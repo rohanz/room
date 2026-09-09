@@ -56,12 +56,31 @@ everything beats a 5/5/2/3. Practical rules:
 - Log agent actions (tool calls, decisions) to stdout or a file — this doubles as demo
   material and as the "explain what it did" story.
 
-## Layout (fill in as the project takes shape)
+## Layout
 
 ```
-RULES.md            verbatim brief + rubric (do not edit)
-AGENTS.md           this file (CLAUDE.md -> AGENTS.md)
-docs/decisions.md   idea, environment, scope, what-was-built-when
-docs/submission.md  deliverables checklist + demo script
-.env.example        required env vars, no values
+RULES.md                 verbatim brief + rubric (do not edit)
+AGENTS.md                this file (CLAUDE.md -> AGENTS.md)
+docs/decisions.md        idea, scope, findings from live runs, what-was-built-when
+docs/prior-art.md        AgentRoom, Zed Delta, etc. and the gap we fill
+docs/submission.md       deliverables checklist + demo script
+docs/superpowers/        design spec + implementation plan
+packages/shared/         one Y.Doc schema: files, claims, bus, chats, meta; typed accessors
+packages/server/         stock y-websocket server (pinned @y/websocket-server 0.1.1)
+packages/roomd/          sync daemon: clone <-> room, both ways, git-aware
+packages/room-mcp/       MCP tools (room_*) + Claude Code channel; AGENT_INSTRUCTIONS
+packages/agent/          roomagent: Codex SDK thread per person, fed by chat + room events
+packages/web/            Vite + CodeMirror editor: cursors, claim gutters, feed, agent chat
+examples/demo-repo/      tiny Python service used in the demo (uv)
+scripts/demo.sh          server + two clones + two daemons on one machine
+scripts/say.mts          post a message into a person's agent chat and watch the room
 ```
+
+## Running and testing
+
+- `npm test` runs every package's vitest suite (roomd spins up an in-process server).
+- `scripts/demo.sh` then two `roomagent`s then `npm run web`. See README.
+- `ROOM_URL=ws://localhost:1244/<room> npx tsx scripts/say.mts Kieran "do X" 200` drives an
+  agent without the browser and prints its chat and the bus. Costs Codex tokens.
+- Ports: server 1234 by default; the demo scripts in this repo have used 1244 to avoid a
+  stray server left by an earlier session. Rooms are in-memory; restart the server to reset.
