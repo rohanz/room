@@ -2,7 +2,9 @@
   "name": "room",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
@@ -18,5 +20,10 @@
     "typescript": "^5.6.0",
     "vitest": "^5.0.0"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "@y/websocket-server": "0.1.1"
+  }
 }
