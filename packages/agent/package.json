@@ -9,6 +9,7 @@
   "scripts": { "start": "tsx src/cli.ts" },
   "dependencies": {
     "@openai/codex-sdk": "^0.153.0",
+    "@room/room-mcp": "*",
     "@room/shared": "*",
     "ws": "^8.21.0",
     "y-protocols": "^1.0.6",
