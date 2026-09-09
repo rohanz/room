@@ -14,7 +14,7 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 cp -R "$ROOT/examples/demo-repo" "$WORK/src"
 ( cd "$WORK/src" && rm -rf .git && git init -q -b main && git add -A && git -c user.email=demo@room -c user.name=demo commit -qm "demo-shop initial" )
 git clone -q "$WORK/src" "$A"; git clone -q "$WORK/src" "$B"
-for d in "$A" "$B"; do ( cd "$d" && git config user.email demo@room && git config user.name "$(basename "$d")" ); done
+for d in "$A" "$B"; do ( cd "$d" && git config user.email demo@room && git config user.name "$(basename "$d")" && uv sync --group dev -q ); done
 
 echo "[demo] starting server on :$PORT"
 PORT="$PORT" npx tsx "$ROOT/packages/server/src/index.ts" > "$WORK/server.log" 2>&1 &

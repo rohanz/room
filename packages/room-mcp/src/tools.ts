@@ -13,7 +13,13 @@ export interface ToolDef {
   name: string
   description: string
   inputSchema: { type: 'object'; properties: Record<string, unknown>; required?: string[] }
+  /** MCP tool annotations; Codex uses these to decide whether a call needs approval. */
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean }
 }
+
+/** Every room tool only touches the shared room doc (never the user's files or the network), so none is destructive. */
+const RO = { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+const RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
 
 export interface ToolCtx {
   room: RoomDoc
@@ -33,21 +39,21 @@ const str = (d: string) => ({ type: 'string', description: d })
 const int = (d: string) => ({ type: 'integer', description: d })
 
 const DEFS: ToolDef[] = [
-  { name: 'room_state', description: 'Room overview: meta, participants (with cursors/status), open claims, last 10 bus messages, unread count. Call this before editing anything.',
+  { name: 'room_state', annotations: RO, description: 'Room overview: meta, participants (with cursors/status), open claims, last 10 bus messages, unread count. Call this before editing anything.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'room_read_live', description: 'Current live room text of a file with line numbers, plus claims and cursors in it.',
+  { name: 'room_read_live', annotations: RO, description: 'Current live room text of a file with line numbers, plus claims and cursors in it.',
     inputSchema: { type: 'object', properties: { path: str('repo-relative path') }, required: ['path'] } },
-  { name: 'room_read_committed', description: 'File content at HEAD of the local clone (git show HEAD:path).',
+  { name: 'room_read_committed', annotations: RO, description: 'File content at HEAD of the local clone (git show HEAD:path).',
     inputSchema: { type: 'object', properties: { path: str('repo-relative path') }, required: ['path'] } },
-  { name: 'room_diff', description: 'Unified diff from committed (HEAD) to live room text, for one path or all changed paths.',
+  { name: 'room_diff', annotations: RO, description: 'Unified diff from committed (HEAD) to live room text, for one path or all changed paths.',
     inputSchema: { type: 'object', properties: { path: str('optional repo-relative path') } } },
-  { name: 'room_who', description: 'Who is active (cursor) or holds claims overlapping a file region.',
+  { name: 'room_who', annotations: RO, description: 'Who is active (cursor) or holds claims overlapping a file region.',
     inputSchema: { type: 'object', properties: { path: str('repo-relative path'), from: int('first line (1-based), default 1'), to: int('last line, default EOF') }, required: ['path'] } },
-  { name: 'room_claim', description: 'Claim a line range before editing it. Reports overlaps with other parties (and posts a conflict). Returns claimId.',
+  { name: 'room_claim', annotations: RW, description: 'Claim a line range before editing it. Reports overlaps with other parties (and posts a conflict). Returns claimId.',
     inputSchema: { type: 'object', properties: { path: str('repo-relative path'), from: int('first line'), to: int('last line'), intent: str('what you are about to do') }, required: ['path', 'from', 'to', 'intent'] } },
-  { name: 'room_release', description: 'Release a claim you hold, optionally with a summary of what you did.',
+  { name: 'room_release', annotations: RW, description: 'Release a claim you hold, optionally with a summary of what you did.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('optional summary') }, required: ['claimId'] } },
-  { name: 'room_send', description: 'Post a bus message: changed (paths+summary), question (to someone), or answer (inReplyTo a question).',
+  { name: 'room_send', annotations: RW, description: 'Post a bus message: changed (paths+summary), question (to someone), or answer (inReplyTo a question).',
     inputSchema: { type: 'object', properties: {
       type: { type: 'string', enum: ['changed', 'question', 'answer'] },
       to: str('recipient person name (their agent); empty = broadcast'),
@@ -55,7 +61,7 @@ const DEFS: ToolDef[] = [
       paths: { type: 'array', items: { type: 'string' }, description: 'paths touched (changed)' },
       inReplyTo: str('message id being answered (answer)'),
     }, required: ['type', 'text'] } },
-  { name: 'room_wait', description: 'Sleep up to 30 seconds, e.g. to let a human finish in your region, then call room_state again.',
+  { name: 'room_wait', annotations: RO, description: 'Sleep up to 30 seconds, e.g. to let a human finish in your region, then call room_state again.',
     inputSchema: { type: 'object', properties: { seconds: int('1-30') } } },
 ]
 

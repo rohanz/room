@@ -18,8 +18,8 @@ export class CodexBackend implements AgentBackend {
   private codex: Codex
   private thread
   constructor(opts: CodexBackendOptions) {
-    this.codex = new Codex({ config: { mcp_servers: { room: { command: opts.mcp.command, args: opts.mcp.args, env: opts.mcp.env } } } })
-    const t: ThreadOptions = { workingDirectory: opts.workingDirectory, sandboxMode: 'workspace-write', approvalPolicy: 'never', skipGitRepoCheck: true }
+    this.codex = new Codex({ config: { mcp_servers: { room: { command: opts.mcp.command, args: opts.mcp.args, env: opts.mcp.env, default_tools_approval_mode: 'auto' } } } })
+    const t: ThreadOptions = { workingDirectory: opts.workingDirectory, sandboxMode: 'workspace-write', approvalPolicy: 'never', skipGitRepoCheck: true, networkAccessEnabled: true }
     if (opts.model) t.model = opts.model
     this.thread = this.codex.startThread(t)
   }
