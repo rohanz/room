@@ -17,11 +17,17 @@ export interface WakeDecision {
  * - wake on claim/release/changed/conflict/question when `to` is empty or is our name
  * - answer only when `to` is our name
  */
-export function shouldWakeOnMsg(me: Identity, m: Msg): WakeDecision {
+export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = []): WakeDecision {
   if (m.from === me.name && m.fromKind === 'agent') return { wake: false, mustAnswer: false, reason: 'own message' }
   if (!WAKE_TYPES.has(m.type)) return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` }
   const addressed = m.to === me.name
   if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` }
+  // Broadcast claim/release traffic is only relevant when it touches a file we are working in;
+  // otherwise every claim in the room costs a turn of "acknowledged, no action needed".
+  if ((m.type === 'claim' || m.type === 'release') && !addressed) {
+    const near = myClaims.some(c => c.by === me.name && c.byKind === 'agent' && c.path === m.path)
+    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${m.path}, not near my claims` }
+  }
   return { wake: true, mustAnswer: addressed, reason: addressed ? 'addressed to me' : 'broadcast' }
 }
 

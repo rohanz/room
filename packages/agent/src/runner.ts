@@ -84,7 +84,7 @@ export class Runner {
 
   private onMsg(m: Msg) {
     if (m.type === 'claim') this.seenClaimIds.add(m.claimId)
-    const d = shouldWakeOnMsg(this.me, m)
+    const d = shouldWakeOnMsg(this.me, m, this.room.openClaims())
     this.log(`bus ${m.type} from ${m.from}/${m.fromKind}: ${d.wake ? 'wake' : 'skip'} (${d.reason})`)
     if (d.wake) this.enqueue({ kind: 'event', msg: m, line: formatMsg(m) })
   }

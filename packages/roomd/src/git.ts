@@ -12,8 +12,12 @@ export function git(dir: string, args: string[]): Promise<string> {
 export const gitHead = (dir: string) => git(dir, ['rev-parse', 'HEAD']).then(s => s.trim())
 export const gitBranch = (dir: string) => git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).then(s => s.trim())
 
-/** Set of git-tracked paths (forward-slash, relative to the repo root). */
+/**
+ * Set of syncable paths: git-tracked files plus untracked files that are not ignored
+ * (forward-slash, relative to the repo root). Untracked files must sync too: an agent that
+ * creates api/notify.py rarely stages it, and a teammate's tests still need it.
+ */
 export async function gitTracked(dir: string): Promise<Set<string>> {
-  const out = await git(dir, ['ls-files', '-z'])
+  const out = await git(dir, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
   return new Set(out.split('\0').filter(Boolean))
 }

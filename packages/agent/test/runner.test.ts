@@ -121,3 +121,16 @@ describe('Runner', () => {
     expect(s.statuses.at(-1)).toBe('idle')
   })
 })
+
+describe('wake rules: claim/release locality', () => {
+  it('ignores broadcast claims in files I have no claim in, wakes for files I am working in', async () => {
+    const { shouldWakeOnMsg } = await import('../src/wake.js')
+    const me = { name: 'Rohan', kind: 'agent' as const }
+    const claim = { id: 'm1', type: 'claim' as const, from: 'Kieran', fromKind: 'agent' as const, at: 1, claimId: 'c1', path: 'api/notify.py', from_line: 1, to_line: 1, intent: 'stub' }
+    expect(shouldWakeOnMsg(me, claim, []).wake).toBe(false)
+    const mine = [{ id: 'c0', path: 'api/notify.py', from: 3, to: 9, by: 'Rohan', byKind: 'agent' as const, intent: 'x', at: 1 }]
+    expect(shouldWakeOnMsg(me, claim, mine).wake).toBe(true)
+    const changed = { id: 'm2', type: 'changed' as const, from: 'Kieran', fromKind: 'agent' as const, at: 1, paths: ['a.py'], summary: 'renamed' }
+    expect(shouldWakeOnMsg(me, changed, []).wake).toBe(true)
+  })
+})

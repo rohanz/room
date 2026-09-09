@@ -160,6 +160,12 @@ describe('roomd', () => {
     expect(dB.roomDoc.text('src/app.py')).toBe(want)
   })
 
+  it('a brand-new untracked (not ignored) file on A lands on B', async () => {
+    await fsp.mkdir(path.join(A, 'api'), { recursive: true })
+    await fsp.writeFile(path.join(A, 'api', 'notify.py'), 'def notify(order):\n    pass\n')
+    await waitFor(() => fs.existsSync(path.join(B, 'api/notify.py')) && read(B, 'api/notify.py') === 'def notify(order):\n    pass\n', 4000)
+  })
+
   it('deletes propagate both ways', async () => {
     await fsp.unlink(path.join(A, 'README.md'))
     await waitFor(() => !fs.existsSync(path.join(B, 'README.md')), 2000)
