@@ -40,6 +40,12 @@ npm install
 codex login              # roomagent uses your Codex CLI auth
 ```
 
+Notes on how the agent runs: the Codex thread uses `workspace-write` sandbox with network
+on and `approval_policy=never`; room tools auto-approve because they carry MCP annotations
+and the server is configured with `default_tools_approval_mode = "auto"`. Claude Code users
+can load the same tools plus a channel with
+`claude --dangerously-load-development-channels server:room` (see `packages/room-mcp/README.md`).
+
 ## Run (one machine, two "people", for a quick look)
 
 See `scripts/demo.sh` (starts the server, seeds `examples/demo-repo` into two clones, runs

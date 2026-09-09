@@ -54,3 +54,19 @@ daemon is the risk and gets built and tested first.
 ## Built when (for the writeup)
 - 9 Sep (pre-event, cleared with organiser): docs, spec, shared schema, server, demo repo,
   and first versions of roomd / room-mcp / agent / web.
+
+## 2026-09-10 — Findings from the first live runs (Codex)
+- **Codex MCP approval.** With `approval_policy=never`, MCP tools without annotations are
+  treated as needing approval and fail ("MCP tool call requires approval"). Fix: every room
+  tool declares `annotations` (readOnlyHint for reads, destructiveHint:false for all) and the
+  server config sets `default_tools_approval_mode = "auto"`. Both are in place.
+- **Sandbox network.** `workspace-write` has no network by default, so `uv` could not fetch
+  pytest. Runner sets `networkAccessEnabled: true`; demo clones are `uv sync`ed up front.
+- **Untracked files must sync.** Agents create files without `git add`. roomd now syncs
+  tracked + untracked-non-ignored files and asks git per new file to dodge a refresh race.
+- **Tool ergonomics.** Claims on not-yet-existing files are allowed (range 1-1); `room_send`
+  to yourself is refused with a hint to talk to your human in chat; broadcast claim/release
+  events only wake an agent when they touch a file it has a claim in (otherwise each claim
+  in the room cost a turn of "acknowledged").
+- **Observed:** two Codex agents on overlapping tasks in one file claimed distinct regions,
+  released, announced `changed`, and reacted to each other's events; clones converged.
