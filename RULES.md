@@ -74,3 +74,7 @@ Every team must submit:
 Every team must complete its submission by the deadline shown in the hackathon portal.
 
 Every eligible project will enter the same global competition.
+
+## Update 2026-09-09 — build-period rule relaxed
+
+Rohan confirmed with an organiser that the "net-new build during the official hackathon period" text above is from old rules and building before build day is OK. Pre-event work is allowed.

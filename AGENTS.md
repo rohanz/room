@@ -13,10 +13,7 @@ Rohan's entry. One-day build; a working prototype demoable by end of day.
 
 ## Hard constraints (from RULES.md)
 
-- **Net-new build during the official hackathon period.** Nothing from other progwork
-  repos gets copied in as "the project". Libraries, templates, starter code, and prompts
-  are fine; the core functionality must be written during the event. Keep a short
-  "what was built during the event" note in `docs/decisions.md` — judges may ask.
+- **Build timing:** organiser confirmed (9 Sep) that pre-event building is fine; the "net-new during the event" text in RULES.md is from old rules. Keep a short "what was built when" note in `docs/decisions.md` anyway.
 - Repo must be **public** on GitHub at submission. Never commit secrets; `.env` is
   gitignored, `.env.example` documents what's needed.
 - Submission also needs: title, written description, 2-minute demo video, social post
