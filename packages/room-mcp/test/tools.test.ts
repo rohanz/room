@@ -65,8 +65,8 @@ describe('tools', () => {
     const types = room.messages().map(m => m.type)
     expect(types).toEqual(['claim', 'conflict'])
     const mine = room.openClaims().find(c => c.by === 'Rohan')!
-    expect(mine.to).toBe(6) // 5 lines + trailing newline, per shared lineCount
-    expect((awareness.getLocalState() as any).cursor).toEqual({ path: 'app.py', from: 4, to: 6 })
+    expect(mine.to).toBe(5) // trailing newline does not add a line
+    expect((awareness.getLocalState() as any).cursor).toEqual({ path: 'app.py', from: 4, to: 5 })
     // release
     const rel = await tools.call('room_release', { claimId: mine.id, summary: 'done' })
     expect(rel).toContain('released')

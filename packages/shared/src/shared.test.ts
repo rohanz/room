@@ -34,7 +34,7 @@ describe('RoomDoc', () => {
 
     a.setFile('api/handlers.py', 'def f():\n    pass\n')
     expect(b.text('api/handlers.py')).toBe('def f():\n    pass\n')
-    expect(b.lineCount('api/handlers.py')).toBe(3)
+    expect(b.lineCount('api/handlers.py')).toBe(2)
 
     const c = a.addClaim({ path: 'api/handlers.py', from: 1, to: 2, by: 'Rohan', byKind: 'agent', intent: 'refactor' })
     expect(b.openClaims()[0].id).toBe(c.id)

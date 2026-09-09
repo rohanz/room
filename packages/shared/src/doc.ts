@@ -24,7 +24,10 @@ export class RoomDoc {
   text(path: string): string | undefined { return this.files.get(path)?.toString() }
   lineCount(path: string): number {
     const t = this.text(path)
-    return t === undefined ? 0 : t.split('\n').length
+    if (t === undefined) return 0
+    // A trailing newline terminates the last line; it does not start a new one.
+    const n = t.split('\n').length
+    return t.endsWith('\n') ? n - 1 : n
   }
   /** Replace or create a file's content wholesale. Prefer applyDiff for live edits. */
   setFile(path: string, content: string, origin?: unknown): void {
