@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import * as Y from 'yjs'
-import { RoomDoc, claimsOverlap, clampRange, colorFor, displayName, formatMsg } from './index.js'
+import { RoomDoc, claimsOverlap, clampRange, colorFor, displayName, formatMsg, type QuestionMsg } from './index.js'
 
 describe('identity', () => {
   it('colour is deterministic and shared between a person and their agent', () => {
@@ -41,7 +41,7 @@ describe('RoomDoc', () => {
     b.removeClaim(c.id)
     expect(a.openClaims()).toHaveLength(0)
 
-    b.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'changing payload?' })
+    b.post<QuestionMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'changing payload?' })
     expect(a.lastMessages(1)[0]).toMatchObject({ type: 'question', from: 'Kieran', fromKind: 'agent' })
     expect(formatMsg(a.lastMessages(1)[0])).toBe("Kieran's agent → Rohan's agent asks: changing payload?")
 
