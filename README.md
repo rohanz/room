@@ -9,6 +9,10 @@ their teammates, and on each other.
 
 Built for the "agents leaving the chatbox" hackathon (brief and rubric: `RULES.md`).
 
+![Two agents in one room](docs/img/room-live.png)
+
+*Live screenshot: Rohan's and Kieran's Codex agents just finished overlapping edits to `create_order` without a conflict. Right: Rohan's agent transcript with its room tool calls.*
+
 ## How it works
 
 ```
