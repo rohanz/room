@@ -12,7 +12,7 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { RoomDoc, colorFor, type Presence } from '@room/shared'
-import { git, gitBranch, gitHead, gitTracked } from './git.js'
+import { git, gitBranch, gitHead, gitIgnored, gitTracked } from './git.js'
 import { applyLocalEdit } from './merge.js'
 
 export interface RoomdOptions {
@@ -305,9 +305,10 @@ class Daemon implements Roomd {
   private async onDiskChange(rel: string, isNew: boolean): Promise<void> {
     if (this.stopped) return
     if (!this.tracked.has(rel) && !this.roomDoc.hasFile(rel)) {
-      // A brand-new file might have just been `git add`ed; refresh the set (throttled).
-      if (isNew && Date.now() - this.lastTrackedRefresh > 1000) await this.refreshTracked()
-      if (!this.tracked.has(rel)) return
+      // A brand-new file: sync it unless git ignores it. (Asking git per file avoids the
+      // race where a periodic ls-files ran just before the file appeared.)
+      if (!isNew || !fs.existsSync(this.abs(rel)) || await gitIgnored(this.dir, rel)) return
+      this.tracked.add(rel)
     }
     if (!fs.existsSync(this.abs(rel))) {
       if (this.roomDoc.hasFile(rel)) {
@@ -347,8 +348,12 @@ class Daemon implements Roomd {
   private async refreshTracked(): Promise<void> {
     if (this.stopped) return
     try {
-      this.tracked = await gitTracked(this.dir)
+      const next = await gitTracked(this.dir)
+      const added = [...next].filter(p => !this.tracked.has(p) && !this.roomDoc.hasFile(p))
+      this.tracked = next
       this.lastTrackedRefresh = Date.now()
+      // Anything syncable that is on disk but not in the room was missed; push it now.
+      for (const p of added) if (!this.isIgnoredPath(p) && fs.existsSync(this.abs(p))) this.scheduleDisk(p, true)
     } catch (e) { this.log(`warn: git ls-files: ${errMsg(e)}`) }
   }
 

@@ -21,3 +21,10 @@ export async function gitTracked(dir: string): Promise<Set<string>> {
   const out = await git(dir, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
   return new Set(out.split('\0').filter(Boolean))
 }
+
+/** True when git would ignore this path (so it must not be synced). */
+export async function gitIgnored(dir: string, rel: string): Promise<boolean> {
+  return new Promise(resolve => {
+    execFile('git', ['check-ignore', '-q', '--', rel], { cwd: dir }, err => resolve(!err))
+  })
+}
