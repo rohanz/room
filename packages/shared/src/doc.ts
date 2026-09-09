@@ -79,7 +79,6 @@ export class RoomDoc {
     this.doc.transact(() => { this.bus.push([msg]) }, origin)
     return msg
   }
-}
 
   // ---- chats (human <-> own agent) ----------------------------------------
   chat(name: string): Y.Array<ChatItem> {
