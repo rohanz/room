@@ -1,0 +1,26 @@
+import type { Identity, Kind } from './types.js'
+
+const PALETTE = ['#0f8b8d', '#c9761a', '#6d4fc2', '#c0392b', '#2e86de', '#27ae60', '#b5179e', '#8d6e63']
+
+/** Deterministic colour per person, so every client agrees without coordination. */
+export function colorFor(name: string): string {
+  // FNV-1a; a weak hash collides on short names ("Rohan"/"Kieran" did).
+  let h = 0x811c9dc5
+  for (const ch of name) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0 }
+  // final avalanche so short names spread across the palette
+  h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995) >>> 0; h ^= h >>> 15
+  return PALETTE[(h >>> 0) % PALETTE.length]
+}
+
+export function displayName(id: Identity | { name: string; kind: Kind }): string {
+  return id.kind === 'agent' ? `${id.name}'s agent` : id.name
+}
+
+export function sameParty(a: Identity, b: Identity): boolean {
+  return a.name === b.name
+}
+
+export function newId(prefix = ''): string {
+  const r = Math.random().toString(36).slice(2, 8)
+  return `${prefix}${Date.now().toString(36)}${r}`
+}

@@ -226,3 +226,39 @@ Vitest for tests. `tsx` to run. Node 22. Python via uv only in `examples/demo-re
 5. Rohan hits commit; Kieran's daemon sees the base update.
 Failure demo: Kieran claims the same lines → `conflict` lands in both sessions, both
 agents stop and ask their humans.
+
+## 12. Amendment 2026-09-09 (late): Codex is the primary agent
+
+This is a Codex hackathon. Codex CLI supports MCP servers but has no channels equivalent
+(open requests openai/codex#15299, #17543). So the agent side becomes:
+
+**`packages/agent` (`roomagent`)** — one local Node process per person, `roomagent --name
+Rohan --dir <clone> --room <url>`. It:
+- Creates a Codex SDK thread (`@openai/codex-sdk`, `startThread({ workingDirectory: dir,
+  sandboxMode: 'workspace-write', approvalPolicy: 'never', skipGitRepoCheck: true })`) with
+  `config.mcp_servers.room = { command, args, env }` pointing at `room-mcp`, so the agent has
+  the room tools. Auth: the user's existing `codex login` (SDK spawns the CLI).
+- Owns an input queue. Sources: (a) the human's chat, (b) room events. Runs turns
+  **sequentially** (`thread.runStreamed`), one queued input per turn; several events that
+  arrive during a turn are coalesced into one follow-up turn.
+- Human chat lives in the room doc: `doc.getMap('chats')` → `Y.Array<ChatItem>` per person
+  name. The browser sidebar appends `{role:'human'}`; the runner appends `agent`, `tool`
+  (MCP calls, commands, file changes), `event` (what room event woke it) and `status` items
+  as it streams. So the browser is the human's line to their agent and both laptops can see
+  both chats — everything through the one doc, no extra sockets.
+- Sets awareness `{ user: {name, kind:'agent'}, status }` and moves its awareness cursor to
+  its active claim.
+- Room-event wake rules are the same as the channel rules in §5. The runner formats an
+  event as a `<room-event type=.. from=..>` block plus the one-line summary and posts it as
+  the turn input. The system prompt (first turn preamble) is the same text as the MCP
+  `instructions` in §5.
+
+`room-mcp` keeps its channel capability so Claude Code users get native wake-ups with
+`--dangerously-load-development-channels server:room`; it costs nothing and is a good line
+in the writeup ("works with both"). The demo runs on Codex.
+
+Shared schema addition:
+```
+doc.getMap('chats') : Map<name, Y.Array<ChatItem>>
+ChatItem = { id, at, role: 'human'|'agent'|'tool'|'event'|'status', text, meta?: Record<string,string> }
+```

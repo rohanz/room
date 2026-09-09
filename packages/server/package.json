@@ -1,0 +1,9 @@
+{
+  "name": "@room/server",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "room-server": "./src/index.ts" },
+  "scripts": { "start": "tsx src/index.ts" },
+  "dependencies": { "ws": "^8.21.0", "@y/websocket-server": "^0.1.5", "yjs": "^13.6.32" },
+  "devDependencies": { "@types/ws": "^8.5.0" }
+}
