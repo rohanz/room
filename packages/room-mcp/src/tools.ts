@@ -163,16 +163,19 @@ export function createTools(ctx: ToolCtx): Tools {
       return act.length ? `${p}:${r.from}-${r.to}\n${act.join('\n')}` : `${p}:${r.from}-${r.to}: nobody active, no claims`
     },
     async room_claim(a) {
-      const p = requireFile(a.path); if (typeof p !== 'string') return p.err
+      if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
+      const p = a.path
       if (typeof a.intent !== 'string' || !a.intent) return 'error: intent is required'
-      const n = room.lineCount(p)
+      // A file that does not exist yet can still be claimed (intent: "create it"); range collapses to 1-1.
+      const isNew = !room.hasFile(p)
+      const n = isNew ? 1 : room.lineCount(p)
       const r = clampRange(Number(a.from), Number(a.to), n)
       if (!Number.isFinite(r.from)) return 'error: from/to must be numbers'
       const others = room.claimsFor(p).filter(c => !(c.by === me.name && c.byKind === me.kind) && claimsOverlap(c, { path: p, ...r }))
       const claim = room.addClaim({ path: p, from: r.from, to: r.to, by: me.name, byKind: me.kind, intent: a.intent })
       room.post<ClaimMsg>(me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent: a.intent })
       setPresence({ cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p} ${r.from}-${r.to}: ${a.intent}` })
-      const out = [`claimed ${claim.id}: ${describeClaim(claim)}`]
+      const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew ? ' (new file, not in room yet)' : ''}`]
       for (const o of others) {
         const text = `${displayName(me)} claimed ${p}:${r.from}-${r.to} (${a.intent}) overlapping ${describeClaim(o)}`
         room.post<ConflictMsg>(me, { type: 'conflict', claimId: claim.id, otherClaimId: o.id, path: p, text })
@@ -198,6 +201,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const text = typeof a.text === 'string' ? a.text : ''
       if (!text) return 'error: text is required'
       const to = typeof a.to === 'string' && a.to ? a.to : undefined
+      if (to === me.name) return `error: you cannot message yourself. To ask ${me.name} (your human) something, just say it in your reply; room_send is for other people's agents.`
       let msg: Msg
       switch (a.type) {
         case 'changed': {

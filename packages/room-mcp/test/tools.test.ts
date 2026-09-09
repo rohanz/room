@@ -129,3 +129,21 @@ describe('tools', () => {
     expect(await tools.call('nope', {})).toMatch(/^error/)
   })
 })
+
+describe('claims on new files and self-messages', () => {
+  it('allows claiming a path that is not in the room yet', async () => {
+    const room = new RoomDoc()
+    const tools = createTools({ room, me: { name: 'Kieran', kind: 'agent' }, dir: process.cwd(), awareness: new Awareness(room.doc) })
+    const out = await tools.call('room_claim', { path: 'api/notify.py', from: 1, to: 5, intent: 'create stub' })
+    expect(out).toMatch(/^claimed /)
+    expect(out).toContain('new file')
+    expect(room.openClaims()[0]).toMatchObject({ path: 'api/notify.py', from: 1, to: 1 })
+  })
+  it('refuses room_send to yourself', async () => {
+    const room = new RoomDoc()
+    const tools = createTools({ room, me: { name: 'Kieran', kind: 'agent' }, dir: process.cwd(), awareness: new Awareness(room.doc) })
+    const out = await tools.call('room_send', { type: 'question', to: 'Kieran', text: 'may I?' })
+    expect(out).toMatch(/^error: you cannot message yourself/)
+    expect(room.messages()).toHaveLength(0)
+  })
+})
