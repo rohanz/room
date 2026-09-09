@@ -25,3 +25,32 @@ Keep current. Judges may ask which parts were created during the hackathon.
 
 - Pre-existing / reused: (libraries, templates, starter repo, ...)
 - Built during the event: (everything else — list the core pieces)
+
+## 2026-09-09 — Idea locked: "room"
+**Decision:** Build the collaborative-agents room. Two people, two clones, one CRDT room; each
+person's own coding agent joins with room tools, sees live edits + claims + other agents.
+Spec: `superpowers/specs/2026-09-09-room-design.md`. Plan: `superpowers/plans/`.
+**Why:** Hits the rubric's "could not be reproduced in a chatbox" line directly; prior-art
+gap confirmed (`prior-art.md`): AgentRoom has agents-only, Zed Delta has no agent-to-agent.
+**Cut / not doing (day one):** task board, review mode, replay, voice, browser-only
+participants, server-side agents, auth, persistence.
+
+## 2026-09-09 — Codex is the primary agent runtime
+**Decision:** It's a Codex hackathon. `packages/agent` drives a Codex SDK thread per person,
+feeding it the human's chat (from the browser sidebar, via the room doc) and room events as
+sequential turns. Room tools stay an MCP server (`room-mcp`), which Codex loads through
+`--config mcp_servers.room`. Claude Code stays supported through the same MCP server's
+channel capability.
+**Why:** Codex has no channel/push mechanism (openai/codex#15299, #17543), so a local runner
+is the only way to wake a Codex agent on room events. Bonus: the chat living in the doc means
+both people can see both agents' transcripts.
+
+## 2026-09-09 — Execution is local, coordination is shared
+**Decision:** Server = stock y-websocket, zero custom logic; all state in one Y.Doc. Each
+laptop runs the daemon, the agent, tests and git against its own clone.
+**Why:** No sandbox to build; bring-your-own toolchain and keys; git stays normal. The sync
+daemon is the risk and gets built and tested first.
+
+## Built when (for the writeup)
+- 9 Sep (pre-event, cleared with organiser): docs, spec, shared schema, server, demo repo,
+  and first versions of roomd / room-mcp / agent / web.
