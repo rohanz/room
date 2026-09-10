@@ -134,3 +134,25 @@ describe('wake rules: claim/release locality', () => {
     expect(shouldWakeOnMsg(me, changed, []).wake).toBe(true)
   })
 })
+
+describe('/stop', () => {
+  it('aborts a held turn, drops the queue, and reports "stopped by you"', async () => {
+    const { RoomDoc } = await import('@room/shared')
+    const { Runner } = await import('../src/runner.js')
+    const { FakeBackend } = await import('../src/backend.js')
+    const room = new RoomDoc()
+    const backend = new FakeBackend(); backend.hold = true
+    const awareness = { setLocalStateField() {} }
+    const r = new Runner({ name: 'Rohan', room, awareness, backend, log: () => {} })
+    r.start()
+    room.say('Rohan', { role: 'human', text: 'do a thing' })
+    await new Promise(res => setTimeout(res, 20))
+    room.say('Rohan', { role: 'human', text: 'and another' })
+    room.say('Rohan', { role: 'human', text: '/stop' })
+    await r.idle()
+    const statuses = room.chat('Rohan').toArray().filter(i => i.role === 'status').map(i => i.text)
+    expect(statuses).toContain('stopped by you')
+    expect(backend.inputs).toHaveLength(1)
+    r.stop()
+  })
+})

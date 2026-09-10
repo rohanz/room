@@ -44,7 +44,12 @@ export class Runner {
     const chat = room.chat(this.me.name)
     const onChat = (ev: Y.YArrayEvent<ChatItem>) => {
       for (const d of ev.changes.delta) {
-        for (const it of d.insert ?? []) if (it.role === 'human') this.enqueue({ kind: 'human', text: it.text })
+        for (const it of d.insert ?? []) {
+          if (it.role !== 'human') continue
+          // "/stop" from the human interrupts the running turn and drops queued work.
+          if (it.text.trim() === '/stop') { this.stopTurn(); continue }
+          this.enqueue({ kind: 'human', text: it.text })
+        }
       }
     }
     chat.observe(onChat); this.unobserve.push(() => chat.unobserve(onChat))
@@ -127,6 +132,15 @@ export class Runner {
     return batch
   }
 
+  private abort: AbortController | null = null
+
+  /** Interrupt the current turn (if any) and clear the queue. Triggered by a "/stop" chat message. */
+  stopTurn(): void {
+    this.queue.length = 0
+    if (this.abort) { this.abort.abort(); this.log('stop requested by human') }
+    else this.room.say(this.me.name, { role: 'status', text: 'nothing running' })
+  }
+
   private async turn(batch: Queued[]) {
     const say = (item: Omit<ChatItem, 'id' | 'at'>) => this.room.say(this.me.name, item)
     let body: string
@@ -140,16 +154,19 @@ export class Runner {
     if (this.firstTurn) { input = `${this.opts.preamble ?? preamble(this.me.name)}\n\n---\n\n${body}`; this.firstTurn = false }
 
     this.setStatus('thinking')
+    this.abort = new AbortController()
+    const { signal } = this.abort
     try {
       await this.opts.backend.run(input, item => {
         const c = itemToChat(item)
         if (c) say(c)
-      }, s => this.setStatus(s))
+      }, s => this.setStatus(s), signal)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      this.log(`turn failed: ${msg}`)
-      say({ role: 'status', text: `turn failed: ${msg}` })
+      if (signal.aborted) { say({ role: 'status', text: 'stopped by you' }) }
+      else { this.log(`turn failed: ${msg}`); say({ role: 'status', text: `turn failed: ${msg}` }) }
     } finally {
+      this.abort = null
       this.setStatus('idle')
     }
   }

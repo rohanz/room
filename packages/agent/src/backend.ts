@@ -5,7 +5,7 @@ export interface TurnResult { finalResponse: string }
 
 export interface AgentBackend {
   /** Run one turn. `onItem` fires for every completed item; `onStatus` for coarse progress. */
-  run(input: string, onItem: (item: AgentItem) => void, onStatus?: (status: string) => void): Promise<TurnResult>
+  run(input: string, onItem: (item: AgentItem) => void, onStatus?: (status: string) => void, signal?: AbortSignal): Promise<TurnResult>
 }
 
 export interface CodexBackendOptions {
@@ -25,8 +25,8 @@ export class CodexBackend implements AgentBackend {
   }
   get threadId(): string | null { return this.thread.id }
 
-  async run(input: string, onItem: (item: AgentItem) => void, onStatus?: (s: string) => void): Promise<TurnResult> {
-    const { events } = await this.thread.runStreamed(input)
+  async run(input: string, onItem: (item: AgentItem) => void, onStatus?: (s: string) => void, signal?: AbortSignal): Promise<TurnResult> {
+    const { events } = await this.thread.runStreamed(input, signal ? { signal } : undefined)
     let finalResponse = ''
     for await (const ev of events) {
       switch (ev.type) {
@@ -57,10 +57,10 @@ export class FakeBackend implements AgentBackend {
   /** Resolve to let a turn finish (when `hold` is true). */
   private release: (() => void) | null = null
   hold = false
-  async run(input: string, onItem: (item: AgentItem) => void, onStatus?: (s: string) => void): Promise<TurnResult> {
+  async run(input: string, onItem: (item: AgentItem) => void, onStatus?: (s: string) => void, signal?: AbortSignal): Promise<TurnResult> {
     this.inputs.push(input)
     onStatus?.('thinking')
-    if (this.hold) await new Promise<void>(r => { this.release = r })
+    if (this.hold) await new Promise<void>((r, rej) => { this.release = r; signal?.addEventListener('abort', () => rej(new Error('aborted'))) })
     const items = this.scripts.shift() ?? []
     let finalResponse = ''
     for (const it of items) { if (it.type === 'agent_message') finalResponse = it.text; onItem(it) }
