@@ -77,6 +77,15 @@ export class Editor {
 
   setClaims(claims: Claim[]) { this.view?.dispatch({ effects: setClaims.of(claims) }) }
 
+  /** Move the cursor to a 1-based line and scroll it into view (centred). */
+  scrollTo(line: number) {
+    if (!this.view) return
+    const n = Math.max(1, Math.min(line, this.view.state.doc.lines))
+    const pos = this.view.state.doc.line(n).from
+    this.view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: 'center' }) })
+    this.view.focus()
+  }
+
   refreshRemoteCursors() {
     if (!this.view || !this.path) return
     const mine = this.conn.provider.awareness.clientID
