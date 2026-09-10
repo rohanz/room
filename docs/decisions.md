@@ -70,3 +70,14 @@ daemon is the risk and gets built and tested first.
   in the room cost a turn of "acknowledged").
 - **Observed:** two Codex agents on overlapping tasks in one file claimed distinct regions,
   released, announced `changed`, and reacted to each other's events; clones converged.
+
+## 2026-09-10 — Codex plugin
+**Decision:** Ship `plugins/room` (manifest, `room-etiquette` skill, bundled MCP server) with
+the repo as its own marketplace (`.agents/plugins/marketplace.json`). Verified: plain `codex
+exec` in a synced clone loads the skill, gets the `room_*` tools, and posts on the bus.
+**Why:** It is the native distribution unit for Codex users and gives a second mode that
+needs no runner: normal Codex, room-aware. The runner stays for reactive agents.
+**Gotchas (Codex 0.153):** `${PLUGIN_ROOT}` is not expanded in `.mcp.json` command/args;
+use `cwd: "."` (plugin dir) with a relative script path. MCP servers get a clean env, so
+`env_vars: ["PWD", ...]` passes the user's directory through; room-mcp walks up from PWD to
+find `.room.json`. `codex exec` blocks on an open stdin; use `</dev/null` in scripts.

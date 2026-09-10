@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
@@ -22,14 +22,34 @@ export type { ToolCtx, ToolDef, Tools } from './tools.js'
 
 interface Config { room: string; name: string; dir: string }
 
+/** Find `.room.json` (written by roomd in the clone root) starting from each candidate directory and walking up. */
+function findRoomFile(): Partial<Config> & { _from?: string } {
+  const env = process.env
+  const starts = [env.ROOM_DIR, process.cwd(), env.PWD, env.INIT_CWD, env.CODEX_CWD].filter((d): d is string => !!d)
+  for (const start of starts) {
+    let d = resolve(start)
+    for (;;) {
+      const f = resolve(d, '.room.json')
+      if (existsSync(f)) {
+        try { return { ...JSON.parse(readFileSync(f, 'utf8')), _from: dirname(f) } } catch { /* try next */ }
+      }
+      const up = dirname(d)
+      if (up === d) break
+      d = up
+    }
+  }
+  return {}
+}
+
 function loadConfig(): Config {
-  let file: Partial<Config> = {}
-  try { file = JSON.parse(readFileSync(resolve(process.cwd(), '.room.json'), 'utf8')) } catch { /* optional */ }
-  const room = process.env.ROOM_URL ?? file.room
-  const name = process.env.ROOM_NAME ?? file.name
-  const dir = process.env.ROOM_DIR ?? file.dir ?? process.cwd()
+  // Empty env values count as unset (a plugin's "${ROOM_URL}" substitution yields "" when not exported).
+  const e = (k: string) => (process.env[k] && process.env[k]!.trim()) || undefined
+  const file = findRoomFile()
+  const room = e('ROOM_URL') ?? file.room
+  const name = e('ROOM_NAME') ?? file.name
+  const dir = e('ROOM_DIR') ?? file.dir ?? file._from ?? process.cwd()
   if (!room || !name) {
-    process.stderr.write('room-mcp: need ROOM_URL and ROOM_NAME (or .room.json {room,name,dir} in cwd)\n')
+    process.stderr.write(`room-mcp: need ROOM_URL and ROOM_NAME, or a .room.json {room,name,dir} in the clone (looked from cwd=${process.cwd()} PWD=${process.env.PWD ?? '-'})\n`)
     process.exit(2)
   }
   return { room, name, dir: resolve(dir) }
@@ -117,5 +137,7 @@ async function main() {
   process.stdin.on('end', bye)
 }
 
-const isEntry = process.argv[1] && /room-mcp[\/\\]src[\/\\]index\.ts$|room-mcp$/.test(process.argv[1])
+// Run main() when executed directly (tsx on src/index.ts, the bundled plugins/room/server/room-mcp.mjs,
+// or the bin name), but not when imported by packages/agent for AGENT_INSTRUCTIONS / shouldWake.
+const isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\]index\.ts|\.mjs)?$/.test(process.argv[1])
 if (isEntry) main().catch(e => { process.stderr.write(`room-mcp: ${e?.stack ?? e}\n`); process.exit(1) })

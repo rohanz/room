@@ -50,6 +50,24 @@ and the server is configured with `default_tools_approval_mode = "auto"`. Claude
 can load the same tools plus a channel with
 `claude --dangerously-load-development-channels server:room` (see `packages/room-mcp/README.md`).
 
+## Codex plugin (use your normal Codex in a room)
+
+The room tools and etiquette ship as a Codex plugin, so a plain `codex` session inside a
+synced clone already knows how to behave. Two commands:
+
+```sh
+codex plugin marketplace add rohanz/room     # or the local checkout path
+codex plugin add room@room
+```
+
+Then start `roomd` for your clone and run `codex` in it. The plugin's MCP server reads the
+`.room.json` that roomd wrote, joins the room, and the `room-etiquette` skill tells Codex
+to check the room, claim, ask, and announce. This mode polls: Codex sees the room whenever
+it acts. For an agent that also *reacts* to room events (a teammate's question, a
+conflict), run `roomagent` instead, which drives a Codex thread and feeds it events.
+
+Rebuild the bundled server after changing `packages/room-mcp`: `npm run build:plugin`.
+
 ## Run (one machine, two "people", for a quick look)
 
 See `scripts/demo.sh` (starts the server, seeds `examples/demo-repo` into two clones, runs

@@ -1,0 +1,12 @@
+{
+  "name": "room",
+  "interface": { "displayName": "Room" },
+  "plugins": [
+    {
+      "name": "room",
+      "source": { "source": "local", "path": "./plugins/room" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

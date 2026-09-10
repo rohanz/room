@@ -1,0 +1,113 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: rohan
+      - generic [ref=e7]: main@dcb0afd
+      - generic [ref=e8]: ·0 touched
+    - generic [ref=e9]:
+      - 'button "Rohan Rohan (you) agent: idle" [ref=e95] [cursor=pointer]':
+        - generic "Rohan" [ref=e96]
+        - generic [ref=e97]: Rohan (you)
+        - generic [ref=e98]: "agent: idle"
+      - 'button "Kieran Kieran agent: idle" [ref=e99] [cursor=pointer]':
+        - generic "Kieran" [ref=e100]
+        - generic [ref=e101]: Kieran
+        - generic [ref=e102]: "agent: idle"
+    - generic [ref=e18]: connected
+  - complementary [ref=e19]:
+    - heading "Files" [level=3] [ref=e20]
+    - generic [ref=e103]:
+      - generic [ref=e104]:
+        - generic [ref=e105]: api/
+        - generic [ref=e106]:
+          - generic "api/__init__.py" [ref=e107] [cursor=pointer]: __init__.py
+          - generic "api/handlers.py" [ref=e109] [cursor=pointer]:
+            - generic [ref=e110]: handlers.py
+            - generic "Rohan is here" [ref=e112]
+          - generic "api/models.py" [ref=e113] [cursor=pointer]: models.py
+          - generic "api/store.py" [ref=e115] [cursor=pointer]: store.py
+      - generic [ref=e117]:
+        - generic [ref=e118]: tests/
+        - generic [ref=e119]:
+          - generic "tests/__init__.py" [ref=e120] [cursor=pointer]: __init__.py
+          - generic "tests/test_handlers.py" [ref=e122] [cursor=pointer]: test_handlers.py
+      - generic ".gitignore" [ref=e124] [cursor=pointer]:
+        - generic "Rohan is here" [ref=e127]
+      - generic "pyproject.toml" [ref=e128] [cursor=pointer]
+      - generic "README.md" [ref=e130] [cursor=pointer]
+      - generic "uv.lock" [ref=e132] [cursor=pointer]
+  - main [ref=e51]:
+    - generic [ref=e52]:
+      - generic [ref=e53]: api/handlers.py
+      - button "Claim selection" [ref=e54] [cursor=pointer]
+    - generic [ref=e135]:
+      - generic [aria-hidden] [ref=e136]:
+        - generic [ref=e137]:
+          - generic [ref=e138]: "1"
+          - generic [ref=e139]: "2"
+          - generic [ref=e140]: "3"
+          - generic [ref=e141]: "4"
+          - generic [ref=e142]: "5"
+          - generic [ref=e143]: "6"
+          - generic [ref=e144]: "7"
+          - generic [ref=e145]: "8"
+          - generic [ref=e146]: "9"
+          - generic [ref=e147]: "10"
+          - generic [ref=e148]: "11"
+          - generic [ref=e149]: "12"
+          - generic [ref=e150]: "13"
+          - generic [ref=e151]: "14"
+          - generic [ref=e152]: "15"
+          - generic [ref=e153]: "16"
+          - generic [ref=e154]: "17"
+          - generic [ref=e155]: "18"
+          - generic [ref=e156]: "19"
+          - generic [ref=e157]: "20"
+          - generic [ref=e158]: "21"
+          - generic [ref=e159]: "22"
+          - generic [ref=e160]: "23"
+          - generic [ref=e161]: "24"
+          - generic [ref=e162]: "25"
+        - generic [ref=e163]:
+          - generic [ref=e164]: ⌄
+          - generic [ref=e165]: ⌄
+          - generic [ref=e166]: ⌄
+          - generic [ref=e167]: ⌄
+          - generic [ref=e168]: ⌄
+          - generic [ref=e169]: ⌄
+      - textbox [active] [ref=e172]:
+        - generic [ref=e173]: from api.models import Order, Payload
+        - generic [ref=e174]: from api.store import db
+        - generic [ref=e177]: "class BadRequest(Exception):"
+        - generic [ref=e178]: pass
+        - generic [ref=e181]: "def parse(req: dict) -> Payload:"
+        - generic [ref=e182]: errors = []
+        - generic [ref=e183]: "if not req.get(\"customer\"):"
+        - generic [ref=e184]: errors.append("customer is required")
+        - generic [ref=e185]: "if not req.get(\"items\"):"
+        - generic [ref=e186]: errors.append("at least one item is required")
+        - generic [ref=e187]: return Payload(customer=req.get("customer", ""), items=list(req.get("items", [])), errors=errors)
+        - generic [ref=e190]: "def create_order(req: dict) -> dict:"
+        - generic [ref=e191]: payload = parse(req)
+        - generic [ref=e192]: "if not payload.valid:"
+        - generic [ref=e193]: raise BadRequest(payload.errors)
+        - generic [ref=e194]: order = Order.from_payload(payload)
+        - generic [ref=e195]: db.save(order)
+        - generic [ref=e196]: return order.to_json()
+  - generic [ref=e73]:
+    - generic [ref=e74]:
+      - generic [ref=e75]:
+        - generic "Rohan" [ref=e76]
+        - generic [ref=e77]: Rohan's agent
+        - generic [ref=e78]: ·
+        - generic [ref=e79]: idle
+      - generic [ref=e82]:
+        - textbox "Message Rohan's agent… (Enter to send)" [ref=e83]
+        - button "Send" [ref=e84] [cursor=pointer]
+    - generic [ref=e86]:
+      - generic [ref=e87]:
+        - generic [ref=e88]: Agents
+        - generic [ref=e89]: · room channel
+      - generic [ref=e92]:
+        - textbox "Post a note to the room…" [ref=e93]
+        - button "Post" [ref=e94] [cursor=pointer]
