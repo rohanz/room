@@ -64,16 +64,18 @@ async function main() {
   const prior = findRoomFile(dir)
   const autoJoin = (async () => {
     try {
-      if (env('ROOM_URL') || prior) {
-        const url = env('ROOM_URL') ?? prior!.room
-        const u = new URL(url)
-        const roomName = decodeRoom(u.pathname.replace(/^\/+/, ''))
-        adopt(await joinSession({ dir: env('ROOM_DIR') ?? prior?.dir ?? dir, name: env('ROOM_NAME') ?? prior?.name, room: roomName, server: `${u.protocol}//${u.host}`, log }))
-      } else {
-        const { roomName } = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
-        if (!roomName) { log(`ready; ${dir} has no git origin — call room_join with a room name`); return }
+      // The clone's origin + current branch always decides the room. ROOM_URL (runner) or a
+      // prior .room.json only fill in when the clone has no origin.
+      const derived = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
+      if (env('ROOM_URL')) {
+        const u = new URL(env('ROOM_URL')!)
+        adopt(await joinSession({ dir: env('ROOM_DIR') ?? dir, name: env('ROOM_NAME'), room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))
+      } else if (derived.roomName) {
         adopt(await joinSession({ dir, log }))
-      }
+      } else if (prior) {
+        const u = new URL(prior.room)
+        adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))
+      } else { log(`ready; ${dir} has no git origin — call room_join with a room name`); return }
       log('ready')
     } catch (e) {
       log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`)
