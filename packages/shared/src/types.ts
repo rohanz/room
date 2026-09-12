@@ -6,6 +6,19 @@ export interface Identity {
   kind: Kind
 }
 
+export interface RelativePositionJson {
+  type?: { client: number; clock: number }
+  tname?: string
+  item?: { client: number; clock: number }
+  assoc?: number
+}
+
+/** JSON-safe pair of Yjs relative positions for the inclusive line range. */
+export interface ClaimAnchor {
+  from: RelativePositionJson
+  to: RelativePositionJson
+}
+
 /** Line ranges are 1-based, inclusive. */
 export interface Claim {
   id: string
@@ -17,13 +30,26 @@ export interface Claim {
   intent: string
   /** epoch ms */
   at: number
+  /** Absent when the owner's overlay did not exist when the claim was made. */
+  anchor?: ClaimAnchor
 }
 
-export type MsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'note'
+export interface Scope {
+  by: string
+  byKind: Kind
+  summary: string
+  paths: string[]
+  /** epoch ms */
+  at: number
+}
+
+export type Priority = 'fyi' | 'notify' | 'interrupt'
+export type MsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'note' | 'scope'
 
 export interface MsgBase {
   id: string
   type: MsgType
+  priority: Priority
   from: string
   fromKind: Kind
   /** Recipient name (kind implied: agents talk to agents). Empty = broadcast. */
@@ -37,7 +63,8 @@ export interface QuestionMsg extends MsgBase { type: 'question'; text: string }
 export interface AnswerMsg extends MsgBase { type: 'answer'; inReplyTo: string; text: string }
 export interface ConflictMsg extends MsgBase { type: 'conflict'; claimId: string; otherClaimId: string; path: string; text: string }
 export interface NoteMsg extends MsgBase { type: 'note'; text: string }
-export type Msg = ClaimMsg | ReleaseMsg | ChangedMsg | QuestionMsg | AnswerMsg | ConflictMsg | NoteMsg
+export interface ScopeMsg extends MsgBase { type: 'scope'; summary: string; paths: string[] }
+export type Msg = ClaimMsg | ReleaseMsg | ChangedMsg | QuestionMsg | AnswerMsg | ConflictMsg | NoteMsg | ScopeMsg
 
 export interface Meta {
   repo?: string
@@ -59,10 +86,11 @@ export interface Presence {
   user: Identity & { color: string }
   cursor?: Cursor
   status?: string
+  /** epoch ms */
+  lastActive?: number
 }
 
 export type ChatRole = 'human' | 'agent' | 'tool' | 'event' | 'status'
-/** One line in a person's chat with their own agent. Stored per person under doc.getMap('chats'). */
 export interface ChatItem {
   id: string
   at: number

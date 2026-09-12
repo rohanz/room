@@ -17,7 +17,7 @@ let dir: string
 function setup() {
   const doc = new Y.Doc()
   const room = new RoomDoc(doc)
-  room.setFile('app.py', LIVE)
+  room.setOverlay('Rohan', 'app.py', LIVE)
   room.setMeta({ repo: 'demo', branch: 'main', base: 'abc123' })
   const awareness = new Awareness(doc)
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle' })

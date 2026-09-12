@@ -39,7 +39,11 @@ export class Editor {
   get boundText() { return this.ytext }
 
   open(path: string) {
-    const ytext = this.conn.room.files.get(path)
+    // phase 2: the read-only view will expose an explicit person selector.
+    const person = this.conn.room.overlayText(this.conn.me.name, path)
+      ? this.conn.me.name
+      : this.conn.room.whoChanged(path)[0]
+    const ytext = person ? this.conn.room.overlayText(person, path) : undefined
     if (!ytext) { this.close(); return }
     if (this.view && this.ytext === ytext) return
     this.close()

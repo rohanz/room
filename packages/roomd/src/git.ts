@@ -24,6 +24,39 @@ export function git(dir: string, args: string[], configuredTimeoutMs?: number): 
 export const gitHead = (dir: string) => git(dir, ['rev-parse', 'HEAD']).then(s => s.trim())
 export const gitBranch = (dir: string) => git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).then(s => s.trim())
 
+export function normalizeGitOrigin(origin: string): string | undefined {
+  const value = origin.trim().replace(/\/+$/, '').replace(/\.git$/, '')
+  const scp = value.match(/^(?:[^@]+@)?([^:/]+):(.+)$/)
+  if (scp && !value.includes('://')) return `${scp[1]}/${scp[2].replace(/^\/+/, '')}`
+  try {
+    const url = new URL(value)
+    if (!url.hostname) return undefined
+    return `${url.hostname}/${url.pathname.replace(/^\/+/, '')}`
+  } catch {
+    return undefined
+  }
+}
+
+export async function gitOrigin(dir: string): Promise<string | undefined> {
+  try {
+    return normalizeGitOrigin(await git(dir, ['remote', 'get-url', 'origin']))
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('timed out')) throw error
+    return undefined
+  }
+}
+
+/** UTF-8 blob at base, or undefined when the path did not exist at that commit. */
+export async function gitShow(dir: string, base: string, relpath: string): Promise<string | undefined> {
+  try {
+    return await git(dir, ['show', `${base}:${relpath}`])
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/does not exist|exists on disk, but not in|path .* not in/i.test(message)) return undefined
+    throw error
+  }
+}
+
 /**
  * Set of syncable paths: git-tracked files plus untracked files that are not ignored
  * (forward-slash, relative to the repo root). Untracked files must sync too: an agent that
@@ -32,20 +65,6 @@ export const gitBranch = (dir: string) => git(dir, ['rev-parse', '--abbrev-ref',
 export async function gitTracked(dir: string): Promise<Set<string>> {
   const out = await git(dir, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
   return new Set(out.split('\0').filter(Boolean))
-}
-
-/** Paths with staged, unstaged, or untracked work (porcelain -z avoids quoting). */
-export async function gitDirtyPaths(dir: string): Promise<Set<string>> {
-  const out = await git(dir, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
-  const records = out.split('\0').filter(Boolean)
-  const paths = new Set<string>()
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i]
-    const status = record.slice(0, 2)
-    paths.add(record.slice(3))
-    if (/[RC]/.test(status) && records[i + 1]) paths.add(records[++i])
-  }
-  return paths
 }
 
 /** True when git would ignore this path (so it must not be synced). */

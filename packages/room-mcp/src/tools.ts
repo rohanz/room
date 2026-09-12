@@ -141,8 +141,9 @@ export function createTools(ctx: ToolCtx): Tools {
     catch { return null }
   }
   const diffOne = async (path: string): Promise<string> => {
-    const live = room.text(path) ?? ''
     const committed = (await gitShow(path)) ?? ''
+    // phase 2: this becomes the full HEAD + caller-overlay merged view, including deletions.
+    const live = room.deleted.get(me.name)?.has(path) ? '' : room.text(path, me.name) ?? committed
     if (live === committed) return ''
     return createTwoFilesPatch(`a/${path}`, `b/${path}`, committed, live, 'HEAD', 'live', { context: 3 })
   }
@@ -172,9 +173,11 @@ export function createTools(ctx: ToolCtx): Tools {
     },
     async room_read_live(a) {
       const p = requireFile(a.path); if (typeof p !== 'string') return p.err
-      const text = room.text(p) ?? ''
+      // phase 2: room_read will support an explicit person and a complete HEAD fallback.
+      const text = room.text(p, me.name) ?? await gitShow(p) ?? ''
       const act = activityIn(p, 1, Number.MAX_SAFE_INTEGER)
-      return `${p} (${room.lineCount(p)} lines)\n${act.length ? act.map(l => `! ${l}`).join('\n') + '\n' : ''}${withLineNumbers(text)}`
+      const lineCount = text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length
+      return `${p} (${lineCount} lines)\n${act.length ? act.map(l => `! ${l}`).join('\n') + '\n' : ''}${withLineNumbers(text)}`
     },
     async room_read_committed(a) {
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
@@ -187,12 +190,12 @@ export function createTools(ctx: ToolCtx): Tools {
         return d || `${a.path}: no difference between HEAD and live`
       }
       const parts: string[] = []
-      for (const p of room.paths()) { const d = await diffOne(p); if (d) parts.push(d) }
+      for (const p of room.changedPaths(me.name)) { const d = await diffOne(p); if (d) parts.push(d) }
       return parts.length ? parts.join('\n') : 'no differences between HEAD and live'
     },
     async room_who(a) {
       const p = requireFile(a.path); if (typeof p !== 'string') return p.err
-      const n = room.lineCount(p)
+      const n = room.lineCount(p, me.name)
       const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n)
       const act = activityIn(p, r.from, r.to)
       return act.length ? `${p}:${r.from}-${r.to}\n${act.join('\n')}` : `${p}:${r.from}-${r.to}: nobody active, no claims`
@@ -203,8 +206,9 @@ export function createTools(ctx: ToolCtx): Tools {
       if (typeof a.intent !== 'string' || !a.intent) return 'error: intent is required'
       const intent = a.intent
       // A file that does not exist yet can still be claimed (intent: "create it"); range collapses to 1-1.
-      const isNew = !room.hasFile(p)
-      const n = isNew ? 1 : room.lineCount(p)
+      // phase 2: consult HEAD before labelling an overlay-absent path as new.
+      const isNew = !room.hasFile(p, me.name)
+      const n = isNew ? 1 : room.lineCount(p, me.name)
       const r = clampRange(Number(a.from), Number(a.to), n)
       if (!Number.isFinite(r.from)) return 'error: from/to must be numbers'
       const others = room.claimsFor(p).filter(c => !(c.by === me.name && c.byKind === me.kind) && claimsOverlap(c, { path: p, ...r }))

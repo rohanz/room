@@ -1,7 +1,7 @@
 import { claimsOverlap } from './claims.js'
 import type { Claim, ClaimMsg, Identity, Msg } from './types.js'
 
-const WAKE_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'conflict', 'question'])
+const WAKE_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'conflict', 'question', 'scope'])
 
 export interface WakeDecision {
   wake: boolean
@@ -37,5 +37,5 @@ export function shouldWakeOnClaim(me: Identity, claim: Claim, myClaims: Claim[])
 }
 
 export function claimToMsg(c: Claim): ClaimMsg {
-  return { id: `claim:${c.id}`, type: 'claim', from: c.by, fromKind: c.byKind, at: c.at, claimId: c.id, path: c.path, from_line: c.from, to_line: c.to, intent: c.intent }
+  return { id: `claim:${c.id}`, type: 'claim', priority: 'fyi', from: c.by, fromKind: c.byKind, at: c.at, claimId: c.id, path: c.path, from_line: c.from, to_line: c.to, intent: c.intent }
 }

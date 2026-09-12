@@ -91,10 +91,13 @@ function centre(conn: Conn, toast: (t: string) => void, tree: ReturnType<typeof 
     tree.setActive(editor.path)
     if (line && editor.path) editor.scrollTo(line)
   }
-  // a daemon may delete/recreate a file: rebind or close
-  conn.room.files.observe(() => {
+  // phase 2: rebind against the overlay selected in the read-only person picker.
+  conn.room.overlays.observeDeep(() => {
     if (!editor.path) return
-    const yt = conn.room.files.get(editor.path)
+    const person = conn.room.overlayText(conn.me.name, editor.path)
+      ? conn.me.name
+      : conn.room.whoChanged(editor.path)[0]
+    const yt = person ? conn.room.overlayText(person, editor.path) : undefined
     if (!yt) open(editor.path)
     else if (yt !== editor.boundText) open(editor.path)
   })

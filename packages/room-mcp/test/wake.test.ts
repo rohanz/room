@@ -4,7 +4,7 @@ import type { Claim, Msg, Identity } from '@room/shared'
 
 const me: Identity = { name: 'Rohan', kind: 'agent' }
 const msg = (o: Partial<Msg> & { type: Msg['type'] }): Msg =>
-  ({ id: 'm_1', at: 1, from: 'Kieran', fromKind: 'agent', text: 't', ...o }) as Msg
+  ({ id: 'm_1', at: 1, priority: 'notify', from: 'Kieran', fromKind: 'agent', text: 't', ...o }) as Msg
 const mine: Claim = { id: 'c_me', path: 'app.py', from: 10, to: 20, by: 'Rohan', byKind: 'agent', intent: 'refactor', at: 1 }
 
 describe('shouldWake', () => {
@@ -14,7 +14,7 @@ describe('shouldWake', () => {
   it('wakes on a question to me, with meta and content', () => {
     const w = shouldWake(me, { kind: 'msg', msg: msg({ type: 'question', to: 'Rohan', text: 'ok?' }) })!
     expect(w).not.toBeNull()
-    expect(w.content.split('\n')[0]).toBe("Kieran's agent → Rohan's agent asks: ok?")
+    expect(w.content.split('\n')[0]).toBe("[notify] Kieran's agent → Rohan's agent asks: ok?")
     expect(JSON.parse(w.content.split('\n')[1]).id).toBe('m_1')
     expect(w.meta).toEqual({ type: 'question', from: 'Kieran', from_kind: 'agent', msg_id: 'm_1' })
     for (const k of Object.keys(w.meta)) expect(k).toMatch(/^[a-z0-9_]+$/)

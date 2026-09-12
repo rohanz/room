@@ -69,12 +69,12 @@ export function touchedTracker(conn: Conn) {
   conn.room.bus.observe(e => { const ms: Msg[] = []; e.changes.added.forEach(i => ms.push(...(i.content.getContent() as Msg[]))); scanBus(ms) })
   const scanClaims = () => add(conn.room.openClaims().map(c => c.path))
   scanClaims(); conn.room.claims.observe(scanClaims)
-  // text edits: only after the initial sync, otherwise every file looks touched
+  // phase 2: replace this compatibility tracker with the person-aware overlay list.
   let live = conn.provider.synced
   conn.provider.once('sync', () => { live = true })
-  conn.room.files.observeDeep(evs => {
+  conn.room.overlays.observeDeep(() => {
     if (!live) return
-    add(evs.flatMap(ev => ev.target !== conn.room.files ? [String(ev.path[0] ?? '')] : []).filter(Boolean))
+    add(conn.room.paths())
   })
   return { has: (p: string) => set.has(p), get size() { return set.size }, onChange(f: () => void) { listeners.push(f) } }
 }
@@ -181,7 +181,8 @@ export function fileTree(conn: Conn, touched: Touched, onOpen: (p: string) => vo
     tree.replaceChildren(draw(root))
     if (!conn.room.paths().length) tree.append(h('div', { class: 'muted' }, 'no files yet — waiting for a daemon to seed'))
   }
-  conn.room.files.observe(render)
+  conn.room.overlays.observeDeep(render)
+  conn.room.deleted.observeDeep(render)
   conn.room.claims.observe(render)
   conn.provider.awareness.on('change', render)
   touched.onChange(render)
