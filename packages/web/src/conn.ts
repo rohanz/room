@@ -50,6 +50,8 @@ export function connect(search = location.search): Conn {
   const q = new URLSearchParams(location.search)
   const token = q.get('token') ?? '', view = q.get('view') ?? ''
   const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: view ? { view } : token ? { token } : {} })
+  // A refused websocket never surfaces a status code; ask the server over HTTP why, and say so.
+  void explainAccess(roomLocation, { view, token }, provider)
   const viewerName = new URLSearchParams(search).get('name')?.trim()
   if (viewerName) {
     provider.awareness.setLocalState({
@@ -95,4 +97,22 @@ export function presences(provider: WebsocketProvider): Presence[] {
     })
   })
   return out.sort((a, b) => a.user.name.localeCompare(b.user.name) || a.user.kind.localeCompare(b.user.kind))
+}
+
+async function explainAccess(loc: RoomLocation, auth: { view: string; token: string }, provider: WebsocketProvider): Promise<void> {
+  const http = loc.serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
+  const roomName = decodeURIComponent(loc.encodedRoomName)
+  const show = (why: string) => {
+    if (provider.synced) return
+    const el = document.getElementById('access-error') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'access-error' }))
+    el.className = 'access-error'
+    el.textContent = `Cannot open ${roomName}: ${why}`
+  }
+  try {
+    const res = await fetch(`${http}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...(auth.token ? { token: auth.token } : {}) }) })
+    if (res.ok) return
+    if (!auth.view && !auth.token) show('this link has no access key. Ask your agent for the room view URL (it ends with &view=...), or use room_state.')
+    else if (auth.view) show('the view key on this link has expired or is for another room. Ask your agent for a fresh link (room_state prints it).')
+    else show((await res.text()) || 'access refused')
+  } catch { show(`cannot reach ${loc.serverUrl}`) }
 }

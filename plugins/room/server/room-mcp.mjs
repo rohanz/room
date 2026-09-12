@@ -33904,6 +33904,18 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     return out;
   };
   const scopeLine = (sc) => `${sc.area}: ${sc.summary} (${sc.paths.join(", ")})`;
+  const personLine = (s, name) => {
+    const sc = s.room.scope(name);
+    const p = presences(s).find((x) => x.user.name === name && x.user.kind === "agent") ?? presences(s).find((x) => x.user.name === name);
+    const changed = s.room.changedPaths(name);
+    const lastDone = [...s.room.messages()].reverse().find((m) => m.from === name && m.type === "note" && m.text.startsWith("done"));
+    let what;
+    if (sc) what = `working on ${scopeLine(sc)}`;
+    else if (p?.status?.startsWith("done")) what = `${p.status}`;
+    else if (lastDone && (!p || p.status === "idle" || p.status === "synced")) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`;
+    else what = p ? `${p.status ?? "idle"}, no task declared` : "offline";
+    return `${what}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(", ")}` : ""}`;
+  };
   const handlers = {
     async room_join(a) {
       const cur = ctx.getSession();
@@ -33921,9 +33933,11 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const stale = cleanupMine(s, "stale from an earlier session");
       if (stale || s.room.scope(s.me.name)) log2(`cleared ${stale} stale claim(s) and scope from an earlier session`);
       const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
-      const ps = presences(s).filter((p) => !isMe(s, p.user));
-      out.push(ps.length ? `here now: ${ps.map((p) => displayName(p.user)).join(", ")}` : "nobody else is here yet");
-      for (const sc of s.room.allScopes()) if (sc.by !== s.me.name) out.push(`  ${sc.by} is on ${scopeLine(sc)}`);
+      const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
+      out.push(here.length ? `here now: ${here.join(", ")}` : "nobody else is here yet");
+      for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`);
+      const away = others(s).filter((n) => !here.includes(n) && s.room.changedPaths(n).length);
+      for (const n of away) out.push(`  ${n} (offline): ${personLine(s, n)}`);
       const cs = s.room.openClaims();
       if (cs.length) {
         out.push(`open claims (${cs.length}):`);
@@ -33967,10 +33981,10 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       out.push(`participants (${names.size}):`);
       for (const n of Array.from(names).sort()) {
         const p = ps.find((x) => x.user.name === n && x.user.kind === "agent") ?? ps.find((x) => x.user.name === n);
-        const sc = s.room.scope(n);
-        const ago = p?.lastActive ? `${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
-        out.push(`  - ${n}${n === s.me.name ? " (you)" : ""}: ${p?.status ?? "offline"} \xB7 active ${ago}${sc ? ` \xB7 ${scopeLine(sc)}` : " \xB7 no scope"}`);
+        const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
+        out.push(`  - ${n}${n === s.me.name ? " (you)" : ""}: ${personLine(s, n)} \xB7 ${ago}`);
       }
+      out.push(`browser view: ${s.browserUrl}`);
       const areas = s.room.areaSummary();
       if (areas.length) {
         out.push("areas:");

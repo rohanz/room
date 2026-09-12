@@ -178,3 +178,5 @@ h2 { margin: 0 0 10px; font-size: 17px; }
   .conflict-gutter { font-size: 7px; }
   .timeline-list { padding: 8px; }
 }
+
+.access-error { position: fixed; left: 50%; top: 56px; transform: translateX(-50%); max-width: 640px; padding: 12px 16px; background: #fff4f4; border: 1px solid #e5b4b4; border-radius: 8px; color: #7a1f1f; font: 13px/1.5 system-ui, sans-serif; z-index: 10; }
