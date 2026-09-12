@@ -52,6 +52,10 @@ export function connect(search = location.search): Conn {
   const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: view ? { view } : token ? { token } : {} })
   // A refused websocket never surfaces a status code; ask the server over HTTP why, and say so.
   void explainAccess(roomLocation, { view, token }, provider)
+  // A successful sync supersedes any earlier HTTP preflight error.
+  provider.on('sync', (synced: boolean) => {
+    if (synced) document.getElementById('access-error')?.remove()
+  })
   const viewerName = new URLSearchParams(search).get('name')?.trim()
   if (viewerName) {
     provider.awareness.setLocalState({

@@ -12,6 +12,7 @@ import type {
   Scope,
 } from './types.js'
 import { newId } from './identity.js'
+import type { GraphSnapshot } from './graph.js'
 import { ledger as ledgerView, areaSummary as areaSummaryView, type LedgerQuery } from './ledger.js'
 
 type ScopeInput = Omit<Scope, 'by' | 'at'> & { at?: number }
@@ -29,6 +30,7 @@ export function defaultPriority(msg: { type: MsgType; symbols?: readonly string[
 /** Typed accessors over the single room Y.Doc. */
 export class RoomDoc {
   readonly doc: Y.Doc
+  get graphs(): Y.Map<GraphSnapshot> { return this.doc.getMap<GraphSnapshot>('graphs') }
 
   constructor(doc: Y.Doc = new Y.Doc()) {
     this.doc = doc

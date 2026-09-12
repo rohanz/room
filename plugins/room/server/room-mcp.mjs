@@ -7208,6 +7208,7 @@ var require_dist = __commonJS({
 // node_modules/fast-diff/diff.js
 var require_diff = __commonJS({
   "node_modules/fast-diff/diff.js"(exports, module) {
+    "use strict";
     var DIFF_DELETE = -1;
     var DIFF_INSERT = 1;
     var DIFF_EQUAL = 0;
@@ -29129,6 +29130,9 @@ function defaultPriority(msg) {
 }
 var RoomDoc = class {
   doc;
+  get graphs() {
+    return this.doc.getMap("graphs");
+  }
   constructor(doc = new Doc2()) {
     this.doc = doc;
   }
@@ -33236,12 +33240,21 @@ var GraphIndex = class {
   graph;
   cache = /* @__PURE__ */ new Map();
   pending = /* @__PURE__ */ new Map();
+  revisions = /* @__PURE__ */ new Map();
+  previousChanged = /* @__PURE__ */ new Set();
+  generation = 0;
+  truncated = false;
+  publishing;
+  phase = "indexing";
   base = "";
   stopped = false;
   unobserve = [];
   /** Resolves when the initial build is done. */
   ready = Promise.resolve();
   start() {
+    for (const person of /* @__PURE__ */ new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) {
+      for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) this.previousChanged.add(p);
+    }
     this.ready = this.rebuild();
     const onOverlays = () => {
       if (!this.stopped) this.refreshChanged();
@@ -33260,33 +33273,55 @@ var GraphIndex = class {
   }
   stop() {
     this.stopped = true;
+    clearTimeout(this.publishing);
     for (const u of this.unobserve) u();
     this.unobserve = [];
   }
   async rebuild() {
+    const generation = ++this.generation;
+    this.phase = "indexing";
     this.base = this.room.meta.base ?? "";
     if (!this.base) return;
+    this.publish("indexing");
     let paths = [];
     try {
       paths = (await git(this.dir, ["ls-tree", "-r", "--name-only", this.base])).split("\n").filter((p) => SOURCE_EXT.test(p));
     } catch (e) {
+      if (generation === this.generation) {
+        this.phase = "error";
+        this.publish("error");
+      }
+      ;
       this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`);
       return;
     }
+    if (generation !== this.generation || this.stopped) return;
+    this.truncated = paths.length > MAX_FILES;
     if (paths.length > MAX_FILES) {
       this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`);
       paths = paths.slice(0, MAX_FILES);
     }
     const all2 = new Set(paths);
     for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) all2.add(p);
+    for (const p of this.cache.keys()) if (!all2.has(p)) {
+      this.cache.delete(p);
+      this.graph.remove(p);
+    }
     const t0 = Date.now();
-    await Promise.all(Array.from(all2).map((p) => this.refresh(p)));
+    const queue = Array.from(all2);
+    await Promise.all(Array.from({ length: Math.min(8, queue.length) }, async () => {
+      while (queue.length && generation === this.generation && !this.stopped) await this.refresh(queue.shift());
+    }));
+    if (generation !== this.generation || this.stopped) return;
+    this.phase = "ready";
+    this.publish("ready");
     this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`);
   }
   refreshChanged() {
     const changed = /* @__PURE__ */ new Set();
-    for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) changed.add(p);
-    for (const p of changed) void this.refresh(p);
+    for (const person of /* @__PURE__ */ new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) changed.add(p);
+    for (const p of /* @__PURE__ */ new Set([...changed, ...this.previousChanged])) void this.refresh(p);
+    this.previousChanged = changed;
   }
   /** Current text for a path as the index sees it. */
   async textFor(path4) {
@@ -33302,20 +33337,57 @@ var GraphIndex = class {
     return gitShow(this.dir, this.base, path4);
   }
   refresh(path4) {
+    this.revisions.set(path4, (this.revisions.get(path4) ?? 0) + 1);
     const inflight = this.pending.get(path4);
     if (inflight) return inflight;
     const p = (async () => {
-      const text = await this.textFor(path4);
-      if (text === void 0 || text.length > MAX_BYTES) {
-        this.cache.delete(path4);
-        this.graph.remove(path4);
-        return;
+      while (!this.stopped) {
+        const revision = this.revisions.get(path4), generation = this.generation;
+        const text = await this.textFor(path4);
+        const symbols = text === void 0 || text.length > MAX_BYTES ? void 0 : await extractSymbols(path4, text);
+        if (this.stopped) return;
+        if (generation !== this.generation || revision !== this.revisions.get(path4)) continue;
+        if (!symbols || text === void 0) {
+          this.cache.delete(path4);
+          this.graph.remove(path4);
+        } else {
+          this.cache.set(path4, symbols);
+          this.graph.set(path4, text);
+        }
+        break;
       }
-      this.cache.set(path4, await extractSymbols(path4, text));
-      this.graph.set(path4, text);
-    })().catch((e) => this.log(`graph: ${path4}: ${e instanceof Error ? e.message : e}`)).finally(() => this.pending.delete(path4));
+    })().catch((e) => this.log(`graph: ${path4}: ${e instanceof Error ? e.message : e}`)).finally(() => {
+      this.pending.delete(path4);
+      if (!this.stopped && !this.pending.size) {
+        clearTimeout(this.publishing);
+        this.publishing = setTimeout(() => this.publish(this.phase), 100);
+      }
+    });
     this.pending.set(path4, p);
     return p;
+  }
+  /** Wait for overlay work already queued as well as base rebuilds. */
+  async whenIdle() {
+    await this.ready;
+    while (this.pending.size) await Promise.all(this.pending.values());
+  }
+  publish(status) {
+    if (this.stopped) return;
+    const paths = Array.from(this.cache.keys()).sort();
+    const edges = /* @__PURE__ */ new Map();
+    let truncated = this.truncated;
+    for (const target of paths) for (const dep of this.graph.dependenciesOf(target)) for (const source of dep.definedIn) {
+      const key = JSON.stringify([source, target]);
+      if (!edges.has(key)) {
+        if (edges.size >= 12e3) {
+          truncated = true;
+          continue;
+        }
+        edges.set(key, { source, target, symbols: [] });
+      }
+      edges.get(key).symbols.push(dep.symbol);
+    }
+    this.room.graphs.set(this.me, { version: 1, base: this.base, at: Date.now(), status, paths, edges: [...edges.values()], truncated });
   }
 };
 
@@ -33414,7 +33486,7 @@ async function joinSession(opts) {
   if (denied) throw new RoomdError(`${server} refused ${roomName}: ${denied}`, 2);
   const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", token, githubToken: gh, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   const view = await viewToken(server, roomName, { gh, token });
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
   graph.start();
   return {
