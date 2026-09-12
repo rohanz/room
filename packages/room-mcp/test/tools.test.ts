@@ -284,6 +284,20 @@ describe('plan changes', () => {
   })
 })
 
+describe('branch follow', () => {
+  it('moves to the new branch room when the clone switches branches', async () => {
+    const t = setup({ joined: false })
+    await t.tools.call('room_join', {})
+    ;(t.session as Session).roomName = 'github.com/x/y/main'
+    const { execFileSync } = await import('node:child_process')
+    execFileSync('git', ['-C', dir, 'checkout', '-q', '-b', 'feature'])
+    const out = await t.tools.call('room_state', {})
+    expect(out).toContain('left main, joined github.com/x/y/feature')
+    expect(t.joined.length).toBe(2)
+    execFileSync('git', ['-C', dir, 'checkout', '-q', '-'])
+  })
+})
+
 describe('inbox', () => {
   it('prefixes tool replies with unread messages for me, once, highest priority first', async () => {
     const t = setup()

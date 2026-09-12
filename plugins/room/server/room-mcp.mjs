@@ -33990,6 +33990,38 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     for (const p of deps) s.room.post(s.me, { ...base2, to: p, copyOf: orig.id });
     return deps.length ? [`plan ${status}: ${formatPlans([plan])} \u2014 told ${deps.map((d) => `${d}'s agent`).join(", ")} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} \u2014 nobody had been shown it`];
   };
+  const followBranch = async () => {
+    const s = ctx.getSession();
+    if (!s || !s.roomName.includes("/")) return "";
+    let branch = "";
+    try {
+      branch = (await git(s.dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    } catch {
+      return "";
+    }
+    if (!branch || branch === "HEAD") return "";
+    const current = s.roomName.slice(s.roomName.lastIndexOf("/") + 1);
+    if (branch === current) return "";
+    const repo = s.roomName.slice(0, s.roomName.lastIndexOf("/"));
+    const target = `${repo}/${branch}`;
+    log2(`branch changed ${current} -> ${branch}; moving room`);
+    cleanupMine(s, `switched branch to ${branch}`);
+    ctx.setSession(null);
+    bridge?.stop();
+    bridge = null;
+    await doLeave(s);
+    try {
+      const n = await doJoin({ dir: s.dir, name: s.me.name, room: target, server: s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")) });
+      ctx.setSession(n);
+      for (const m of n.room.messages()) seen.add(m.id);
+      observeClaims(n);
+      attachHooks(n);
+      cleanupMine(n, "stale from an earlier session");
+      return `[room] your clone switched to branch ${branch}: left ${current}, joined ${target}. Scope and claims were reset; declare a scope before editing.`;
+    } catch (e) {
+      return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`;
+    }
+  };
   const cleanupMine = (s, why) => {
     const released = mine(s);
     for (const c of released) {
@@ -34463,6 +34495,7 @@ ${conflicts.join("\n")}`);
         await pendingJoin;
         pendingJoin = null;
       }
+      const moved = await followBranch();
       const s = ctx.getSession();
       if (s && !s.provider.synced && name !== "room_leave") return "error: room not synced yet, retry";
       if (s) observeClaims(s);
@@ -34470,7 +34503,10 @@ ${conflicts.join("\n")}`);
         const body = await h(args2 ?? {});
         const s2 = ctx.getSession();
         if (s2 && name !== "room_join") s2.daemon.touch();
-        return s2 && name !== "room_join" ? inbox(s2) + body : body;
+        const prefix = moved ? `${moved}
+
+` : "";
+        return prefix + (s2 && name !== "room_join" ? inbox(s2) + body : body);
       } catch (e) {
         if (e instanceof NotJoined) return "error: not in a room. Call room_join first.";
         if (e instanceof NeedFetch) return `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry`;
