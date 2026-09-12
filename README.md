@@ -8,6 +8,10 @@ Two developers ask their agents to change the same codebase. One changes the ord
 the other adds coupons to the checkout that consumes it. Their work can break together
 even when Git reports no conflicting lines.
 
+Developers already resolve these integration issues through review, communication, and
+rework. Room aims to prevent avoidable conflicts and incompatible assumptions before
+they become implementation problems, reducing rework and speeding up iteration.
+
 Room is a coordination layer for developers and small teams using coding agents
 in parallel on a shared repository. It connects the agents inside their existing Git
 clones and Codex sessions. They share
@@ -118,9 +122,6 @@ the participant and timeline views.
   once. The browser renders at most 250 files and asks you to narrow larger views.
 - **Claims depend on agent cooperation.** Overlaps raise interrupts; they do not prevent
   writes. Cancelled plans and releases update coordination state, not source code.
-- **Delivery depends on the client.** Hook/session registration and a running MCP process
-  are needed for the plugin wake-up path. Tool replies provide another inbox surface;
-  `room_wait` returns a timeout if the expected event does not arrive.
 - **Git and connection failures are visible.** Behind clones are identified; unavailable
   bases or divergence at join require fetching or reconciliation. Connection attempts
   time out, offline claims become stale, and graph snapshots expose age and status.
@@ -129,23 +130,34 @@ the participant and timeline views.
 
 ## Areas for improvement
 
-The next priorities are to make coordination more precise, delivery easier to verify,
-and larger repositories easier to explore. These are proposed improvements, not current
-capabilities.
+**Graph efficiency and accuracy.** Build on the existing symbol index with algorithms
+and data structures that reduce repeated work as a repository grows. Forward and reverse
+adjacency indexes can support targeted upstream and downstream traversal; incremental
+edge updates and cached reachability results can avoid recomputing unaffected paths.
+Strongly connected components can group dependency cycles, while module-level aggregation
+and rendering only visible nodes can keep the browser responsive on larger graphs.
+Language-aware symbol resolution would also reduce false connections from matching names.
+These changes should be measured against indexing time, update latency, memory use, and
+impact-query accuracy.
 
-| Priority | Improvement | Why it matters | How we would verify it |
-|---|---|---|---|
-| 1 | Resolve imports and symbols using language-aware parsers or language servers. | Matching names can connect unrelated symbols or miss aliases and dynamic usage. | Check provider/consumer edges against fixtures with aliases, re-exports, and duplicate names. |
-| 2 | Track declared, superseded, implemented, and verified contract states separately. | A file edit or released claim does not establish that a planned interface change landed correctly. | Compare declarations with source changes and run affected consumer tests before marking compatibility verified. |
-| 3 | Add delivery acknowledgments, retries, and visible session-bridge health. | Receiving a room update, delivering it to a session, and the agent acting on it are different events. | Exercise mid-edit interrupts, idle wake-ups, reconnects, and duplicate delivery in two real sessions. |
-| 4 | Preserve separate participant versions when calculating impact. | The current overlay precedence yields one projection rather than every possible combination of ongoing work. | Test two agents editing the same provider differently and show which version supports each impact path. |
-| 5 | Group graph nodes by module and expand affected paths on demand. | Rendering individual files becomes difficult to navigate beyond the current display cap. | Measure navigation and rendering on larger repositories while keeping paths to affected consumers inspectable. |
-| 6 | Improve recovery and control over shared data. | Teams need clear handling of abandoned claims, retained history, and which paths get published. | Test restart/rejoin flows and configurable publication and retention rules. |
+**Contract declarations and landed changes.** Make the relationship between an agent’s
+intent and the code that actually lands more explicit. Declarations should describe the
+old and proposed contract, identify affected symbols, and retain a clear history when a
+plan is revised or cancelled. Link those declarations to file revisions and pushed
+commits so Room can distinguish a proposed change from an implemented one. Consumer tests
+can then provide evidence of compatibility instead of treating an edit or released claim
+as proof that the contract is satisfied.
 
-The immediate engineering milestone is a repeatable two-session scenario: change a
-contract plan during implementation, observe the consumer agent react, ask an idle agent
-a question, then integrate and pass the combined tests. This validates the coordination
-loop before expanding language coverage or graph size.
+**Incoming data and coordination handling.** Handle arriving edits, declarations, and Git
+base updates as a consistent sequence of revisions. Preserve each participant’s version,
+reconcile updates against the correct base, and invalidate stale graph results when their
+source data changes. Deduplication, batching, and explicit handling of out-of-order updates
+would help keep the displayed state and agent context consistent. Recovery should cover
+reconnects, abandoned claims, cancelled work, and simultaneous changes to the same file,
+with a clear distinction between current activity and retained history.
+
+These are proposed improvements to the prototype, not claims of capabilities already
+implemented.
 
 ## Try it with a teammate
 
