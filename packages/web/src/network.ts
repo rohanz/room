@@ -18,7 +18,7 @@ export function networkPanel(conn: Conn): HTMLElement {
   person.setAttribute('aria-label', 'View changes as participant')
   const search = h('input', { type: 'search', placeholder: 'Find a file…' })
   search.setAttribute('aria-label', 'Find a file in the network')
-  const focus = h('input', { type: 'checkbox', checked: true })
+  const focus = h('input', { type: 'checkbox', checked: new URLSearchParams(location.search).get('network') !== 'all' })
   const zoom = h('input', { type: 'range', min: '30', max: '160', value: '100', title: 'Network zoom' })
   const fit = h('button', { title: 'Fit the full network in the available width' }, 'Fit')
   const expand = h('button', { title: 'Give the network the full workspace width' }, 'Expand')
@@ -88,7 +88,7 @@ export function networkPanel(conn: Conn): HTMLElement {
     const query = search.value.toLowerCase().trim()
     const matching = model.nodes.filter(n => !query || n.path.toLowerCase().includes(query))
     const ranked = [...matching].sort((a, b) => (a.role === 'changed' ? -1 : roles.indexOf(a.role)) - (b.role === 'changed' ? -1 : roles.indexOf(b.role)) || a.path.localeCompare(b.path))
-    const nodes = ranked.slice(0, 160)
+    const nodes = ranked.slice(0, 250)
     if (matching.length > nodes.length) status.textContent += ` · Showing ${nodes.length} of ${matching.length} files; narrow the search.`
     if (!nodes.length) {
       canvas.replaceChildren(h('div', { class: 'network-empty' }, 'No matching files. Clear the search or turn off My neighborhood.'))

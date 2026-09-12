@@ -101,8 +101,25 @@ for offline participants, indexing errors, older bases, and index limits.
 Edges are **inferred symbol references**, not fully resolved imports or call graphs.
 Each local index chooses its own overlay, then another participant's overlay, then the
 room base. The browser displays that index honestly; it is not a merged program or an
-exact graph of every participant's separate version. The view renders at most 160 files
+exact graph of every participant's separate version. The view renders at most 250 files
 at a time and prompts you to narrow the search when needed.
+
+#### Larger sample repository
+
+With the Room server and browser running, generate a fresh illustrative commerce repo:
+
+```sh
+npm run seed:scale -w @room/web -- --dir /tmp/atlas-commerce-sample --server ws://localhost:1234 --web http://localhost:5173
+```
+
+The destination must not exist. The script generates 168 TypeScript files across 16
+domains, shared infrastructure, storefront and admin apps, commits a baseline locally,
+and publishes graphs through the actual indexer. It prints the browser URL and stays
+running to publish edits made in the generated repository as Kieran's overlay. Four
+sample participants have 12 changed files and declared plans; synthetic activity is
+labeled SAMPLE. Functions are illustrative dependency fixtures, not a working shop.
+Each run defaults to a unique room; `--room` can choose an explicit fresh room instead.
+Stop the publisher with Ctrl-C. The generated Git repository remains available to edit.
 
 ## Use it
 
