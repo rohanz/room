@@ -61,7 +61,9 @@ h2 { margin: 0 0 10px; font-size: 17px; }
 .participant.focused { border-color: #8db5dd; background: #f4f8fd; box-shadow: 0 0 0 2px #dfeefa; }
 .participant.offline { opacity: .72; }
 .participant-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.participant-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.participant-head strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.participant-head .sp { display: none; }
+.participant-head .state-pill { flex: 0 1 auto; max-width: 58%; overflow: hidden; text-overflow: ellipsis; }
 .state-pill, .episode-status, .priority, .area-chip, .claim-count, .link-chip {
   display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 1px 6px;
   font: 500 9px/1.55 var(--mono); white-space: nowrap; background: var(--surface); color: var(--muted);
@@ -137,12 +139,14 @@ h2 { margin: 0 0 10px; font-size: 17px; }
 .timeline-scroll { flex: 1; }
 .timeline-list { display: flex; flex-direction: column; gap: 9px; padding: 10px; }
 .episode { border: 1px solid var(--line); border-radius: 8px; background: #fbfcfd; overflow: hidden; }
-.episode-head { display: flex; align-items: center; gap: 6px; padding: 8px 9px 2px; }
+.episode-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 8px 9px 2px; min-width: 0; }
+.episode-head strong { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .episode-head .dot { box-shadow: none; }
 .area-chip { color: var(--purple); border-color: #d7cfeb; }
 .episode-status { margin-left: auto; font-size: 8.5px; color: var(--warn); border-color: #ead4b7; background: #fffaf2; }
 .episode-status.done { color: var(--ok); border-color: #c4dfce; background: #f2faf5; }
-.episode-summary { padding: 2px 9px 7px 23px; color: #444b56; font-size: 11px; }
+.episode-summary { padding: 2px 9px 7px 23px; color: #444b56; font-size: 11px; overflow-wrap: anywhere; }
+.link-chip, .area-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .episode-summary .link-chip { margin-left: 5px; }
 .episode-items { border-top: 1px solid var(--line-soft); background: #fff; }
 .timeline-item { padding: 6px 8px; font-size: 10.5px; }

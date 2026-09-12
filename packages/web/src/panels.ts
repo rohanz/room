@@ -133,6 +133,17 @@ export function deriveParticipants(input: ParticipantInput): Participant[] {
   })
 }
 
+/** Pill text fit for one line: keep the state word, shorten the detail to a symbol or file basename. */
+export function shortPill(state: string, max = 26): string {
+  const m = state.match(/^(editing|waiting on|waiting|done|behind base|ahead|working|idle|offline)\s*(.*)$/)
+  if (!m) return state.length > max ? state.slice(0, max - 1) + '…' : state
+  let detail = m[2].replace(/^[:\s]+/, '')
+  // "api/handlers.py:22-24 — Use Order..." -> "handlers.py:22-24"; "create_order — intent" -> "create_order"
+  detail = detail.split(/\s+[—–-]\s+/)[0].split(':')[0].replace(/^.*\//, '') + (detail.match(/:(\d+-\d+)/) ? `:${detail.match(/:(\d+-\d+)/)![1]}` : '')
+  const out = detail ? `${m[1]} ${detail}` : m[1]
+  return out.length > max ? out.slice(0, max - 1) + '…' : out
+}
+
 /** Derives the single prominent state shown on a person card. */
 export function deriveStatePill(person: Pick<Participant, 'online' | 'behindBase' | 'statuses' | 'claims'>): string {
   if (!person.online) return 'offline'
@@ -206,12 +217,13 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
     const participants = deriveParticipants(participantInput(conn))
     list.replaceChildren(...participants.map(participant => {
       const state = deriveStatePill(participant)
+      const short = shortPill(state)
       const card = h('button', {
         class: `participant${participant.online ? '' : ' offline'}${focus.person === participant.name ? ' focused' : ''}`,
         title: focus.person === participant.name ? `Clear ${participant.name} focus` : `Focus on ${participant.name}`,
       },
       h('div', { class: 'participant-head' }, dot(participant.name), h('strong', {}, participant.name), h('span', { class: 'sp' }),
-        h('span', { class: `state-pill ${state.split(' ')[0]}` }, state)),
+        h('span', { class: `state-pill ${state.split(' ')[0]}`, title: state }, short)),
       participant.scope
         ? h('div', { class: 'scope-line' }, h('strong', {}, `${participant.scope.area}:`), ` ${participant.scope.summary}`)
         : h('div', { class: 'scope-line muted' }, 'no area declared'),

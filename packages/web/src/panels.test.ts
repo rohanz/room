@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { Claim, Presence, Scope } from '@room/shared'
 import { parseRoomUrl } from './conn.ts'
-import { deriveParticipants, deriveStatePill } from './panels.ts'
+import { deriveParticipants, deriveStatePill, shortPill } from './panels.ts'
+
+describe('shortPill', () => {
+  it('keeps the state and a short detail', () => {
+    expect(shortPill('editing api/handlers.py:22-24 — Use Order.to_json total as subtotal')).toBe('editing handlers.py:22-24')
+    expect(shortPill('editing create_order — restructuring validation')).toBe('editing create_order')
+    expect(shortPill('waiting on Kieran')).toBe('waiting on Kieran')
+    expect(shortPill('done')).toBe('done')
+    expect(shortPill('behind base')).toBe('behind base')
+  })
+})
 
 describe('state pill: done and working', () => {
   it('shows done after room_done and working while scoped', () => {
