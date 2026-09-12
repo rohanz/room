@@ -246,20 +246,39 @@ function recentPeople(room: RoomDoc, path: string, people: readonly string[]): s
   return [...people].sort((a, b) => (score.get(b)! - score.get(a)!) || a.localeCompare(b))
 }
 
-function lineElement(line: MergedLine, names: [string, string], prefix = ''): HTMLElement {
+/** Claims covering a given line of a person's version of the selected file. */
+export type ClaimsAt = (person: string, line: number) => readonly Claim[]
+
+/** Hover text for a merged/diff line: who wrote it, and any claim covering it. */
+export function lineHoverText(line: MergedLine, names: [string, string], claimsAt?: ClaimsAt): string {
+  const parts: string[] = []
+  if (line.conflict) parts.push(`CONFLICT: ${names[0]} and ${names[1]} changed this differently; this is ${line.side === 'a' ? names[0] : names[1]}'s version`)
+  else if (line.side === 'a') parts.push(`added by ${names[0]}`)
+  else if (line.side === 'b') parts.push(`added by ${names[1]}`)
+  else parts.push('unchanged from base')
+  const claims = [
+    ...(line.aLine !== undefined ? claimsAt?.(names[0], line.aLine) ?? [] : []),
+    ...(line.bLine !== undefined ? claimsAt?.(names[1], line.bLine) ?? [] : []),
+  ]
+  const seen = new Set<string>()
+  for (const c of claims) if (!seen.has(c.id)) { seen.add(c.id); parts.push(`claimed by ${c.by}: ${c.intent}${c.plans?.length ? ` (plans: ${formatPlans(c.plans)})` : ''}`) }
+  return parts.join('\n')
+}
+
+function lineElement(line: MergedLine, names: [string, string], prefix = '', claimsAt?: ClaimsAt): HTMLElement {
   const owner = line.side === 'a' ? names[0] : line.side === 'b' ? names[1] : ''
-  const row = h('div', { class: `code-line side-${line.side}${line.conflict ? ' conflict-line' : ''}` },
-    h('span', { class: 'conflict-gutter' }, line.conflict ? 'conflict?' : ''),
+  const row = h('div', { class: `code-line side-${line.side}${line.conflict ? ' conflict-line' : ''}`, title: lineHoverText(line, names, claimsAt) },
+    h('span', { class: 'conflict-gutter' }, line.conflict ? 'conflict' : ''),
     h('span', { class: 'line-number' }, line.aLine?.toString() ?? ''),
     h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
     h('span', { class: 'diff-prefix' }, prefix),
     h('code', {}, line.text || ' '))
-  if (owner) row.style.setProperty('--line-owner', colorFor(owner))
+  if (owner) { row.style.setProperty('--line-owner', colorFor(owner)); row.dataset.owner = owner }
   return row
 }
 
-function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: [string, string]): void {
-  host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, ...lines.map(line => lineElement(line, names, line.prefix))))
+function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: [string, string], claimsAt?: ClaimsAt): void {
+  host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, ...lines.map(line => lineElement(line, names, line.prefix, claimsAt))))
 }
 
 export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
@@ -334,7 +353,8 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const a = conn.room.text(selected.path, pair[0]) ?? '', b = conn.room.text(selected.path, pair[1]) ?? ''
       const sha = conn.room.baseOf(pair[0])
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
-      renderCodeLines(host, base !== undefined ? classifyThreeWay(base, a, b) : classifyMergedLines(a, b), pair)
+      const claimsAt: ClaimsAt = (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to)
+      renderCodeLines(host, base !== undefined ? classifyThreeWay(base, a, b) : classifyMergedLines(a, b), pair, claimsAt)
       return
     }
 
@@ -342,7 +362,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person)!
     compareLabel.textContent = `vs ${other}`
     legend.replaceChildren(h('span', {}, dot(other), ` removed from ${other}`), h('span', {}, dot(person), ` added by ${person}`))
-    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person])
+    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to))
   }
 
   render = () => {

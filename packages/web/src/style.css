@@ -119,6 +119,8 @@ h2 { margin: 0 0 10px; font-size: 17px; }
 .code-line { --line-owner: transparent; display: grid; grid-template-columns: 58px 32px 32px 14px minmax(max-content, 1fr); min-height: 17px; border-left: 3px solid transparent; }
 .code-line.side-a, .code-line.side-b { background: color-mix(in srgb, var(--line-owner) 12%, white); }
 .code-line.conflict-line { border-left-color: var(--danger); }
+.code-line { position: relative; }
+.code-line[data-owner]:hover::after { content: attr(data-owner); position: absolute; right: 8px; top: 0; font: 600 10px/17px system-ui, sans-serif; color: var(--line-owner); opacity: .85; pointer-events: none; }
 .conflict-gutter { padding: 1px 5px 0 2px; color: var(--danger); font: 8px/1.5 var(--sans); text-align: right; }
 .line-number { padding-right: 6px; color: #99a0aa; text-align: right; user-select: none; border-right: 1px solid #f0f1f3; }
 .diff-prefix { text-align: center; color: var(--muted); }

@@ -35,3 +35,15 @@ describe('classifyThreeWay', () => {
     expect(conflict.filter(l => l.conflict).map(l => l.text.trim())).toEqual(['return None', 'return 1'])
   })
 })
+
+import { lineHoverText } from './panels.ts'
+describe('lineHoverText', () => {
+  it('names the author, base lines, conflicts, and claims covering the line', () => {
+    const names: [string, string] = ['Rohan', 'Kieran']
+    const claim = { id: 'c1', path: 'a.py', from: 3, to: 5, by: 'Kieran', byKind: 'agent' as const, intent: 'guard', at: 1, plans: [{ kind: 'add' as const, symbol: 'limit' }] }
+    const claimsAt = (person: string, line: number) => person === 'Kieran' && line >= 3 && line <= 5 ? [claim] : []
+    expect(lineHoverText({ text: '', side: 'a', conflict: false, aLine: 1 }, names)).toBe('added by Rohan')
+    expect(lineHoverText({ text: '', side: 'common', conflict: false, aLine: 4, bLine: 4 }, names, claimsAt)).toBe('unchanged from base\nclaimed by Kieran: guard (plans: add limit)')
+    expect(lineHoverText({ text: '', side: 'b', conflict: true, bLine: 9 }, names)).toMatch(/^CONFLICT: Rohan and Kieran changed this differently; this is Kieran's version$/)
+  })
+})
