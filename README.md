@@ -84,18 +84,24 @@ first.
 
 ### Dependency network
 
-The browser opens on a **Network** tab focused on declared contract changes. Purple nodes
-have open rename, signature, delete, or add plans. Amber nodes are direct consumers of the
-exact declared symbols; paler nodes are further downstream. These are potential impacts,
-not verified failures. Blue dots and borders separately identify the selected participant's
-actual overlay edits, including edits on contract nodes. Ordinary edits do not imply a
-contract change. Releasing a claim removes its declarations from this view.
+The browser opens on a **Network** tab centered on the selected participant's edited files
+and open claims, including plans made before editing. The middle column is **My edits &
+plans**. The left shows immediate dependencies and relevant paths from other participants'
+contract plans that can reach that work. Unrelated consumers of those upstream changes
+are excluded. The right shows potential consumers of **your own declared contract plans**;
+ordinary edits alone do not imply downstream breakage. Changing participant recalculates
+the anchors and both directions.
+
+Purple nodes have relevant rename, signature, delete, or add plans. Amber nodes have a
+direct symbol match; paler nodes have potential transitive exposure. Blue borders identify
+your work and blue dots identify actual edits. These are potential impacts, not verified
+failures. Releasing a claim removes its declarations; an edited file remains a work anchor.
 
 Dense graphs automatically use compact nodes with module/file labels. A density selector
 also offers Compact and Comfortable modes. Hover or keyboard focus previews the file,
 owner, plans, and potential exposure; click or Enter opens full plans and consumer lists.
 Escape dismisses the preview. Selecting a file emphasizes its incident edges. Search,
-zoom, Fit, Expand, and the contract-impact filter help explore larger graphs; turn the
+zoom, Fit, Expand, and the Relevant to my work filter help explore larger graphs; turn the
 filter off for all indexed files. The Changed files tab retains the overlay reader.
 Fit adjusts with the available width; Expand gives the network the whole workspace.
 

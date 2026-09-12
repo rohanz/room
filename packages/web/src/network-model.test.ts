@@ -57,3 +57,39 @@ describe('contract impact', () => {
     expect(deriveContractImpact(graph, [{ ...contract, path: 'deleted.ts' }]).contracts.has('deleted.ts')).toBe(true)
   })
 })
+
+import { deriveWorkImpact } from './network-model.ts'
+describe('work-centered contract impact', () => {
+  const own: Claim = { ...contract, id: 'mine', by: 'Kieran', path: 'checkout', plans: [{ kind: 'signature', symbol: 'checkout_summary' }] }
+  it('anchors edits and plans, exposes upstream risks and only my outgoing contract impact', () => {
+    const unrelated: Claim = { ...contract, id: 'unrelated', path: 'unrelated', plans: [{ kind: 'rename', symbol: 'other' }] }
+    const view = deriveWorkImpact(graph, [contract, own, unrelated], 'Kieran', ['checkout'])
+    expect([...view.work]).toEqual(['checkout'])
+    expect([...view.upstream]).toEqual(['pricing'])
+    expect([...view.downstream]).toEqual(['receipt'])
+    expect(view.impact.contracts.has('unrelated')).toBe(false)
+    expect(view.upstreamPlans).toBe(1)
+  })
+  it('includes unedited claimed files but never infers outgoing breakage from ordinary edits', () => {
+    const view = deriveWorkImpact(graph, [contract, { ...own, plans: [] }], 'Kieran', [])
+    expect(view.work.has('checkout')).toBe(true)
+    expect(view.downstream.size).toBe(0)
+    expect(view.upstreamPlans).toBe(1)
+  })
+  it('omits other consumers of an upstream plan and rejects an unrelated symbol in the same file', () => {
+    const extended = { ...graph, edges: [...graph.edges, { source: 'pricing', target: 'unrelated', symbols: ['quote_total'] }] }
+    const view = deriveWorkImpact(extended, [contract], 'Kieran', ['checkout'])
+    expect(view.edges.has(JSON.stringify(['pricing', 'unrelated']))).toBe(false)
+    expect(view.downstream.size).toBe(0)
+    expect(deriveWorkImpact(graph, [{ ...contract, plans: [{ kind: 'rename', symbol: 'other' }] }], 'Kieran', ['checkout']).upstreamPlans).toBe(0)
+  })
+  it('retains multi-hop upstream routes and switches perspective without including unrelated work', () => {
+    const view = deriveWorkImpact(graph, [contract], 'Kieran', ['receipt'])
+    expect(view.upstream).toEqual(new Set(['checkout', 'pricing']))
+    expect(view.upstreamPlans).toBe(1)
+    const rohan = deriveWorkImpact(graph, [contract], 'Rohan', [])
+    expect(rohan.work).toEqual(new Set(['pricing']))
+    expect(rohan.downstream).toEqual(new Set(['checkout', 'receipt']))
+    expect(deriveWorkImpact(graph, [contract], 'Nobody', []).work.size).toBe(0)
+  })
+})

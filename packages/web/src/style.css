@@ -234,3 +234,6 @@ h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; text-transform: upperca
 .network-tooltip { position: fixed; z-index: 100; pointer-events: none; width: min(340px, calc(100vw - 16px)); padding: 13px 15px; background: #fff; border: 1px solid #d6cce5; border-radius: 9px; box-shadow: 0 8px 30px #26304726; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .network-tooltip > div { margin-top: 6px; }
 .network-tooltip strong { color: #513777; }
+.network-node.my-work rect { stroke: #598ed8; stroke-width: 2; }
+.network-node.my-work.neutral rect { fill: #eef5ff; }
+.network-stats > div:nth-child(2) strong { color: #2c77da; }

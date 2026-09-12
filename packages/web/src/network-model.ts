@@ -63,3 +63,45 @@ export function deriveContractImpact(snapshot: GraphSnapshot, claims: readonly i
   }
   return { declarations, contracts, direct, indirect, affectedEdges }
 }
+
+/** A participant's work is the anchor. Foreign plans only contribute paths that
+ * reach that work; outgoing impact is inferred only from this participant's plans. */
+export function deriveWorkImpact(snapshot: GraphSnapshot, claims: readonly import('@room/shared').Claim[], person: string, changed: readonly string[]) {
+  const mine = claims.filter(c => c.by === person)
+  const work = new Set([...changed, ...mine.map(c => c.path)])
+  const ancestors = new Set(work), queue = [...work]
+  const incoming = new Map<string, GraphSnapshot['edges']>()
+  for (const edge of snapshot.edges) incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge])
+  for (let i = 0; i < queue.length; i++) for (const edge of incoming.get(queue[i]) ?? []) {
+    if (!ancestors.has(edge.source)) { ancestors.add(edge.source); queue.push(edge.source) }
+  }
+  const impact = deriveContractImpact(snapshot, mine)
+  const downstream = new Set([...impact.direct.keys(), ...impact.indirect.keys()].filter(p => !work.has(p)))
+  const upstream = new Set<string>()
+  const edges = new Set(impact.affectedEdges)
+  // Ordinary dependencies remain context, without implying that edits break them.
+  for (const path of work) for (const edge of incoming.get(path) ?? []) {
+    if (!work.has(edge.source)) upstream.add(edge.source)
+    edges.add(JSON.stringify([edge.source, edge.target]))
+  }
+  let upstreamPlans = 0
+  for (const claim of claims.filter(c => c.by !== person)) for (const plan of claim.plans ?? []) {
+    const candidate = deriveContractImpact(snapshot, [{ ...claim, plans: [plan] }])
+    if (!work.has(claim.path) && ![...work].some(p => candidate.direct.has(p) || candidate.indirect.has(p))) continue
+    upstreamPlans++
+    impact.declarations.push(...candidate.declarations)
+    for (const [path, values] of candidate.contracts) impact.contracts.set(path, [...(impact.contracts.get(path) ?? []), ...values])
+    for (const kind of ['direct', 'indirect'] as const) for (const [path, values] of candidate[kind]) {
+      if (ancestors.has(path)) impact[kind].set(path, [...(impact[kind].get(path) ?? []), ...values])
+    }
+    for (const edge of snapshot.edges) {
+      const key = JSON.stringify([edge.source, edge.target])
+      if (candidate.affectedEdges.has(key) && ancestors.has(edge.source) && ancestors.has(edge.target)) {
+        edges.add(key); impact.affectedEdges.add(key)
+        if (!work.has(edge.source)) upstream.add(edge.source)
+        if (!work.has(edge.target)) upstream.add(edge.target)
+      }
+    }
+  }
+  return { work, upstream, downstream, edges, impact, upstreamPlans, ownPlans: mine.reduce((n, c) => n + (c.plans?.length ?? 0), 0) }
+}
