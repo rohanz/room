@@ -132,8 +132,8 @@ export function networkPanel(conn: Conn): HTMLElement {
     drawing = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group', 'aria-label': `Dependency network for ${selectedPerson}` })
     drawing.style.width = `${width * Number(zoom.value) / 100}px`
     const defs = svg('defs')
-    const bothFill = svg('linearGradient', { id: 'network-both-fill', x1: '0%', y1: '0%', x2: '100%', y2: '100%' })
-    bothFill.append(svg('stop', { offset: '50%', 'stop-color': '#174b9c' }), svg('stop', { offset: '50%', 'stop-color': '#6533a1' }))
+    const bothFill = svg('linearGradient', { id: 'network-both-fill', x1: '0%', y1: '0%', x2: '100%', y2: '0%' })
+    bothFill.append(svg('stop', { offset: '49.5%', 'stop-color': '#075fa8' }), svg('stop', { offset: '49.5%', 'stop-color': '#e9e3fa' }), svg('stop', { offset: '50.5%', 'stop-color': '#e9e3fa' }), svg('stop', { offset: '50.5%', 'stop-color': '#9624b5' }))
     defs.append(bothFill)
     const marker = svg('marker', { id: 'network-arrow', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse' })
     marker.append(svg('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'context-stroke' })); defs.append(marker); drawing.append(defs)
