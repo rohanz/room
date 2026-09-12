@@ -85,8 +85,7 @@ first.
 ## Use it
 
 ```sh
-npm install
-codex plugin marketplace add rohanz/room     # or the path to this checkout
+codex plugin marketplace add rohanz/room     # or the path to a local checkout
 codex plugin add room@room
 ```
 
