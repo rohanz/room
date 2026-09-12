@@ -240,3 +240,25 @@ h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; text-transform: upperca
 .network-node .contract-marker { fill: #8051b9; stroke: #fff; stroke-width: 1; }
 .network-node .edit-badge rect { fill: #e1edff; stroke: #a5c3ed; stroke-width: 1; filter: none; }
 .network-node .edit-badge text { fill: #245b9e; font: 8px var(--mono); font-weight: 600; letter-spacing: .3px; }
+
+/* File edits and declared contracts are independent; fills can encode both. */
+.legend-changed { color: #174b9c; }
+.legend-contract { color: #6533a1; }
+.legend-both { color: #4b3d85; }
+.legend-both::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; vertical-align: -1px; background: linear-gradient(135deg, #174b9c 50%, #6533a1 50%); }
+.legend-impact { color: #b92d3b; }
+.network-node.direct > rect { fill: #ffe2e5; stroke: #d96570; }
+.network-node.indirect > rect { fill: #fff0f1; stroke: #df9ba2; }
+.network-node.direct > circle, .network-node.indirect > circle { fill: #bd3644; }
+.network-edge.impact { stroke: #c94351; opacity: .5; }
+.network-node.contract > rect { fill: #6533a1; stroke: #512480; }
+.network-node.file-edited > rect { fill: #174b9c; stroke: #123d80; }
+.network-node.contract.file-edited > rect { fill: url(#network-both-fill); stroke: #473578; }
+.network-node:is(.contract, .file-edited) > .network-filename,
+.network-node:is(.contract, .file-edited) > .network-directory { fill: #fff; }
+.network-node:is(.contract, .file-edited) > circle { fill: #fff; }
+.network-node.contract > .contract-marker { fill: #fff; stroke: none; }
+.network-node:is(.contract, .file-edited) .edit-badge rect { fill: #ffffff26; stroke: #ffffff70; }
+.network-node:is(.contract, .file-edited) .edit-badge text { fill: #fff; }
+.network-node.exposed:is(.contract, .file-edited) > rect { stroke: #e86876; stroke-width: 2.5; }
+.network-node:is(:hover, :focus, .selected) > rect { stroke: #162c4d; stroke-width: 3; }

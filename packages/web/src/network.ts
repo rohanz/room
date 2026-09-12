@@ -36,7 +36,7 @@ export function networkPanel(conn: Conn): HTMLElement {
     h('div', { class: 'network-heading' }, h('div', {}, h('h2', {}, 'My work & contract risks'), h('p', { class: 'muted' }, 'Upstream risks to my work → my edits and plans → consumers of my planned changes.')), h('label', {}, 'Viewing as ', person)),
     h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' Relevant to my work'), density, h('label', { class: 'network-zoom' }, 'Zoom ', zoom), fit, expand),
     stats,
-    h('div', { class: 'network-legend' }, h('span', { class: 'legend-contract' }, '◆ Contract change declared'), h('span', { class: 'legend-changed' }, 'EDIT · File modified'), h('span', {}, 'Blue border · My work'), h('span', { class: 'legend-impact' }, 'Amber · Potential impact'), h('span', {}, 'Provider → consumer · Hover to preview, click to inspect')),
+    h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Blue · Edits'), h('span', { class: 'legend-contract' }, 'Purple · Declared contract'), h('span', { class: 'legend-both' }, 'Blue / purple · Both'), h('span', { class: 'legend-impact' }, 'Red · Potential impact'), h('span', {}, 'Provider → consumer · Hover to preview, click to inspect')),
     status, canvas, details, tooltip,
     h('div', { class: 'network-footnote' }, 'Potential impact from declared plans and inferred symbol references. Not a verified break or proof of implementation. Released plans leave this view; compatibility needs tests.'))
   let selectedPerson = new URLSearchParams(location.search).get('participant') ?? new URLSearchParams(location.search).get('name') ?? ''
@@ -132,6 +132,9 @@ export function networkPanel(conn: Conn): HTMLElement {
     drawing = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group', 'aria-label': `Dependency network for ${selectedPerson}` })
     drawing.style.width = `${width * Number(zoom.value) / 100}px`
     const defs = svg('defs')
+    const bothFill = svg('linearGradient', { id: 'network-both-fill', x1: '0%', y1: '0%', x2: '100%', y2: '100%' })
+    bothFill.append(svg('stop', { offset: '50%', 'stop-color': '#174b9c' }), svg('stop', { offset: '50%', 'stop-color': '#6533a1' }))
+    defs.append(bothFill)
     const marker = svg('marker', { id: 'network-arrow', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse' })
     marker.append(svg('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'context-stroke' })); defs.append(marker); drawing.append(defs)
     const positions = new Map<string, { x: number; y: number }>()
@@ -158,6 +161,8 @@ export function networkPanel(conn: Conn): HTMLElement {
       const editedBy = [...new Set([...conn.room.overlays.keys(), ...conn.room.deleted.keys()])].filter(p => conn.room.changedPaths(p).includes(node.path))
       const declared = impact.contracts.has(node.path)
       const group = svg('g', { transform: `translate(${x} ${y})`, class: `network-node ${contractStyle(node.path)}${workView.work.has(node.path) ? ' my-work' : ''}${node.role === 'changed' ? ' own-edit' : ''}${node.path === selectedPath ? ' selected' : ''}`, tabindex: '0', role: 'button', 'aria-label': `${node.path}, ${risk(node.path)}, ${contractStyle(node.path)}${node.role === 'changed' ? ', my edits' : ''}`, 'data-path': node.path })
+      group.classList.toggle('file-edited', editedBy.length > 0)
+      group.classList.toggle('exposed', impact.direct.has(node.path) || impact.indirect.has(node.path))
       group.setAttribute('aria-label', `${node.path}, ${risk(node.path)}${declared ? ', contract change declared' : ''}${editedBy.length ? `, file modified by ${editedBy.join(', ')}` : ', no file edits'}`)
       group.append(svg('rect', { width: '244', height: String(nodeHeight), rx: compact ? '6' : '10' }))
       if (declared) group.append(svg('path', { d: compact ? 'M 14 9 L 20 15 L 14 21 L 8 15 Z' : 'M 14 16 L 20 22 L 14 28 L 8 22 Z', class: 'contract-marker' }))

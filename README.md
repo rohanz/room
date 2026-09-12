@@ -92,12 +92,12 @@ are excluded. The right shows potential consumers of **your own declared contrac
 ordinary edits alone do not imply downstream breakage. Changing participant recalculates
 the anchors and both directions.
 
-Purple nodes have relevant rename, signature, delete, or add plans. Amber nodes have a
-direct symbol match; paler nodes have potential transitive exposure. Blue borders identify
-your work and blue dots identify actual edits. These are potential impacts, not verified
-failures. A purple diamond marks a declared contract change independently of the blue
-EDIT badge for an actual file modification (by any participant). Both can appear together;
-hover identifies the editor and makes clear that contract implementation is not verified.
+Deep blue nodes have actual file edits; deep purple nodes have declared contract plans.
+Nodes with both use a split blue/purple fill, with white labels on all changed nodes.
+Red highlights identify potentially affected consumers (paler red for transitive exposure).
+An edited or planned node that is also affected keeps its change fill with a red outline.
+The diamond and EDIT badge reinforce the two independent change states; hover identifies
+the editor and makes clear that contract implementation is not verified.
 Releasing a claim removes its declarations; an edited file remains a work anchor.
 
 Dense graphs automatically use compact nodes with module/file labels. A density selector
