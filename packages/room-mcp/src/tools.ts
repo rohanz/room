@@ -7,7 +7,7 @@ import type {
   Claim, Identity, Presence, Msg, Plan, Priority, Scope,
   ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg,
 } from '@room/shared'
-import { git, gitShow } from '@room/roomd/git'
+import { gitShow } from '@room/roomd/git'
 import { joinSession, leaveSession, type JoinOptions, type Session } from './session.js'
 
 export interface ToolDef {
@@ -83,6 +83,8 @@ export const DEFS: ToolDef[] = [
     }, required: ['type', 'text'] } },
   { name: 'room_wait', annotations: RO, description: 'Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). Returns what happened. Then call room_state.',
     inputSchema: { type: 'object', properties: { claimId: str('wait for this claim to be released'), questionId: str('wait for an answer to this question'), timeoutMs: int('default 30000, max 120000') } } },
+  { name: 'room_impact', annotations: RO, description: 'Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.',
+    inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
   { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and another person\'s combine cleanly? Three-way merge in memory against the base commit; nothing is written. Reports clean paths and conflicting hunks.',
     inputSchema: { type: 'object', properties: { person: str('the other person') }, required: ['person'] } },
 ]
@@ -159,25 +161,64 @@ export function createTools(ctx: ToolCtx): Tools {
       const hitPath = sc && paths.find(p => scopeCovers(sc, p))
       if (hitPath) { out.set(person, `scope ${sc.area} covers ${hitPath}`); continue }
       if (!symbols.length) continue
-      // Their live files, then the shared base under their scope paths.
-      const files = new Set(s.room.changedPaths(person))
+      // Files that use the symbol (graph), owned by this person: in their scope, changed by them, or claimed by them.
       let hit: string | undefined
-      for (const f of files) {
-        const t = s.room.text(f, person) ?? ''
-        const sym = symbols.find(x => t.includes(x))
-        if (sym) { hit = `${f} uses ${sym}`; break }
-      }
-      if (!hit && sc?.paths.length) {
+      if (s.graph) {
+        await s.graph.ready
         for (const sym of symbols) {
-          try {
-            const res = (await git(s.dir, ['grep', '-l', '--fixed-strings', sym, base(s), '--', ...sc.paths])).trim()
-            if (res) { hit = `${res.split('\n')[0].replace(/^[^:]*:/, '')} uses ${sym}`; break }
-          } catch { /* no match */ }
+          const f = s.graph.graph.usersOf(sym).find(u => ownsFile(s, person, u))
+          if (f) { hit = `${f} uses ${sym}`; break }
+        }
+      } else {
+        for (const f of s.room.changedPaths(person)) {
+          const t = s.room.text(f, person) ?? ''
+          const sym = symbols.find(x => t.includes(x))
+          if (sym) { hit = `${f} uses ${sym}`; break }
         }
       }
       if (hit) out.set(person, hit)
     }
     return out
+  }
+  const ownsFile = (s: Session, person: string, f: string): boolean => {
+    const sc = s.room.scope(person)
+    return (!!sc && scopeCovers(sc, f)) || s.room.changedPaths(person).includes(f) || s.room.openClaims().some(c => c.by === person && c.path === f)
+  }
+  /** Who is around a file: scope owner, claimants, changers. */
+  const owners = (s: Session, f: string): string[] => {
+    const out = new Set<string>()
+    for (const sc of s.room.allScopes()) if (scopeCovers(sc, f)) out.add(sc.by)
+    for (const c of s.room.claimsFor(f)) out.add(c.by)
+    for (const p of s.room.whoChanged(f)) out.add(p)
+    return Array.from(out).sort()
+  }
+  const describeUsers = (s: Session, files: string[]): string => files.map(f => { const o = owners(s, f).filter(x => x !== s.me.name); return o.length ? `${f} (${o.join(', ')})` : f }).join(', ')
+  /** Open plans by others on symbols that files in my scope (or my changed files) reference. */
+  const waitingOn = async (s: Session): Promise<string[]> => {
+    if (!s.graph) return []
+    await s.graph.ready
+    const g = s.graph.graph
+    const sc = s.room.scope(s.me.name)
+    const myFiles = new Set(s.room.changedPaths(s.me.name))
+    if (sc) for (const f of allIndexed(s)) if (scopeCovers(sc, f)) myFiles.add(f)
+    const needed = new Map<string, string[]>()
+    for (const f of myFiles) for (const d of g.dependenciesOf(f)) { const arr = needed.get(d.symbol) ?? []; arr.push(f); needed.set(d.symbol, arr) }
+    const out: string[] = []
+    for (const c of s.room.openClaims()) {
+      if (c.by === s.me.name || !c.plans?.length) continue
+      for (const pl of c.plans) {
+        const files = needed.get(pl.symbol)
+        if (files) out.push(`  - ${c.by}'s agent plans ${pl.kind} ${pl.symbol}${pl.detail ? ` → ${pl.detail}` : ''} in ${c.path} (claim ${c.id}); you use it in ${Array.from(new Set(files)).join(', ')}`)
+      }
+    }
+    return out
+  }
+  const allIndexed = (s: Session): string[] => {
+    const set = new Set<string>()
+    for (const sc of s.room.allScopes()) for (const p of sc.paths) set.add(p)
+    // The graph does not expose its file list; approximate via scope paths + changed paths + graph users/definers reached through them.
+    for (const person of [s.me.name, ...others(s)]) for (const p of s.room.changedPaths(person)) set.add(p)
+    return Array.from(set).filter(p => s.graph!.graph.has(p))
   }
   const upgrade = async (s: Session, m: Msg, paths: string[], symbols: string[]): Promise<string[]> => {
     const notes: string[] = []
@@ -279,6 +320,8 @@ export function createTools(ctx: ToolCtx): Tools {
       out.push('uncommitted changes:')
       if (!changed.size) out.push('  (none)')
       for (const [person, ps2] of changed) out.push(`  - ${person}: ${ps2.join(', ')}`)
+      const waits = await waitingOn(s)
+      if (waits.length) { out.push('waiting on (others\' planned changes to symbols you use):'); out.push(...waits) }
       const msgs = s.room.lastMessages(10).filter(x => !(x.to && x.to !== s.me.name && x.from !== s.me.name))
       out.push(`recent bus (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
@@ -355,6 +398,13 @@ export function createTools(ctx: ToolCtx): Tools {
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p}:${r.from}-${r.to} — ${intent}` })
       const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew ? ' (new file)' : ''}`]
       for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`)
+      if (s.graph && plans.length) {
+        await s.graph.ready
+        for (const pl of plans) {
+          const users = s.graph.graph.usersOf(pl.symbol)
+          out.push(users.length ? `impact: ${pl.symbol} is used in ${users.length} file(s): ${describeUsers(s, users)}` : `impact: ${pl.symbol} has no other users in the indexed graph`)
+        }
+      }
       const scopesHit = s.room.allScopes().filter(sc => sc.by !== s.me.name && scopeCovers(sc, p))
       for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`)
       out.push(...await upgrade(s, msg, [p], plans.map(x => x.symbol)))
@@ -445,6 +495,27 @@ export function createTools(ctx: ToolCtx): Tools {
       })
       setPresence(s, { status: 'idle' })
       return `${result}\ncall room_state before continuing.`
+    },
+    async room_impact(a) {
+      const s = S()
+      if (!s.graph) return 'error: no symbol graph in this session'
+      await s.graph.ready
+      const g = s.graph.graph
+      const out: string[] = []
+      if (typeof a.symbol === 'string' && a.symbol) {
+        const i = g.impact(a.symbol)
+        out.push(`${a.symbol}: defined in ${i.definedIn.length ? describeUsers(s, i.definedIn) : 'nowhere indexed'}`)
+        out.push(i.usedIn.length ? `used in ${i.usedIn.length} file(s): ${describeUsers(s, i.usedIn)}` : 'used by no other indexed file')
+        for (const c of s.room.openClaims()) if (c.plans?.some(pl => pl.symbol === a.symbol)) out.push(`open plan: ${describeClaim(c)}`)
+      } else if (typeof a.path === 'string' && a.path) {
+        if (!g.has(a.path)) return `${a.path} is not in the graph (not a source file, too large, or not at base/overlays)`
+        const deps = g.dependenciesOf(a.path), dependents = g.dependentsOf(a.path)
+        out.push(`${a.path} depends on ${deps.length} symbol(s) defined elsewhere:`)
+        for (const d of deps.slice(0, 40)) out.push(`  - ${d.symbol} from ${describeUsers(s, d.definedIn)}`)
+        out.push(`${a.path} defines ${dependents.length} symbol(s) used elsewhere:`)
+        for (const d of dependents.slice(0, 40)) out.push(`  - ${d.symbol} used in ${describeUsers(s, d.usedIn)}`)
+      } else return 'error: pass symbol or path'
+      return out.join('\n')
     },
     async room_preview_merge(a) {
       const s = S()

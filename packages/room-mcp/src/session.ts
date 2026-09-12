@@ -10,6 +10,7 @@ import type { Awareness } from 'y-protocols/awareness'
 import { startRoomd, RoomdError, type Roomd } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import type { Identity, RoomDoc } from '@room/shared'
+import { GraphIndex } from './graph-index.js'
 
 export const DEFAULT_SERVER = 'ws://localhost:1234'
 export const DEFAULT_WEB = 'http://localhost:5173'
@@ -26,6 +27,8 @@ export interface Session {
   /** Human-readable room name, e.g. github.com/rohanz/room/main */
   roomName: string
   browserUrl: string
+  /** Symbol graph over base + overlays; undefined in unit tests. */
+  graph?: GraphIndex
 }
 
 export interface JoinOptions {
@@ -84,7 +87,10 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const roomUrl = `${server}/${encodeRoom(roomName)}`
   const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}`
+  const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
+  graph.start()
   return {
+    graph,
     room: daemon.roomDoc,
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
@@ -98,5 +104,6 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
 }
 
 export async function leaveSession(s: Session): Promise<void> {
+  s.graph?.stop()
   await s.daemon.stop()
 }

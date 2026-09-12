@@ -22517,8 +22517,8 @@ var iterateDeletedStructs = (transaction, ds, f) => ds.clients.forEach((deletes,
   if (structs != null) {
     const lastStruct = structs[structs.length - 1];
     const clockState = lastStruct.id.clock + lastStruct.length;
-    for (let i = 0, del = deletes[i]; i < deletes.length && del.clock < clockState; del = deletes[++i]) {
-      iterateStructs(transaction, structs, del.clock, del.len, f);
+    for (let i = 0, del2 = deletes[i]; i < deletes.length && del2.clock < clockState; del2 = deletes[++i]) {
+      iterateStructs(transaction, structs, del2.clock, del2.len, f);
     }
   }
 });
@@ -29413,6 +29413,112 @@ function shouldWakeOnClaim(me, claim2, myClaims) {
   return { wake: true, mustAnswer: false, reason: `overlaps my claim ${hit.id}` };
 }
 
+// packages/shared/src/graph.ts
+var WORD = /[A-Za-z_][A-Za-z0-9_]*/g;
+var PY_DEF = /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
+var PY_ASSIGN = /^([A-Z_][A-Z0-9_]*)\s*(?::[^=]+)?=/gm;
+var JS_DEF = /\b(?:function\*?|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)|\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g;
+var KEYWORDS = new Set("def class return if else elif for while in not and or import from as with try except finally raise pass break continue lambda yield await async None True False self cls function const let var new this export default import from return if else for while do switch case break continue typeof instanceof void null undefined true false async await class extends super interface type enum implements".split(" "));
+var regexExtractor = (path2, text) => {
+  const ext = path2.slice(path2.lastIndexOf(".") + 1);
+  const defs = /* @__PURE__ */ new Set();
+  if (ext === "py") {
+    for (const m of text.matchAll(PY_DEF)) defs.add(m[1]);
+    for (const m of text.matchAll(PY_ASSIGN)) defs.add(m[1]);
+  } else if (["js", "jsx", "ts", "tsx", "mjs", "mts", "cjs"].includes(ext)) {
+    for (const m of text.matchAll(JS_DEF)) defs.add(m[1] ?? m[2]);
+  } else return void 0;
+  const refs = /* @__PURE__ */ new Set();
+  for (const m of text.matchAll(WORD)) {
+    const w = m[0];
+    if (w.length < 3 || KEYWORDS.has(w) || defs.has(w)) continue;
+    refs.add(w);
+  }
+  return { defs: Array.from(defs), refs: Array.from(refs) };
+};
+var SymbolGraph = class {
+  constructor(extract = regexExtractor) {
+    this.extract = extract;
+  }
+  extract;
+  files = /* @__PURE__ */ new Map();
+  definers = /* @__PURE__ */ new Map();
+  users = /* @__PURE__ */ new Map();
+  get size() {
+    return this.files.size;
+  }
+  has(path2) {
+    return this.files.has(path2);
+  }
+  /** Index or re-index one file. Returns false when the extractor does not handle it. */
+  set(path2, text) {
+    this.remove(path2);
+    const syms = this.extract(path2, text);
+    if (!syms) return false;
+    this.files.set(path2, syms);
+    for (const d of syms.defs) add(this.definers, d, path2);
+    for (const r of syms.refs) add(this.users, r, path2);
+    return true;
+  }
+  remove(path2) {
+    const prev = this.files.get(path2);
+    if (!prev) return;
+    for (const d of prev.defs) del(this.definers, d, path2);
+    for (const r of prev.refs) del(this.users, r, path2);
+    this.files.delete(path2);
+  }
+  symbolsOf(path2) {
+    return this.files.get(path2);
+  }
+  definersOf(symbol) {
+    return Array.from(this.definers.get(symbol) ?? []).sort();
+  }
+  /** Files that reference a symbol defined elsewhere (a definer that also references itself is excluded). */
+  usersOf(symbol) {
+    const defs = this.definers.get(symbol) ?? /* @__PURE__ */ new Set();
+    return Array.from(this.users.get(symbol) ?? []).filter((p) => !defs.has(p)).sort();
+  }
+  /** Symbols a file uses that some other file defines. */
+  dependenciesOf(path2) {
+    const syms = this.files.get(path2);
+    if (!syms) return [];
+    const out = [];
+    for (const r of syms.refs) {
+      const definedIn = this.definersOf(r).filter((p) => p !== path2);
+      if (definedIn.length) out.push({ symbol: r, definedIn, usedIn: [path2] });
+    }
+    return out.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  }
+  /** Symbols a file defines and the other files that use them. */
+  dependentsOf(path2) {
+    const syms = this.files.get(path2);
+    if (!syms) return [];
+    const out = [];
+    for (const d of syms.defs) {
+      const usedIn = this.usersOf(d);
+      if (usedIn.length) out.push({ symbol: d, definedIn: [path2], usedIn });
+    }
+    return out.sort((a, b) => b.usedIn.length - a.usedIn.length || a.symbol.localeCompare(b.symbol));
+  }
+  impact(symbol) {
+    return { symbol, definedIn: this.definersOf(symbol), usedIn: this.usersOf(symbol) };
+  }
+};
+function add(m, k, v) {
+  let s = m.get(k);
+  if (!s) {
+    s = /* @__PURE__ */ new Set();
+    m.set(k, s);
+  }
+  s.add(v);
+}
+function del(m, k, v) {
+  const s = m.get(k);
+  if (!s) return;
+  s.delete(v);
+  if (!s.size) m.delete(k);
+}
+
 // node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
@@ -32921,6 +33027,163 @@ function errMsg(error2) {
   return error2 instanceof Error ? error2.message : String(error2);
 }
 
+// packages/room-mcp/src/pyextract.ts
+import { execFile as execFile2 } from "node:child_process";
+var SCRIPT = `
+import ast, json, sys
+src = sys.stdin.read()
+try:
+    tree = ast.parse(src)
+except SyntaxError:
+    print("null"); sys.exit(0)
+defs, refs = set(), set()
+for node in ast.walk(tree):
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        defs.add(node.name)
+    elif isinstance(node, ast.Assign):
+        for t in node.targets:
+            if isinstance(t, ast.Name): defs.add(t.id)
+    elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        defs.add(node.target.id)
+    elif isinstance(node, ast.Name):
+        refs.add(node.id)
+    elif isinstance(node, ast.Attribute):
+        refs.add(node.attr)
+    elif isinstance(node, ast.ImportFrom):
+        for a in node.names: refs.add(a.name)
+print(json.dumps({"defs": sorted(defs), "refs": sorted(refs - defs)}))
+`;
+var pythonOk;
+async function runPython(text) {
+  if (pythonOk === false) return void 0;
+  return new Promise((resolve5) => {
+    const p = execFile2("python3", ["-c", SCRIPT], { timeout: 5e3, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      if (err) {
+        if (err.code === "ENOENT") pythonOk = false;
+        return resolve5(void 0);
+      }
+      pythonOk = true;
+      try {
+        resolve5(JSON.parse(stdout));
+      } catch {
+        resolve5(void 0);
+      }
+    });
+    p.stdin?.end(text);
+  });
+}
+async function extractSymbols(path2, text) {
+  if (path2.endsWith(".py")) {
+    const r = await runPython(text);
+    if (r) return r;
+    if (r === null) return regexExtractor(path2, text);
+  }
+  return regexExtractor(path2, text);
+}
+
+// packages/room-mcp/src/graph-index.ts
+var SOURCE_EXT = /\.(py|js|jsx|ts|tsx|mjs|mts|cjs)$/;
+var MAX_FILES = 3e3;
+var MAX_BYTES = 256 * 1024;
+var GraphIndex = class {
+  constructor(room, me, dir, log2 = () => {
+  }) {
+    this.room = room;
+    this.me = me;
+    this.dir = dir;
+    this.log = log2;
+    this.graph = new SymbolGraph((path2) => this.cache.get(path2));
+  }
+  room;
+  me;
+  dir;
+  log;
+  graph;
+  cache = /* @__PURE__ */ new Map();
+  pending = /* @__PURE__ */ new Map();
+  base = "";
+  stopped = false;
+  unobserve = [];
+  /** Resolves when the initial build is done. */
+  ready = Promise.resolve();
+  start() {
+    this.ready = this.rebuild();
+    const onOverlays = () => {
+      if (!this.stopped) this.refreshChanged();
+    };
+    this.room.overlays.observeDeep(onOverlays);
+    this.room.deleted.observeDeep(onOverlays);
+    this.unobserve.push(() => {
+      this.room.overlays.unobserveDeep(onOverlays);
+      this.room.deleted.unobserveDeep(onOverlays);
+    });
+    const onMeta = () => {
+      if (!this.stopped && this.room.meta.base && this.room.meta.base !== this.base) this.ready = this.rebuild();
+    };
+    this.room.metaMap.observe(onMeta);
+    this.unobserve.push(() => this.room.metaMap.unobserve(onMeta));
+  }
+  stop() {
+    this.stopped = true;
+    for (const u of this.unobserve) u();
+    this.unobserve = [];
+  }
+  async rebuild() {
+    this.base = this.room.meta.base ?? "";
+    if (!this.base) return;
+    let paths = [];
+    try {
+      paths = (await git(this.dir, ["ls-tree", "-r", "--name-only", this.base])).split("\n").filter((p) => SOURCE_EXT.test(p));
+    } catch (e) {
+      this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`);
+      return;
+    }
+    if (paths.length > MAX_FILES) {
+      this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`);
+      paths = paths.slice(0, MAX_FILES);
+    }
+    const all2 = new Set(paths);
+    for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) all2.add(p);
+    const t0 = Date.now();
+    await Promise.all(Array.from(all2).map((p) => this.refresh(p)));
+    this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`);
+  }
+  refreshChanged() {
+    const changed = /* @__PURE__ */ new Set();
+    for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) changed.add(p);
+    for (const p of changed) void this.refresh(p);
+  }
+  /** Current text for a path as the index sees it. */
+  async textFor(path2) {
+    if (this.room.deleted.get(this.me)?.has(path2)) return void 0;
+    const mine = this.room.text(path2, this.me);
+    if (mine !== void 0) return mine;
+    for (const person of this.room.overlays.keys()) {
+      if (person === this.me) continue;
+      const t = this.room.text(path2, person);
+      if (t !== void 0) return t;
+    }
+    if (!this.base) return void 0;
+    return gitShow(this.dir, this.base, path2);
+  }
+  refresh(path2) {
+    const inflight = this.pending.get(path2);
+    if (inflight) return inflight;
+    const p = (async () => {
+      const text = await this.textFor(path2);
+      if (text === void 0 || text.length > MAX_BYTES) {
+        this.cache.delete(path2);
+        this.graph.remove(path2);
+        return;
+      }
+      this.cache.set(path2, await extractSymbols(path2, text));
+      this.graph.set(path2, text);
+    })().catch((e) => this.log(`graph: ${path2}: ${e instanceof Error ? e.message : e}`)).finally(() => this.pending.delete(path2));
+    this.pending.set(path2, p);
+    return p;
+  }
+};
+
 // packages/room-mcp/src/session.ts
 var DEFAULT_SERVER = "ws://localhost:1234";
 var DEFAULT_WEB = "http://localhost:5173";
@@ -32976,7 +33239,10 @@ async function joinSession(opts) {
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
   const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}`;
+  const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
+  graph.start();
   return {
+    graph,
     room: daemon.roomDoc,
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
@@ -32989,6 +33255,7 @@ async function joinSession(opts) {
   };
 }
 async function leaveSession(s) {
+  s.graph?.stop();
   await s.daemon.stop();
 }
 
@@ -33083,6 +33350,12 @@ var DEFS = [
     inputSchema: { type: "object", properties: { claimId: str("wait for this claim to be released"), questionId: str("wait for an answer to this question"), timeoutMs: int2("default 30000, max 120000") } }
   },
   {
+    name: "room_impact",
+    annotations: RO,
+    description: "Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.",
+    inputSchema: { type: "object", properties: { symbol: str("function/class/variable name"), path: str("repo-relative path") } }
+  },
+  {
     name: "room_preview_merge",
     annotations: RO,
     description: "Would your uncommitted changes and another person's combine cleanly? Three-way merge in memory against the base commit; nothing is written. Reports clean paths and conflicting hunks.",
@@ -33156,31 +33429,75 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         continue;
       }
       if (!symbols.length) continue;
-      const files = new Set(s.room.changedPaths(person));
       let hit;
-      for (const f of files) {
-        const t = s.room.text(f, person) ?? "";
-        const sym = symbols.find((x) => t.includes(x));
-        if (sym) {
-          hit = `${f} uses ${sym}`;
-          break;
-        }
-      }
-      if (!hit && sc?.paths.length) {
+      if (s.graph) {
+        await s.graph.ready;
         for (const sym of symbols) {
-          try {
-            const res = (await git(s.dir, ["grep", "-l", "--fixed-strings", sym, base(s), "--", ...sc.paths])).trim();
-            if (res) {
-              hit = `${res.split("\n")[0].replace(/^[^:]*:/, "")} uses ${sym}`;
-              break;
-            }
-          } catch {
+          const f = s.graph.graph.usersOf(sym).find((u) => ownsFile(s, person, u));
+          if (f) {
+            hit = `${f} uses ${sym}`;
+            break;
+          }
+        }
+      } else {
+        for (const f of s.room.changedPaths(person)) {
+          const t = s.room.text(f, person) ?? "";
+          const sym = symbols.find((x) => t.includes(x));
+          if (sym) {
+            hit = `${f} uses ${sym}`;
+            break;
           }
         }
       }
       if (hit) out.set(person, hit);
     }
     return out;
+  };
+  const ownsFile = (s, person, f) => {
+    const sc = s.room.scope(person);
+    return !!sc && scopeCovers(sc, f) || s.room.changedPaths(person).includes(f) || s.room.openClaims().some((c) => c.by === person && c.path === f);
+  };
+  const owners = (s, f) => {
+    const out = /* @__PURE__ */ new Set();
+    for (const sc of s.room.allScopes()) if (scopeCovers(sc, f)) out.add(sc.by);
+    for (const c of s.room.claimsFor(f)) out.add(c.by);
+    for (const p of s.room.whoChanged(f)) out.add(p);
+    return Array.from(out).sort();
+  };
+  const describeUsers = (s, files) => files.map((f) => {
+    const o = owners(s, f).filter((x) => x !== s.me.name);
+    return o.length ? `${f} (${o.join(", ")})` : f;
+  }).join(", ");
+  const waitingOn = async (s) => {
+    if (!s.graph) return [];
+    await s.graph.ready;
+    const g = s.graph.graph;
+    const sc = s.room.scope(s.me.name);
+    const myFiles = new Set(s.room.changedPaths(s.me.name));
+    if (sc) {
+      for (const f of allIndexed(s)) if (scopeCovers(sc, f)) myFiles.add(f);
+    }
+    const needed = /* @__PURE__ */ new Map();
+    for (const f of myFiles) for (const d of g.dependenciesOf(f)) {
+      const arr = needed.get(d.symbol) ?? [];
+      arr.push(f);
+      needed.set(d.symbol, arr);
+    }
+    const out = [];
+    for (const c of s.room.openClaims()) {
+      if (c.by === s.me.name || !c.plans?.length) continue;
+      for (const pl2 of c.plans) {
+        const files = needed.get(pl2.symbol);
+        if (files) out.push(`  - ${c.by}'s agent plans ${pl2.kind} ${pl2.symbol}${pl2.detail ? ` \u2192 ${pl2.detail}` : ""} in ${c.path} (claim ${c.id}); you use it in ${Array.from(new Set(files)).join(", ")}`);
+      }
+    }
+    return out;
+  };
+  const allIndexed = (s) => {
+    const set = /* @__PURE__ */ new Set();
+    for (const sc of s.room.allScopes()) for (const p of sc.paths) set.add(p);
+    for (const person of [s.me.name, ...others(s)]) for (const p of s.room.changedPaths(person)) set.add(p);
+    return Array.from(set).filter((p) => s.graph.graph.has(p));
   };
   const upgrade = async (s, m, paths, symbols) => {
     const notes = [];
@@ -33293,6 +33610,11 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       out.push("uncommitted changes:");
       if (!changed.size) out.push("  (none)");
       for (const [person, ps2] of changed) out.push(`  - ${person}: ${ps2.join(", ")}`);
+      const waits = await waitingOn(s);
+      if (waits.length) {
+        out.push("waiting on (others' planned changes to symbols you use):");
+        out.push(...waits);
+      }
       const msgs = s.room.lastMessages(10).filter((x) => !(x.to && x.to !== s.me.name && x.from !== s.me.name));
       out.push(`recent bus (${msgs.length}):`);
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`);
@@ -33373,6 +33695,13 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p}:${r.from}-${r.to} \u2014 ${intent}` });
       const out = [`claimed ${claim2.id}: ${describeClaim(claim2)}${isNew ? " (new file)" : ""}`];
       for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`);
+      if (s.graph && plans.length) {
+        await s.graph.ready;
+        for (const pl2 of plans) {
+          const users = s.graph.graph.usersOf(pl2.symbol);
+          out.push(users.length ? `impact: ${pl2.symbol} is used in ${users.length} file(s): ${describeUsers(s, users)}` : `impact: ${pl2.symbol} has no other users in the indexed graph`);
+        }
+      }
       const scopesHit = s.room.allScopes().filter((sc) => sc.by !== s.me.name && scopeCovers(sc, p));
       for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`);
       out.push(...await upgrade(s, msg, [p], plans.map((x) => x.symbol)));
@@ -33474,6 +33803,27 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       setPresence(s, { status: "idle" });
       return `${result}
 call room_state before continuing.`;
+    },
+    async room_impact(a) {
+      const s = S();
+      if (!s.graph) return "error: no symbol graph in this session";
+      await s.graph.ready;
+      const g = s.graph.graph;
+      const out = [];
+      if (typeof a.symbol === "string" && a.symbol) {
+        const i = g.impact(a.symbol);
+        out.push(`${a.symbol}: defined in ${i.definedIn.length ? describeUsers(s, i.definedIn) : "nowhere indexed"}`);
+        out.push(i.usedIn.length ? `used in ${i.usedIn.length} file(s): ${describeUsers(s, i.usedIn)}` : "used by no other indexed file");
+        for (const c of s.room.openClaims()) if (c.plans?.some((pl2) => pl2.symbol === a.symbol)) out.push(`open plan: ${describeClaim(c)}`);
+      } else if (typeof a.path === "string" && a.path) {
+        if (!g.has(a.path)) return `${a.path} is not in the graph (not a source file, too large, or not at base/overlays)`;
+        const deps = g.dependenciesOf(a.path), dependents = g.dependentsOf(a.path);
+        out.push(`${a.path} depends on ${deps.length} symbol(s) defined elsewhere:`);
+        for (const d of deps.slice(0, 40)) out.push(`  - ${d.symbol} from ${describeUsers(s, d.definedIn)}`);
+        out.push(`${a.path} defines ${dependents.length} symbol(s) used elsewhere:`);
+        for (const d of dependents.slice(0, 40)) out.push(`  - ${d.symbol} used in ${describeUsers(s, d.usedIn)}`);
+      } else return "error: pass symbol or path";
+      return out.join("\n");
     },
     async room_preview_merge(a) {
       const s = S();
@@ -33607,15 +33957,16 @@ var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's
 Rules:
 1. room_join once (it derives the room from the git remote). Then room_scope(area, summary, paths) before editing: one word for the area (auth, orders, ...), one line, the paths you expect to touch. Read the area ledger it returns.
 2. Every tool reply starts with your inbox. interrupt: stop and re-plan before continuing. notify: check whether it touches what you are doing. fyi: nothing.
-3. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, from, to, intent, plans). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
-4. Never edit inside another party's claim. room_wait(claimId) or ask with room_send type=question to=<person>, then room_wait(questionId).
-5. room_release(claimId, summary, done) when finished, then room_send type=changed with paths, a one-line summary and symbols for anything others may depend on.
-6. Answer questions addressed to you on your next move: room_send type=answer inReplyTo=<id>. room_send is for OTHER people's agents; to ask your own human, say it in your reply and stop.
-7. If a wait times out, tell your human and proceed only where you do not depend on the answer.
-8. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
-9. When another person plans to rename a symbol you use, either adopt the new name now (and say so with a note) or ask. When their change lands, room_read their version (person=<name>) and update your callers.
-10. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
-11. Before telling your human you are done: room_preview_merge(person) for anyone who changed the same files, and report the result. room_leave when your session ends.
+3. Before renaming or changing a signature: room_impact(symbol) shows who defines and uses it and who owns those files. room_state lists what you are waiting on: others' planned changes to symbols your files use.
+4. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, from, to, intent, plans). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
+5. Never edit inside another party's claim. room_wait(claimId) or ask with room_send type=question to=<person>, then room_wait(questionId).
+6. room_release(claimId, summary, done) when finished, then room_send type=changed with paths, a one-line summary and symbols for anything others may depend on.
+7. Answer questions addressed to you on your next move: room_send type=answer inReplyTo=<id>. room_send is for OTHER people's agents; to ask your own human, say it in your reply and stop.
+8. If a wait times out, tell your human and proceed only where you do not depend on the answer.
+9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
+10. When another person plans to rename a symbol you use, either adopt the new name now (and say so with a note) or ask. When their change lands, room_read their version (person=<name>) and update your callers.
+11. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
+12. Before telling your human you are done: room_preview_merge(person) for anyone who changed the same files, and report the result. room_leave when your session ends.
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.`;
 
 // packages/room-mcp/src/index.ts

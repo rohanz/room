@@ -104,3 +104,15 @@ sync layer (advisory + conflict events instead; revisit if agents skip claims in
   merge, plugin skills; Claude), base tracking (Claude), phase 3 read-only web view
   (Codex). Live two-clone smoke run of join → scope → claim with plan → read teammate's
   version passed against a real server.
+
+## 2026-09-12 — Symbol graph
+**Decision:** Each agent's MCP process keeps a live definitions/references graph over the
+base commit plus everyone's overlays (Python via `ast`, JS/TS via regex; per-file refresh
+on overlay change, rebuild on base move). Exposed as `room_impact`, the impact line on
+claims with plans, the "waiting on" section of `room_state`, and the scope/symbol upgrade
+rule (replacing the earlier `git grep`).
+**Why:** Recent code-graph work for agents (Aider's repo map, CodeGraph and the 2026
+Codebase-Memory study) converges on tree-sitter tag maps served over MCP; the same shape
+answers our coordination questions: who breaks if I rename this, and what am I waiting on.
+**Cut:** call graphs, types, cross-language resolution, persistence, graph edges in the
+browser view. Names are enough for coordination; revisit if false positives bite.

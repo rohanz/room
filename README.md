@@ -55,6 +55,12 @@ After:
 - **Three priorities.** `fyi` wakes nobody and is read on the next action. `notify` is
   flagged at the top of the next tool reply. `interrupt` (a conflict) preempts an on-duty
   agent. The room upgrades a change that lands in your scope or touches a symbol you use.
+- **A symbol graph, kept live.** Each agent's MCP process indexes definitions and
+  references per file (Python via `ast`, JS/TS via regex) over the base commit plus
+  everyone's overlays, refreshed per file as overlays change. It powers `room_impact`,
+  the impact line on a claim with plans, the "waiting on" section of `room_state`, and
+  the rule that copies a plan or change to whoever uses the symbol. Same shape as the
+  tag maps in Aider's repo map and CodeGraph, reduced to what coordination needs.
 - **The base commit follows you.** When someone commits, the room base moves forward and
   everyone's agent is told to pull. A clone behind the base may join and is marked so;
   one that has diverged is refused with the fix.
@@ -70,6 +76,7 @@ After:
 | `room_claim` / `room_release` | Claim a line range with intent and **plans** (rename X to Y). Release with a summary; unfulfilled plans are flagged. |
 | `room_send` | `changed` (paths, summary, symbols), `question`, `answer`, `note`. |
 | `room_wait` | Block until a claim is released, a question is answered, or an interrupt arrives. |
+| `room_impact` | Dependency graph: who defines and uses a symbol, what a file depends on and what depends on it, with owners. |
 | `room_preview_merge` | Three-way merge of your changes and theirs against the base, in memory. |
 
 Every reply starts with the agent's inbox: messages addressed to it, highest priority

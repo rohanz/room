@@ -9,6 +9,7 @@ import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools, DEFS } from '../src/tools.js'
 import type { Session } from '../src/session.js'
+import { GraphIndex } from '../src/graph-index.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -27,7 +28,9 @@ function pair() {
 function fakeSession(room: RoomDoc, synced = true): Session {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle' })
+  const graph = new GraphIndex(room, 'Rohan', dir); graph.start()
   return {
+    graph,
     room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     provider: { synced, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
@@ -80,8 +83,8 @@ describe('session gating', () => {
     expect(t.session).toBeNull()
   })
 
-  it('lists the twelve tools', () => {
-    expect(DEFS.map(d => d.name)).toEqual(['room_join', 'room_leave', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_preview_merge'])
+  it('lists the thirteen tools', () => {
+    expect(DEFS.map(d => d.name)).toEqual(['room_join', 'room_leave', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_impact', 'room_preview_merge'])
   })
 })
 
@@ -151,6 +154,28 @@ describe('scope, claims, plans, ledger', () => {
     const out = await t.tools.call('room_send', { type: 'changed', text: 'renamed validate to verify', paths: ['app.py'], symbols: ['validate'] })
     expect(out).toContain("notified Kieran's agent")
     expect(t.room.messages().filter(m => m.type === 'changed').length).toBe(2)
+  })
+})
+
+describe('graph', () => {
+  it('room_impact answers by symbol and by path with owners; claim plans show impact; state shows waiting-on', async () => {
+    const t = setup()
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
+    const sym = await t.tools.call('room_impact', { symbol: 'validate' })
+    expect(sym).toContain('validate: defined in app.py')
+    expect(sym).toContain('used in 1 file(s): session.py (Kieran)')
+    const byPath = await t.tools.call('room_impact', { path: 'session.py' })
+    expect(byPath).toContain('validate from app.py')
+    const claim = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate', detail: 'verify' }] })
+    expect(claim).toContain('impact: validate is used in 1 file(s): session.py (Kieran)')
+    // Kieran's view: he is waiting on Rohan's rename because session.py uses validate.
+    const k = { name: 'Kieran', kind: 'agent' as const }
+    let ks: Session | null = { ...fakeSession(t.other), me: k }
+    const ktools = createTools({ getSession: () => ks, setSession: s => { ks = s }, cwd: dir })
+    await t.tools.call('room_scope', { area: 'api', summary: 'x', paths: ['app.py'] })
+    const state = await ktools.call('room_state', {})
+    expect(state).toContain("waiting on")
+    expect(state).toContain("Rohan's agent plans rename validate → verify in app.py")
   })
 })
 
