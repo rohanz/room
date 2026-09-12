@@ -1,14 +1,14 @@
 # Fly.io config for the room server. Deploy from the repo root:
-#   fly launch --config deploy/fly.toml --dockerfile deploy/Dockerfile --no-deploy
+#   fly launch --config deploy/fly.toml --dockerfile Dockerfile --no-deploy
 #   fly volumes create room_data --size 1
 #   fly secrets set ROOM_TOKEN=$(openssl rand -hex 16)
-#   fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+#   fly deploy --config deploy/fly.toml --dockerfile Dockerfile
 # Then: ROOM_SERVER="wss://<app>.fly.dev/?token=<token>" codex
-app = "room-server"
+app = "room-rohanz"
 primary_region = "sin"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "../Dockerfile"
 
 [env]
   PORT = "8080"

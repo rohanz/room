@@ -1,0 +1,14 @@
+.git
+node_modules
+**/node_modules
+packages/web
+packages/agent
+packages/roomd
+packages/room-mcp
+packages/shared
+plugins
+docs
+examples
+scripts
+.playwright-mcp
+*.png

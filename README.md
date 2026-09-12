@@ -97,8 +97,9 @@ ROOM_TOKEN=$(openssl rand -hex 16) YPERSISTENCE=./room-data PORT=1234 npm run se
 ```
 
 `ROOM_TOKEN` gates every connection (drop it for an open server). `YPERSISTENCE` stores
-rooms in LevelDB so they survive restarts (drop it for in-memory). Hosted on Fly.io in
-three commands: see `deploy/fly.toml`.
+rooms in LevelDB so they survive restarts (drop it for in-memory). Hosted on Fly.io with a
+persistent volume: `deploy/fly.toml` has the commands; the root `Dockerfile` builds only
+the server. The hackathon instance runs at `wss://room-rohanz.fly.dev`.
 
 Then in any clone, with the server URL carrying the token:
 
