@@ -258,4 +258,18 @@ describe('preview merge', () => {
     expect(out).toContain('CONFLICTS:')
     expect(out).toContain('app.py')
   })
+
+  it('run= executes a command in the merged tree and never touches the clone', async () => {
+    const t = setup()
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    const out = await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'cat app.py && ls' })
+    expect(out).toContain('exit 0')
+    expect(out).toContain('return x + 1') // Kieran's change
+    expect(out).toContain('return 22')    // mine
+    expect(out).toContain('session.py')   // rest of the base tree is there
+    const { readFileSync } = await import('node:fs')
+    expect(readFileSync(`${dir}/app.py`, 'utf8')).toBe(COMMITTED) // clone untouched
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
+    expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'true' })).toContain('resolve the conflicts first')
+  })
 })

@@ -32,9 +32,12 @@ disk; edit files with your normal tools.
 8. If a wait times out, tell your human and proceed only where you do not depend on the
    answer.
 9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
-10. When another person plans to rename a symbol you use, either adopt the new name now (and
-   say so with a `note`) or ask. When their change lands, `room_read` their version
-   (`person=<name>`) and update your callers.
+10. Never re-create another person's change in your clone, and never edit lines that belong
+    to their claim or announced change. When they declare or announce a rename, signature or
+    new symbol, write your code against the declared name/signature and carry on. Your clone
+    will lag until git merges; that is expected. To verify code that depends on their
+    unmerged work, `room_preview_merge(person, run="<test command>")` runs the tests on the
+    merged tree without touching any clone.
 11. A `base` entry means someone committed and the room moved forward. If your status
     says behind, run `git pull --ff-only` before editing further; the ledger lists which
     paths changed.

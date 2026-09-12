@@ -1,4 +1,8 @@
 import { createTwoFilesPatch } from 'diff'
+import { execFile } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { diff3Merge } from 'node-diff3'
 import {
   RoomDoc, formatMsg, formatPlans, withLineNumbers, claimsOverlap, clampRange, describeClaim, displayName, rangesOverlap, scopeCovers, msgPaths,
@@ -85,8 +89,8 @@ export const DEFS: ToolDef[] = [
     inputSchema: { type: 'object', properties: { claimId: str('wait for this claim to be released'), questionId: str('wait for an answer to this question'), timeoutMs: int('default 30000, max 120000') } } },
   { name: 'room_impact', annotations: RO, description: 'Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
-  { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and another person\'s combine cleanly? Three-way merge in memory against the base commit; nothing is written. Reports clean paths and conflicting hunks.',
-    inputSchema: { type: 'object', properties: { person: str('the other person') }, required: ['person'] } },
+  { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and another person\'s combine cleanly? Three-way merge against the common base; nothing in any clone is written. Reports clean paths and conflicting hunks. With `run`, materialises the merged tree in a scratch directory and runs that command there (e.g. the tests), so you can verify code that depends on their unmerged work.',
+    inputSchema: { type: 'object', properties: { person: str('the other person'), run: str('optional shell command to run in the merged tree, e.g. "uv run pytest -q"') }, required: ['person'] } },
 ]
 
 const WAIT_DEFAULT = 30_000
@@ -564,14 +568,20 @@ export function createTools(ctx: ToolCtx): Tools {
       const paths = Array.from(new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person), ...committedBetween])).sort()
       if (!paths.length) return `neither you nor ${person} has changes relative to ${ancestor.slice(0, 10)}`
       const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = []
+      const merged = new Map<string, string | null>() // path -> merged text, null = deleted
       for (const p of paths) {
         const b = (await gitShow(s.dir, ancestor, p)) ?? ''
         const m = await liveText(s, p, s.me.name), t = await liveText(s, p, person)
         const mineT = m === null ? '' : m ?? b, theirs = t === null ? '' : t ?? b
-        if (mineT === b || theirs === b) { onlyOne.push(`${p} (${mineT === b ? person : 'you'} only)`); continue }
+        if (mineT === b || theirs === b) {
+          onlyOne.push(`${p} (${mineT === b ? person : 'you'} only)`)
+          const side = mineT === b ? t : m
+          merged.set(p, side === null ? null : side ?? b)
+          continue
+        }
         const res = diff3Merge(mineT.split('\n'), b.split('\n'), theirs.split('\n'))
         const hunks = res.filter(r => 'conflict' in r)
-        if (!hunks.length) { clean.push(p); continue }
+        if (!hunks.length) { clean.push(p); merged.set(p, res.flatMap(r => r.ok ?? []).join('\n')); continue }
         let line = 1
         const detail: string[] = []
         for (const r of res) {
@@ -588,6 +598,11 @@ export function createTools(ctx: ToolCtx): Tools {
       if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
       if (conflicts.length) out.push(`CONFLICTS:\n${conflicts.join('\n')}`)
       else out.push('no conflicts')
+      const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
+      if (run) {
+        if (conflicts.length) out.push(`not running "${run}": resolve the conflicts first`)
+        else out.push(await runInMergedTree(s, ancestor, merged, run))
+      }
       return out.join('\n')
     },
   }
@@ -615,6 +630,40 @@ export function createTools(ctx: ToolCtx): Tools {
 }
 
 class NotJoined extends Error {}
+
+/** Materialise ancestor + merged files in a scratch dir (sharing .venv/node_modules from my clone) and run a command there. */
+async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string): Promise<string> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-'))
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const p = execFile('sh', ['-c', `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 60_000 }, err => err ? reject(err) : resolve())
+      p.unref?.()
+    })
+    for (const [rel, text] of merged) {
+      const abs = path.resolve(dir, rel)
+      if (!abs.startsWith(dir)) continue
+      if (text === null) { fs.rmSync(abs, { force: true }); continue }
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      fs.writeFileSync(abs, text)
+    }
+    for (const shared of ['.venv', 'node_modules']) {
+      const src = path.join(s.dir, shared)
+      if (fs.existsSync(src) && !fs.existsSync(path.join(dir, shared))) fs.symlinkSync(src, path.join(dir, shared))
+    }
+    const result = await new Promise<{ code: number | null; out: string }>(resolve => {
+      execFile('sh', ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ROOM_MERGED_TREE: dir } }, (err, stdout, stderr) => {
+        const raw = err ? (err as { code?: unknown }).code : 0
+        resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
+      })
+    })
+    const tail = result.out.trim().split('\n').slice(-25).join('\n')
+    return `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}`
+  } catch (e) {
+    return `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}`
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
 class NeedFetch extends Error { constructor(public person: string, public sha: string, public detail: string) { super(detail) } }
 
 function parsePlans(v: unknown): Plan[] | string {
