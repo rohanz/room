@@ -34,15 +34,17 @@ export function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
 }
 
-/** Repo-relative paths an edit tool call touches. */
+/** Repo-relative paths an edit tool call touches. Scans every string in the input: patch
+ *  file markers (apply_patch) and any value that resolves to a file inside the clone. */
 export function pathsOf(toolName, input, root) {
   const out = new Set()
-  const rel = p => { const abs = path.isAbsolute(p) ? p : path.resolve(root, p); const r = path.relative(root, abs); return r.startsWith('..') ? undefined : r.split(path.sep).join('/') }
-  if (!input || typeof input !== 'object') return []
-  if (toolName === 'apply_patch' || typeof input.input === 'string' || typeof input.patch === 'string') {
-    const text = typeof input.input === 'string' ? input.input : typeof input.patch === 'string' ? input.patch : ''
+  const rel = p => { const abs = path.isAbsolute(p) ? p : path.resolve(root, p); const r = path.relative(root, abs); return r && !r.startsWith('..') ? r.split(path.sep).join('/') : undefined }
+  const strings = []
+  const walk = v => { if (typeof v === 'string') strings.push(v); else if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') Object.values(v).forEach(walk) }
+  walk(input)
+  for (const text of strings) {
     for (const m of text.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) { const r = rel(m[1].trim()); if (r) out.add(r) }
+    if (!text.includes('\n') && text.length < 400 && /[\w./-]+\.[A-Za-z0-9]+$/.test(text.trim())) { const r = rel(text.trim()); if (r && fs.existsSync(path.join(root, r))) out.add(r) }
   }
-  for (const k of ['file_path', 'path', 'filePath', 'file']) if (typeof input[k] === 'string') { const r = rel(input[k]); if (r) out.add(r) }
   return Array.from(out)
 }
