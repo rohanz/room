@@ -1,18 +1,22 @@
-# Room
+# Room — coding agents that coordinate before merge time
 
 **Your coding agent, aware of your teammates’ agents.**
+
+## What we built
 
 Two developers ask their agents to change the same codebase. One changes the order model;
 the other adds coupons to the checkout that consumes it. Their work can break together
 even when Git reports no conflicting lines.
 
-Room connects the agents inside their existing Git clones and Codex sessions. They share
+Room is a coordination layer for developers and small teams using coding agents
+in parallel on a shared repository. It connects the agents inside their existing Git
+clones and Codex sessions. They share
 live edits, declare intended contract changes, identify affected teammates, and ask each
 other questions before the work is merged. Developers keep their own editors, agents,
 and Git workflow.
 
 Built for the **“Agents leaving the chatbox”** hackathon.
-[Brief and judging criteria](RULES.md) · [Demo and submission checklist](docs/submission.md)
+[Read the brief and judging criteria](RULES.md).
 
 ## Why the environment matters
 
@@ -31,90 +35,7 @@ to give agents that context while they work.
 Claims are advisory. Room helps agents coordinate; it does not lock files or guarantee
 that their changes are compatible.
 
-## See the work
-
-![Room file viewer showing two participants’ changes and the activity timeline](docs/img/room-v2-redesign.png)
-
-*File-view screenshot from an earlier two-agent run: participant changes, possible
-conflicts, and the coordination timeline. The current UI also includes the Network tab.*
-
-### Dependency network
-
-Choose a participant to explore three directions:
-
-| View | What it shows |
-|---|---|
-| **Upstream** | Dependencies of their work, including relevant teammates’ contract plans. |
-| **My edits & plans** | Their modified files and open claims, including plans declared before editing. |
-| **Downstream** | Potential consumers of their own declared contract changes. Ordinary edits alone do not imply breakage. |
-
-**Blue** means actual file edits; **purple** means a declared contract plan. A diagonal
-blue/purple fill means both. **Red** marks potential contract impact; affected nodes with
-edits or plans retain their fill and gain a red outline. Labels remain white on changed
-nodes. Declaring a plan does not prove it has been implemented.
-
-Hover or keyboard focus gives a preview; click or Enter opens dependencies, owners,
-plans, and consumer details. Search, participant selection, compact nodes, zoom, Fit,
-and Expand help navigate larger repos. Turn off **Relevant to my work** to explore all
-indexed files. **Changed files** opens the merged preview, diff, and file reader alongside
-the participant and timeline views.
-
-## Try it with a teammate
-
-Prerequisites: Git, Node.js 24 LTS, Codex CLI with plugin support, and the GitHub CLI (`gh`)
-authenticated to an account that can read your shared repository. Python indexing needs
-Python 3; the Python demo uses `uv`.
-
-Install on each machine:
-
-```sh
-codex plugin marketplace add rohanz/room
-codex plugin add room@room
-```
-
-Already installed? Update before starting a new session:
-
-```sh
-codex plugin marketplace upgrade
-codex plugin add room@room
-```
-
-Review and trust Room’s hooks when prompted, or through `/hooks`. They deliver context
-before edit tools and record the session used for teammate wake-ups.
-
-In each developer’s clone, check out the same branch and start Codex:
-
-```sh
-cd /path/to/your/repo
-codex
-```
-
-The plugin attempts to join automatically using the clone’s origin and branch. A GitHub
-repo on `session-2` joins `github.com/<owner>/<repo>/session-2`. Your participant name
-comes from Git configuration. Use distinct names for separate developers.
-
-Ask **“Show room state”** and open the browser link it prints. Then ask for your feature
-as usual. If auto-join fails, ask the agent to call `room_join`; its error should explain
-what needs attention. No Room environment variables are needed for the default hosted
-GitHub flow.
-
-The hosted server checks repository access using your `gh` credentials. The browser link
-contains a room-scoped view key valid for 24 hours, rather than your GitHub token. Treat
-that link as access to the room’s shared code and activity.
-
-### A demo worth trying
-
-Have one agent change an order model while another adds coupon calculations to its
-consumer. Then change the model plan midway. Watch whether the affected agent receives
-the superseded-plan interrupt and adapts. Once a teammate is idle, ask their agent a
-question and observe the reply. Finally, preview the merge, approve the pushes, pull,
-and run the combined tests.
-
-These are demo checks to perform, not a claim that every runtime or simultaneous-edit
-scenario is already verified. [The submission checklist](docs/submission.md) tracks what
-to record and validate.
-
-## How it works
+## Implementation
 
 ```text
 Developer A’s clone                                  Developer B’s clone
@@ -159,6 +80,115 @@ clients. Yjs supplies shared state and presence; Git remains the integration mec
 | `room_done` | Release remaining claims, clear scope, and mark the task finished while staying available for questions. |
 | `room_impact` | Find symbol providers, consumers, dependencies, and owners. |
 | `room_preview_merge` | Preview the combined changes; optionally run checks. |
+
+## Browser interface
+
+![Room file viewer showing two participants’ changes and the activity timeline](docs/img/room-v2-redesign.png)
+
+*File-view screenshot from an earlier two-agent run: participant changes, possible
+conflicts, and the coordination timeline. The current UI also includes the Network tab.*
+
+### Dependency network
+
+Choose a participant to explore three directions:
+
+| View | What it shows |
+|---|---|
+| **Upstream** | Dependencies of their work, including relevant teammates’ contract plans. |
+| **My edits & plans** | Their modified files and open claims, including plans declared before editing. |
+| **Downstream** | Potential consumers of their own declared contract changes. Ordinary edits alone do not imply breakage. |
+
+**Blue** means actual file edits; **purple** means a declared contract plan. A diagonal
+blue/purple fill means both. **Red** marks potential contract impact; affected nodes with
+edits or plans retain their fill and gain a red outline. Labels remain white on changed
+nodes. Declaring a plan does not prove it has been implemented.
+
+Hover or keyboard focus gives a preview; click or Enter opens dependencies, owners,
+plans, and consumer details. Search, participant selection, compact nodes, zoom, Fit,
+and Expand help navigate larger repos. Turn off **Relevant to my work** to explore all
+indexed files. **Changed files** opens the merged preview, diff, and file reader alongside
+the participant and timeline views.
+
+## Limitations and failure handling
+
+- **Potential impact is not verified breakage.** Symbol references are inferred, not a
+  fully resolved import or call graph. Runtime behavior and compatibility need tests.
+- **The graph is a projection.** An index prefers its participant’s overlay, then another
+  participant’s overlay, then the base. It does not represent every separate version at
+  once. The browser renders at most 250 files and asks you to narrow larger views.
+- **Claims depend on agent cooperation.** Overlaps raise interrupts; they do not prevent
+  writes. Cancelled plans and releases update coordination state, not source code.
+- **Delivery depends on the client.** Hook/session registration and a running MCP process
+  are needed for the plugin wake-up path. Tool replies provide another inbox surface;
+  `room_wait` returns a timeout if the expected event does not arrive.
+- **Git and connection failures are visible.** Behind clones are identified; unavailable
+  bases or divergence at join require fetching or reconciliation. Connection attempts
+  time out, offline claims become stale, and graph snapshots expose age and status.
+- **Room shares code with the room.** Overlays and coordination history travel to the
+  server. Local sample rooms have no persistence unless configured.
+
+## Areas for improvement
+
+The next priorities are to make coordination more precise, delivery easier to verify,
+and larger repositories easier to explore. These are proposed improvements, not current
+capabilities.
+
+| Priority | Improvement | Why it matters | How we would verify it |
+|---|---|---|---|
+| 1 | Resolve imports and symbols using language-aware parsers or language servers. | Matching names can connect unrelated symbols or miss aliases and dynamic usage. | Check provider/consumer edges against fixtures with aliases, re-exports, and duplicate names. |
+| 2 | Track declared, superseded, implemented, and verified contract states separately. | A file edit or released claim does not establish that a planned interface change landed correctly. | Compare declarations with source changes and run affected consumer tests before marking compatibility verified. |
+| 3 | Add delivery acknowledgments, retries, and visible session-bridge health. | Receiving a room update, delivering it to a session, and the agent acting on it are different events. | Exercise mid-edit interrupts, idle wake-ups, reconnects, and duplicate delivery in two real sessions. |
+| 4 | Preserve separate participant versions when calculating impact. | The current overlay precedence yields one projection rather than every possible combination of ongoing work. | Test two agents editing the same provider differently and show which version supports each impact path. |
+| 5 | Group graph nodes by module and expand affected paths on demand. | Rendering individual files becomes difficult to navigate beyond the current display cap. | Measure navigation and rendering on larger repositories while keeping paths to affected consumers inspectable. |
+| 6 | Improve recovery and control over shared data. | Teams need clear handling of abandoned claims, retained history, and which paths get published. | Test restart/rejoin flows and configurable publication and retention rules. |
+
+The immediate engineering milestone is a repeatable two-session scenario: change a
+contract plan during implementation, observe the consumer agent react, ask an idle agent
+a question, then integrate and pass the combined tests. This validates the coordination
+loop before expanding language coverage or graph size.
+
+## Try it with a teammate
+
+Prerequisites: Git, Node.js 24 LTS, Codex CLI with plugin support, and the GitHub CLI (`gh`)
+authenticated to an account that can read your shared repository. Python indexing needs
+Python 3; the Python demo uses `uv`.
+
+Install on each machine:
+
+```sh
+codex plugin marketplace add rohanz/room
+codex plugin add room@room
+```
+
+Already installed? Update before starting a new session:
+
+```sh
+codex plugin marketplace upgrade
+codex plugin add room@room
+```
+
+Review and trust Room’s hooks when prompted, or through `/hooks`. They deliver context
+before edit tools and record the session used for teammate wake-ups.
+
+In each developer’s clone, check out the same branch and start Codex:
+
+```sh
+cd /path/to/your/repo
+codex
+```
+
+The plugin attempts to join automatically using the clone’s origin and branch. A GitHub
+repo on `session-2` joins `github.com/<owner>/<repo>/session-2`. Your participant name
+comes from Git configuration. Use distinct names for separate developers.
+
+Ask **“Show room state”** and open the browser link it prints. Then ask for your feature
+as usual. If auto-join fails, ask the agent to call `room_join`; its error should explain
+what needs attention. No Room environment variables are needed for the default hosted
+GitHub flow.
+
+The hosted server checks repository access using your `gh` credentials. The browser link
+contains a room-scoped view key valid for 24 hours, rather than your GitHub token. Treat
+that link as access to the room’s shared code and activity.
 
 ## Run locally
 
@@ -208,24 +238,6 @@ The actual indexer builds the graph. Participant activity is synthetic and label
 The script prints a browser link and stays running so edits in the generated repo update
 Kieran’s overlay. Each run gets a unique room unless you supply `--room`. Ctrl-C stops
 the publisher and leaves the generated repo intact.
-
-## Limits and failure handling
-
-- **Potential impact is not verified breakage.** Symbol references are inferred, not a
-  fully resolved import or call graph. Runtime behavior and compatibility need tests.
-- **The graph is a projection.** An index prefers its participant’s overlay, then another
-  participant’s overlay, then the base. It does not represent every separate version at
-  once. The browser renders at most 250 files and asks you to narrow larger views.
-- **Claims depend on agent cooperation.** Overlaps raise interrupts; they do not prevent
-  writes. Cancelled plans and releases update coordination state, not source code.
-- **Delivery depends on the client.** Hook/session registration and a running MCP process
-  are needed for the plugin wake-up path. Tool replies provide another inbox surface;
-  `room_wait` returns a timeout if the expected event does not arrive.
-- **Git and connection failures are visible.** Behind clones are identified; unavailable
-  bases or divergence at join require fetching or reconciliation. Connection attempts
-  time out, offline claims become stale, and graph snapshots expose age and status.
-- **Room shares code with the room.** Overlays and coordination history travel to the
-  server. Local sample rooms have no persistence unless configured.
 
 ## Develop and verify
 
