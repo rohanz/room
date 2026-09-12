@@ -13,7 +13,7 @@ import {
 import { presences, type Conn } from './conn.ts'
 import { Editor } from './editor.ts'
 import { buildActivityGraph, type OverlayVersion } from './activity-graph.ts'
-import { classifyMergedLines, unifiedDiffLines, type MergedLine } from './merged.ts'
+import { classifyMergedLines, classifyThreeWay, unifiedDiffLines, type MergedLine } from './merged.ts'
 import { groupEpisodes, type Episode, type TimelineItem } from './timeline.ts'
 
 export const h = <K extends keyof HTMLElementTagNameMap>(
@@ -331,7 +331,10 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     if (tab === 'Merged') {
       const pair = people.slice(0, 2) as [string, string]
       legend.replaceChildren(h('span', {}, dot(pair[0]), ` lines by ${pair[0]}`), h('span', {}, dot(pair[1]), ` lines by ${pair[1]}`))
-      renderCodeLines(host, classifyMergedLines(conn.room.text(selected.path, pair[0]) ?? '', conn.room.text(selected.path, pair[1]) ?? ''), pair)
+      const a = conn.room.text(selected.path, pair[0]) ?? '', b = conn.room.text(selected.path, pair[1]) ?? ''
+      const sha = conn.room.baseOf(pair[0])
+      const base = sha ? conn.room.baseText(sha, selected.path) : undefined
+      renderCodeLines(host, base !== undefined ? classifyThreeWay(base, a, b) : classifyMergedLines(a, b), pair)
       return
     }
 

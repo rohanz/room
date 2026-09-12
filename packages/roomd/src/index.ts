@@ -375,7 +375,10 @@ class Daemon implements Roomd {
       this.roomDoc.doc.transact(() => {
         this.roomDoc.unmarkDeleted(this.name, relpath, this)
         if (disk === base) this.roomDoc.clearOverlay(this.name, relpath, this)
-        else this.roomDoc.setOverlay(this.name, relpath, disk, this)
+        else {
+          this.roomDoc.setOverlay(this.name, relpath, disk, this)
+          if (disk.length <= this.sizeCap) this.roomDoc.setBaseText(this.base, relpath, base ?? '', this)
+        }
       }, this)
     }
 

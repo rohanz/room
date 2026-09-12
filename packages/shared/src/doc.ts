@@ -40,6 +40,14 @@ export class RoomDoc {
   get claims(): Y.Map<Claim> { return this.doc.getMap<Claim>('claims') }
   get bus(): Y.Array<Msg> { return this.doc.getArray<Msg>('bus') }
   get metaMap(): Y.Map<string | number> { return this.doc.getMap<string | number>('meta') }
+  /** Base-commit text of files someone has changed, keyed "<sha>:<path>", so browsers can three-way merge. */
+  get baseTexts(): Y.Map<string> { return this.doc.getMap<string>('basetext') }
+  baseText(sha: string, relpath: string): string | undefined { return this.baseTexts.get(`${sha}:${relpath}`) }
+  setBaseText(sha: string, relpath: string, text: string, origin?: unknown): void {
+    const k = `${sha}:${relpath}`
+    if (this.baseTexts.has(k)) return
+    this.doc.transact(() => { this.baseTexts.set(k, text) }, origin)
+  }
   /** Each person's own HEAD: the commit their overlay is a delta from. */
   get bases(): Y.Map<string> { return this.doc.getMap<string>('bases') }
   baseOf(person: string): string | undefined { return this.bases.get(person) ?? this.meta.base }

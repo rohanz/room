@@ -185,6 +185,7 @@ describe('concurrency', () => {
     await t.tools.call('room_state', {}) // attaches the claims observer
     // Kieran's claim arrives from the other doc after Rohan's was made (neither saw the other pre-insert).
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 3, intent: 'mine' })
+    await new Promise(r => setTimeout(r, 5)) // ids are time-ordered; the earlier (smaller) id is the one that reports
     t.other.addClaim({ path: 'app.py', from: 2, to: 2, by: 'Kieran', byKind: 'agent', intent: 'theirs' })
     await new Promise(r => setTimeout(r, 150))
     const conflicts = t.room.messages().filter(m => m.type === 'conflict')
