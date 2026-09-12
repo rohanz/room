@@ -36,7 +36,7 @@ export function networkPanel(conn: Conn): HTMLElement {
     h('div', { class: 'network-heading' }, h('div', {}, h('h2', {}, 'My work & contract risks'), h('p', { class: 'muted' }, 'Upstream risks to my work → my edits and plans → consumers of my planned changes.')), h('label', {}, 'Viewing as ', person)),
     h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' Relevant to my work'), density, h('label', { class: 'network-zoom' }, 'Zoom ', zoom), fit, expand),
     stats,
-    h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Blue · Edits'), h('span', { class: 'legend-contract' }, 'Purple · Declared contract'), h('span', { class: 'legend-both' }, 'Blue / purple · Both'), h('span', { class: 'legend-impact' }, 'Red · Potential impact'), h('span', {}, 'Provider → consumer · Hover to preview, click to inspect')),
+    h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Blue · Edits'), h('span', { class: 'legend-contract' }, 'Purple · Declared contract'), h('span', { class: 'legend-impact' }, 'Red · Potential impact'), h('span', {}, 'Provider → consumer · Hover to preview, click to inspect')),
     status, canvas, details, tooltip,
     h('div', { class: 'network-footnote' }, 'Potential impact from declared plans and inferred symbol references. Not a verified break or proof of implementation. Released plans leave this view; compatibility needs tests.'))
   let selectedPerson = new URLSearchParams(location.search).get('participant') ?? new URLSearchParams(location.search).get('name') ?? ''
