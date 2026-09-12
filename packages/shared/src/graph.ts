@@ -8,6 +8,17 @@
  */
 
 export interface FileSymbols { defs: string[]; refs: string[] }
+/** Read-only browser projection, published by each participant's local indexer. */
+export interface GraphSnapshot {
+  version: 1
+  base: string
+  at: number
+  status: 'ready' | 'indexing' | 'error'
+  paths: string[]
+  /** Direction: definition/provider -> consumer. Names are inferred, not resolved imports. */
+  edges: { source: string; target: string; symbols: string[] }[]
+  truncated: boolean
+}
 export type Extractor = (path: string, text: string) => FileSymbols | undefined
 
 const WORD = /[A-Za-z_][A-Za-z0-9_]*/g

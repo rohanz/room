@@ -116,3 +116,15 @@ Codebase-Memory study) converges on tree-sitter tag maps served over MCP; the sa
 answers our coordination questions: who breaks if I rename this, and what am I waiting on.
 **Cut:** call graphs, types, cross-language resolution, persistence, graph edges in the
 browser view. Names are enough for coordination; revisit if false positives bite.
+
+## 2026-09-12 — Dependency network browser view
+**Decision:** Add a Network tab with participant selection, current-change and transitive
+upstream highlighting, provider-to-consumer arrows, file details, search and zoom. Local
+MCP indexers publish bounded, timestamped graph snapshots in the Y.Doc. The existing file
+viewer remains available. Browser URLs preselect the joining participant.
+**Why:** Make the dependency coordination visible during a demo and let people inspect
+the upstream work their edits depend on. Overlay reverts and edits during extraction now
+trigger fresh indexing; snapshots expose base and readiness rather than implying exactness.
+**Limits:** Name-based inference and the indexer's existing mixed-overlay selection remain.
+No parser migration, automatic conflict resolution, or guaranteed message interruption.
+**Validation:** Model and indexer regression tests plus a live two-clone browser preview.

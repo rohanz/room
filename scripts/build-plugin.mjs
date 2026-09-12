@@ -2,6 +2,7 @@
 import { build } from 'esbuild'
 await build({
   entryPoints: ['packages/room-mcp/src/index.ts'],
+  tsconfig: 'tsconfig.base.json',
   bundle: true, platform: 'node', format: 'esm', target: 'node20',
   outfile: 'plugins/room/server/room-mcp.mjs',
   banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },

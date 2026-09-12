@@ -82,6 +82,26 @@ After:
 Every reply starts with the agent's inbox: messages addressed to it, highest priority
 first.
 
+### Dependency network
+
+The browser opens on a **Network** tab. Choose a participant to highlight their current
+overlay changes in blue and their transitive upstream dependencies in amber. Arrows point
+from provider to consumer. Select a file to see dependency symbols, who is changing it,
+and open claims and plans. Search, zoom, Fit, and the neighborhood filter help explore
+larger graphs; the Changed files tab retains the overlay reader.
+
+The MCP indexer publishes a bounded graph snapshot for each participant into the room.
+Join using the updated MCP server (rebuild the plugin with `npm run build:plugin`) before
+opening the browser URL printed by `room_join`; it preselects your participant. Older
+clients display a waiting state. Snapshots retain timestamps and base SHAs, with notices
+for offline participants, indexing errors, older bases, and index limits.
+
+Edges are **inferred symbol references**, not fully resolved imports or call graphs.
+Each local index chooses its own overlay, then another participant's overlay, then the
+room base. The browser displays that index honestly; it is not a merged program or an
+exact graph of every participant's separate version. The view renders at most 160 files
+at a time and prompts you to narrow the search when needed.
+
 ## Use it
 
 ```sh

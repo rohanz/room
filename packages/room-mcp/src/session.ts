@@ -101,7 +101,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
   const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', token, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${token ? `&token=${encodeURIComponent(token)}` : ''}`
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
   graph.start()
   return {
