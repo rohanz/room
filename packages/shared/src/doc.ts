@@ -22,7 +22,7 @@ type PostBody<T extends Msg> = Omit<T, 'id' | 'at' | 'from' | 'fromKind' | 'prio
 export function defaultPriority(msg: { type: MsgType; symbols?: readonly string[]; [key: string]: unknown }): Priority {
   if (msg.type === 'conflict') return 'interrupt'
   if (msg.type === 'changed') return msg.symbols?.length ? 'notify' : 'fyi'
-  if (msg.type === 'question' || msg.type === 'answer' || msg.type === 'scope') return 'notify'
+  if (msg.type === 'question' || msg.type === 'answer' || msg.type === 'scope' || msg.type === 'base') return 'notify'
   return 'fyi'
 }
 
@@ -286,5 +286,5 @@ function makeAnchor(text: Y.Text, from: number, to: number): ClaimAnchor {
 }
 
 export function isMsgType(value: string): value is MsgType {
-  return ['claim', 'release', 'changed', 'question', 'answer', 'conflict', 'note', 'scope'].includes(value)
+  return ['claim', 'release', 'changed', 'question', 'answer', 'conflict', 'note', 'scope', 'base'].includes(value)
 }

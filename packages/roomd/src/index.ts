@@ -10,8 +10,8 @@ import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, colorFor, type Kind, type Presence } from '@room/shared'
-import { gitBranch, gitHead, gitIgnored, gitOrigin, gitShow, gitTracked } from './git.js'
+import { RoomDoc, colorFor, type BaseMsg, type Kind, type Presence } from '@room/shared'
+import { gitBranch, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitSubject, gitTracked } from './git.js'
 
 export interface RoomdOptions {
   /** Full room URL, e.g. ws://host:1234/my-room */
@@ -28,6 +28,8 @@ export interface RoomdOptions {
   /** Overrides for tests. */
   debounceMs?: number
   trackedRefreshMs?: number
+  /** How often to check whether local HEAD moved (commit/pull); default 3s. */
+  basePollMs?: number
   sizeCap?: number
   /** In-memory transport override for tests that cannot open loopback sockets. */
   providerFactory?: (serverUrl: string, roomName: string, doc: Y.Doc) => WebsocketProvider
@@ -86,6 +88,7 @@ class Daemon implements Roomd {
   private readonly log: (line: string) => void
   private readonly debounceMs: number
   private readonly trackedRefreshMs: number
+  private readonly basePollMs: number
   private readonly sizeCap: number
   private readonly connectTimeoutMs: number
   private readonly roomUrl: string
@@ -105,6 +108,7 @@ class Daemon implements Roomd {
     this.log = options.log ?? (line => process.stderr.write(`[roomd] ${line}\n`))
     this.debounceMs = options.debounceMs ?? 50
     this.trackedRefreshMs = options.trackedRefreshMs ?? 10_000
+    this.basePollMs = options.basePollMs ?? 3_000
     this.sizeCap = options.sizeCap ?? 512 * 1024
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000
     const { serverUrl, roomName } = splitRoomUrl(options.room)
@@ -134,9 +138,16 @@ class Daemon implements Roomd {
     await this.waitForSync()
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== this.base) {
-      const message = `room base is ${roomBase}; local HEAD is ${this.base} — git pull, then $room-join`
-      this.setStatus(`error: ${message}`)
-      throw new RoomdError(message, 2)
+      const rel = await gitRelation(this.dir, this.base, roomBase)
+      if (rel === 'ahead') await this.advanceBase(roomBase, this.base)
+      else if (rel === 'behind') this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)}); git pull to catch up`)
+      else {
+        const message = rel === 'unknown'
+          ? `room base ${roomBase} is not in this clone (local HEAD ${this.base}) — git pull, then $room-join`
+          : `local HEAD ${this.base} has diverged from room base ${roomBase} — rebase or merge onto the room base, then $room-join`
+        this.setStatus(`error: ${message}`)
+        throw new RoomdError(message, 2)
+      }
     }
     if (!roomBase) {
       this.roomDoc.setMeta({
@@ -153,7 +164,9 @@ class Daemon implements Roomd {
     this.excludeRoomFile()
     await this.startWatcher()
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
-    this.setStatus('synced')
+    this.every(this.basePollMs, () => this.pollHead())
+    this.roomDoc.metaMap.observe(() => { void this.refreshBaseStatus() })
+    await this.refreshBaseStatus()
     this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)})`)
   }
 
@@ -238,6 +251,49 @@ class Daemon implements Roomd {
   }
 
   // ---- startup and disk -> overlay --------------------------------------
+
+  // ---- base commit tracking ---------------------------------------------
+
+  /** Local HEAD moved (commit, pull, checkout): re-seed the overlay and maybe advance the room base. */
+  private async pollHead(): Promise<void> {
+    if (this.stopped) return
+    const head = await gitHead(this.dir)
+    if (head === this.base) return
+    const prev = this.base
+    this.base = head
+    this.branch = await gitBranch(this.dir)
+    this.tracked = await gitTracked(this.dir)
+    this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
+    const roomBase = this.roomDoc.meta.base
+    if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.advanceBase(roomBase, head)
+    await this.seedLocalOverlay()
+    for (const relpath of this.roomDoc.changedPaths(this.name)) if (!this.tracked.has(relpath)) await this.publishDiskState(relpath)
+    await this.refreshBaseStatus()
+  }
+
+  private async advanceBase(from: string, to: string): Promise<void> {
+    const [commits, paths, summary] = await Promise.all([
+      gitCountBetween(this.dir, from, to), gitPathsBetween(this.dir, from, to), gitSubject(this.dir, to),
+    ])
+    this.roomDoc.doc.transact(() => {
+      this.roomDoc.setMeta({ base: to, branch: this.branch }, this)
+      this.roomDoc.post<BaseMsg>({ name: this.name, kind: this.kind }, { type: 'base', base: to, prev: from, commits, paths, summary }, this)
+    }, this)
+    this.log(`advanced room base to ${to.slice(0, 10)} (+${commits})`)
+  }
+
+  /** Presence status reflects where this clone stands relative to the room base. */
+  private async refreshBaseStatus(): Promise<void> {
+    if (this.stopped) return
+    const roomBase = this.roomDoc.meta.base
+    if (!roomBase || roomBase === this.base) { this.setStatus('synced'); return }
+    const rel = await gitRelation(this.dir, this.base, roomBase)
+    if (rel === 'behind') {
+      const n = await gitCountBetween(this.dir, this.base, roomBase).catch(() => 0)
+      this.setStatus(`behind base by ${n || '?'} commit${n === 1 ? '' : 's'}: git pull`)
+    } else if (rel === 'ahead') { /* pollHead will advance */ }
+    else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}: git pull`)
+  }
 
   private async seedLocalOverlay(): Promise<void> {
     for (const relpath of this.tracked) {

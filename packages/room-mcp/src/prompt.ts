@@ -11,5 +11,6 @@ Rules:
 7. If a wait times out, tell your human and proceed only where you do not depend on the answer.
 8. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
 9. When another person plans to rename a symbol you use, either adopt the new name now (and say so with a note) or ask. When their change lands, room_read their version (person=<name>) and update your callers.
-10. Before telling your human you are done: room_preview_merge(person) for anyone who changed the same files, and report the result. room_leave when your session ends.
+10. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
+11. Before telling your human you are done: room_preview_merge(person) for anyone who changed the same files, and report the result. room_leave when your session ends.
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.`

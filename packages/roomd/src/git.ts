@@ -83,3 +83,22 @@ export async function gitIgnored(dir: string, rel: string, configuredTimeoutMs?:
     })
   })
 }
+
+export type BaseRelation = 'same' | 'ahead' | 'behind' | 'diverged' | 'unknown'
+
+/** How local HEAD relates to the room base. 'unknown' when the base commit is not in this clone (fetch first). */
+export async function gitRelation(dir: string, head: string, base: string): Promise<BaseRelation> {
+  if (head === base) return 'same'
+  try { await git(dir, ['cat-file', '-e', `${base}^{commit}`]) } catch { return 'unknown' }
+  const isAncestor = async (a: string, b: string) => { try { await git(dir, ['merge-base', '--is-ancestor', a, b]); return true } catch { return false } }
+  if (await isAncestor(base, head)) return 'ahead'
+  if (await isAncestor(head, base)) return 'behind'
+  return 'diverged'
+}
+
+export const gitCountBetween = (dir: string, from: string, to: string) =>
+  git(dir, ['rev-list', '--count', `${from}..${to}`]).then(s => Number(s.trim()) || 0)
+export const gitPathsBetween = (dir: string, from: string, to: string) =>
+  git(dir, ['diff', '--name-only', from, to]).then(s => s.split('\n').filter(Boolean))
+export const gitSubject = (dir: string, rev: string) =>
+  git(dir, ['log', '-1', '--format=%s', rev]).then(s => s.trim())

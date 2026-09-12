@@ -14,6 +14,7 @@ export function formatMsg(m: Msg): string {
     case 'answer': return `${priority}${who}${to} answers: ${m.text}`
     case 'conflict': return `${priority}CONFLICT on ${m.path}: ${m.text}`
     case 'note': return `${priority}${who}: ${m.text}`
+    case 'base': return `${priority}${who} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — git pull to catch up`
     case 'scope': return `${priority}${who} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})`
   }
 }

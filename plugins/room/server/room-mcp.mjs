@@ -21226,6 +21226,8 @@ function formatMsg(m) {
       return `${priority}CONFLICT on ${m.path}: ${m.text}`;
     case "note":
       return `${priority}${who}: ${m.text}`;
+    case "base":
+      return `${priority}${who} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up`;
     case "scope":
       return `${priority}${who} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})`;
   }
@@ -29081,7 +29083,7 @@ if (glo[importIdentifier] === true) {
 glo[importIdentifier] = true;
 
 // packages/shared/src/ledger.ts
-var LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict"]);
+var LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict", "base"]);
 function msgPaths(m) {
   if ("paths" in m) return m.paths;
   if ("path" in m) return [m.path];
@@ -29120,7 +29122,7 @@ function areaSummary(messages, scopes, windowMs = 10 * 60 * 1e3, now = Date.now(
 function defaultPriority(msg) {
   if (msg.type === "conflict") return "interrupt";
   if (msg.type === "changed") return msg.symbols?.length ? "notify" : "fyi";
-  if (msg.type === "question" || msg.type === "answer" || msg.type === "scope") return "notify";
+  if (msg.type === "question" || msg.type === "answer" || msg.type === "scope" || msg.type === "base") return "notify";
   return "fyi";
 }
 var RoomDoc = class {
@@ -30079,6 +30081,10 @@ function normalizeGitOrigin(origin) {
   const value = origin.trim().replace(/\/+$/, "").replace(/\.git$/, "");
   const scp = value.match(/^(?:[^@]+@)?([^:/]+):(.+)$/);
   if (scp && !value.includes("://")) return `${scp[1]}/${scp[2].replace(/^\/+/, "")}`;
+  if (value.startsWith("/") || value.startsWith(".") || value.startsWith("file://")) {
+    const name = value.replace(/^file:\/\//, "").split("/").filter(Boolean).pop();
+    return name ? `local/${name}` : void 0;
+  }
   try {
     const url = new URL(value);
     if (!url.hostname) return void 0;
@@ -30118,6 +30124,28 @@ async function gitIgnored(dir, rel, configuredTimeoutMs) {
     });
   });
 }
+async function gitRelation(dir, head, base) {
+  if (head === base) return "same";
+  try {
+    await git(dir, ["cat-file", "-e", `${base}^{commit}`]);
+  } catch {
+    return "unknown";
+  }
+  const isAncestor = async (a, b) => {
+    try {
+      await git(dir, ["merge-base", "--is-ancestor", a, b]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (await isAncestor(base, head)) return "ahead";
+  if (await isAncestor(head, base)) return "behind";
+  return "diverged";
+}
+var gitCountBetween = (dir, from2, to) => git(dir, ["rev-list", "--count", `${from2}..${to}`]).then((s) => Number(s.trim()) || 0);
+var gitPathsBetween = (dir, from2, to) => git(dir, ["diff", "--name-only", from2, to]).then((s) => s.split("\n").filter(Boolean));
+var gitSubject = (dir, rev) => git(dir, ["log", "-1", "--format=%s", rev]).then((s) => s.trim());
 
 // packages/room-mcp/src/session.ts
 import { existsSync, readFileSync } from "node:fs";
@@ -32565,6 +32593,7 @@ var Daemon = class {
   log;
   debounceMs;
   trackedRefreshMs;
+  basePollMs;
   sizeCap;
   connectTimeoutMs;
   roomUrl;
@@ -32583,6 +32612,7 @@ var Daemon = class {
 `));
     this.debounceMs = options.debounceMs ?? 50;
     this.trackedRefreshMs = options.trackedRefreshMs ?? 1e4;
+    this.basePollMs = options.basePollMs ?? 3e3;
     this.sizeCap = options.sizeCap ?? 512 * 1024;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15e3;
     const { serverUrl, roomName } = splitRoomUrl(options.room);
@@ -32607,9 +32637,14 @@ var Daemon = class {
     await this.waitForSync();
     const roomBase = this.roomDoc.meta.base;
     if (roomBase && roomBase !== this.base) {
-      const message = `room base is ${roomBase}; local HEAD is ${this.base} \u2014 git pull, then $room-join`;
-      this.setStatus(`error: ${message}`);
-      throw new RoomdError(message, 2);
+      const rel = await gitRelation(this.dir, this.base, roomBase);
+      if (rel === "ahead") await this.advanceBase(roomBase, this.base);
+      else if (rel === "behind") this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)}); git pull to catch up`);
+      else {
+        const message = rel === "unknown" ? `room base ${roomBase} is not in this clone (local HEAD ${this.base}) \u2014 git pull, then $room-join` : `local HEAD ${this.base} has diverged from room base ${roomBase} \u2014 rebase or merge onto the room base, then $room-join`;
+        this.setStatus(`error: ${message}`);
+        throw new RoomdError(message, 2);
+      }
     }
     if (!roomBase) {
       this.roomDoc.setMeta({
@@ -32625,7 +32660,11 @@ var Daemon = class {
     this.excludeRoomFile();
     await this.startWatcher();
     this.every(this.trackedRefreshMs, () => this.refreshTracked());
-    this.setStatus("synced");
+    this.every(this.basePollMs, () => this.pollHead());
+    this.roomDoc.metaMap.observe(() => {
+      void this.refreshBaseStatus();
+    });
+    await this.refreshBaseStatus();
     this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)})`);
   }
   async stop() {
@@ -32708,6 +32747,50 @@ var Daemon = class {
     }
   }
   // ---- startup and disk -> overlay --------------------------------------
+  // ---- base commit tracking ---------------------------------------------
+  /** Local HEAD moved (commit, pull, checkout): re-seed the overlay and maybe advance the room base. */
+  async pollHead() {
+    if (this.stopped) return;
+    const head = await gitHead(this.dir);
+    if (head === this.base) return;
+    const prev = this.base;
+    this.base = head;
+    this.branch = await gitBranch(this.dir);
+    this.tracked = await gitTracked(this.dir);
+    this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
+    const roomBase = this.roomDoc.meta.base;
+    if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === "ahead") await this.advanceBase(roomBase, head);
+    await this.seedLocalOverlay();
+    for (const relpath of this.roomDoc.changedPaths(this.name)) if (!this.tracked.has(relpath)) await this.publishDiskState(relpath);
+    await this.refreshBaseStatus();
+  }
+  async advanceBase(from2, to) {
+    const [commits, paths, summary] = await Promise.all([
+      gitCountBetween(this.dir, from2, to),
+      gitPathsBetween(this.dir, from2, to),
+      gitSubject(this.dir, to)
+    ]);
+    this.roomDoc.doc.transact(() => {
+      this.roomDoc.setMeta({ base: to, branch: this.branch }, this);
+      this.roomDoc.post({ name: this.name, kind: this.kind }, { type: "base", base: to, prev: from2, commits, paths, summary }, this);
+    }, this);
+    this.log(`advanced room base to ${to.slice(0, 10)} (+${commits})`);
+  }
+  /** Presence status reflects where this clone stands relative to the room base. */
+  async refreshBaseStatus() {
+    if (this.stopped) return;
+    const roomBase = this.roomDoc.meta.base;
+    if (!roomBase || roomBase === this.base) {
+      this.setStatus("synced");
+      return;
+    }
+    const rel = await gitRelation(this.dir, this.base, roomBase);
+    if (rel === "behind") {
+      const n = await gitCountBetween(this.dir, this.base, roomBase).catch(() => 0);
+      this.setStatus(`behind base by ${n || "?"} commit${n === 1 ? "" : "s"}: git pull`);
+    } else if (rel === "ahead") {
+    } else this.setStatus(`${rel === "unknown" ? "behind base (fetch)" : "diverged from base"}: git pull`);
+  }
   async seedLocalOverlay() {
     for (const relpath of this.tracked) {
       if (!this.isSafeRoomPath(relpath)) continue;
@@ -33047,6 +33130,7 @@ function createTools(ctx) {
   const forMe = (s, m) => {
     if (m.from === s.me.name && m.fromKind === "agent") return false;
     if (m.to === s.me.name) return true;
+    if (m.type === "base") return true;
     if (m.type === "conflict") return mine(s).some((c) => c.id === m.claimId || c.id === m.otherClaimId);
     return false;
   };
@@ -33530,7 +33614,8 @@ Rules:
 7. If a wait times out, tell your human and proceed only where you do not depend on the answer.
 8. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
 9. When another person plans to rename a symbol you use, either adopt the new name now (and say so with a note) or ask. When their change lands, room_read their version (person=<name>) and update your callers.
-10. Before telling your human you are done: room_preview_merge(person) for anyone who changed the same files, and report the result. room_leave when your session ends.
+10. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
+11. Before telling your human you are done: room_preview_merge(person) for anyone who changed the same files, and report the result. room_leave when your session ends.
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.`;
 
 // packages/room-mcp/src/index.ts

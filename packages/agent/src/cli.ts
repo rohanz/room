@@ -1,11 +1,13 @@
 #!/usr/bin/env tsx
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { RoomDoc, colorFor } from '@room/shared'
+import { deriveRoomName, encodeRoom } from '@room/room-mcp'
 import { CodexBackend } from './backend.js'
 import { Runner } from './runner.js'
 
@@ -20,16 +22,22 @@ function parseArgs(argv: string[]): Record<string, string> {
 
 const args = parseArgs(process.argv.slice(2))
 if (args.help) {
-  console.log('usage: roomagent --name <Name> --dir <clone> --room ws://host:1234/<room> [--model <model>] [--turn-timeout-ms <ms>]\n(defaults read from <dir>/.room.json {room,name,dir})')
+  console.log('usage: roomagent [--dir <clone>] [--name <Name>] [--room ws://host:1234/<room>] [--server ws://host:1234] [--model <model>] [--turn-timeout-ms <ms>]\n(room defaults to <server>/<origin>/<branch> of the clone, or <dir>/.room.json; name defaults to git config user.name)')
   process.exit(0)
 }
 const dir = resolve(args.dir ?? process.cwd())
 let cfg: { room?: string; name?: string; dir?: string } = {}
 try { cfg = JSON.parse(readFileSync(resolve(dir, '.room.json'), 'utf8')) } catch { /* optional */ }
-const name = args.name ?? cfg.name
-const roomUrl = args.room ?? cfg.room
 const workDir = resolve(cfg.dir ?? dir)
-if (!name || !roomUrl) { console.error('roomagent: need --name and --room (or <dir>/.room.json)'); process.exit(2) }
+const gitName = () => { try { return execFileSync('git', ['-C', workDir, 'config', 'user.name'], { encoding: 'utf8' }).trim() || undefined } catch { return undefined } }
+const name = args.name ?? cfg.name ?? gitName()
+let roomUrl = args.room ?? cfg.room
+if (!roomUrl) {
+  const server = (args.server ?? process.env.ROOM_SERVER ?? 'ws://localhost:1234').replace(/\/+$/, '')
+  const d = await deriveRoomName(workDir)
+  if (d.roomName) roomUrl = `${server}/${encodeRoom(d.roomName)}`
+}
+if (!name || !roomUrl) { console.error('roomagent: could not derive room/name; pass --room and --name (or run in a clone with an origin remote)'); process.exit(2) }
 
 // ws://host:1234/<room> → server + room name
 const u = new URL(roomUrl)
