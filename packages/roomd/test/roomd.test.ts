@@ -92,6 +92,25 @@ describe('merge', () => {
     expect(yt.toString()).toBe('A1\nline2\nB3\n')
     expect(ops).toBeLessThanOrEqual(2)
   })
+  it('preserves a concurrent insertion inside a same-line local replacement', () => {
+    const doc = new Y.Doc()
+    const yt = doc.getText('t')
+    const shadow = 'const value = old;\n'
+    yt.insert(0, 'const value = oREMOTEld;\n')
+    applyLocalEdit(yt, shadow, 'const value = new;\n')
+    expect(yt.toString()).toBe('const value = REMOTEnew;\n')
+  })
+  it('is idempotent when the same local edit is applied again', () => {
+    const doc = new Y.Doc()
+    const yt = doc.getText('t')
+    const shadow = 'const value = old;\n'
+    yt.insert(0, 'const value = oREMOTEld;\n')
+    const local = 'const value = new;\n'
+    applyLocalEdit(yt, shadow, local)
+    const once = yt.toString()
+    applyLocalEdit(yt, shadow, local)
+    expect(yt.toString()).toBe(once)
+  })
 })
 
 // ---- integration -------------------------------------------------------------
@@ -131,6 +150,26 @@ describe('roomd', () => {
     dB = await startRoomd({ room: roomUrl, dir: B, name: 'Bob', log: silent })
     expect(dB.roomDoc.paths()).toEqual(['README.md', 'src/app.py'])
     expect(read(B, 'src/app.py')).toBe('line1\nline2\nline3\n')
+  })
+
+  it('refuses adoption when uncommitted local work differs from the room', async () => {
+    const dirty = await cloneRepo(A)
+    await fsp.writeFile(path.join(dirty, 'src/app.py'), 'uncommitted local work\n')
+    const err = await startRoomd({ room: roomUrl, dir: dirty, name: 'Dirty', log: silent }).then(() => null, e => e)
+    expect(err).toBeInstanceOf(RoomdError)
+    expect(err.message).toBe('clone has uncommitted changes in src/app.py; commit or stash first')
+    expect(read(dirty, 'src/app.py')).toBe('uncommitted local work\n')
+  })
+
+  it('does not adopt or remotely delete paths outside the clone', async () => {
+    const outside = path.join(path.dirname(B), 'outside.txt')
+    await fsp.writeFile(outside, 'keep me\n')
+    dA.roomDoc.setFile('../outside.txt', 'overwrite\n')
+    await sleep(100)
+    expect(await fsp.readFile(outside, 'utf8')).toBe('keep me\n')
+    dA.roomDoc.deleteFile('../outside.txt')
+    await sleep(100)
+    expect(await fsp.readFile(outside, 'utf8')).toBe('keep me\n')
   })
 
   it('(3) a write on A lands on B disk within 2s', async () => {

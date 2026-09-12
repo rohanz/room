@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { RoomDoc, type QuestionMsg, type NoteMsg, type ChangedMsg } from '@room/shared'
+import { RoomDoc, type AnswerMsg, type ConflictMsg, type QuestionMsg, type NoteMsg, type ChangedMsg } from '@room/shared'
 import { Runner } from '../src/runner.js'
 import { FakeBackend } from '../src/backend.js'
 
@@ -54,6 +54,15 @@ describe('Runner', () => {
     expect(inp).toContain('"type":"question"')
     const roles = s.room.chat('Rohan').toArray().map(i => i.role)
     expect(roles).toContain('event')
+  })
+
+  it('enqueues the answer to a question addressed to us', async () => {
+    const question = s.room.post<QuestionMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'Kieran', text: 'which payload?' })
+    s.room.post<AnswerMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'answer', to: 'Rohan', inReplyTo: question.id, text: 'use v2' })
+    await tick(); await s.runner.idle()
+    expect(s.backend.inputs).toHaveLength(1)
+    expect(s.backend.inputs[0]).toContain('type="answer"')
+    expect(s.backend.inputs[0]).toContain('use v2')
   })
 
   it('coalesces events that arrive during a running turn into one follow-up input', async () => {
@@ -136,7 +145,7 @@ describe('wake rules: claim/release locality', () => {
 })
 
 describe('/stop', () => {
-  it('aborts a held turn, drops the queue, and reports "stopped by you"', async () => {
+  it('aborts, drops the queue, releases claims, and pauses until /resume', async () => {
     const { RoomDoc } = await import('@room/shared')
     const { Runner } = await import('../src/runner.js')
     const { FakeBackend } = await import('../src/backend.js')
@@ -145,14 +154,54 @@ describe('/stop', () => {
     const awareness = { setLocalStateField() {} }
     const r = new Runner({ name: 'Rohan', room, awareness, backend, log: () => {} })
     r.start()
+    room.addClaim({ path: 'a.py', from: 1, to: 3, by: 'Rohan', byKind: 'agent', intent: 'edit a' })
+    room.addClaim({ path: 'b.py', from: 2, to: 4, by: 'Rohan', byKind: 'agent', intent: 'edit b' })
     room.say('Rohan', { role: 'human', text: 'do a thing' })
     await new Promise(res => setTimeout(res, 20))
     room.say('Rohan', { role: 'human', text: 'and another' })
+    backend.hold = false
     room.say('Rohan', { role: 'human', text: '/stop' })
     await r.idle()
     const statuses = room.chat('Rohan').toArray().filter(i => i.role === 'status').map(i => i.text)
-    expect(statuses).toContain('stopped by you')
+    expect(statuses).toContain('stopped by you; released 2 claims; paused until /resume')
+    expect(room.openClaims().filter(c => c.by === 'Rohan' && c.byKind === 'agent')).toHaveLength(0)
+    expect(room.messages().filter(m => m.type === 'release' && m.from === 'Rohan')).toHaveLength(2)
     expect(backend.inputs).toHaveLength(1)
+
+    room.say('Rohan', { role: 'human', text: 'this must not run yet' })
+    await tick()
+    expect(backend.inputs).toHaveLength(1)
+    expect(room.chat('Rohan').toArray().some(i => i.role === 'status' && i.text === 'agent paused; send /resume')).toBe(true)
+    room.say('Rohan', { role: 'human', text: '/resume' })
+    room.say('Rohan', { role: 'human', text: 'continue now' })
+    await r.idle()
+    expect(backend.inputs).toHaveLength(2)
+    expect(backend.inputs[1]).toBe('continue now')
+    r.stop()
+  })
+})
+
+describe('conflict preemption', () => {
+  it('aborts a running turn and handles the conflict before queued work', async () => {
+    const room = new RoomDoc()
+    const backend = new FakeBackend(); backend.hold = true
+    const r = new Runner({ name: 'Rohan', room, awareness: { setLocalStateField() {} }, backend })
+    r.start()
+    room.say('Rohan', { role: 'human', text: 'long task' })
+    await tick()
+    room.say('Rohan', { role: 'human', text: 'queued work' })
+    backend.hold = false
+    room.post<ConflictMsg>({ name: 'Kieran', kind: 'agent' }, {
+      type: 'conflict', claimId: 'c_other', otherClaimId: 'c_mine', path: 'a.py', text: 'same lines',
+    })
+    await r.idle()
+
+    expect(backend.inputs).toHaveLength(3)
+    expect(backend.inputs[1]).toContain('type="conflict"')
+    expect(backend.inputs[2]).toContain('queued work')
+    const statuses = room.chat('Rohan').toArray().filter(i => i.role === 'status').map(i => i.text)
+    expect(statuses).toContain('conflict on a.py; interrupting current turn')
+    expect(statuses).toContain('turn interrupted by conflict')
     r.stop()
   })
 })

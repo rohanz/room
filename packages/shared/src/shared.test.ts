@@ -48,6 +48,23 @@ describe('RoomDoc', () => {
     a.setMeta({ base: 'abc123', branch: 'main' })
     expect(b.meta.base).toBe('abc123')
   })
+
+  it('merges chat messages created concurrently before the docs sync', () => {
+    const docA = new Y.Doc()
+    const docB = new Y.Doc()
+    const a = new RoomDoc(docA)
+    const b = new RoomDoc(docB)
+
+    a.say('Rohan', { role: 'human', text: '/stop' })
+    b.say('Rohan', { role: 'agent', text: 'working' })
+    const updateA = Y.encodeStateAsUpdate(docA)
+    const updateB = Y.encodeStateAsUpdate(docB)
+    Y.applyUpdate(docA, updateB)
+    Y.applyUpdate(docB, updateA)
+
+    expect(a.chat('Rohan').toArray().map(i => i.text).sort()).toEqual(['/stop', 'working'])
+    expect(b.chat('Rohan').toArray().map(i => i.text).sort()).toEqual(['/stop', 'working'])
+  })
   it('setFile with identical content is a no-op transaction', () => {
     const a = new RoomDoc()
     a.setFile('x', 'hi')

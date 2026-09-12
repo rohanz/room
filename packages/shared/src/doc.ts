@@ -85,9 +85,9 @@ export class RoomDoc {
 
   // ---- chats (human <-> own agent) ----------------------------------------
   chat(name: string): Y.Array<ChatItem> {
-    let a = this.chats.get(name)
-    if (!a) { a = new Y.Array<ChatItem>(); this.doc.transact(() => { this.chats.set(name, a!) }) }
-    return a
+    // A deterministic top-level shared type cannot be replaced by a competing
+    // pre-sync map assignment, so concurrent first messages merge normally.
+    return this.doc.getArray<ChatItem>(`chat:${encodeURIComponent(name)}`)
   }
   say(name: string, item: Omit<ChatItem, 'id' | 'at'>, origin?: unknown): ChatItem {
     const it: ChatItem = { ...item, id: newId('h_'), at: Date.now() }

@@ -58,7 +58,8 @@ env = { ROOM_URL = "ws://localhost:1234/demo", ROOM_NAME = "Rohan", ROOM_DIR = "
 ```
 
 Codex has no channel equivalent; `packages/agent` (`roomagent`) wakes the Codex thread
-using the same `shouldWake` filter (`import { shouldWake } from '@room/room-mcp/wake'`)
+using the same shared message/claim wake policy (`shouldWakeOnMsg` and `shouldWakeOnClaim`
+from `@room/shared`) as the MCP channel's `shouldWake` wrapper
 and the same preamble (`AGENT_INSTRUCTIONS(name)` from `@room/room-mcp`).
 
 ## Limitations

@@ -57,14 +57,54 @@ export function applyLocalEdit(yt: Y.Text, shadow: string, local: string): void 
   const room = yt.toString()
   if (room === local) return
   const ops = opsBetween(shadow, local)
-  const map = positionMapper(shadow, room)
+  const projected = projectShadow(shadow, room)
   for (let k = ops.length - 1; k >= 0; k--) {
     const op = ops[k]
     if (op.kind === 'insert') {
-      yt.insert(map(op.at), op.text)
+      const at = projected.boundaries[op.at]
+      // Re-reading the same disk event with a stale shadow must not add the same
+      // local insertion again. It may sit on either side of concurrent inserts.
+      if (room.slice(at, at + op.text.length) === op.text || room.slice(Math.max(0, at - op.text.length), at) === op.text) continue
+      yt.insert(at, op.text)
     } else {
-      const a = map(op.at), b = map(op.at + op.len)
-      if (b > a) yt.delete(a, b - a)
+      // Delete only characters that still descend from the shadow. Remote text
+      // inserted inside the locally deleted span is deliberately left intact.
+      const positions = projected.characters.slice(op.at, op.at + op.len).filter((p): p is number => p !== null)
+      const ranges: { at: number; len: number }[] = []
+      for (const p of positions) {
+        const last = ranges.at(-1)
+        if (last && last.at + last.len === p) last.len++
+        else ranges.push({ at: p, len: 1 })
+      }
+      for (let i = ranges.length - 1; i >= 0; i--) yt.delete(ranges[i].at, ranges[i].len)
     }
   }
+}
+
+/** Map each shadow character and boundary to its surviving position in room text. */
+function projectShadow(shadow: string, room: string): { characters: (number | null)[]; boundaries: number[] } {
+  const characters: (number | null)[] = Array(shadow.length).fill(null)
+  const boundaries: number[] = Array(shadow.length + 1).fill(0)
+  let s = 0, r = 0
+  for (const [kind, text] of diff(shadow, room)) {
+    if (kind === diff.EQUAL) {
+      for (let i = 0; i < text.length; i++) {
+        boundaries[s] = r
+        characters[s] = r
+        s++; r++
+        boundaries[s] = r
+      }
+    } else if (kind === diff.DELETE) {
+      for (let i = 0; i < text.length; i++) {
+        boundaries[s] = r
+        s++
+        boundaries[s] = r
+      }
+    } else {
+      r += text.length
+      boundaries[s] = r
+    }
+  }
+  boundaries[shadow.length] = r
+  return { characters, boundaries }
 }

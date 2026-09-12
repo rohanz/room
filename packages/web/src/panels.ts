@@ -23,6 +23,9 @@ export const relTime = (t: number) => {
 
 // ---- people: one entry per person, folding their human + agent presences -------------
 export interface Person { name: string; human?: Presence; agent?: Presence }
+export function agentPresence(conn: Conn, name: string): Presence | undefined {
+  return presences(conn.provider).find(({ p }) => p.user.name === name && p.user.kind === 'agent')?.p
+}
 export function people(conn: Conn): Person[] {
   const m = new Map<string, Person>()
   for (const { p } of presences(conn.provider)) {
@@ -205,7 +208,7 @@ export function agentPane(conn: Conn, unread: UnreadTracker) {
   let stopRequested = false
   stop.onclick = () => { conn.room.say(conn.me.name, { role: 'human', text: '/stop' }); stopRequested = true; renderStatus() }
   const renderStatus = () => {
-    const ag = people(conn).find(p => p.name === conn.me.name)?.agent
+    const ag = agentPresence(conn, conn.me.name)
     const s = ag ? (ag.status ?? 'idle') : 'offline'
     const running = !!ag && s !== 'idle' && s !== 'offline'
     if (!running) stopRequested = false
@@ -238,7 +241,6 @@ export function agentPane(conn: Conn, unread: UnreadTracker) {
     })
   }
   bind()
-  conn.room.chats.observe(bind) // the runner or another client may (re)create my chat array
   return el
 }
 

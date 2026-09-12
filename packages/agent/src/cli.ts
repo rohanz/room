@@ -20,7 +20,7 @@ function parseArgs(argv: string[]): Record<string, string> {
 
 const args = parseArgs(process.argv.slice(2))
 if (args.help) {
-  console.log('usage: roomagent --name <Name> --dir <clone> --room ws://host:1234/<room> [--model <model>]\n(defaults read from <dir>/.room.json {room,name,dir})')
+  console.log('usage: roomagent --name <Name> --dir <clone> --room ws://host:1234/<room> [--model <model>] [--turn-timeout-ms <ms>]\n(defaults read from <dir>/.room.json {room,name,dir})')
   process.exit(0)
 }
 const dir = resolve(args.dir ?? process.cwd())
@@ -47,6 +47,7 @@ provider.awareness.setLocalState({ user: { name, kind: 'agent', color: colorFor(
 const backend = new CodexBackend({
   workingDirectory: workDir,
   model: args.model,
+  turnTimeoutMs: args['turn-timeout-ms'] ? Number(args['turn-timeout-ms']) : undefined,
   mcp: { command: 'npx', args: ['tsx', mcpEntry], env: { ROOM_URL: roomUrl, ROOM_NAME: name, ROOM_DIR: workDir } },
 })
 const runner = new Runner({ name, room, awareness: provider.awareness, backend, log: l => console.error(`[roomagent] ${l}`) })

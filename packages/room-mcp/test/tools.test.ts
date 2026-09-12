@@ -35,6 +35,15 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('tools', () => {
+  it('gates calls until initial room sync completes', async () => {
+    const room = new RoomDoc()
+    let synced = false
+    const tools = createTools({ room, me, dir, isSynced: () => synced })
+    expect(await tools.call('room_state', {})).toBe('error: room not synced yet, retry')
+    synced = true
+    expect(await tools.call('room_state', {})).toContain("you: Rohan's agent")
+  })
+
   it('lists the nine tools', () => {
     const { tools } = setup()
     expect(tools.list().map(t => t.name)).toEqual(['room_state', 'room_read_live', 'room_read_committed', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait'])
@@ -138,6 +147,28 @@ describe('claims on new files and self-messages', () => {
     expect(out).toMatch(/^claimed /)
     expect(out).toContain('new file')
     expect(room.openClaims()[0]).toMatchObject({ path: 'api/notify.py', from: 1, to: 1 })
+  })
+  it('posts exactly one conflict when overlapping claims arrive concurrently', async () => {
+    const docA = new Y.Doc(), docB = new Y.Doc()
+    const roomA = new RoomDoc(docA), roomB = new RoomDoc(docB)
+    const toolsA = createTools({ room: roomA, me: { name: 'Rohan', kind: 'agent' }, dir: process.cwd() })
+    const toolsB = createTools({ room: roomB, me: { name: 'Kieran', kind: 'agent' }, dir: process.cwd() })
+    await Promise.all([
+      toolsA.call('room_claim', { path: 'new.py', from: 1, to: 1, intent: 'A' }),
+      toolsB.call('room_claim', { path: 'new.py', from: 1, to: 1, intent: 'B' }),
+    ])
+
+    const initialA = Y.encodeStateAsUpdate(docA), initialB = Y.encodeStateAsUpdate(docB)
+    Y.applyUpdate(docA, initialB); Y.applyUpdate(docB, initialA)
+    const settledA = Y.encodeStateAsUpdate(docA), settledB = Y.encodeStateAsUpdate(docB)
+    Y.applyUpdate(docA, settledB); Y.applyUpdate(docB, settledA)
+
+    for (const room of [roomA, roomB]) {
+      const conflicts = room.messages().filter(m => m.type === 'conflict')
+      expect(conflicts).toHaveLength(1)
+      const conflict = conflicts[0] as any
+      expect([conflict.claimId, conflict.otherClaimId].sort()).toEqual(room.openClaims().map(c => c.id).sort())
+    }
   })
   it('refuses room_send to yourself', async () => {
     const room = new RoomDoc()

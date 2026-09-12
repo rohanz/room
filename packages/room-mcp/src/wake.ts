@@ -1,4 +1,4 @@
-import { claimsOverlap, cursorInClaim, formatMsg, describeClaim } from '@room/shared'
+import { claimsOverlap, cursorInClaim, formatMsg, describeClaim, shouldWakeOnClaim, shouldWakeOnMsg } from '@room/shared'
 import type { Claim, Cursor, Identity, Msg } from '@room/shared'
 
 /** What gets pushed to the agent (channel notification or Codex turn input). */
@@ -12,8 +12,6 @@ export type RoomEvent =
   | { kind: 'msg'; msg: Msg }
   | { kind: 'claim'; claim: Claim }
   | { kind: 'cursor'; who: Identity; cursor: Cursor }
-
-const WAKE_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'conflict', 'question'])
 
 function cleanMeta(m: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {}
@@ -33,13 +31,7 @@ function cleanMeta(m: Record<string, string | undefined>): Record<string, string
 export function shouldWake(me: Identity, ev: RoomEvent, myClaims: Claim[] = []): WakeEvent | null {
   if (ev.kind === 'msg') {
     const m = ev.msg
-    // never my own messages
-    if (m.from === me.name && m.fromKind === 'agent') return null
-    if (!WAKE_TYPES.has(m.type) && m.type !== 'answer') return null
-    const toMe = m.to === me.name
-    const broadcast = !m.to
-    if (m.type === 'answer') { if (!toMe) return null }
-    else if (!(toMe || broadcast)) return null
+    if (!shouldWakeOnMsg(me, m, myClaims).wake) return null
     const path = 'path' in m ? m.path : 'paths' in m ? m.paths[0] : undefined
     return {
       content: `${formatMsg(m)}\n${JSON.stringify(m)}`,
@@ -48,7 +40,7 @@ export function shouldWake(me: Identity, ev: RoomEvent, myClaims: Claim[] = []):
   }
   if (ev.kind === 'claim') {
     const c = ev.claim
-    if (c.by === me.name && c.byKind === 'agent') return null
+    if (!shouldWakeOnClaim(me, c, myClaims).wake) return null
     const hit = myClaims.find(mine => claimsOverlap(mine, c))
     if (!hit) return null
     return {

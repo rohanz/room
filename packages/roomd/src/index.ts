@@ -5,14 +5,13 @@
  * `packages/agent` embed it in-process.
  */
 import fs from 'node:fs'
-import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { WebSocket } from 'ws'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { RoomDoc, colorFor, type Presence } from '@room/shared'
-import { git, gitBranch, gitHead, gitIgnored, gitTracked } from './git.js'
+import { git, gitBranch, gitDirtyPaths, gitHead, gitIgnored, gitTracked } from './git.js'
 import { applyLocalEdit } from './merge.js'
 
 export interface RoomdOptions {
@@ -89,7 +88,6 @@ class Daemon implements Roomd {
   private timers = new Set<NodeJS.Timeout>()
   private debounce = new Map<string, NodeJS.Timeout>()
   private stopped = false
-  private lastTrackedRefresh = 0
   private observer: ((events: Y.YEvent<any>[], tr: Y.Transaction) => void) | null = null
   private metaObserver: ((e: Y.YMapEvent<any>, tr: Y.Transaction) => void) | null = null
   private mergeInFlight = false
@@ -117,7 +115,6 @@ class Daemon implements Roomd {
     if (!fs.existsSync(path.join(this.dir, '.git'))) throw new RoomdError(`${this.dir} is not a git repository`, 1)
     ;[this.branch, this.base] = await Promise.all([gitBranch(this.dir), gitHead(this.dir)])
     this.tracked = await gitTracked(this.dir)
-    this.lastTrackedRefresh = Date.now()
 
     await this.waitForSync()
 
@@ -198,6 +195,7 @@ class Daemon implements Roomd {
     let n = 0
     this.roomDoc.doc.transact(() => {
       for (const p of this.tracked) {
+        if (!this.isSafeRoomPath(p)) continue
         const text = this.readText(p)
         if (text === undefined) continue
         this.roomDoc.setFile(p, text)
@@ -210,8 +208,16 @@ class Daemon implements Roomd {
   }
 
   private async adopt(): Promise<void> {
+    const dirty = await gitDirtyPaths(this.dir)
+    const conflicting = this.roomDoc.paths()
+      .filter(p => this.isSafeRoomPath(p) && dirty.has(p) && this.readText(p, true) !== this.roomDoc.text(p))
+      .sort()
+    if (conflicting.length) {
+      throw new RoomdError(`clone has uncommitted changes in ${conflicting.join(', ')}; commit or stash first`, 2)
+    }
     let written = 0, added = 0
     for (const p of this.roomDoc.paths()) {
+      if (!this.isSafeRoomPath(p)) continue
       const room = this.roomDoc.text(p)!
       const disk = this.readText(p, true)
       if (disk !== room) {
@@ -221,6 +227,7 @@ class Daemon implements Roomd {
     }
     this.roomDoc.doc.transact(() => {
       for (const p of this.tracked) {
+        if (!this.isSafeRoomPath(p)) continue
         if (this.roomDoc.hasFile(p)) continue
         const text = this.readText(p)
         if (text === undefined) continue
@@ -264,6 +271,13 @@ class Daemon implements Roomd {
     if (segs.some(s => IGNORED_DIRS.has(s))) return true
     if (/\.roomd-\d+-[a-z0-9]+\.tmp$/.test(rel)) return true
     return false
+  }
+
+  private isSafeRoomPath(rel: string): boolean {
+    if (this.isIgnoredPath(rel)) return false
+    const target = path.resolve(this.dir, ...rel.split('/'))
+    const inside = path.relative(this.dir, target)
+    return inside !== '' && inside !== '..' && !inside.startsWith(`..${path.sep}`) && !path.isAbsolute(inside)
   }
 
   // ---- disk -> room ---------------------------------------------------------
@@ -351,7 +365,6 @@ class Daemon implements Roomd {
       const next = await gitTracked(this.dir)
       const added = [...next].filter(p => !this.tracked.has(p) && !this.roomDoc.hasFile(p))
       this.tracked = next
-      this.lastTrackedRefresh = Date.now()
       // Anything syncable that is on disk but not in the room was missed; push it now.
       for (const p of added) if (!this.isIgnoredPath(p) && fs.existsSync(this.abs(p))) this.scheduleDisk(p, true)
     } catch (e) { this.log(`warn: git ls-files: ${errMsg(e)}`) }
@@ -375,6 +388,7 @@ class Daemon implements Roomd {
     }
     for (const p of deleted) {
       if (changed.has(p)) continue
+      if (!this.isSafeRoomPath(p)) continue
       try {
         this.shadow.delete(p)
         if (fs.existsSync(this.abs(p))) { fs.unlinkSync(this.abs(p)); this.log(`deleted ${p} (removed from room)`) }
@@ -387,7 +401,7 @@ class Daemon implements Roomd {
 
   /** Bring disk up to date with the room text of `rel`, merging in any unflushed local edit. */
   private pullRoom(rel: string): void {
-    if (this.isIgnoredPath(rel) || rel.split('/').includes('..')) return
+    if (!this.isSafeRoomPath(rel)) return
     const pending = this.debounce.get(rel)
     if (pending) { clearTimeout(pending); this.debounce.delete(rel) }
     const disk = this.readText(rel, true)

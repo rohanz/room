@@ -26,6 +26,8 @@ export interface ToolCtx {
   me: Identity
   dir: string
   awareness?: Awareness
+  /** Tool calls are gated until the websocket provider completes initial sync. */
+  isSynced?: () => boolean
   /** injectable for tests */
   sleep?: (ms: number) => Promise<void>
 }
@@ -76,6 +78,39 @@ export function createTools(ctx: ToolCtx): Tools {
   }
   const isMe = (p: { name: string; kind: string }) => p.name === me.name && p.kind === me.kind
   const myClaims = () => room.openClaims().filter(c => c.by === me.name && c.byKind === me.kind)
+  const conflictPairs = new Set(room.messages().flatMap(m => m.type === 'conflict' ? [[m.claimId, m.otherClaimId].sort().join(':')] : []))
+  const pairKey = (a: Claim, b: Claim) => [a.id, b.id].sort().join(':')
+  const conflictExists = (key: string) => conflictPairs.has(key) || room.messages().some(m => m.type === 'conflict' && [m.claimId, m.otherClaimId].sort().join(':') === key)
+
+  const postConflictOnce = (claim: Claim, other: Claim): boolean => {
+    const key = pairKey(claim, other)
+    if (conflictExists(key)) return false
+    conflictPairs.add(key)
+    const text = `${displayName(me)} claimed ${claim.path}:${claim.from}-${claim.to} (${claim.intent}) overlapping ${describeClaim(other)}`
+    room.post<ConflictMsg>(me, { type: 'conflict', claimId: claim.id, otherClaimId: other.id, path: claim.path, text })
+    return true
+  }
+
+  // If two room_claim calls race, neither sees the other during its pre-check. Once the
+  // remote claim arrives, only the owner of the lexicographically first claim reports it.
+  room.claims.observe((ev, tr) => {
+    if (tr.local) return
+    for (const [id, change] of ev.changes.keys) {
+      if (change.action !== 'add') continue
+      const arrived = room.claims.get(id)
+      if (!arrived) continue
+      for (const mine of myClaims()) {
+        if (mine.id === arrived.id || !claimsOverlap(mine, arrived)) continue
+        const ordered = [mine, arrived].sort((a, b) => a.id.localeCompare(b.id))
+        const key = pairKey(mine, arrived)
+        if (conflictExists(key)) { conflictPairs.add(key); continue }
+        conflictPairs.add(key)
+        if (ordered[0].id !== mine.id) continue
+        const text = `${displayName(me)} detected concurrent overlapping claims: ${describeClaim(mine)} and ${describeClaim(arrived)}`
+        room.post<ConflictMsg>(me, { type: 'conflict', claimId: mine.id, otherClaimId: arrived.id, path: mine.path, text })
+      }
+    }
+  })
 
   const setPresence = (patch: Partial<Presence>) => {
     const a = ctx.awareness
@@ -166,19 +201,22 @@ export function createTools(ctx: ToolCtx): Tools {
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
       const p = a.path
       if (typeof a.intent !== 'string' || !a.intent) return 'error: intent is required'
+      const intent = a.intent
       // A file that does not exist yet can still be claimed (intent: "create it"); range collapses to 1-1.
       const isNew = !room.hasFile(p)
       const n = isNew ? 1 : room.lineCount(p)
       const r = clampRange(Number(a.from), Number(a.to), n)
       if (!Number.isFinite(r.from)) return 'error: from/to must be numbers'
       const others = room.claimsFor(p).filter(c => !(c.by === me.name && c.byKind === me.kind) && claimsOverlap(c, { path: p, ...r }))
-      const claim = room.addClaim({ path: p, from: r.from, to: r.to, by: me.name, byKind: me.kind, intent: a.intent })
-      room.post<ClaimMsg>(me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent: a.intent })
-      setPresence({ cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p} ${r.from}-${r.to}: ${a.intent}` })
+      let claim!: Claim
+      room.doc.transact(() => {
+        claim = room.addClaim({ path: p, from: r.from, to: r.to, by: me.name, byKind: me.kind, intent })
+        room.post<ClaimMsg>(me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent })
+        for (const o of others) postConflictOnce(claim, o)
+      }, me)
+      setPresence({ cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p} ${r.from}-${r.to}: ${intent}` })
       const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew ? ' (new file, not in room yet)' : ''}`]
       for (const o of others) {
-        const text = `${displayName(me)} claimed ${p}:${r.from}-${r.to} (${a.intent}) overlapping ${describeClaim(o)}`
-        room.post<ConflictMsg>(me, { type: 'conflict', claimId: claim.id, otherClaimId: o.id, path: p, text })
         out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}) — conflict posted to bus. Stop and check with your human before editing.`)
       }
       return out.join('\n')
@@ -238,6 +276,7 @@ export function createTools(ctx: ToolCtx): Tools {
   return {
     list: () => DEFS,
     async call(name, args) {
+      if (ctx.isSynced && !ctx.isSynced()) return 'error: room not synced yet, retry'
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
       try { return await h(args ?? {}) }

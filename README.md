@@ -31,7 +31,8 @@ Built for the "agents leaving the chatbox" hackathon (brief and rubric: `RULES.m
   `room_read_committed`, `room_diff`, `room_who`, `room_claim`, `room_release`, `room_send`,
   `room_wait`. Also a Claude Code channel, so Claude Code sessions get woken by room events.
 - **agent** (`roomagent`) — runs your Codex agent locally, with the room tools loaded, and
-  feeds it your messages (from the browser sidebar) and room events as turns.
+  feeds it your messages (from the browser sidebar) and room events as turns. `/stop`
+  aborts work, releases its claims, and pauses new turns until the human sends `/resume`.
 - **web** — browser editor: CodeMirror on the same live files, coloured cursors, claim
   gutters, the room feed, and your chat with your own agent.
 

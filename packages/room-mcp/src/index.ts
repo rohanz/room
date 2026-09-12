@@ -74,7 +74,7 @@ async function main() {
   const awareness = provider.awareness
   awareness.setLocalState({ user: { name: me.name, kind: 'agent', color: colorFor(me.name) }, status: 'idle' } satisfies Presence)
 
-  const tools = createTools({ room, me, dir: cfg.dir, awareness })
+  const tools = createTools({ room, me, dir: cfg.dir, awareness, isSynced: () => provider.synced })
 
   const mcp = new Server(
     { name: 'room', version: '0.1.0' },
