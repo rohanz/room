@@ -82,6 +82,61 @@ After:
 Every reply starts with the agent's inbox: messages addressed to it, highest priority
 first.
 
+### Dependency network
+
+The browser opens on a **Network** tab centered on the selected participant's edited files
+and open claims, including plans made before editing. The middle column is **My edits &
+plans**. The left shows immediate dependencies and relevant paths from other participants'
+contract plans that can reach that work. Unrelated consumers of those upstream changes
+are excluded. The right shows potential consumers of **your own declared contract plans**;
+ordinary edits alone do not imply downstream breakage. Changing participant recalculates
+the anchors and both directions.
+
+Deep blue nodes have actual file edits; deep purple nodes have declared contract plans.
+Nodes with both use a split blue/purple fill, with white labels on all changed nodes.
+Red highlights identify potentially affected consumers (paler red for transitive exposure).
+An edited or planned node that is also affected keeps its change fill with a red outline.
+The diamond and EDIT badge reinforce the two independent change states; hover identifies
+the editor and makes clear that contract implementation is not verified.
+Releasing a claim removes its declarations; an edited file remains a work anchor.
+
+Dense graphs automatically use compact nodes with module/file labels. A density selector
+also offers Compact and Comfortable modes. Hover or keyboard focus previews the file,
+owner, plans, and potential exposure; click or Enter opens full plans and consumer lists.
+Escape dismisses the preview. Selecting a file emphasizes its incident edges. Search,
+zoom, Fit, Expand, and the Relevant to my work filter help explore larger graphs; turn the
+filter off for all indexed files. The Changed files tab retains the overlay reader.
+Fit adjusts with the available width; Expand gives the network the whole workspace.
+
+The MCP indexer publishes a bounded graph snapshot for each participant into the room.
+Join using the updated MCP server (rebuild the plugin with `npm run build:plugin`) before
+opening the browser URL printed by `room_join`; it preselects your participant. Older
+clients display a waiting state. Snapshots retain timestamps and base SHAs, with notices
+for offline participants, indexing errors, older bases, and index limits.
+
+Edges are **inferred symbol references**, not fully resolved imports or call graphs.
+Each local index chooses its own overlay, then another participant's overlay, then the
+room base. The browser displays that index honestly; it is not a merged program or an
+exact graph of every participant's separate version. The view renders at most 250 files
+at a time and prompts you to narrow the search when needed.
+
+#### Larger sample repository
+
+With the Room server and browser running, generate a fresh illustrative commerce repo:
+
+```sh
+npm run seed:scale -w @room/web -- --dir /tmp/atlas-commerce-sample --server ws://localhost:1234 --web http://localhost:5173
+```
+
+The destination must not exist. The script generates 168 TypeScript files across 16
+domains, shared infrastructure, storefront and admin apps, commits a baseline locally,
+and publishes graphs through the actual indexer. It prints the browser URL and stays
+running to publish edits made in the generated repository as Kieran's overlay. Four
+sample participants have 12 changed files and declared plans; synthetic activity is
+labeled SAMPLE. Functions are illustrative dependency fixtures, not a working shop.
+Each run defaults to a unique room; `--room` can choose an explicit fresh room instead.
+Stop the publisher with Ctrl-C. The generated Git repository remains available to edit.
+
 ## Use it
 
 ```sh
