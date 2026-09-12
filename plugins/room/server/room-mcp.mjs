@@ -33623,10 +33623,11 @@ var HooksBridge = class {
       this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`);
     }
   }
-  /** Interrupts and questions addressed to me wake the idle Codex thread, once per message. */
+  /** Interrupts, questions addressed to me, and a base move while I have uncommitted work wake the idle Codex thread, once per message. */
   async maybeWake(m) {
     if (!this.o.forMe(m)) return;
-    const wake = m.priority === "interrupt" || m.type === "question" && m.to === this.s.me.name;
+    const baseMoved = m.type === "base" && m.from !== this.s.me.name && this.s.room.changedPaths(this.s.me.name).length > 0;
+    const wake = m.priority === "interrupt" || m.type === "question" && m.to === this.s.me.name || baseMoved;
     if (!wake || this.woken.has(m.id)) return;
     this.woken.add(m.id);
     let session;
@@ -33639,7 +33640,8 @@ var HooksBridge = class {
       this.o.log?.("cannot wake: no Codex thread id known for this clone (SessionStart hook not run and no rollout found)");
       return;
     }
-    const text = `[room] ${formatMsg(m)}
+    const text = m.type === "base" ? `[room] ${formatMsg(m)}
+You have uncommitted work. Run git pull --ff-only, re-run room_preview_merge with the test command against anyone who changed the same files, then report and offer to commit and push.` : `[room] ${formatMsg(m)}
 Call room_state, then react per the room-etiquette skill.`;
     try {
       await (this.o.queue ?? defaultQueue)(session.session_id, text);

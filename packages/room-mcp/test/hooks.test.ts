@@ -37,7 +37,7 @@ describe('hooks bridge + plugin hook scripts', () => {
     const room = new RoomDoc()
     const s = session(room)
     const queued: string[] = []
-    const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan' || m.type === 'conflict', isSeen: () => false, queue: async (id, text) => { queued.push(`${id}: ${text.split('\n')[0]}`) } })
+    const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan' || m.type === 'conflict' || m.type === 'base', isSeen: () => false, queue: async (id, text) => { queued.push(`${id}: ${text.split('\n')[0]}`) } })
     b.start()
     const k = { name: 'Kieran', kind: 'agent' as const }
     // remote inserts: apply from another doc so transaction.local is false
@@ -45,8 +45,15 @@ describe('hooks bridge + plugin hook scripts', () => {
     other.post(k, { type: 'note', to: 'Rohan', text: 'fyi only' } as never)
     other.post(k, { type: 'question', to: 'Rohan', text: 'are you done?' } as never)
     other.post(k, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
+    // a base move wakes only when I have uncommitted work
+    other.post(k, { type: 'base', base: 'b'.repeat(40), prev: 'a'.repeat(40), commits: 1, paths: ['app.py'], summary: 'x' } as never)
     await new Promise(r => setTimeout(r, 50))
     expect(queued.length).toBe(2)
+    room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+    other.post(k, { type: 'base', base: 'c'.repeat(40), prev: 'b'.repeat(40), commits: 1, paths: ['app.py'], summary: 'y' } as never)
+    await new Promise(r => setTimeout(r, 50))
+    expect(queued.length).toBe(3)
+    expect(queued[2]).toContain('moved the base')
     expect(queued[0]).toContain('thread-1: [room] [notify]')
     expect(queued[1]).toContain('stop!')
     b.stop()
