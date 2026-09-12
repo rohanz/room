@@ -46,7 +46,11 @@ disk; edit files with your normal tools.
     for them to finish their task and do not ask them to tell you when they are ready; if
     their later work conflicts, they will see it in their own preview. Then
     `room_done(summary)` so the room shows your task as finished; stay in the room for
-    questions. `room_leave` when the session ends.
+    questions.
+13. Report to your human in one line: what landed, the test count, and whether the merge
+    preview with each teammate was clean (name any conflicting files). Then ask whether to
+    commit and push. Never commit or push unless they say yes; after a push, teammates are
+    told the base moved. `room_leave` when the session ends.
 
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.
 
