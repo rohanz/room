@@ -95,7 +95,10 @@ the anchors and both directions.
 Purple nodes have relevant rename, signature, delete, or add plans. Amber nodes have a
 direct symbol match; paler nodes have potential transitive exposure. Blue borders identify
 your work and blue dots identify actual edits. These are potential impacts, not verified
-failures. Releasing a claim removes its declarations; an edited file remains a work anchor.
+failures. A purple diamond marks a declared contract change independently of the blue
+EDIT badge for an actual file modification (by any participant). Both can appear together;
+hover identifies the editor and makes clear that contract implementation is not verified.
+Releasing a claim removes its declarations; an edited file remains a work anchor.
 
 Dense graphs automatically use compact nodes with module/file labels. A density selector
 also offers Compact and Comfortable modes. Hover or keyboard focus previews the file,

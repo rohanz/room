@@ -36,7 +36,7 @@ export function networkPanel(conn: Conn): HTMLElement {
     h('div', { class: 'network-heading' }, h('div', {}, h('h2', {}, 'My work & contract risks'), h('p', { class: 'muted' }, 'Upstream risks to my work → my edits and plans → consumers of my planned changes.')), h('label', {}, 'Viewing as ', person)),
     h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' Relevant to my work'), density, h('label', { class: 'network-zoom' }, 'Zoom ', zoom), fit, expand),
     stats,
-    h('div', { class: 'network-legend' }, h('span', { class: 'legend-contract' }, '◆ Declared contract'), h('span', { class: 'legend-impact' }, '● Potential impact'), h('span', { class: 'legend-changed' }, '● My edits'), h('span', {}, 'Provider → consumer · Hover to preview, click to inspect')),
+    h('div', { class: 'network-legend' }, h('span', { class: 'legend-contract' }, '◆ Contract change declared'), h('span', { class: 'legend-changed' }, 'EDIT · File modified'), h('span', {}, 'Blue border · My work'), h('span', { class: 'legend-impact' }, 'Amber · Potential impact'), h('span', {}, 'Provider → consumer · Hover to preview, click to inspect')),
     status, canvas, details, tooltip,
     h('div', { class: 'network-footnote' }, 'Potential impact from declared plans and inferred symbol references. Not a verified break or proof of implementation. Released plans leave this view; compatibility needs tests.'))
   let selectedPerson = new URLSearchParams(location.search).get('participant') ?? new URLSearchParams(location.search).get('name') ?? ''
@@ -155,10 +155,21 @@ export function networkPanel(conn: Conn): HTMLElement {
     }
     for (const node of nodes) {
       const { x, y } = positions.get(node.path)!
+      const editedBy = [...new Set([...conn.room.overlays.keys(), ...conn.room.deleted.keys()])].filter(p => conn.room.changedPaths(p).includes(node.path))
+      const declared = impact.contracts.has(node.path)
       const group = svg('g', { transform: `translate(${x} ${y})`, class: `network-node ${contractStyle(node.path)}${workView.work.has(node.path) ? ' my-work' : ''}${node.role === 'changed' ? ' own-edit' : ''}${node.path === selectedPath ? ' selected' : ''}`, tabindex: '0', role: 'button', 'aria-label': `${node.path}, ${risk(node.path)}, ${contractStyle(node.path)}${node.role === 'changed' ? ', my edits' : ''}`, 'data-path': node.path })
-      group.append(svg('rect', { width: '244', height: String(nodeHeight), rx: compact ? '6' : '10' }), svg('circle', { cx: '14', cy: compact ? '15' : '22', r: '3.5' }))
+      group.setAttribute('aria-label', `${node.path}, ${risk(node.path)}${declared ? ', contract change declared' : ''}${editedBy.length ? `, file modified by ${editedBy.join(', ')}` : ', no file edits'}`)
+      group.append(svg('rect', { width: '244', height: String(nodeHeight), rx: compact ? '6' : '10' }))
+      if (declared) group.append(svg('path', { d: compact ? 'M 14 9 L 20 15 L 14 21 L 8 15 Z' : 'M 14 16 L 20 22 L 14 28 L 8 22 Z', class: 'contract-marker' }))
+      else group.append(svg('circle', { cx: '14', cy: compact ? '15' : '22', r: '3.5' }))
       const filename = node.path.split('/').slice(compact ? -2 : -1).join('/')
-      group.append(svg('text', { x: '25', y: compact ? '19' : '26', class: 'network-filename' }, filename.length > 28 ? `${filename.slice(0, 26)}…` : filename))
+      const maxLabel = editedBy.length ? 22 : 28
+      group.append(svg('text', { x: '25', y: compact ? '19' : '26', class: 'network-filename' }, filename.length > maxLabel ? `${filename.slice(0, maxLabel - 2)}…` : filename))
+      if (editedBy.length) {
+        const badge = svg('g', { class: 'edit-badge', transform: `translate(203 ${compact ? 7 : 14})` })
+        badge.append(svg('rect', { width: '34', height: '16', rx: '4' }), svg('text', { x: '17', y: '11', 'text-anchor': 'middle' }, 'EDIT'), svg('title', {}, `File modified by ${editedBy.join(', ')}; contract implementation is not verified`))
+        group.append(badge)
+      }
       const subtitle = node.deleted ? 'DELETED' : node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'repository root'
       if (!compact) group.append(svg('text', { x: '16', y: '46', class: 'network-directory' }, subtitle.length > 33 ? `…${subtitle.slice(-32)}` : subtitle))
       const preview = () => {
@@ -166,6 +177,7 @@ export function networkPanel(conn: Conn): HTMLElement {
         tooltip.replaceChildren(h('strong', { class: 'mono' }, node.path),
           h('div', {}, risk(node.path) === 'work' ? 'My edited or planned work' : risk(node.path) === 'upstream' ? 'Upstream dependency of my work' : risk(node.path) === 'downstream' ? 'Consumer of my planned contract change' : 'Other file'),
           h('div', {}, plans.length ? `${plans.length} declared contract change(s)` : affected.length ? 'Potential consumer impact — not verified breakage' : 'No declared contract impact'),
+          h('div', {}, editedBy.length ? `Actual file edits: ${editedBy.join(', ')}. Contract implementation is not verified.` : 'No actual file edits in the room; plans can exist before editing.'),
           ...plans.slice(0, 2).map(p => h('div', {}, `${p.owner} · ${p.kind} ${p.symbol}: ${p.detail}`)),
           ...affected.slice(0, 2).map(p => h('div', {}, `Depends on ${p.symbol} · ${p.owner}`)),
           h('div', { class: 'muted' }, `${node.role === 'changed' ? 'You have edits here. ' : ''}Click for full plans and dependency details.`))
