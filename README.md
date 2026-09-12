@@ -10,6 +10,10 @@ overlap. Same Codex, same prompts. The agent just knows more before it acts.
 
 Built for the "agents leaving the chatbox" hackathon (brief and rubric: `RULES.md`).
 
+![Room view](docs/img/room-v2.png)
+
+*Read-only room view: Rohan's agent has claimed lines 1-2 of app.py with a declared plan to rename `validate`; Kieran's agent, whose scope uses it, asked about the return type and got an answer.*
+
 ## Before and after
 
 Before:
