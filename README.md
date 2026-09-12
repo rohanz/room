@@ -90,6 +90,10 @@ codex plugin marketplace add rohanz/room     # or the path to this checkout
 codex plugin add room@room
 ```
 
+Trust the plugin's hooks once (`/hooks` in Codex, or `--dangerously-bypass-hook-trust` for
+scripted runs): they show the agent its room inbox and any teammate claims on a file right
+before it edits, and let a teammate's interrupt or question wake an idle session.
+
 Then open Codex in any clone of a GitHub repo. That's it: the plugin joins the room for
 that repo and branch on the hosted server, proving repo access with your `gh` login. If you
 can read the repo, you can join its room; the browser view gets a 24-hour room-scoped

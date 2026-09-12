@@ -1,6 +1,6 @@
 {
   "name": "room",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Room awareness for coding agents: one-step join, see what teammates and their agents are on, declare intent, claim lines, get told when your symbols are about to change.",
   "author": {
     "name": "Rohan",
@@ -29,5 +29,6 @@
     "defaultPrompt": [
       "Join the room and tell me who is on what"
     ]
-  }
+  },
+  "hooks": "./hooks.json"
 }

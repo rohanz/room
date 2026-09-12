@@ -30,6 +30,7 @@ async function main() {
   let session: Session | null = null
   const dir = cwd()
   const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir })
+  const adopt = (s: Session) => { session = s; attachChannel(s); tools.attachHooks(s) }
 
   const mcp = new Server(
     { name: 'room', version: '0.2.0' },
@@ -61,7 +62,7 @@ async function main() {
   if (!env('ROOM_URL') && !prior && env('ROOM_SERVER')) {
     try {
       const s = await joinSession({ dir, log })
-      session = s; attachChannel(s)
+      adopt(s)
     } catch (e) {
       log(`auto-join skipped (${e instanceof Error ? e.message : String(e)}); call room_join`)
     }
@@ -71,7 +72,7 @@ async function main() {
       const u = new URL(url)
       const roomName = decodeRoom(u.pathname.replace(/^\/+/, ''))
       const s = await joinSession({ dir: env('ROOM_DIR') ?? prior?.dir ?? dir, name: env('ROOM_NAME') ?? prior?.name, room: roomName, server: `${u.protocol}//${u.host}`, log })
-      session = s; attachChannel(s)
+      adopt(s)
     } catch (e) {
       log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`)
     }

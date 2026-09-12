@@ -13,6 +13,7 @@ import type {
 } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { joinSession, leaveSession, type JoinOptions, type Session } from './session.js'
+import { HooksBridge } from './hooks-bridge.js'
 
 export interface ToolDef {
   name: string
@@ -36,6 +37,8 @@ export interface ToolCtx {
   join?: (o: JoinOptions) => Promise<Session>
   leave?: (s: Session) => Promise<void>
   now?: () => number
+  /** Injectable wake for tests (default: `codex queue`). */
+  queue?: (threadId: string, text: string) => Promise<void>
   /** Diagnostics (inbox deliveries etc.); default stderr. */
   log?: (line: string) => void
 }
@@ -43,6 +46,8 @@ export interface ToolCtx {
 export interface Tools {
   list(): ToolDef[]
   call(name: string, args: Record<string, unknown>): Promise<string>
+  /** Attach the hooks bridge (state file + wake) to a session; idempotent. */
+  attachHooks(s: Session): void
 }
 
 const str = (d: string) => ({ type: 'string', description: d })
@@ -110,6 +115,13 @@ export function createTools(ctx: ToolCtx): Tools {
   const upgraded = new Set<string>() // "msgId:person" copies already posted
   const conflictPairs = new Set<string>() // sorted "a:b" claim-id pairs already reported
   let observedSession: Session | null = null
+  let bridge: HooksBridge | null = null
+  const attachHooks = (s: Session) => {
+    if (bridge && (bridge as unknown as { s: Session }).s === s) return
+    bridge?.stop()
+    bridge = new HooksBridge(s, { forMe: m => forMe(s, m), isSeen: id => seen.has(id), log, queue: ctx.queue })
+    bridge.start()
+  }
   /** Two room_claim calls on different machines can both pass the overlap pre-check. When the
    *  other claim arrives, the owner of the lexicographically smaller id reports the conflict. */
   const observeClaims = (s: Session) => {
@@ -191,6 +203,7 @@ export function createTools(ctx: ToolCtx): Tools {
     fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at)
     s.room.markSeen(s.me.name, fresh.map(m => m.id))
     for (const m of fresh) log(`inbox → ${s.me.name}: [${m.priority}] ${formatMsg(m)}`)
+    bridge?.scheduleWrite()
     return `[inbox ${fresh.length}]\n${fresh.map(m => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
   }
 
@@ -313,6 +326,7 @@ export function createTools(ctx: ToolCtx): Tools {
       ctx.setSession(s)
       for (const m of s.room.messages()) seen.add(m.id)
       observeClaims(s)
+      attachHooks(s)
       const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
       const ps = presences(s).filter(p => !isMe(s, p.user))
       out.push(ps.length ? `here now: ${ps.map(p => displayName(p.user)).join(', ')}` : 'nobody else is here yet')
@@ -333,6 +347,7 @@ export function createTools(ctx: ToolCtx): Tools {
       }
       s.room.clearScope(s.me.name)
       ctx.setSession(null)
+      bridge?.stop(); bridge = null
       await doLeave(s)
       return `left ${s.roomName}; released ${released.length} claim(s)`
     },
@@ -648,6 +663,7 @@ export function createTools(ctx: ToolCtx): Tools {
 
   return {
     list: () => DEFS,
+    attachHooks,
     async call(name, args) {
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
