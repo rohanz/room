@@ -7,6 +7,7 @@
  */
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { formatMsg, formatPlans, type Msg } from '@room/shared'
 import type { Session } from './session.js'
@@ -36,6 +37,7 @@ export interface HooksBridgeOptions {
 export class HooksBridge {
   private timer: NodeJS.Timeout | null = null
   private woken = new Set<string>()
+  private startedAt = Date.now()
   private unobserve: (() => void)[] = []
   constructor(private s: Session, private o: HooksBridgeOptions) {}
 
@@ -84,8 +86,9 @@ export class HooksBridge {
     if (!wake || this.woken.has(m.id)) return
     this.woken.add(m.id)
     let session: { session_id?: string } | undefined
-    try { session = JSON.parse(fs.readFileSync(this.sessionFile(), 'utf8')) } catch { return }
-    if (!session?.session_id) return
+    try { session = JSON.parse(fs.readFileSync(this.sessionFile(), 'utf8')) } catch { /* fall back below */ }
+    if (!session?.session_id) session = { session_id: findThreadForDir(this.s.dir, this.startedAt) }
+    if (!session?.session_id) { this.o.log?.('cannot wake: no Codex thread id known for this clone (SessionStart hook not run and no rollout found)'); return }
     const text = `[room] ${formatMsg(m)}\nCall room_state, then react per the room-etiquette skill.`
     try {
       await (this.o.queue ?? defaultQueue)(session.session_id, text)
@@ -98,4 +101,34 @@ function defaultQueue(threadId: string, text: string): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile('codex', ['queue', '--thread', threadId, '--message', text], { timeout: 10_000 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve())
   })
+}
+
+/**
+ * Codex writes ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl per thread; the first
+ * line carries the cwd. The newest rollout for this clone started around when this MCP
+ * server did is our thread.
+ */
+export function findThreadForDir(dir: string, since: number): string | undefined {
+  const root = path.join(os.homedir(), '.codex', 'sessions')
+  const want = [path.resolve(dir), fs.realpathSync.native(path.resolve(dir))]
+  let best: { id: string; mtime: number } | undefined
+  const walk = (d: string, depth: number) => {
+    let entries: fs.Dirent[] = []
+    try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const p = path.join(d, e.name)
+      if (e.isDirectory() && depth < 3) { walk(p, depth + 1); continue }
+      const m = e.name.match(/^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/)
+      if (!m) continue
+      let st: fs.Stats
+      try { st = fs.statSync(p) } catch { continue }
+      if (st.mtimeMs < since - 5 * 60 * 1000 || (best && st.mtimeMs <= best.mtime)) continue
+      let head = ''
+      try { const fd = fs.openSync(p, 'r'); const buf = Buffer.alloc(4096); const n = fs.readSync(fd, buf, 0, 4096, 0); fs.closeSync(fd); head = buf.toString('utf8', 0, n) } catch { continue }
+      const cwd = head.match(/"cwd":"([^"]+)"/)?.[1]?.replace(/^file:\/\//, '')
+      if (cwd && want.includes(path.resolve(cwd))) best = { id: m[1], mtime: st.mtimeMs }
+    }
+  }
+  walk(root, 0)
+  return best?.id
 }

@@ -30055,7 +30055,7 @@ function splitLines(text) {
 // packages/room-mcp/src/tools.ts
 import { execFile as execFile4 } from "node:child_process";
 import fs3 from "node:fs";
-import os from "node:os";
+import os2 from "node:os";
 import path3 from "node:path";
 
 // node_modules/node-diff3/dist/diff3.mjs
@@ -33460,6 +33460,7 @@ async function leaveSession(s) {
 // packages/room-mcp/src/hooks-bridge.ts
 import { execFile as execFile3 } from "node:child_process";
 import fs2 from "node:fs";
+import os from "node:os";
 import path2 from "node:path";
 function gitStatePath(root, name) {
   const dotgit = path2.join(root, ".git");
@@ -33481,6 +33482,7 @@ var HooksBridge = class {
   o;
   timer = null;
   woken = /* @__PURE__ */ new Set();
+  startedAt = Date.now();
   unobserve = [];
   start() {
     const kick = () => this.scheduleWrite();
@@ -33542,9 +33544,12 @@ var HooksBridge = class {
     try {
       session = JSON.parse(fs2.readFileSync(this.sessionFile(), "utf8"));
     } catch {
+    }
+    if (!session?.session_id) session = { session_id: findThreadForDir(this.s.dir, this.startedAt) };
+    if (!session?.session_id) {
+      this.o.log?.("cannot wake: no Codex thread id known for this clone (SessionStart hook not run and no rollout found)");
       return;
     }
-    if (!session?.session_id) return;
     const text = `[room] ${formatMsg(m)}
 Call room_state, then react per the room-etiquette skill.`;
     try {
@@ -33559,6 +33564,49 @@ function defaultQueue(threadId, text) {
   return new Promise((resolve5, reject) => {
     execFile3("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve5());
   });
+}
+function findThreadForDir(dir, since) {
+  const root = path2.join(os.homedir(), ".codex", "sessions");
+  const want = [path2.resolve(dir), fs2.realpathSync.native(path2.resolve(dir))];
+  let best;
+  const walk = (d, depth) => {
+    let entries = [];
+    try {
+      entries = fs2.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path2.join(d, e.name);
+      if (e.isDirectory() && depth < 3) {
+        walk(p, depth + 1);
+        continue;
+      }
+      const m = e.name.match(/^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/);
+      if (!m) continue;
+      let st;
+      try {
+        st = fs2.statSync(p);
+      } catch {
+        continue;
+      }
+      if (st.mtimeMs < since - 5 * 60 * 1e3 || best && st.mtimeMs <= best.mtime) continue;
+      let head = "";
+      try {
+        const fd = fs2.openSync(p, "r");
+        const buf = Buffer.alloc(4096);
+        const n = fs2.readSync(fd, buf, 0, 4096, 0);
+        fs2.closeSync(fd);
+        head = buf.toString("utf8", 0, n);
+      } catch {
+        continue;
+      }
+      const cwd2 = head.match(/"cwd":"([^"]+)"/)?.[1]?.replace(/^file:\/\//, "");
+      if (cwd2 && want.includes(path2.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
+    }
+  };
+  walk(root, 0);
+  return best?.id;
 }
 
 // packages/room-mcp/src/tools.ts
@@ -34358,7 +34406,7 @@ ${conflicts.join("\n")}`);
 var NotJoined = class extends Error {
 };
 async function runInMergedTree(s, ancestor, merged, cmd) {
-  const dir = fs3.mkdtempSync(path3.join(os.tmpdir(), "room-merge-"));
+  const dir = fs3.mkdtempSync(path3.join(os2.tmpdir(), "room-merge-"));
   try {
     await new Promise((resolve5, reject) => {
       const p = execFile4("sh", ["-c", `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 6e4 }, (err) => err ? reject(err) : resolve5());

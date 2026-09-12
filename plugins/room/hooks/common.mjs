@@ -8,7 +8,7 @@ export function readStdinJson() {
 
 /** Walk up from cwd to the directory containing .git (file or dir). */
 export function gitRoot(start) {
-  let d = path.resolve(start || process.cwd())
+  let d = path.resolve(String(start || process.env.PWD || process.cwd()).replace(/^file:\/\//, ''))
   for (;;) {
     if (fs.existsSync(path.join(d, '.git'))) return d
     const up = path.dirname(d)
