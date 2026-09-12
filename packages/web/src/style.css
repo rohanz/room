@@ -235,7 +235,7 @@ h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; text-transform: upperca
 .network-tooltip > div { margin-top: 6px; }
 .network-tooltip strong { color: #513777; }
 .network-node.my-work rect { stroke: #598ed8; stroke-width: 2; }
-.network-node.my-work.neutral rect { fill: #eef5ff; }
+.network-node.my-work.neutral:not(.file-edited) > rect { fill: #eef5ff; }
 .network-stats > div:nth-child(2) strong { color: #2c77da; }
 .network-node .contract-marker { fill: #8051b9; stroke: #fff; stroke-width: 1; }
 .network-node .edit-badge rect { fill: #e1edff; stroke: #a5c3ed; stroke-width: 1; filter: none; }
