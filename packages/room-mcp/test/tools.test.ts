@@ -209,6 +209,26 @@ describe('concurrency', () => {
   })
 })
 
+describe('claim by symbol and read receipts', () => {
+  it('claims a function by name, resolving its range from my live text', async () => {
+    const t = setup()
+    const out = await t.tools.call('room_claim', { path: 'app.py', symbol: 'b', intent: 'fix' })
+    expect(out).toMatch(/app\.py:4-5 · b: fix/)
+    expect(await t.tools.call('room_claim', { path: 'app.py', symbol: 'zzz', intent: 'x' })).toMatch(/could not find a definition of zzz/)
+  })
+  it('records which messages an agent was shown, and marks copies with copyOf', async () => {
+    const t = setup()
+    const k = { name: 'Kieran', kind: 'agent' as const }
+    const q = t.other.post(k, { type: 'question', to: 'Rohan', text: 'hi' } as never)
+    await t.tools.call('room_state', {})
+    expect(t.room.seenBy(q.id)).toEqual(['Rohan'])
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 's', paths: ['session.py'] })
+    await t.tools.call('room_send', { type: 'changed', text: 'renamed', paths: ['app.py'], symbols: ['validate'] })
+    const [orig, copy] = t.room.messages().filter(m => m.type === 'changed')
+    expect(copy.copyOf).toBe(orig.id)
+  })
+})
+
 describe('inbox', () => {
   it('prefixes tool replies with unread messages for me, once, highest priority first', async () => {
     const t = setup()

@@ -5,7 +5,7 @@ Rules:
 1. room_join once (it derives the room from the git remote). Then room_scope(area, summary, paths) before editing: one word for the area (auth, orders, ...), one line, the paths you expect to touch. Read the area ledger it returns.
 2. Every tool reply starts with your inbox. interrupt: stop and re-plan before continuing. notify: check whether it touches what you are doing. fyi: nothing.
 3. Before renaming or changing a signature: room_impact(symbol) shows who defines and uses it and who owns those files. room_state lists what you are waiting on: others' planned changes to symbols your files use.
-4. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, from, to, intent, plans). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
+4. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, symbol, intent, plans) (or from/to for a range). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
 5. Never edit inside another party's claim. room_wait(claimId) or ask with room_send type=question to=<person>, then room_wait(questionId).
 6. room_release(claimId, summary, done) when finished, then room_send type=changed with paths, a one-line summary and symbols for anything others may depend on.
 7. Answer questions addressed to you on your next move: room_send type=answer inReplyTo=<id>. room_send is for OTHER people's agents; to ask your own human, say it in your reply and stop.
@@ -13,5 +13,5 @@ Rules:
 9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
 10. Never re-create another person's change in your clone, and never edit lines that belong to their claim or announced change. When they declare or announce a rename, signature or new symbol, write your code against the declared name/signature and carry on. Your clone will lag until git merges; that is expected. To verify code that depends on their unmerged work, room_preview_merge(person, run="<test command>") runs the tests on the merged tree without touching any clone.
 11. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
-12. Before telling your human you are done: room_preview_merge(person) for anyone who changed the same files, and report the result. room_leave when your session ends.
+12. Before telling your human you are done: room_preview_merge(person, run=<tests>) against each person who changed the same files, using their CURRENT state. Do not wait for them to finish their task and do not ask them to tell you when they are ready; if their later work conflicts, they will see it in their own preview. room_leave when your session ends.
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.`

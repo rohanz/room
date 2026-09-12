@@ -253,6 +253,20 @@ export class RoomDoc {
     return msg
   }
 
+  // ---- read receipts ------------------------------------------------------
+  /** Message ids a person's agent has been shown (inbox delivery), with the time. */
+  seen(name: string): Y.Map<number> { return this.doc.getMap<number>(`seen:${encodeURIComponent(name)}`) }
+  markSeen(name: string, ids: string[], origin?: unknown): void {
+    if (!ids.length) return
+    const at = Date.now()
+    this.doc.transact(() => { const m = this.seen(name); for (const id of ids) if (!m.has(id)) m.set(id, at) }, origin)
+  }
+  seenBy(msgId: string): string[] {
+    const out: string[] = []
+    for (const key of this.doc.share.keys()) if (key.startsWith('seen:') && this.doc.getMap<number>(key).has(msgId)) out.push(decodeURIComponent(key.slice(5)))
+    return out.sort()
+  }
+
   // ---- chats (human <-> own agent) --------------------------------------
 
   chat(name: string): Y.Array<ChatItem> {

@@ -104,3 +104,46 @@ export class SymbolGraph {
 
 function add(m: Map<string, Set<string>>, k: string, v: string) { let s = m.get(k); if (!s) { s = new Set(); m.set(k, s) } s.add(v) }
 function del(m: Map<string, Set<string>>, k: string, v: string) { const s = m.get(k); if (!s) return; s.delete(v); if (!s.size) m.delete(k) }
+
+/**
+ * 1-based inclusive line range of a top-level or nested definition named `symbol`, or
+ * undefined. Python: the def/class line through the last line indented deeper than it.
+ * JS/TS: the declaration line through its matching closing brace.
+ */
+export function symbolRange(path: string, text: string, symbol: string): { from: number; to: number } | undefined {
+  const lines = text.split('\n')
+  const ext = path.slice(path.lastIndexOf('.') + 1)
+  const esc = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (ext === 'py') {
+    const re = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${esc}\\b`)
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(re)
+      if (!m) continue
+      const indent = m[1].length
+      let end = i
+      for (let j = i + 1; j < lines.length; j++) {
+        const l = lines[j]
+        if (l.trim() === '') continue
+        const ind = l.length - l.trimStart().length
+        if (ind <= indent) break
+        end = j
+      }
+      return { from: i + 1, to: end + 1 }
+    }
+    const assign = new RegExp(`^${esc}\\s*(?::[^=]+)?=`)
+    for (let i = 0; i < lines.length; i++) if (assign.test(lines[i])) return { from: i + 1, to: i + 1 }
+    return undefined
+  }
+  const re = new RegExp(`\\b(?:function\\*?|class|interface|type|enum|const|let|var)\\s+${esc}\\b`)
+  for (let i = 0; i < lines.length; i++) {
+    if (!re.test(lines[i])) continue
+    let depth = 0, seen = false
+    for (let j = i; j < lines.length; j++) {
+      for (const ch of lines[j]) { if (ch === '{') { depth++; seen = true } else if (ch === '}') depth-- }
+      if (seen && depth <= 0) return { from: i + 1, to: j + 1 }
+      if (!seen && j > i && /;\s*$/.test(lines[j])) return { from: i + 1, to: j + 1 }
+    }
+    return { from: i + 1, to: i + 1 }
+  }
+  return undefined
+}

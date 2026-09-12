@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { diff3Merge } from 'node-diff3'
 import {
-  RoomDoc, formatMsg, formatPlans, withLineNumbers, claimsOverlap, clampRange, describeClaim, displayName, rangesOverlap, scopeCovers, msgPaths,
+  RoomDoc, formatMsg, formatPlans, withLineNumbers, claimsOverlap, clampRange, describeClaim, displayName, rangesOverlap, scopeCovers, msgPaths, symbolRange,
 } from '@room/shared'
 import type {
   Claim, Identity, Presence, Msg, Plan, Priority, Scope,
@@ -36,6 +36,8 @@ export interface ToolCtx {
   join?: (o: JoinOptions) => Promise<Session>
   leave?: (s: Session) => Promise<void>
   now?: () => number
+  /** Diagnostics (inbox deliveries etc.); default stderr. */
+  log?: (line: string) => void
 }
 
 export interface Tools {
@@ -71,8 +73,8 @@ export const DEFS: ToolDef[] = [
     inputSchema: { type: 'object', properties: { path: str('optional path'), person: str('default you') } } },
   { name: 'room_who', annotations: RO, description: 'Who holds claims in a region of a file, whose scope covers it, and who has changed the file.',
     inputSchema: { type: 'object', properties: { path: str('repo-relative path'), from: int('first line, default 1'), to: int('last line, default EOF') }, required: ['path'] } },
-  { name: 'room_claim', annotations: RW, description: 'Claim a line range before editing it, saying what you will do. Declare renames/signature changes in `plans` so anyone who uses those symbols is told now. Reports overlaps (posting a conflict). Returns claimId.',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), from: int('first line'), to: int('last line'), intent: str('what you are about to do'), plans: PLANS }, required: ['path', 'from', 'to', 'intent'] } },
+  { name: 'room_claim', annotations: RW, description: 'Claim what you are about to edit, saying what you will do: either a symbol (function/class name; the room resolves its line range) or a line range. Declare renames/signature changes in `plans` so anyone who uses those symbols is told now. Reports overlaps (posting a conflict). Returns claimId.',
+    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), symbol: str('function/class to claim (preferred over from/to)'), from: int('first line (if no symbol)'), to: int('last line (if no symbol)'), intent: str('what you are about to do'), plans: PLANS }, required: ['path', 'intent'] } },
   { name: 'room_release', annotations: RW, description: 'Release a claim with a summary of what you did. Plans whose symbol is not mentioned in the summary (or in `done`) are reported as not done.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('what changed, one line'), done: strs('symbols from your plans that you completed') }, required: ['claimId'] } },
   { name: 'room_send', annotations: RW, description: 'Post to the bus. changed: paths + summary (+ symbols renamed/changed, which notifies whoever uses them). question: to a person\'s agent. answer: inReplyTo a question id. note: broadcast fyi.',
@@ -99,6 +101,7 @@ const STALE_MS = 10 * 60 * 1000
 
 export function createTools(ctx: ToolCtx): Tools {
   const now = ctx.now ?? (() => Date.now())
+  const log = ctx.log ?? ((l: string) => process.stderr.write(`room-mcp: ${l}\n`))
   const doJoin = ctx.join ?? joinSession
   const doLeave = ctx.leave ?? leaveSession
 
@@ -186,6 +189,8 @@ export function createTools(ctx: ToolCtx): Tools {
     if (!fresh.length) return ''
     const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
     fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at)
+    s.room.markSeen(s.me.name, fresh.map(m => m.id))
+    for (const m of fresh) log(`inbox → ${s.me.name}: [${m.priority}] ${formatMsg(m)}`)
     return `[inbox ${fresh.length}]\n${fresh.map(m => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
   }
 
@@ -265,7 +270,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (upgraded.has(key)) continue
       upgraded.add(key)
       const { id: _id, at: _at, from: _f, fromKind: _k, ...body } = m as Msg & Record<string, unknown>
-      s.room.post(s.me, { ...(body as object), to: person, priority: 'notify' } as never)
+      s.room.post(s.me, { ...(body as object), to: person, priority: 'notify', copyOf: m.id } as never)
       notes.push(`notified ${person}'s agent (${why})`)
     }
     return notes
@@ -419,21 +424,31 @@ export function createTools(ctx: ToolCtx): Tools {
       const t = await liveText(s, p, s.me.name)
       const isNew = t === undefined || t === null
       const n = isNew ? 1 : lines(t)
-      const r = clampRange(Number(a.from), Number(a.to), n)
-      if (!Number.isFinite(r.from)) return 'error: from/to must be numbers'
+      let range: { from: number; to: number }
+      const symbol = typeof a.symbol === 'string' && a.symbol.trim() ? a.symbol.trim() : undefined
+      if (symbol) {
+        const r0 = isNew ? undefined : symbolRange(p, t!, symbol)
+        if (!r0) return `error: could not find a definition of ${symbol} in ${p}; pass from/to instead`
+        range = r0
+      } else {
+        if (!Number.isFinite(Number(a.from)) || !Number.isFinite(Number(a.to))) return 'error: pass symbol, or from and to'
+        range = { from: Number(a.from), to: Number(a.to) }
+      }
+      const r = clampRange(range.from, range.to, n)
+      const intentFull = symbol ? `${symbol}: ${intent}` : intent
       const overl = s.room.claimsFor(p).filter(c => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }))
       let claim!: Claim
       let msg!: ClaimMsg
       s.room.doc.transact(() => {
-        claim = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent, ...(plans.length ? { plans } : {}) })
-        msg = s.room.post<ClaimMsg>(s.me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent, ...(plans.length ? { plans } : {}) })
+        claim = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent: intentFull, ...(plans.length ? { plans } : {}) })
+        msg = s.room.post<ClaimMsg>(s.me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent: intentFull, ...(plans.length ? { plans } : {}) })
         for (const o of overl) {
-          const text = `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intent}) overlapping ${describeClaim(o)}`
+          const text = `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intentFull}) overlapping ${describeClaim(o)}`
           s.room.post<ConflictMsg>(s.me, { type: 'conflict', claimId: claim.id, otherClaimId: o.id, path: p, text, to: o.by })
         }
       }, s.me)
       s.daemon.touch()
-      setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p}:${r.from}-${r.to} — ${intent}` })
+      setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} — ${intent}` })
       const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew ? ' (new file)' : ''}`]
       for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`)
       if (s.graph && plans.length) {

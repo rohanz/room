@@ -29363,6 +29363,24 @@ var RoomDoc = class {
     }, origin);
     return msg;
   }
+  // ---- read receipts ------------------------------------------------------
+  /** Message ids a person's agent has been shown (inbox delivery), with the time. */
+  seen(name) {
+    return this.doc.getMap(`seen:${encodeURIComponent(name)}`);
+  }
+  markSeen(name, ids, origin) {
+    if (!ids.length) return;
+    const at = Date.now();
+    this.doc.transact(() => {
+      const m = this.seen(name);
+      for (const id2 of ids) if (!m.has(id2)) m.set(id2, at);
+    }, origin);
+  }
+  seenBy(msgId) {
+    const out = [];
+    for (const key of this.doc.share.keys()) if (key.startsWith("seen:") && this.doc.getMap(key).has(msgId)) out.push(decodeURIComponent(key.slice(5)));
+    return out.sort();
+  }
   // ---- chats (human <-> own agent) --------------------------------------
   chat(name) {
     return this.doc.getArray(`chat:${encodeURIComponent(name)}`);
@@ -29529,6 +29547,48 @@ function del(m, k, v) {
   if (!s) return;
   s.delete(v);
   if (!s.size) m.delete(k);
+}
+function symbolRange(path3, text, symbol) {
+  const lines = text.split("\n");
+  const ext = path3.slice(path3.lastIndexOf(".") + 1);
+  const esc2 = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (ext === "py") {
+    const re2 = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${esc2}\\b`);
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(re2);
+      if (!m) continue;
+      const indent = m[1].length;
+      let end = i;
+      for (let j = i + 1; j < lines.length; j++) {
+        const l = lines[j];
+        if (l.trim() === "") continue;
+        const ind = l.length - l.trimStart().length;
+        if (ind <= indent) break;
+        end = j;
+      }
+      return { from: i + 1, to: end + 1 };
+    }
+    const assign2 = new RegExp(`^${esc2}\\s*(?::[^=]+)?=`);
+    for (let i = 0; i < lines.length; i++) if (assign2.test(lines[i])) return { from: i + 1, to: i + 1 };
+    return void 0;
+  }
+  const re = new RegExp(`\\b(?:function\\*?|class|interface|type|enum|const|let|var)\\s+${esc2}\\b`);
+  for (let i = 0; i < lines.length; i++) {
+    if (!re.test(lines[i])) continue;
+    let depth = 0, seen = false;
+    for (let j = i; j < lines.length; j++) {
+      for (const ch of lines[j]) {
+        if (ch === "{") {
+          depth++;
+          seen = true;
+        } else if (ch === "}") depth--;
+      }
+      if (seen && depth <= 0) return { from: i + 1, to: j + 1 };
+      if (!seen && j > i && /;\s*$/.test(lines[j])) return { from: i + 1, to: j + 1 };
+    }
+    return { from: i + 1, to: i + 1 };
+  }
+  return void 0;
 }
 
 // node_modules/diff/libesm/diff/base.js
@@ -33383,8 +33443,8 @@ var DEFS = [
   {
     name: "room_claim",
     annotations: RW,
-    description: "Claim a line range before editing it, saying what you will do. Declare renames/signature changes in `plans` so anyone who uses those symbols is told now. Reports overlaps (posting a conflict). Returns claimId.",
-    inputSchema: { type: "object", properties: { path: str("repo-relative path"), from: int2("first line"), to: int2("last line"), intent: str("what you are about to do"), plans: PLANS }, required: ["path", "from", "to", "intent"] }
+    description: "Claim what you are about to edit, saying what you will do: either a symbol (function/class name; the room resolves its line range) or a line range. Declare renames/signature changes in `plans` so anyone who uses those symbols is told now. Reports overlaps (posting a conflict). Returns claimId.",
+    inputSchema: { type: "object", properties: { path: str("repo-relative path"), symbol: str("function/class to claim (preferred over from/to)"), from: int2("first line (if no symbol)"), to: int2("last line (if no symbol)"), intent: str("what you are about to do"), plans: PLANS }, required: ["path", "intent"] }
   },
   {
     name: "room_release",
@@ -33430,6 +33490,8 @@ var WAIT_MAX = 12e4;
 var STALE_MS = 10 * 60 * 1e3;
 function createTools(ctx) {
   const now = ctx.now ?? (() => Date.now());
+  const log2 = ctx.log ?? ((l) => process.stderr.write(`room-mcp: ${l}
+`));
   const doJoin = ctx.join ?? joinSession;
   const doLeave = ctx.leave ?? leaveSession;
   const seen = /* @__PURE__ */ new Set();
@@ -33516,6 +33578,8 @@ function createTools(ctx) {
     if (!fresh.length) return "";
     const rank = { interrupt: 0, notify: 1, fyi: 2 };
     fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at);
+    s.room.markSeen(s.me.name, fresh.map((m) => m.id));
+    for (const m of fresh) log2(`inbox \u2192 ${s.me.name}: [${m.priority}] ${formatMsg(m)}`);
     return `[inbox ${fresh.length}]
 ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("\n")}
 
@@ -33609,7 +33673,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       if (upgraded.has(key)) continue;
       upgraded.add(key);
       const { id: _id, at: _at, from: _f, fromKind: _k, ...body } = m;
-      s.room.post(s.me, { ...body, to: person, priority: "notify" });
+      s.room.post(s.me, { ...body, to: person, priority: "notify", copyOf: m.id });
       notes.push(`notified ${person}'s agent (${why})`);
     }
     return notes;
@@ -33781,21 +33845,31 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       const t = await liveText(s, p, s.me.name);
       const isNew = t === void 0 || t === null;
       const n = isNew ? 1 : lines(t);
-      const r = clampRange(Number(a.from), Number(a.to), n);
-      if (!Number.isFinite(r.from)) return "error: from/to must be numbers";
+      let range;
+      const symbol = typeof a.symbol === "string" && a.symbol.trim() ? a.symbol.trim() : void 0;
+      if (symbol) {
+        const r0 = isNew ? void 0 : symbolRange(p, t, symbol);
+        if (!r0) return `error: could not find a definition of ${symbol} in ${p}; pass from/to instead`;
+        range = r0;
+      } else {
+        if (!Number.isFinite(Number(a.from)) || !Number.isFinite(Number(a.to))) return "error: pass symbol, or from and to";
+        range = { from: Number(a.from), to: Number(a.to) };
+      }
+      const r = clampRange(range.from, range.to, n);
+      const intentFull = symbol ? `${symbol}: ${intent}` : intent;
       const overl = s.room.claimsFor(p).filter((c) => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }));
       let claim2;
       let msg;
       s.room.doc.transact(() => {
-        claim2 = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent, ...plans.length ? { plans } : {} });
-        msg = s.room.post(s.me, { type: "claim", claimId: claim2.id, path: p, from_line: r.from, to_line: r.to, intent, ...plans.length ? { plans } : {} });
+        claim2 = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent: intentFull, ...plans.length ? { plans } : {} });
+        msg = s.room.post(s.me, { type: "claim", claimId: claim2.id, path: p, from_line: r.from, to_line: r.to, intent: intentFull, ...plans.length ? { plans } : {} });
         for (const o of overl) {
-          const text = `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intent}) overlapping ${describeClaim(o)}`;
+          const text = `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intentFull}) overlapping ${describeClaim(o)}`;
           s.room.post(s.me, { type: "conflict", claimId: claim2.id, otherClaimId: o.id, path: p, text, to: o.by });
         }
       }, s.me);
       s.daemon.touch();
-      setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p}:${r.from}-${r.to} \u2014 ${intent}` });
+      setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} \u2014 ${intent}` });
       const out = [`claimed ${claim2.id}: ${describeClaim(claim2)}${isNew ? " (new file)" : ""}`];
       for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`);
       if (s.graph && plans.length) {
@@ -34128,7 +34202,7 @@ Rules:
 1. room_join once (it derives the room from the git remote). Then room_scope(area, summary, paths) before editing: one word for the area (auth, orders, ...), one line, the paths you expect to touch. Read the area ledger it returns.
 2. Every tool reply starts with your inbox. interrupt: stop and re-plan before continuing. notify: check whether it touches what you are doing. fyi: nothing.
 3. Before renaming or changing a signature: room_impact(symbol) shows who defines and uses it and who owns those files. room_state lists what you are waiting on: others' planned changes to symbols your files use.
-4. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, from, to, intent, plans). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
+4. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, symbol, intent, plans) (or from/to for a range). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
 5. Never edit inside another party's claim. room_wait(claimId) or ask with room_send type=question to=<person>, then room_wait(questionId).
 6. room_release(claimId, summary, done) when finished, then room_send type=changed with paths, a one-line summary and symbols for anything others may depend on.
 7. Answer questions addressed to you on your next move: room_send type=answer inReplyTo=<id>. room_send is for OTHER people's agents; to ask your own human, say it in your reply and stop.
@@ -34136,7 +34210,7 @@ Rules:
 9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
 10. Never re-create another person's change in your clone, and never edit lines that belong to their claim or announced change. When they declare or announce a rename, signature or new symbol, write your code against the declared name/signature and carry on. Your clone will lag until git merges; that is expected. To verify code that depends on their unmerged work, room_preview_merge(person, run="<test command>") runs the tests on the merged tree without touching any clone.
 11. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
-12. Before telling your human you are done: room_preview_merge(person) for anyone who changed the same files, and report the result. room_leave when your session ends.
+12. Before telling your human you are done: room_preview_merge(person, run=<tests>) against each person who changed the same files, using their CURRENT state. Do not wait for them to finish their task and do not ask them to tell you when they are ready; if their later work conflicts, they will see it in their own preview. room_leave when your session ends.
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.`;
 
 // packages/room-mcp/src/index.ts

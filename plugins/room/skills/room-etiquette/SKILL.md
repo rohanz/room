@@ -19,7 +19,7 @@ disk; edit files with your normal tools.
    uses it and who owns those files. `room_state` lists what you are waiting on: others'
    planned changes to symbols your files use.
 4. Before editing a region: `room_read` it (note claims and the file ledger), then
-   `room_claim(path, from, to, intent, plans)`. Declare `plans` whenever you will rename,
+   `room_claim(path, symbol, intent, plans) (or from/to for a range)`. Declare `plans` whenever you will rename,
    change a signature, delete, or add a public symbol; whoever uses those symbols is told
    immediately. Keep claims small and short-lived.
 5. Never edit inside another party's claim. `room_wait(claimId)` or ask with
@@ -41,8 +41,11 @@ disk; edit files with your normal tools.
 11. A `base` entry means someone committed and the room moved forward. If your status
     says behind, run `git pull --ff-only` before editing further; the ledger lists which
     paths changed.
-12. Before telling your human you are done: `room_preview_merge(person)` for anyone who
-    changed the same files, and report the result. `room_leave` when the session ends.
+12. Before telling your human you are done: `room_preview_merge(person, run=<tests>)`
+    against each person who changed the same files, using their CURRENT state. Do not wait
+    for them to finish their task and do not ask them to tell you when they are ready; if
+    their later work conflicts, they will see it in their own preview. `room_leave` when the
+    session ends.
 
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.
 
