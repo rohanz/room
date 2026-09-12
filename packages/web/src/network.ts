@@ -21,6 +21,8 @@ export function networkPanel(conn: Conn): HTMLElement {
   const focus = h('input', { type: 'checkbox', checked: true })
   const zoom = h('input', { type: 'range', min: '30', max: '160', value: '100', title: 'Network zoom' })
   const fit = h('button', { title: 'Fit the full network in the available width' }, 'Fit')
+  const expand = h('button', { title: 'Give the network the full workspace width' }, 'Expand')
+  expand.setAttribute('aria-pressed', 'false')
   zoom.setAttribute('aria-label', 'Network zoom')
   const status = h('div', { class: 'network-status' })
   const stats = h('div', { class: 'network-stats' })
@@ -28,7 +30,7 @@ export function networkPanel(conn: Conn): HTMLElement {
   const details = h('div', { class: 'network-details' })
   const root = h('section', { class: 'network-panel' },
     h('div', { class: 'network-heading' }, h('div', {}, h('h2', {}, 'Your work, in context'), h('p', { class: 'muted' }, 'Follow dependencies before they become surprises.')), h('label', {}, 'Viewing as ', person)),
-    h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' My neighborhood'), h('label', { class: 'network-zoom' }, 'Zoom ', zoom), fit),
+    h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' My neighborhood'), h('label', { class: 'network-zoom' }, 'Zoom ', zoom), fit, expand),
     stats,
     h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, '● My changes'), h('span', { class: 'legend-upstream' }, '● Upstream'), h('span', {}, '○ Downstream / other'), h('span', {}, 'Provider → consumer')),
     status, canvas, details,
@@ -36,6 +38,13 @@ export function networkPanel(conn: Conn): HTMLElement {
   let selectedPerson = new URLSearchParams(location.search).get('participant') ?? new URLSearchParams(location.search).get('name') ?? ''
   let selectedPath = ''
   let drawing: SVGSVGElement | undefined
+  let fitMode = false
+  const sizeDrawing = () => {
+    if (!drawing || !canvas.clientWidth) return
+    const width = drawing.viewBox.baseVal.width
+    if (fitMode) zoom.value = String(Math.max(30, Math.min(160, Math.floor(canvas.clientWidth / width * 100))))
+    drawing.style.width = `${width * Number(zoom.value) / 100}px`
+  }
 
   const showDetails = (node: NetworkNode, snapshot: GraphSnapshot) => {
     selectedPath = node.path
@@ -47,11 +56,15 @@ export function networkPanel(conn: Conn): HTMLElement {
     const linkList = (title: string, edges: typeof upstream, incoming: boolean) => h('div', {}, h('h3', {}, title),
       ...edges.map(e => h('div', { class: 'network-dependency mono' }, `${incoming ? e.source : e.target} · ${e.symbols.join(', ')}`)),
       edges.length ? null : h('span', { class: 'muted' }, 'None in this snapshot'))
-    details.replaceChildren(h('strong', { class: 'mono' }, node.path),
+    const clear = h('button', { class: 'network-clear', title: 'Clear file selection' }, 'Clear selection')
+    clear.onclick = () => { selectedPath = ''; render() }
+    details.replaceChildren(h('div', { class: 'network-detail-head' }, h('strong', { class: 'mono' }, node.path), clear),
       h('p', { class: 'muted' }, `${node.deleted ? 'Deleted locally. ' : ''}${changers.length ? `Changed by ${changers.join(', ')}.` : 'No current overlay changes.'}`),
       h('div', { class: 'network-detail-columns' }, linkList('Depends on', upstream, true), linkList('Used by', downstream, false)),
       ...claims.map(c => h('p', {}, `${c.by}: ${c.intent}${c.plans?.length ? ` · ${c.plans.map(p => `${p.kind} ${p.symbol}: ${p.detail ?? ''}`).join('; ')}` : ''}`)))
     drawing?.querySelectorAll('[data-path]').forEach(el => el.classList.toggle('selected', el.getAttribute('data-path') === selectedPath))
+    drawing?.classList.add('has-selection')
+    drawing?.querySelectorAll('.network-edge').forEach(el => el.classList.toggle('selected', el.getAttribute('data-source') === selectedPath || el.getAttribute('data-target') === selectedPath))
   }
 
   const render = () => {
@@ -85,7 +98,7 @@ export function networkPanel(conn: Conn): HTMLElement {
     const width = Math.max(740, columns.length * 300 + 50)
     const height = Math.max(380, Math.max(...columns.map(role => nodes.filter(n => n.role === role).length)) * 88 + 105)
     drawing = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group', 'aria-label': `Dependency network for ${selectedPerson}` })
-    drawing.style.width = `${Number(zoom.value)}%`; drawing.style.minWidth = `${width * Number(zoom.value) / 100}px`
+    drawing.style.width = `${width * Number(zoom.value) / 100}px`
     const defs = svg('defs')
     const marker = svg('marker', { id: 'network-arrow', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse' })
     marker.append(svg('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'context-stroke' })); defs.append(marker); drawing.append(defs)
@@ -103,6 +116,7 @@ export function networkPanel(conn: Conn): HTMLElement {
       const start = a.x + (forward ? 244 : 0), end = b.x + (forward || sameColumn ? 0 : 244)
       const bend = sameColumn ? -30 : (end - start) / 2
       const edge = svg('path', { d: `M ${start} ${a.y + 29} C ${start + bend} ${a.y + 29}, ${sameColumn ? end + bend : end - bend} ${b.y + 29}, ${end} ${b.y + 29}`, class: `network-edge${model.upstream.has(e.source) && (model.upstream.has(e.target) || changed.includes(e.target)) ? ' upstream' : ''}`, 'marker-end': 'url(#network-arrow)' })
+      edge.setAttribute('data-source', e.source); edge.setAttribute('data-target', e.target)
       edge.append(svg('title', {}, `${e.source} → ${e.target}: ${e.symbols.join(', ')}`)); drawing.append(edge)
     }
     for (const node of nodes) {
@@ -118,14 +132,21 @@ export function networkPanel(conn: Conn): HTMLElement {
       drawing.append(group)
     }
     canvas.replaceChildren(drawing)
+    sizeDrawing()
     const selection = nodes.find(n => n.path === selectedPath)
     if (selection) showDetails(selection, snapshot)
     else details.replaceChildren(h('span', { class: 'muted' }, 'Select a file to inspect its dependencies, current owners, and declared plans.'))
   }
   person.onchange = () => { selectedPerson = person.value; selectedPath = ''; render() }
   search.oninput = render; focus.onchange = render
-  zoom.oninput = render
-  fit.onclick = () => { if (drawing) { zoom.value = String(Math.max(30, Math.min(160, Math.floor(canvas.clientWidth / drawing.viewBox.baseVal.width * 100)))); render() } }
+  zoom.oninput = () => { fitMode = false; sizeDrawing() }
+  fit.onclick = () => { fitMode = true; sizeDrawing() }
+  expand.onclick = () => {
+    const expanded = root.classList.toggle('expanded')
+    expand.textContent = expanded ? 'Collapse' : 'Expand'
+    expand.setAttribute('aria-pressed', String(expanded))
+  }
+  new ResizeObserver(sizeDrawing).observe(canvas)
   conn.room.graphs.observe(render); conn.room.overlays.observeDeep(render); conn.room.deleted.observeDeep(render)
   conn.room.claims.observe(render); conn.room.scopes.observe(render); conn.room.metaMap.observe(render)
   conn.provider.awareness.on('change', render)

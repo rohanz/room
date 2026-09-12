@@ -200,3 +200,18 @@ h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; text-transform: upperca
 @media (max-width: 1250px) { .layout { grid-template-columns: 195px minmax(440px, 1fr) 260px; } .network-heading { padding-inline: 16px; } .network-controls, .network-stats { padding-inline: 16px; gap: 12px; } }
 @media (max-width: 850px) { .layout { grid-template-columns: 170px minmax(0, 1fr); grid-template-areas: 'head head' 'participants center'; } .feed { display: none; } .network-heading { align-items: flex-start; } .network-stats { flex-wrap: wrap; } }
 @media (max-width: 600px) { .layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'head' 'center'; } .participants { display: none; } .header-detail { display: none; } .network-heading h2 { font-size: 20px; } }
+
+/* Keep the graph readable while giving selected relationships visual priority. */
+.network-canvas svg { margin-inline: auto; }
+.network-controls button { padding: 5px 9px; font-size: 11px; }
+.network-controls button:hover { background: #edf2f9; }
+.network-node rect { filter: drop-shadow(0 2px 3px rgb(31 49 76 / 5%)); transition: stroke .15s; }
+.network-edge { transition: opacity .15s, stroke-width .15s; }
+.has-selection .network-edge:not(.selected) { opacity: .18; }
+.has-selection .network-edge.selected { stroke-width: 3; opacity: 1; }
+.network-detail-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.network-detail-head strong { overflow-wrap: anywhere; }
+.network-clear { font-size: 10px; padding: 4px 8px; flex: none; color: var(--muted); }
+.layout:has(.network-panel.expanded:not([hidden])) { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'head' 'center'; }
+.layout:has(.network-panel.expanded:not([hidden])) > .participants,
+.layout:has(.network-panel.expanded:not([hidden])) > .feed { display: none; }

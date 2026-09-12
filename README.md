@@ -87,8 +87,10 @@ first.
 The browser opens on a **Network** tab. Choose a participant to highlight their current
 overlay changes in blue and their transitive upstream dependencies in amber. Arrows point
 from provider to consumer. Select a file to see dependency symbols, who is changing it,
-and open claims and plans. Search, zoom, Fit, and the neighborhood filter help explore
-larger graphs; the Changed files tab retains the overlay reader.
+and open claims and plans. Selecting a file emphasizes its incoming and outgoing edges.
+Search, zoom, Fit, Expand, and the neighborhood filter help explore larger graphs;
+the Changed files tab retains the overlay reader. Fit adjusts with the available width,
+and Expand temporarily gives the network the whole workspace.
 
 The MCP indexer publishes a bounded graph snapshot for each participant into the room.
 Join using the updated MCP server (rebuild the plugin with `npm run build:plugin`) before
