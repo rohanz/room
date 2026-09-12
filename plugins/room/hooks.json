@@ -1,10 +1,27 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "node ./hooks/session-start.mjs", "timeout": 5 } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/session-start.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
     ],
     "PreToolUse": [
-      { "matcher": "apply_patch|Write|Edit", "hooks": [ { "type": "command", "command": "node ./hooks/before-edit.mjs", "timeout": 5 } ] }
+      {
+        "matcher": "apply_patch|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/before-edit.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }
