@@ -68,6 +68,9 @@ h2 { margin: 0 0 10px; font-size: 17px; }
 }
 .state-pill.editing { color: var(--accent); border-color: #bfd5ea; background: #f1f7fc; }
 .state-pill.waiting { color: var(--warn); border-color: #ead1ad; background: #fff9ef; }
+.state-pill.done { color: #1f7a3a; border-color: #bfe0c8; background: #f1faf4; }
+.state-pill.working { color: var(--accent); border-color: #bfd5ea; background: #f1f7fc; }
+.state-pill.behind, .state-pill.ahead { color: #8a5a00; border-color: #ead1ad; background: #fff9ef; }
 .state-pill.behind { color: var(--danger); border-color: #ebc2bd; background: #fff5f4; }
 .state-pill.ahead { color: var(--ok); border-color: #bddcc9; background: #f2faf5; }
 .scope-line { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line-soft); font-size: 11.5px; overflow-wrap: anywhere; }

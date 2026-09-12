@@ -32984,7 +32984,11 @@ var Daemon = class {
   async pollHead() {
     if (this.stopped) return;
     const head = await gitHead(this.dir);
-    if (head === this.base) return;
+    if (head === this.base) {
+      const roomBase2 = this.roomDoc.meta.base;
+      if (roomBase2 && roomBase2 !== head) await this.refreshBaseStatus();
+      return;
+    }
     const prev = this.base;
     this.base = head;
     this.branch = await gitBranch(this.dir);

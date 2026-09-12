@@ -1,6 +1,6 @@
 import type { GraphSnapshot } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
-import { h } from './panels.ts'
+import { h, type FocusState } from './panels.ts'
 import { deriveNetwork, deriveContractImpact, deriveWorkImpact, type NetworkNode } from './network-model.ts'
 
 const NS = 'http://www.w3.org/2000/svg'
@@ -13,7 +13,7 @@ function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string,
 const roles = ['upstream', 'work', 'downstream', 'context'] as const
 const labels = { upstream: 'UPSTREAM · WHAT I RELY ON', work: 'MY EDITS & PLANS', downstream: 'DOWNSTREAM · MY PLAN IMPACT', context: 'OTHER FILES' }
 
-export function networkPanel(conn: Conn): HTMLElement {
+export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   const person = h('select', { title: 'View changes as participant' })
   person.setAttribute('aria-label', 'View changes as participant')
   const search = h('input', { type: 'search', placeholder: 'Find a file…' })
@@ -36,9 +36,9 @@ export function networkPanel(conn: Conn): HTMLElement {
     h('div', { class: 'network-heading' }, h('div', {}, h('h2', {}, 'My work & contract risks'), h('p', { class: 'muted' }, 'Upstream risks to my work → my edits and plans → consumers of my planned changes.')), h('label', {}, 'Viewing as ', person)),
     h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' Relevant to my work'), density, h('label', { class: 'network-zoom' }, 'Zoom ', zoom), fit, expand),
     stats,
-    h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Blue · Edits'), h('span', { class: 'legend-contract' }, 'Purple · Declared contract'), h('span', { class: 'legend-impact' }, 'Red · Potential impact'), h('span', {}, 'Provider → consumer · Hover to preview, click to inspect')),
+    h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Blue · Edits'), h('span', { class: 'legend-contract' }, 'Purple · Declared plan'), h('span', { class: 'legend-impact' }, 'Red · Uses a symbol someone plans to change'), h('span', {}, 'Provider → consumer · Hover to preview, click to inspect')),
     status, canvas, details, tooltip,
-    h('div', { class: 'network-footnote' }, 'Potential impact from declared plans and inferred symbol references. Not a verified break or proof of implementation. Released plans leave this view; compatibility needs tests.'))
+    h('div', { class: 'network-footnote' }, 'Impact is inferred from declared plans and symbol references; the merged-tree test run is the proof.'))
   let selectedPerson = new URLSearchParams(location.search).get('participant') ?? new URLSearchParams(location.search).get('name') ?? ''
   let selectedPath = ''
   let drawing: SVGSVGElement | undefined
@@ -204,7 +204,9 @@ export function networkPanel(conn: Conn): HTMLElement {
     if (selection) showDetails(selection, snapshot)
     else details.replaceChildren(h('span', { class: 'muted' }, 'Select a file to inspect its dependencies, current owners, and declared plans.'))
   }
-  person.onchange = () => { selectedPerson = person.value; selectedPath = ''; render() }
+  person.onchange = () => { selectedPerson = person.value; selectedPath = ''; shared?.set(selectedPerson || null); render() }
+  // The People column's click-to-focus drives this view too.
+  shared?.subscribe(() => { if (shared.person && shared.person !== selectedPerson) { selectedPerson = shared.person; selectedPath = ''; render() } })
   search.oninput = render; focus.onchange = render; density.onchange = render
   canvas.addEventListener('scroll', hideTooltip)
   zoom.oninput = () => { fitMode = false; sizeDrawing() }

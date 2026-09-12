@@ -269,7 +269,12 @@ class Daemon implements Roomd {
   private async pollHead(): Promise<void> {
     if (this.stopped) return
     const head = await gitHead(this.dir)
-    if (head === this.base) return
+    if (head === this.base) {
+      // HEAD unchanged, but a commit we are ahead with may have been pushed since last check.
+      const roomBase = this.roomDoc.meta.base
+      if (roomBase && roomBase !== head) await this.refreshBaseStatus()
+      return
+    }
     const prev = this.base
     this.base = head
     this.branch = await gitBranch(this.dir)

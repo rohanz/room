@@ -145,6 +145,8 @@ export function deriveStatePill(person: Pick<Participant, 'online' | 'behindBase
   if (explicitEditing) return `editing${explicitEditing.slice(7)}`
   const claim = person.claims[0]
   if (claim) return `editing ${claim.plans?.[0]?.symbol ?? claim.path}`
+  if (statuses.some(status => status.toLowerCase().startsWith('done'))) return 'done'
+  if (statuses.some(status => status.toLowerCase().startsWith('on '))) return 'working'
   return 'idle'
 }
 
