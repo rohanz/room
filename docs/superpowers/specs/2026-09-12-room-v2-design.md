@@ -163,3 +163,30 @@ cursors. URL: `/?room=<ws>/<repo>/<branch>`.
 2. room-mcp: join/leave, inbox, priorities, scope, wait, preview_merge, upgrade rule;
    plugin skill; runner adjustments.
 3. web read-only view; README, AGENTS.md, decisions.md, demo script.
+
+## 13. Amendment 2026-09-12: planned changes on claims, and area ledgers
+
+**Planned changes.** `room_claim` takes `intent` plus optional `plans: {kind: 'rename'|'signature'|'delete'|'add', symbol, detail?}[]`.
+Stored on the claim. The scope-upgrade rule (§6) runs at claim time as well as on
+`changed`: any other participant whose scope paths or overlay text reference a planned
+`symbol` gets a `notify`: "<who> plans to <kind> <symbol> in <path>". On `room_release`,
+the summary is compared with `plans`; unfulfilled plans are listed in the release message.
+
+**Areas.** A scope has `area: string` (one word, e.g. `auth`) plus `summary` and `paths`.
+Areas name ledgers.
+
+**Ledger.** A derived view over the bus, no new storage: entries are `scope`, `claim`,
+`changed`, `release`, `conflict` messages, indexed by the paths they touch and by every area
+whose scope paths include those paths at the time of the entry. Accessor
+`ledger({ area?, path?, since? })` in shared.
+
+Where the ledger is read automatically:
+- `room_scope(area, ...)` response ends with the area's ledger (last 20 entries, plus all
+  open claims with plans in that area).
+- `room_read(path)` response ends with the file's ledger (last 10 entries) and open claims
+  with plans on that file.
+- `room_state()` shows one line per area: changes in the last 10 minutes by whom, open
+  planned changes.
+
+Etiquette additions: declare `plans` on a claim whenever you intend to rename, change a
+signature, or delete; read the ledger printed with your scope and file reads before editing.
