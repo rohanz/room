@@ -75,7 +75,8 @@ for (const person of participants) {
     const text = sources.get(file)!.text + `\n// SAMPLE in-progress change: ${person.task}.\n`
     if (person.name === 'Kieran') writeFileSync(resolve(dir, file), text)
     else room.setOverlay(person.name, file, text)
-    room.addClaim({ by: person.name, byKind: 'agent', path: file, from: 1, to: 8, intent: `[SAMPLE] ${person.task}`, plans: [{ kind: 'signature', symbol: sources.get(file)!.symbol, detail: person.task }] })
+    // Service interfaces have contract plans; supporting changes are ordinary edits.
+    room.addClaim({ by: person.name, byKind: 'agent', path: file, from: 1, to: 8, intent: `[SAMPLE] ${person.task}`, plans: file.endsWith('/service.ts') ? [{ kind: 'signature', symbol: sources.get(file)!.symbol, detail: person.task }] : [] })
   }
 }
 const indexes = participants.map(p => new GraphIndex(room, p.name, dir, console.log))
