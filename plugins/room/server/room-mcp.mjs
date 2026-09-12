@@ -33791,7 +33791,7 @@ var DEFS = [
     name: "room_preview_merge",
     annotations: RO,
     description: "Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. Reports clean paths and conflicting hunks. With `run`, materialises the merged tree in a scratch directory and runs that command there (e.g. the tests), so you can verify code that depends on their unmerged work.",
-    inputSchema: { type: "object", properties: { person: str("the other person"), run: str('optional shell command to run in the merged tree, e.g. "uv run pytest -q"') }, required: ["person"] }
+    inputSchema: { type: "object", properties: { person: str("the other person"), run: str('optional shell command to run in the merged tree, e.g. "uv run pytest -q"'), resolve: { type: "boolean", description: "when a conflicting region on one side contains the other side's lines in order (you built on their change), take the larger side and return the resolved file text so you can write it to your own clone" } }, required: ["person"] }
   }
 ];
 var WAIT_DEFAULT = 3e4;
@@ -34420,7 +34420,8 @@ call room_state before continuing.`;
       const committedBetween = theirBase === myBase ? [] : (await git(s.dir, ["diff", "--name-only", ancestor, theirBase])).split("\n").filter(Boolean);
       const paths = Array.from(/* @__PURE__ */ new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person), ...committedBetween])).sort();
       if (!paths.length) return `neither you nor ${person} has changes relative to ${ancestor.slice(0, 10)}`;
-      const clean = [], conflicts = [], onlyOne = [];
+      const clean = [], conflicts = [], onlyOne = [], resolvable = [];
+      const resolvedText = /* @__PURE__ */ new Map();
       const merged = /* @__PURE__ */ new Map();
       for (const p of paths) {
         const b = await gitShow(s.dir, ancestor, p) ?? "";
@@ -34441,28 +34442,48 @@ call room_state before continuing.`;
         }
         let line = 1;
         const detail = [];
+        const resolvedLines = [];
+        let unresolved = 0;
         for (const r of res) {
           if (r.ok) {
             line += r.ok.length;
+            resolvedLines.push(...r.ok);
             continue;
           }
           const c = r.conflict;
           if (!c) continue;
-          detail.push(`  around line ${line}: you changed ${c.a.length} line(s), ${person} changed ${c.b.length} line(s)`);
+          const sup = supersetSide(c.a, c.b);
+          if (sup) {
+            detail.push(`  around line ${line}: ${sup === "a" ? "your" : `${person}'s`} version contains ${sup === "a" ? `${person}'s` : "your"} change in order \u2014 resolvable by taking ${sup === "a" ? "yours" : "theirs"}`);
+            resolvedLines.push(...sup === "a" ? c.a : c.b);
+          } else {
+            unresolved++;
+            detail.push(`  around line ${line}: you changed ${c.a.length} line(s), ${person} changed ${c.b.length} line(s) \u2014 needs a human or a rewrite`);
+            resolvedLines.push("<<<<<<< yours", ...c.a, "=======", ...c.b, `>>>>>>> ${person}`);
+          }
           line += c.o.length;
         }
-        conflicts.push(`${p}
+        if (!unresolved) {
+          resolvable.push(p);
+          merged.set(p, resolvedLines.join("\n") + (resolvedLines.length ? "\n" : ""));
+        }
+        conflicts.push(`${p}${unresolved ? "" : " (resolvable)"}
 ${detail.join("\n")}`);
+        if (!unresolved && a.resolve === true) resolvedText.set(p, merged.get(p));
       }
       const out = [`preview merge of your changes with ${person}'s (common ancestor ${ancestor.slice(0, 10)}${theirBase !== myBase ? `; ${person} is on ${theirBase.slice(0, 10)}, you on ${myBase.slice(0, 10)}` : ""}):`];
       if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(", ")}`);
       if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(", ")}`);
+      const hard = conflicts.filter((c) => !c.includes(" (resolvable)"));
       if (conflicts.length) out.push(`CONFLICTS:
 ${conflicts.join("\n")}`);
       else out.push("no conflicts");
+      if (resolvable.length && a.resolve !== true) out.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone (only your side changes).`);
+      for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---
+${text}--- end ${p} ---`);
       const run = typeof a.run === "string" && a.run.trim() ? a.run.trim() : "";
       if (run) {
-        if (conflicts.length) out.push(`not running "${run}": resolve the conflicts first`);
+        if (hard.length) out.push(`not running "${run}": ${hard.length} conflict(s) need a human first`);
         else out.push(await runInMergedTree(s, ancestor, merged, run));
       }
       return out.join("\n");
@@ -34517,6 +34538,17 @@ ${conflicts.join("\n")}`);
 }
 var NotJoined = class extends Error {
 };
+function supersetSide(a, b) {
+  const contains = (outer, inner) => {
+    if (!inner.length || inner.length > outer.length) return false;
+    let i = 0;
+    for (const line of outer) if (line === inner[i]) i++;
+    return i === inner.length;
+  };
+  if (a.length > b.length && contains(a, b)) return "a";
+  if (b.length > a.length && contains(b, a)) return "b";
+  return void 0;
+}
 async function runInMergedTree(s, ancestor, merged, cmd) {
   const dir = fs3.mkdtempSync(path3.join(os2.tmpdir(), "room-merge-"));
   try {
@@ -34637,7 +34669,7 @@ Rules:
 7. Answer questions addressed to you on your next move: room_send type=answer inReplyTo=<id>. room_send is for OTHER people's agents; to ask your own human, say it in your reply and stop.
 8. If a wait times out, tell your human and proceed only where you do not depend on the answer.
 9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
-10. Never re-create another person's change in your clone, and never edit lines that belong to their claim or announced change. When they declare or announce a rename, signature or new symbol, write your code against the declared name/signature and carry on. Your clone will lag until git merges; that is expected. To verify code that depends on their unmerged work, room_preview_merge(person, run="<test command>") runs the tests on the merged tree without touching any clone.
+10. Never re-create another person's change in your clone, and never edit lines that belong to their claim or announced change. When they declare or announce a rename, signature or new symbol, write your code against the declared name/signature and carry on. Your clone will lag until git merges; that is expected. To verify code that depends on their unmerged work, room_preview_merge(person, run="<test command>") runs the tests on the merged tree without touching any clone. If you insert next to a line they changed, copy their version of that line exactly; the preview then reports the overlap as resolvable, and room_preview_merge(person, resolve=true) gives you the resolved file to write into your own clone.
 11. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
 12. Before telling your human you are done: room_preview_merge(person, run=<tests>) against each person who changed the same files, using their CURRENT state. Do not wait for them to finish their task and do not ask them to tell you when they are ready; if their later work conflicts, they will see it in their own preview. Then room_done(summary) so the room shows your task as finished; stay in the room.
 13. Report to your human in one line: what landed, the test count, and whether the merge preview with each teammate was clean (name any conflicting files). Then ask whether to commit and push. Never commit or push unless they say yes; after a push, teammates are told the base moved. room_leave when your session ends.

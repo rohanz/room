@@ -348,6 +348,28 @@ describe('preview merge', () => {
     expect(out).toContain('app.py')
   })
 
+  it('a conflict where one side built on the other is reported as resolvable and can be resolved', async () => {
+    const t = setup()
+    // Kieran changes the return line; Rohan (me) inserts before it and copies Kieran's new return line.
+    const kieran = COMMITTED.replace('    return 2\n', '    return result\n')
+    const mine = COMMITTED.replace('    return 2\n', '    audit()\n    return result\n')
+    t.room.setOverlay('Rohan', 'app.py', mine)
+    t.other.setOverlay('Kieran', 'app.py', kieran)
+    const out = await t.tools.call('room_preview_merge', { person: 'Kieran' })
+    expect(out).toContain('app.py (resolvable)')
+    expect(out).toContain("your version contains Kieran's change in order")
+    expect(out).toContain('call again with resolve=true')
+    const res = await t.tools.call('room_preview_merge', { person: 'Kieran', resolve: true, run: 'cat app.py' })
+    expect(res).toContain('--- resolved app.py')
+    expect(res).toContain('    audit()\n    return result')
+    expect(res).toContain('exit 0')
+    // A genuine disagreement stays a conflict.
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('    return 2\n', '    return other\n'))
+    const hard = await t.tools.call('room_preview_merge', { person: 'Kieran', resolve: true })
+    expect(hard).toContain('needs a human')
+    expect(hard).not.toContain('--- resolved')
+  })
+
   it('run= executes a command in the merged tree and never touches the clone', async () => {
     const t = setup()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
@@ -359,6 +381,6 @@ describe('preview merge', () => {
     const { readFileSync } = await import('node:fs')
     expect(readFileSync(`${dir}/app.py`, 'utf8')).toBe(COMMITTED) // clone untouched
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
-    expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'true' })).toContain('resolve the conflicts first')
+    expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'true' })).toContain('need a human first')
   })
 })

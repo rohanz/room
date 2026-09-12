@@ -105,7 +105,7 @@ export const DEFS: ToolDef[] = [
   { name: 'room_impact', annotations: RO, description: 'Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
   { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and another person\'s combine cleanly? Three-way merge against the common base; nothing in any clone is written. Reports clean paths and conflicting hunks. With `run`, materialises the merged tree in a scratch directory and runs that command there (e.g. the tests), so you can verify code that depends on their unmerged work.',
-    inputSchema: { type: 'object', properties: { person: str('the other person'), run: str('optional shell command to run in the merged tree, e.g. "uv run pytest -q"') }, required: ['person'] } },
+    inputSchema: { type: 'object', properties: { person: str('the other person'), run: str('optional shell command to run in the merged tree, e.g. "uv run pytest -q"'), resolve: { type: 'boolean', description: 'when a conflicting region on one side contains the other side\'s lines in order (you built on their change), take the larger side and return the resolved file text so you can write it to your own clone' } }, required: ['person'] } },
 ]
 
 const WAIT_DEFAULT = 30_000
@@ -690,7 +690,8 @@ export function createTools(ctx: ToolCtx): Tools {
       const committedBetween = theirBase === myBase ? [] : (await git(s.dir, ['diff', '--name-only', ancestor, theirBase])).split('\n').filter(Boolean)
       const paths = Array.from(new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person), ...committedBetween])).sort()
       if (!paths.length) return `neither you nor ${person} has changes relative to ${ancestor.slice(0, 10)}`
-      const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = []
+      const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], resolvable: string[] = []
+      const resolvedText = new Map<string, string>()
       const merged = new Map<string, string | null>() // path -> merged text, null = deleted
       for (const p of paths) {
         const b = (await gitShow(s.dir, ancestor, p)) ?? ''
@@ -707,23 +708,38 @@ export function createTools(ctx: ToolCtx): Tools {
         if (!hunks.length) { clean.push(p); merged.set(p, res.flatMap(r => r.ok ?? []).join('\n')); continue }
         let line = 1
         const detail: string[] = []
+        const resolvedLines: string[] = []
+        let unresolved = 0
         for (const r of res) {
-          if (r.ok) { line += r.ok.length; continue }
+          if (r.ok) { line += r.ok.length; resolvedLines.push(...r.ok); continue }
           const c = r.conflict
           if (!c) continue
-          detail.push(`  around line ${line}: you changed ${c.a.length} line(s), ${person} changed ${c.b.length} line(s)`)
+          const sup = supersetSide(c.a, c.b)
+          if (sup) {
+            detail.push(`  around line ${line}: ${sup === 'a' ? 'your' : `${person}'s`} version contains ${sup === 'a' ? `${person}'s` : 'your'} change in order — resolvable by taking ${sup === 'a' ? 'yours' : 'theirs'}`)
+            resolvedLines.push(...(sup === 'a' ? c.a : c.b))
+          } else {
+            unresolved++
+            detail.push(`  around line ${line}: you changed ${c.a.length} line(s), ${person} changed ${c.b.length} line(s) — needs a human or a rewrite`)
+            resolvedLines.push('<<<<<<< yours', ...c.a, '=======', ...c.b, `>>>>>>> ${person}`)
+          }
           line += c.o.length
         }
-        conflicts.push(`${p}\n${detail.join('\n')}`)
+        if (!unresolved) { resolvable.push(p); merged.set(p, resolvedLines.join('\n') + (resolvedLines.length ? '\n' : '')) }
+        conflicts.push(`${p}${unresolved ? '' : ' (resolvable)'}\n${detail.join('\n')}`)
+        if (!unresolved && a.resolve === true) resolvedText.set(p, merged.get(p)!)
       }
       const out = [`preview merge of your changes with ${person}'s (common ancestor ${ancestor.slice(0, 10)}${theirBase !== myBase ? `; ${person} is on ${theirBase.slice(0, 10)}, you on ${myBase.slice(0, 10)}` : ''}):`]
       if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
       if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
+      const hard = conflicts.filter(c => !c.includes(' (resolvable)'))
       if (conflicts.length) out.push(`CONFLICTS:\n${conflicts.join('\n')}`)
       else out.push('no conflicts')
+      if (resolvable.length && a.resolve !== true) out.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone (only your side changes).`)
+      for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       if (run) {
-        if (conflicts.length) out.push(`not running "${run}": resolve the conflicts first`)
+        if (hard.length) out.push(`not running "${run}": ${hard.length} conflict(s) need a human first`)
         else out.push(await runInMergedTree(s, ancestor, merged, run))
       }
       return out.join('\n')
@@ -767,6 +783,19 @@ export function createTools(ctx: ToolCtx): Tools {
 }
 
 class NotJoined extends Error {}
+
+/** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
+export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {
+  const contains = (outer: string[], inner: string[]) => {
+    if (!inner.length || inner.length > outer.length) return false
+    let i = 0
+    for (const line of outer) if (line === inner[i]) i++
+    return i === inner.length
+  }
+  if (a.length > b.length && contains(a, b)) return 'a'
+  if (b.length > a.length && contains(b, a)) return 'b'
+  return undefined
+}
 
 /** Materialise ancestor + merged files in a scratch dir (sharing .venv/node_modules from my clone) and run a command there. */
 async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string): Promise<string> {

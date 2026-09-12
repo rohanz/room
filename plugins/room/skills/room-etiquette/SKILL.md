@@ -37,7 +37,10 @@ disk; edit files with your normal tools.
     new symbol, write your code against the declared name/signature and carry on. Your clone
     will lag until git merges; that is expected. To verify code that depends on their
     unmerged work, `room_preview_merge(person, run="<test command>")` runs the tests on the
-    merged tree without touching any clone.
+    merged tree without touching any clone. If you insert next to a line they changed, copy
+    their version of that line exactly; the preview then reports the overlap as resolvable,
+    and `room_preview_merge(person, resolve=true)` gives you the resolved file to write into
+    your own clone.
 11. A `base` entry means someone committed and the room moved forward. If your status
     says behind, run `git pull --ff-only` before editing further; the ledger lists which
     paths changed.
