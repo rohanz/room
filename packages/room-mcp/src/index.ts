@@ -15,7 +15,7 @@ export { shouldWake } from './wake.js'
 export type { WakeEvent, RoomEvent } from './wake.js'
 export { createTools, DEFS } from './tools.js'
 export type { ToolCtx, ToolDef, Tools } from './tools.js'
-export { joinSession, leaveSession, deriveRoomName, findRoomFile, encodeRoom, decodeRoom } from './session.js'
+export { joinSession, leaveSession, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer } from './session.js'
 export type { Session, JoinOptions } from './session.js'
 
 const log = (s: string) => process.stderr.write(`room-mcp: ${s}\n`)
@@ -54,10 +54,18 @@ async function main() {
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
   }
 
-  // Auto-join when this clone was joined before (.room.json) or the runner told us where to go.
+  // Auto-join when this clone was joined before (.room.json), the runner told us where to go
+  // (ROOM_URL), or a server is configured (ROOM_SERVER) and the clone has an origin remote.
   const env = (k: string) => (process.env[k] && process.env[k]!.trim()) || undefined
   const prior = findRoomFile(dir)
-  if (env('ROOM_URL') || prior) {
+  if (!env('ROOM_URL') && !prior && env('ROOM_SERVER')) {
+    try {
+      const s = await joinSession({ dir, log })
+      session = s; attachChannel(s)
+    } catch (e) {
+      log(`auto-join skipped (${e instanceof Error ? e.message : String(e)}); call room_join`)
+    }
+  } else if (env('ROOM_URL') || prior) {
     try {
       const url = env('ROOM_URL') ?? prior!.room
       const u = new URL(url)

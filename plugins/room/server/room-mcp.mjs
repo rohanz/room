@@ -32669,6 +32669,10 @@ var RoomdError = class extends Error {
 };
 var IGNORED_DIRS = /* @__PURE__ */ new Set([".git", "node_modules", ".venv"]);
 var ROOM_FILE = ".room.json";
+function tokenParams(token) {
+  const t = token?.trim();
+  return t ? { token: t } : {};
+}
 function splitRoomUrl(room) {
   const url = new URL(room);
   const parts = url.pathname.split("/").filter(Boolean);
@@ -32723,7 +32727,8 @@ var Daemon = class {
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15e3;
     const { serverUrl, roomName } = splitRoomUrl(options.room);
     this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
-      WebSocketPolyfill: import_websocket.default
+      WebSocketPolyfill: import_websocket.default,
+      params: tokenParams(options.token ?? process.env.ROOM_TOKEN)
     });
     this.setStatus("syncing");
   }
@@ -33214,6 +33219,16 @@ async function defaultName(dir) {
   }
   return process.env.USER || process.env.USERNAME || void 0;
 }
+function parseServer(raw) {
+  try {
+    const u = new URL(raw);
+    const token = u.searchParams.get("token") ?? void 0;
+    u.search = "";
+    return { server: u.toString().replace(/\/+$/, ""), token };
+  } catch {
+    return { server: raw.replace(/\/+$/, "") };
+  }
+}
 function encodeRoom(roomName) {
   return encodeURIComponent(roomName);
 }
@@ -33226,7 +33241,9 @@ function decodeRoom(encoded) {
 }
 async function joinSession(opts) {
   const dir = resolve3(opts.dir);
-  const server = (opts.server ?? process.env.ROOM_SERVER ?? DEFAULT_SERVER).replace(/\/+$/, "");
+  const parsed = parseServer(opts.server ?? process.env.ROOM_SERVER ?? DEFAULT_SERVER);
+  const server = parsed.server;
+  const token = opts.token ?? process.env.ROOM_TOKEN?.trim() ?? parsed.token;
   const web = (opts.web ?? process.env.ROOM_WEB ?? DEFAULT_WEB).replace(/\/+$/, "");
   const name = opts.name ?? await defaultName(dir);
   if (!name) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
@@ -33237,8 +33254,8 @@ async function joinSession(opts) {
     roomName = d.roomName;
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}`;
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", token, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
   graph.start();
   return {
@@ -34006,7 +34023,15 @@ async function main() {
   };
   const env = (k) => process.env[k] && process.env[k].trim() || void 0;
   const prior = findRoomFile(dir);
-  if (env("ROOM_URL") || prior) {
+  if (!env("ROOM_URL") && !prior && env("ROOM_SERVER")) {
+    try {
+      const s = await joinSession({ dir, log });
+      session = s;
+      attachChannel(s);
+    } catch (e) {
+      log(`auto-join skipped (${e instanceof Error ? e.message : String(e)}); call room_join`);
+    }
+  } else if (env("ROOM_URL") || prior) {
     try {
       const url = env("ROOM_URL") ?? prior.room;
       const u = new URL(url);
@@ -34054,6 +34079,7 @@ export {
   findRoomFile,
   joinSession,
   leaveSession,
+  parseServer,
   shouldWake
 };
 /*! Bundled license information:

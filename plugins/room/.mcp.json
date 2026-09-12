@@ -9,6 +9,7 @@
       "env_vars": [
         "PWD",
         "ROOM_SERVER",
+        "ROOM_TOKEN",
         "ROOM_WEB",
         "ROOM_URL",
         "ROOM_NAME",

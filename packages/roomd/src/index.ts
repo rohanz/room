@@ -22,6 +22,8 @@ export interface RoomdOptions {
   name: string
   /** Presence kind to publish; 'agent' when embedded in the MCP server. Default 'human'. */
   kind?: Kind
+  /** Shared room token, sent as ?token= on the websocket. Default: ROOM_TOKEN env. */
+  token?: string
   log?: (line: string) => void
   /** Max time to wait for the initial sync; default 15s. */
   connectTimeoutMs?: number
@@ -55,6 +57,11 @@ export class RoomdError extends Error {
 
 const IGNORED_DIRS = new Set(['.git', 'node_modules', '.venv'])
 const ROOM_FILE = '.room.json'
+
+export function tokenParams(token?: string): Record<string, string> {
+  const t = token?.trim()
+  return t ? { token: t } : {}
+}
 
 export function splitRoomUrl(room: string): { serverUrl: string; roomName: string } {
   const url = new URL(room)
@@ -116,6 +123,7 @@ class Daemon implements Roomd {
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
       : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
           WebSocketPolyfill: WebSocket as any,
+          params: tokenParams(options.token ?? process.env.ROOM_TOKEN),
         })
     this.setStatus('syncing')
   }

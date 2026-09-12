@@ -1,0 +1,36 @@
+# Fly.io config for the room server. Deploy from the repo root:
+#   fly launch --config deploy/fly.toml --dockerfile deploy/Dockerfile --no-deploy
+#   fly volumes create room_data --size 1
+#   fly secrets set ROOM_TOKEN=$(openssl rand -hex 16)
+#   fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+# Then: ROOM_SERVER="wss://<app>.fly.dev/?token=<token>" codex
+app = "room-server"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  YPERSISTENCE = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  path = "/health"
+  interval = "30s"
+  timeout = "5s"
+  method = "GET"
+
+[mounts]
+  source = "room_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

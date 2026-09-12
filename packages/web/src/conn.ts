@@ -47,7 +47,8 @@ export function connect(search = location.search): Conn {
   const roomLocation = roomLocationFromQuery(search)
   const doc = new Y.Doc()
   const room = new RoomDoc(doc)
-  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc)
+  const token = new URLSearchParams(location.search).get('token') ?? ''
+  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: token ? { token } : {} })
   const viewerName = new URLSearchParams(search).get('name')?.trim()
   if (viewerName) {
     provider.awareness.setLocalState({

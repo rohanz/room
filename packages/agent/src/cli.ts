@@ -7,7 +7,7 @@ import WebSocket from 'ws'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { RoomDoc, colorFor } from '@room/shared'
-import { deriveRoomName, encodeRoom } from '@room/room-mcp'
+import { deriveRoomName, encodeRoom, parseServer } from '@room/room-mcp'
 import { CodexBackend } from './backend.js'
 import { Runner } from './runner.js'
 
@@ -33,7 +33,7 @@ const gitName = () => { try { return execFileSync('git', ['-C', workDir, 'config
 const name = args.name ?? cfg.name ?? gitName()
 let roomUrl = args.room ?? cfg.room
 if (!roomUrl) {
-  const server = (args.server ?? process.env.ROOM_SERVER ?? 'ws://localhost:1234').replace(/\/+$/, '')
+  const server = parseServer(args.server ?? process.env.ROOM_SERVER ?? 'ws://localhost:1234').server
   const d = await deriveRoomName(workDir)
   if (d.roomName) roomUrl = `${server}/${encodeRoom(d.roomName)}`
 }
@@ -49,14 +49,15 @@ const mcpEntry = resolve(here, '../../room-mcp/src/index.ts')
 
 const doc = new Y.Doc()
 const room = new RoomDoc(doc)
-const provider = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket })
+const token = (args.token ?? process.env.ROOM_TOKEN ?? parseServer(args.server ?? process.env.ROOM_SERVER ?? '').token ?? '').trim()
+const provider = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket, params: token ? { token } : {} })
 provider.awareness.setLocalState({ user: { name, kind: 'agent', color: colorFor(name) }, status: 'idle' })
 
 const backend = new CodexBackend({
   workingDirectory: workDir,
   model: args.model,
   turnTimeoutMs: args['turn-timeout-ms'] ? Number(args['turn-timeout-ms']) : undefined,
-  mcp: { command: 'npx', args: ['tsx', mcpEntry], env: { ROOM_URL: roomUrl, ROOM_NAME: name, ROOM_DIR: workDir } },
+  mcp: { command: 'npx', args: ['tsx', mcpEntry], env: { ROOM_URL: roomUrl, ROOM_NAME: name, ROOM_DIR: workDir, ...(token ? { ROOM_TOKEN: token } : {}) } },
 })
 const runner = new Runner({ name, room, awareness: provider.awareness, backend, log: l => console.error(`[roomagent] ${l}`) })
 

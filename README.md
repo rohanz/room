@@ -90,15 +90,26 @@ codex plugin marketplace add rohanz/room     # or the path to this checkout
 codex plugin add room@room
 ```
 
-Run a room server somewhere both laptops can reach (`PORT=1234 npm run server`; rooms are
-in-memory and unauthenticated, demo-grade). Then in any clone:
+Run a room server somewhere both laptops can reach. Locally:
 
 ```sh
-ROOM_SERVER=ws://<server>:1234 codex
-> $room-join
+ROOM_TOKEN=$(openssl rand -hex 16) YPERSISTENCE=./room-data PORT=1234 npm run server
 ```
 
-That's it. The `room-etiquette` skill tells Codex how to behave. Optional:
+`ROOM_TOKEN` gates every connection (drop it for an open server). `YPERSISTENCE` stores
+rooms in LevelDB so they survive restarts (drop it for in-memory). Hosted on Fly.io in
+three commands: see `deploy/fly.toml`.
+
+Then in any clone, with the server URL carrying the token:
+
+```sh
+export ROOM_SERVER="wss://<server>/?token=<token>"    # once, in your shell profile
+codex
+```
+
+Codex joins the room on startup (the plugin's MCP server sees `ROOM_SERVER` and the
+clone's origin). Say "join the room" or `$room-join` if it didn't, or to switch rooms.
+The `room-etiquette` skill tells Codex how to behave. Optional:
 
 - **Browser view**: `npm run web`, then open the URL `room_join` prints. Read-only: who is
   on what, claims in the gutter, the feed with priorities, filter by area.

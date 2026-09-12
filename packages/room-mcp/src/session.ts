@@ -37,6 +37,7 @@ export interface JoinOptions {
   room?: string
   server?: string
   web?: string
+  token?: string
   connectTimeoutMs?: number
   log?: (line: string) => void
 }
@@ -68,12 +69,26 @@ export async function defaultName(dir: string): Promise<string | undefined> {
   return process.env.USER || process.env.USERNAME || undefined
 }
 
+/** "wss://host/?token=abc" -> { server: "wss://host", token: "abc" }; a bare URL has no token. */
+export function parseServer(raw: string): { server: string; token?: string } {
+  try {
+    const u = new URL(raw)
+    const token = u.searchParams.get('token') ?? undefined
+    u.search = ''
+    return { server: u.toString().replace(/\/+$/, ''), token }
+  } catch {
+    return { server: raw.replace(/\/+$/, '') }
+  }
+}
+
 export function encodeRoom(roomName: string): string { return encodeURIComponent(roomName) }
 export function decodeRoom(encoded: string): string { try { return decodeURIComponent(encoded) } catch { return encoded } }
 
 export async function joinSession(opts: JoinOptions): Promise<Session> {
   const dir = resolve(opts.dir)
-  const server = (opts.server ?? process.env.ROOM_SERVER ?? DEFAULT_SERVER).replace(/\/+$/, '')
+  const parsed = parseServer(opts.server ?? process.env.ROOM_SERVER ?? DEFAULT_SERVER)
+  const server = parsed.server
+  const token = opts.token ?? process.env.ROOM_TOKEN?.trim() ?? parsed.token
   const web = (opts.web ?? process.env.ROOM_WEB ?? DEFAULT_WEB).replace(/\/+$/, '')
   const name = opts.name ?? await defaultName(dir)
   if (!name) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
@@ -85,8 +100,8 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     roomName = d.roomName
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}`
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', token, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
   graph.start()
   return {
