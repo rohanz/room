@@ -437,12 +437,19 @@ function timelineItem(item: TimelineItem): HTMLElement {
     item.replies.length ? h('div', { class: 'thread-replies' }, ...item.replies.map(timelineItem)) : null)
 }
 
-function episodeCard(episode: Episode): HTMLElement {
-  return h('article', { class: 'episode' },
+/** Ids rendered before; anything not in here gets the enter animation on this render. */
+function episodeCard(episode: Episode, seen?: Set<string>): HTMLElement {
+  const fresh = (id: string) => { if (!seen) return false; if (seen.has(id)) return false; seen.add(id); return true }
+  const card = h('article', { class: `episode${fresh(`ep:${episode.id}`) ? ' enter' : ''}` },
     h('div', { class: 'episode-head' }, dot(episode.person), h('strong', {}, episode.person), h('span', { class: 'area-chip' }, episode.area),
       h('span', { class: `episode-status ${episode.status === 'done' ? 'done' : ''}` }, episode.status)),
     h('div', { class: 'episode-summary' }, episode.summary, ...copyChips(episode.alsoSentTo)),
-    h('div', { class: 'episode-items' }, ...episode.items.map(timelineItem)))
+    h('div', { class: 'episode-items' }, ...episode.items.map(item => {
+      const el = timelineItem(item)
+      if (fresh(item.message.id)) el.classList.add('enter')
+      return el
+    })))
+  return card
 }
 
 export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
@@ -452,11 +459,15 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
   const element = h('aside', { class: 'timeline' }, h('div', { class: 'timeline-head' }, h('div', { class: 'panel-title' }, 'Timeline'), filters), scroll)
   let areaFilter: string | null = null
   let followNewest = true
+  const seen = new Set<string>()
+  let primed = false
   scroll.onscroll = () => { followNewest = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48 }
 
   const render = () => {
     const shouldFollow = followNewest
     const episodes = groupEpisodes(conn.room.messages())
+    // Everything present at first paint is "old"; only later arrivals animate in.
+    if (!primed) { for (const e of episodes) { seen.add(`ep:${e.id}`); for (const it of e.items) seen.add(it.message.id) }; primed = true }
     const areas = Array.from(new Set(episodes.map(episode => episode.area))).sort()
     const people = Array.from(new Set(episodes.map(episode => episode.person))).sort()
     const chip = (label: string, active: boolean, action: () => void) => {
@@ -470,7 +481,7 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
       ...people.map(person => chip(person, focus.person === person, () => { areaFilter = null; focus.set(focus.person === person ? null : person) })),
     )
     const visible = episodes.filter(episode => focus.person ? episode.person === focus.person : !areaFilter || episode.area === areaFilter)
-    list.replaceChildren(...visible.map(episodeCard))
+    list.replaceChildren(...visible.map(e => episodeCard(e, seen)))
     if (!visible.length) list.append(h('div', { class: 'empty-note muted' }, 'No matching episodes'))
     if (shouldFollow) requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight })
   }

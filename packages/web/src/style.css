@@ -293,3 +293,10 @@ h2 { margin: 0 0 10px; font-size: 17px; }
 .network-node:is(.contract, .file-edited) .edit-badge text { fill: #fff; }
 .network-node.exposed:is(.contract, .file-edited) > rect { stroke: #e86876; stroke-width: 2.5; }
 .network-node:is(:hover, :focus, .selected) > rect { stroke: #162c4d; stroke-width: 3; }
+
+/* New timeline arrivals ease in; existing ones stay still on re-render. */
+@keyframes room-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes room-flash { from { background: color-mix(in srgb, var(--accent) 18%, white); } to { background: transparent; } }
+.episode.enter { animation: room-enter .45s ease-out both; }
+.timeline-item.enter { animation: room-enter .35s ease-out both, room-flash 1.8s ease-out both; }
+@media (prefers-reduced-motion: reduce) { .episode.enter, .timeline-item.enter { animation: none; } }
