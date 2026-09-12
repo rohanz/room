@@ -32,3 +32,28 @@ describe('dependency network', () => {
     expect(deriveNetwork(graph, []).nodes).toHaveLength(5)
   })
 })
+
+import { deriveContractImpact } from './network-model.ts'
+import type { Claim } from '@room/shared'
+const contract: Claim = { id: 'plan', by: 'Rohan', byKind: 'agent', path: 'pricing', from: 1, to: 5, intent: 'Return Quote', at: 0, plans: [{ kind: 'signature', symbol: 'quote_total', detail: 'Return Quote' }] }
+describe('contract impact', () => {
+  it('matches the declared symbol and distinguishes direct from transitive exposure', () => {
+    const result = deriveContractImpact(graph, [contract])
+    expect([...result.contracts.keys()]).toEqual(['pricing'])
+    expect([...result.direct.keys()]).toEqual(['checkout'])
+    expect([...result.indirect.keys()]).toEqual(['receipt'])
+    expect(result.direct.has('catalog')).toBe(false)
+  })
+  it('does not flag consumers of unrelated symbols or ordinary edits', () => {
+    expect(deriveContractImpact(graph, [{ ...contract, plans: [] }]).declarations).toEqual([])
+    const result = deriveContractImpact(graph, [{ ...contract, plans: [{ kind: 'rename', symbol: 'other_symbol' }] }])
+    expect(result.contracts.size).toBe(1)
+    expect(result.direct.size).toBe(0)
+    expect(deriveContractImpact(graph, []).contracts.size).toBe(0)
+  })
+  it('handles cycles and plans on files absent from the current index', () => {
+    const result = deriveContractImpact({ ...graph, edges: [...graph.edges, { source: 'receipt', target: 'pricing', symbols: ['callback'] }] }, [contract])
+    expect(result.indirect.has('pricing')).toBe(false)
+    expect(deriveContractImpact(graph, [{ ...contract, path: 'deleted.ts' }]).contracts.has('deleted.ts')).toBe(true)
+  })
+})

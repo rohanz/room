@@ -215,3 +215,22 @@ h3 { margin: 0 0 8px; font-size: 11px; font-weight: 600; text-transform: upperca
 .layout:has(.network-panel.expanded:not([hidden])) { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'head' 'center'; }
 .layout:has(.network-panel.expanded:not([hidden])) > .participants,
 .layout:has(.network-panel.expanded:not([hidden])) > .feed { display: none; }
+
+.legend-contract { color: #7652af; }
+.legend-impact { color: #aa681c; }
+.network-node.contract rect { fill: #f3ecff; stroke: #ad8cd7; }
+.network-node.contract circle { fill: #8051b9; }
+.network-node.direct rect { fill: #fff4e5; stroke: #d6a564; }
+.network-node.direct circle { fill: #c0802b; }
+.network-node.indirect rect { fill: #fffdf7; stroke: #ddd3bd; }
+.network-node.indirect circle { fill: #b4a17b; }
+.network-node.own-edit circle { fill: #2c77da; r: 4.5; }
+.network-node.own-edit rect { stroke-width: 2; stroke: #598ed8; }
+.network-edge.impact { stroke: #b89360; opacity: .5; }
+.network-edge.background { opacity: .1; }
+.network-stats > div:first-child strong { color: #7652af; }
+.network-stats > div:last-child strong { color: #2c77da; }
+.network-contract-details { border-left: 3px solid #aa8bcf; padding-left: 10px; margin: 12px 0; }
+.network-tooltip { position: fixed; z-index: 100; pointer-events: none; width: min(340px, calc(100vw - 16px)); padding: 13px 15px; background: #fff; border: 1px solid #d6cce5; border-radius: 9px; box-shadow: 0 8px 30px #26304726; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.network-tooltip > div { margin-top: 6px; }
+.network-tooltip strong { color: #513777; }

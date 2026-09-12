@@ -84,13 +84,20 @@ first.
 
 ### Dependency network
 
-The browser opens on a **Network** tab. Choose a participant to highlight their current
-overlay changes in blue and their transitive upstream dependencies in amber. Arrows point
-from provider to consumer. Select a file to see dependency symbols, who is changing it,
-and open claims and plans. Selecting a file emphasizes its incoming and outgoing edges.
-Search, zoom, Fit, Expand, and the neighborhood filter help explore larger graphs;
-the Changed files tab retains the overlay reader. Fit adjusts with the available width,
-and Expand temporarily gives the network the whole workspace.
+The browser opens on a **Network** tab focused on declared contract changes. Purple nodes
+have open rename, signature, delete, or add plans. Amber nodes are direct consumers of the
+exact declared symbols; paler nodes are further downstream. These are potential impacts,
+not verified failures. Blue dots and borders separately identify the selected participant's
+actual overlay edits, including edits on contract nodes. Ordinary edits do not imply a
+contract change. Releasing a claim removes its declarations from this view.
+
+Dense graphs automatically use compact nodes with module/file labels. A density selector
+also offers Compact and Comfortable modes. Hover or keyboard focus previews the file,
+owner, plans, and potential exposure; click or Enter opens full plans and consumer lists.
+Escape dismisses the preview. Selecting a file emphasizes its incident edges. Search,
+zoom, Fit, Expand, and the contract-impact filter help explore larger graphs; turn the
+filter off for all indexed files. The Changed files tab retains the overlay reader.
+Fit adjusts with the available width; Expand gives the network the whole workspace.
 
 The MCP indexer publishes a bounded graph snapshot for each participant into the room.
 Join using the updated MCP server (rebuild the plugin with `npm run build:plugin`) before
