@@ -1,301 +1,337 @@
-import type * as Y from 'yjs'
-import { colorFor, displayName, formatMsg, type ChatItem, type Claim, type Cursor, type Msg, type NoteMsg, type Presence } from '@room/shared'
+import {
+  RoomDoc,
+  colorFor,
+  describeClaim,
+  formatMsg,
+  type Claim,
+  type Kind,
+  type Msg,
+  type Presence,
+  type Scope,
+} from '@room/shared'
 import { presences, type Conn } from './conn.ts'
+import { Editor } from './editor.ts'
 
-export const h = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> & { class?: string } = {}, ...kids: (Node | string | null | undefined)[]) => {
-  const el = document.createElement(tag)
-  const { class: cls, ...rest } = props
-  if (cls) el.className = cls
-  Object.assign(el, rest)
-  for (const k of kids) if (k != null) el.append(k)
-  return el
-}
-const dot = (name: string, title?: string) => { const d = h('span', { class: 'dot', title: title ?? name }); d.style.background = colorFor(name); return d }
-const timeStr = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-export const relTime = (t: number) => {
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000))
-  if (s < 5) return 'now'
-  if (s < 60) return `${s}s ago`
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return timeStr(t)
+export const h = <K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  props: Partial<HTMLElementTagNameMap[K]> & { class?: string } = {},
+  ...children: (Node | string | null | undefined)[]
+) => {
+  const element = document.createElement(tag)
+  const { class: className, ...rest } = props
+  if (className) element.className = className
+  Object.assign(element, rest)
+  for (const child of children) if (child != null) element.append(child)
+  return element
 }
 
-// ---- people: one entry per person, folding their human + agent presences -------------
-export interface Person { name: string; human?: Presence; agent?: Presence }
-export function agentPresence(conn: Conn, name: string): Presence | undefined {
-  return presences(conn.provider).find(({ p }) => p.user.name === name && p.user.kind === 'agent')?.p
-}
-export function people(conn: Conn): Person[] {
-  const m = new Map<string, Person>()
-  for (const { p } of presences(conn.provider)) {
-    const e = m.get(p.user.name) ?? { name: p.user.name }
-    if (p.user.kind === 'agent') e.agent ??= p
-    // daemon + browser both publish a human presence for one name: prefer the one with a cursor
-    else if (!e.human || (!e.human.cursor && p.cursor)) e.human = p
-    m.set(p.user.name, e)
-  }
-  return Array.from(m.values()).sort((a, b) => Number(b.name === conn.me.name) - Number(a.name === conn.me.name) || a.name.localeCompare(b.name))
-}
-/** Where a person "is": human cursor, else agent cursor, else the agent's newest claim. */
-export function whereIs(conn: Conn, p: Person): Cursor | undefined {
-  if (p.human?.cursor) return p.human.cursor
-  if (p.agent?.cursor) return p.agent.cursor
-  const c = conn.room.openClaims().filter(c => c.by === p.name).pop()
-  return c ? { path: c.path, from: c.from, to: c.to } : undefined
-}
-const agentLabel = (p: Person) => {
-  if (!p.agent) return 'no agent'
-  const s = p.agent.status ?? 'idle'
-  const c = p.agent.cursor
-  if (c && /^editing/.test(s)) return `editing ${c.path.split('/').pop()} ${c.from}-${c.to}`
-  return s
+const dot = (name: string, title = name) => {
+  const element = h('span', { class: 'dot', title })
+  element.style.background = colorFor(name)
+  return element
 }
 
-// ---- touched files ---------------------------------------------------------------
-/**
- * Files whose text is likely to differ from the committed base. The daemon does not publish
- * committed text or base hashes, so this is a heuristic: changed in the room since this page
- * loaded, named in any `changed` bus message, or has/had a claim. Labelled "touched" to be
- * honest. True committed-vs-live needs the daemon to publish per-file base hashes — day two.
- */
-export function touchedTracker(conn: Conn) {
-  const set = new Set<string>()
-  const listeners: (() => void)[] = []
-  const emit = () => listeners.forEach(f => f())
-  const add = (ps: Iterable<string>) => { let n = 0; for (const p of ps) if (!set.has(p)) { set.add(p); n++ }; if (n) emit() }
-  const scanBus = (ms: Msg[]) => add(ms.flatMap(m => m.type === 'changed' ? m.paths : m.type === 'claim' || m.type === 'release' || m.type === 'conflict' ? [m.path] : []))
-  scanBus(conn.room.messages())
-  conn.room.bus.observe(e => { const ms: Msg[] = []; e.changes.added.forEach(i => ms.push(...(i.content.getContent() as Msg[]))); scanBus(ms) })
-  const scanClaims = () => add(conn.room.openClaims().map(c => c.path))
-  scanClaims(); conn.room.claims.observe(scanClaims)
-  // phase 2: replace this compatibility tracker with the person-aware overlay list.
-  let live = conn.provider.synced
-  conn.provider.once('sync', () => { live = true })
-  conn.room.overlays.observeDeep(() => {
-    if (!live) return
-    add(conn.room.paths())
+const absoluteTime = (at: number) => new Date(at).toLocaleString()
+
+export function relativeTime(at: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - at) / 1000))
+  if (seconds < 5) return 'active now'
+  if (seconds < 60) return `active ${seconds}s ago`
+  if (seconds < 3600) return `active ${Math.floor(seconds / 60)}m ago`
+  if (seconds < 86400) return `active ${Math.floor(seconds / 3600)}h ago`
+  return `active ${Math.floor(seconds / 86400)}d ago`
+}
+
+export interface ParticipantClaim extends Claim { stale: boolean }
+export interface Participant {
+  name: string
+  online: boolean
+  latestActive?: number
+  kinds: Kind[]
+  statuses: { kind: Kind; status: string }[]
+  scope?: Scope
+  files: string[]
+  claims: ParticipantClaim[]
+}
+
+export interface ParticipantInput {
+  presences: readonly Presence[]
+  scopes: readonly (readonly [string, Scope])[]
+  overlayPeople: readonly string[]
+  changesByPerson: ReadonlyMap<string, readonly string[]>
+  claims: readonly Claim[]
+  now?: number
+}
+
+/** One card model per person, derived without mutating room state. */
+export function deriveParticipants(input: ParticipantInput): Participant[] {
+  const now = input.now ?? Date.now()
+  const names = new Set<string>()
+  for (const presence of input.presences) names.add(presence.user.name)
+  for (const [name] of input.scopes) names.add(name)
+  for (const name of input.overlayPeople) names.add(name)
+
+  return Array.from(names).sort().map(name => {
+    const current = input.presences.filter(presence => presence.user.name === name)
+    const latest = new Map<Kind, Presence>()
+    for (const presence of current) {
+      const previous = latest.get(presence.user.kind)
+      if (!previous || (presence.lastActive ?? 0) >= (previous.lastActive ?? 0)) latest.set(presence.user.kind, presence)
+    }
+    const scope = input.scopes.find(([scopeName]) => scopeName === name)?.[1]
+    const kinds = new Set<Kind>(latest.keys())
+    if (scope) kinds.add(scope.byKind)
+    for (const claim of input.claims) if (claim.by === name) kinds.add(claim.byKind)
+    const latestActive = current.reduce<number | undefined>((value, presence) => {
+      if (presence.lastActive === undefined) return value
+      return value === undefined ? presence.lastActive : Math.max(value, presence.lastActive)
+    }, undefined)
+    const online = current.length > 0
+    return {
+      name,
+      online,
+      latestActive,
+      kinds: Array.from(kinds).sort((a, b) => a.localeCompare(b)),
+      statuses: Array.from(latest.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([kind, presence]) => ({ kind, status: presence.status ?? 'online' })),
+      scope,
+      files: [...(input.changesByPerson.get(name) ?? [])].sort(),
+      claims: input.claims
+        .filter(claim => claim.by === name)
+        .map(claim => ({ ...claim, stale: !online && now - claim.at > 10 * 60_000 })),
+    }
   })
-  return { has: (p: string) => set.has(p), get size() { return set.size }, onChange(f: () => void) { listeners.push(f) } }
-}
-export type Touched = ReturnType<typeof touchedTracker>
-
-// ---- header ----------------------------------------------------------------------
-export interface HeaderOpts { touched: Touched; onJump(c: Cursor): void; unread: UnreadTracker }
-export function header(conn: Conn, o: HeaderOpts) {
-  const repo = h('span', { class: 'repo' }, '…')
-  const sub = h('span', { class: 'sub muted' })
-  const count = h('span', { class: 'sub muted' })
-  const chips = h('div', { class: 'chips' })
-  const pill = h('span', { class: 'pill' }, 'offline')
-  const el = h('header', { class: 'header' }, h('div', { class: 'meta' }, repo, sub, count), chips, pill)
-  const renderMeta = () => {
-    const m = conn.room.meta
-    repo.textContent = m.repo ?? 'room'
-    sub.replaceChildren(m.branch ?? '—', '@', h('span', { class: 'mono' }, (m.base ?? '').slice(0, 7) || '—'))
-    count.textContent = `${o.touched.size} touched`
-  }
-  const renderChips = () => {
-    chips.replaceChildren(...people(conn).map(p => {
-      const me = p.name === conn.me.name
-      const where = whereIs(conn, p)
-      const n = o.unread.countFrom(p.name)
-      const chip = h('button', { class: 'chip person' + (me ? ' me' : ''), title: where ? `${where.path}:${where.from}` : 'no location' },
-        dot(p.name), h('span', { class: 'nm' }, p.name, me ? h('span', { class: 'muted' }, ' (you)') : null),
-        h('span', { class: 'ag muted' }, 'agent: ', h('span', { class: 'st ' + (p.agent ? (p.agent.status ?? 'idle').split(/[\s:]/)[0] : 'none') }, agentLabel(p))),
-        n ? h('span', { class: 'unread', title: `${n} unread for you` }, String(n)) : null)
-      chip.onclick = () => { if (where) o.onJump(where); o.unread.clearFrom(p.name) }
-      return chip
-    }))
-  }
-  conn.room.metaMap.observe(renderMeta); renderMeta()
-  o.touched.onChange(renderMeta)
-  conn.provider.awareness.on('change', renderChips)
-  conn.room.claims.observe(renderChips)
-  o.unread.onChange(renderChips)
-  renderChips()
-  conn.onStatus(c => { pill.textContent = c ? 'connected' : 'disconnected'; pill.classList.toggle('on', c) })
-  return el
 }
 
-/** Unread question/conflict messages addressed to me, keyed by sender. */
-export function unreadTracker(conn: Conn) {
-  const ids = new Map<string, string>() // msg id -> sender
-  const listeners: (() => void)[] = []
-  const emit = () => listeners.forEach(f => f())
-  const seen = (m: Msg) => m.to === conn.me.name && (m.type === 'question' || m.type === 'conflict') && Date.now() - m.at < 10 * 60_000
-  conn.room.bus.observe(e => {
-    let n = 0
-    e.changes.added.forEach(i => (i.content.getContent() as Msg[]).forEach(m => { if (seen(m)) { ids.set(m.id, m.from); n++ } }))
-    if (n) emit()
-  })
+export interface FileRow { path: string; people: string[] }
+
+export function deriveFileRows(changesByPerson: ReadonlyMap<string, readonly string[]>): FileRow[] {
+  const byPath = new Map<string, Set<string>>()
+  for (const [person, paths] of changesByPerson) {
+    for (const path of paths) {
+      const people = byPath.get(path) ?? new Set<string>()
+      people.add(person)
+      byPath.set(path, people)
+    }
+  }
+  return Array.from(byPath, ([path, people]) => ({ path, people: Array.from(people).sort() }))
+    .sort((a, b) => a.path.localeCompare(b.path))
+}
+
+function participantInput(conn: Conn): ParticipantInput {
+  const names = new Set([...conn.room.overlays.keys(), ...conn.room.deleted.keys(), ...conn.room.scopes.keys()])
+  const changes = new Map<string, string[]>()
+  for (const name of names) changes.set(name, conn.room.changedPaths(name))
   return {
-    countFrom: (name: string) => Array.from(ids.values()).filter(v => v === name).length,
-    clearFrom(name: string) { let n = 0; for (const [k, v] of ids) if (v === name) { ids.delete(k); n++ }; if (n) emit() },
-    /** Called when the agent panel shows the event: clears after 10s of being viewed. */
-    viewed(msgId: string, delay = 10_000) { if (ids.has(msgId)) setTimeout(() => { if (ids.delete(msgId)) emit() }, delay) },
-    clear(msgId: string) { if (ids.delete(msgId)) emit() },
-    onChange(f: () => void) { listeners.push(f) },
+    presences: presences(conn.provider),
+    scopes: Array.from(conn.room.scopes.entries()),
+    // The participant union deliberately follows spec §9: awareness, scopes, overlays.
+    overlayPeople: Array.from(conn.room.overlays.keys()),
+    changesByPerson: changes,
+    claims: conn.room.openClaims(),
   }
 }
-export type UnreadTracker = ReturnType<typeof unreadTracker>
 
-// ---- file tree ---------------------------------------------------------------------
-interface TreeNode { name: string; path: string; kids?: Map<string, TreeNode> }
-export function fileTree(conn: Conn, touched: Touched, onOpen: (p: string) => void) {
-  const tree = h('div', { class: 'tree' })
-  const el = h('aside', { class: 'files scroll' }, h('h3', {}, 'Files'), tree)
-  let active: string | null = null
-  const partiesIn = (path: string): string[] => {
-    const names = new Set<string>()
-    for (const { p } of presences(conn.provider)) if (p.cursor?.path === path) names.add(p.user.name)
-    for (const c of conn.room.claimsFor(path)) names.add(c.by)
-    return Array.from(names).sort()
-  }
+export function participantsPanel(conn: Conn): HTMLElement {
+  const list = h('div', { class: 'participant-list' })
+  const element = h('aside', { class: 'participants scroll' }, h('h3', {}, 'Participants'), list)
   const render = () => {
-    const root: TreeNode = { name: '', path: '', kids: new Map() }
-    for (const p of conn.room.paths()) {
-      let cur = root
-      const parts = p.split('/')
-      parts.forEach((seg, i) => {
-        const full = parts.slice(0, i + 1).join('/')
-        let n = cur.kids!.get(seg)
-        if (!n) { n = { name: seg, path: full, kids: i < parts.length - 1 ? new Map() : undefined }; cur.kids!.set(seg, n) }
-        cur = n
-      })
-    }
-    const draw = (n: TreeNode): HTMLElement => {
-      if (n.kids) {
-        const entries = Array.from(n.kids.values()).sort((a, b) => Number(!!b.kids) - Number(!!a.kids) || a.name.localeCompare(b.name))
-        const kids = h('div', { class: 'kids' }, ...entries.map(draw))
-        return n.path ? h('div', {}, h('div', { class: 'node dir' }, n.name + '/'), kids) : kids
-      }
-      const t = touched.has(n.path)
-      const f = h('div', { class: 'node file' + (n.path === active ? ' active' : '') + (t ? ' touched' : ''), title: n.path + (t ? ' · touched (changed in this room, claimed, or in a changed message)' : '') },
-        h('span', { class: 'fn' }, n.name),
-        h('span', { class: 'dots' }, ...partiesIn(n.path).map(nm => dot(nm, `${nm} is here`))),
-        t ? h('span', { class: 'gitmark', title: 'touched' }, 'M') : null)
-      f.onclick = () => onOpen(n.path)
-      return f
-    }
-    tree.replaceChildren(draw(root))
-    if (!conn.room.paths().length) tree.append(h('div', { class: 'muted' }, 'no files yet — waiting for a daemon to seed'))
+    const participants = deriveParticipants(participantInput(conn))
+    list.replaceChildren(...participants.map(participant => {
+      const activity = participant.latestActive === undefined ? 'offline' : relativeTime(participant.latestActive)
+      const kinds = h('div', { class: 'kind-row' }, ...participant.kinds.map(kind => h('span', { class: `kind-badge ${kind}` }, kind)))
+      const statuses = participant.statuses.length
+        ? h('div', { class: 'statuses' }, ...participant.statuses.map(item => h('div', {}, `${item.kind}: ${item.status}`)))
+        : h('div', { class: 'statuses muted' }, 'offline')
+      const scope = participant.scope
+        ? h('div', { class: 'scope' },
+            h('div', { class: 'scope-title' }, h('span', { class: 'area' }, participant.scope.area), participant.scope.summary),
+            h('div', { class: 'path-list mono' }, participant.scope.paths.join(', ') || 'no paths'))
+        : h('div', { class: 'muted no-scope' }, 'no scope declared')
+      const files = h('div', { class: 'person-files' },
+        h('span', { class: 'label' }, 'changed'),
+        participant.files.length ? h('div', { class: 'path-list mono' }, participant.files.join(', ')) : h('span', { class: 'muted' }, ' none'))
+      const claims = participant.claims.length
+        ? h('div', { class: 'person-claims' }, ...participant.claims.map(claim => h('div', {
+            class: `person-claim${claim.stale ? ' stale' : ''}`,
+            title: describeClaim(claim),
+          }, `${claim.path}:${claim.from}-${claim.to}`, claim.stale ? h('span', { class: 'stale-badge' }, 'stale') : null)))
+        : null
+      return h('article', { class: `participant${participant.online ? '' : ' offline'}` },
+        h('div', { class: 'participant-head' }, dot(participant.name), h('strong', {}, participant.name), h('span', { class: 'sp' }), kinds),
+        h('div', { class: 'presence-line' }, statuses, h('span', { class: 'activity muted', title: participant.latestActive ? absoluteTime(participant.latestActive) : '' }, activity)),
+        scope,
+        files,
+        claims)
+    }))
+    if (!participants.length) list.append(h('div', { class: 'empty-note muted' }, 'Waiting for participants…'))
   }
+  conn.provider.awareness.on('change', render)
+  conn.room.scopes.observe(render)
   conn.room.overlays.observeDeep(render)
   conn.room.deleted.observeDeep(render)
   conn.room.claims.observe(render)
-  conn.provider.awareness.on('change', render)
-  touched.onChange(render)
   render()
-  return { el, setActive(p: string | null) { active = p; render() } }
+  return element
 }
 
-// ---- right panel: your agent --------------------------------------------------------
-export function agentPane(conn: Conn, unread: UnreadTracker) {
-  const status = h('span', { class: 'ast' }, 'offline')
-  const stop = h('button', { class: 'stop', textContent: 'Stop', hidden: true })
-  const head = h('div', { class: 'ahead' }, dot(conn.me.name), h('span', { class: 'ttl' }, `${conn.me.name}'s agent`), h('span', { class: 'muted' }, ' · '), status, h('span', { class: 'sp' }), stop)
-  const list = h('div', { class: 'chat' })
-  const scroll = h('div', { class: 'scroll grow' }, list)
-  const input = h('textarea', { placeholder: `Message ${conn.me.name}'s agent… (Enter to send)`, rows: 2 })
-  const send = () => {
-    const text = input.value.trim(); if (!text) return
-    conn.room.say(conn.me.name, { role: 'human', text })
-    input.value = ''
-  }
-  input.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }
-  const el = h('section', { class: 'agent' }, head, scroll, h('div', { class: 'composer' }, input, h('button', { class: 'primary', onclick: send }, 'Send')))
-
-  let stopRequested = false
-  stop.onclick = () => { conn.room.say(conn.me.name, { role: 'human', text: '/stop' }); stopRequested = true; renderStatus() }
-  const renderStatus = () => {
-    const ag = agentPresence(conn, conn.me.name)
-    const s = ag ? (ag.status ?? 'idle') : 'offline'
-    const running = !!ag && s !== 'idle' && s !== 'offline'
-    if (!running) stopRequested = false
-    status.textContent = s
-    status.className = 'ast ' + s.split(/[\s:]/)[0]
-    stop.hidden = !running
-    stop.textContent = stopRequested ? 'stop requested' : 'Stop'
-    stop.disabled = stopRequested
-  }
-  conn.provider.awareness.on('change', renderStatus); renderStatus()
-
-  const item = (it: ChatItem) => {
-    const addressed = it.role === 'event' && (it.meta?.type === 'question' || it.meta?.type === 'conflict')
-    const el = h('div', { class: 'msg ' + it.role + (addressed ? ' addressed' : ''), title: it.meta ? Object.entries(it.meta).map(([k, v]) => `${k}: ${v}`).join('\n') : '' },
-      it.text, it.role === 'human' || it.role === 'agent' ? h('time', {}, timeStr(it.at)) : null)
-    const id = it.meta?.msg_id
-    if (addressed && id) { unread.viewed(id); el.onclick = () => unread.clear(id) }
-    return el
-  }
-  let bound: Y.Array<ChatItem> | null = null
-  const bind = () => {
-    const arr = conn.room.chat(conn.me.name)
-    if (arr === bound) return
-    bound = arr
-    list.replaceChildren(...arr.toArray().map(item))
-    scroll.scrollTop = scroll.scrollHeight
-    arr.observe(e => {
-      e.changes.added.forEach(c => (c.content.getContent() as ChatItem[]).forEach(it => list.append(item(it))))
-      scroll.scrollTop = scroll.scrollHeight
-    })
-  }
-  bind()
-  return el
+function changesByPerson(room: RoomDoc): Map<string, string[]> {
+  const names = new Set([...room.overlays.keys(), ...room.deleted.keys()])
+  return new Map(Array.from(names, name => [name, room.changedPaths(name)]))
 }
 
-// ---- agents channel: the bus as a group chat ------------------------------------------
-const LOUD = new Set<Msg['type']>(['question', 'answer', 'conflict'])
-export function agentsPane(conn: Conn) {
-  const list = h('div', { class: 'bus' })
-  const scroll = h('div', { class: 'scroll grow' }, list)
-  const input = h('input', { placeholder: 'Post a note to the room…' })
-  const send = () => {
-    const text = input.value.trim(); if (!text) return
-    conn.room.post<NoteMsg>(conn.me, { type: 'note', text })
-    input.value = ''
-  }
-  input.onkeydown = e => { if (e.key === 'Enter') send() }
-  const el = h('section', { class: 'agents' }, h('div', { class: 'ahead' }, h('span', { class: 'ttl' }, 'Agents'), h('span', { class: 'muted' }, ' · room channel')), scroll,
-    h('div', { class: 'composer' }, input, h('button', { onclick: send }, 'Post')))
+export function centrePanel(conn: Conn): HTMLElement {
+  const fileList = h('div', { class: 'file-list scroll' })
+  const pathLabel = h('span', { class: 'selected-path mono muted' }, 'no file selected')
+  const personSelect = h('select', { class: 'person-select', title: 'Overlay to display' })
+  const host = h('div', { class: 'editor-wrap' })
+  const editor = new Editor(host)
+  const element = h('main', { class: 'center' },
+    h('section', { class: 'center-files' }, h('h3', {}, 'Changed files'), fileList),
+    h('section', { class: 'viewer' }, h('div', { class: 'toolbar' }, pathLabel, h('span', { class: 'sp' }), personSelect), host))
+  let selectedPath: string | null = null
+  let selectedPerson: string | null = null
 
-  const threads = new Map<string, HTMLElement>() // question msg id -> replies container
-  const quiet = (m: Msg) => h('div', { class: 'line quiet' }, dot(m.from), h('span', { class: 'badge ' + m.type }, m.type), h('span', { class: 't', title: timeStr(m.at) }, formatMsg(m)), h('span', { class: 'muted rel' }, relTime(m.at)))
-  const bubble = (m: Msg) => {
-    const who = displayName({ name: m.from, kind: m.fromKind })
-    const text = m.type === 'conflict' ? `Conflict on ${m.path}: ${m.text}` : m.type === 'question' || m.type === 'answer' ? m.text : formatMsg(m)
-    const b = h('div', { class: 'bub ' + m.type + (m.to === conn.me.name ? ' tome' : '') },
-      h('div', { class: 'who' }, dot(m.from), h('b', {}, who), m.to ? h('span', { class: 'muted' }, ` → ${m.to}'s agent`) : null, h('span', { class: 'badge ' + m.type }, m.type), h('span', { class: 'muted rel', title: timeStr(m.at) }, relTime(m.at))),
-      h('div', { class: 'txt' }, text))
-    if (m.type === 'question') { const replies = h('div', { class: 'replies' }); threads.set(m.id, replies); return h('div', { class: 'thread' }, b, replies) }
-    return b
-  }
-  const append = (ms: Msg[]) => {
-    for (const m of ms) {
-      const node = LOUD.has(m.type) ? bubble(m) : quiet(m)
-      const parent = m.type === 'answer' ? threads.get(m.inReplyTo) : undefined
-      ;(parent ?? list).append(node)
+  const renderViewer = (rows: FileRow[]) => {
+    const row = rows.find(candidate => candidate.path === selectedPath)
+    if (!row) {
+      selectedPath = rows[0]?.path ?? null
+      selectedPerson = null
     }
+    const selected = rows.find(candidate => candidate.path === selectedPath)
+    if (!selected) {
+      pathLabel.textContent = 'no file selected'
+      pathLabel.classList.add('muted')
+      personSelect.replaceChildren()
+      personSelect.hidden = true
+      editor.empty(rows.length ? 'Select a changed file' : 'Waiting for changed files…')
+      return
+    }
+    if (!selectedPerson || !selected.people.includes(selectedPerson)) selectedPerson = selected.people[0]
+    pathLabel.textContent = selected.path
+    pathLabel.classList.remove('muted')
+    personSelect.hidden = false
+    personSelect.replaceChildren(...selected.people.map(person => h('option', { value: person, selected: person === selectedPerson }, person)))
+    const person = selectedPerson!
+    if (conn.room.deleted.get(person)?.has(selected.path)) {
+      editor.empty(`deleted by ${person}`)
+      return
+    }
+    const text = conn.room.text(selected.path, person)
+    if (text === undefined) {
+      editor.empty(`No overlay available for ${person}`)
+      return
+    }
+    editor.show(selected.path, text, conn.room.claimsFor(selected.path))
+  }
+
+  const render = () => {
+    const rows = deriveFileRows(changesByPerson(conn.room))
+    if (selectedPath && !rows.some(row => row.path === selectedPath)) selectedPath = null
+    if (!selectedPath) selectedPath = rows[0]?.path ?? null
+    fileList.replaceChildren(...rows.map(row => {
+      const item = h('button', { class: `file-item${row.path === selectedPath ? ' active' : ''}`, title: row.path },
+        h('span', { class: 'file-path mono' }, row.path),
+        h('span', { class: 'file-dots' }, ...row.people.map(person => dot(person, `${person} changed this file`))))
+      item.onclick = () => { selectedPath = row.path; selectedPerson = null; render() }
+      return item
+    }))
+    if (!rows.length) fileList.append(h('div', { class: 'empty-note muted' }, 'No changed files'))
+    renderViewer(rows)
+  }
+  personSelect.onchange = () => { selectedPerson = personSelect.value; render() }
+  conn.room.overlays.observeDeep(render)
+  conn.room.deleted.observeDeep(render)
+  conn.room.claims.observe(render)
+  render()
+  return element
+}
+
+export function feedMessages(room: RoomDoc, area: string, onlyLedger: boolean): Msg[] {
+  if (area !== 'all') return room.ledger({ area })
+  return onlyLedger ? room.ledger() : room.messages()
+}
+
+export interface FeedThread { message: Msg; replies: Msg[] }
+
+export function threadFeed(messages: readonly Msg[]): FeedThread[] {
+  const questionIds = new Set(messages.filter(message => message.type === 'question').map(message => message.id))
+  const threads = new Map<string, FeedThread>()
+  const top: FeedThread[] = []
+  for (const message of messages) {
+    if (message.type === 'answer' && questionIds.has(message.inReplyTo)) continue
+    const thread = { message, replies: [] }
+    top.push(thread)
+    if (message.type === 'question') threads.set(message.id, thread)
+  }
+  for (const message of messages) {
+    if (message.type === 'answer') threads.get(message.inReplyTo)?.replies.push(message)
+  }
+  return top
+}
+
+function feedLine(message: Msg): HTMLElement {
+  return h('div', { class: `feed-line ${message.type}` },
+    h('span', { class: `priority ${message.priority}` }, message.priority),
+    h('span', { class: 'feed-text' }, formatMsg(message)),
+    h('time', { class: 'feed-time muted', title: absoluteTime(message.at) }, new Date(message.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })))
+}
+
+export function feedPanel(conn: Conn): HTMLElement {
+  const areaSelect = h('select', { title: 'Filter feed by area' })
+  const ledgerOnly = h('input', { type: 'checkbox' })
+  const list = h('div', { class: 'feed-list' })
+  const scroll = h('div', { class: 'feed-scroll scroll' }, list)
+  const element = h('aside', { class: 'feed' },
+    h('div', { class: 'feed-head' }, h('h3', {}, 'Feed'), h('span', { class: 'sp' }), areaSelect,
+      h('label', { class: 'ledger-check' }, ledgerOnly, 'only ledger entries')),
+    scroll)
+
+  const render = () => {
+    const areas = Array.from(new Set(conn.room.allScopes().map(scope => scope.area))).sort()
+    const previous = areaSelect.value || 'all'
+    const selected = previous === 'all' || areas.includes(previous) ? previous : 'all'
+    areaSelect.replaceChildren(h('option', { value: 'all', selected: selected === 'all' }, 'all areas'),
+      ...areas.map(area => h('option', { value: area, selected: selected === area }, area)))
+    const messages = feedMessages(conn.room, selected, ledgerOnly.checked)
+    list.replaceChildren(...threadFeed(messages).map(thread => {
+      const question = feedLine(thread.message)
+      if (!thread.replies.length) return question
+      return h('div', { class: 'feed-thread' }, question,
+        h('div', { class: 'feed-replies' }, ...thread.replies.map(feedLine)))
+    }))
+    if (!messages.length) list.append(h('div', { class: 'empty-note muted' }, 'No matching feed entries'))
     scroll.scrollTop = scroll.scrollHeight
   }
-  append(conn.room.messages())
-  conn.room.bus.observe(e => {
-    const added: Msg[] = []
-    e.changes.added.forEach(item => added.push(...(item.content.getContent() as Msg[])))
-    append(added)
-  })
-  return el
+  areaSelect.onchange = render
+  ledgerOnly.onchange = render
+  conn.room.bus.observe(render)
+  conn.room.scopes.observe(render)
+  render()
+  return element
 }
 
-export function toaster() {
-  const el = h('div', { class: 'toasts' })
-  document.body.append(el)
-  return (text: string, ms = 4500) => {
-    const t = h('div', { class: 'toast' }, text)
-    el.append(t)
-    setTimeout(() => t.remove(), ms)
+export function header(conn: Conn): HTMLElement {
+  const roomName = h('span', { class: 'room-name' }, conn.displayRoomName)
+  const base = h('span', { class: 'header-detail mono' }, 'base —')
+  const count = h('span', { class: 'header-detail' }, '0 participants')
+  const connection = h('span', { class: 'connection' }, 'disconnected')
+  const element = h('header', { class: 'header' }, roomName, base, count, h('span', { class: 'sp' }), connection)
+  const render = () => {
+    const meta = conn.room.meta
+    base.textContent = `base ${(meta.base ?? '').slice(0, 7) || '—'}`
+    const total = deriveParticipants(participantInput(conn)).length
+    count.textContent = `${total} participant${total === 1 ? '' : 's'}`
   }
+  conn.room.metaMap.observe(render)
+  conn.room.scopes.observe(render)
+  conn.room.overlays.observeDeep(render)
+  conn.provider.awareness.on('change', render)
+  conn.onStatus(connected => {
+    connection.textContent = connected ? 'connected' : 'disconnected'
+    connection.classList.toggle('online', connected)
+  })
+  render()
+  return element
 }
-
-export type { Claim }

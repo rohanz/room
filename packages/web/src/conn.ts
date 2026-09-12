@@ -1,67 +1,96 @@
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { RoomDoc, colorFor, type Presence, type Cursor } from '@room/shared'
+import { RoomDoc, colorFor, type Presence } from '@room/shared'
 
-export const NAME_KEY = 'room.name'
-
-export function roomUrlFromQuery(): { serverUrl: string; roomName: string } {
-  const q = new URLSearchParams(location.search)
-  const raw = q.get('room') ?? 'ws://localhost:1234/demo'
-  const u = new URL(raw)
-  const roomName = u.pathname.replace(/^\/+/, '') || 'demo'
-  return { serverUrl: `${u.protocol}//${u.host}`, roomName }
+export interface RoomLocation {
+  serverUrl: string
+  /** Kept encoded because y-websocket uses this as the document name. */
+  encodedRoomName: string
+  /** Human-readable room name for the header. */
+  displayRoomName: string
 }
 
-export function storedName(): string | null {
-  const q = new URLSearchParams(location.search).get('name')
-  if (q) { try { localStorage.setItem(NAME_KEY, q) } catch {} ; return q }
-  try { return localStorage.getItem(NAME_KEY) } catch { return null }
+export function parseRoomUrl(raw: string): RoomLocation {
+  const url = new URL(raw)
+  if (url.protocol !== 'ws:' && url.protocol !== 'wss:') throw new Error('room must be a ws:// or wss:// URL')
+
+  const slash = url.pathname.lastIndexOf('/')
+  const encodedRoomName = url.pathname.slice(slash + 1)
+  if (!encodedRoomName) throw new Error('room URL must end with an encoded room name')
+
+  let displayRoomName = encodedRoomName
+  try { displayRoomName = decodeURIComponent(encodedRoomName) } catch { /* display the malformed value verbatim */ }
+
+  url.pathname = url.pathname.slice(0, slash) || '/'
+  url.search = ''
+  url.hash = ''
+  return {
+    serverUrl: url.toString().replace(/\/$/, ''),
+    encodedRoomName,
+    displayRoomName,
+  }
 }
 
-export interface Conn {
+export function roomLocationFromQuery(search = location.search): RoomLocation {
+  const raw = new URLSearchParams(search).get('room') ?? 'ws://localhost:1234/demo'
+  return parseRoomUrl(raw)
+}
+
+export interface Conn extends RoomLocation {
   room: RoomDoc
   provider: WebsocketProvider
-  me: Presence['user'] & { colorLight: string }
-  setCursor(c: Cursor | undefined): void
-  onStatus(fn: (connected: boolean) => void): void
   connected: boolean
+  onStatus(fn: (connected: boolean) => void): void
 }
 
-export function connect(name: string): Conn {
-  const { serverUrl, roomName } = roomUrlFromQuery()
+export function connect(search = location.search): Conn {
+  const roomLocation = roomLocationFromQuery(search)
   const doc = new Y.Doc()
   const room = new RoomDoc(doc)
-  const provider = new WebsocketProvider(serverUrl, roomName, doc)
-  const color = colorFor(name)
-  const me = { name, kind: 'human' as const, color, colorLight: color + '33' }
-  provider.awareness.setLocalState({ user: me, status: 'editing' })
+  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc)
+  const viewerName = new URLSearchParams(search).get('name')?.trim()
+  if (viewerName) {
+    provider.awareness.setLocalState({
+      user: { name: viewerName, kind: 'human', color: colorFor(viewerName) },
+      status: 'viewing',
+      lastActive: Date.now(),
+    })
+  } else {
+    provider.awareness.setLocalState(null)
+  }
 
-  const listeners: ((c: boolean) => void)[] = []
+  const listeners: ((connected: boolean) => void)[] = []
   const conn: Conn = {
-    room, provider, me, connected: false,
-    setCursor(c) { provider.awareness.setLocalStateField('cursor', c) },
+    ...roomLocation,
+    room,
+    provider,
+    connected: false,
     onStatus(fn) { listeners.push(fn); fn(conn.connected) },
   }
-  provider.on('status', (e: { status: string }) => {
-    conn.connected = e.status === 'connected'
-    listeners.forEach(f => f(conn.connected))
+  provider.on('status', (event: { status: string }) => {
+    conn.connected = event.status === 'connected'
+    for (const listener of listeners) listener(conn.connected)
   })
   return conn
 }
 
-/** Read awareness states defensively: other clients may publish anything. */
-export function presences(provider: WebsocketProvider): { clientId: number; p: Presence }[] {
-  const out: { clientId: number; p: Presence }[] = []
-  provider.awareness.getStates().forEach((s: unknown, clientId: number) => {
-    if (!s || typeof s !== 'object') return
-    const st = s as Record<string, unknown>
-    const u = st.user as Record<string, unknown> | undefined
-    if (!u || typeof u.name !== 'string' || !u.name) return
-    const kind = u.kind === 'agent' ? 'agent' : 'human'
-    const c = st.cursor as Record<string, unknown> | undefined
-    const cursor = c && typeof c.path === 'string' && typeof c.from === 'number' && typeof c.to === 'number'
-      ? { path: c.path, from: c.from, to: c.to } : undefined
-    out.push({ clientId, p: { user: { name: u.name, kind, color: typeof u.color === 'string' ? u.color : colorFor(u.name) }, cursor, status: typeof st.status === 'string' ? st.status : undefined } })
+/** Read awareness states defensively: other clients may publish arbitrary data. */
+export function presences(provider: WebsocketProvider): Presence[] {
+  const out: Presence[] = []
+  provider.awareness.getStates().forEach((state: unknown) => {
+    if (!state || typeof state !== 'object') return
+    const value = state as Record<string, unknown>
+    const user = value.user as Record<string, unknown> | undefined
+    if (!user || typeof user.name !== 'string' || !user.name) return
+    out.push({
+      user: {
+        name: user.name,
+        kind: user.kind === 'agent' ? 'agent' : 'human',
+        color: typeof user.color === 'string' ? user.color : colorFor(user.name),
+      },
+      status: typeof value.status === 'string' ? value.status : undefined,
+      lastActive: typeof value.lastActive === 'number' ? value.lastActive : undefined,
+    })
   })
-  return out.sort((a, b) => a.p.user.name.localeCompare(b.p.user.name) || a.p.user.kind.localeCompare(b.p.user.kind))
+  return out.sort((a, b) => a.user.name.localeCompare(b.user.name) || a.user.kind.localeCompare(b.user.kind))
 }

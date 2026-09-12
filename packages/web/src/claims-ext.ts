@@ -12,12 +12,14 @@ function clamp(c: Claim, lines: number): { from: number; to: number } | null {
 }
 
 class ClaimMarker extends GutterMarker {
-  constructor(readonly color: string, readonly title: string) { super() }
-  eq(o: ClaimMarker) { return o.color === this.color && o.title === this.title }
+  constructor(readonly colors: string[], readonly title: string) { super() }
+  eq(o: ClaimMarker) { return o.colors.join() === this.colors.join() && o.title === this.title }
   toDOM() {
     const el = document.createElement('span')
     el.className = 'cm-claim-mark'
-    el.style.background = this.color
+    el.style.background = this.colors.length === 1
+      ? this.colors[0]
+      : `linear-gradient(to bottom, ${this.colors.map((color, index) => `${color} ${index / this.colors.length * 100}% ${(index + 1) / this.colors.length * 100}%`).join(', ')})`
     el.title = this.title
     return el
   }
@@ -37,11 +39,12 @@ function build(claims: Claim[], view: { doc: { lines: number; line(n: number): {
   for (const n of Array.from(perLine.keys()).sort((a, b) => a - b)) {
     const cs = perLine.get(n)!
     const first = cs[0]
-    const color = colorFor(first.by)
+    const colors = Array.from(new Set(cs.map(claim => colorFor(claim.by))))
     const title = cs.map(describeClaim).join('\n')
     const pos = view.doc.line(n).from
-    db.add(pos, pos, Decoration.line({ attributes: { style: `background: ${color}1c`, title, 'data-claim': first.id } }))
-    mb.add(pos, pos, new ClaimMarker(color, title))
+    const stops = colors.map((color, index) => `${color}1c ${index / colors.length * 100}% ${(index + 1) / colors.length * 100}%`).join(', ')
+    db.add(pos, pos, Decoration.line({ attributes: { style: `background: linear-gradient(to right, ${stops})`, title, 'data-claim': first.id } }))
+    mb.add(pos, pos, new ClaimMarker(colors, title))
   }
   return { deco: db.finish(), marks: mb.finish() }
 }
