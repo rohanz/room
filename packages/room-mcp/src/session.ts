@@ -176,6 +176,20 @@ export async function viewToken(server: string, roomName: string, auth: { gh?: s
   } catch { return undefined }
 }
 
+/** Re-mint the browser link (view keys can expire or be lost); falls back to the stored one. */
+export async function refreshBrowserUrl(s: Session): Promise<string> {
+  try {
+    const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
+    const u = new URL(s.browserUrl)
+    const web = `${u.protocol}//${u.host}`
+    const token = process.env.ROOM_TOKEN?.trim() ?? parseServer(process.env.ROOM_SERVER ?? '').token
+    const gh = s.roomName.startsWith('github.com/') ? await githubToken() : undefined
+    const view = await viewToken(server, s.roomName, { gh, token })
+    if (view) s.browserUrl = `${web}/?room=${encodeURIComponent(s.roomUrl)}&view=${view}`
+  } catch { /* keep the stored link */ }
+  return s.browserUrl
+}
+
 export async function leaveSession(s: Session): Promise<void> {
   s.graph?.stop()
   await s.daemon.stop()

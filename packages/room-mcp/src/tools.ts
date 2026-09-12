@@ -12,7 +12,7 @@ import type {
   ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg, PlanMsg,
 } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
-import { joinSession, leaveSession, type JoinOptions, type Session } from './session.js'
+import { joinSession, leaveSession, refreshBrowserUrl, type JoinOptions, type Session } from './session.js'
 import { HooksBridge } from './hooks-bridge.js'
 
 export interface ToolDef {
@@ -397,7 +397,7 @@ export function createTools(ctx: ToolCtx): Tools {
       for (const n of away) out.push(`  ${n} (offline): ${personLine(s, n)}`)
       const cs = s.room.openClaims()
       if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
-      out.push(`browser view: ${s.browserUrl}`)
+      out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       out.push('next: room_scope(area, summary, paths) before you edit.')
       return out.join('\n')
     },
@@ -437,7 +437,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1000))}s ago` : 'offline'
         out.push(`  - ${n}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)} · ${ago}`)
       }
-      out.push(`browser view: ${s.browserUrl}`)
+      out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       const areas = s.room.areaSummary()
       if (areas.length) { out.push('areas:'); for (const l of areas) out.push(`  - ${l}`) }
       const cs = s.room.openClaims()

@@ -33528,6 +33528,19 @@ async function viewToken(server, roomName, auth) {
     return void 0;
   }
 }
+async function refreshBrowserUrl(s) {
+  try {
+    const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
+    const u = new URL(s.browserUrl);
+    const web = `${u.protocol}//${u.host}`;
+    const token = process.env.ROOM_TOKEN?.trim() ?? parseServer(process.env.ROOM_SERVER ?? "").token;
+    const gh = s.roomName.startsWith("github.com/") ? await githubToken() : void 0;
+    const view = await viewToken(server, s.roomName, { gh, token });
+    if (view) s.browserUrl = `${web}/?room=${encodeURIComponent(s.roomUrl)}&view=${view}`;
+  } catch {
+  }
+  return s.browserUrl;
+}
 async function leaveSession(s) {
   s.graph?.stop();
   await s.daemon.stop();
@@ -34100,7 +34113,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         out.push(`open claims (${cs.length}):`);
         for (const c of cs) out.push(claimLine(s, c));
       }
-      out.push(`browser view: ${s.browserUrl}`);
+      out.push(`browser view: ${await refreshBrowserUrl(s)}`);
       out.push("next: room_scope(area, summary, paths) before you edit.");
       return out.join("\n");
     },
@@ -34141,7 +34154,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
         out.push(`  - ${n}${n === s.me.name ? " (you)" : ""}: ${personLine(s, n)} \xB7 ${ago}`);
       }
-      out.push(`browser view: ${s.browserUrl}`);
+      out.push(`browser view: ${await refreshBrowserUrl(s)}`);
       const areas = s.room.areaSummary();
       if (areas.length) {
         out.push("areas:");
