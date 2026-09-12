@@ -1,6 +1,6 @@
 {
   "name": "room",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Room awareness for coding agents: one-step join, see what teammates and their agents are on, declare intent, claim lines, get told when your symbols are about to change.",
   "author": {
     "name": "Rohan",
