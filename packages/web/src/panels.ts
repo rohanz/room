@@ -395,6 +395,7 @@ function messageBody(message: Msg): (Node | string | null)[] {
     case 'question': return [h('strong', {}, 'asked '), message.text]
     case 'answer': return [h('strong', {}, 'answered '), message.text]
     case 'base': return [`${message.from} pushed ${message.commits} commit${message.commits === 1 ? '' : 's'}: ${message.summary} (base → ${message.base.slice(0, 7)})`]
+    case 'plan': return [h('strong', {}, `${message.status} plan `), formatPlans([message.plan]), message.replacedBy ? ` → now ${formatPlans([message.replacedBy])}` : '', ` · ${message.text}`]
     case 'scope': return []
   }
 }

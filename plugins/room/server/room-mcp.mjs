@@ -21228,6 +21228,8 @@ function formatMsg(m) {
       return `${priority}${who}: ${m.text}`;
     case "base":
       return `${priority}${who} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up`;
+    case "plan":
+      return `${priority}${who} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""} \u2014 ${m.text}`;
     case "scope":
       return `${priority}${who} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})`;
   }
@@ -29083,7 +29085,7 @@ if (glo[importIdentifier] === true) {
 glo[importIdentifier] = true;
 
 // packages/shared/src/ledger.ts
-var LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict", "base"]);
+var LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict", "base", "plan"]);
 function msgPaths(m) {
   if ("paths" in m) return m.paths;
   if ("path" in m) return [m.path];
@@ -29120,7 +29122,7 @@ function areaSummary(messages, scopes, windowMs = 10 * 60 * 1e3, now = Date.now(
 
 // packages/shared/src/doc.ts
 function defaultPriority(msg) {
-  if (msg.type === "conflict") return "interrupt";
+  if (msg.type === "conflict" || msg.type === "plan") return "interrupt";
   if (msg.type === "changed") return msg.symbols?.length ? "notify" : "fyi";
   if (msg.type === "question" || msg.type === "answer" || msg.type === "scope" || msg.type === "base") return "notify";
   return "fyi";
@@ -29304,6 +29306,21 @@ var RoomDoc = class {
   }
   claimsFor(relpath) {
     return this.openClaims().filter((claim2) => claim2.path === relpath);
+  }
+  /** Everyone who was shown a message: recipients of routed copies plus agents with a read receipt for it or its copies. */
+  dependentsOf(msgId) {
+    const out = new Set(this.seenBy(msgId));
+    for (const m of this.messages()) if (m.copyOf === msgId) {
+      if (m.to) out.add(m.to);
+      for (const p of this.seenBy(m.id)) out.add(p);
+    }
+    return Array.from(out).sort();
+  }
+  setClaimMsg(claimId, msgId, origin) {
+    const c = this.claims.get(claimId);
+    if (c) this.doc.transact(() => {
+      this.claims.set(claimId, { ...c, msgId });
+    }, origin);
   }
   addClaim(input, origin) {
     const text = this.overlayText(input.by, input.path);
@@ -32813,7 +32830,7 @@ var Daemon = class {
     const { serverUrl, roomName } = splitRoomUrl(options.room);
     this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
       WebSocketPolyfill: import_websocket.default,
-      params: tokenParams(options.token ?? process.env.ROOM_TOKEN)
+      params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.githubToken ? { gh: options.githubToken } : {} }
     });
     this.setStatus("syncing");
   }
@@ -33286,7 +33303,7 @@ var GraphIndex = class {
 };
 
 // packages/room-mcp/src/session.ts
-var DEFAULT_SERVER = "ws://localhost:1234";
+var DEFAULT_SERVER = "wss://room-rohanz.fly.dev";
 var DEFAULT_WEB = "http://localhost:5173";
 function findRoomFile(start) {
   let d = resolve3(start);
@@ -33306,6 +33323,16 @@ function findRoomFile(start) {
 async function deriveRoomName(dir) {
   const [repo, branch] = await Promise.all([gitOrigin(dir), gitBranch(dir)]);
   return { repo, branch, roomName: repo ? `${repo}/${branch}` : void 0 };
+}
+async function githubToken() {
+  const env = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
+  if (env?.trim()) return env.trim();
+  try {
+    const { execFile: execFile4 } = await import("node:child_process");
+    return await new Promise((resolve5) => execFile4("gh", ["auth", "token"], { timeout: 5e3 }, (err, out) => resolve5(err ? void 0 : out.trim() || void 0)));
+  } catch {
+    return void 0;
+  }
 }
 async function defaultName(dir) {
   try {
@@ -33360,8 +33387,11 @@ async function joinSession(opts) {
     roomName = d.roomName;
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", token, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+  const gh = roomName.startsWith("github.com/") ? await githubToken() : void 0;
+  if (!token && roomName.startsWith("github.com/") && !gh) opts.log?.("no ROOM_TOKEN and no GitHub token (run `gh auth login`); the server may refuse");
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", token, githubToken: gh, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+  const view = await viewToken(server, roomName, { gh, token });
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
   graph.start();
   return {
@@ -33376,6 +33406,17 @@ async function joinSession(opts) {
     roomName,
     browserUrl
   };
+}
+async function viewToken(server, roomName, auth) {
+  if (!auth.gh && !auth.token) return void 0;
+  try {
+    const http = server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+    const res = await fetch(`${http}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }) });
+    if (!res.ok) return void 0;
+    return (await res.json()).view;
+  } catch {
+    return void 0;
+  }
 }
 async function leaveSession(s) {
   s.graph?.stop();
@@ -33665,6 +33706,13 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     for (const person of [s.me.name, ...others(s)]) for (const p of s.room.changedPaths(person)) set.add(p);
     return Array.from(set).filter((p) => s.graph.graph.has(p));
   };
+  const planChanged = (s, c, plan, status, text, replacedBy) => {
+    const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter((p) => p !== s.me.name);
+    const base2 = { type: "plan", status, claimId: c.id, path: c.path, plan, text, ...replacedBy ? { replacedBy } : {} };
+    const orig = s.room.post(s.me, base2);
+    for (const p of deps) s.room.post(s.me, { ...base2, to: p, copyOf: orig.id });
+    return deps.length ? [`plan ${status}: ${formatPlans([plan])} \u2014 told ${deps.map((d) => `${d}'s agent`).join(", ")} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} \u2014 nobody had been shown it`];
+  };
   const upgrade = async (s, m, paths, symbols) => {
     const notes = [];
     for (const [person, why] of await affected(s, paths, symbols)) {
@@ -33725,7 +33773,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const released = mine(s);
       for (const c of released) {
         s.room.removeClaim(c.id);
-        s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, summary: "left the room" });
+        s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, summary: "left the room", ...c.plans?.length ? { unfulfilled: c.plans } : {} });
+        for (const pl2 of c.plans ?? []) planChanged(s, c, pl2, "cancelled", "left the room");
       }
       s.room.clearScope(s.me.name);
       ctx.setSession(null);
@@ -33868,9 +33917,17 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
           s.room.post(s.me, { type: "conflict", claimId: claim2.id, otherClaimId: o.id, path: p, text, to: o.by });
         }
       }, s.me);
+      s.room.setClaimMsg(claim2.id, msg.id);
       s.daemon.touch();
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} \u2014 ${intent}` });
       const out = [`claimed ${claim2.id}: ${describeClaim(claim2)}${isNew ? " (new file)" : ""}`];
+      for (const pl2 of plans) {
+        for (const other of mine(s)) {
+          if (other.id === claim2.id) continue;
+          const old = other.plans?.find((x) => x.symbol === pl2.symbol && (x.kind !== pl2.kind || x.detail !== pl2.detail));
+          if (old) out.push(...planChanged(s, other, old, "superseded", `replaced by ${formatPlans([pl2])} in claim ${claim2.id}`, pl2));
+        }
+      }
       for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`);
       if (s.graph && plans.length) {
         await s.graph.ready;
@@ -33899,7 +33956,10 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       const next = mine(s)[0];
       setPresence(s, next ? { cursor: { path: next.path, from: next.from, to: next.to }, status: `editing ${next.path}:${next.from}-${next.to} \u2014 ${next.intent}` } : { cursor: void 0, status: s.room.scope(s.me.name) ? `on ${s.room.scope(s.me.name).area}` : "idle" });
       const out = [`released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` \u2014 ${summary}` : ""}`];
-      if (unfulfilled.length) out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} \u2014 if you did them, room_send changed with symbols; if not, others were expecting them`);
+      if (unfulfilled.length) {
+        out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} \u2014 if you did them, room_send changed with symbols; if not, others were expecting them`);
+        for (const pl2 of unfulfilled) out.push(...planChanged(s, c, pl2, "cancelled", summary ?? "released without doing it"));
+      }
       if (c.plans?.length && !unfulfilled.length) out.push(`reminder: announce with room_send type=changed symbols=[${c.plans.map((x) => x.symbol).join(", ")}] so users of those symbols are told`);
       return out.join("\n");
     },
