@@ -81,6 +81,16 @@ export function parseServer(raw: string): { server: string; token?: string } {
   }
 }
 
+/** The server also serves the browser view: ws(s)://host -> http(s)://host. Local dev keeps the Vite port. */
+export function defaultWeb(server: string): string {
+  try {
+    const u = new URL(server)
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return DEFAULT_WEB
+    u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:'
+    return u.toString().replace(/\/+$/, '')
+  } catch { return DEFAULT_WEB }
+}
+
 export function encodeRoom(roomName: string): string { return encodeURIComponent(roomName) }
 export function decodeRoom(encoded: string): string { try { return decodeURIComponent(encoded) } catch { return encoded } }
 
@@ -89,7 +99,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const parsed = parseServer(opts.server ?? process.env.ROOM_SERVER ?? DEFAULT_SERVER)
   const server = parsed.server
   const token = opts.token ?? process.env.ROOM_TOKEN?.trim() ?? parsed.token
-  const web = (opts.web ?? process.env.ROOM_WEB ?? DEFAULT_WEB).replace(/\/+$/, '')
+  const web = (opts.web ?? process.env.ROOM_WEB ?? defaultWeb(server)).replace(/\/+$/, '')
   const name = opts.name ?? await defaultName(dir)
   if (!name) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
 

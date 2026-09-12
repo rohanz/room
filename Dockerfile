@@ -5,6 +5,8 @@ WORKDIR /app
 COPY packages/server/package.json ./package.json
 RUN npm install --omit=dev --no-audit --no-fund && npm install --no-audit --no-fund tsx@4
 COPY packages/server/src ./src
+# Built browser view (run `npm run build -w @room/web` before building the image).
+COPY packages/web/dist ./public
 ENV PORT=8080 HOST=0.0.0.0
 EXPOSE 8080
 CMD ["npx", "tsx", "src/index.ts"]

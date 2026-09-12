@@ -112,8 +112,10 @@ Codex joins the room on startup (the plugin's MCP server sees `ROOM_SERVER` and 
 clone's origin). Say "join the room" or `$room-join` if it didn't, or to switch rooms.
 The `room-etiquette` skill tells Codex how to behave. Optional:
 
-- **Browser view**: `npm run web`, then open the URL `room_join` prints. Read-only: who is
-  on what, claims in the gutter, the feed with priorities, filter by area.
+- **Browser view**: the server serves it, so open the URL `room_join` prints (on the
+  hosted instance that is `https://room-rohanz.fly.dev/?room=...`). Read-only: who is on
+  what, claims in the gutter, the feed with priorities, filter by area. For local dev
+  `npm run web` serves it from Vite instead.
 - **Agent on duty**: `npx tsx packages/agent/src/cli.ts --dir <clone>` runs a Codex thread
   that reacts to interrupts and questions while you're away.
 - **Claude Code**: the same MCP server exposes a channel; see `packages/room-mcp/README.md`.
