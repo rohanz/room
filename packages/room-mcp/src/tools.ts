@@ -52,6 +52,8 @@ export interface Tools {
   shutdown(): Promise<void>
   /** For sessions joined outside room_join (auto-join): clear stale state under my name. */
   clearStale(s: Session): number
+  /** A join in progress at startup; tool calls wait for it before answering. */
+  setPendingJoin(p: Promise<void>): void
 }
 
 const str = (d: string) => ({ type: 'string', description: d })
@@ -122,6 +124,7 @@ export function createTools(ctx: ToolCtx): Tools {
   const conflictPairs = new Set<string>() // sorted "a:b" claim-id pairs already reported
   let observedSession: Session | null = null
   let bridge: HooksBridge | null = null
+  let pendingJoin: Promise<void> | null = null
   const attachHooks = (s: Session) => {
     if (bridge && (bridge as unknown as { s: Session }).s === s) return
     bridge?.stop()
@@ -704,6 +707,7 @@ export function createTools(ctx: ToolCtx): Tools {
     list: () => DEFS,
     attachHooks,
     clearStale: (s: Session) => cleanupMine(s, 'stale from an earlier session'),
+    setPendingJoin(p) { pendingJoin = p.catch(() => {}) },
     async shutdown() {
       const s = ctx.getSession()
       if (!s) return
@@ -715,6 +719,7 @@ export function createTools(ctx: ToolCtx): Tools {
     async call(name, args) {
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
+      if (pendingJoin) { await pendingJoin; pendingJoin = null }
       const s = ctx.getSession()
       if (s && !s.provider.synced && name !== 'room_leave') return 'error: room not synced yet, retry'
       if (s) observeClaims(s)

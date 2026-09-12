@@ -8,7 +8,7 @@ import type { Msg } from '@room/shared'
 import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { decodeRoom, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
+import { decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
@@ -55,32 +55,31 @@ async function main() {
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
   }
 
-  // Auto-join when this clone was joined before (.room.json), the runner told us where to go
-  // (ROOM_URL), or a server is configured (ROOM_SERVER) and the clone has an origin remote.
+  // Connect first so Codex starts promptly; join in the background. Tool calls wait for it.
+  const transport = new StdioServerTransport()
+  await mcp.connect(transport)
+
+  // Auto-join: the runner's ROOM_URL, a prior .room.json, or simply a clone with a git origin.
   const env = (k: string) => (process.env[k] && process.env[k]!.trim()) || undefined
   const prior = findRoomFile(dir)
-  if (!env('ROOM_URL') && !prior && env('ROOM_SERVER')) {
+  const autoJoin = (async () => {
     try {
-      const s = await joinSession({ dir, log })
-      adopt(s)
-    } catch (e) {
-      log(`auto-join skipped (${e instanceof Error ? e.message : String(e)}); call room_join`)
-    }
-  } else if (env('ROOM_URL') || prior) {
-    try {
-      const url = env('ROOM_URL') ?? prior!.room
-      const u = new URL(url)
-      const roomName = decodeRoom(u.pathname.replace(/^\/+/, ''))
-      const s = await joinSession({ dir: env('ROOM_DIR') ?? prior?.dir ?? dir, name: env('ROOM_NAME') ?? prior?.name, room: roomName, server: `${u.protocol}//${u.host}`, log })
-      adopt(s)
+      if (env('ROOM_URL') || prior) {
+        const url = env('ROOM_URL') ?? prior!.room
+        const u = new URL(url)
+        const roomName = decodeRoom(u.pathname.replace(/^\/+/, ''))
+        adopt(await joinSession({ dir: env('ROOM_DIR') ?? prior?.dir ?? dir, name: env('ROOM_NAME') ?? prior?.name, room: roomName, server: `${u.protocol}//${u.host}`, log }))
+      } else {
+        const { roomName } = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
+        if (!roomName) { log(`ready; ${dir} has no git origin — call room_join with a room name`); return }
+        adopt(await joinSession({ dir, log }))
+      }
+      log('ready')
     } catch (e) {
       log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`)
     }
-  }
-
-  const transport = new StdioServerTransport()
-  await mcp.connect(transport)
-  log(session ? 'ready' : `ready; not in a room yet (cwd ${dir}) — call room_join`)
+  })()
+  tools.setPendingJoin(autoJoin)
 
   let closing = false
   const bye = async () => {

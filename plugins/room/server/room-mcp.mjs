@@ -33684,6 +33684,7 @@ function createTools(ctx) {
   const conflictPairs = /* @__PURE__ */ new Set();
   let observedSession = null;
   let bridge = null;
+  let pendingJoin = null;
   const attachHooks = (s) => {
     if (bridge && bridge.s === s) return;
     bridge?.stop();
@@ -34315,6 +34316,10 @@ ${conflicts.join("\n")}`);
     list: () => DEFS,
     attachHooks,
     clearStale: (s) => cleanupMine(s, "stale from an earlier session"),
+    setPendingJoin(p) {
+      pendingJoin = p.catch(() => {
+      });
+    },
     async shutdown() {
       const s = ctx.getSession();
       if (!s) return;
@@ -34330,6 +34335,10 @@ ${conflicts.join("\n")}`);
     async call(name, args2) {
       const h = handlers[name];
       if (!h) return `error: unknown tool ${name}`;
+      if (pendingJoin) {
+        await pendingJoin;
+        pendingJoin = null;
+      }
       const s = ctx.getSession();
       if (s && !s.provider.synced && name !== "room_leave") return "error: room not synced yet, retry";
       if (s) observeClaims(s);
@@ -34516,29 +34525,31 @@ async function main() {
     });
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
   };
+  const transport = new StdioServerTransport();
+  await mcp.connect(transport);
   const env = (k) => process.env[k] && process.env[k].trim() || void 0;
   const prior = findRoomFile(dir);
-  if (!env("ROOM_URL") && !prior && env("ROOM_SERVER")) {
+  const autoJoin = (async () => {
     try {
-      const s = await joinSession({ dir, log });
-      adopt(s);
-    } catch (e) {
-      log(`auto-join skipped (${e instanceof Error ? e.message : String(e)}); call room_join`);
-    }
-  } else if (env("ROOM_URL") || prior) {
-    try {
-      const url = env("ROOM_URL") ?? prior.room;
-      const u = new URL(url);
-      const roomName = decodeRoom(u.pathname.replace(/^\/+/, ""));
-      const s = await joinSession({ dir: env("ROOM_DIR") ?? prior?.dir ?? dir, name: env("ROOM_NAME") ?? prior?.name, room: roomName, server: `${u.protocol}//${u.host}`, log });
-      adopt(s);
+      if (env("ROOM_URL") || prior) {
+        const url = env("ROOM_URL") ?? prior.room;
+        const u = new URL(url);
+        const roomName = decodeRoom(u.pathname.replace(/^\/+/, ""));
+        adopt(await joinSession({ dir: env("ROOM_DIR") ?? prior?.dir ?? dir, name: env("ROOM_NAME") ?? prior?.name, room: roomName, server: `${u.protocol}//${u.host}`, log }));
+      } else {
+        const { roomName } = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
+        if (!roomName) {
+          log(`ready; ${dir} has no git origin \u2014 call room_join with a room name`);
+          return;
+        }
+        adopt(await joinSession({ dir, log }));
+      }
+      log("ready");
     } catch (e) {
       log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`);
     }
-  }
-  const transport = new StdioServerTransport();
-  await mcp.connect(transport);
-  log(session ? "ready" : `ready; not in a room yet (cwd ${dir}) \u2014 call room_join`);
+  })();
+  tools.setPendingJoin(autoJoin);
   let closing = false;
   const bye = async () => {
     if (closing) return;
