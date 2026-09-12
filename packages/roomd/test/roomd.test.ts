@@ -216,7 +216,9 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.roomDoc.meta.base).toBe(before)
     sh(origin, ['config', 'receive.denyCurrentBranch', 'updateInstead'])
     sh(source, ['push', '-q', 'origin', 'HEAD:main'])
+    // HEAD did not move on push; the daemon must notice the commit is now on the remote.
     await waitFor(() => daemon.roomDoc.meta.base === after)
+    await waitFor(() => (daemon.provider.awareness.getLocalState() as { status: string }).status === 'synced')
     expect(daemon.base).toBe(after)
     await waitFor(() => daemon.roomDoc.changedPaths('Alice').length === 0)
     const entry = daemon.roomDoc.messages().find(m => m.type === 'base')

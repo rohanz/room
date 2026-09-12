@@ -3,6 +3,14 @@ import type { Claim, Presence, Scope } from '@room/shared'
 import { parseRoomUrl } from './conn.ts'
 import { deriveParticipants, deriveStatePill } from './panels.ts'
 
+describe('state pill: done and working', () => {
+  it('shows done after room_done and working while scoped', () => {
+    const base = { online: true, behindBase: false, claims: [] as never[] }
+    expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'done: coupons landed' }] })).toBe('done')
+    expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'on orders: coupons' }] })).toBe('working')
+  })
+})
+
 describe('room URL parsing', () => {
   it('keeps the last segment encoded and decodes it for display', () => {
     expect(parseRoomUrl('ws://localhost:1244/local%2Fbare%2Fmain')).toEqual({

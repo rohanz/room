@@ -32984,7 +32984,11 @@ var Daemon = class {
   async pollHead() {
     if (this.stopped) return;
     const head = await gitHead(this.dir);
-    if (head === this.base) return;
+    if (head === this.base) {
+      const roomBase2 = this.roomDoc.meta.base;
+      if (roomBase2 && roomBase2 !== head) await this.refreshBaseStatus();
+      return;
+    }
     const prev = this.base;
     this.base = head;
     this.branch = await gitBranch(this.dir);
@@ -34651,18 +34655,18 @@ async function main() {
   const prior = findRoomFile(dir);
   const autoJoin = (async () => {
     try {
-      if (env("ROOM_URL") || prior) {
-        const url = env("ROOM_URL") ?? prior.room;
-        const u = new URL(url);
-        const roomName = decodeRoom(u.pathname.replace(/^\/+/, ""));
-        adopt(await joinSession({ dir: env("ROOM_DIR") ?? prior?.dir ?? dir, name: env("ROOM_NAME") ?? prior?.name, room: roomName, server: `${u.protocol}//${u.host}`, log }));
-      } else {
-        const { roomName } = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
-        if (!roomName) {
-          log(`ready; ${dir} has no git origin \u2014 call room_join with a room name`);
-          return;
-        }
+      const derived = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
+      if (env("ROOM_URL")) {
+        const u = new URL(env("ROOM_URL"));
+        adopt(await joinSession({ dir: env("ROOM_DIR") ?? dir, name: env("ROOM_NAME"), room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: `${u.protocol}//${u.host}`, log }));
+      } else if (derived.roomName) {
         adopt(await joinSession({ dir, log }));
+      } else if (prior) {
+        const u = new URL(prior.room);
+        adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: `${u.protocol}//${u.host}`, log }));
+      } else {
+        log(`ready; ${dir} has no git origin \u2014 call room_join with a room name`);
+        return;
       }
       log("ready");
     } catch (e) {
