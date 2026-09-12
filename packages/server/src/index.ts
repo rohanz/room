@@ -1,11 +1,15 @@
 #!/usr/bin/env tsx
 /**
- * Room server: a stock y-websocket server plus two switches.
- *  - ROOM_TOKEN: if set, every websocket must carry ?token=<same> or it is refused (401).
+ * Room server: a stock y-websocket server plus access control and persistence.
+ *  - Rooms named github.com/<owner>/<repo>/<branch> admit a websocket carrying ?gh=<GitHub token>
+ *    when that token can read the repo (checked against the GitHub API, cached 10 min).
+ *  - ROOM_TOKEN: if set, ?token=<same> admits any room (fallback for non-GitHub repos, and override).
+ *  - With neither a GitHub-verifiable room nor ROOM_TOKEN configured, the server is open.
  *  - YPERSISTENCE: if set to a directory, rooms are stored in LevelDB there and survive restarts.
  * All coordination state lives inside the Y.Doc; room name = URL path.
  */
 import http from 'node:http'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
@@ -18,9 +22,51 @@ const TOKEN = process.env.ROOM_TOKEN?.trim() || undefined
 const STATIC = process.env.ROOM_STATIC ?? path.resolve(process.cwd(), 'public')
 const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' }
 
+/** GitHub token -> (owner/repo -> admitted until). */
+const ghCache = new Map<string, Map<string, number>>()
+async function githubCanRead(token: string, ownerRepo: string): Promise<boolean> {
+  const now = Date.now()
+  const hit = ghCache.get(token)?.get(ownerRepo)
+  if (hit && hit > now) return true
+  try {
+    const res = await fetch(`https://api.github.com/repos/${ownerRepo}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'room-server' } })
+    if (!res.ok) return false
+    let m = ghCache.get(token); if (!m) { m = new Map(); ghCache.set(token, m) }
+    m.set(ownerRepo, now + 10 * 60 * 1000)
+    return true
+  } catch { return false }
+}
+/** "github.com%2Fowner%2Frepo%2Fbranch" (or decoded) -> "owner/repo" */
+function githubRepoOf(roomPath: string): string | undefined {
+  const name = (() => { try { return decodeURIComponent(roomPath) } catch { return roomPath } })().replace(/^\/+/, '')
+  const m = name.match(/^github\.com\/([^/]+)\/([^/]+)\//)
+  return m ? `${m[1]}/${m[2]}` : undefined
+}
+
+/** Short-lived, room-scoped tokens for the browser view (minted for GitHub-verified clients). */
+const viewTokens = new Map<string, { room: string; exp: number }>()
+const VIEW_TTL = 24 * 60 * 60 * 1000
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://x')
   if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); return }
+  if (url.pathname === '/view-token' && req.method === 'POST') {
+    let body = ''
+    req.on('data', c => { body += c }); req.on('end', async () => {
+      try {
+        const { room, gh, token } = JSON.parse(body || '{}') as { room?: string; gh?: string; token?: string }
+        if (!room) { res.writeHead(400); res.end('room required'); return }
+        const repo = githubRepoOf(room)
+        const ok = (TOKEN && token === TOKEN) || (gh && repo && await githubCanRead(gh, repo)) || (!TOKEN && !repo)
+        if (!ok) { res.writeHead(403); res.end('forbidden'); return }
+        const view = crypto.randomBytes(16).toString('hex')
+        viewTokens.set(view, { room: decodeURIComponent(room), exp: Date.now() + VIEW_TTL })
+        for (const [k, v] of viewTokens) if (v.exp < Date.now()) viewTokens.delete(k)
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ view, expiresIn: VIEW_TTL }))
+      } catch { res.writeHead(400); res.end('bad request') }
+    })
+    return
+  }
   if (fs.existsSync(STATIC)) {
     const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
     const file = path.resolve(STATIC, rel)
@@ -35,16 +81,30 @@ const server = http.createServer((req, res) => {
 })
 const wss = new WebSocketServer({ noServer: true })
 wss.on('connection', (conn, req) => setupWSConnection(conn, req, { gc: true }))
+const refuse = (socket: import('node:stream').Duplex, code: number, why: string) => {
+  socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`)
+  socket.destroy()
+}
 server.on('upgrade', (req, socket, head) => {
-  if (TOKEN) {
-    const url = new URL(req.url ?? '/', 'http://x')
-    if (url.searchParams.get('token') !== TOKEN) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
-      socket.destroy()
-      return
-    }
+  const url = new URL(req.url ?? '/', 'http://x')
+  const accept = () => wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
+  if (TOKEN && url.searchParams.get('token') === TOKEN) return accept()
+  const view = url.searchParams.get('view')
+  if (view) {
+    const v = viewTokens.get(view)
+    const roomName = (() => { try { return decodeURIComponent(url.pathname.replace(/^\/+/, '')) } catch { return url.pathname } })()
+    if (v && v.exp > Date.now() && v.room === roomName) return accept()
+    return refuse(socket, 403, 'Forbidden: view token invalid for this room')
   }
-  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
+  const gh = url.searchParams.get('gh')
+  const repo = githubRepoOf(url.pathname)
+  if (gh && repo) {
+    githubCanRead(gh, repo).then(ok => ok ? accept() : refuse(socket, 403, 'Forbidden: GitHub token cannot read ' + repo)).catch(() => refuse(socket, 403, 'Forbidden'))
+    return
+  }
+  if (!TOKEN && !repo) return accept() // open server, non-GitHub room
+  if (!TOKEN && repo) return refuse(socket, 401, 'Unauthorized: send ?gh=<GitHub token> for a github.com room')
+  refuse(socket, 401, 'Unauthorized')
 })
 server.listen(PORT, HOST, () => console.log(
   `room server listening on ws://${HOST}:${PORT}/<room>` +

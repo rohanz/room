@@ -90,26 +90,22 @@ codex plugin marketplace add rohanz/room     # or the path to this checkout
 codex plugin add room@room
 ```
 
-Run a room server somewhere both laptops can reach. Locally:
+Then open Codex in any clone of a GitHub repo. That's it: the plugin joins the room for
+that repo and branch on the hosted server, proving repo access with your `gh` login. If you
+can read the repo, you can join its room; the browser view gets a 24-hour room-scoped
+link, never your GitHub token.
+
+Self-host or work on a non-GitHub remote with two env vars:
 
 ```sh
 ROOM_TOKEN=$(openssl rand -hex 16) YPERSISTENCE=./room-data PORT=1234 npm run server
+export ROOM_SERVER="ws://<host>:1234/?token=<token>"
 ```
 
-`ROOM_TOKEN` gates every connection (drop it for an open server). `YPERSISTENCE` stores
-rooms in LevelDB so they survive restarts (drop it for in-memory). Hosted on Fly.io with a
-persistent volume: `deploy/fly.toml` has the commands; the root `Dockerfile` builds only
-the server. The hackathon instance runs at `wss://room-rohanz.fly.dev`.
+`ROOM_TOKEN` admits any room with the shared token; `YPERSISTENCE` stores rooms in LevelDB
+so they survive restarts. Hosted on Fly.io with a persistent volume: `deploy/fly.toml`
+has the commands; the root `Dockerfile` builds the server plus the browser view.
 
-Then in any clone, with the server URL carrying the token:
-
-```sh
-export ROOM_SERVER="wss://<server>/?token=<token>"    # once, in your shell profile
-codex
-```
-
-Codex joins the room on startup (the plugin's MCP server sees `ROOM_SERVER` and the
-clone's origin). Say "join the room" or `$room-join` if it didn't, or to switch rooms.
 The `room-etiquette` skill tells Codex how to behave. Optional:
 
 - **Browser view**: the server serves it, so open the URL `room_join` prints (on the

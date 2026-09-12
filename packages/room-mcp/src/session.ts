@@ -12,7 +12,8 @@ import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import type { Identity, RoomDoc } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 
-export const DEFAULT_SERVER = 'ws://localhost:1234'
+/** The hosted room server. Override with ROOM_SERVER (e.g. ws://localhost:1234 for local dev). */
+export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
 export const DEFAULT_WEB = 'http://localhost:5173'
 
 export interface Session {
@@ -64,6 +65,16 @@ export async function deriveRoomName(dir: string): Promise<{ roomName?: string; 
   return { repo, branch, roomName: repo ? `${repo}/${branch}` : undefined }
 }
 
+/** The user's GitHub token from the gh CLI (or GH_TOKEN/GITHUB_TOKEN), if any. Proves repo access to the server. */
+export async function githubToken(): Promise<string | undefined> {
+  const env = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN
+  if (env?.trim()) return env.trim()
+  try {
+    const { execFile } = await import('node:child_process')
+    return await new Promise<string | undefined>(resolve => execFile('gh', ['auth', 'token'], { timeout: 5000 }, (err, out) => resolve(err ? undefined : out.trim() || undefined)))
+  } catch { return undefined }
+}
+
 export async function defaultName(dir: string): Promise<string | undefined> {
   try { const n = (await git(dir, ['config', 'user.name'])).trim(); if (n) return n } catch { /* fall through */ }
   return process.env.USER || process.env.USERNAME || undefined
@@ -110,8 +121,11 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     roomName = d.roomName
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', token, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${token ? `&token=${encodeURIComponent(token)}` : ''}`
+  const gh = roomName.startsWith('github.com/') ? await githubToken() : undefined
+  if (!token && roomName.startsWith('github.com/') && !gh) opts.log?.('no ROOM_TOKEN and no GitHub token (run `gh auth login`); the server may refuse')
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', token, githubToken: gh, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+  const view = await viewToken(server, roomName, { gh, token })
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
   graph.start()
   return {
@@ -126,6 +140,17 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     roomName,
     browserUrl,
   }
+}
+
+/** Ask the server for a 24h room-scoped token the browser can use (never the GitHub token itself). */
+export async function viewToken(server: string, roomName: string, auth: { gh?: string; token?: string }): Promise<string | undefined> {
+  if (!auth.gh && !auth.token) return undefined
+  try {
+    const http = server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
+    const res = await fetch(`${http}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }) })
+    if (!res.ok) return undefined
+    return ((await res.json()) as { view?: string }).view
+  } catch { return undefined }
 }
 
 export async function leaveSession(s: Session): Promise<void> {
