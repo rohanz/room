@@ -14,6 +14,13 @@ export interface WakeDecision {
 export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = []): WakeDecision {
   if (m.from === me.name && m.fromKind === 'agent') return { wake: false, mustAnswer: false, reason: 'own message' }
   const addressed = m.to === me.name
+  // v2 priorities: fyi never wakes; notify wakes only when addressed; interrupt always (unless addressed elsewhere).
+  if (m.priority === 'fyi') return { wake: false, mustAnswer: false, reason: 'fyi does not wake' }
+  if (m.priority === 'notify' && !addressed) return { wake: false, mustAnswer: false, reason: m.to ? `addressed to ${m.to}` : 'broadcast notify is read on next action' }
+  if (m.priority === 'interrupt') {
+    if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` }
+    return { wake: true, mustAnswer: addressed, reason: addressed ? 'interrupt addressed to me' : 'broadcast interrupt' }
+  }
   if (m.type === 'answer') {
     return addressed
       ? { wake: true, mustAnswer: true, reason: 'answer addressed to me' }

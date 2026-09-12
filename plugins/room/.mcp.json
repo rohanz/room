@@ -2,9 +2,18 @@
   "mcpServers": {
     "room": {
       "command": "node",
-      "args": ["./server/room-mcp.mjs"],
+      "args": [
+        "./server/room-mcp.mjs"
+      ],
       "cwd": ".",
-      "env_vars": ["PWD", "ROOM_URL", "ROOM_NAME", "ROOM_DIR"],
+      "env_vars": [
+        "PWD",
+        "ROOM_SERVER",
+        "ROOM_WEB",
+        "ROOM_URL",
+        "ROOM_NAME",
+        "ROOM_DIR"
+      ],
       "startup_timeout_sec": 30
     }
   }

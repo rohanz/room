@@ -12,6 +12,7 @@ import type {
   Scope,
 } from './types.js'
 import { newId } from './identity.js'
+import { ledger as ledgerView, areaSummary as areaSummaryView, type LedgerQuery } from './ledger.js'
 
 type ScopeInput = Omit<Scope, 'by' | 'at'> & { at?: number }
 type NewScope = Omit<Scope, 'at'> & { at?: number }
@@ -118,6 +119,9 @@ export class RoomDoc {
   }
 
   scope(person: string): Scope | undefined { return this.scopes.get(person) }
+  allScopes(): Scope[] { return Array.from(this.scopes.values()).sort((a, b) => a.at - b.at) }
+  ledger(q: LedgerQuery = {}): Msg[] { return ledgerView(this.messages(), this.allScopes(), q) }
+  areaSummary(windowMs?: number): string[] { return areaSummaryView(this.messages(), this.allScopes(), windowMs) }
 
   setScope(scope: NewScope, origin?: unknown): Scope
   setScope(person: string, scope: ScopeInput, origin?: unknown): Scope

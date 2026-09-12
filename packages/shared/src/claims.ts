@@ -1,4 +1,5 @@
 import type { Claim, Cursor } from './types.js'
+import { formatPlans } from './format.js'
 
 export function rangesOverlap(aFrom: number, aTo: number, bFrom: number, bTo: number): boolean {
   return aFrom <= bTo && bFrom <= aTo
@@ -22,5 +23,5 @@ export function clampRange(from: number, to: number, lineCount: number): { from:
 
 export function describeClaim(c: Claim): string {
   const who = c.byKind === 'agent' ? `${c.by}'s agent` : c.by
-  return `${who} · ${c.path}:${c.from}-${c.to} · ${c.intent}`
+  return `${who} · ${c.path}:${c.from}-${c.to} · ${c.intent}${c.plans?.length ? ` · plans: ${formatPlans(c.plans)}` : ''}`
 }

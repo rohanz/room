@@ -20,6 +20,13 @@ export interface ClaimAnchor {
 }
 
 /** Line ranges are 1-based, inclusive. */
+/** A change the claimant intends to make, declared before editing so others can prepare. */
+export interface Plan {
+  kind: 'rename' | 'signature' | 'delete' | 'add'
+  symbol: string
+  detail?: string
+}
+
 export interface Claim {
   id: string
   path: string
@@ -32,11 +39,14 @@ export interface Claim {
   at: number
   /** Absent when the owner's overlay did not exist when the claim was made. */
   anchor?: ClaimAnchor
+  plans?: Plan[]
 }
 
 export interface Scope {
   by: string
   byKind: Kind
+  /** One-word ledger name, e.g. "auth". */
+  area: string
   summary: string
   paths: string[]
   /** epoch ms */
@@ -56,14 +66,14 @@ export interface MsgBase {
   to?: string
   at: number
 }
-export interface ClaimMsg extends MsgBase { type: 'claim'; claimId: string; path: string; from_line: number; to_line: number; intent: string }
-export interface ReleaseMsg extends MsgBase { type: 'release'; claimId: string; path: string; summary?: string }
+export interface ClaimMsg extends MsgBase { type: 'claim'; claimId: string; path: string; from_line: number; to_line: number; intent: string; plans?: Plan[] }
+export interface ReleaseMsg extends MsgBase { type: 'release'; claimId: string; path: string; summary?: string; unfulfilled?: Plan[] }
 export interface ChangedMsg extends MsgBase { type: 'changed'; paths: string[]; summary: string; symbols?: string[] }
 export interface QuestionMsg extends MsgBase { type: 'question'; text: string }
 export interface AnswerMsg extends MsgBase { type: 'answer'; inReplyTo: string; text: string }
 export interface ConflictMsg extends MsgBase { type: 'conflict'; claimId: string; otherClaimId: string; path: string; text: string }
 export interface NoteMsg extends MsgBase { type: 'note'; text: string }
-export interface ScopeMsg extends MsgBase { type: 'scope'; summary: string; paths: string[] }
+export interface ScopeMsg extends MsgBase { type: 'scope'; area: string; summary: string; paths: string[] }
 export type Msg = ClaimMsg | ReleaseMsg | ChangedMsg | QuestionMsg | AnswerMsg | ConflictMsg | NoteMsg | ScopeMsg
 
 export interface Meta {

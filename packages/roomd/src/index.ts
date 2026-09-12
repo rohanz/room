@@ -10,7 +10,7 @@ import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, colorFor, type Presence } from '@room/shared'
+import { RoomDoc, colorFor, type Kind, type Presence } from '@room/shared'
 import { gitBranch, gitHead, gitIgnored, gitOrigin, gitShow, gitTracked } from './git.js'
 
 export interface RoomdOptions {
@@ -20,6 +20,8 @@ export interface RoomdOptions {
   dir: string
   /** Person whose overlay this daemon publishes. */
   name: string
+  /** Presence kind to publish; 'agent' when embedded in the MCP server. Default 'human'. */
+  kind?: Kind
   log?: (line: string) => void
   /** Max time to wait for the initial sync; default 15s. */
   connectTimeoutMs?: number
@@ -33,6 +35,9 @@ export interface RoomdOptions {
 
 export interface Roomd {
   stop(): Promise<void>
+  touch(): void
+  readonly dir: string
+  readonly name: string
   readonly roomDoc: RoomDoc
   readonly provider: WebsocketProvider
   readonly branch: string
@@ -75,8 +80,9 @@ class Daemon implements Roomd {
   branch = ''
   base = ''
 
-  private readonly dir: string
-  private readonly name: string
+  readonly dir: string
+  readonly name: string
+  private readonly kind: Kind
   private readonly log: (line: string) => void
   private readonly debounceMs: number
   private readonly trackedRefreshMs: number
@@ -94,6 +100,7 @@ class Daemon implements Roomd {
   constructor(options: RoomdOptions) {
     this.dir = path.resolve(options.dir)
     this.name = options.name
+    this.kind = options.kind ?? 'human'
     this.roomUrl = options.room
     this.log = options.log ?? (line => process.stderr.write(`[roomd] ${line}\n`))
     this.debounceMs = options.debounceMs ?? 50
@@ -170,13 +177,18 @@ class Daemon implements Roomd {
   }
 
   private setStatus(status: string): void {
+    const current = (this.provider.awareness.getLocalState() ?? {}) as Partial<Presence>
     const state: Presence = {
-      user: { name: this.name, kind: 'human', color: colorFor(this.name) },
+      ...current,
+      user: { name: this.name, kind: this.kind, color: colorFor(this.name) },
       status,
       lastActive: this.lastActive,
     }
     this.provider.awareness.setLocalState(state)
   }
+
+  /** Mark this party active now (tool calls count as activity). */
+  touch(): void { this.bumpLastActive() }
 
   private bumpLastActive(): void {
     this.lastActive = Date.now()

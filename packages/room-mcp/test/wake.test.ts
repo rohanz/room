@@ -22,8 +22,9 @@ describe('shouldWake', () => {
   it('does not wake on a question to someone else', () => {
     expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'question', to: 'Alice' }) })).toBeNull()
   })
-  it('wakes on broadcast changed and includes path', () => {
-    const w = shouldWake(me, { kind: 'msg', msg: msg({ type: 'changed', paths: ['a.py'], summary: 's' } as any) })!
+  it('broadcast changed is read on next action; addressed changed wakes and includes path', () => {
+    expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'changed', paths: ['a.py'], summary: 's', priority: 'notify' } as any) })).toBeNull()
+    const w = shouldWake(me, { kind: 'msg', msg: msg({ type: 'changed', to: 'Rohan', paths: ['a.py'], summary: 's', priority: 'notify' } as any) })!
     expect(w.meta.path).toBe('a.py')
     expect(w.meta.type).toBe('changed')
   })
@@ -32,8 +33,9 @@ describe('shouldWake', () => {
     expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'answer', to: 'Rohan', inReplyTo: 'x' } as any) })).not.toBeNull()
     expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'note', from: 'Kieran', fromKind: 'human' }) })).toBeNull()
   })
-  it('my human owner messages still wake me', () => {
-    expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'claim', from: 'Rohan', fromKind: 'human', path: 'a', from_line: 1, to_line: 2, intent: 'i', claimId: 'c' } as any) })).not.toBeNull()
+  it('interrupts wake even when broadcast; fyi never wakes', () => {
+    expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'note', text: 'stop', priority: 'interrupt' } as any) })).not.toBeNull()
+    expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'note', to: 'Rohan', text: 'x', priority: 'fyi' } as any) })).toBeNull()
   })
   it('wakes on overlapping claim by another party, not on disjoint or own', () => {
     const other: Claim = { ...mine, id: 'c_o', by: 'Kieran', from: 15, to: 30 }

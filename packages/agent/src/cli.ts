@@ -52,6 +52,10 @@ const backend = new CodexBackend({
 })
 const runner = new Runner({ name, room, awareness: provider.awareness, backend, log: l => console.error(`[roomagent] ${l}`) })
 
+// Mirror the transcript to the terminal so the browser view is optional.
+room.chat(name).observe(ev => {
+  for (const d of ev.changes.delta) for (const it of d.insert ?? []) if (it.role !== 'human') console.log(`[${it.role}] ${it.text}`)
+})
 provider.once('sync', () => {
   runner.start()
   console.error(`[roomagent] ${name}'s agent online in ${roomName} @ ${serverUrl}, cwd ${workDir}`)

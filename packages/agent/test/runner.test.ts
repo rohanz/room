@@ -70,8 +70,8 @@ describe('Runner', () => {
     s.room.say('Rohan', { role: 'human', text: 'go' })
     await tick()
     expect(s.backend.inputs).toHaveLength(1)
-    s.room.post<ChangedMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'changed', paths: ['a.py'], summary: 'renamed f' })
-    s.room.post<QuestionMsg>({ name: 'Kieran', kind: 'human' }, { type: 'question', text: 'anyone touching b.py?' })
+    s.room.post<ChangedMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'changed', to: 'Rohan', paths: ['a.py'], summary: 'renamed f', symbols: ['f'] })
+    s.room.post<QuestionMsg>({ name: 'Kieran', kind: 'human' }, { type: 'question', to: 'Rohan', text: 'anyone touching b.py?' })
     s.backend.hold = false
     s.backend.finish()
     await s.runner.idle()
@@ -131,16 +131,18 @@ describe('Runner', () => {
   })
 })
 
-describe('wake rules: claim/release locality', () => {
-  it('ignores broadcast claims in files I have no claim in, wakes for files I am working in', async () => {
+describe('wake rules: priorities', () => {
+  it('fyi never wakes, notify wakes only when addressed, interrupt always', async () => {
     const { shouldWakeOnMsg } = await import('../src/wake.js')
     const me = { name: 'Rohan', kind: 'agent' as const }
     const claim = { id: 'm1', type: 'claim' as const, priority: 'fyi' as const, from: 'Kieran', fromKind: 'agent' as const, at: 1, claimId: 'c1', path: 'api/notify.py', from_line: 1, to_line: 1, intent: 'stub' }
-    expect(shouldWakeOnMsg(me, claim, []).wake).toBe(false)
     const mine = [{ id: 'c0', path: 'api/notify.py', from: 3, to: 9, by: 'Rohan', byKind: 'agent' as const, intent: 'x', at: 1 }]
-    expect(shouldWakeOnMsg(me, claim, mine).wake).toBe(true)
-    const changed = { id: 'm2', type: 'changed' as const, priority: 'fyi' as const, from: 'Kieran', fromKind: 'agent' as const, at: 1, paths: ['a.py'], summary: 'renamed' }
-    expect(shouldWakeOnMsg(me, changed, []).wake).toBe(true)
+    expect(shouldWakeOnMsg(me, claim, mine).wake).toBe(false)
+    const changed = { id: 'm2', type: 'changed' as const, priority: 'notify' as const, from: 'Kieran', fromKind: 'agent' as const, at: 1, paths: ['a.py'], summary: 'renamed', symbols: ['f'] }
+    expect(shouldWakeOnMsg(me, changed, []).wake).toBe(false)
+    expect(shouldWakeOnMsg(me, { ...changed, to: 'Rohan' }, []).wake).toBe(true)
+    const conflict = { id: 'm3', type: 'conflict' as const, priority: 'interrupt' as const, from: 'Kieran', fromKind: 'agent' as const, at: 1, claimId: 'a', otherClaimId: 'b', path: 'a.py', text: 'x' }
+    expect(shouldWakeOnMsg(me, conflict, []).wake).toBe(true)
   })
 })
 

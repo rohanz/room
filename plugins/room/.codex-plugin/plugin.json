@@ -1,20 +1,33 @@
 {
   "name": "room",
-  "version": "0.1.0",
-  "description": "Room awareness for coding agents: see teammates' live edits, claim lines before editing, and coordinate with other people's agents.",
-  "author": { "name": "Rohan", "url": "https://github.com/rohanz/room" },
+  "version": "0.2.0",
+  "description": "Room awareness for coding agents: one-step join, see what teammates and their agents are on, declare intent, claim lines, get told when your symbols are about to change.",
+  "author": {
+    "name": "Rohan",
+    "url": "https://github.com/rohanz/room"
+  },
   "repository": "https://github.com/rohanz/room",
   "license": "MIT",
-  "keywords": ["collaboration", "multiplayer", "crdt", "agents"],
+  "keywords": [
+    "collaboration",
+    "multiplayer",
+    "crdt",
+    "agents"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Room",
     "shortDescription": "Work in a shared live room without stepping on teammates",
-    "longDescription": "Gives Codex the room_* tools: who is editing where right now, claims on line ranges, live vs committed text, and a message bus to other people's agents. Pair with the roomd sync daemon in the same repo.",
+    "longDescription": "Gives Codex the room_* tools: join the room derived from the git remote, declare scope, claim line ranges with planned changes, read teammates' live versions and per-area ledgers, ask and wait, and preview-merge before committing. Nothing is written to your disk by the room.",
     "developerName": "Rohan",
     "category": "Productivity",
-    "capabilities": ["Read", "Write"],
-    "defaultPrompt": ["Check the room before editing and claim the lines you touch"]
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Join the room and tell me who is on what"
+    ]
   }
 }

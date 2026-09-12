@@ -1,143 +1,89 @@
 #!/usr/bin/env tsx
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { WebSocket } from 'ws'
-import * as Y from 'yjs'
-import { WebsocketProvider } from 'y-websocket'
-import { RoomDoc, colorFor, displayName } from '@room/shared'
-import type { Claim, Identity, Msg, Presence } from '@room/shared'
+import { displayName } from '@room/shared'
+import type { Msg } from '@room/shared'
 import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
+import { decodeRoom, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
 export type { WakeEvent, RoomEvent } from './wake.js'
-export { createTools } from './tools.js'
+export { createTools, DEFS } from './tools.js'
 export type { ToolCtx, ToolDef, Tools } from './tools.js'
+export { joinSession, leaveSession, deriveRoomName, findRoomFile, encodeRoom, decodeRoom } from './session.js'
+export type { Session, JoinOptions } from './session.js'
 
+const log = (s: string) => process.stderr.write(`room-mcp: ${s}\n`)
 
-interface Config { room: string; name: string; dir: string }
-
-/** Find `.room.json` (written by roomd in the clone root) starting from each candidate directory and walking up. */
-function findRoomFile(): Partial<Config> & { _from?: string } {
-  const env = process.env
-  const starts = [env.ROOM_DIR, process.cwd(), env.PWD, env.INIT_CWD, env.CODEX_CWD].filter((d): d is string => !!d)
-  for (const start of starts) {
-    let d = resolve(start)
-    for (;;) {
-      const f = resolve(d, '.room.json')
-      if (existsSync(f)) {
-        try { return { ...JSON.parse(readFileSync(f, 'utf8')), _from: dirname(f) } } catch { /* try next */ }
-      }
-      const up = dirname(d)
-      if (up === d) break
-      d = up
-    }
-  }
-  return {}
-}
-
-function loadConfig(): Config {
-  // Empty env values count as unset (a plugin's "${ROOM_URL}" substitution yields "" when not exported).
+/** Where the user is working: the runner passes ROOM_DIR; the Codex plugin passes PWD through. */
+function cwd(): string {
   const e = (k: string) => (process.env[k] && process.env[k]!.trim()) || undefined
-  const file = findRoomFile()
-  const room = e('ROOM_URL') ?? file.room
-  const name = e('ROOM_NAME') ?? file.name
-  const dir = e('ROOM_DIR') ?? file.dir ?? file._from ?? process.cwd()
-  if (!room || !name) {
-    process.stderr.write(`room-mcp: need ROOM_URL and ROOM_NAME, or a .room.json {room,name,dir} in the clone (looked from cwd=${process.cwd()} PWD=${process.env.PWD ?? '-'})\n`)
-    process.exit(2)
-  }
-  return { room, name, dir: resolve(dir) }
-}
-
-/** "ws://host:1234/myroom" -> { serverUrl: "ws://host:1234", roomName: "myroom" } */
-export function splitRoomUrl(url: string): { serverUrl: string; roomName: string } {
-  const u = new URL(url)
-  const parts = u.pathname.split('/').filter(Boolean)
-  const roomName = parts.pop() ?? 'room'
-  u.pathname = parts.length ? '/' + parts.join('/') : ''
-  return { serverUrl: u.toString().replace(/\/$/, ''), roomName }
+  return resolve(e('ROOM_DIR') ?? e('PWD') ?? e('INIT_CWD') ?? process.cwd())
 }
 
 async function main() {
-  const cfg = loadConfig()
-  const me: Identity = { name: cfg.name, kind: 'agent' }
-  const doc = new Y.Doc()
-  const room = new RoomDoc(doc)
-  const { serverUrl, roomName } = splitRoomUrl(cfg.room)
-  const provider = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket })
-  const awareness = provider.awareness
-  awareness.setLocalState({ user: { name: me.name, kind: 'agent', color: colorFor(me.name) }, status: 'idle' } satisfies Presence)
-
-  const tools = createTools({ room, me, dir: cfg.dir, awareness, isSynced: () => provider.synced })
+  let session: Session | null = null
+  const dir = cwd()
+  const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir })
 
   const mcp = new Server(
-    { name: 'room', version: '0.1.0' },
-    { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: AGENT_INSTRUCTIONS(me.name) },
+    { name: 'room', version: '0.2.0' },
+    { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: AGENT_INSTRUCTIONS() },
   )
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }))
   mcp.setRequestHandler(CallToolRequestSchema, async req => ({
     content: [{ type: 'text', text: await tools.call(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>) }],
   }))
 
-  const push = (w: { content: string; meta: Record<string, string> } | null) => {
-    if (!w) return
-    mcp.notification({ method: 'notifications/claude/channel', params: { content: w.content, meta: w.meta } }).catch(() => { /* channel not attached */ })
+  // Claude Code channel: push interrupts and addressed notifies as they arrive.
+  const attachChannel = (s: Session) => {
+    const push = (w: { content: string; meta: Record<string, string> } | null) => {
+      if (!w) return
+      mcp.notification({ method: 'notifications/claude/channel', params: { content: w.content, meta: w.meta } }).catch(() => { /* no channel attached */ })
+    }
+    const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === 'agent')
+    s.room.bus.observe(ev => {
+      if (ev.transaction.local) return
+      for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims()))
+    })
+    log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
   }
-  const myClaims = () => room.openClaims().filter(c => c.by === me.name && c.byKind === 'agent')
 
-  // bus: new items only
-  room.bus.observe(ev => {
-    if (ev.transaction.local) return
-    for (const d of ev.changes.delta) {
-      if (!d.insert) continue
-      for (const m of d.insert as Msg[]) push(shouldWake(me, { kind: 'msg', msg: m }, myClaims()))
+  // Auto-join when this clone was joined before (.room.json) or the runner told us where to go.
+  const env = (k: string) => (process.env[k] && process.env[k]!.trim()) || undefined
+  const prior = findRoomFile(dir)
+  if (env('ROOM_URL') || prior) {
+    try {
+      const url = env('ROOM_URL') ?? prior!.room
+      const u = new URL(url)
+      const roomName = decodeRoom(u.pathname.replace(/^\/+/, ''))
+      const s = await joinSession({ dir: env('ROOM_DIR') ?? prior?.dir ?? dir, name: env('ROOM_NAME') ?? prior?.name, room: roomName, server: `${u.protocol}//${u.host}`, log })
+      session = s; attachChannel(s)
+    } catch (e) {
+      log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`)
     }
-  })
-  // claims: new keys only
-  room.claims.observe(ev => {
-    if (ev.transaction.local) return
-    for (const [k, ch] of ev.changes.keys) {
-      if (ch.action !== 'add') continue
-      const c = room.claims.get(k) as Claim | undefined
-      if (c) push(shouldWake(me, { kind: 'claim', claim: c }, myClaims()))
-    }
-  })
-  // human cursor entering my claim, once per claim per 3s
-  const lastCursorWake = new Map<string, number>()
-  awareness.on('change', () => {
-    const mine = myClaims()
-    if (!mine.length) return
-    for (const [clientId, s] of awareness.getStates()) {
-      if (clientId === awareness.clientID) continue
-      const p = s as Presence | undefined
-      if (!p?.user || p.user.kind !== 'human' || !p.cursor) continue
-      const w = shouldWake(me, { kind: 'cursor', who: { name: p.user.name, kind: 'human' }, cursor: p.cursor }, mine)
-      if (!w) continue
-      const key = `${w.meta.msg_id}:${p.user.name}`
-      const now = Date.now()
-      if ((lastCursorWake.get(key) ?? 0) + 3000 > now) continue
-      lastCursorWake.set(key, now)
-      push(w)
-    }
-  })
+  }
 
   const transport = new StdioServerTransport()
   await mcp.connect(transport)
-  process.stderr.write(`room-mcp: ${displayName(me)} joined ${cfg.room} (dir ${cfg.dir})\n`)
+  log(session ? 'ready' : `ready; not in a room yet (cwd ${dir}) — call room_join`)
 
-  const bye = () => { try { awareness.setLocalState(null); provider.destroy() } catch { /* ignore */ } process.exit(0) }
+  let closing = false
+  const bye = async () => {
+    if (closing) return
+    closing = true
+    if (session) { try { await leaveSession(session) } catch { /* ignore */ } }
+    process.exit(0)
+  }
   process.on('SIGINT', bye); process.on('SIGTERM', bye)
   mcp.onclose = bye
   process.stdin.on('end', bye)
 }
 
-// Run main() when executed directly (tsx on src/index.ts, the bundled plugins/room/server/room-mcp.mjs,
-// or the bin name), but not when imported by packages/agent for AGENT_INSTRUCTIONS / shouldWake.
 const isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\]index\.ts|\.mjs)?$/.test(process.argv[1])
 if (isEntry) main().catch(e => { process.stderr.write(`room-mcp: ${e?.stack ?? e}\n`); process.exit(1) })

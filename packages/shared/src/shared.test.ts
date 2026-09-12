@@ -51,11 +51,11 @@ describe('RoomDoc overlays', () => {
     expect(b.changedPaths('Rohan')).toEqual(['api/handlers.py', 'old.py'])
     expect(a.whoChanged('api/handlers.py')).toEqual(['Rohan'])
 
-    a.setScope('Rohan', { byKind: 'agent', summary: 'refactor handlers', paths: ['api/handlers.py'] })
+    a.setScope('Rohan', { byKind: 'agent', area: 'api', summary: 'refactor handlers', paths: ['api/handlers.py'] })
     expect(b.scope('Rohan')).toMatchObject({ by: 'Rohan', byKind: 'agent', summary: 'refactor handlers' })
     b.clearScope('Rohan')
     expect(a.scope('Rohan')).toBeUndefined()
-    b.setScope({ by: 'Kieran', byKind: 'human', summary: 'write tests', paths: ['tests/'] })
+    b.setScope({ by: 'Kieran', byKind: 'human', area: 'tests', summary: 'write tests', paths: ['tests/'] })
     expect(a.scope('Kieran')).toMatchObject({ summary: 'write tests', at: expect.any(Number) })
 
     b.post<QuestionMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'changing payload?' })

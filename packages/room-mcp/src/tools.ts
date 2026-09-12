@@ -1,13 +1,14 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { createTwoFilesPatch } from 'diff'
-import type { Awareness } from 'y-protocols/awareness'
+import { diff3Merge } from 'node-diff3'
 import {
-  RoomDoc, formatMsg, withLineNumbers, claimsOverlap, clampRange, describeClaim, displayName, rangesOverlap,
+  RoomDoc, formatMsg, formatPlans, withLineNumbers, claimsOverlap, clampRange, describeClaim, displayName, rangesOverlap, scopeCovers, msgPaths,
 } from '@room/shared'
-import type { Claim, Identity, Presence, Msg, ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg } from '@room/shared'
-
-const exec = promisify(execFile)
+import type {
+  Claim, Identity, Presence, Msg, Plan, Priority, Scope,
+  ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg,
+} from '@room/shared'
+import { git, gitShow } from '@room/roomd/git'
+import { joinSession, leaveSession, type JoinOptions, type Session } from './session.js'
 
 export interface ToolDef {
   name: string
@@ -17,19 +18,20 @@ export interface ToolDef {
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean }
 }
 
-/** Every room tool only touches the shared room doc (never the user's files or the network), so none is destructive. */
+/** Room tools only touch the shared room doc, never the user's files, so none is destructive. */
 const RO = { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
 const RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
 
 export interface ToolCtx {
-  room: RoomDoc
-  me: Identity
-  dir: string
-  awareness?: Awareness
-  /** Tool calls are gated until the websocket provider completes initial sync. */
-  isSynced?: () => boolean
-  /** injectable for tests */
-  sleep?: (ms: number) => Promise<void>
+  /** Current session, or null before room_join. */
+  getSession(): Session | null
+  setSession(s: Session | null): void
+  /** Working directory used by room_join when the caller passes none. */
+  cwd: string
+  /** Injectable for tests. */
+  join?: (o: JoinOptions) => Promise<Session>
+  leave?: (s: Session) => Promise<void>
+  now?: () => number
 }
 
 export interface Tools {
@@ -39,252 +41,478 @@ export interface Tools {
 
 const str = (d: string) => ({ type: 'string', description: d })
 const int = (d: string) => ({ type: 'integer', description: d })
+const strs = (d: string) => ({ type: 'array', items: { type: 'string' }, description: d })
+const PLANS = {
+  type: 'array',
+  description: 'Changes you intend to make that others may depend on. Declare BEFORE editing.',
+  items: { type: 'object', properties: {
+    kind: { type: 'string', enum: ['rename', 'signature', 'delete', 'add'] },
+    symbol: str('function/class/variable name as it is now'),
+    detail: str('new name, new signature, or why'),
+  }, required: ['kind', 'symbol'] },
+}
 
-const DEFS: ToolDef[] = [
-  { name: 'room_state', annotations: RO, description: 'Room overview: meta, participants (with cursors/status), open claims, last 10 bus messages, unread count. Call this before editing anything.',
+export const DEFS: ToolDef[] = [
+  { name: 'room_join', annotations: RW, description: 'Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL.',
+    inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)') } } },
+  { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'room_read_live', annotations: RO, description: 'Current live room text of a file with line numbers, plus claims and cursors in it.',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path') }, required: ['path'] } },
-  { name: 'room_read_committed', annotations: RO, description: 'File content at HEAD of the local clone (git show HEAD:path).',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path') }, required: ['path'] } },
-  { name: 'room_diff', annotations: RO, description: 'Unified diff from committed (HEAD) to live room text, for one path or all changed paths.',
-    inputSchema: { type: 'object', properties: { path: str('optional repo-relative path') } } },
-  { name: 'room_who', annotations: RO, description: 'Who is active (cursor) or holds claims overlapping a file region.',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), from: int('first line (1-based), default 1'), to: int('last line, default EOF') }, required: ['path'] } },
-  { name: 'room_claim', annotations: RW, description: 'Claim a line range before editing it. Reports overlaps with other parties (and posts a conflict). Returns claimId.',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), from: int('first line'), to: int('last line'), intent: str('what you are about to do') }, required: ['path', 'from', 'to', 'intent'] } },
-  { name: 'room_release', annotations: RW, description: 'Release a claim you hold, optionally with a summary of what you did.',
-    inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('optional summary') }, required: ['claimId'] } },
-  { name: 'room_send', annotations: RW, description: 'Post a bus message: changed (paths+summary), question (to someone), or answer (inReplyTo a question).',
+  { name: 'room_scope', annotations: RW, description: 'Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. Do this before editing. Replaces your previous scope. The reply ends with the area ledger: what others changed there and their open plans.',
+    inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('files or directories you expect to touch') }, required: ['area', 'summary', 'paths'] } },
+  { name: 'room_state', annotations: RO, description: 'Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Call before editing and after any wait.',
+    inputSchema: { type: 'object', properties: {} } },
+  { name: 'room_read', annotations: RO, description: 'A file as a person sees it right now: base commit + their uncommitted edits (default: you). With line numbers, claims in the file, and the file ledger (recent changes by others, open plans).',
+    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), person: str('whose live version (default you)') }, required: ['path'] } },
+  { name: 'room_diff', annotations: RO, description: 'Unified diff from the base commit to a person\'s live version, for one path or all their changed paths.',
+    inputSchema: { type: 'object', properties: { path: str('optional path'), person: str('default you') } } },
+  { name: 'room_who', annotations: RO, description: 'Who holds claims in a region of a file, whose scope covers it, and who has changed the file.',
+    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), from: int('first line, default 1'), to: int('last line, default EOF') }, required: ['path'] } },
+  { name: 'room_claim', annotations: RW, description: 'Claim a line range before editing it, saying what you will do. Declare renames/signature changes in `plans` so anyone who uses those symbols is told now. Reports overlaps (posting a conflict). Returns claimId.',
+    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), from: int('first line'), to: int('last line'), intent: str('what you are about to do'), plans: PLANS }, required: ['path', 'from', 'to', 'intent'] } },
+  { name: 'room_release', annotations: RW, description: 'Release a claim with a summary of what you did. Plans whose symbol is not mentioned in the summary (or in `done`) are reported as not done.',
+    inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('what changed, one line'), done: strs('symbols from your plans that you completed') }, required: ['claimId'] } },
+  { name: 'room_send', annotations: RW, description: 'Post to the bus. changed: paths + summary (+ symbols renamed/changed, which notifies whoever uses them). question: to a person\'s agent. answer: inReplyTo a question id. note: broadcast fyi.',
     inputSchema: { type: 'object', properties: {
-      type: { type: 'string', enum: ['changed', 'question', 'answer'] },
+      type: { type: 'string', enum: ['changed', 'question', 'answer', 'note'] },
       to: str('recipient person name (their agent); empty = broadcast'),
       text: str('message text / change summary'),
-      paths: { type: 'array', items: { type: 'string' }, description: 'paths touched (changed)' },
-      inReplyTo: str('message id being answered (answer)'),
+      paths: strs('paths touched (changed)'),
+      symbols: strs('symbols renamed or whose signature changed (changed)'),
+      inReplyTo: str('question id (answer)'),
+      priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'override; defaults are usually right' },
     }, required: ['type', 'text'] } },
-  { name: 'room_wait', annotations: RO, description: 'Sleep up to 30 seconds, e.g. to let a human finish in your region, then call room_state again.',
-    inputSchema: { type: 'object', properties: { seconds: int('1-30') } } },
+  { name: 'room_wait', annotations: RO, description: 'Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). Returns what happened. Then call room_state.',
+    inputSchema: { type: 'object', properties: { claimId: str('wait for this claim to be released'), questionId: str('wait for an answer to this question'), timeoutMs: int('default 30000, max 120000') } } },
+  { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and another person\'s combine cleanly? Three-way merge in memory against the base commit; nothing is written. Reports clean paths and conflicting hunks.',
+    inputSchema: { type: 'object', properties: { person: str('the other person') }, required: ['person'] } },
 ]
 
+const WAIT_DEFAULT = 30_000
+const WAIT_MAX = 120_000
+const STALE_MS = 10 * 60 * 1000
+
 export function createTools(ctx: ToolCtx): Tools {
-  const { room, me, dir } = ctx
-  const sleep = ctx.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
-  let seenBus = room.bus.length
+  const now = ctx.now ?? (() => Date.now())
+  const doJoin = ctx.join ?? joinSession
+  const doLeave = ctx.leave ?? leaveSession
 
-  const presences = (): Presence[] => {
-    if (!ctx.awareness) return []
-    return Array.from(ctx.awareness.getStates().values()).filter((s): s is Presence => !!s && typeof s === 'object' && !!(s as Presence).user)
+  // ---- per-session state --------------------------------------------------
+  let readCursor = 0 // bus index up to which the inbox has been shown
+  const upgraded = new Set<string>() // "msgId:person" copies already posted
+
+  const S = (): Session => {
+    const s = ctx.getSession()
+    if (!s) throw new NotJoined()
+    return s
   }
-  const isMe = (p: { name: string; kind: string }) => p.name === me.name && p.kind === me.kind
-  const myClaims = () => room.openClaims().filter(c => c.by === me.name && c.byKind === me.kind)
-  const conflictPairs = new Set(room.messages().flatMap(m => m.type === 'conflict' ? [[m.claimId, m.otherClaimId].sort().join(':')] : []))
-  const pairKey = (a: Claim, b: Claim) => [a.id, b.id].sort().join(':')
-  const conflictExists = (key: string) => conflictPairs.has(key) || room.messages().some(m => m.type === 'conflict' && [m.claimId, m.otherClaimId].sort().join(':') === key)
+  const isMe = (s: Session, p: { name: string; kind: string }) => p.name === s.me.name && p.kind === s.me.kind
+  const mine = (s: Session) => s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === s.me.kind)
+  const others = (s: Session): string[] => {
+    const names = new Set<string>()
+    for (const k of s.room.scopes.keys()) names.add(k)
+    for (const k of s.room.overlays.keys()) names.add(k)
+    for (const p of presences(s)) names.add(p.user.name)
+    names.delete(s.me.name)
+    return Array.from(names).sort()
+  }
+  const presences = (s: Session): Presence[] =>
+    Array.from(s.awareness.getStates().values()).filter((x): x is Presence => !!x && typeof x === 'object' && !!(x as Presence).user)
+  const setPresence = (s: Session, patch: Partial<Presence>) => {
+    const cur = (s.awareness.getLocalState() ?? {}) as Partial<Presence>
+    s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() })
+  }
+  const base = (s: Session) => s.room.meta.base ?? 'HEAD'
+  const baseText = async (s: Session, path: string): Promise<string | undefined> => gitShow(s.dir, base(s), path)
+  /** HEAD + a person's overlay; undefined if the file exists nowhere; null if they deleted it. */
+  const liveText = async (s: Session, path: string, person: string): Promise<string | undefined | null> => {
+    if (s.room.deleted.get(person)?.has(path)) return null
+    const ov = s.room.text(path, person)
+    if (ov !== undefined) return ov
+    return baseText(s, path)
+  }
+  const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
-  const postConflictOnce = (claim: Claim, other: Claim): boolean => {
-    const key = pairKey(claim, other)
-    if (conflictExists(key)) return false
-    conflictPairs.add(key)
-    const text = `${displayName(me)} claimed ${claim.path}:${claim.from}-${claim.to} (${claim.intent}) overlapping ${describeClaim(other)}`
-    room.post<ConflictMsg>(me, { type: 'conflict', claimId: claim.id, otherClaimId: other.id, path: claim.path, text })
-    return true
+  // ---- inbox ----------------------------------------------------------------
+  const forMe = (s: Session, m: Msg) => {
+    if (m.from === s.me.name && m.fromKind === 'agent') return false
+    if (m.to === s.me.name) return true
+    if (m.type === 'conflict') return mine(s).some(c => c.id === m.claimId || c.id === m.otherClaimId)
+    return false
+  }
+  const inbox = (s: Session): string => {
+    const all = s.room.messages()
+    const fresh = all.slice(readCursor).filter(m => forMe(s, m))
+    readCursor = all.length
+    if (!fresh.length) return ''
+    const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
+    fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at)
+    return `[inbox ${fresh.length}]\n${fresh.map(m => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
   }
 
-  // If two room_claim calls race, neither sees the other during its pre-check. Once the
-  // remote claim arrives, only the owner of the lexicographically first claim reports it.
-  room.claims.observe((ev, tr) => {
-    if (tr.local) return
-    for (const [id, change] of ev.changes.keys) {
-      if (change.action !== 'add') continue
-      const arrived = room.claims.get(id)
-      if (!arrived) continue
-      for (const mine of myClaims()) {
-        if (mine.id === arrived.id || !claimsOverlap(mine, arrived)) continue
-        const ordered = [mine, arrived].sort((a, b) => a.id.localeCompare(b.id))
-        const key = pairKey(mine, arrived)
-        if (conflictExists(key)) { conflictPairs.add(key); continue }
-        conflictPairs.add(key)
-        if (ordered[0].id !== mine.id) continue
-        const text = `${displayName(me)} detected concurrent overlapping claims: ${describeClaim(mine)} and ${describeClaim(arrived)}`
-        room.post<ConflictMsg>(me, { type: 'conflict', claimId: mine.id, otherClaimId: arrived.id, path: mine.path, text })
+  // ---- scope upgrade rule ---------------------------------------------------
+  /** Who else is affected by these paths/symbols: scope covers a path, or their files mention a symbol. */
+  const affected = async (s: Session, paths: string[], symbols: string[]): Promise<Map<string, string>> => {
+    const out = new Map<string, string>()
+    for (const person of others(s)) {
+      const sc = s.room.scope(person)
+      const hitPath = sc && paths.find(p => scopeCovers(sc, p))
+      if (hitPath) { out.set(person, `scope ${sc.area} covers ${hitPath}`); continue }
+      if (!symbols.length) continue
+      // Their live files, then the shared base under their scope paths.
+      const files = new Set(s.room.changedPaths(person))
+      let hit: string | undefined
+      for (const f of files) {
+        const t = s.room.text(f, person) ?? ''
+        const sym = symbols.find(x => t.includes(x))
+        if (sym) { hit = `${f} uses ${sym}`; break }
       }
+      if (!hit && sc?.paths.length) {
+        for (const sym of symbols) {
+          try {
+            const res = (await git(s.dir, ['grep', '-l', '--fixed-strings', sym, base(s), '--', ...sc.paths])).trim()
+            if (res) { hit = `${res.split('\n')[0].replace(/^[^:]*:/, '')} uses ${sym}`; break }
+          } catch { /* no match */ }
+        }
+      }
+      if (hit) out.set(person, hit)
     }
-  })
-
-  const setPresence = (patch: Partial<Presence>) => {
-    const a = ctx.awareness
-    if (!a) return
-    const cur = (a.getLocalState() ?? {}) as Partial<Presence>
-    a.setLocalState({ ...cur, ...patch })
+    return out
   }
-
-  const requireFile = (path: unknown): string | { err: string } => {
-    if (typeof path !== 'string' || !path) return { err: 'error: path is required' }
-    if (!room.hasFile(path)) return { err: `error: ${path} is not in the room (known: ${room.paths().slice(0, 20).join(', ') || 'none'})` }
-    return path
-  }
-
-  const activityIn = (path: string, from: number, to: number): string[] => {
-    const lines: string[] = []
-    for (const c of room.claimsFor(path)) if (rangesOverlap(c.from, c.to, from, to)) lines.push(`claim ${c.id}: ${describeClaim(c)}`)
-    for (const p of presences()) {
-      if (!p.cursor || p.cursor.path !== path) continue
-      if (!rangesOverlap(p.cursor.from, p.cursor.to, from, to)) continue
-      lines.push(`cursor: ${displayName(p.user)} at ${path}:${p.cursor.from}-${p.cursor.to}${p.status ? ` (${p.status})` : ''}`)
+  const upgrade = async (s: Session, m: Msg, paths: string[], symbols: string[]): Promise<string[]> => {
+    const notes: string[] = []
+    for (const [person, why] of await affected(s, paths, symbols)) {
+      if (m.to === person) continue
+      const key = `${m.id}:${person}`
+      if (upgraded.has(key)) continue
+      upgraded.add(key)
+      const { id: _id, at: _at, from: _f, fromKind: _k, ...body } = m as Msg & Record<string, unknown>
+      s.room.post(s.me, { ...(body as object), to: person, priority: 'notify' } as never)
+      notes.push(`notified ${person}'s agent (${why})`)
     }
-    return lines
+    return notes
   }
 
-  const gitShow = async (path: string): Promise<string | null> => {
-    try { const { stdout } = await exec('git', ['-C', dir, 'show', `HEAD:${path}`], { maxBuffer: 8 * 1024 * 1024 }); return stdout }
-    catch { return null }
+  // ---- rendering helpers ----------------------------------------------------
+  const claimLine = (s: Session, c: Claim) => {
+    const stale = !presences(s).some(p => p.user.name === c.by) && now() - c.at > STALE_MS
+    return `  - ${c.id}: ${describeClaim(c)}${isMe(s, { name: c.by, kind: c.byKind }) ? ' (yours)' : ''}${stale ? ' [stale: owner offline]' : ''}`
   }
-  const diffOne = async (path: string): Promise<string> => {
-    const committed = (await gitShow(path)) ?? ''
-    // phase 2: this becomes the full HEAD + caller-overlay merged view, including deletions.
-    const live = room.deleted.get(me.name)?.has(path) ? '' : room.text(path, me.name) ?? committed
-    if (live === committed) return ''
-    return createTwoFilesPatch(`a/${path}`, `b/${path}`, committed, live, 'HEAD', 'live', { context: 3 })
+  const ledgerLines = (s: Session, q: NonNullable<Parameters<RoomDoc['ledger']>[0]>, label: string): string[] => {
+    const entries = s.room.ledger({ ...q, limit: q.limit ?? 10 }).filter(m => !(m.to && m.to !== s.me.name && m.from !== s.me.name))
+    const plans = s.room.openClaims().filter(c => c.plans?.length && !(c.by === s.me.name) && (q.path ? c.path === q.path : true) && (q.area ? s.room.allScopes().some(sc => sc.area === q.area && scopeCovers(sc, c.path)) : true))
+    const out = [`${label} ledger (${entries.length}):`]
+    for (const m of entries) out.push(`  - ${new Date(m.at).toISOString().slice(11, 19)} ${formatMsg(m)}`)
+    if (plans.length) { out.push('open plans by others:'); for (const c of plans) out.push(`  - ${c.by}'s agent in ${c.path}: ${formatPlans(c.plans!)}`) }
+    return out
   }
+  const scopeLine = (sc: Scope) => `${sc.area}: ${sc.summary} (${sc.paths.join(', ')})`
 
+  // ---- handlers -------------------------------------------------------------
   const handlers: Record<string, (a: Record<string, unknown>) => Promise<string>> = {
-    async room_state() {
-      const m = room.meta
-      const out: string[] = []
-      out.push(`you: ${displayName(me)}`)
-      out.push(`meta: repo=${m.repo ?? '?'} branch=${m.branch ?? '?'} base=${(m.base ?? '?').slice(0, 10)} files=${room.paths().length}`)
-      const ps = presences()
-      out.push(`participants (${ps.length}):`)
-      for (const p of ps) {
-        const cur = p.cursor ? ` cursor=${p.cursor.path}:${p.cursor.from}-${p.cursor.to}` : ''
-        out.push(`  - ${displayName(p.user)}${isMe(p.user) ? ' (you)' : ''} [${p.user.kind}]${p.status ? ` status=${p.status}` : ''}${cur}`)
-      }
-      const cs = room.openClaims()
-      out.push(`open claims (${cs.length}):`)
-      for (const c of cs) out.push(`  - ${c.id}: ${describeClaim(c)}${c.by === me.name && c.byKind === me.kind ? ' (yours)' : ''}`)
-      const msgs = room.lastMessages(10)
-      out.push(`last ${msgs.length} bus messages:`)
-      for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
-      const unread = Math.max(0, room.bus.length - seenBus)
-      seenBus = room.bus.length
-      out.push(`unread since your last room_state: ${unread}`)
+    async room_join(a) {
+      const cur = ctx.getSession()
+      if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`
+      const s = await doJoin({
+        dir: typeof a.dir === 'string' && a.dir ? a.dir : ctx.cwd,
+        name: typeof a.name === 'string' && a.name ? a.name : undefined,
+        room: typeof a.room === 'string' && a.room ? a.room : undefined,
+        server: typeof a.server === 'string' && a.server ? a.server : undefined,
+      })
+      ctx.setSession(s)
+      readCursor = s.room.bus.length
+      const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
+      const ps = presences(s).filter(p => !isMe(s, p.user))
+      out.push(ps.length ? `here now: ${ps.map(p => displayName(p.user)).join(', ')}` : 'nobody else is here yet')
+      for (const sc of s.room.allScopes()) if (sc.by !== s.me.name) out.push(`  ${sc.by} is on ${scopeLine(sc)}`)
+      const cs = s.room.openClaims()
+      if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
+      out.push(`browser view: ${s.browserUrl}`)
+      out.push('next: room_scope(area, summary, paths) before you edit.')
       return out.join('\n')
     },
-    async room_read_live(a) {
-      const p = requireFile(a.path); if (typeof p !== 'string') return p.err
-      // phase 2: room_read will support an explicit person and a complete HEAD fallback.
-      const text = room.text(p, me.name) ?? await gitShow(p) ?? ''
-      const act = activityIn(p, 1, Number.MAX_SAFE_INTEGER)
-      const lineCount = text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length
-      return `${p} (${lineCount} lines)\n${act.length ? act.map(l => `! ${l}`).join('\n') + '\n' : ''}${withLineNumbers(text)}`
+    async room_leave() {
+      const s = S()
+      const released = mine(s)
+      for (const c of released) { s.room.removeClaim(c.id); s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: 'left the room' }) }
+      s.room.clearScope(s.me.name)
+      ctx.setSession(null)
+      await doLeave(s)
+      return `left ${s.roomName}; released ${released.length} claim(s)`
     },
-    async room_read_committed(a) {
-      if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
-      const s = await gitShow(a.path)
-      return s === null ? `error: ${a.path} is not at HEAD in ${dir}` : withLineNumbers(s)
+    async room_scope(a) {
+      const s = S()
+      const area = String(a.area ?? '').trim().toLowerCase().split(/\s+/)[0]
+      const summary = String(a.summary ?? '').trim()
+      const paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string' && !!x) : []
+      if (!area || !summary || !paths.length) return 'error: area, summary and paths are required'
+      s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths })
+      s.room.post<ScopeMsg>(s.me, { type: 'scope', area, summary, paths })
+      setPresence(s, { status: `on ${area}: ${summary}` })
+      const out = [`scope set: ${scopeLine({ area, summary, paths } as Scope)}`]
+      const overlapping = s.room.allScopes().filter(sc => sc.by !== s.me.name && paths.some(p => scopeCovers(sc, p) || sc.paths.some(q => scopeCovers({ paths }, q))))
+      for (const sc of overlapping) out.push(`overlaps ${sc.by}'s scope ${scopeLine(sc)} — coordinate before touching shared files`)
+      out.push(...ledgerLines(s, { area, limit: 20 }, area))
+      return out.join('\n')
     },
-    async room_diff(a) {
-      if (typeof a.path === 'string' && a.path) {
-        const d = await diffOne(a.path)
-        return d || `${a.path}: no difference between HEAD and live`
+    async room_state() {
+      const s = S()
+      const m = s.room.meta
+      const out: string[] = []
+      out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? '?').slice(0, 10)})`)
+      const ps = presences(s)
+      const names = new Set<string>([...ps.map(p => p.user.name), ...s.room.scopes.keys()])
+      out.push(`participants (${names.size}):`)
+      for (const n of Array.from(names).sort()) {
+        const p = ps.find(x => x.user.name === n && x.user.kind === 'agent') ?? ps.find(x => x.user.name === n)
+        const sc = s.room.scope(n)
+        const ago = p?.lastActive ? `${Math.max(0, Math.round((now() - p.lastActive) / 1000))}s ago` : 'offline'
+        out.push(`  - ${n}${n === s.me.name ? ' (you)' : ''}: ${p?.status ?? 'offline'} · active ${ago}${sc ? ` · ${scopeLine(sc)}` : ' · no scope'}`)
       }
-      const parts: string[] = []
-      for (const p of room.changedPaths(me.name)) { const d = await diffOne(p); if (d) parts.push(d) }
-      return parts.length ? parts.join('\n') : 'no differences between HEAD and live'
+      const areas = s.room.areaSummary()
+      if (areas.length) { out.push('areas:'); for (const l of areas) out.push(`  - ${l}`) }
+      const cs = s.room.openClaims()
+      out.push(`open claims (${cs.length}):`)
+      for (const c of cs) out.push(claimLine(s, c))
+      const changed = new Map<string, string[]>()
+      for (const person of [s.me.name, ...others(s)]) { const ps2 = s.room.changedPaths(person); if (ps2.length) changed.set(person, ps2) }
+      out.push('uncommitted changes:')
+      if (!changed.size) out.push('  (none)')
+      for (const [person, ps2] of changed) out.push(`  - ${person}: ${ps2.join(', ')}`)
+      const msgs = s.room.lastMessages(10).filter(x => !(x.to && x.to !== s.me.name && x.from !== s.me.name))
+      out.push(`recent bus (${msgs.length}):`)
+      for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
+      return out.join('\n')
     },
-    async room_who(a) {
-      const p = requireFile(a.path); if (typeof p !== 'string') return p.err
-      const n = room.lineCount(p, me.name)
-      const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n)
-      const act = activityIn(p, r.from, r.to)
-      return act.length ? `${p}:${r.from}-${r.to}\n${act.join('\n')}` : `${p}:${r.from}-${r.to}: nobody active, no claims`
-    },
-    async room_claim(a) {
+    async room_read(a) {
+      const s = S()
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
       const p = a.path
+      const person = typeof a.person === 'string' && a.person ? a.person : s.me.name
+      const t = await liveText(s, p, person)
+      if (t === null) return `${p}: deleted by ${person} (uncommitted)`
+      if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes`
+      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== undefined ? ', uncommitted edits' : ', unchanged from base'})`]
+      const who = s.room.whoChanged(p).filter(x => x !== person)
+      if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(', ')} — room_read with person= to see theirs`)
+      for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
+      out.push(withLineNumbers(t))
+      out.push(...ledgerLines(s, { path: p, limit: 10 }, p))
+      return out.join('\n')
+    },
+    async room_diff(a) {
+      const s = S()
+      const person = typeof a.person === 'string' && a.person ? a.person : s.me.name
+      const one = async (p: string) => {
+        const b = (await baseText(s, p)) ?? ''
+        const l = await liveText(s, p, person)
+        const live = l === null ? '' : l ?? b
+        return live === b ? '' : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, 'base', person, { context: 3 })
+      }
+      if (typeof a.path === 'string' && a.path) return (await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`
+      const parts: string[] = []
+      for (const p of s.room.changedPaths(person)) { const d = await one(p); if (d) parts.push(d) }
+      return parts.length ? parts.join('\n') : `${person} has no uncommitted changes`
+    },
+    async room_who(a) {
+      const s = S()
+      if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
+      const p = a.path
+      const t = await liveText(s, p, s.me.name)
+      const n = t ? lines(t) : 1
+      const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n)
+      const out: string[] = []
+      for (const c of s.room.claimsFor(p)) if (rangesOverlap(c.from, c.to, r.from, r.to)) out.push(`claim ${c.id}: ${describeClaim(c)}`)
+      for (const sc of s.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(`scope: ${sc.by} is on ${scopeLine(sc)}`)
+      const who = s.room.whoChanged(p).filter(x => x !== s.me.name)
+      if (who.length) out.push(`uncommitted changes by: ${who.join(', ')}`)
+      return out.length ? `${p}:${r.from}-${r.to}\n${out.join('\n')}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`
+    },
+    async room_claim(a) {
+      const s = S()
+      if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
       if (typeof a.intent !== 'string' || !a.intent) return 'error: intent is required'
-      const intent = a.intent
-      // A file that does not exist yet can still be claimed (intent: "create it"); range collapses to 1-1.
-      // phase 2: consult HEAD before labelling an overlay-absent path as new.
-      const isNew = !room.hasFile(p, me.name)
-      const n = isNew ? 1 : room.lineCount(p, me.name)
+      const p = a.path, intent = a.intent
+      const plans = parsePlans(a.plans)
+      if (typeof plans === 'string') return plans
+      const t = await liveText(s, p, s.me.name)
+      const isNew = t === undefined || t === null
+      const n = isNew ? 1 : lines(t)
       const r = clampRange(Number(a.from), Number(a.to), n)
       if (!Number.isFinite(r.from)) return 'error: from/to must be numbers'
-      const others = room.claimsFor(p).filter(c => !(c.by === me.name && c.byKind === me.kind) && claimsOverlap(c, { path: p, ...r }))
+      const overl = s.room.claimsFor(p).filter(c => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }))
       let claim!: Claim
-      room.doc.transact(() => {
-        claim = room.addClaim({ path: p, from: r.from, to: r.to, by: me.name, byKind: me.kind, intent })
-        room.post<ClaimMsg>(me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent })
-        for (const o of others) postConflictOnce(claim, o)
-      }, me)
-      setPresence({ cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p} ${r.from}-${r.to}: ${intent}` })
-      const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew ? ' (new file, not in room yet)' : ''}`]
-      for (const o of others) {
-        out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}) — conflict posted to bus. Stop and check with your human before editing.`)
-      }
+      let msg!: ClaimMsg
+      s.room.doc.transact(() => {
+        claim = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent, ...(plans.length ? { plans } : {}) })
+        msg = s.room.post<ClaimMsg>(s.me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent, ...(plans.length ? { plans } : {}) })
+        for (const o of overl) {
+          const text = `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intent}) overlapping ${describeClaim(o)}`
+          s.room.post<ConflictMsg>(s.me, { type: 'conflict', claimId: claim.id, otherClaimId: o.id, path: p, text, to: o.by })
+        }
+      }, s.me)
+      s.daemon.touch()
+      setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p}:${r.from}-${r.to} — ${intent}` })
+      const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew ? ' (new file)' : ''}`]
+      for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`)
+      const scopesHit = s.room.allScopes().filter(sc => sc.by !== s.me.name && scopeCovers(sc, p))
+      for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`)
+      out.push(...await upgrade(s, msg, [p], plans.map(x => x.symbol)))
       return out.join('\n')
     },
     async room_release(a) {
+      const s = S()
       if (typeof a.claimId !== 'string') return 'error: claimId is required'
-      const c = room.claims.get(a.claimId)
+      const c = s.room.claims.get(a.claimId)
       if (!c) return `error: no open claim ${a.claimId}`
-      if (!(c.by === me.name && c.byKind === me.kind)) return `error: ${a.claimId} belongs to ${displayName({ name: c.by, kind: c.byKind })}`
-      room.removeClaim(c.id)
+      if (!isMe(s, { name: c.by, kind: c.byKind })) return `error: ${a.claimId} belongs to ${displayName({ name: c.by, kind: c.byKind })}`
       const summary = typeof a.summary === 'string' && a.summary ? a.summary : undefined
-      room.post<ReleaseMsg>(me, { type: 'release', claimId: c.id, path: c.path, ...(summary ? { summary } : {}) })
-      const next = myClaims()[0]
-      setPresence(next
-        ? { cursor: { path: next.path, from: next.from, to: next.to }, status: `editing ${next.path} ${next.from}-${next.to}: ${next.intent}` }
-        : { cursor: undefined, status: 'idle' })
-      return `released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` — ${summary}` : ''}`
+      const done = new Set(Array.isArray(a.done) ? a.done.filter((x): x is string => typeof x === 'string') : [])
+      const unfulfilled = (c.plans ?? []).filter(pl => !done.has(pl.symbol) && !(summary ?? '').includes(pl.symbol) && !(pl.detail && (summary ?? '').includes(pl.detail)))
+      s.room.removeClaim(c.id)
+      s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, ...(summary ? { summary } : {}), ...(unfulfilled.length ? { unfulfilled } : {}) })
+      s.daemon.touch()
+      const next = mine(s)[0]
+      setPresence(s, next
+        ? { cursor: { path: next.path, from: next.from, to: next.to }, status: `editing ${next.path}:${next.from}-${next.to} — ${next.intent}` }
+        : { cursor: undefined, status: s.room.scope(s.me.name) ? `on ${s.room.scope(s.me.name)!.area}` : 'idle' })
+      const out = [`released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` — ${summary}` : ''}`]
+      if (unfulfilled.length) out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} — if you did them, room_send changed with symbols; if not, others were expecting them`)
+      if (c.plans?.length && !unfulfilled.length) out.push(`reminder: announce with room_send type=changed symbols=[${c.plans.map(x => x.symbol).join(', ')}] so users of those symbols are told`)
+      return out.join('\n')
     },
     async room_send(a) {
+      const s = S()
       const text = typeof a.text === 'string' ? a.text : ''
       if (!text) return 'error: text is required'
       const to = typeof a.to === 'string' && a.to ? a.to : undefined
-      if (to === me.name) return `error: you cannot message yourself. To ask ${me.name} (your human) something, just say it in your reply; room_send is for other people's agents.`
+      if (to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
+      const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
+      const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
       let msg: Msg
+      const notes: string[] = []
       switch (a.type) {
         case 'changed': {
           const paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
+          const symbols = Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
           if (!paths.length) return 'error: changed requires paths'
-          msg = room.post<ChangedMsg>(me, { type: 'changed', paths, summary: text, ...(to ? { to } : {}) })
+          msg = s.room.post<ChangedMsg>(s.me, withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }))
+          notes.push(...await upgrade(s, msg, paths, symbols))
           break
         }
         case 'question':
-          msg = room.post<QuestionMsg>(me, { type: 'question', text, ...(to ? { to } : {}) })
+          if (!to) return 'error: question requires to (whose agent)'
+          msg = s.room.post<QuestionMsg>(s.me, withPr({ type: 'question', text, to }))
+          notes.push(`room_wait questionId=${msg.id} to block for the answer`)
           break
         case 'answer': {
           if (typeof a.inReplyTo !== 'string' || !a.inReplyTo) return 'error: answer requires inReplyTo'
-          const orig = room.messages().find(m => m.id === a.inReplyTo)
+          const orig = s.room.messages().find(m => m.id === a.inReplyTo)
           const dest = to ?? orig?.from
           if (!dest) return 'error: answer requires to (could not infer from inReplyTo)'
-          msg = room.post<AnswerMsg>(me, { type: 'answer', to: dest, inReplyTo: a.inReplyTo, text })
+          msg = s.room.post<AnswerMsg>(s.me, withPr({ type: 'answer', to: dest, inReplyTo: a.inReplyTo, text }))
           break
         }
-        default: return `error: type must be changed|question|answer (got ${String(a.type)})`
+        case 'note':
+          msg = s.room.post<NoteMsg>(s.me, withPr({ type: 'note', text, ...(to ? { to } : {}) }))
+          break
+        default: return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       }
-      seenBus = Math.max(seenBus, room.bus.length) // own message is not unread
-      return `sent [${msg.id}] ${formatMsg(msg)}`
+      s.daemon.touch()
+      return [`sent [${msg.id}] ${formatMsg(msg)}`, ...notes].join('\n')
     },
     async room_wait(a) {
-      const s = Math.min(30, Math.max(0, Number(a.seconds ?? 5) || 0))
-      const before = room.bus.length
-      await sleep(s * 1000)
-      const arrived = room.bus.length - before
-      return `waited ${s}s; ${arrived} new bus message(s) arrived — call room_state`
+      const s = S()
+      const claimId = typeof a.claimId === 'string' && a.claimId ? a.claimId : undefined
+      const questionId = typeof a.questionId === 'string' && a.questionId ? a.questionId : undefined
+      const timeoutMs = Math.min(WAIT_MAX, Math.max(0, Number(a.timeoutMs ?? WAIT_DEFAULT) || WAIT_DEFAULT))
+      if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`
+      const answered = (id: string) => s.room.messages().find(m => m.type === 'answer' && m.inReplyTo === id)
+      if (questionId) { const an = answered(questionId); if (an) return `answered: ${formatMsg(an)}` }
+      setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
+      const busStart = s.room.bus.length
+      const result = await new Promise<string>(resolve => {
+        const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); resolve(r) }
+        const timer = setTimeout(() => finish(`timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Tell your human; proceed only where you do not depend on it.`), timeoutMs)
+        const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
+        const onBus = () => {
+          for (const m of s.room.messages().slice(busStart)) {
+            if (questionId && m.type === 'answer' && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`)
+            if (m.priority === 'interrupt' && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`)
+          }
+        }
+        s.room.claims.observe(onClaims); s.room.bus.observe(onBus)
+      })
+      setPresence(s, { status: 'idle' })
+      return `${result}\ncall room_state before continuing.`
+    },
+    async room_preview_merge(a) {
+      const s = S()
+      const person = typeof a.person === 'string' && a.person ? a.person : ''
+      if (!person || person === s.me.name) return 'error: person is required (someone other than you)'
+      const paths = Array.from(new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person)])).sort()
+      if (!paths.length) return `neither you nor ${person} has uncommitted changes`
+      const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = []
+      for (const p of paths) {
+        const b = (await baseText(s, p)) ?? ''
+        const m = await liveText(s, p, s.me.name), t = await liveText(s, p, person)
+        const mineT = m === null ? '' : m ?? b, theirs = t === null ? '' : t ?? b
+        if (mineT === b || theirs === b) { onlyOne.push(`${p} (${mineT === b ? person : 'you'} only)`); continue }
+        const res = diff3Merge(mineT.split('\n'), b.split('\n'), theirs.split('\n'))
+        const hunks = res.filter(r => 'conflict' in r)
+        if (!hunks.length) { clean.push(p); continue }
+        let line = 1
+        const detail: string[] = []
+        for (const r of res) {
+          if (r.ok) { line += r.ok.length; continue }
+          const c = r.conflict
+          if (!c) continue
+          detail.push(`  around line ${line}: you changed ${c.a.length} line(s), ${person} changed ${c.b.length} line(s)`)
+          line += c.o.length
+        }
+        conflicts.push(`${p}\n${detail.join('\n')}`)
+      }
+      const out = [`preview merge of your changes with ${person}'s (base ${base(s).slice(0, 10)}):`]
+      if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
+      if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
+      if (conflicts.length) out.push(`CONFLICTS:\n${conflicts.join('\n')}`)
+      else out.push('no conflicts')
+      return out.join('\n')
     },
   }
 
   return {
     list: () => DEFS,
     async call(name, args) {
-      if (ctx.isSynced && !ctx.isSynced()) return 'error: room not synced yet, retry'
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
-      try { return await h(args ?? {}) }
-      catch (e) { return `error: ${e instanceof Error ? e.message : String(e)}` }
+      const s = ctx.getSession()
+      if (s && !s.provider.synced && name !== 'room_leave') return 'error: room not synced yet, retry'
+      try {
+        const body = await h(args ?? {})
+        const s2 = ctx.getSession()
+        if (s2 && name !== 'room_join') s2.daemon.touch()
+        return s2 && name !== 'room_join' ? inbox(s2) + body : body
+      } catch (e) {
+        if (e instanceof NotJoined) return 'error: not in a room. Call room_join first.'
+        return `error: ${e instanceof Error ? e.message : String(e)}`
+      }
     },
   }
 }
+
+class NotJoined extends Error {}
+
+function parsePlans(v: unknown): Plan[] | string {
+  if (v === undefined || v === null) return []
+  if (!Array.isArray(v)) return 'error: plans must be an array'
+  const out: Plan[] = []
+  for (const x of v) {
+    if (!x || typeof x !== 'object') return 'error: each plan needs kind and symbol'
+    const o = x as Record<string, unknown>
+    if (!['rename', 'signature', 'delete', 'add'].includes(String(o.kind)) || typeof o.symbol !== 'string' || !o.symbol) return 'error: each plan needs kind (rename|signature|delete|add) and symbol'
+    out.push({ kind: o.kind as Plan['kind'], symbol: o.symbol, ...(typeof o.detail === 'string' && o.detail ? { detail: o.detail } : {}) })
+  }
+  return out
+}
+
+export { msgPaths }

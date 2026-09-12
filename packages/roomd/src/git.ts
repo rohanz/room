@@ -28,6 +28,11 @@ export function normalizeGitOrigin(origin: string): string | undefined {
   const value = origin.trim().replace(/\/+$/, '').replace(/\.git$/, '')
   const scp = value.match(/^(?:[^@]+@)?([^:/]+):(.+)$/)
   if (scp && !value.includes('://')) return `${scp[1]}/${scp[2].replace(/^\/+/, '')}`
+  // Filesystem remotes (demo scripts, tests): local/<repo dir name>.
+  if (value.startsWith('/') || value.startsWith('.') || value.startsWith('file://')) {
+    const name = value.replace(/^file:\/\//, '').split('/').filter(Boolean).pop()
+    return name ? `local/${name}` : undefined
+  }
   try {
     const url = new URL(value)
     if (!url.hostname) return undefined

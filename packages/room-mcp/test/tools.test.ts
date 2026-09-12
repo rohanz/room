@@ -7,174 +7,200 @@ import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
-import { createTools } from '../src/tools.js'
+import { createTools, DEFS } from '../src/tools.js'
+import type { Session } from '../src/session.js'
 
-const COMMITTED = 'def a():\n    return 1\n\ndef b():\n    return 2\n'
-const LIVE = 'def a():\n    return 1\n\ndef b():\n    return 22\n'
+const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
+const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
 const me: Identity = { name: 'Rohan', kind: 'agent' }
 let dir: string
+let base: string
 
-function setup() {
-  const doc = new Y.Doc()
-  const room = new RoomDoc(doc)
-  room.setOverlay('Rohan', 'app.py', LIVE)
-  room.setMeta({ repo: 'demo', branch: 'main', base: 'abc123' })
-  const awareness = new Awareness(doc)
+/** Two docs synced by update exchange: Rohan's session doc and Kieran's view. */
+function pair() {
+  const a = new Y.Doc(), b = new Y.Doc()
+  a.on('update', (u: Uint8Array) => Y.applyUpdate(b, u))
+  b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
+  return { a: new RoomDoc(a), b: new RoomDoc(b) }
+}
+
+function fakeSession(room: RoomDoc, synced = true): Session {
+  const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle' })
-  const tools = createTools({ room, me, dir, awareness, sleep: async () => {} })
-  return { room, awareness, tools }
+  return {
+    room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+    provider: { synced, awareness } as unknown as Session['provider'],
+    daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
+  }
+}
+
+function setup(opts: { synced?: boolean; joined?: boolean } = {}) {
+  const { a, b } = pair()
+  a.setMeta({ repo: 'demo', branch: 'main', base })
+  a.setOverlay('Rohan', 'app.py', MINE)
+  let session: Session | null = opts.joined === false ? null : fakeSession(a, opts.synced)
+  const joined: string[] = []
+  const tools = createTools({
+    getSession: () => session, setSession: s => { session = s }, cwd: dir,
+    join: async o => { joined.push(o.dir); return fakeSession(a) },
+    leave: async () => {},
+  })
+  return { room: a, other: b, tools, joined, get session() { return session } }
 }
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'room-mcp-'))
-  const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' })
+  const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
   git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
   writeFileSync(join(dir, 'app.py'), COMMITTED)
+  writeFileSync(join(dir, 'session.py'), 'from app import validate\n')
   git('add', '.'); git('commit', '-qm', 'init')
+  base = git('rev-parse', 'HEAD').trim()
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
-describe('tools', () => {
-  it('gates calls until initial room sync completes', async () => {
-    const room = new RoomDoc()
-    let synced = false
-    const tools = createTools({ room, me, dir, isSynced: () => synced })
-    expect(await tools.call('room_state', {})).toBe('error: room not synced yet, retry')
-    synced = true
-    expect(await tools.call('room_state', {})).toContain("you: Rohan's agent")
+describe('session gating', () => {
+  it('refuses tools before join and gates until synced', async () => {
+    const t = setup({ joined: false })
+    expect(await t.tools.call('room_state', {})).toBe('error: not in a room. Call room_join first.')
+    const u = setup({ synced: false })
+    expect(await u.tools.call('room_state', {})).toBe('error: room not synced yet, retry')
   })
 
-  it('lists the nine tools', () => {
-    const { tools } = setup()
-    expect(tools.list().map(t => t.name)).toEqual(['room_state', 'room_read_live', 'room_read_committed', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait'])
+  it('join uses cwd, reports who is here, and leave releases claims', async () => {
+    const t = setup({ joined: false })
+    const out = await t.tools.call('room_join', {})
+    expect(t.joined).toEqual([dir])
+    expect(out).toContain("joined r as Rohan's agent")
+    expect(out).toContain('browser view: http://x')
+    expect(await t.tools.call('room_join', {})).toMatch(/^already in r/)
+    await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'x' })
+    expect(await t.tools.call('room_leave', {})).toBe('left r; released 1 claim(s)')
+    expect(t.room.openClaims()).toEqual([])
+    expect(t.session).toBeNull()
   })
 
-  it('read_committed and diff use the git repo', async () => {
-    const { tools } = setup()
-    expect(await tools.call('room_read_committed', { path: 'app.py' })).toContain('5|     return 2')
-    const d = await tools.call('room_diff', { path: 'app.py' })
-    expect(d).toContain('-    return 2\n')
-    expect(d).toContain('+    return 22')
-    expect(await tools.call('room_diff', {})).toContain('app.py')
-    expect(await tools.call('room_read_committed', { path: 'nope.py' })).toMatch(/^error:/)
-  })
-
-  it('read_live has line numbers and unknown path errors', async () => {
-    const { tools } = setup()
-    expect(await tools.call('room_read_live', { path: 'app.py' })).toContain('4| def b():')
-    expect(await tools.call('room_read_live', { path: 'x' })).toMatch(/^error:/)
-  })
-
-  it('claim clamps, posts claim msg, sets awareness; overlap emits conflict', async () => {
-    const { room, tools, awareness } = setup()
-    room.addClaim({ path: 'app.py', from: 4, to: 5, by: 'Kieran', byKind: 'agent', intent: 'notify' })
-    const r = await tools.call('room_claim', { path: 'app.py', from: 4, to: 99, intent: 'refactor b' })
-    expect(r).toContain('claimed c_')
-    expect(r).toContain('CONFLICT')
-    const types = room.messages().map(m => m.type)
-    expect(types).toEqual(['claim', 'conflict'])
-    const mine = room.openClaims().find(c => c.by === 'Rohan')!
-    expect(mine.to).toBe(5) // trailing newline does not add a line
-    expect((awareness.getLocalState() as any).cursor).toEqual({ path: 'app.py', from: 4, to: 5 })
-    // release
-    const rel = await tools.call('room_release', { claimId: mine.id, summary: 'done' })
-    expect(rel).toContain('released')
-    expect(room.openClaims().map(c => c.by)).toEqual(['Kieran'])
-    expect(room.messages().at(-1)!.type).toBe('release')
-    expect((awareness.getLocalState() as any).status).toBe('idle')
-    expect(await tools.call('room_release', { claimId: 'nope' })).toMatch(/^error:/)
-  })
-
-  it('no conflict when nobody overlaps', async () => {
-    const { room, tools } = setup()
-    const r = await tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'x' })
-    expect(r).not.toContain('CONFLICT')
-    expect(room.messages().map(m => m.type)).toEqual(['claim'])
-  })
-
-  it('room_who reports a cursor and a claim in range', async () => {
-    const { room, tools, awareness } = setup()
-    const doc2 = new Y.Doc()
-    void doc2
-    // simulate a remote human via awareness state of another client id
-    const states = awareness.getStates()
-    states.set(999, { user: { name: 'Kieran', kind: 'human', color: '#111' }, cursor: { path: 'app.py', from: 4, to: 4 } })
-    room.addClaim({ path: 'app.py', from: 5, to: 5, by: 'Kieran', byKind: 'agent', intent: 'notify' })
-    const r = await tools.call('room_who', { path: 'app.py', from: 4, to: 5 })
-    expect(r).toContain('cursor: Kieran at app.py:4-4')
-    expect(r).toContain("Kieran's agent · app.py:5-5")
-    expect(await tools.call('room_who', { path: 'app.py', from: 1, to: 2 })).toContain('nobody active')
-  })
-
-  it('room_send maps types and validates', async () => {
-    const { room, tools } = setup()
-    expect(await tools.call('room_send', { type: 'changed', text: 'renamed' })).toMatch(/^error/)
-    await tools.call('room_send', { type: 'changed', text: 'renamed b', paths: ['app.py'] })
-    const q = room.post(( { name: 'Kieran', kind: 'agent' }), { type: 'question', to: 'Rohan', text: 'why?' } as any)
-    const a = await tools.call('room_send', { type: 'answer', inReplyTo: q.id, text: 'because' })
-    expect(a).toContain('answers: because')
-    const last = room.messages().at(-1) as any
-    expect(last).toMatchObject({ type: 'answer', to: 'Kieran', inReplyTo: q.id, from: 'Rohan', fromKind: 'agent' })
-    expect(await tools.call('room_send', { type: 'note', text: 'x' })).toMatch(/^error/)
-  })
-
-  it('room_state shows everything and counts unread', async () => {
-    const { room, tools } = setup()
-    const s1 = await tools.call('room_state', {})
-    expect(s1).toContain('meta: repo=demo branch=main')
-    expect(s1).toContain("Rohan's agent (you)")
-    expect(s1).toContain('unread since your last room_state: 0')
-    room.post({ name: 'Kieran', kind: 'human' }, { type: 'note', text: 'hi' } as any)
-    room.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Kieran', byKind: 'human', intent: 'fix' })
-    const s2 = await tools.call('room_state', {})
-    expect(s2).toContain('unread since your last room_state: 1')
-    expect(s2).toContain('Kieran · app.py:1-1 · fix')
-    expect(s2).toContain('Kieran: hi')
-  })
-
-  it('room_wait caps at 30s and never throws', async () => {
-    const { tools } = setup()
-    expect(await tools.call('room_wait', { seconds: 500 })).toContain('waited 30s')
-    expect(await tools.call('nope', {})).toMatch(/^error/)
+  it('lists the twelve tools', () => {
+    expect(DEFS.map(d => d.name)).toEqual(['room_join', 'room_leave', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_preview_merge'])
   })
 })
 
-describe('claims on new files and self-messages', () => {
-  it('allows claiming a path that is not in the room yet', async () => {
-    const room = new RoomDoc()
-    const tools = createTools({ room, me: { name: 'Kieran', kind: 'agent' }, dir: process.cwd(), awareness: new Awareness(room.doc) })
-    const out = await tools.call('room_claim', { path: 'api/notify.py', from: 1, to: 5, intent: 'create stub' })
-    expect(out).toMatch(/^claimed /)
-    expect(out).toContain('new file')
-    expect(room.openClaims()[0]).toMatchObject({ path: 'api/notify.py', from: 1, to: 1 })
+describe('reading', () => {
+  it('room_read shows my overlay, base for untouched files, and others\' versions', async () => {
+    const t = setup()
+    const mine = await t.tools.call('room_read', { path: 'app.py' })
+    expect(mine).toContain('5|     return 22')
+    expect(mine).toContain('uncommitted edits')
+    const untouched = await t.tools.call('room_read', { path: 'session.py' })
+    expect(untouched).toContain('unchanged from base')
+    expect(untouched).toContain('1| from app import validate')
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    const theirs = await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' })
+    expect(theirs).toContain('return x + 1')
+    expect(await t.tools.call('room_read', { path: 'app.py' })).toContain('also changed (uncommitted) by: Kieran')
+    expect(await t.tools.call('room_read', { path: 'nope.py' })).toMatch(/^error:/)
   })
-  it('posts exactly one conflict when overlapping claims arrive concurrently', async () => {
-    const docA = new Y.Doc(), docB = new Y.Doc()
-    const roomA = new RoomDoc(docA), roomB = new RoomDoc(docB)
-    const toolsA = createTools({ room: roomA, me: { name: 'Rohan', kind: 'agent' }, dir: process.cwd() })
-    const toolsB = createTools({ room: roomB, me: { name: 'Kieran', kind: 'agent' }, dir: process.cwd() })
-    await Promise.all([
-      toolsA.call('room_claim', { path: 'new.py', from: 1, to: 1, intent: 'A' }),
-      toolsB.call('room_claim', { path: 'new.py', from: 1, to: 1, intent: 'B' }),
-    ])
 
-    const initialA = Y.encodeStateAsUpdate(docA), initialB = Y.encodeStateAsUpdate(docB)
-    Y.applyUpdate(docA, initialB); Y.applyUpdate(docB, initialA)
-    const settledA = Y.encodeStateAsUpdate(docA), settledB = Y.encodeStateAsUpdate(docB)
-    Y.applyUpdate(docA, settledB); Y.applyUpdate(docB, settledA)
-
-    for (const room of [roomA, roomB]) {
-      const conflicts = room.messages().filter(m => m.type === 'conflict')
-      expect(conflicts).toHaveLength(1)
-      const conflict = conflicts[0] as any
-      expect([conflict.claimId, conflict.otherClaimId].sort()).toEqual(room.openClaims().map(c => c.id).sort())
-    }
+  it('room_diff is against base, per person', async () => {
+    const t = setup()
+    const d = await t.tools.call('room_diff', { path: 'app.py' })
+    expect(d).toContain('-    return 2\n')
+    expect(d).toContain('+    return 22')
+    expect(await t.tools.call('room_diff', { person: 'Kieran' })).toBe('Kieran has no uncommitted changes')
   })
-  it('refuses room_send to yourself', async () => {
-    const room = new RoomDoc()
-    const tools = createTools({ room, me: { name: 'Kieran', kind: 'agent' }, dir: process.cwd(), awareness: new Awareness(room.doc) })
-    const out = await tools.call('room_send', { type: 'question', to: 'Kieran', text: 'may I?' })
-    expect(out).toMatch(/^error: you cannot message yourself/)
-    expect(room.messages()).toHaveLength(0)
+})
+
+describe('scope, claims, plans, ledger', () => {
+  it('scope posts a notify and returns the area ledger', async () => {
+    const t = setup()
+    t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'changed', paths: ['app.py'], summary: 'tweaked b', symbols: ['b'] } as never)
+    const out = await t.tools.call('room_scope', { area: 'API', summary: 'harden app', paths: ['app.py'] })
+    expect(out).toContain('scope set: api: harden app (app.py)')
+    expect(out).toContain('api ledger (2):')
+    expect(out).toContain('tweaked b')
+    expect(t.room.scope('Rohan')?.area).toBe('api')
+    expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'scope', priority: 'notify' })
+  })
+
+  it('a claim with plans notifies whoever uses the symbol; release reports unfulfilled plans', async () => {
+    const t = setup()
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
+    const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'rename validate', plans: [{ kind: 'rename', symbol: 'validate', detail: 'verify' }] })
+    expect(out).toMatch(/claimed c_/)
+    expect(out).toContain("notified Kieran's agent (session.py uses validate)")
+    const copy = t.room.messages().find(m => m.to === 'Kieran')
+    expect(copy).toMatchObject({ type: 'claim', priority: 'notify' })
+    const id = t.room.openClaims()[0].id
+    const rel = await t.tools.call('room_release', { claimId: id, summary: 'renamed nothing yet' })
+    expect(rel).toContain('not done (declared but not in summary): rename validate → verify')
+    expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'release', unfulfilled: [{ symbol: 'validate' }] })
+  })
+
+  it('overlapping claim posts a conflict addressed to the other party, which shows in their inbox logic', async () => {
+    const t = setup()
+    t.other.addClaim({ path: 'app.py', from: 4, to: 5, by: 'Kieran', byKind: 'agent', intent: 'fix b' })
+    const out = await t.tools.call('room_claim', { path: 'app.py', from: 5, to: 5, intent: 'also b' })
+    expect(out).toContain('CONFLICT: overlaps')
+    const c = t.room.messages().find(m => m.type === 'conflict')
+    expect(c).toMatchObject({ priority: 'interrupt', to: 'Kieran' })
+  })
+
+  it('changed with symbols upgrades to scope owners via base grep', async () => {
+    const t = setup()
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
+    const out = await t.tools.call('room_send', { type: 'changed', text: 'renamed validate to verify', paths: ['app.py'], symbols: ['validate'] })
+    expect(out).toContain("notified Kieran's agent")
+    expect(t.room.messages().filter(m => m.type === 'changed').length).toBe(2)
+  })
+})
+
+describe('inbox', () => {
+  it('prefixes tool replies with unread messages for me, once, highest priority first', async () => {
+    const t = setup()
+    const k = { name: 'Kieran', kind: 'agent' as const }
+    t.other.post(k, { type: 'note', text: 'broadcast fyi' } as never)
+    t.other.post(k, { type: 'question', text: 'are you changing b?', to: 'Rohan' } as never)
+    t.other.post(k, { type: 'note', text: 'urgent', to: 'Rohan', priority: 'interrupt' } as never)
+    const out = await t.tools.call('room_state', {})
+    expect(out.startsWith('[inbox 2]\n  interrupt')).toBe(true)
+    const block = out.split('\n\n')[0]
+    expect(block).toContain('are you changing b?')
+    expect(block).not.toContain('broadcast fyi')
+    expect((await t.tools.call('room_state', {})).startsWith('[inbox')).toBe(false)
+  })
+})
+
+describe('wait', () => {
+  it('resolves on release, on answer, on interrupt, and on timeout', async () => {
+    const t = setup()
+    const k = { name: 'Kieran', kind: 'agent' as const }
+    const c = t.other.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'x' })
+    const p1 = t.tools.call('room_wait', { claimId: c.id, timeoutMs: 2000 })
+    setTimeout(() => t.other.removeClaim(c.id), 20)
+    expect(await p1).toContain(`released: ${c.id}`)
+
+    const q = await t.tools.call('room_send', { type: 'question', to: 'Kieran', text: 'ok?' })
+    const qid = q.match(/\[(m_[^\]]+)\]/)![1]
+    const p2 = t.tools.call('room_wait', { questionId: qid, timeoutMs: 2000 })
+    setTimeout(() => t.other.post(k, { type: 'answer', inReplyTo: qid, to: 'Rohan', text: 'yes' } as never), 20)
+    expect(await p2).toContain('answered:')
+
+    const p3 = t.tools.call('room_wait', { timeoutMs: 2000 })
+    setTimeout(() => t.other.post(k, { type: 'note', text: 'stop', to: 'Rohan', priority: 'interrupt' } as never), 20)
+    expect(await p3).toContain('interrupt:')
+
+    expect(await t.tools.call('room_wait', { timeoutMs: 30 })).toContain('timeout after 30ms')
+  })
+})
+
+describe('preview merge', () => {
+  it('reports clean merges and conflicts against base', async () => {
+    const t = setup()
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    expect(await t.tools.call('room_preview_merge', { person: 'Kieran' })).toContain('both changed, merge cleanly: app.py')
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
+    const out = await t.tools.call('room_preview_merge', { person: 'Kieran' })
+    expect(out).toContain('CONFLICTS:')
+    expect(out).toContain('app.py')
   })
 })

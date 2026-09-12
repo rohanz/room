@@ -97,24 +97,24 @@ var require_code = __commonJS({
     };
     exports._Code = _Code;
     exports.nil = new _Code("");
-    function _(strs, ...args2) {
-      const code = [strs[0]];
+    function _(strs2, ...args2) {
+      const code = [strs2[0]];
       let i = 0;
       while (i < args2.length) {
         addCodeArg(code, args2[i]);
-        code.push(strs[++i]);
+        code.push(strs2[++i]);
       }
       return new _Code(code);
     }
     exports._ = _;
     var plus = new _Code("+");
-    function str2(strs, ...args2) {
-      const expr = [safeStringify(strs[0])];
+    function str2(strs2, ...args2) {
+      const expr = [safeStringify(strs2[0])];
       let i = 0;
       while (i < args2.length) {
         expr.push(plus);
         addCodeArg(expr, args2[i]);
-        expr.push(plus, safeStringify(strs[++i]));
+        expr.push(plus, safeStringify(strs2[++i]));
       }
       optimize(expr);
       return new _Code(expr);
@@ -2242,8 +2242,8 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id2 = "", normalize) {
-      if (normalize !== false)
+    function getFullPath(resolver, id2 = "", normalize2) {
+      if (normalize2 !== false)
         id2 = normalizeId(id2);
       const p = resolver.parse(id2);
       return _getFullPath(resolver, p);
@@ -2991,7 +2991,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve2.call(this, root, ref);
+      let _sch = resolve5.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3018,7 +3018,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve2(root, ref) {
+    function resolve5(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3269,8 +3269,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path) {
-      let input = path;
+    function removeDotSegments(path2) {
+      let input = path2;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3679,8 +3679,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path && path !== "/" ? path : void 0;
+        const path2 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path2 && path2 !== "/" ? path2 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -3838,7 +3838,7 @@ var require_fast_uri = __commonJS({
       }
       return decodedScheme;
     }
-    function normalize(uri, options) {
+    function normalize2(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         normalizeString(uri, options);
@@ -3848,7 +3848,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve2(baseURI, relativeURI, options) {
+    function resolve5(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -3881,49 +3881,49 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative, options, skipNormalization) {
+    function resolveComponent(base, relative3, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
         base = parse3(serialize(base, options), options);
-        relative = parse3(serialize(relative, options), options);
+        relative3 = parse3(serialize(relative3, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative.scheme) {
-        target.scheme = relative.scheme;
-        target.userinfo = relative.userinfo;
-        target.host = relative.host;
-        target.port = relative.port;
-        target.path = removeDotSegments(relative.path || "");
-        target.query = relative.query;
+      if (!options.tolerant && relative3.scheme) {
+        target.scheme = relative3.scheme;
+        target.userinfo = relative3.userinfo;
+        target.host = relative3.host;
+        target.port = relative3.port;
+        target.path = removeDotSegments(relative3.path || "");
+        target.query = relative3.query;
       } else {
-        if (relative.userinfo !== void 0 || relative.host !== void 0 || relative.port !== void 0) {
-          target.userinfo = relative.userinfo;
-          target.host = relative.host;
-          target.port = relative.port;
-          target.path = removeDotSegments(relative.path || "");
-          target.query = relative.query;
+        if (relative3.userinfo !== void 0 || relative3.host !== void 0 || relative3.port !== void 0) {
+          target.userinfo = relative3.userinfo;
+          target.host = relative3.host;
+          target.port = relative3.port;
+          target.path = removeDotSegments(relative3.path || "");
+          target.query = relative3.query;
         } else {
-          if (!relative.path) {
+          if (!relative3.path) {
             target.path = base.path;
-            if (relative.query !== void 0) {
-              target.query = relative.query;
+            if (relative3.query !== void 0) {
+              target.query = relative3.query;
             } else {
               target.query = base.query;
             }
           } else {
-            if (relative.path[0] === "/") {
-              target.path = removeDotSegments(relative.path);
+            if (relative3.path[0] === "/") {
+              target.path = removeDotSegments(relative3.path);
             } else {
               if ((base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0) && !base.path) {
-                target.path = "/" + relative.path;
+                target.path = "/" + relative3.path;
               } else if (!base.path) {
-                target.path = relative.path;
+                target.path = relative3.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative.path;
+                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative3.path;
               }
               target.path = removeDotSegments(target.path);
             }
-            target.query = relative.query;
+            target.query = relative3.query;
           }
           target.userinfo = base.userinfo;
           target.host = base.host;
@@ -3931,7 +3931,7 @@ var require_fast_uri = __commonJS({
         }
         target.scheme = base.scheme;
       }
-      target.fragment = relative.fragment;
+      target.fragment = relative3.fragment;
       return target;
     }
     function equal(uriA, uriB, options) {
@@ -4215,8 +4215,8 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize,
-      resolve: resolve2,
+      normalize: normalize2,
+      resolve: resolve5,
       resolveComponent,
       equal,
       serialize,
@@ -4720,11 +4720,11 @@ var require_core = __commonJS({
     Ajv2.ValidationError = validation_error_1.default;
     Ajv2.MissingRefError = ref_error_1.default;
     exports.default = Ajv2;
-    function checkOptions(checkOpts, options, msg, log = "error") {
+    function checkOptions(checkOpts, options, msg, log2 = "error") {
       for (const key in checkOpts) {
         const opt = key;
         if (opt in options)
-          this.logger[log](`${msg}: option ${key}. ${checkOpts[opt]}`);
+          this.logger[log2](`${msg}: option ${key}. ${checkOpts[opt]}`);
       }
     }
     function getSchEnv(keyRef) {
@@ -7192,16 +7192,784 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs, exportName) {
+    function addFormats(ajv, list, fs2, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs[f]);
+        ajv.addFormat(f, fs2[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = formatsPlugin;
+  }
+});
+
+// node_modules/fast-diff/diff.js
+var require_diff = __commonJS({
+  "node_modules/fast-diff/diff.js"(exports, module) {
+    var DIFF_DELETE = -1;
+    var DIFF_INSERT = 1;
+    var DIFF_EQUAL = 0;
+    function diff_main(text1, text2, cursor_pos, cleanup, _fix_unicode) {
+      if (text1 === text2) {
+        if (text1) {
+          return [[DIFF_EQUAL, text1]];
+        }
+        return [];
+      }
+      if (cursor_pos != null) {
+        var editdiff = find_cursor_edit_diff(text1, text2, cursor_pos);
+        if (editdiff) {
+          return editdiff;
+        }
+      }
+      var commonlength = diff_commonPrefix(text1, text2);
+      var commonprefix = text1.substring(0, commonlength);
+      text1 = text1.substring(commonlength);
+      text2 = text2.substring(commonlength);
+      commonlength = diff_commonSuffix(text1, text2);
+      var commonsuffix = text1.substring(text1.length - commonlength);
+      text1 = text1.substring(0, text1.length - commonlength);
+      text2 = text2.substring(0, text2.length - commonlength);
+      var diffs = diff_compute_(text1, text2);
+      if (commonprefix) {
+        diffs.unshift([DIFF_EQUAL, commonprefix]);
+      }
+      if (commonsuffix) {
+        diffs.push([DIFF_EQUAL, commonsuffix]);
+      }
+      diff_cleanupMerge(diffs, _fix_unicode);
+      if (cleanup) {
+        diff_cleanupSemantic(diffs);
+      }
+      return diffs;
+    }
+    function diff_compute_(text1, text2) {
+      var diffs;
+      if (!text1) {
+        return [[DIFF_INSERT, text2]];
+      }
+      if (!text2) {
+        return [[DIFF_DELETE, text1]];
+      }
+      var longtext = text1.length > text2.length ? text1 : text2;
+      var shorttext = text1.length > text2.length ? text2 : text1;
+      var i = longtext.indexOf(shorttext);
+      if (i !== -1) {
+        diffs = [
+          [DIFF_INSERT, longtext.substring(0, i)],
+          [DIFF_EQUAL, shorttext],
+          [DIFF_INSERT, longtext.substring(i + shorttext.length)]
+        ];
+        if (text1.length > text2.length) {
+          diffs[0][0] = diffs[2][0] = DIFF_DELETE;
+        }
+        return diffs;
+      }
+      if (shorttext.length === 1) {
+        return [
+          [DIFF_DELETE, text1],
+          [DIFF_INSERT, text2]
+        ];
+      }
+      var hm = diff_halfMatch_(text1, text2);
+      if (hm) {
+        var text1_a = hm[0];
+        var text1_b = hm[1];
+        var text2_a = hm[2];
+        var text2_b = hm[3];
+        var mid_common = hm[4];
+        var diffs_a = diff_main(text1_a, text2_a);
+        var diffs_b = diff_main(text1_b, text2_b);
+        return diffs_a.concat([[DIFF_EQUAL, mid_common]], diffs_b);
+      }
+      return diff_bisect_(text1, text2);
+    }
+    function diff_bisect_(text1, text2) {
+      var text1_length = text1.length;
+      var text2_length = text2.length;
+      var max_d = Math.ceil((text1_length + text2_length) / 2);
+      var v_offset = max_d;
+      var v_length = 2 * max_d;
+      var v1 = new Array(v_length);
+      var v2 = new Array(v_length);
+      for (var x = 0; x < v_length; x++) {
+        v1[x] = -1;
+        v2[x] = -1;
+      }
+      v1[v_offset + 1] = 0;
+      v2[v_offset + 1] = 0;
+      var delta = text1_length - text2_length;
+      var front = delta % 2 !== 0;
+      var k1start = 0;
+      var k1end = 0;
+      var k2start = 0;
+      var k2end = 0;
+      for (var d = 0; d < max_d; d++) {
+        for (var k1 = -d + k1start; k1 <= d - k1end; k1 += 2) {
+          var k1_offset = v_offset + k1;
+          var x1;
+          if (k1 === -d || k1 !== d && v1[k1_offset - 1] < v1[k1_offset + 1]) {
+            x1 = v1[k1_offset + 1];
+          } else {
+            x1 = v1[k1_offset - 1] + 1;
+          }
+          var y1 = x1 - k1;
+          while (x1 < text1_length && y1 < text2_length && text1.charAt(x1) === text2.charAt(y1)) {
+            x1++;
+            y1++;
+          }
+          v1[k1_offset] = x1;
+          if (x1 > text1_length) {
+            k1end += 2;
+          } else if (y1 > text2_length) {
+            k1start += 2;
+          } else if (front) {
+            var k2_offset = v_offset + delta - k1;
+            if (k2_offset >= 0 && k2_offset < v_length && v2[k2_offset] !== -1) {
+              var x2 = text1_length - v2[k2_offset];
+              if (x1 >= x2) {
+                return diff_bisectSplit_(text1, text2, x1, y1);
+              }
+            }
+          }
+        }
+        for (var k2 = -d + k2start; k2 <= d - k2end; k2 += 2) {
+          var k2_offset = v_offset + k2;
+          var x2;
+          if (k2 === -d || k2 !== d && v2[k2_offset - 1] < v2[k2_offset + 1]) {
+            x2 = v2[k2_offset + 1];
+          } else {
+            x2 = v2[k2_offset - 1] + 1;
+          }
+          var y2 = x2 - k2;
+          while (x2 < text1_length && y2 < text2_length && text1.charAt(text1_length - x2 - 1) === text2.charAt(text2_length - y2 - 1)) {
+            x2++;
+            y2++;
+          }
+          v2[k2_offset] = x2;
+          if (x2 > text1_length) {
+            k2end += 2;
+          } else if (y2 > text2_length) {
+            k2start += 2;
+          } else if (!front) {
+            var k1_offset = v_offset + delta - k2;
+            if (k1_offset >= 0 && k1_offset < v_length && v1[k1_offset] !== -1) {
+              var x1 = v1[k1_offset];
+              var y1 = v_offset + x1 - k1_offset;
+              x2 = text1_length - x2;
+              if (x1 >= x2) {
+                return diff_bisectSplit_(text1, text2, x1, y1);
+              }
+            }
+          }
+        }
+      }
+      return [
+        [DIFF_DELETE, text1],
+        [DIFF_INSERT, text2]
+      ];
+    }
+    function diff_bisectSplit_(text1, text2, x, y) {
+      var text1a = text1.substring(0, x);
+      var text2a = text2.substring(0, y);
+      var text1b = text1.substring(x);
+      var text2b = text2.substring(y);
+      var diffs = diff_main(text1a, text2a);
+      var diffsb = diff_main(text1b, text2b);
+      return diffs.concat(diffsb);
+    }
+    function diff_commonPrefix(text1, text2) {
+      if (!text1 || !text2 || text1.charAt(0) !== text2.charAt(0)) {
+        return 0;
+      }
+      var pointermin = 0;
+      var pointermax = Math.min(text1.length, text2.length);
+      var pointermid = pointermax;
+      var pointerstart = 0;
+      while (pointermin < pointermid) {
+        if (text1.substring(pointerstart, pointermid) == text2.substring(pointerstart, pointermid)) {
+          pointermin = pointermid;
+          pointerstart = pointermin;
+        } else {
+          pointermax = pointermid;
+        }
+        pointermid = Math.floor((pointermax - pointermin) / 2 + pointermin);
+      }
+      if (is_surrogate_pair_start(text1.charCodeAt(pointermid - 1))) {
+        pointermid--;
+      }
+      return pointermid;
+    }
+    function diff_commonOverlap_(text1, text2) {
+      var text1_length = text1.length;
+      var text2_length = text2.length;
+      if (text1_length == 0 || text2_length == 0) {
+        return 0;
+      }
+      if (text1_length > text2_length) {
+        text1 = text1.substring(text1_length - text2_length);
+      } else if (text1_length < text2_length) {
+        text2 = text2.substring(0, text1_length);
+      }
+      var text_length = Math.min(text1_length, text2_length);
+      if (text1 == text2) {
+        return text_length;
+      }
+      var best = 0;
+      var length2 = 1;
+      while (true) {
+        var pattern = text1.substring(text_length - length2);
+        var found = text2.indexOf(pattern);
+        if (found == -1) {
+          return best;
+        }
+        length2 += found;
+        if (found == 0 || text1.substring(text_length - length2) == text2.substring(0, length2)) {
+          best = length2;
+          length2++;
+        }
+      }
+    }
+    function diff_commonSuffix(text1, text2) {
+      if (!text1 || !text2 || text1.slice(-1) !== text2.slice(-1)) {
+        return 0;
+      }
+      var pointermin = 0;
+      var pointermax = Math.min(text1.length, text2.length);
+      var pointermid = pointermax;
+      var pointerend = 0;
+      while (pointermin < pointermid) {
+        if (text1.substring(text1.length - pointermid, text1.length - pointerend) == text2.substring(text2.length - pointermid, text2.length - pointerend)) {
+          pointermin = pointermid;
+          pointerend = pointermin;
+        } else {
+          pointermax = pointermid;
+        }
+        pointermid = Math.floor((pointermax - pointermin) / 2 + pointermin);
+      }
+      if (is_surrogate_pair_end(text1.charCodeAt(text1.length - pointermid))) {
+        pointermid--;
+      }
+      return pointermid;
+    }
+    function diff_halfMatch_(text1, text2) {
+      var longtext = text1.length > text2.length ? text1 : text2;
+      var shorttext = text1.length > text2.length ? text2 : text1;
+      if (longtext.length < 4 || shorttext.length * 2 < longtext.length) {
+        return null;
+      }
+      function diff_halfMatchI_(longtext2, shorttext2, i) {
+        var seed = longtext2.substring(i, i + Math.floor(longtext2.length / 4));
+        var j = -1;
+        var best_common = "";
+        var best_longtext_a, best_longtext_b, best_shorttext_a, best_shorttext_b;
+        while ((j = shorttext2.indexOf(seed, j + 1)) !== -1) {
+          var prefixLength = diff_commonPrefix(
+            longtext2.substring(i),
+            shorttext2.substring(j)
+          );
+          var suffixLength = diff_commonSuffix(
+            longtext2.substring(0, i),
+            shorttext2.substring(0, j)
+          );
+          if (best_common.length < suffixLength + prefixLength) {
+            best_common = shorttext2.substring(j - suffixLength, j) + shorttext2.substring(j, j + prefixLength);
+            best_longtext_a = longtext2.substring(0, i - suffixLength);
+            best_longtext_b = longtext2.substring(i + prefixLength);
+            best_shorttext_a = shorttext2.substring(0, j - suffixLength);
+            best_shorttext_b = shorttext2.substring(j + prefixLength);
+          }
+        }
+        if (best_common.length * 2 >= longtext2.length) {
+          return [
+            best_longtext_a,
+            best_longtext_b,
+            best_shorttext_a,
+            best_shorttext_b,
+            best_common
+          ];
+        } else {
+          return null;
+        }
+      }
+      var hm1 = diff_halfMatchI_(
+        longtext,
+        shorttext,
+        Math.ceil(longtext.length / 4)
+      );
+      var hm2 = diff_halfMatchI_(
+        longtext,
+        shorttext,
+        Math.ceil(longtext.length / 2)
+      );
+      var hm;
+      if (!hm1 && !hm2) {
+        return null;
+      } else if (!hm2) {
+        hm = hm1;
+      } else if (!hm1) {
+        hm = hm2;
+      } else {
+        hm = hm1[4].length > hm2[4].length ? hm1 : hm2;
+      }
+      var text1_a, text1_b, text2_a, text2_b;
+      if (text1.length > text2.length) {
+        text1_a = hm[0];
+        text1_b = hm[1];
+        text2_a = hm[2];
+        text2_b = hm[3];
+      } else {
+        text2_a = hm[0];
+        text2_b = hm[1];
+        text1_a = hm[2];
+        text1_b = hm[3];
+      }
+      var mid_common = hm[4];
+      return [text1_a, text1_b, text2_a, text2_b, mid_common];
+    }
+    function diff_cleanupSemantic(diffs) {
+      var changes = false;
+      var equalities = [];
+      var equalitiesLength = 0;
+      var lastequality = null;
+      var pointer = 0;
+      var length_insertions1 = 0;
+      var length_deletions1 = 0;
+      var length_insertions2 = 0;
+      var length_deletions2 = 0;
+      while (pointer < diffs.length) {
+        if (diffs[pointer][0] == DIFF_EQUAL) {
+          equalities[equalitiesLength++] = pointer;
+          length_insertions1 = length_insertions2;
+          length_deletions1 = length_deletions2;
+          length_insertions2 = 0;
+          length_deletions2 = 0;
+          lastequality = diffs[pointer][1];
+        } else {
+          if (diffs[pointer][0] == DIFF_INSERT) {
+            length_insertions2 += diffs[pointer][1].length;
+          } else {
+            length_deletions2 += diffs[pointer][1].length;
+          }
+          if (lastequality && lastequality.length <= Math.max(length_insertions1, length_deletions1) && lastequality.length <= Math.max(length_insertions2, length_deletions2)) {
+            diffs.splice(equalities[equalitiesLength - 1], 0, [
+              DIFF_DELETE,
+              lastequality
+            ]);
+            diffs[equalities[equalitiesLength - 1] + 1][0] = DIFF_INSERT;
+            equalitiesLength--;
+            equalitiesLength--;
+            pointer = equalitiesLength > 0 ? equalities[equalitiesLength - 1] : -1;
+            length_insertions1 = 0;
+            length_deletions1 = 0;
+            length_insertions2 = 0;
+            length_deletions2 = 0;
+            lastequality = null;
+            changes = true;
+          }
+        }
+        pointer++;
+      }
+      if (changes) {
+        diff_cleanupMerge(diffs);
+      }
+      diff_cleanupSemanticLossless(diffs);
+      pointer = 1;
+      while (pointer < diffs.length) {
+        if (diffs[pointer - 1][0] == DIFF_DELETE && diffs[pointer][0] == DIFF_INSERT) {
+          var deletion = diffs[pointer - 1][1];
+          var insertion = diffs[pointer][1];
+          var overlap_length1 = diff_commonOverlap_(deletion, insertion);
+          var overlap_length2 = diff_commonOverlap_(insertion, deletion);
+          if (overlap_length1 >= overlap_length2) {
+            if (overlap_length1 >= deletion.length / 2 || overlap_length1 >= insertion.length / 2) {
+              diffs.splice(pointer, 0, [
+                DIFF_EQUAL,
+                insertion.substring(0, overlap_length1)
+              ]);
+              diffs[pointer - 1][1] = deletion.substring(
+                0,
+                deletion.length - overlap_length1
+              );
+              diffs[pointer + 1][1] = insertion.substring(overlap_length1);
+              pointer++;
+            }
+          } else {
+            if (overlap_length2 >= deletion.length / 2 || overlap_length2 >= insertion.length / 2) {
+              diffs.splice(pointer, 0, [
+                DIFF_EQUAL,
+                deletion.substring(0, overlap_length2)
+              ]);
+              diffs[pointer - 1][0] = DIFF_INSERT;
+              diffs[pointer - 1][1] = insertion.substring(
+                0,
+                insertion.length - overlap_length2
+              );
+              diffs[pointer + 1][0] = DIFF_DELETE;
+              diffs[pointer + 1][1] = deletion.substring(overlap_length2);
+              pointer++;
+            }
+          }
+          pointer++;
+        }
+        pointer++;
+      }
+    }
+    var nonAlphaNumericRegex_ = /[^a-zA-Z0-9]/;
+    var whitespaceRegex_ = /\s/;
+    var linebreakRegex_ = /[\r\n]/;
+    var blanklineEndRegex_ = /\n\r?\n$/;
+    var blanklineStartRegex_ = /^\r?\n\r?\n/;
+    function diff_cleanupSemanticLossless(diffs) {
+      function diff_cleanupSemanticScore_(one, two) {
+        if (!one || !two) {
+          return 6;
+        }
+        var char1 = one.charAt(one.length - 1);
+        var char2 = two.charAt(0);
+        var nonAlphaNumeric1 = char1.match(nonAlphaNumericRegex_);
+        var nonAlphaNumeric2 = char2.match(nonAlphaNumericRegex_);
+        var whitespace1 = nonAlphaNumeric1 && char1.match(whitespaceRegex_);
+        var whitespace2 = nonAlphaNumeric2 && char2.match(whitespaceRegex_);
+        var lineBreak1 = whitespace1 && char1.match(linebreakRegex_);
+        var lineBreak2 = whitespace2 && char2.match(linebreakRegex_);
+        var blankLine1 = lineBreak1 && one.match(blanklineEndRegex_);
+        var blankLine2 = lineBreak2 && two.match(blanklineStartRegex_);
+        if (blankLine1 || blankLine2) {
+          return 5;
+        } else if (lineBreak1 || lineBreak2) {
+          return 4;
+        } else if (nonAlphaNumeric1 && !whitespace1 && whitespace2) {
+          return 3;
+        } else if (whitespace1 || whitespace2) {
+          return 2;
+        } else if (nonAlphaNumeric1 || nonAlphaNumeric2) {
+          return 1;
+        }
+        return 0;
+      }
+      var pointer = 1;
+      while (pointer < diffs.length - 1) {
+        if (diffs[pointer - 1][0] == DIFF_EQUAL && diffs[pointer + 1][0] == DIFF_EQUAL) {
+          var equality1 = diffs[pointer - 1][1];
+          var edit = diffs[pointer][1];
+          var equality2 = diffs[pointer + 1][1];
+          var commonOffset = diff_commonSuffix(equality1, edit);
+          if (commonOffset) {
+            var commonString = edit.substring(edit.length - commonOffset);
+            equality1 = equality1.substring(0, equality1.length - commonOffset);
+            edit = commonString + edit.substring(0, edit.length - commonOffset);
+            equality2 = commonString + equality2;
+          }
+          var bestEquality1 = equality1;
+          var bestEdit = edit;
+          var bestEquality2 = equality2;
+          var bestScore = diff_cleanupSemanticScore_(equality1, edit) + diff_cleanupSemanticScore_(edit, equality2);
+          while (edit.charAt(0) === equality2.charAt(0)) {
+            equality1 += edit.charAt(0);
+            edit = edit.substring(1) + equality2.charAt(0);
+            equality2 = equality2.substring(1);
+            var score = diff_cleanupSemanticScore_(equality1, edit) + diff_cleanupSemanticScore_(edit, equality2);
+            if (score >= bestScore) {
+              bestScore = score;
+              bestEquality1 = equality1;
+              bestEdit = edit;
+              bestEquality2 = equality2;
+            }
+          }
+          if (diffs[pointer - 1][1] != bestEquality1) {
+            if (bestEquality1) {
+              diffs[pointer - 1][1] = bestEquality1;
+            } else {
+              diffs.splice(pointer - 1, 1);
+              pointer--;
+            }
+            diffs[pointer][1] = bestEdit;
+            if (bestEquality2) {
+              diffs[pointer + 1][1] = bestEquality2;
+            } else {
+              diffs.splice(pointer + 1, 1);
+              pointer--;
+            }
+          }
+        }
+        pointer++;
+      }
+    }
+    function diff_cleanupMerge(diffs, fix_unicode) {
+      diffs.push([DIFF_EQUAL, ""]);
+      var pointer = 0;
+      var count_delete = 0;
+      var count_insert = 0;
+      var text_delete = "";
+      var text_insert = "";
+      var commonlength;
+      while (pointer < diffs.length) {
+        if (pointer < diffs.length - 1 && !diffs[pointer][1]) {
+          diffs.splice(pointer, 1);
+          continue;
+        }
+        switch (diffs[pointer][0]) {
+          case DIFF_INSERT:
+            count_insert++;
+            text_insert += diffs[pointer][1];
+            pointer++;
+            break;
+          case DIFF_DELETE:
+            count_delete++;
+            text_delete += diffs[pointer][1];
+            pointer++;
+            break;
+          case DIFF_EQUAL:
+            var previous_equality = pointer - count_insert - count_delete - 1;
+            if (fix_unicode) {
+              if (previous_equality >= 0 && ends_with_pair_start(diffs[previous_equality][1])) {
+                var stray = diffs[previous_equality][1].slice(-1);
+                diffs[previous_equality][1] = diffs[previous_equality][1].slice(
+                  0,
+                  -1
+                );
+                text_delete = stray + text_delete;
+                text_insert = stray + text_insert;
+                if (!diffs[previous_equality][1]) {
+                  diffs.splice(previous_equality, 1);
+                  pointer--;
+                  var k = previous_equality - 1;
+                  if (diffs[k] && diffs[k][0] === DIFF_INSERT) {
+                    count_insert++;
+                    text_insert = diffs[k][1] + text_insert;
+                    k--;
+                  }
+                  if (diffs[k] && diffs[k][0] === DIFF_DELETE) {
+                    count_delete++;
+                    text_delete = diffs[k][1] + text_delete;
+                    k--;
+                  }
+                  previous_equality = k;
+                }
+              }
+              if (starts_with_pair_end(diffs[pointer][1])) {
+                var stray = diffs[pointer][1].charAt(0);
+                diffs[pointer][1] = diffs[pointer][1].slice(1);
+                text_delete += stray;
+                text_insert += stray;
+              }
+            }
+            if (pointer < diffs.length - 1 && !diffs[pointer][1]) {
+              diffs.splice(pointer, 1);
+              break;
+            }
+            if (text_delete.length > 0 || text_insert.length > 0) {
+              if (text_delete.length > 0 && text_insert.length > 0) {
+                commonlength = diff_commonPrefix(text_insert, text_delete);
+                if (commonlength !== 0) {
+                  if (previous_equality >= 0) {
+                    diffs[previous_equality][1] += text_insert.substring(
+                      0,
+                      commonlength
+                    );
+                  } else {
+                    diffs.splice(0, 0, [
+                      DIFF_EQUAL,
+                      text_insert.substring(0, commonlength)
+                    ]);
+                    pointer++;
+                  }
+                  text_insert = text_insert.substring(commonlength);
+                  text_delete = text_delete.substring(commonlength);
+                }
+                commonlength = diff_commonSuffix(text_insert, text_delete);
+                if (commonlength !== 0) {
+                  diffs[pointer][1] = text_insert.substring(text_insert.length - commonlength) + diffs[pointer][1];
+                  text_insert = text_insert.substring(
+                    0,
+                    text_insert.length - commonlength
+                  );
+                  text_delete = text_delete.substring(
+                    0,
+                    text_delete.length - commonlength
+                  );
+                }
+              }
+              var n = count_insert + count_delete;
+              if (text_delete.length === 0 && text_insert.length === 0) {
+                diffs.splice(pointer - n, n);
+                pointer = pointer - n;
+              } else if (text_delete.length === 0) {
+                diffs.splice(pointer - n, n, [DIFF_INSERT, text_insert]);
+                pointer = pointer - n + 1;
+              } else if (text_insert.length === 0) {
+                diffs.splice(pointer - n, n, [DIFF_DELETE, text_delete]);
+                pointer = pointer - n + 1;
+              } else {
+                diffs.splice(
+                  pointer - n,
+                  n,
+                  [DIFF_DELETE, text_delete],
+                  [DIFF_INSERT, text_insert]
+                );
+                pointer = pointer - n + 2;
+              }
+            }
+            if (pointer !== 0 && diffs[pointer - 1][0] === DIFF_EQUAL) {
+              diffs[pointer - 1][1] += diffs[pointer][1];
+              diffs.splice(pointer, 1);
+            } else {
+              pointer++;
+            }
+            count_insert = 0;
+            count_delete = 0;
+            text_delete = "";
+            text_insert = "";
+            break;
+        }
+      }
+      if (diffs[diffs.length - 1][1] === "") {
+        diffs.pop();
+      }
+      var changes = false;
+      pointer = 1;
+      while (pointer < diffs.length - 1) {
+        if (diffs[pointer - 1][0] === DIFF_EQUAL && diffs[pointer + 1][0] === DIFF_EQUAL) {
+          if (diffs[pointer][1].substring(
+            diffs[pointer][1].length - diffs[pointer - 1][1].length
+          ) === diffs[pointer - 1][1]) {
+            diffs[pointer][1] = diffs[pointer - 1][1] + diffs[pointer][1].substring(
+              0,
+              diffs[pointer][1].length - diffs[pointer - 1][1].length
+            );
+            diffs[pointer + 1][1] = diffs[pointer - 1][1] + diffs[pointer + 1][1];
+            diffs.splice(pointer - 1, 1);
+            changes = true;
+          } else if (diffs[pointer][1].substring(0, diffs[pointer + 1][1].length) == diffs[pointer + 1][1]) {
+            diffs[pointer - 1][1] += diffs[pointer + 1][1];
+            diffs[pointer][1] = diffs[pointer][1].substring(diffs[pointer + 1][1].length) + diffs[pointer + 1][1];
+            diffs.splice(pointer + 1, 1);
+            changes = true;
+          }
+        }
+        pointer++;
+      }
+      if (changes) {
+        diff_cleanupMerge(diffs, fix_unicode);
+      }
+    }
+    function is_surrogate_pair_start(charCode) {
+      return charCode >= 55296 && charCode <= 56319;
+    }
+    function is_surrogate_pair_end(charCode) {
+      return charCode >= 56320 && charCode <= 57343;
+    }
+    function starts_with_pair_end(str2) {
+      return is_surrogate_pair_end(str2.charCodeAt(0));
+    }
+    function ends_with_pair_start(str2) {
+      return is_surrogate_pair_start(str2.charCodeAt(str2.length - 1));
+    }
+    function remove_empty_tuples(tuples) {
+      var ret = [];
+      for (var i = 0; i < tuples.length; i++) {
+        if (tuples[i][1].length > 0) {
+          ret.push(tuples[i]);
+        }
+      }
+      return ret;
+    }
+    function make_edit_splice(before, oldMiddle, newMiddle, after) {
+      if (ends_with_pair_start(before) || starts_with_pair_end(after)) {
+        return null;
+      }
+      return remove_empty_tuples([
+        [DIFF_EQUAL, before],
+        [DIFF_DELETE, oldMiddle],
+        [DIFF_INSERT, newMiddle],
+        [DIFF_EQUAL, after]
+      ]);
+    }
+    function find_cursor_edit_diff(oldText, newText, cursor_pos) {
+      var oldRange = typeof cursor_pos === "number" ? { index: cursor_pos, length: 0 } : cursor_pos.oldRange;
+      var newRange = typeof cursor_pos === "number" ? null : cursor_pos.newRange;
+      var oldLength = oldText.length;
+      var newLength = newText.length;
+      if (oldRange.length === 0 && (newRange === null || newRange.length === 0)) {
+        var oldCursor = oldRange.index;
+        var oldBefore = oldText.slice(0, oldCursor);
+        var oldAfter = oldText.slice(oldCursor);
+        var maybeNewCursor = newRange ? newRange.index : null;
+        editBefore: {
+          var newCursor = oldCursor + newLength - oldLength;
+          if (maybeNewCursor !== null && maybeNewCursor !== newCursor) {
+            break editBefore;
+          }
+          if (newCursor < 0 || newCursor > newLength) {
+            break editBefore;
+          }
+          var newBefore = newText.slice(0, newCursor);
+          var newAfter = newText.slice(newCursor);
+          if (newAfter !== oldAfter) {
+            break editBefore;
+          }
+          var prefixLength = Math.min(oldCursor, newCursor);
+          var oldPrefix = oldBefore.slice(0, prefixLength);
+          var newPrefix = newBefore.slice(0, prefixLength);
+          if (oldPrefix !== newPrefix) {
+            break editBefore;
+          }
+          var oldMiddle = oldBefore.slice(prefixLength);
+          var newMiddle = newBefore.slice(prefixLength);
+          return make_edit_splice(oldPrefix, oldMiddle, newMiddle, oldAfter);
+        }
+        editAfter: {
+          if (maybeNewCursor !== null && maybeNewCursor !== oldCursor) {
+            break editAfter;
+          }
+          var cursor = oldCursor;
+          var newBefore = newText.slice(0, cursor);
+          var newAfter = newText.slice(cursor);
+          if (newBefore !== oldBefore) {
+            break editAfter;
+          }
+          var suffixLength = Math.min(oldLength - cursor, newLength - cursor);
+          var oldSuffix = oldAfter.slice(oldAfter.length - suffixLength);
+          var newSuffix = newAfter.slice(newAfter.length - suffixLength);
+          if (oldSuffix !== newSuffix) {
+            break editAfter;
+          }
+          var oldMiddle = oldAfter.slice(0, oldAfter.length - suffixLength);
+          var newMiddle = newAfter.slice(0, newAfter.length - suffixLength);
+          return make_edit_splice(oldBefore, oldMiddle, newMiddle, oldSuffix);
+        }
+      }
+      if (oldRange.length > 0 && newRange && newRange.length === 0) {
+        replaceRange: {
+          var oldPrefix = oldText.slice(0, oldRange.index);
+          var oldSuffix = oldText.slice(oldRange.index + oldRange.length);
+          var prefixLength = oldPrefix.length;
+          var suffixLength = oldSuffix.length;
+          if (newLength < prefixLength + suffixLength) {
+            break replaceRange;
+          }
+          var newPrefix = newText.slice(0, prefixLength);
+          var newSuffix = newText.slice(newLength - suffixLength);
+          if (oldPrefix !== newPrefix || oldSuffix !== newSuffix) {
+            break replaceRange;
+          }
+          var oldMiddle = oldText.slice(prefixLength, oldLength - suffixLength);
+          var newMiddle = newText.slice(prefixLength, newLength - suffixLength);
+          return make_edit_splice(oldPrefix, oldMiddle, newMiddle, oldSuffix);
+        }
+      }
+      return null;
+    }
+    function diff2(text1, text2, cursor_pos, cleanup) {
+      return diff_main(text1, text2, cursor_pos, cleanup, true);
+    }
+    diff2.INSERT = DIFF_INSERT;
+    diff2.DELETE = DIFF_DELETE;
+    diff2.EQUAL = DIFF_EQUAL;
+    module.exports = diff2;
   }
 });
 
@@ -9439,13 +10207,13 @@ var require_extension = __commonJS({
 var require_websocket = __commonJS({
   "node_modules/ws/lib/websocket.js"(exports, module) {
     "use strict";
-    var EventEmitter = __require("events");
+    var EventEmitter2 = __require("events");
     var https = __require("https");
     var http = __require("http");
     var net = __require("net");
     var tls = __require("tls");
     var { randomBytes, createHash } = __require("crypto");
-    var { Duplex, Readable } = __require("stream");
+    var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
     var Receiver2 = require_receiver();
@@ -9471,7 +10239,7 @@ var require_websocket = __commonJS({
     var protocolVersions = [8, 13];
     var readyStates = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
     var subprotocolRegex = /^[!#$%&'*+\-.0-9A-Z^_`|a-z~]+$/;
-    var WebSocket3 = class _WebSocket extends EventEmitter {
+    var WebSocket3 = class _WebSocket extends EventEmitter2 {
       /**
        * Create a new `WebSocket`.
        *
@@ -10393,7 +11161,7 @@ var require_stream = __commonJS({
       };
       duplex._final = function(callback) {
         if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open2() {
+          ws.once("open", function open3() {
             duplex._final(callback);
           });
           return;
@@ -10414,7 +11182,7 @@ var require_stream = __commonJS({
       };
       duplex._write = function(chunk, encoding, callback) {
         if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open2() {
+          ws.once("open", function open3() {
             duplex._write(chunk, encoding, callback);
           });
           return;
@@ -10478,7 +11246,7 @@ var require_subprotocol = __commonJS({
 var require_websocket_server = __commonJS({
   "node_modules/ws/lib/websocket-server.js"(exports, module) {
     "use strict";
-    var EventEmitter = __require("events");
+    var EventEmitter2 = __require("events");
     var http = __require("http");
     var { Duplex } = __require("stream");
     var { createHash } = __require("crypto");
@@ -10491,7 +11259,7 @@ var require_websocket_server = __commonJS({
     var RUNNING = 0;
     var CLOSING = 1;
     var CLOSED = 2;
-    var WebSocketServer2 = class extends EventEmitter {
+    var WebSocketServer2 = class extends EventEmitter2 {
       /**
        * Create a `WebSocketServer` instance.
        *
@@ -10876,8 +11644,7 @@ var require_websocket_server = __commonJS({
 });
 
 // packages/room-mcp/src/index.ts
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve as resolve4 } from "node:path";
 
 // node_modules/zod/v4/core/util.js
 var util_exports = {};
@@ -11059,10 +11826,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path) {
-  if (!path)
+function getElementAtPath(obj, path2) {
+  if (!path2)
     return obj;
-  return path.reduce((acc, key) => acc?.[key], obj);
+  return path2.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -11474,11 +12241,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path, issues) {
+function prefixIssues(path2, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path);
+    iss.path.unshift(path2);
     return iss;
   });
 }
@@ -11907,16 +12674,16 @@ function flattenError(error2, mapper = (issue2) => issue2.message) {
 }
 function formatError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error3, path = []) => {
+  const processError = (error3, path2 = []) => {
     for (const issue2 of error3.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path2, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path2, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path2, ...issue2.path]);
       } else {
-        const fullpath = [...path, ...issue2.path];
+        const fullpath = [...path2, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -19170,7 +19937,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
+        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -19187,7 +19954,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve5, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -19265,7 +20032,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve2(parseResult.data);
+            resolve5(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -19526,12 +20293,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve5, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve2, interval);
+      const timeoutId = setTimeout(resolve5, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -20407,26 +21174,95 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve2) => {
+    return new Promise((resolve5) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve2();
+        resolve5();
       } else {
-        this._stdout.once("drain", resolve2);
+        this._stdout.once("drain", resolve5);
       }
     });
   }
 };
 
-// node_modules/ws/wrapper.mjs
-var import_stream = __toESM(require_stream(), 1);
-var import_extension = __toESM(require_extension(), 1);
-var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
-var import_receiver = __toESM(require_receiver(), 1);
-var import_sender = __toESM(require_sender(), 1);
-var import_subprotocol = __toESM(require_subprotocol(), 1);
-var import_websocket = __toESM(require_websocket(), 1);
-var import_websocket_server = __toESM(require_websocket_server(), 1);
+// packages/shared/src/identity.ts
+var PALETTE = ["#0f8b8d", "#c9761a", "#6d4fc2", "#c0392b", "#2e86de", "#27ae60", "#b5179e", "#8d6e63"];
+function colorFor(name) {
+  let h = 2166136261;
+  for (const ch of name) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  h ^= h >>> 13;
+  h = Math.imul(h, 1540483477) >>> 0;
+  h ^= h >>> 15;
+  return PALETTE[(h >>> 0) % PALETTE.length];
+}
+function displayName(id2) {
+  return id2.kind === "agent" ? `${id2.name}'s agent` : id2.name;
+}
+function newId(prefix = "") {
+  const r = Math.random().toString(36).slice(2, 8);
+  return `${prefix}${Date.now().toString(36)}${r}`;
+}
+
+// packages/shared/src/format.ts
+function formatMsg(m) {
+  const who = displayName({ name: m.from, kind: m.fromKind });
+  const to = m.to ? ` \u2192 ${m.to}'s agent` : "";
+  const priority = `[${m.priority}] `;
+  switch (m.type) {
+    case "claim":
+      return `${priority}${who} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}`;
+    case "release":
+      return `${priority}${who} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}`;
+    case "changed":
+      return `${priority}${who} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}`;
+    case "question":
+      return `${priority}${who}${to} asks: ${m.text}`;
+    case "answer":
+      return `${priority}${who}${to} answers: ${m.text}`;
+    case "conflict":
+      return `${priority}CONFLICT on ${m.path}: ${m.text}`;
+    case "note":
+      return `${priority}${who}: ${m.text}`;
+    case "scope":
+      return `${priority}${who} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})`;
+  }
+}
+function withLineNumbers(text) {
+  const lines = text.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  const w = String(lines.length).length;
+  return lines.map((l, i) => `${String(i + 1).padStart(w)}| ${l}`).join("\n");
+}
+function formatPlans(plans) {
+  return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
+}
+
+// packages/shared/src/claims.ts
+function rangesOverlap(aFrom, aTo, bFrom, bTo) {
+  return aFrom <= bTo && bFrom <= aTo;
+}
+function claimsOverlap(a, b) {
+  return a.path === b.path && rangesOverlap(a.from, a.to, b.from, b.to);
+}
+function cursorInClaim(c, claim2) {
+  return c.path === claim2.path && rangesOverlap(c.from, c.to, claim2.from, claim2.to);
+}
+function clampRange(from2, to, lineCount) {
+  const max2 = Math.max(1, lineCount);
+  const f = Math.min(Math.max(1, Math.floor(from2)), max2);
+  const t = Math.min(Math.max(f, Math.floor(to)), max2);
+  return { from: f, to: t };
+}
+function describeClaim(c) {
+  const who = c.byKind === "agent" ? `${c.by}'s agent` : c.by;
+  return `${who} \xB7 ${c.path}:${c.from}-${c.to} \xB7 ${c.intent}${c.plans?.length ? ` \xB7 plans: ${formatPlans(c.plans)}` : ""}`;
+}
+
+// packages/shared/src/doc.ts
+var import_fast_diff = __toESM(require_diff(), 1);
 
 // node_modules/lib0/map.js
 var create = () => /* @__PURE__ */ new Map();
@@ -21203,9 +22039,9 @@ var IntDiffOptRleDecoder = class extends Decoder {
    */
   read() {
     if (this.count === 0) {
-      const diff = readVarInt(this);
-      const hasCount = diff & 1;
-      this.diff = floor(diff / 2);
+      const diff2 = readVarInt(this);
+      const hasCount = diff2 & 1;
+      this.diff = floor(diff2 / 2);
       this.count = 1;
       if (hasCount) {
         this.count = readVarUint(this) + 2;
@@ -21357,14 +22193,14 @@ var deepFreeze = (o) => {
 };
 
 // node_modules/lib0/function.js
-var callAll = (fs, args2, i = 0) => {
+var callAll = (fs2, args2, i = 0) => {
   try {
-    for (; i < fs.length; i++) {
-      fs[i](...args2);
+    for (; i < fs2.length; i++) {
+      fs2[i](...args2);
     }
   } finally {
-    if (i < fs.length) {
-      callAll(fs, args2, i + 1);
+    if (i < fs2.length) {
+      callAll(fs2, args2, i + 1);
     }
   }
 };
@@ -21876,17 +22712,17 @@ var Doc2 = class _Doc extends ObservableV2 {
     this.isLoaded = false;
     this.isSynced = false;
     this.isDestroyed = false;
-    this.whenLoaded = create4((resolve2) => {
+    this.whenLoaded = create4((resolve5) => {
       this.on("load", () => {
         this.isLoaded = true;
-        resolve2(this);
+        resolve5(this);
       });
     });
-    const provideSyncedPromise = () => create4((resolve2) => {
+    const provideSyncedPromise = () => create4((resolve5) => {
       const eventHandler = (isSynced) => {
         if (isSynced === void 0 || isSynced === true) {
           this.off("sync", eventHandler);
-          resolve2();
+          resolve5();
         }
       };
       this.on("sync", eventHandler);
@@ -22243,9 +23079,9 @@ var DSDecoderV2 = class {
    * @return {number}
    */
   readDsLen() {
-    const diff = readVarUint(this.restDecoder) + 1;
-    this.dsCurrVal += diff;
-    return diff;
+    const diff2 = readVarUint(this.restDecoder) + 1;
+    this.dsCurrVal += diff2;
+    return diff2;
   }
 };
 var UpdateDecoderV2 = class extends DSDecoderV2 {
@@ -22472,9 +23308,9 @@ var DSEncoderV2 = class {
    * @param {number} clock
    */
   writeDsClock(clock) {
-    const diff = clock - this.dsCurrVal;
+    const diff2 = clock - this.dsCurrVal;
     this.dsCurrVal = clock;
-    writeVarUint(this.restEncoder, diff);
+    writeVarUint(this.restEncoder, diff2);
   }
   /**
    * @param {number} len
@@ -22958,6 +23794,143 @@ var findRootTypeKey = (type) => {
   }
   throw unexpectedCase();
 };
+var RelativePosition = class {
+  /**
+   * @param {ID|null} type
+   * @param {string|null} tname
+   * @param {ID|null} item
+   * @param {number} assoc
+   */
+  constructor(type, tname, item, assoc = 0) {
+    this.type = type;
+    this.tname = tname;
+    this.item = item;
+    this.assoc = assoc;
+  }
+};
+var relativePositionToJSON = (rpos) => {
+  const json = {};
+  if (rpos.type) {
+    json.type = rpos.type;
+  }
+  if (rpos.tname) {
+    json.tname = rpos.tname;
+  }
+  if (rpos.item) {
+    json.item = rpos.item;
+  }
+  if (rpos.assoc != null) {
+    json.assoc = rpos.assoc;
+  }
+  return json;
+};
+var createRelativePositionFromJSON = (json) => new RelativePosition(json.type == null ? null : createID(json.type.client, json.type.clock), json.tname ?? null, json.item == null ? null : createID(json.item.client, json.item.clock), json.assoc == null ? 0 : json.assoc);
+var AbsolutePosition = class {
+  /**
+   * @param {AbstractType<any>} type
+   * @param {number} index
+   * @param {number} [assoc]
+   */
+  constructor(type, index, assoc = 0) {
+    this.type = type;
+    this.index = index;
+    this.assoc = assoc;
+  }
+};
+var createAbsolutePosition = (type, index, assoc = 0) => new AbsolutePosition(type, index, assoc);
+var createRelativePosition = (type, item, assoc) => {
+  let typeid = null;
+  let tname = null;
+  if (type._item === null) {
+    tname = findRootTypeKey(type);
+  } else {
+    typeid = createID(type._item.id.client, type._item.id.clock);
+  }
+  return new RelativePosition(typeid, tname, item, assoc);
+};
+var createRelativePositionFromTypeIndex = (type, index, assoc = 0) => {
+  let t = type._start;
+  if (assoc < 0) {
+    if (index === 0) {
+      return createRelativePosition(type, null, assoc);
+    }
+    index--;
+  }
+  while (t !== null) {
+    if (!t.deleted && t.countable) {
+      if (t.length > index) {
+        return createRelativePosition(type, createID(t.id.client, t.id.clock + index), assoc);
+      }
+      index -= t.length;
+    }
+    if (t.right === null && assoc < 0) {
+      return createRelativePosition(type, t.lastId, assoc);
+    }
+    t = t.right;
+  }
+  return createRelativePosition(type, null, assoc);
+};
+var getItemWithOffset = (store, id2) => {
+  const item = getItem(store, id2);
+  const diff2 = id2.clock - item.id.clock;
+  return {
+    item,
+    diff: diff2
+  };
+};
+var createAbsolutePositionFromRelativePosition = (rpos, doc, followUndoneDeletions = true) => {
+  const store = doc.store;
+  const rightID = rpos.item;
+  const typeID = rpos.type;
+  const tname = rpos.tname;
+  const assoc = rpos.assoc;
+  let type = null;
+  let index = 0;
+  if (rightID !== null) {
+    if (getState(store, rightID.client) <= rightID.clock) {
+      return null;
+    }
+    const res = followUndoneDeletions ? followRedone(store, rightID) : getItemWithOffset(store, rightID);
+    const right = res.item;
+    if (!(right instanceof Item)) {
+      return null;
+    }
+    type = /** @type {AbstractType<any>} */
+    right.parent;
+    if (type._item === null || !type._item.deleted) {
+      index = right.deleted || !right.countable ? 0 : res.diff + (assoc >= 0 ? 0 : 1);
+      let n = right.left;
+      while (n !== null) {
+        if (!n.deleted && n.countable) {
+          index += n.length;
+        }
+        n = n.left;
+      }
+    }
+  } else {
+    if (tname !== null) {
+      type = doc.get(tname);
+    } else if (typeID !== null) {
+      if (getState(store, typeID.client) <= typeID.clock) {
+        return null;
+      }
+      const { item } = followUndoneDeletions ? followRedone(store, typeID) : { item: getItem(store, typeID) };
+      if (item instanceof Item && item.content instanceof ContentType) {
+        type = item.content.type;
+      } else {
+        return null;
+      }
+    } else {
+      throw unexpectedCase();
+    }
+    if (assoc >= 0) {
+      index = type._length;
+    } else {
+      index = 0;
+    }
+  }
+  return createAbsolutePosition(type, index, rpos.assoc);
+};
 var Snapshot = class {
   /**
    * @param {DeleteSet} ds
@@ -23211,15 +24184,15 @@ var cleanupTransactions = (transactionCleanups, i) => {
       sortAndMergeDeleteSet(ds);
       transaction.afterState = getStateVector(transaction.doc.store);
       doc.emit("beforeObserverCalls", [transaction, doc]);
-      const fs = [];
+      const fs2 = [];
       transaction.changed.forEach(
-        (subs, itemtype) => fs.push(() => {
+        (subs, itemtype) => fs2.push(() => {
           if (itemtype._item === null || !itemtype._item.deleted) {
             itemtype._callObserver(transaction, subs);
           }
         })
       );
-      fs.push(() => {
+      fs2.push(() => {
         transaction.changedParentTypes.forEach((events, type) => {
           if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
             events = events.filter(
@@ -23230,19 +24203,19 @@ var cleanupTransactions = (transactionCleanups, i) => {
               event._path = null;
             });
             events.sort((event1, event2) => event1.path.length - event2.path.length);
-            fs.push(() => {
+            fs2.push(() => {
               callEventHandlerListeners(type._dEH, events, transaction);
             });
           }
         });
-        fs.push(() => doc.emit("afterTransaction", [transaction, doc]));
-        fs.push(() => {
+        fs2.push(() => doc.emit("afterTransaction", [transaction, doc]));
+        fs2.push(() => {
           if (transaction._needFormattingCleanup) {
             cleanupYTextAfterTransaction(transaction);
           }
         });
       });
-      callAll(fs, []);
+      callAll(fs2, []);
     } finally {
       if (doc.gc) {
         tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -23421,13 +24394,13 @@ var LazyStructWriter = class {
   }
 };
 var mergeUpdates = (updates) => mergeUpdatesV2(updates, UpdateDecoderV1, UpdateEncoderV1);
-var sliceStruct = (left, diff) => {
+var sliceStruct = (left, diff2) => {
   if (left.constructor === GC) {
     const { client, clock } = left.id;
-    return new GC(createID(client, clock + diff), left.length - diff);
+    return new GC(createID(client, clock + diff2), left.length - diff2);
   } else if (left.constructor === Skip) {
     const { client, clock } = left.id;
-    return new Skip(createID(client, clock + diff), left.length - diff);
+    return new Skip(createID(client, clock + diff2), left.length - diff2);
   } else {
     const leftItem = (
       /** @type {Item} */
@@ -23435,14 +24408,14 @@ var sliceStruct = (left, diff) => {
     );
     const { client, clock } = leftItem.id;
     return new Item(
-      createID(client, clock + diff),
+      createID(client, clock + diff2),
       null,
-      createID(client, clock + diff - 1),
+      createID(client, clock + diff2 - 1),
       null,
       leftItem.rightOrigin,
       leftItem.parent,
       leftItem.parentSub,
-      leftItem.content.splice(diff)
+      leftItem.content.splice(diff2)
     );
   }
 };
@@ -23505,17 +24478,17 @@ var mergeUpdatesV2 = (updates, YDecoder = UpdateDecoderV2, YEncoder = UpdateEnco
             currWrite.struct.length = curr.id.clock + curr.length - currWrite.struct.id.clock;
           } else {
             writeStructToLazyStructWriter(lazyStructEncoder, currWrite.struct, currWrite.offset);
-            const diff = curr.id.clock - currWrite.struct.id.clock - currWrite.struct.length;
-            const struct = new Skip(createID(firstClient, currWrite.struct.id.clock + currWrite.struct.length), diff);
+            const diff2 = curr.id.clock - currWrite.struct.id.clock - currWrite.struct.length;
+            const struct = new Skip(createID(firstClient, currWrite.struct.id.clock + currWrite.struct.length), diff2);
             currWrite = { struct, offset: 0 };
           }
         } else {
-          const diff = currWrite.struct.id.clock + currWrite.struct.length - curr.id.clock;
-          if (diff > 0) {
+          const diff2 = currWrite.struct.id.clock + currWrite.struct.length - curr.id.clock;
+          if (diff2 > 0) {
             if (currWrite.struct.constructor === Skip) {
-              currWrite.struct.length -= diff;
+              currWrite.struct.length -= diff2;
             } else {
-              curr = sliceStruct(curr, diff);
+              curr = sliceStruct(curr, diff2);
             }
           }
           if (!currWrite.struct.mergeWith(
@@ -23825,10 +24798,10 @@ var YEvent = class {
   }
 };
 var getPathTo = (parent, child) => {
-  const path = [];
+  const path2 = [];
   while (child._item !== null && child !== parent) {
     if (child._item.parentSub !== null) {
-      path.unshift(child._item.parentSub);
+      path2.unshift(child._item.parentSub);
     } else {
       let i = 0;
       let c = (
@@ -23841,12 +24814,12 @@ var getPathTo = (parent, child) => {
         }
         c = c.right;
       }
-      path.unshift(i);
+      path2.unshift(i);
     }
     child = /** @type {AbstractType<any>} */
     child._item.parent;
   }
-  return path;
+  return path2;
 };
 var warnPrematureAccess = () => {
   warn("Invalid access: Add Yjs type to a document before reading data.");
@@ -27616,17 +28589,34 @@ var ContentType = class _ContentType {
   }
 };
 var readContentType = (decoder) => new ContentType(typeRefs[decoder.readTypeRef()](decoder));
-var splitItem = (transaction, leftItem, diff) => {
+var followRedone = (store, id2) => {
+  let nextID = id2;
+  let diff2 = 0;
+  let item;
+  do {
+    if (diff2 > 0) {
+      nextID = createID(nextID.client, nextID.clock + diff2);
+    }
+    item = getItem(store, nextID);
+    diff2 = nextID.clock - item.id.clock;
+    nextID = item.redone;
+  } while (nextID !== null && item instanceof Item);
+  return {
+    item,
+    diff: diff2
+  };
+};
+var splitItem = (transaction, leftItem, diff2) => {
   const { client, clock } = leftItem.id;
   const rightItem = new Item(
-    createID(client, clock + diff),
+    createID(client, clock + diff2),
     leftItem,
-    createID(client, clock + diff - 1),
+    createID(client, clock + diff2 - 1),
     leftItem.right,
     leftItem.rightOrigin,
     leftItem.parent,
     leftItem.parentSub,
-    leftItem.content.splice(diff)
+    leftItem.content.splice(diff2)
   );
   if (leftItem.deleted) {
     rightItem.markDeleted();
@@ -27635,7 +28625,7 @@ var splitItem = (transaction, leftItem, diff) => {
     rightItem.keep = true;
   }
   if (leftItem.redone !== null) {
-    rightItem.redone = createID(leftItem.redone.client, leftItem.redone.clock + diff);
+    rightItem.redone = createID(leftItem.redone.client, leftItem.redone.clock + diff2);
   }
   leftItem.right = rightItem;
   if (rightItem.right !== null) {
@@ -27645,7 +28635,7 @@ var splitItem = (transaction, leftItem, diff) => {
   if (rightItem.parentSub !== null && rightItem.right === null) {
     rightItem.parent._map.set(rightItem.parentSub, rightItem);
   }
-  leftItem.length = diff;
+  leftItem.length = diff2;
   return rightItem;
 };
 var Item = class _Item extends AbstractStruct {
@@ -28089,6 +29079,1063 @@ if (glo[importIdentifier] === true) {
   console.error("Yjs was already imported. This breaks constructor checks and will lead to issues! - https://github.com/yjs/yjs/issues/438");
 }
 glo[importIdentifier] = true;
+
+// packages/shared/src/ledger.ts
+var LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict"]);
+function msgPaths(m) {
+  if ("paths" in m) return m.paths;
+  if ("path" in m) return [m.path];
+  return [];
+}
+function scopeCovers(scope, path2) {
+  return scope.paths.some((p) => path2 === p || path2.startsWith(p.replace(/\/?$/, "/")));
+}
+function ledger(messages, scopes, q = {}) {
+  const areaScopes = q.area ? scopes.filter((s) => s.area === q.area) : [];
+  const out = [];
+  for (const m of messages) {
+    if (!LEDGER_TYPES.has(m.type)) continue;
+    if (q.since && m.at < q.since) continue;
+    const paths = msgPaths(m);
+    if (q.path && !paths.includes(q.path)) continue;
+    if (q.area) {
+      const inArea = m.type === "scope" && m.area === q.area || paths.some((p) => areaScopes.some((s) => scopeCovers(s, p)));
+      if (!inArea) continue;
+    }
+    out.push(m);
+  }
+  return q.limit ? out.slice(-q.limit) : out;
+}
+function areaSummary(messages, scopes, windowMs = 10 * 60 * 1e3, now = Date.now()) {
+  const areas = Array.from(new Set(scopes.map((s) => s.area))).sort();
+  return areas.map((area) => {
+    const recent = ledger(messages, scopes, { area, since: now - windowMs }).filter((m) => m.type === "changed");
+    const who = Array.from(new Set(recent.map((m) => m.from)));
+    const owners = scopes.filter((s) => s.area === area).map((s) => s.by);
+    return `${area} (${owners.join(", ")}): ${recent.length} change${recent.length === 1 ? "" : "s"} in the last ${Math.round(windowMs / 6e4)} min${who.length ? ` by ${who.join(", ")}` : ""}`;
+  });
+}
+
+// packages/shared/src/doc.ts
+function defaultPriority(msg) {
+  if (msg.type === "conflict") return "interrupt";
+  if (msg.type === "changed") return msg.symbols?.length ? "notify" : "fyi";
+  if (msg.type === "question" || msg.type === "answer" || msg.type === "scope") return "notify";
+  return "fyi";
+}
+var RoomDoc = class {
+  doc;
+  constructor(doc = new Doc2()) {
+    this.doc = doc;
+  }
+  get overlays() {
+    return this.doc.getMap("overlays");
+  }
+  get deleted() {
+    return this.doc.getMap("deleted");
+  }
+  get scopes() {
+    return this.doc.getMap("scopes");
+  }
+  get claims() {
+    return this.doc.getMap("claims");
+  }
+  get bus() {
+    return this.doc.getArray("bus");
+  }
+  get metaMap() {
+    return this.doc.getMap("meta");
+  }
+  // ---- overlays ----------------------------------------------------------
+  overlay(person) {
+    let map2 = this.overlays.get(person);
+    if (!map2) {
+      map2 = new YMap();
+      this.overlays.set(person, map2);
+    }
+    return map2;
+  }
+  overlayText(person, relpath) {
+    return this.overlays.get(person)?.get(relpath);
+  }
+  /** Apply character-level diff operations, preserving Yjs relative positions. */
+  setOverlay(person, relpath, content, origin) {
+    const existing = this.overlayText(person, relpath);
+    if (existing?.toString() === content) return;
+    this.doc.transact(() => {
+      let text = this.overlayText(person, relpath);
+      if (!text) {
+        text = new YText();
+        this.overlay(person).set(relpath, text);
+      }
+      let index = 0;
+      for (const [kind, value] of (0, import_fast_diff.default)(text.toString(), content)) {
+        if (kind === import_fast_diff.default.EQUAL) index += value.length;
+        else if (kind === import_fast_diff.default.DELETE) text.delete(index, value.length);
+        else {
+          text.insert(index, value);
+          index += value.length;
+        }
+      }
+    }, origin);
+  }
+  clearOverlay(person, relpath, origin) {
+    const map2 = this.overlays.get(person);
+    if (!map2?.has(relpath)) return;
+    this.doc.transact(() => {
+      map2.delete(relpath);
+    }, origin);
+  }
+  deletedFor(person) {
+    let map2 = this.deleted.get(person);
+    if (!map2) {
+      map2 = new YMap();
+      this.deleted.set(person, map2);
+    }
+    return map2;
+  }
+  markDeleted(person, relpath, origin) {
+    if (this.deleted.get(person)?.has(relpath)) return;
+    this.doc.transact(() => {
+      this.deletedFor(person).set(relpath, true);
+    }, origin);
+  }
+  unmarkDeleted(person, relpath, origin) {
+    const map2 = this.deleted.get(person);
+    if (!map2?.has(relpath)) return;
+    this.doc.transact(() => {
+      map2.delete(relpath);
+    }, origin);
+  }
+  changedPaths(person) {
+    return Array.from(/* @__PURE__ */ new Set([
+      ...Array.from(this.overlays.get(person)?.keys() ?? []),
+      ...Array.from(this.deleted.get(person)?.keys() ?? [])
+    ])).sort();
+  }
+  whoChanged(relpath) {
+    const people = /* @__PURE__ */ new Set();
+    for (const [person, map2] of this.overlays) if (map2.has(relpath)) people.add(person);
+    for (const [person, map2] of this.deleted) if (map2.has(relpath)) people.add(person);
+    return Array.from(people).sort();
+  }
+  scope(person) {
+    return this.scopes.get(person);
+  }
+  allScopes() {
+    return Array.from(this.scopes.values()).sort((a, b) => a.at - b.at);
+  }
+  ledger(q = {}) {
+    return ledger(this.messages(), this.allScopes(), q);
+  }
+  areaSummary(windowMs) {
+    return areaSummary(this.messages(), this.allScopes(), windowMs);
+  }
+  setScope(personOrScope, scopeOrOrigin, origin) {
+    const value = typeof personOrScope === "string" ? { ...scopeOrOrigin, by: personOrScope, at: scopeOrOrigin.at ?? Date.now() } : { ...personOrScope, at: personOrScope.at ?? Date.now() };
+    const transactionOrigin = typeof personOrScope === "string" ? origin : scopeOrOrigin;
+    this.doc.transact(() => {
+      this.scopes.set(value.by, value);
+    }, transactionOrigin);
+    return value;
+  }
+  clearScope(person, origin) {
+    const scope = this.scopes.get(person);
+    if (scope) this.doc.transact(() => {
+      this.scopes.delete(person);
+    }, origin);
+    return scope;
+  }
+  text(relpath, person) {
+    return person ? this.overlayText(person, relpath)?.toString() : void 0;
+  }
+  /** Compatibility helper for phase-1 consumers: aggregate changed paths. */
+  paths(person) {
+    if (person) return this.changedPaths(person);
+    const paths = /* @__PURE__ */ new Set();
+    for (const p of this.overlays.keys()) for (const relpath of this.changedPaths(p)) paths.add(relpath);
+    for (const p of this.deleted.keys()) for (const relpath of this.changedPaths(p)) paths.add(relpath);
+    return Array.from(paths).sort();
+  }
+  hasFile(relpath, person) {
+    return person ? this.overlayText(person, relpath) !== void 0 : this.whoChanged(relpath).length > 0;
+  }
+  lineCount(relpath, person) {
+    const text = this.text(relpath, person);
+    if (text === void 0) return 0;
+    const count = text.split("\n").length;
+    return text.endsWith("\n") ? count - 1 : count;
+  }
+  // ---- meta --------------------------------------------------------------
+  get meta() {
+    const map2 = this.metaMap;
+    return {
+      repo: map2.get("repo"),
+      branch: map2.get("branch"),
+      base: map2.get("base"),
+      createdAt: map2.get("createdAt"),
+      seededBy: map2.get("seededBy")
+    };
+  }
+  setMeta(patch, origin) {
+    this.doc.transact(() => {
+      for (const [key, value] of Object.entries(patch)) {
+        if (value !== void 0) this.metaMap.set(key, value);
+      }
+    }, origin);
+  }
+  // ---- claims ------------------------------------------------------------
+  openClaims() {
+    return Array.from(this.claims.values()).map((claim2) => ({ ...claim2, ...this.claimRange(claim2) })).sort((a, b) => a.at - b.at);
+  }
+  claimsFor(relpath) {
+    return this.openClaims().filter((claim2) => claim2.path === relpath);
+  }
+  addClaim(input, origin) {
+    const text = this.overlayText(input.by, input.path);
+    const anchor2 = text ? makeAnchor(text, input.from, input.to) : void 0;
+    const claim2 = { ...input, id: newId("c_"), at: Date.now(), ...anchor2 ? { anchor: anchor2 } : {} };
+    this.doc.transact(() => {
+      this.claims.set(claim2.id, claim2);
+    }, origin);
+    return claim2;
+  }
+  claimRange(claim2) {
+    const text = this.overlayText(claim2.by, claim2.path);
+    if (!text || !claim2.anchor) return { from: claim2.from, to: claim2.to };
+    try {
+      const from2 = createAbsolutePositionFromRelativePosition(
+        createRelativePositionFromJSON(claim2.anchor.from),
+        this.doc
+      );
+      const to = createAbsolutePositionFromRelativePosition(
+        createRelativePositionFromJSON(claim2.anchor.to),
+        this.doc
+      );
+      if (!from2 || !to || from2.type !== text || to.type !== text) return { from: claim2.from, to: claim2.to };
+      const fromLine = lineAt(text.toString(), from2.index);
+      const toLine = lineAt(text.toString(), to.index);
+      return { from: fromLine, to: Math.max(fromLine, toLine) };
+    } catch {
+      return { from: claim2.from, to: claim2.to };
+    }
+  }
+  removeClaim(id2, origin) {
+    const claim2 = this.claims.get(id2);
+    if (claim2) this.doc.transact(() => {
+      this.claims.delete(id2);
+    }, origin);
+    return claim2;
+  }
+  // ---- bus ---------------------------------------------------------------
+  messages() {
+    return this.bus.toArray();
+  }
+  lastMessages(n) {
+    const messages = this.messages();
+    return messages.slice(Math.max(0, messages.length - n));
+  }
+  post(from2, body, origin) {
+    const msg = {
+      ...body,
+      priority: body.priority ?? defaultPriority(body),
+      id: newId("m_"),
+      at: Date.now(),
+      from: from2.name,
+      fromKind: from2.kind
+    };
+    this.doc.transact(() => {
+      this.bus.push([msg]);
+    }, origin);
+    return msg;
+  }
+  // ---- chats (human <-> own agent) --------------------------------------
+  chat(name) {
+    return this.doc.getArray(`chat:${encodeURIComponent(name)}`);
+  }
+  say(name, item, origin) {
+    const value = { ...item, id: newId("h_"), at: Date.now() };
+    this.doc.transact(() => {
+      this.chat(name).push([value]);
+    }, origin);
+    return value;
+  }
+};
+function lineStart(text, oneBasedLine) {
+  let index = 0;
+  for (let line = 1; line < Math.max(1, oneBasedLine); line++) {
+    const newline = text.indexOf("\n", index);
+    if (newline < 0) return text.length;
+    index = newline + 1;
+  }
+  return index;
+}
+function lineAt(text, index) {
+  let line = 1;
+  for (let i = 0; i < Math.min(index, text.length); i++) if (text[i] === "\n") line++;
+  return line;
+}
+function makeAnchor(text, from2, to) {
+  return {
+    from: relativePositionToJSON(createRelativePositionFromTypeIndex(text, lineStart(text.toString(), from2))),
+    to: relativePositionToJSON(createRelativePositionFromTypeIndex(text, lineStart(text.toString(), to)))
+  };
+}
+
+// packages/shared/src/wake.ts
+var WAKE_TYPES = /* @__PURE__ */ new Set(["claim", "release", "changed", "conflict", "question", "scope"]);
+function shouldWakeOnMsg(me, m, myClaims = []) {
+  if (m.from === me.name && m.fromKind === "agent") return { wake: false, mustAnswer: false, reason: "own message" };
+  const addressed = m.to === me.name;
+  if (m.priority === "fyi") return { wake: false, mustAnswer: false, reason: "fyi does not wake" };
+  if (m.priority === "notify" && !addressed) return { wake: false, mustAnswer: false, reason: m.to ? `addressed to ${m.to}` : "broadcast notify is read on next action" };
+  if (m.priority === "interrupt") {
+    if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` };
+    return { wake: true, mustAnswer: addressed, reason: addressed ? "interrupt addressed to me" : "broadcast interrupt" };
+  }
+  if (m.type === "answer") {
+    return addressed ? { wake: true, mustAnswer: true, reason: "answer addressed to me" } : { wake: false, mustAnswer: false, reason: m.to ? `addressed to ${m.to}` : "broadcast answer does not wake" };
+  }
+  if (!WAKE_TYPES.has(m.type)) return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` };
+  if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` };
+  if ((m.type === "claim" || m.type === "release") && !addressed && !(m.from === me.name && m.fromKind === "human")) {
+    const near = myClaims.some((c) => c.by === me.name && c.byKind === "agent" && c.path === m.path);
+    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${m.path}, not near my claims` };
+  }
+  return { wake: true, mustAnswer: addressed, reason: addressed ? "addressed to me" : "broadcast" };
+}
+function shouldWakeOnClaim(me, claim2, myClaims) {
+  if (claim2.by === me.name && claim2.byKind === "agent") return { wake: false, mustAnswer: false, reason: "own agent" };
+  const hit = myClaims.find((c) => c.by === me.name && c.byKind === "agent" && c.id !== claim2.id && claimsOverlap(c, claim2));
+  if (!hit) return { wake: false, mustAnswer: false, reason: "no overlap with my claims" };
+  return { wake: true, mustAnswer: false, reason: `overlaps my claim ${hit.id}` };
+}
+
+// node_modules/diff/libesm/diff/base.js
+var Diff = class {
+  diff(oldStr, newStr, options = {}) {
+    let callback;
+    if (typeof options === "function") {
+      callback = options;
+      options = {};
+    } else if ("callback" in options) {
+      callback = options.callback;
+    }
+    const oldString = this.castInput(oldStr, options);
+    const newString = this.castInput(newStr, options);
+    const oldTokens = this.removeEmpty(this.tokenize(oldString, options));
+    const newTokens = this.removeEmpty(this.tokenize(newString, options));
+    return this.diffWithOptionsObj(oldTokens, newTokens, options, callback);
+  }
+  diffWithOptionsObj(oldTokens, newTokens, options, callback) {
+    var _a3;
+    const done = (value) => {
+      value = this.postProcess(value, options);
+      if (callback) {
+        setTimeout(function() {
+          callback(value);
+        }, 0);
+        return void 0;
+      } else {
+        return value;
+      }
+    };
+    const newLen = newTokens.length, oldLen = oldTokens.length;
+    let editLength = 1;
+    let maxEditLength = newLen + oldLen;
+    if (options.maxEditLength != null) {
+      maxEditLength = Math.min(maxEditLength, options.maxEditLength);
+    }
+    const maxExecutionTime = (_a3 = options.timeout) !== null && _a3 !== void 0 ? _a3 : Infinity;
+    const abortAfterTimestamp = Date.now() + maxExecutionTime;
+    const bestPath = [{ oldPos: -1, lastComponent: void 0 }];
+    let newPos = this.extractCommon(bestPath[0], newTokens, oldTokens, 0, options);
+    if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+      return done(this.buildValues(bestPath[0].lastComponent, newTokens, oldTokens));
+    }
+    let minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
+    const execEditLength = () => {
+      for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
+        let basePath;
+        const removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
+        if (removePath) {
+          bestPath[diagonalPath - 1] = void 0;
+        }
+        let canAdd = false;
+        if (addPath) {
+          const addPathNewPos = addPath.oldPos - diagonalPath;
+          canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
+        }
+        const canRemove = removePath && removePath.oldPos + 1 < oldLen;
+        if (!canAdd && !canRemove) {
+          bestPath[diagonalPath] = void 0;
+          continue;
+        }
+        if (!canRemove || canAdd && removePath.oldPos < addPath.oldPos) {
+          basePath = this.addToPath(addPath, true, false, 0, options);
+        } else {
+          basePath = this.addToPath(removePath, false, true, 1, options);
+        }
+        newPos = this.extractCommon(basePath, newTokens, oldTokens, diagonalPath, options);
+        if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+          return done(this.buildValues(basePath.lastComponent, newTokens, oldTokens)) || true;
+        } else {
+          bestPath[diagonalPath] = basePath;
+          if (basePath.oldPos + 1 >= oldLen) {
+            maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
+          }
+          if (newPos + 1 >= newLen) {
+            minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
+          }
+        }
+      }
+      editLength++;
+    };
+    if (callback) {
+      (function exec() {
+        setTimeout(function() {
+          if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
+            return callback(void 0);
+          }
+          if (!execEditLength()) {
+            exec();
+          }
+        }, 0);
+      })();
+    } else {
+      while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
+        const ret = execEditLength();
+        if (ret) {
+          return ret;
+        }
+      }
+    }
+  }
+  addToPath(path2, added, removed, oldPosInc, options) {
+    const last2 = path2.lastComponent;
+    if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
+      return {
+        oldPos: path2.oldPos + oldPosInc,
+        lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
+      };
+    } else {
+      return {
+        oldPos: path2.oldPos + oldPosInc,
+        lastComponent: { count: 1, added, removed, previousComponent: last2 }
+      };
+    }
+  }
+  extractCommon(basePath, newTokens, oldTokens, diagonalPath, options) {
+    const newLen = newTokens.length, oldLen = oldTokens.length;
+    let oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
+    while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldTokens[oldPos + 1], newTokens[newPos + 1], options)) {
+      newPos++;
+      oldPos++;
+      commonCount++;
+      if (options.oneChangePerToken) {
+        basePath.lastComponent = { count: 1, previousComponent: basePath.lastComponent, added: false, removed: false };
+      }
+    }
+    if (commonCount && !options.oneChangePerToken) {
+      basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
+    }
+    basePath.oldPos = oldPos;
+    return newPos;
+  }
+  equals(left, right, options) {
+    if (options.comparator) {
+      return options.comparator(left, right);
+    } else {
+      return left === right || !!options.ignoreCase && left.toLowerCase() === right.toLowerCase();
+    }
+  }
+  removeEmpty(array2) {
+    const ret = [];
+    for (let i = 0; i < array2.length; i++) {
+      if (array2[i]) {
+        ret.push(array2[i]);
+      }
+    }
+    return ret;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  castInput(value, options) {
+    return value;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  tokenize(value, options) {
+    return Array.from(value);
+  }
+  join(chars) {
+    return chars.join("");
+  }
+  postProcess(changeObjects, options) {
+    return changeObjects;
+  }
+  get useLongestToken() {
+    return false;
+  }
+  buildValues(lastComponent, newTokens, oldTokens) {
+    const components = [];
+    let nextComponent;
+    while (lastComponent) {
+      components.push(lastComponent);
+      nextComponent = lastComponent.previousComponent;
+      delete lastComponent.previousComponent;
+      lastComponent = nextComponent;
+    }
+    components.reverse();
+    const componentLen = components.length;
+    let componentPos = 0, newPos = 0, oldPos = 0;
+    for (; componentPos < componentLen; componentPos++) {
+      const component = components[componentPos];
+      if (!component.removed) {
+        if (!component.added && this.useLongestToken) {
+          let value = newTokens.slice(newPos, newPos + component.count);
+          value = value.map(function(value2, i) {
+            const oldValue = oldTokens[oldPos + i];
+            return oldValue.length > value2.length ? oldValue : value2;
+          });
+          component.value = this.join(value);
+        } else {
+          component.value = this.join(newTokens.slice(newPos, newPos + component.count));
+        }
+        newPos += component.count;
+        if (!component.added) {
+          oldPos += component.count;
+        }
+      } else {
+        component.value = this.join(oldTokens.slice(oldPos, oldPos + component.count));
+        oldPos += component.count;
+      }
+    }
+    return components;
+  }
+};
+
+// node_modules/diff/libesm/diff/line.js
+var LineDiff = class extends Diff {
+  constructor() {
+    super(...arguments);
+    this.tokenize = tokenize;
+  }
+  equals(left, right, options) {
+    if (options.ignoreWhitespace) {
+      if (!options.newlineIsToken || !left.includes("\n")) {
+        left = left.trim();
+      }
+      if (!options.newlineIsToken || !right.includes("\n")) {
+        right = right.trim();
+      }
+    } else if (options.ignoreNewlineAtEof && !options.newlineIsToken) {
+      if (left.endsWith("\n")) {
+        left = left.slice(0, -1);
+      }
+      if (right.endsWith("\n")) {
+        right = right.slice(0, -1);
+      }
+    }
+    return super.equals(left, right, options);
+  }
+};
+var lineDiff = new LineDiff();
+function diffLines(oldStr, newStr, options) {
+  return lineDiff.diff(oldStr, newStr, options);
+}
+function tokenize(value, options) {
+  if (options.stripTrailingCr) {
+    value = value.replace(/\r\n/g, "\n");
+  }
+  const retLines = [], linesAndNewlines = value.split(/(\n|\r\n)/);
+  if (!linesAndNewlines[linesAndNewlines.length - 1]) {
+    linesAndNewlines.pop();
+  }
+  for (let i = 0; i < linesAndNewlines.length; i++) {
+    const line = linesAndNewlines[i];
+    if (i % 2 && !options.newlineIsToken) {
+      retLines[retLines.length - 1] += line;
+    } else {
+      retLines.push(line);
+    }
+  }
+  return retLines;
+}
+
+// node_modules/diff/libesm/patch/create.js
+var INCLUDE_HEADERS = {
+  includeIndex: true,
+  includeUnderline: true,
+  includeFileHeaders: true
+};
+function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
+  let optionsObj;
+  if (!options) {
+    optionsObj = {};
+  } else if (typeof options === "function") {
+    optionsObj = { callback: options };
+  } else {
+    optionsObj = options;
+  }
+  if (typeof optionsObj.context === "undefined") {
+    optionsObj.context = 4;
+  }
+  const context = optionsObj.context;
+  if (optionsObj.newlineIsToken) {
+    throw new Error("newlineIsToken may not be used with patch-generation functions, only with diffing functions");
+  }
+  if (!optionsObj.callback) {
+    return diffLinesResultToPatch(diffLines(oldStr, newStr, optionsObj));
+  } else {
+    const { callback } = optionsObj;
+    diffLines(oldStr, newStr, Object.assign(Object.assign({}, optionsObj), { callback: (diff2) => {
+      const patch = diffLinesResultToPatch(diff2);
+      callback(patch);
+    } }));
+  }
+  function diffLinesResultToPatch(diff2) {
+    if (!diff2) {
+      return;
+    }
+    diff2.push({ value: "", lines: [] });
+    function contextLines(lines) {
+      return lines.map(function(entry) {
+        return " " + entry;
+      });
+    }
+    const hunks = [];
+    let oldRangeStart = 0, newRangeStart = 0, curRange = [], oldLine = 1, newLine = 1;
+    for (let i = 0; i < diff2.length; i++) {
+      const current = diff2[i], lines = current.lines || splitLines(current.value);
+      current.lines = lines;
+      if (current.added || current.removed) {
+        if (!oldRangeStart) {
+          const prev = diff2[i - 1];
+          oldRangeStart = oldLine;
+          newRangeStart = newLine;
+          if (prev) {
+            curRange = context > 0 ? contextLines(prev.lines.slice(-context)) : [];
+            oldRangeStart -= curRange.length;
+            newRangeStart -= curRange.length;
+          }
+        }
+        for (const line of lines) {
+          curRange.push((current.added ? "+" : "-") + line);
+        }
+        if (current.added) {
+          newLine += lines.length;
+        } else {
+          oldLine += lines.length;
+        }
+      } else {
+        if (oldRangeStart) {
+          if (lines.length <= context * 2 && i < diff2.length - 2) {
+            for (const line of contextLines(lines)) {
+              curRange.push(line);
+            }
+          } else {
+            const contextSize = Math.min(lines.length, context);
+            for (const line of contextLines(lines.slice(0, contextSize))) {
+              curRange.push(line);
+            }
+            const hunk = {
+              oldStart: oldRangeStart,
+              oldLines: oldLine - oldRangeStart + contextSize,
+              newStart: newRangeStart,
+              newLines: newLine - newRangeStart + contextSize,
+              lines: curRange
+            };
+            hunks.push(hunk);
+            oldRangeStart = 0;
+            newRangeStart = 0;
+            curRange = [];
+          }
+        }
+        oldLine += lines.length;
+        newLine += lines.length;
+      }
+    }
+    for (const hunk of hunks) {
+      for (let i = 0; i < hunk.lines.length; i++) {
+        if (hunk.lines[i].endsWith("\n")) {
+          hunk.lines[i] = hunk.lines[i].slice(0, -1);
+        } else {
+          hunk.lines.splice(i + 1, 0, "\\ No newline at end of file");
+          i++;
+        }
+      }
+    }
+    return {
+      oldFileName,
+      newFileName,
+      oldHeader,
+      newHeader,
+      hunks
+    };
+  }
+}
+function formatPatch(patch, headerOptions) {
+  if (!headerOptions) {
+    headerOptions = INCLUDE_HEADERS;
+  }
+  if (Array.isArray(patch)) {
+    if (patch.length > 1 && !headerOptions.includeFileHeaders) {
+      throw new Error("Cannot omit file headers on a multi-file patch. (The result would be unparseable; how would a tool trying to apply the patch know which changes are to which file?)");
+    }
+    return patch.map((p) => formatPatch(p, headerOptions)).join("\n");
+  }
+  const ret = [];
+  if (headerOptions.includeIndex && patch.oldFileName == patch.newFileName) {
+    ret.push("Index: " + patch.oldFileName);
+  }
+  if (headerOptions.includeUnderline) {
+    ret.push("===================================================================");
+  }
+  if (headerOptions.includeFileHeaders) {
+    ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
+    ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
+  }
+  for (let i = 0; i < patch.hunks.length; i++) {
+    const hunk = patch.hunks[i];
+    if (hunk.oldLines === 0) {
+      hunk.oldStart -= 1;
+    }
+    if (hunk.newLines === 0) {
+      hunk.newStart -= 1;
+    }
+    ret.push("@@ -" + hunk.oldStart + "," + hunk.oldLines + " +" + hunk.newStart + "," + hunk.newLines + " @@");
+    for (const line of hunk.lines) {
+      ret.push(line);
+    }
+  }
+  return ret.join("\n") + "\n";
+}
+function createTwoFilesPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
+  if (typeof options === "function") {
+    options = { callback: options };
+  }
+  if (!(options === null || options === void 0 ? void 0 : options.callback)) {
+    const patchObj = structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options);
+    if (!patchObj) {
+      return;
+    }
+    return formatPatch(patchObj, options === null || options === void 0 ? void 0 : options.headerOptions);
+  } else {
+    const { callback } = options;
+    structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, Object.assign(Object.assign({}, options), { callback: (patchObj) => {
+      if (!patchObj) {
+        callback(void 0);
+      } else {
+        callback(formatPatch(patchObj, options.headerOptions));
+      }
+    } }));
+  }
+}
+function splitLines(text) {
+  const hasTrailingNl = text.endsWith("\n");
+  const result = text.split("\n").map((line) => line + "\n");
+  if (hasTrailingNl) {
+    result.pop();
+  } else {
+    result.push(result.pop().slice(0, -1));
+  }
+  return result;
+}
+
+// node_modules/node-diff3/dist/diff3.mjs
+function LCS(buffer1, buffer2) {
+  let equivalenceClasses = /* @__PURE__ */ Object.create(null);
+  for (let j = 0; j < buffer2.length; j++) {
+    const item = buffer2[j];
+    if (equivalenceClasses[item]) {
+      equivalenceClasses[item].push(j);
+    } else {
+      equivalenceClasses[item] = [j];
+    }
+  }
+  const NULLRESULT = { buffer1index: -1, buffer2index: -1, chain: null };
+  let candidates = [NULLRESULT];
+  for (let i = 0; i < buffer1.length; i++) {
+    const item = buffer1[i];
+    const buffer2indices = equivalenceClasses[item] || [];
+    let r = 0;
+    let c = candidates[0];
+    for (const j of buffer2indices) {
+      let s;
+      for (s = r; s < candidates.length; s++) {
+        if (candidates[s].buffer2index < j && (s === candidates.length - 1 || candidates[s + 1].buffer2index > j)) {
+          break;
+        }
+      }
+      if (s < candidates.length) {
+        const newCandidate = { buffer1index: i, buffer2index: j, chain: candidates[s] };
+        if (r === candidates.length) {
+          candidates.push(c);
+        } else {
+          candidates[r] = c;
+        }
+        r = s + 1;
+        c = newCandidate;
+        if (r === candidates.length) {
+          break;
+        }
+      }
+    }
+    candidates[r] = c;
+  }
+  return candidates[candidates.length - 1];
+}
+function diffIndices(buffer1, buffer2) {
+  const lcs = LCS(buffer1, buffer2);
+  let result = [];
+  let tail1 = buffer1.length;
+  let tail2 = buffer2.length;
+  for (let candidate = lcs; candidate !== null; candidate = candidate.chain) {
+    const mismatchLength1 = tail1 - candidate.buffer1index - 1;
+    const mismatchLength2 = tail2 - candidate.buffer2index - 1;
+    tail1 = candidate.buffer1index;
+    tail2 = candidate.buffer2index;
+    if (mismatchLength1 || mismatchLength2) {
+      result.push({
+        buffer1: [tail1 + 1, mismatchLength1],
+        buffer1Content: buffer1.slice(tail1 + 1, tail1 + 1 + mismatchLength1),
+        buffer2: [tail2 + 1, mismatchLength2],
+        buffer2Content: buffer2.slice(tail2 + 1, tail2 + 1 + mismatchLength2)
+      });
+    }
+  }
+  result.reverse();
+  return result;
+}
+function diff3MergeRegions(a, o, b) {
+  let hunks = [];
+  function addHunk(h, ab) {
+    hunks.push({
+      ab,
+      oStart: h.buffer1[0],
+      oLength: h.buffer1[1],
+      abStart: h.buffer2[0],
+      abLength: h.buffer2[1]
+    });
+  }
+  diffIndices(o, a).forEach((item) => addHunk(item, "a"));
+  diffIndices(o, b).forEach((item) => addHunk(item, "b"));
+  hunks.sort((x, y) => x.oStart - y.oStart);
+  let results = [];
+  let currOffset = 0;
+  function advanceTo(endOffset) {
+    if (endOffset > currOffset) {
+      results.push({
+        stable: true,
+        buffer: "o",
+        bufferStart: currOffset,
+        bufferLength: endOffset - currOffset,
+        bufferContent: o.slice(currOffset, endOffset)
+      });
+      currOffset = endOffset;
+    }
+  }
+  while (hunks.length) {
+    let hunk = hunks.shift();
+    let regionStart = hunk.oStart;
+    let regionEnd = hunk.oStart + hunk.oLength;
+    let regionHunks = [hunk];
+    advanceTo(regionStart);
+    while (hunks.length) {
+      const nextHunk = hunks[0];
+      const nextHunkStart = nextHunk.oStart;
+      if (nextHunkStart > regionEnd)
+        break;
+      regionEnd = Math.max(regionEnd, nextHunkStart + nextHunk.oLength);
+      regionHunks.push(hunks.shift());
+    }
+    if (regionHunks.length === 1) {
+      if (hunk.abLength > 0) {
+        const buffer = hunk.ab === "a" ? a : b;
+        results.push({
+          stable: true,
+          buffer: hunk.ab,
+          bufferStart: hunk.abStart,
+          bufferLength: hunk.abLength,
+          bufferContent: buffer.slice(hunk.abStart, hunk.abStart + hunk.abLength)
+        });
+      }
+    } else {
+      let bounds = {
+        a: [a.length, -1, o.length, -1],
+        b: [b.length, -1, o.length, -1]
+      };
+      while (regionHunks.length) {
+        hunk = regionHunks.shift();
+        const oStart = hunk.oStart;
+        const oEnd = oStart + hunk.oLength;
+        const abStart = hunk.abStart;
+        const abEnd = abStart + hunk.abLength;
+        let b2 = bounds[hunk.ab];
+        b2[0] = Math.min(abStart, b2[0]);
+        b2[1] = Math.max(abEnd, b2[1]);
+        b2[2] = Math.min(oStart, b2[2]);
+        b2[3] = Math.max(oEnd, b2[3]);
+      }
+      const aStart = bounds.a[0] + (regionStart - bounds.a[2]);
+      const aEnd = bounds.a[1] + (regionEnd - bounds.a[3]);
+      const bStart = bounds.b[0] + (regionStart - bounds.b[2]);
+      const bEnd = bounds.b[1] + (regionEnd - bounds.b[3]);
+      let result = {
+        stable: false,
+        aStart,
+        aLength: aEnd - aStart,
+        aContent: a.slice(aStart, aEnd),
+        oStart: regionStart,
+        oLength: regionEnd - regionStart,
+        oContent: o.slice(regionStart, regionEnd),
+        bStart,
+        bLength: bEnd - bStart,
+        bContent: b.slice(bStart, bEnd)
+      };
+      results.push(result);
+    }
+    currOffset = regionEnd;
+  }
+  advanceTo(o.length);
+  return results;
+}
+function diff3Merge(a, o, b, options) {
+  let defaults = {
+    excludeFalseConflicts: true,
+    stringSeparator: /\s+/
+  };
+  options = Object.assign(defaults, options);
+  if (typeof a === "string")
+    a = a.split(options.stringSeparator);
+  if (typeof o === "string")
+    o = o.split(options.stringSeparator);
+  if (typeof b === "string")
+    b = b.split(options.stringSeparator);
+  let results = [];
+  const regions = diff3MergeRegions(a, o, b);
+  let okBuffer = [];
+  function flushOk() {
+    if (okBuffer.length) {
+      results.push({ ok: okBuffer });
+    }
+    okBuffer = [];
+  }
+  function isFalseConflict(a2, b2) {
+    if (a2.length !== b2.length)
+      return false;
+    for (let i = 0; i < a2.length; i++) {
+      if (a2[i] !== b2[i])
+        return false;
+    }
+    return true;
+  }
+  regions.forEach((region) => {
+    if (region.stable) {
+      okBuffer.push(...region.bufferContent);
+    } else {
+      if (options.excludeFalseConflicts && isFalseConflict(region.aContent, region.bContent)) {
+        okBuffer.push(...region.aContent);
+      } else {
+        flushOk();
+        results.push({
+          conflict: {
+            a: region.aContent,
+            aIndex: region.aStart,
+            o: region.oContent,
+            oIndex: region.oStart,
+            b: region.bContent,
+            bIndex: region.bStart
+          }
+        });
+      }
+    }
+  });
+  flushOk();
+  return results;
+}
+
+// packages/roomd/src/git.ts
+import { execFile } from "node:child_process";
+var DEFAULT_GIT_TIMEOUT_MS = 3e4;
+function timeoutMs(configured) {
+  const fromEnv = Number(process.env.ROOM_GIT_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_GIT_TIMEOUT_MS;
+}
+function git(dir, args2, configuredTimeoutMs) {
+  const timeout = timeoutMs(configuredTimeoutMs);
+  return new Promise((resolve5, reject) => {
+    execFile("git", args2, { cwd: dir, maxBuffer: 64 * 1024 * 1024, timeout }, (err, stdout, stderr) => {
+      if (err) {
+        const stopped = err;
+        const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr || err.message).trim();
+        reject(new Error(`git ${args2.join(" ")} failed: ${detail}`));
+      } else resolve5(stdout);
+    });
+  });
+}
+var gitHead = (dir) => git(dir, ["rev-parse", "HEAD"]).then((s) => s.trim());
+var gitBranch = (dir) => git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).then((s) => s.trim());
+function normalizeGitOrigin(origin) {
+  const value = origin.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+  const scp = value.match(/^(?:[^@]+@)?([^:/]+):(.+)$/);
+  if (scp && !value.includes("://")) return `${scp[1]}/${scp[2].replace(/^\/+/, "")}`;
+  try {
+    const url = new URL(value);
+    if (!url.hostname) return void 0;
+    return `${url.hostname}/${url.pathname.replace(/^\/+/, "")}`;
+  } catch {
+    return void 0;
+  }
+}
+async function gitOrigin(dir) {
+  try {
+    return normalizeGitOrigin(await git(dir, ["remote", "get-url", "origin"]));
+  } catch (error2) {
+    if (error2 instanceof Error && error2.message.includes("timed out")) throw error2;
+    return void 0;
+  }
+}
+async function gitShow(dir, base, relpath) {
+  try {
+    return await git(dir, ["show", `${base}:${relpath}`]);
+  } catch (error2) {
+    const message = error2 instanceof Error ? error2.message : String(error2);
+    if (/does not exist|exists on disk, but not in|path .* not in/i.test(message)) return void 0;
+    throw error2;
+  }
+}
+async function gitTracked(dir) {
+  const out = await git(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
+  return new Set(out.split("\0").filter(Boolean));
+}
+async function gitIgnored(dir, rel, configuredTimeoutMs) {
+  const timeout = timeoutMs(configuredTimeoutMs);
+  return new Promise((resolve5, reject) => {
+    execFile("git", ["check-ignore", "-q", "--", rel], { cwd: dir, timeout }, (err) => {
+      const stopped = err;
+      if (stopped?.killed || stopped?.signal) reject(new Error(`git check-ignore timed out after ${timeout}ms`));
+      else resolve5(!err);
+    });
+  });
+}
+
+// packages/room-mcp/src/session.ts
+import { existsSync, readFileSync } from "node:fs";
+import { dirname as dirname3, resolve as resolve3 } from "node:path";
+
+// packages/roomd/src/index.ts
+import fs from "node:fs";
+import path from "node:path";
+
+// node_modules/ws/wrapper.mjs
+var import_stream = __toESM(require_stream(), 1);
+var import_extension = __toESM(require_extension(), 1);
+var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
+var import_receiver = __toESM(require_receiver(), 1);
+var import_sender = __toESM(require_sender(), 1);
+var import_subprotocol = __toESM(require_subprotocol(), 1);
+var import_websocket = __toESM(require_websocket(), 1);
+var import_websocket_server = __toESM(require_websocket_server(), 1);
 
 // node_modules/lib0/broadcastchannel.js
 var channels = /* @__PURE__ */ new Map();
@@ -28786,875 +30833,2607 @@ var WebsocketProvider = class extends ObservableV2 {
   }
 };
 
-// packages/shared/src/identity.ts
-var PALETTE = ["#0f8b8d", "#c9761a", "#6d4fc2", "#c0392b", "#2e86de", "#27ae60", "#b5179e", "#8d6e63"];
-function colorFor(name) {
-  let h = 2166136261;
-  for (const ch of name) {
-    h ^= ch.charCodeAt(0);
-    h = Math.imul(h, 16777619) >>> 0;
-  }
-  h ^= h >>> 13;
-  h = Math.imul(h, 1540483477) >>> 0;
-  h ^= h >>> 15;
-  return PALETTE[(h >>> 0) % PALETTE.length];
-}
-function displayName(id2) {
-  return id2.kind === "agent" ? `${id2.name}'s agent` : id2.name;
-}
-function newId(prefix = "") {
-  const r = Math.random().toString(36).slice(2, 8);
-  return `${prefix}${Date.now().toString(36)}${r}`;
-}
+// node_modules/chokidar/esm/index.js
+import { stat as statcb } from "fs";
+import { stat as stat3, readdir as readdir2 } from "fs/promises";
+import { EventEmitter } from "events";
+import * as sysPath2 from "path";
 
-// packages/shared/src/claims.ts
-function rangesOverlap(aFrom, aTo, bFrom, bTo) {
-  return aFrom <= bTo && bFrom <= aTo;
-}
-function claimsOverlap(a, b) {
-  return a.path === b.path && rangesOverlap(a.from, a.to, b.from, b.to);
-}
-function cursorInClaim(c, claim2) {
-  return c.path === claim2.path && rangesOverlap(c.from, c.to, claim2.from, claim2.to);
-}
-function clampRange(from2, to, lineCount) {
-  const max2 = Math.max(1, lineCount);
-  const f = Math.min(Math.max(1, Math.floor(from2)), max2);
-  const t = Math.min(Math.max(f, Math.floor(to)), max2);
-  return { from: f, to: t };
-}
-function describeClaim(c) {
-  const who = c.byKind === "agent" ? `${c.by}'s agent` : c.by;
-  return `${who} \xB7 ${c.path}:${c.from}-${c.to} \xB7 ${c.intent}`;
-}
-
-// packages/shared/src/doc.ts
-var RoomDoc = class {
-  doc;
-  constructor(doc = new Doc2()) {
-    this.doc = doc;
-  }
-  get files() {
-    return this.doc.getMap("files");
-  }
-  get claims() {
-    return this.doc.getMap("claims");
-  }
-  get bus() {
-    return this.doc.getArray("bus");
-  }
-  get chats() {
-    return this.doc.getMap("chats");
-  }
-  get metaMap() {
-    return this.doc.getMap("meta");
-  }
-  // ---- files -------------------------------------------------------------
-  paths() {
-    return Array.from(this.files.keys()).sort();
-  }
-  hasFile(path) {
-    return this.files.has(path);
-  }
-  text(path) {
-    return this.files.get(path)?.toString();
-  }
-  lineCount(path) {
-    const t = this.text(path);
-    if (t === void 0) return 0;
-    const n = t.split("\n").length;
-    return t.endsWith("\n") ? n - 1 : n;
-  }
-  /** Replace or create a file's content wholesale. Prefer applyDiff for live edits. */
-  setFile(path, content, origin) {
-    this.doc.transact(() => {
-      let yt = this.files.get(path);
-      if (!yt) {
-        yt = new YText();
-        this.files.set(path, yt);
-      }
-      if (yt.toString() === content) return;
-      yt.delete(0, yt.length);
-      yt.insert(0, content);
-    }, origin);
-  }
-  deleteFile(path, origin) {
-    this.doc.transact(() => {
-      this.files.delete(path);
-    }, origin);
-  }
-  // ---- meta --------------------------------------------------------------
-  get meta() {
-    const m = this.metaMap;
-    return {
-      repo: m.get("repo"),
-      branch: m.get("branch"),
-      base: m.get("base"),
-      createdAt: m.get("createdAt"),
-      seededBy: m.get("seededBy")
-    };
-  }
-  setMeta(patch, origin) {
-    this.doc.transact(() => {
-      for (const [k, v] of Object.entries(patch)) if (v !== void 0) this.metaMap.set(k, v);
-    }, origin);
-  }
-  // ---- claims ------------------------------------------------------------
-  openClaims() {
-    return Array.from(this.claims.values()).sort((a, b) => a.at - b.at);
-  }
-  claimsFor(path) {
-    return this.openClaims().filter((c) => c.path === path);
-  }
-  addClaim(c, origin) {
-    const claim2 = { ...c, id: newId("c_"), at: Date.now() };
-    this.doc.transact(() => {
-      this.claims.set(claim2.id, claim2);
-    }, origin);
-    return claim2;
-  }
-  removeClaim(id2, origin) {
-    const c = this.claims.get(id2);
-    if (c) this.doc.transact(() => {
-      this.claims.delete(id2);
-    }, origin);
-    return c;
-  }
-  // ---- bus ---------------------------------------------------------------
-  messages() {
-    return this.bus.toArray();
-  }
-  lastMessages(n) {
-    const a = this.messages();
-    return a.slice(Math.max(0, a.length - n));
-  }
-  post(from2, body, origin) {
-    const msg = { ...body, id: newId("m_"), at: Date.now(), from: from2.name, fromKind: from2.kind };
-    this.doc.transact(() => {
-      this.bus.push([msg]);
-    }, origin);
-    return msg;
-  }
-  // ---- chats (human <-> own agent) ----------------------------------------
-  chat(name) {
-    let a = this.chats.get(name);
-    if (!a) {
-      a = new YArray();
-      this.doc.transact(() => {
-        this.chats.set(name, a);
-      });
-    }
-    return a;
-  }
-  say(name, item, origin) {
-    const it = { ...item, id: newId("h_"), at: Date.now() };
-    this.doc.transact(() => {
-      this.chat(name).push([it]);
-    }, origin);
-    return it;
-  }
+// node_modules/readdirp/esm/index.js
+import { stat, lstat, readdir, realpath } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { resolve as presolve, relative as prelative, join as pjoin, sep as psep } from "node:path";
+var EntryTypes = {
+  FILE_TYPE: "files",
+  DIR_TYPE: "directories",
+  FILE_DIR_TYPE: "files_directories",
+  EVERYTHING_TYPE: "all"
 };
-
-// packages/shared/src/format.ts
-function formatMsg(m) {
-  const who = displayName({ name: m.from, kind: m.fromKind });
-  const to = m.to ? ` \u2192 ${m.to}'s agent` : "";
-  switch (m.type) {
-    case "claim":
-      return `${who} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}`;
-    case "release":
-      return `${who} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}`;
-    case "changed":
-      return `${who} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}`;
-    case "question":
-      return `${who}${to} asks: ${m.text}`;
-    case "answer":
-      return `${who}${to} answers: ${m.text}`;
-    case "conflict":
-      return `CONFLICT on ${m.path}: ${m.text}`;
-    case "note":
-      return `${who}: ${m.text}`;
+var defaultOptions = {
+  root: ".",
+  fileFilter: (_entryInfo) => true,
+  directoryFilter: (_entryInfo) => true,
+  type: EntryTypes.FILE_TYPE,
+  lstat: false,
+  depth: 2147483648,
+  alwaysStat: false,
+  highWaterMark: 4096
+};
+Object.freeze(defaultOptions);
+var RECURSIVE_ERROR_CODE = "READDIRP_RECURSIVE_ERROR";
+var NORMAL_FLOW_ERRORS = /* @__PURE__ */ new Set(["ENOENT", "EPERM", "EACCES", "ELOOP", RECURSIVE_ERROR_CODE]);
+var ALL_TYPES = [
+  EntryTypes.DIR_TYPE,
+  EntryTypes.EVERYTHING_TYPE,
+  EntryTypes.FILE_DIR_TYPE,
+  EntryTypes.FILE_TYPE
+];
+var DIR_TYPES = /* @__PURE__ */ new Set([
+  EntryTypes.DIR_TYPE,
+  EntryTypes.EVERYTHING_TYPE,
+  EntryTypes.FILE_DIR_TYPE
+]);
+var FILE_TYPES = /* @__PURE__ */ new Set([
+  EntryTypes.EVERYTHING_TYPE,
+  EntryTypes.FILE_DIR_TYPE,
+  EntryTypes.FILE_TYPE
+]);
+var isNormalFlowError = (error2) => NORMAL_FLOW_ERRORS.has(error2.code);
+var wantBigintFsStats = process.platform === "win32";
+var emptyFn = (_entryInfo) => true;
+var normalizeFilter = (filter) => {
+  if (filter === void 0)
+    return emptyFn;
+  if (typeof filter === "function")
+    return filter;
+  if (typeof filter === "string") {
+    const fl = filter.trim();
+    return (entry) => entry.basename === fl;
   }
-}
-function withLineNumbers(text) {
-  const lines = text.split("\n");
-  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-  const w = String(lines.length).length;
-  return lines.map((l, i) => `${String(i + 1).padStart(w)}| ${l}`).join("\n");
-}
-
-// packages/room-mcp/src/tools.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-// node_modules/diff/libesm/diff/base.js
-var Diff = class {
-  diff(oldStr, newStr, options = {}) {
-    let callback;
-    if (typeof options === "function") {
-      callback = options;
-      options = {};
-    } else if ("callback" in options) {
-      callback = options.callback;
-    }
-    const oldString = this.castInput(oldStr, options);
-    const newString = this.castInput(newStr, options);
-    const oldTokens = this.removeEmpty(this.tokenize(oldString, options));
-    const newTokens = this.removeEmpty(this.tokenize(newString, options));
-    return this.diffWithOptionsObj(oldTokens, newTokens, options, callback);
+  if (Array.isArray(filter)) {
+    const trItems = filter.map((item) => item.trim());
+    return (entry) => trItems.some((f) => entry.basename === f);
   }
-  diffWithOptionsObj(oldTokens, newTokens, options, callback) {
-    var _a3;
-    const done = (value) => {
-      value = this.postProcess(value, options);
-      if (callback) {
-        setTimeout(function() {
-          callback(value);
-        }, 0);
-        return void 0;
-      } else {
-        return value;
-      }
-    };
-    const newLen = newTokens.length, oldLen = oldTokens.length;
-    let editLength = 1;
-    let maxEditLength = newLen + oldLen;
-    if (options.maxEditLength != null) {
-      maxEditLength = Math.min(maxEditLength, options.maxEditLength);
+  return emptyFn;
+};
+var ReaddirpStream = class extends Readable {
+  constructor(options = {}) {
+    super({
+      objectMode: true,
+      autoDestroy: true,
+      highWaterMark: options.highWaterMark
+    });
+    const opts = { ...defaultOptions, ...options };
+    const { root, type } = opts;
+    this._fileFilter = normalizeFilter(opts.fileFilter);
+    this._directoryFilter = normalizeFilter(opts.directoryFilter);
+    const statMethod = opts.lstat ? lstat : stat;
+    if (wantBigintFsStats) {
+      this._stat = (path2) => statMethod(path2, { bigint: true });
+    } else {
+      this._stat = statMethod;
     }
-    const maxExecutionTime = (_a3 = options.timeout) !== null && _a3 !== void 0 ? _a3 : Infinity;
-    const abortAfterTimestamp = Date.now() + maxExecutionTime;
-    const bestPath = [{ oldPos: -1, lastComponent: void 0 }];
-    let newPos = this.extractCommon(bestPath[0], newTokens, oldTokens, 0, options);
-    if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
-      return done(this.buildValues(bestPath[0].lastComponent, newTokens, oldTokens));
-    }
-    let minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
-    const execEditLength = () => {
-      for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
-        let basePath;
-        const removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
-        if (removePath) {
-          bestPath[diagonalPath - 1] = void 0;
-        }
-        let canAdd = false;
-        if (addPath) {
-          const addPathNewPos = addPath.oldPos - diagonalPath;
-          canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
-        }
-        const canRemove = removePath && removePath.oldPos + 1 < oldLen;
-        if (!canAdd && !canRemove) {
-          bestPath[diagonalPath] = void 0;
-          continue;
-        }
-        if (!canRemove || canAdd && removePath.oldPos < addPath.oldPos) {
-          basePath = this.addToPath(addPath, true, false, 0, options);
+    this._maxDepth = opts.depth ?? defaultOptions.depth;
+    this._wantsDir = type ? DIR_TYPES.has(type) : false;
+    this._wantsFile = type ? FILE_TYPES.has(type) : false;
+    this._wantsEverything = type === EntryTypes.EVERYTHING_TYPE;
+    this._root = presolve(root);
+    this._isDirent = !opts.alwaysStat;
+    this._statsProp = this._isDirent ? "dirent" : "stats";
+    this._rdOptions = { encoding: "utf8", withFileTypes: this._isDirent };
+    this.parents = [this._exploreDir(root, 1)];
+    this.reading = false;
+    this.parent = void 0;
+  }
+  async _read(batch) {
+    if (this.reading)
+      return;
+    this.reading = true;
+    try {
+      while (!this.destroyed && batch > 0) {
+        const par = this.parent;
+        const fil = par && par.files;
+        if (fil && fil.length > 0) {
+          const { path: path2, depth } = par;
+          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path2));
+          const awaited = await Promise.all(slice);
+          for (const entry of awaited) {
+            if (!entry)
+              continue;
+            if (this.destroyed)
+              return;
+            const entryType = await this._getEntryType(entry);
+            if (entryType === "directory" && this._directoryFilter(entry)) {
+              if (depth <= this._maxDepth) {
+                this.parents.push(this._exploreDir(entry.fullPath, depth + 1));
+              }
+              if (this._wantsDir) {
+                this.push(entry);
+                batch--;
+              }
+            } else if ((entryType === "file" || this._includeAsFile(entry)) && this._fileFilter(entry)) {
+              if (this._wantsFile) {
+                this.push(entry);
+                batch--;
+              }
+            }
+          }
         } else {
-          basePath = this.addToPath(removePath, false, true, 1, options);
-        }
-        newPos = this.extractCommon(basePath, newTokens, oldTokens, diagonalPath, options);
-        if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
-          return done(this.buildValues(basePath.lastComponent, newTokens, oldTokens)) || true;
-        } else {
-          bestPath[diagonalPath] = basePath;
-          if (basePath.oldPos + 1 >= oldLen) {
-            maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
+          const parent = this.parents.pop();
+          if (!parent) {
+            this.push(null);
+            break;
           }
-          if (newPos + 1 >= newLen) {
-            minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
-          }
+          this.parent = await parent;
+          if (this.destroyed)
+            return;
         }
       }
-      editLength++;
-    };
-    if (callback) {
-      (function exec2() {
-        setTimeout(function() {
-          if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
-            return callback(void 0);
-          }
-          if (!execEditLength()) {
-            exec2();
-          }
-        }, 0);
-      })();
-    } else {
-      while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
-        const ret = execEditLength();
-        if (ret) {
-          return ret;
-        }
-      }
+    } catch (error2) {
+      this.destroy(error2);
+    } finally {
+      this.reading = false;
     }
   }
-  addToPath(path, added, removed, oldPosInc, options) {
-    const last2 = path.lastComponent;
-    if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
-      return {
-        oldPos: path.oldPos + oldPosInc,
-        lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
-      };
-    } else {
-      return {
-        oldPos: path.oldPos + oldPosInc,
-        lastComponent: { count: 1, added, removed, previousComponent: last2 }
-      };
+  async _exploreDir(path2, depth) {
+    let files;
+    try {
+      files = await readdir(path2, this._rdOptions);
+    } catch (error2) {
+      this._onError(error2);
     }
+    return { files, depth, path: path2 };
   }
-  extractCommon(basePath, newTokens, oldTokens, diagonalPath, options) {
-    const newLen = newTokens.length, oldLen = oldTokens.length;
-    let oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
-    while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldTokens[oldPos + 1], newTokens[newPos + 1], options)) {
-      newPos++;
-      oldPos++;
-      commonCount++;
-      if (options.oneChangePerToken) {
-        basePath.lastComponent = { count: 1, previousComponent: basePath.lastComponent, added: false, removed: false };
-      }
-    }
-    if (commonCount && !options.oneChangePerToken) {
-      basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
-    }
-    basePath.oldPos = oldPos;
-    return newPos;
-  }
-  equals(left, right, options) {
-    if (options.comparator) {
-      return options.comparator(left, right);
-    } else {
-      return left === right || !!options.ignoreCase && left.toLowerCase() === right.toLowerCase();
-    }
-  }
-  removeEmpty(array2) {
-    const ret = [];
-    for (let i = 0; i < array2.length; i++) {
-      if (array2[i]) {
-        ret.push(array2[i]);
-      }
-    }
-    return ret;
-  }
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  castInput(value, options) {
-    return value;
-  }
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  tokenize(value, options) {
-    return Array.from(value);
-  }
-  join(chars) {
-    return chars.join("");
-  }
-  postProcess(changeObjects, options) {
-    return changeObjects;
-  }
-  get useLongestToken() {
-    return false;
-  }
-  buildValues(lastComponent, newTokens, oldTokens) {
-    const components = [];
-    let nextComponent;
-    while (lastComponent) {
-      components.push(lastComponent);
-      nextComponent = lastComponent.previousComponent;
-      delete lastComponent.previousComponent;
-      lastComponent = nextComponent;
-    }
-    components.reverse();
-    const componentLen = components.length;
-    let componentPos = 0, newPos = 0, oldPos = 0;
-    for (; componentPos < componentLen; componentPos++) {
-      const component = components[componentPos];
-      if (!component.removed) {
-        if (!component.added && this.useLongestToken) {
-          let value = newTokens.slice(newPos, newPos + component.count);
-          value = value.map(function(value2, i) {
-            const oldValue = oldTokens[oldPos + i];
-            return oldValue.length > value2.length ? oldValue : value2;
-          });
-          component.value = this.join(value);
-        } else {
-          component.value = this.join(newTokens.slice(newPos, newPos + component.count));
-        }
-        newPos += component.count;
-        if (!component.added) {
-          oldPos += component.count;
-        }
-      } else {
-        component.value = this.join(oldTokens.slice(oldPos, oldPos + component.count));
-        oldPos += component.count;
-      }
-    }
-    return components;
-  }
-};
-
-// node_modules/diff/libesm/diff/line.js
-var LineDiff = class extends Diff {
-  constructor() {
-    super(...arguments);
-    this.tokenize = tokenize;
-  }
-  equals(left, right, options) {
-    if (options.ignoreWhitespace) {
-      if (!options.newlineIsToken || !left.includes("\n")) {
-        left = left.trim();
-      }
-      if (!options.newlineIsToken || !right.includes("\n")) {
-        right = right.trim();
-      }
-    } else if (options.ignoreNewlineAtEof && !options.newlineIsToken) {
-      if (left.endsWith("\n")) {
-        left = left.slice(0, -1);
-      }
-      if (right.endsWith("\n")) {
-        right = right.slice(0, -1);
-      }
-    }
-    return super.equals(left, right, options);
-  }
-};
-var lineDiff = new LineDiff();
-function diffLines(oldStr, newStr, options) {
-  return lineDiff.diff(oldStr, newStr, options);
-}
-function tokenize(value, options) {
-  if (options.stripTrailingCr) {
-    value = value.replace(/\r\n/g, "\n");
-  }
-  const retLines = [], linesAndNewlines = value.split(/(\n|\r\n)/);
-  if (!linesAndNewlines[linesAndNewlines.length - 1]) {
-    linesAndNewlines.pop();
-  }
-  for (let i = 0; i < linesAndNewlines.length; i++) {
-    const line = linesAndNewlines[i];
-    if (i % 2 && !options.newlineIsToken) {
-      retLines[retLines.length - 1] += line;
-    } else {
-      retLines.push(line);
-    }
-  }
-  return retLines;
-}
-
-// node_modules/diff/libesm/patch/create.js
-var INCLUDE_HEADERS = {
-  includeIndex: true,
-  includeUnderline: true,
-  includeFileHeaders: true
-};
-function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
-  let optionsObj;
-  if (!options) {
-    optionsObj = {};
-  } else if (typeof options === "function") {
-    optionsObj = { callback: options };
-  } else {
-    optionsObj = options;
-  }
-  if (typeof optionsObj.context === "undefined") {
-    optionsObj.context = 4;
-  }
-  const context = optionsObj.context;
-  if (optionsObj.newlineIsToken) {
-    throw new Error("newlineIsToken may not be used with patch-generation functions, only with diffing functions");
-  }
-  if (!optionsObj.callback) {
-    return diffLinesResultToPatch(diffLines(oldStr, newStr, optionsObj));
-  } else {
-    const { callback } = optionsObj;
-    diffLines(oldStr, newStr, Object.assign(Object.assign({}, optionsObj), { callback: (diff) => {
-      const patch = diffLinesResultToPatch(diff);
-      callback(patch);
-    } }));
-  }
-  function diffLinesResultToPatch(diff) {
-    if (!diff) {
+  async _formatEntry(dirent, path2) {
+    let entry;
+    const basename3 = this._isDirent ? dirent.name : dirent;
+    try {
+      const fullPath = presolve(pjoin(path2, basename3));
+      entry = { path: prelative(this._root, fullPath), fullPath, basename: basename3 };
+      entry[this._statsProp] = this._isDirent ? dirent : await this._stat(fullPath);
+    } catch (err) {
+      this._onError(err);
       return;
     }
-    diff.push({ value: "", lines: [] });
-    function contextLines(lines) {
-      return lines.map(function(entry) {
-        return " " + entry;
-      });
+    return entry;
+  }
+  _onError(err) {
+    if (isNormalFlowError(err) && !this.destroyed) {
+      this.emit("warn", err);
+    } else {
+      this.destroy(err);
     }
-    const hunks = [];
-    let oldRangeStart = 0, newRangeStart = 0, curRange = [], oldLine = 1, newLine = 1;
-    for (let i = 0; i < diff.length; i++) {
-      const current = diff[i], lines = current.lines || splitLines(current.value);
-      current.lines = lines;
-      if (current.added || current.removed) {
-        if (!oldRangeStart) {
-          const prev = diff[i - 1];
-          oldRangeStart = oldLine;
-          newRangeStart = newLine;
-          if (prev) {
-            curRange = context > 0 ? contextLines(prev.lines.slice(-context)) : [];
-            oldRangeStart -= curRange.length;
-            newRangeStart -= curRange.length;
+  }
+  async _getEntryType(entry) {
+    if (!entry && this._statsProp in entry) {
+      return "";
+    }
+    const stats = entry[this._statsProp];
+    if (stats.isFile())
+      return "file";
+    if (stats.isDirectory())
+      return "directory";
+    if (stats && stats.isSymbolicLink()) {
+      const full = entry.fullPath;
+      try {
+        const entryRealPath = await realpath(full);
+        const entryRealPathStats = await lstat(entryRealPath);
+        if (entryRealPathStats.isFile()) {
+          return "file";
+        }
+        if (entryRealPathStats.isDirectory()) {
+          const len = entryRealPath.length;
+          if (full.startsWith(entryRealPath) && full.substr(len, 1) === psep) {
+            const recursiveError = new Error(`Circular symlink detected: "${full}" points to "${entryRealPath}"`);
+            recursiveError.code = RECURSIVE_ERROR_CODE;
+            return this._onError(recursiveError);
           }
+          return "directory";
         }
-        for (const line of lines) {
-          curRange.push((current.added ? "+" : "-") + line);
-        }
-        if (current.added) {
-          newLine += lines.length;
-        } else {
-          oldLine += lines.length;
+      } catch (error2) {
+        this._onError(error2);
+        return "";
+      }
+    }
+  }
+  _includeAsFile(entry) {
+    const stats = entry && entry[this._statsProp];
+    return stats && this._wantsEverything && !stats.isDirectory();
+  }
+};
+function readdirp(root, options = {}) {
+  let type = options.entryType || options.type;
+  if (type === "both")
+    type = EntryTypes.FILE_DIR_TYPE;
+  if (type)
+    options.type = type;
+  if (!root) {
+    throw new Error("readdirp: root argument is required. Usage: readdirp(root, options)");
+  } else if (typeof root !== "string") {
+    throw new TypeError("readdirp: root argument must be a string. Usage: readdirp(root, options)");
+  } else if (type && !ALL_TYPES.includes(type)) {
+    throw new Error(`readdirp: Invalid type passed. Use one of ${ALL_TYPES.join(", ")}`);
+  }
+  options.root = root;
+  return new ReaddirpStream(options);
+}
+
+// node_modules/chokidar/esm/handler.js
+import { watchFile, unwatchFile, watch as fs_watch } from "fs";
+import { open as open2, stat as stat2, lstat as lstat2, realpath as fsrealpath } from "fs/promises";
+import * as sysPath from "path";
+import { type as osType } from "os";
+var STR_DATA = "data";
+var STR_END = "end";
+var STR_CLOSE = "close";
+var EMPTY_FN = () => {
+};
+var pl = process.platform;
+var isWindows = pl === "win32";
+var isMacos = pl === "darwin";
+var isLinux = pl === "linux";
+var isFreeBSD = pl === "freebsd";
+var isIBMi = osType() === "OS400";
+var EVENTS = {
+  ALL: "all",
+  READY: "ready",
+  ADD: "add",
+  CHANGE: "change",
+  ADD_DIR: "addDir",
+  UNLINK: "unlink",
+  UNLINK_DIR: "unlinkDir",
+  RAW: "raw",
+  ERROR: "error"
+};
+var EV = EVENTS;
+var THROTTLE_MODE_WATCH = "watch";
+var statMethods = { lstat: lstat2, stat: stat2 };
+var KEY_LISTENERS = "listeners";
+var KEY_ERR = "errHandlers";
+var KEY_RAW = "rawEmitters";
+var HANDLER_KEYS = [KEY_LISTENERS, KEY_ERR, KEY_RAW];
+var binaryExtensions = /* @__PURE__ */ new Set([
+  "3dm",
+  "3ds",
+  "3g2",
+  "3gp",
+  "7z",
+  "a",
+  "aac",
+  "adp",
+  "afdesign",
+  "afphoto",
+  "afpub",
+  "ai",
+  "aif",
+  "aiff",
+  "alz",
+  "ape",
+  "apk",
+  "appimage",
+  "ar",
+  "arj",
+  "asf",
+  "au",
+  "avi",
+  "bak",
+  "baml",
+  "bh",
+  "bin",
+  "bk",
+  "bmp",
+  "btif",
+  "bz2",
+  "bzip2",
+  "cab",
+  "caf",
+  "cgm",
+  "class",
+  "cmx",
+  "cpio",
+  "cr2",
+  "cur",
+  "dat",
+  "dcm",
+  "deb",
+  "dex",
+  "djvu",
+  "dll",
+  "dmg",
+  "dng",
+  "doc",
+  "docm",
+  "docx",
+  "dot",
+  "dotm",
+  "dra",
+  "DS_Store",
+  "dsk",
+  "dts",
+  "dtshd",
+  "dvb",
+  "dwg",
+  "dxf",
+  "ecelp4800",
+  "ecelp7470",
+  "ecelp9600",
+  "egg",
+  "eol",
+  "eot",
+  "epub",
+  "exe",
+  "f4v",
+  "fbs",
+  "fh",
+  "fla",
+  "flac",
+  "flatpak",
+  "fli",
+  "flv",
+  "fpx",
+  "fst",
+  "fvt",
+  "g3",
+  "gh",
+  "gif",
+  "graffle",
+  "gz",
+  "gzip",
+  "h261",
+  "h263",
+  "h264",
+  "icns",
+  "ico",
+  "ief",
+  "img",
+  "ipa",
+  "iso",
+  "jar",
+  "jpeg",
+  "jpg",
+  "jpgv",
+  "jpm",
+  "jxr",
+  "key",
+  "ktx",
+  "lha",
+  "lib",
+  "lvp",
+  "lz",
+  "lzh",
+  "lzma",
+  "lzo",
+  "m3u",
+  "m4a",
+  "m4v",
+  "mar",
+  "mdi",
+  "mht",
+  "mid",
+  "midi",
+  "mj2",
+  "mka",
+  "mkv",
+  "mmr",
+  "mng",
+  "mobi",
+  "mov",
+  "movie",
+  "mp3",
+  "mp4",
+  "mp4a",
+  "mpeg",
+  "mpg",
+  "mpga",
+  "mxu",
+  "nef",
+  "npx",
+  "numbers",
+  "nupkg",
+  "o",
+  "odp",
+  "ods",
+  "odt",
+  "oga",
+  "ogg",
+  "ogv",
+  "otf",
+  "ott",
+  "pages",
+  "pbm",
+  "pcx",
+  "pdb",
+  "pdf",
+  "pea",
+  "pgm",
+  "pic",
+  "png",
+  "pnm",
+  "pot",
+  "potm",
+  "potx",
+  "ppa",
+  "ppam",
+  "ppm",
+  "pps",
+  "ppsm",
+  "ppsx",
+  "ppt",
+  "pptm",
+  "pptx",
+  "psd",
+  "pya",
+  "pyc",
+  "pyo",
+  "pyv",
+  "qt",
+  "rar",
+  "ras",
+  "raw",
+  "resources",
+  "rgb",
+  "rip",
+  "rlc",
+  "rmf",
+  "rmvb",
+  "rpm",
+  "rtf",
+  "rz",
+  "s3m",
+  "s7z",
+  "scpt",
+  "sgi",
+  "shar",
+  "snap",
+  "sil",
+  "sketch",
+  "slk",
+  "smv",
+  "snk",
+  "so",
+  "stl",
+  "suo",
+  "sub",
+  "swf",
+  "tar",
+  "tbz",
+  "tbz2",
+  "tga",
+  "tgz",
+  "thmx",
+  "tif",
+  "tiff",
+  "tlz",
+  "ttc",
+  "ttf",
+  "txz",
+  "udf",
+  "uvh",
+  "uvi",
+  "uvm",
+  "uvp",
+  "uvs",
+  "uvu",
+  "viv",
+  "vob",
+  "war",
+  "wav",
+  "wax",
+  "wbmp",
+  "wdp",
+  "weba",
+  "webm",
+  "webp",
+  "whl",
+  "wim",
+  "wm",
+  "wma",
+  "wmv",
+  "wmx",
+  "woff",
+  "woff2",
+  "wrm",
+  "wvx",
+  "xbm",
+  "xif",
+  "xla",
+  "xlam",
+  "xls",
+  "xlsb",
+  "xlsm",
+  "xlsx",
+  "xlt",
+  "xltm",
+  "xltx",
+  "xm",
+  "xmind",
+  "xpi",
+  "xpm",
+  "xwd",
+  "xz",
+  "z",
+  "zip",
+  "zipx"
+]);
+var isBinaryPath = (filePath) => binaryExtensions.has(sysPath.extname(filePath).slice(1).toLowerCase());
+var foreach = (val, fn) => {
+  if (val instanceof Set) {
+    val.forEach(fn);
+  } else {
+    fn(val);
+  }
+};
+var addAndConvert = (main2, prop, item) => {
+  let container = main2[prop];
+  if (!(container instanceof Set)) {
+    main2[prop] = container = /* @__PURE__ */ new Set([container]);
+  }
+  container.add(item);
+};
+var clearItem = (cont) => (key) => {
+  const set = cont[key];
+  if (set instanceof Set) {
+    set.clear();
+  } else {
+    delete cont[key];
+  }
+};
+var delFromSet = (main2, prop, item) => {
+  const container = main2[prop];
+  if (container instanceof Set) {
+    container.delete(item);
+  } else if (container === item) {
+    delete main2[prop];
+  }
+};
+var isEmptySet = (val) => val instanceof Set ? val.size === 0 : !val;
+var FsWatchInstances = /* @__PURE__ */ new Map();
+function createFsWatchInstance(path2, options, listener, errHandler, emitRaw) {
+  const handleEvent = (rawEvent, evPath) => {
+    listener(path2);
+    emitRaw(rawEvent, evPath, { watchedPath: path2 });
+    if (evPath && path2 !== evPath) {
+      fsWatchBroadcast(sysPath.resolve(path2, evPath), KEY_LISTENERS, sysPath.join(path2, evPath));
+    }
+  };
+  try {
+    return fs_watch(path2, {
+      persistent: options.persistent
+    }, handleEvent);
+  } catch (error2) {
+    errHandler(error2);
+    return void 0;
+  }
+}
+var fsWatchBroadcast = (fullPath, listenerType, val1, val2, val3) => {
+  const cont = FsWatchInstances.get(fullPath);
+  if (!cont)
+    return;
+  foreach(cont[listenerType], (listener) => {
+    listener(val1, val2, val3);
+  });
+};
+var setFsWatchListener = (path2, fullPath, options, handlers) => {
+  const { listener, errHandler, rawEmitter } = handlers;
+  let cont = FsWatchInstances.get(fullPath);
+  let watcher;
+  if (!options.persistent) {
+    watcher = createFsWatchInstance(path2, options, listener, errHandler, rawEmitter);
+    if (!watcher)
+      return;
+    return watcher.close.bind(watcher);
+  }
+  if (cont) {
+    addAndConvert(cont, KEY_LISTENERS, listener);
+    addAndConvert(cont, KEY_ERR, errHandler);
+    addAndConvert(cont, KEY_RAW, rawEmitter);
+  } else {
+    watcher = createFsWatchInstance(
+      path2,
+      options,
+      fsWatchBroadcast.bind(null, fullPath, KEY_LISTENERS),
+      errHandler,
+      // no need to use broadcast here
+      fsWatchBroadcast.bind(null, fullPath, KEY_RAW)
+    );
+    if (!watcher)
+      return;
+    watcher.on(EV.ERROR, async (error2) => {
+      const broadcastErr = fsWatchBroadcast.bind(null, fullPath, KEY_ERR);
+      if (cont)
+        cont.watcherUnusable = true;
+      if (isWindows && error2.code === "EPERM") {
+        try {
+          const fd = await open2(path2, "r");
+          await fd.close();
+          broadcastErr(error2);
+        } catch (err) {
         }
       } else {
-        if (oldRangeStart) {
-          if (lines.length <= context * 2 && i < diff.length - 2) {
-            for (const line of contextLines(lines)) {
-              curRange.push(line);
-            }
+        broadcastErr(error2);
+      }
+    });
+    cont = {
+      listeners: listener,
+      errHandlers: errHandler,
+      rawEmitters: rawEmitter,
+      watcher
+    };
+    FsWatchInstances.set(fullPath, cont);
+  }
+  return () => {
+    delFromSet(cont, KEY_LISTENERS, listener);
+    delFromSet(cont, KEY_ERR, errHandler);
+    delFromSet(cont, KEY_RAW, rawEmitter);
+    if (isEmptySet(cont.listeners)) {
+      cont.watcher.close();
+      FsWatchInstances.delete(fullPath);
+      HANDLER_KEYS.forEach(clearItem(cont));
+      cont.watcher = void 0;
+      Object.freeze(cont);
+    }
+  };
+};
+var FsWatchFileInstances = /* @__PURE__ */ new Map();
+var setFsWatchFileListener = (path2, fullPath, options, handlers) => {
+  const { listener, rawEmitter } = handlers;
+  let cont = FsWatchFileInstances.get(fullPath);
+  const copts = cont && cont.options;
+  if (copts && (copts.persistent < options.persistent || copts.interval > options.interval)) {
+    unwatchFile(fullPath);
+    cont = void 0;
+  }
+  if (cont) {
+    addAndConvert(cont, KEY_LISTENERS, listener);
+    addAndConvert(cont, KEY_RAW, rawEmitter);
+  } else {
+    cont = {
+      listeners: listener,
+      rawEmitters: rawEmitter,
+      options,
+      watcher: watchFile(fullPath, options, (curr, prev) => {
+        foreach(cont.rawEmitters, (rawEmitter2) => {
+          rawEmitter2(EV.CHANGE, fullPath, { curr, prev });
+        });
+        const currmtime = curr.mtimeMs;
+        if (curr.size !== prev.size || currmtime > prev.mtimeMs || currmtime === 0) {
+          foreach(cont.listeners, (listener2) => listener2(path2, curr));
+        }
+      })
+    };
+    FsWatchFileInstances.set(fullPath, cont);
+  }
+  return () => {
+    delFromSet(cont, KEY_LISTENERS, listener);
+    delFromSet(cont, KEY_RAW, rawEmitter);
+    if (isEmptySet(cont.listeners)) {
+      FsWatchFileInstances.delete(fullPath);
+      unwatchFile(fullPath);
+      cont.options = cont.watcher = void 0;
+      Object.freeze(cont);
+    }
+  };
+};
+var NodeFsHandler = class {
+  constructor(fsW) {
+    this.fsw = fsW;
+    this._boundHandleError = (error2) => fsW._handleError(error2);
+  }
+  /**
+   * Watch file for changes with fs_watchFile or fs_watch.
+   * @param path to file or dir
+   * @param listener on fs change
+   * @returns closer for the watcher instance
+   */
+  _watchWithNodeFs(path2, listener) {
+    const opts = this.fsw.options;
+    const directory = sysPath.dirname(path2);
+    const basename3 = sysPath.basename(path2);
+    const parent = this.fsw._getWatchedDir(directory);
+    parent.add(basename3);
+    const absolutePath = sysPath.resolve(path2);
+    const options = {
+      persistent: opts.persistent
+    };
+    if (!listener)
+      listener = EMPTY_FN;
+    let closer;
+    if (opts.usePolling) {
+      const enableBin = opts.interval !== opts.binaryInterval;
+      options.interval = enableBin && isBinaryPath(basename3) ? opts.binaryInterval : opts.interval;
+      closer = setFsWatchFileListener(path2, absolutePath, options, {
+        listener,
+        rawEmitter: this.fsw._emitRaw
+      });
+    } else {
+      closer = setFsWatchListener(path2, absolutePath, options, {
+        listener,
+        errHandler: this._boundHandleError,
+        rawEmitter: this.fsw._emitRaw
+      });
+    }
+    return closer;
+  }
+  /**
+   * Watch a file and emit add event if warranted.
+   * @returns closer for the watcher instance
+   */
+  _handleFile(file, stats, initialAdd) {
+    if (this.fsw.closed) {
+      return;
+    }
+    const dirname4 = sysPath.dirname(file);
+    const basename3 = sysPath.basename(file);
+    const parent = this.fsw._getWatchedDir(dirname4);
+    let prevStats = stats;
+    if (parent.has(basename3))
+      return;
+    const listener = async (path2, newStats) => {
+      if (!this.fsw._throttle(THROTTLE_MODE_WATCH, file, 5))
+        return;
+      if (!newStats || newStats.mtimeMs === 0) {
+        try {
+          const newStats2 = await stat2(file);
+          if (this.fsw.closed)
+            return;
+          const at = newStats2.atimeMs;
+          const mt = newStats2.mtimeMs;
+          if (!at || at <= mt || mt !== prevStats.mtimeMs) {
+            this.fsw._emit(EV.CHANGE, file, newStats2);
+          }
+          if ((isMacos || isLinux || isFreeBSD) && prevStats.ino !== newStats2.ino) {
+            this.fsw._closeFile(path2);
+            prevStats = newStats2;
+            const closer2 = this._watchWithNodeFs(file, listener);
+            if (closer2)
+              this.fsw._addPathCloser(path2, closer2);
           } else {
-            const contextSize = Math.min(lines.length, context);
-            for (const line of contextLines(lines.slice(0, contextSize))) {
-              curRange.push(line);
-            }
-            const hunk = {
-              oldStart: oldRangeStart,
-              oldLines: oldLine - oldRangeStart + contextSize,
-              newStart: newRangeStart,
-              newLines: newLine - newRangeStart + contextSize,
-              lines: curRange
-            };
-            hunks.push(hunk);
-            oldRangeStart = 0;
-            newRangeStart = 0;
-            curRange = [];
+            prevStats = newStats2;
           }
+        } catch (error2) {
+          this.fsw._remove(dirname4, basename3);
         }
-        oldLine += lines.length;
-        newLine += lines.length;
-      }
-    }
-    for (const hunk of hunks) {
-      for (let i = 0; i < hunk.lines.length; i++) {
-        if (hunk.lines[i].endsWith("\n")) {
-          hunk.lines[i] = hunk.lines[i].slice(0, -1);
-        } else {
-          hunk.lines.splice(i + 1, 0, "\\ No newline at end of file");
-          i++;
+      } else if (parent.has(basename3)) {
+        const at = newStats.atimeMs;
+        const mt = newStats.mtimeMs;
+        if (!at || at <= mt || mt !== prevStats.mtimeMs) {
+          this.fsw._emit(EV.CHANGE, file, newStats);
         }
+        prevStats = newStats;
       }
-    }
-    return {
-      oldFileName,
-      newFileName,
-      oldHeader,
-      newHeader,
-      hunks
     };
-  }
-}
-function formatPatch(patch, headerOptions) {
-  if (!headerOptions) {
-    headerOptions = INCLUDE_HEADERS;
-  }
-  if (Array.isArray(patch)) {
-    if (patch.length > 1 && !headerOptions.includeFileHeaders) {
-      throw new Error("Cannot omit file headers on a multi-file patch. (The result would be unparseable; how would a tool trying to apply the patch know which changes are to which file?)");
+    const closer = this._watchWithNodeFs(file, listener);
+    if (!(initialAdd && this.fsw.options.ignoreInitial) && this.fsw._isntIgnored(file)) {
+      if (!this.fsw._throttle(EV.ADD, file, 0))
+        return;
+      this.fsw._emit(EV.ADD, file, stats);
     }
-    return patch.map((p) => formatPatch(p, headerOptions)).join("\n");
+    return closer;
   }
-  const ret = [];
-  if (headerOptions.includeIndex && patch.oldFileName == patch.newFileName) {
-    ret.push("Index: " + patch.oldFileName);
-  }
-  if (headerOptions.includeUnderline) {
-    ret.push("===================================================================");
-  }
-  if (headerOptions.includeFileHeaders) {
-    ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
-    ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
-  }
-  for (let i = 0; i < patch.hunks.length; i++) {
-    const hunk = patch.hunks[i];
-    if (hunk.oldLines === 0) {
-      hunk.oldStart -= 1;
-    }
-    if (hunk.newLines === 0) {
-      hunk.newStart -= 1;
-    }
-    ret.push("@@ -" + hunk.oldStart + "," + hunk.oldLines + " +" + hunk.newStart + "," + hunk.newLines + " @@");
-    for (const line of hunk.lines) {
-      ret.push(line);
-    }
-  }
-  return ret.join("\n") + "\n";
-}
-function createTwoFilesPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
-  if (typeof options === "function") {
-    options = { callback: options };
-  }
-  if (!(options === null || options === void 0 ? void 0 : options.callback)) {
-    const patchObj = structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options);
-    if (!patchObj) {
+  /**
+   * Handle symlinks encountered while reading a dir.
+   * @param entry returned by readdirp
+   * @param directory path of dir being read
+   * @param path of this item
+   * @param item basename of this item
+   * @returns true if no more processing is needed for this entry.
+   */
+  async _handleSymlink(entry, directory, path2, item) {
+    if (this.fsw.closed) {
       return;
     }
-    return formatPatch(patchObj, options === null || options === void 0 ? void 0 : options.headerOptions);
-  } else {
-    const { callback } = options;
-    structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, Object.assign(Object.assign({}, options), { callback: (patchObj) => {
-      if (!patchObj) {
-        callback(void 0);
-      } else {
-        callback(formatPatch(patchObj, options.headerOptions));
+    const full = entry.fullPath;
+    const dir = this.fsw._getWatchedDir(directory);
+    if (!this.fsw.options.followSymlinks) {
+      this.fsw._incrReadyCount();
+      let linkPath;
+      try {
+        linkPath = await fsrealpath(path2);
+      } catch (e) {
+        this.fsw._emitReady();
+        return true;
       }
-    } }));
+      if (this.fsw.closed)
+        return;
+      if (dir.has(item)) {
+        if (this.fsw._symlinkPaths.get(full) !== linkPath) {
+          this.fsw._symlinkPaths.set(full, linkPath);
+          this.fsw._emit(EV.CHANGE, path2, entry.stats);
+        }
+      } else {
+        dir.add(item);
+        this.fsw._symlinkPaths.set(full, linkPath);
+        this.fsw._emit(EV.ADD, path2, entry.stats);
+      }
+      this.fsw._emitReady();
+      return true;
+    }
+    if (this.fsw._symlinkPaths.has(full)) {
+      return true;
+    }
+    this.fsw._symlinkPaths.set(full, true);
+  }
+  _handleRead(directory, initialAdd, wh, target, dir, depth, throttler) {
+    directory = sysPath.join(directory, "");
+    throttler = this.fsw._throttle("readdir", directory, 1e3);
+    if (!throttler)
+      return;
+    const previous = this.fsw._getWatchedDir(wh.path);
+    const current = /* @__PURE__ */ new Set();
+    let stream = this.fsw._readdirp(directory, {
+      fileFilter: (entry) => wh.filterPath(entry),
+      directoryFilter: (entry) => wh.filterDir(entry)
+    });
+    if (!stream)
+      return;
+    stream.on(STR_DATA, async (entry) => {
+      if (this.fsw.closed) {
+        stream = void 0;
+        return;
+      }
+      const item = entry.path;
+      let path2 = sysPath.join(directory, item);
+      current.add(item);
+      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path2, item)) {
+        return;
+      }
+      if (this.fsw.closed) {
+        stream = void 0;
+        return;
+      }
+      if (item === target || !target && !previous.has(item)) {
+        this.fsw._incrReadyCount();
+        path2 = sysPath.join(dir, sysPath.relative(dir, path2));
+        this._addToNodeFs(path2, initialAdd, wh, depth + 1);
+      }
+    }).on(EV.ERROR, this._boundHandleError);
+    return new Promise((resolve5, reject) => {
+      if (!stream)
+        return reject();
+      stream.once(STR_END, () => {
+        if (this.fsw.closed) {
+          stream = void 0;
+          return;
+        }
+        const wasThrottled = throttler ? throttler.clear() : false;
+        resolve5(void 0);
+        previous.getChildren().filter((item) => {
+          return item !== directory && !current.has(item);
+        }).forEach((item) => {
+          this.fsw._remove(directory, item);
+        });
+        stream = void 0;
+        if (wasThrottled)
+          this._handleRead(directory, false, wh, target, dir, depth, throttler);
+      });
+    });
+  }
+  /**
+   * Read directory to add / remove files from `@watched` list and re-read it on change.
+   * @param dir fs path
+   * @param stats
+   * @param initialAdd
+   * @param depth relative to user-supplied path
+   * @param target child path targeted for watch
+   * @param wh Common watch helpers for this path
+   * @param realpath
+   * @returns closer for the watcher instance.
+   */
+  async _handleDir(dir, stats, initialAdd, depth, target, wh, realpath2) {
+    const parentDir = this.fsw._getWatchedDir(sysPath.dirname(dir));
+    const tracked = parentDir.has(sysPath.basename(dir));
+    if (!(initialAdd && this.fsw.options.ignoreInitial) && !target && !tracked) {
+      this.fsw._emit(EV.ADD_DIR, dir, stats);
+    }
+    parentDir.add(sysPath.basename(dir));
+    this.fsw._getWatchedDir(dir);
+    let throttler;
+    let closer;
+    const oDepth = this.fsw.options.depth;
+    if ((oDepth == null || depth <= oDepth) && !this.fsw._symlinkPaths.has(realpath2)) {
+      if (!target) {
+        await this._handleRead(dir, initialAdd, wh, target, dir, depth, throttler);
+        if (this.fsw.closed)
+          return;
+      }
+      closer = this._watchWithNodeFs(dir, (dirPath, stats2) => {
+        if (stats2 && stats2.mtimeMs === 0)
+          return;
+        this._handleRead(dirPath, false, wh, target, dir, depth, throttler);
+      });
+    }
+    return closer;
+  }
+  /**
+   * Handle added file, directory, or glob pattern.
+   * Delegates call to _handleFile / _handleDir after checks.
+   * @param path to file or ir
+   * @param initialAdd was the file added at watch instantiation?
+   * @param priorWh depth relative to user-supplied path
+   * @param depth Child path actually targeted for watch
+   * @param target Child path actually targeted for watch
+   */
+  async _addToNodeFs(path2, initialAdd, priorWh, depth, target) {
+    const ready = this.fsw._emitReady;
+    if (this.fsw._isIgnored(path2) || this.fsw.closed) {
+      ready();
+      return false;
+    }
+    const wh = this.fsw._getWatchHelpers(path2);
+    if (priorWh) {
+      wh.filterPath = (entry) => priorWh.filterPath(entry);
+      wh.filterDir = (entry) => priorWh.filterDir(entry);
+    }
+    try {
+      const stats = await statMethods[wh.statMethod](wh.watchPath);
+      if (this.fsw.closed)
+        return;
+      if (this.fsw._isIgnored(wh.watchPath, stats)) {
+        ready();
+        return false;
+      }
+      const follow = this.fsw.options.followSymlinks;
+      let closer;
+      if (stats.isDirectory()) {
+        const absPath = sysPath.resolve(path2);
+        const targetPath = follow ? await fsrealpath(path2) : path2;
+        if (this.fsw.closed)
+          return;
+        closer = await this._handleDir(wh.watchPath, stats, initialAdd, depth, target, wh, targetPath);
+        if (this.fsw.closed)
+          return;
+        if (absPath !== targetPath && targetPath !== void 0) {
+          this.fsw._symlinkPaths.set(absPath, targetPath);
+        }
+      } else if (stats.isSymbolicLink()) {
+        const targetPath = follow ? await fsrealpath(path2) : path2;
+        if (this.fsw.closed)
+          return;
+        const parent = sysPath.dirname(wh.watchPath);
+        this.fsw._getWatchedDir(parent).add(wh.watchPath);
+        this.fsw._emit(EV.ADD, wh.watchPath, stats);
+        closer = await this._handleDir(parent, stats, initialAdd, depth, path2, wh, targetPath);
+        if (this.fsw.closed)
+          return;
+        if (targetPath !== void 0) {
+          this.fsw._symlinkPaths.set(sysPath.resolve(path2), targetPath);
+        }
+      } else {
+        closer = this._handleFile(wh.watchPath, stats, initialAdd);
+      }
+      ready();
+      if (closer)
+        this.fsw._addPathCloser(path2, closer);
+      return false;
+    } catch (error2) {
+      if (this.fsw._handleError(error2)) {
+        ready();
+        return path2;
+      }
+    }
+  }
+};
+
+// node_modules/chokidar/esm/index.js
+var SLASH = "/";
+var SLASH_SLASH = "//";
+var ONE_DOT = ".";
+var TWO_DOTS = "..";
+var STRING_TYPE = "string";
+var BACK_SLASH_RE = /\\/g;
+var DOUBLE_SLASH_RE = /\/\//;
+var DOT_RE = /\..*\.(sw[px])$|~$|\.subl.*\.tmp/;
+var REPLACER_RE = /^\.[/\\]/;
+function arrify(item) {
+  return Array.isArray(item) ? item : [item];
+}
+var isMatcherObject = (matcher) => typeof matcher === "object" && matcher !== null && !(matcher instanceof RegExp);
+function createPattern(matcher) {
+  if (typeof matcher === "function")
+    return matcher;
+  if (typeof matcher === "string")
+    return (string3) => matcher === string3;
+  if (matcher instanceof RegExp)
+    return (string3) => matcher.test(string3);
+  if (typeof matcher === "object" && matcher !== null) {
+    return (string3) => {
+      if (matcher.path === string3)
+        return true;
+      if (matcher.recursive) {
+        const relative3 = sysPath2.relative(matcher.path, string3);
+        if (!relative3) {
+          return false;
+        }
+        return !relative3.startsWith("..") && !sysPath2.isAbsolute(relative3);
+      }
+      return false;
+    };
+  }
+  return () => false;
+}
+function normalizePath(path2) {
+  if (typeof path2 !== "string")
+    throw new Error("string expected");
+  path2 = sysPath2.normalize(path2);
+  path2 = path2.replace(/\\/g, "/");
+  let prepend = false;
+  if (path2.startsWith("//"))
+    prepend = true;
+  const DOUBLE_SLASH_RE2 = /\/\//;
+  while (path2.match(DOUBLE_SLASH_RE2))
+    path2 = path2.replace(DOUBLE_SLASH_RE2, "/");
+  if (prepend)
+    path2 = "/" + path2;
+  return path2;
+}
+function matchPatterns(patterns, testString, stats) {
+  const path2 = normalizePath(testString);
+  for (let index = 0; index < patterns.length; index++) {
+    const pattern = patterns[index];
+    if (pattern(path2, stats)) {
+      return true;
+    }
+  }
+  return false;
+}
+function anymatch(matchers, testString) {
+  if (matchers == null) {
+    throw new TypeError("anymatch: specify first argument");
+  }
+  const matchersArray = arrify(matchers);
+  const patterns = matchersArray.map((matcher) => createPattern(matcher));
+  if (testString == null) {
+    return (testString2, stats) => {
+      return matchPatterns(patterns, testString2, stats);
+    };
+  }
+  return matchPatterns(patterns, testString);
+}
+var unifyPaths = (paths_) => {
+  const paths = arrify(paths_).flat();
+  if (!paths.every((p) => typeof p === STRING_TYPE)) {
+    throw new TypeError(`Non-string provided as watch path: ${paths}`);
+  }
+  return paths.map(normalizePathToUnix);
+};
+var toUnix = (string3) => {
+  let str2 = string3.replace(BACK_SLASH_RE, SLASH);
+  let prepend = false;
+  if (str2.startsWith(SLASH_SLASH)) {
+    prepend = true;
+  }
+  while (str2.match(DOUBLE_SLASH_RE)) {
+    str2 = str2.replace(DOUBLE_SLASH_RE, SLASH);
+  }
+  if (prepend) {
+    str2 = SLASH + str2;
+  }
+  return str2;
+};
+var normalizePathToUnix = (path2) => toUnix(sysPath2.normalize(toUnix(path2)));
+var normalizeIgnored = (cwd2 = "") => (path2) => {
+  if (typeof path2 === "string") {
+    return normalizePathToUnix(sysPath2.isAbsolute(path2) ? path2 : sysPath2.join(cwd2, path2));
+  } else {
+    return path2;
+  }
+};
+var getAbsolutePath = (path2, cwd2) => {
+  if (sysPath2.isAbsolute(path2)) {
+    return path2;
+  }
+  return sysPath2.join(cwd2, path2);
+};
+var EMPTY_SET = Object.freeze(/* @__PURE__ */ new Set());
+var DirEntry = class {
+  constructor(dir, removeWatcher) {
+    this.path = dir;
+    this._removeWatcher = removeWatcher;
+    this.items = /* @__PURE__ */ new Set();
+  }
+  add(item) {
+    const { items } = this;
+    if (!items)
+      return;
+    if (item !== ONE_DOT && item !== TWO_DOTS)
+      items.add(item);
+  }
+  async remove(item) {
+    const { items } = this;
+    if (!items)
+      return;
+    items.delete(item);
+    if (items.size > 0)
+      return;
+    const dir = this.path;
+    try {
+      await readdir2(dir);
+    } catch (err) {
+      if (this._removeWatcher) {
+        this._removeWatcher(sysPath2.dirname(dir), sysPath2.basename(dir));
+      }
+    }
+  }
+  has(item) {
+    const { items } = this;
+    if (!items)
+      return;
+    return items.has(item);
+  }
+  getChildren() {
+    const { items } = this;
+    if (!items)
+      return [];
+    return [...items.values()];
+  }
+  dispose() {
+    this.items.clear();
+    this.path = "";
+    this._removeWatcher = EMPTY_FN;
+    this.items = EMPTY_SET;
+    Object.freeze(this);
+  }
+};
+var STAT_METHOD_F = "stat";
+var STAT_METHOD_L = "lstat";
+var WatchHelper = class {
+  constructor(path2, follow, fsw) {
+    this.fsw = fsw;
+    const watchPath = path2;
+    this.path = path2 = path2.replace(REPLACER_RE, "");
+    this.watchPath = watchPath;
+    this.fullWatchPath = sysPath2.resolve(watchPath);
+    this.dirParts = [];
+    this.dirParts.forEach((parts) => {
+      if (parts.length > 1)
+        parts.pop();
+    });
+    this.followSymlinks = follow;
+    this.statMethod = follow ? STAT_METHOD_F : STAT_METHOD_L;
+  }
+  entryPath(entry) {
+    return sysPath2.join(this.watchPath, sysPath2.relative(this.watchPath, entry.fullPath));
+  }
+  filterPath(entry) {
+    const { stats } = entry;
+    if (stats && stats.isSymbolicLink())
+      return this.filterDir(entry);
+    const resolvedPath = this.entryPath(entry);
+    return this.fsw._isntIgnored(resolvedPath, stats) && this.fsw._hasReadPermissions(stats);
+  }
+  filterDir(entry) {
+    return this.fsw._isntIgnored(this.entryPath(entry), entry.stats);
+  }
+};
+var FSWatcher = class extends EventEmitter {
+  // Not indenting methods for history sake; for now.
+  constructor(_opts = {}) {
+    super();
+    this.closed = false;
+    this._closers = /* @__PURE__ */ new Map();
+    this._ignoredPaths = /* @__PURE__ */ new Set();
+    this._throttled = /* @__PURE__ */ new Map();
+    this._streams = /* @__PURE__ */ new Set();
+    this._symlinkPaths = /* @__PURE__ */ new Map();
+    this._watched = /* @__PURE__ */ new Map();
+    this._pendingWrites = /* @__PURE__ */ new Map();
+    this._pendingUnlinks = /* @__PURE__ */ new Map();
+    this._readyCount = 0;
+    this._readyEmitted = false;
+    const awf = _opts.awaitWriteFinish;
+    const DEF_AWF = { stabilityThreshold: 2e3, pollInterval: 100 };
+    const opts = {
+      // Defaults
+      persistent: true,
+      ignoreInitial: false,
+      ignorePermissionErrors: false,
+      interval: 100,
+      binaryInterval: 300,
+      followSymlinks: true,
+      usePolling: false,
+      // useAsync: false,
+      atomic: true,
+      // NOTE: overwritten later (depends on usePolling)
+      ..._opts,
+      // Change format
+      ignored: _opts.ignored ? arrify(_opts.ignored) : arrify([]),
+      awaitWriteFinish: awf === true ? DEF_AWF : typeof awf === "object" ? { ...DEF_AWF, ...awf } : false
+    };
+    if (isIBMi)
+      opts.usePolling = true;
+    if (opts.atomic === void 0)
+      opts.atomic = !opts.usePolling;
+    const envPoll = process.env.CHOKIDAR_USEPOLLING;
+    if (envPoll !== void 0) {
+      const envLower = envPoll.toLowerCase();
+      if (envLower === "false" || envLower === "0")
+        opts.usePolling = false;
+      else if (envLower === "true" || envLower === "1")
+        opts.usePolling = true;
+      else
+        opts.usePolling = !!envLower;
+    }
+    const envInterval = process.env.CHOKIDAR_INTERVAL;
+    if (envInterval)
+      opts.interval = Number.parseInt(envInterval, 10);
+    let readyCalls = 0;
+    this._emitReady = () => {
+      readyCalls++;
+      if (readyCalls >= this._readyCount) {
+        this._emitReady = EMPTY_FN;
+        this._readyEmitted = true;
+        process.nextTick(() => this.emit(EVENTS.READY));
+      }
+    };
+    this._emitRaw = (...args2) => this.emit(EVENTS.RAW, ...args2);
+    this._boundRemove = this._remove.bind(this);
+    this.options = opts;
+    this._nodeFsHandler = new NodeFsHandler(this);
+    Object.freeze(opts);
+  }
+  _addIgnoredPath(matcher) {
+    if (isMatcherObject(matcher)) {
+      for (const ignored of this._ignoredPaths) {
+        if (isMatcherObject(ignored) && ignored.path === matcher.path && ignored.recursive === matcher.recursive) {
+          return;
+        }
+      }
+    }
+    this._ignoredPaths.add(matcher);
+  }
+  _removeIgnoredPath(matcher) {
+    this._ignoredPaths.delete(matcher);
+    if (typeof matcher === "string") {
+      for (const ignored of this._ignoredPaths) {
+        if (isMatcherObject(ignored) && ignored.path === matcher) {
+          this._ignoredPaths.delete(ignored);
+        }
+      }
+    }
+  }
+  // Public methods
+  /**
+   * Adds paths to be watched on an existing FSWatcher instance.
+   * @param paths_ file or file list. Other arguments are unused
+   */
+  add(paths_, _origAdd, _internal) {
+    const { cwd: cwd2 } = this.options;
+    this.closed = false;
+    this._closePromise = void 0;
+    let paths = unifyPaths(paths_);
+    if (cwd2) {
+      paths = paths.map((path2) => {
+        const absPath = getAbsolutePath(path2, cwd2);
+        return absPath;
+      });
+    }
+    paths.forEach((path2) => {
+      this._removeIgnoredPath(path2);
+    });
+    this._userIgnored = void 0;
+    if (!this._readyCount)
+      this._readyCount = 0;
+    this._readyCount += paths.length;
+    Promise.all(paths.map(async (path2) => {
+      const res = await this._nodeFsHandler._addToNodeFs(path2, !_internal, void 0, 0, _origAdd);
+      if (res)
+        this._emitReady();
+      return res;
+    })).then((results) => {
+      if (this.closed)
+        return;
+      results.forEach((item) => {
+        if (item)
+          this.add(sysPath2.dirname(item), sysPath2.basename(_origAdd || item));
+      });
+    });
+    return this;
+  }
+  /**
+   * Close watchers or start ignoring events from specified paths.
+   */
+  unwatch(paths_) {
+    if (this.closed)
+      return this;
+    const paths = unifyPaths(paths_);
+    const { cwd: cwd2 } = this.options;
+    paths.forEach((path2) => {
+      if (!sysPath2.isAbsolute(path2) && !this._closers.has(path2)) {
+        if (cwd2)
+          path2 = sysPath2.join(cwd2, path2);
+        path2 = sysPath2.resolve(path2);
+      }
+      this._closePath(path2);
+      this._addIgnoredPath(path2);
+      if (this._watched.has(path2)) {
+        this._addIgnoredPath({
+          path: path2,
+          recursive: true
+        });
+      }
+      this._userIgnored = void 0;
+    });
+    return this;
+  }
+  /**
+   * Close watchers and remove all listeners from watched paths.
+   */
+  close() {
+    if (this._closePromise) {
+      return this._closePromise;
+    }
+    this.closed = true;
+    this.removeAllListeners();
+    const closers = [];
+    this._closers.forEach((closerList) => closerList.forEach((closer) => {
+      const promise = closer();
+      if (promise instanceof Promise)
+        closers.push(promise);
+    }));
+    this._streams.forEach((stream) => stream.destroy());
+    this._userIgnored = void 0;
+    this._readyCount = 0;
+    this._readyEmitted = false;
+    this._watched.forEach((dirent) => dirent.dispose());
+    this._closers.clear();
+    this._watched.clear();
+    this._streams.clear();
+    this._symlinkPaths.clear();
+    this._throttled.clear();
+    this._closePromise = closers.length ? Promise.all(closers).then(() => void 0) : Promise.resolve();
+    return this._closePromise;
+  }
+  /**
+   * Expose list of watched paths
+   * @returns for chaining
+   */
+  getWatched() {
+    const watchList = {};
+    this._watched.forEach((entry, dir) => {
+      const key = this.options.cwd ? sysPath2.relative(this.options.cwd, dir) : dir;
+      const index = key || ONE_DOT;
+      watchList[index] = entry.getChildren().sort();
+    });
+    return watchList;
+  }
+  emitWithAll(event, args2) {
+    this.emit(event, ...args2);
+    if (event !== EVENTS.ERROR)
+      this.emit(EVENTS.ALL, event, ...args2);
+  }
+  // Common helpers
+  // --------------
+  /**
+   * Normalize and emit events.
+   * Calling _emit DOES NOT MEAN emit() would be called!
+   * @param event Type of event
+   * @param path File or directory path
+   * @param stats arguments to be passed with event
+   * @returns the error if defined, otherwise the value of the FSWatcher instance's `closed` flag
+   */
+  async _emit(event, path2, stats) {
+    if (this.closed)
+      return;
+    const opts = this.options;
+    if (isWindows)
+      path2 = sysPath2.normalize(path2);
+    if (opts.cwd)
+      path2 = sysPath2.relative(opts.cwd, path2);
+    const args2 = [path2];
+    if (stats != null)
+      args2.push(stats);
+    const awf = opts.awaitWriteFinish;
+    let pw;
+    if (awf && (pw = this._pendingWrites.get(path2))) {
+      pw.lastChange = /* @__PURE__ */ new Date();
+      return this;
+    }
+    if (opts.atomic) {
+      if (event === EVENTS.UNLINK) {
+        this._pendingUnlinks.set(path2, [event, ...args2]);
+        setTimeout(() => {
+          this._pendingUnlinks.forEach((entry, path3) => {
+            this.emit(...entry);
+            this.emit(EVENTS.ALL, ...entry);
+            this._pendingUnlinks.delete(path3);
+          });
+        }, typeof opts.atomic === "number" ? opts.atomic : 100);
+        return this;
+      }
+      if (event === EVENTS.ADD && this._pendingUnlinks.has(path2)) {
+        event = EVENTS.CHANGE;
+        this._pendingUnlinks.delete(path2);
+      }
+    }
+    if (awf && (event === EVENTS.ADD || event === EVENTS.CHANGE) && this._readyEmitted) {
+      const awfEmit = (err, stats2) => {
+        if (err) {
+          event = EVENTS.ERROR;
+          args2[0] = err;
+          this.emitWithAll(event, args2);
+        } else if (stats2) {
+          if (args2.length > 1) {
+            args2[1] = stats2;
+          } else {
+            args2.push(stats2);
+          }
+          this.emitWithAll(event, args2);
+        }
+      };
+      this._awaitWriteFinish(path2, awf.stabilityThreshold, event, awfEmit);
+      return this;
+    }
+    if (event === EVENTS.CHANGE) {
+      const isThrottled = !this._throttle(EVENTS.CHANGE, path2, 50);
+      if (isThrottled)
+        return this;
+    }
+    if (opts.alwaysStat && stats === void 0 && (event === EVENTS.ADD || event === EVENTS.ADD_DIR || event === EVENTS.CHANGE)) {
+      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path2) : path2;
+      let stats2;
+      try {
+        stats2 = await stat3(fullPath);
+      } catch (err) {
+      }
+      if (!stats2 || this.closed)
+        return;
+      args2.push(stats2);
+    }
+    this.emitWithAll(event, args2);
+    return this;
+  }
+  /**
+   * Common handler for errors
+   * @returns The error if defined, otherwise the value of the FSWatcher instance's `closed` flag
+   */
+  _handleError(error2) {
+    const code = error2 && error2.code;
+    if (error2 && code !== "ENOENT" && code !== "ENOTDIR" && (!this.options.ignorePermissionErrors || code !== "EPERM" && code !== "EACCES")) {
+      this.emit(EVENTS.ERROR, error2);
+    }
+    return error2 || this.closed;
+  }
+  /**
+   * Helper utility for throttling
+   * @param actionType type being throttled
+   * @param path being acted upon
+   * @param timeout duration of time to suppress duplicate actions
+   * @returns tracking object or false if action should be suppressed
+   */
+  _throttle(actionType, path2, timeout) {
+    if (!this._throttled.has(actionType)) {
+      this._throttled.set(actionType, /* @__PURE__ */ new Map());
+    }
+    const action = this._throttled.get(actionType);
+    if (!action)
+      throw new Error("invalid throttle");
+    const actionPath = action.get(path2);
+    if (actionPath) {
+      actionPath.count++;
+      return false;
+    }
+    let timeoutObject;
+    const clear = () => {
+      const item = action.get(path2);
+      const count = item ? item.count : 0;
+      action.delete(path2);
+      clearTimeout(timeoutObject);
+      if (item)
+        clearTimeout(item.timeoutObject);
+      return count;
+    };
+    timeoutObject = setTimeout(clear, timeout);
+    const thr = { timeoutObject, clear, count: 0 };
+    action.set(path2, thr);
+    return thr;
+  }
+  _incrReadyCount() {
+    return this._readyCount++;
+  }
+  /**
+   * Awaits write operation to finish.
+   * Polls a newly created file for size variations. When files size does not change for 'threshold' milliseconds calls callback.
+   * @param path being acted upon
+   * @param threshold Time in milliseconds a file size must be fixed before acknowledging write OP is finished
+   * @param event
+   * @param awfEmit Callback to be called when ready for event to be emitted.
+   */
+  _awaitWriteFinish(path2, threshold, event, awfEmit) {
+    const awf = this.options.awaitWriteFinish;
+    if (typeof awf !== "object")
+      return;
+    const pollInterval = awf.pollInterval;
+    let timeoutHandler;
+    let fullPath = path2;
+    if (this.options.cwd && !sysPath2.isAbsolute(path2)) {
+      fullPath = sysPath2.join(this.options.cwd, path2);
+    }
+    const now = /* @__PURE__ */ new Date();
+    const writes = this._pendingWrites;
+    function awaitWriteFinishFn(prevStat) {
+      statcb(fullPath, (err, curStat) => {
+        if (err || !writes.has(path2)) {
+          if (err && err.code !== "ENOENT")
+            awfEmit(err);
+          return;
+        }
+        const now2 = Number(/* @__PURE__ */ new Date());
+        if (prevStat && curStat.size !== prevStat.size) {
+          writes.get(path2).lastChange = now2;
+        }
+        const pw = writes.get(path2);
+        const df = now2 - pw.lastChange;
+        if (df >= threshold) {
+          writes.delete(path2);
+          awfEmit(void 0, curStat);
+        } else {
+          timeoutHandler = setTimeout(awaitWriteFinishFn, pollInterval, curStat);
+        }
+      });
+    }
+    if (!writes.has(path2)) {
+      writes.set(path2, {
+        lastChange: now,
+        cancelWait: () => {
+          writes.delete(path2);
+          clearTimeout(timeoutHandler);
+          return event;
+        }
+      });
+      timeoutHandler = setTimeout(awaitWriteFinishFn, pollInterval);
+    }
+  }
+  /**
+   * Determines whether user has asked to ignore this path.
+   */
+  _isIgnored(path2, stats) {
+    if (this.options.atomic && DOT_RE.test(path2))
+      return true;
+    if (!this._userIgnored) {
+      const { cwd: cwd2 } = this.options;
+      const ign = this.options.ignored;
+      const ignored = (ign || []).map(normalizeIgnored(cwd2));
+      const ignoredPaths = [...this._ignoredPaths];
+      const list = [...ignoredPaths.map(normalizeIgnored(cwd2)), ...ignored];
+      this._userIgnored = anymatch(list, void 0);
+    }
+    return this._userIgnored(path2, stats);
+  }
+  _isntIgnored(path2, stat4) {
+    return !this._isIgnored(path2, stat4);
+  }
+  /**
+   * Provides a set of common helpers and properties relating to symlink handling.
+   * @param path file or directory pattern being watched
+   */
+  _getWatchHelpers(path2) {
+    return new WatchHelper(path2, this.options.followSymlinks, this);
+  }
+  // Directory helpers
+  // -----------------
+  /**
+   * Provides directory tracking objects
+   * @param directory path of the directory
+   */
+  _getWatchedDir(directory) {
+    const dir = sysPath2.resolve(directory);
+    if (!this._watched.has(dir))
+      this._watched.set(dir, new DirEntry(dir, this._boundRemove));
+    return this._watched.get(dir);
+  }
+  // File helpers
+  // ------------
+  /**
+   * Check for read permissions: https://stackoverflow.com/a/11781404/1358405
+   */
+  _hasReadPermissions(stats) {
+    if (this.options.ignorePermissionErrors)
+      return true;
+    return Boolean(Number(stats.mode) & 256);
+  }
+  /**
+   * Handles emitting unlink events for
+   * files and directories, and via recursion, for
+   * files and directories within directories that are unlinked
+   * @param directory within which the following item is located
+   * @param item      base path of item/directory
+   */
+  _remove(directory, item, isDirectory) {
+    const path2 = sysPath2.join(directory, item);
+    const fullPath = sysPath2.resolve(path2);
+    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path2) || this._watched.has(fullPath);
+    if (!this._throttle("remove", path2, 100))
+      return;
+    if (!isDirectory && this._watched.size === 1) {
+      this.add(directory, item, true);
+    }
+    const wp = this._getWatchedDir(path2);
+    const nestedDirectoryChildren = wp.getChildren();
+    nestedDirectoryChildren.forEach((nested) => this._remove(path2, nested));
+    const parent = this._getWatchedDir(directory);
+    const wasTracked = parent.has(item);
+    parent.remove(item);
+    if (this._symlinkPaths.has(fullPath)) {
+      this._symlinkPaths.delete(fullPath);
+    }
+    let relPath = path2;
+    if (this.options.cwd)
+      relPath = sysPath2.relative(this.options.cwd, path2);
+    if (this.options.awaitWriteFinish && this._pendingWrites.has(relPath)) {
+      const event = this._pendingWrites.get(relPath).cancelWait();
+      if (event === EVENTS.ADD)
+        return;
+    }
+    this._watched.delete(path2);
+    this._watched.delete(fullPath);
+    const eventName = isDirectory ? EVENTS.UNLINK_DIR : EVENTS.UNLINK;
+    if (wasTracked && !this._isIgnored(path2))
+      this._emit(eventName, path2);
+    this._closePath(path2);
+  }
+  /**
+   * Closes all watchers for a path
+   */
+  _closePath(path2) {
+    this._closeFile(path2);
+    const dir = sysPath2.dirname(path2);
+    this._getWatchedDir(dir).remove(sysPath2.basename(path2));
+  }
+  /**
+   * Closes only file-specific watchers
+   */
+  _closeFile(path2) {
+    const closers = this._closers.get(path2);
+    if (!closers)
+      return;
+    closers.forEach((closer) => closer());
+    this._closers.delete(path2);
+  }
+  _addPathCloser(path2, closer) {
+    if (!closer)
+      return;
+    let list = this._closers.get(path2);
+    if (!list) {
+      list = [];
+      this._closers.set(path2, list);
+    }
+    list.push(closer);
+  }
+  _readdirp(root, opts) {
+    if (this.closed)
+      return;
+    const options = { type: EVENTS.ALL, alwaysStat: true, lstat: true, ...opts, depth: 0 };
+    let stream = readdirp(root, options);
+    this._streams.add(stream);
+    stream.once(STR_CLOSE, () => {
+      stream = void 0;
+    });
+    stream.once(STR_END, () => {
+      if (stream) {
+        this._streams.delete(stream);
+        stream = void 0;
+      }
+    });
+    return stream;
+  }
+};
+function watch(paths, options = {}) {
+  const watcher = new FSWatcher(options);
+  watcher.add(paths);
+  return watcher;
+}
+var esm_default = { watch, FSWatcher };
+
+// packages/roomd/src/index.ts
+var RoomdError = class extends Error {
+  constructor(message, code) {
+    super(message);
+    this.code = code;
+    this.name = "RoomdError";
+  }
+  code;
+};
+var IGNORED_DIRS = /* @__PURE__ */ new Set([".git", "node_modules", ".venv"]);
+var ROOM_FILE = ".room.json";
+function splitRoomUrl(room) {
+  const url = new URL(room);
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length === 0) throw new RoomdError(`room URL must end with /<room>: ${room}`, 1);
+  const roomName = parts.pop();
+  url.pathname = parts.length ? "/" + parts.join("/") : "";
+  return { serverUrl: url.toString().replace(/\/$/, ""), roomName };
+}
+async function startRoomd(options) {
+  const daemon = new Daemon(options);
+  try {
+    await daemon.start();
+  } catch (error2) {
+    await daemon.stop().catch(() => {
+    });
+    throw error2;
+  }
+  return daemon;
+}
+var Daemon = class {
+  roomDoc = new RoomDoc();
+  provider;
+  branch = "";
+  base = "";
+  dir;
+  name;
+  kind;
+  log;
+  debounceMs;
+  trackedRefreshMs;
+  sizeCap;
+  connectTimeoutMs;
+  roomUrl;
+  tracked = /* @__PURE__ */ new Set();
+  watcher = null;
+  timers = /* @__PURE__ */ new Set();
+  debounce = /* @__PURE__ */ new Map();
+  stopped = false;
+  lastActive = Date.now();
+  constructor(options) {
+    this.dir = path.resolve(options.dir);
+    this.name = options.name;
+    this.kind = options.kind ?? "human";
+    this.roomUrl = options.room;
+    this.log = options.log ?? ((line) => process.stderr.write(`[roomd] ${line}
+`));
+    this.debounceMs = options.debounceMs ?? 50;
+    this.trackedRefreshMs = options.trackedRefreshMs ?? 1e4;
+    this.sizeCap = options.sizeCap ?? 512 * 1024;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? 15e3;
+    const { serverUrl, roomName } = splitRoomUrl(options.room);
+    this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
+      WebSocketPolyfill: import_websocket.default
+    });
+    this.setStatus("syncing");
+  }
+  async start() {
+    if (!fs.existsSync(path.join(this.dir, ".git"))) {
+      throw new RoomdError(`${this.dir} is not a git repository`, 1);
+    }
+    const [branch, base, repo, tracked] = await Promise.all([
+      gitBranch(this.dir),
+      gitHead(this.dir),
+      gitOrigin(this.dir),
+      gitTracked(this.dir)
+    ]);
+    this.branch = branch;
+    this.base = base;
+    this.tracked = tracked;
+    await this.waitForSync();
+    const roomBase = this.roomDoc.meta.base;
+    if (roomBase && roomBase !== this.base) {
+      const message = `room base is ${roomBase}; local HEAD is ${this.base} \u2014 git pull, then $room-join`;
+      this.setStatus(`error: ${message}`);
+      throw new RoomdError(message, 2);
+    }
+    if (!roomBase) {
+      this.roomDoc.setMeta({
+        ...repo ? { repo } : {},
+        branch: this.branch,
+        base: this.base,
+        createdAt: Date.now(),
+        seededBy: this.name
+      }, this);
+    }
+    await this.seedLocalOverlay();
+    this.writeRoomFile();
+    this.excludeRoomFile();
+    await this.startWatcher();
+    this.every(this.trackedRefreshMs, () => this.refreshTracked());
+    this.setStatus("synced");
+    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)})`);
+  }
+  async stop() {
+    if (this.stopped) return;
+    this.stopped = true;
+    for (const timer of this.timers) clearInterval(timer);
+    for (const timer of this.debounce.values()) clearTimeout(timer);
+    await this.watcher?.close().catch(() => {
+    });
+    try {
+      this.provider.awareness.setLocalState(null);
+    } catch {
+    }
+    this.provider.destroy();
+    this.roomDoc.doc.destroy();
+  }
+  every(ms, fn) {
+    const timer = setInterval(() => {
+      Promise.resolve(fn()).catch((error2) => this.log(`warn: ${errMsg(error2)}`));
+    }, ms);
+    timer.unref?.();
+    this.timers.add(timer);
+  }
+  setStatus(status) {
+    const current = this.provider.awareness.getLocalState() ?? {};
+    const state = {
+      ...current,
+      user: { name: this.name, kind: this.kind, color: colorFor(this.name) },
+      status,
+      lastActive: this.lastActive
+    };
+    this.provider.awareness.setLocalState(state);
+  }
+  /** Mark this party active now (tool calls count as activity). */
+  touch() {
+    this.bumpLastActive();
+  }
+  bumpLastActive() {
+    this.lastActive = Date.now();
+    const current = this.provider.awareness.getLocalState();
+    this.setStatus(current?.status ?? "synced");
+  }
+  waitForSync() {
+    if (this.provider.synced) return Promise.resolve();
+    return new Promise((resolve5, reject) => {
+      const timer = setTimeout(() => {
+        this.provider.off("sync", onSync);
+        reject(new RoomdError(`could not sync with ${this.roomUrl} within ${this.connectTimeoutMs}ms`, 1));
+      }, this.connectTimeoutMs);
+      const onSync = (synced) => {
+        if (!synced) return;
+        clearTimeout(timer);
+        this.provider.off("sync", onSync);
+        resolve5();
+      };
+      this.provider.on("sync", onSync);
+    });
+  }
+  writeRoomFile() {
+    try {
+      fs.writeFileSync(
+        path.join(this.dir, ROOM_FILE),
+        JSON.stringify({ room: this.roomUrl, name: this.name, dir: this.dir }, null, 2) + "\n"
+      );
+    } catch (error2) {
+      this.log(`warn: could not write ${ROOM_FILE}: ${errMsg(error2)}`);
+    }
+  }
+  excludeRoomFile() {
+    const exclude = path.join(this.dir, ".git", "info", "exclude");
+    try {
+      fs.mkdirSync(path.dirname(exclude), { recursive: true });
+      const current = fs.existsSync(exclude) ? fs.readFileSync(exclude, "utf8") : "";
+      if (current.split(/\r?\n/).includes(ROOM_FILE)) return;
+      const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+      fs.appendFileSync(exclude, `${separator}${ROOM_FILE}
+`);
+    } catch (error2) {
+      this.log(`warn: could not add ${ROOM_FILE} to .git/info/exclude: ${errMsg(error2)}`);
+    }
+  }
+  // ---- startup and disk -> overlay --------------------------------------
+  async seedLocalOverlay() {
+    for (const relpath of this.tracked) {
+      if (!this.isSafeRoomPath(relpath)) continue;
+      await this.publishDiskState(relpath);
+    }
+  }
+  abs(relpath) {
+    return path.join(this.dir, ...relpath.split("/"));
+  }
+  /** Read UTF-8 text; undefined for missing, binary, or over-cap files. */
+  readText(relpath, quiet = false) {
+    try {
+      const stat4 = fs.statSync(this.abs(relpath));
+      if (!stat4.isFile()) return void 0;
+      if (stat4.size > this.sizeCap) {
+        if (!quiet) this.log(`skip ${relpath}: ${stat4.size} bytes > cap`);
+        return void 0;
+      }
+      const bytes = fs.readFileSync(this.abs(relpath));
+      try {
+        return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        if (!quiet) this.log(`skip ${relpath}: not UTF-8`);
+        return void 0;
+      }
+    } catch {
+      return void 0;
+    }
+  }
+  isIgnoredPath(relpath) {
+    if (!relpath || relpath === ROOM_FILE) return true;
+    return relpath.split("/").some((segment) => IGNORED_DIRS.has(segment));
+  }
+  isSafeRoomPath(relpath) {
+    if (this.isIgnoredPath(relpath)) return false;
+    const target = path.resolve(this.dir, ...relpath.split("/"));
+    const inside = path.relative(this.dir, target);
+    return inside !== "" && inside !== ".." && !inside.startsWith(`..${path.sep}`) && !path.isAbsolute(inside);
+  }
+  async publishDiskState(relpath) {
+    if (!this.isSafeRoomPath(relpath)) return;
+    const exists = fs.existsSync(this.abs(relpath));
+    const beforeText = this.roomDoc.text(relpath, this.name);
+    const beforeDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false;
+    if (!exists) {
+      this.roomDoc.doc.transact(() => {
+        this.roomDoc.markDeleted(this.name, relpath, this);
+        this.roomDoc.clearOverlay(this.name, relpath, this);
+      }, this);
+    } else {
+      const disk = this.readText(relpath);
+      if (disk === void 0) return;
+      const base = await gitShow(this.dir, this.base, relpath);
+      this.roomDoc.doc.transact(() => {
+        this.roomDoc.unmarkDeleted(this.name, relpath, this);
+        if (disk === base) this.roomDoc.clearOverlay(this.name, relpath, this);
+        else this.roomDoc.setOverlay(this.name, relpath, disk, this);
+      }, this);
+    }
+    const afterText = this.roomDoc.text(relpath, this.name);
+    const afterDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false;
+    if (beforeText !== afterText || beforeDeleted !== afterDeleted) {
+      this.bumpLastActive();
+      this.log(afterDeleted ? `marked ${relpath} deleted` : afterText === void 0 ? `cleared ${relpath} overlay` : `published ${relpath} overlay`);
+    }
+  }
+  // ---- watcher -----------------------------------------------------------
+  async startWatcher() {
+    const watcher = esm_default.watch(this.dir, {
+      ignoreInitial: true,
+      persistent: true,
+      ignored: (absolute) => {
+        const relpath = path.relative(this.dir, absolute).split(path.sep).join("/");
+        if (relpath === "") return false;
+        return relpath.split("/").some((segment) => IGNORED_DIRS.has(segment));
+      }
+    });
+    this.watcher = watcher;
+    watcher.on("all", (event, absolute) => {
+      if (this.stopped) return;
+      const relpath = path.relative(this.dir, absolute).split(path.sep).join("/");
+      if (this.isIgnoredPath(relpath) || event === "addDir" || event === "unlinkDir") return;
+      if (path.basename(relpath) === ".gitignore") this.refreshTracked().catch(() => {
+      });
+      this.scheduleDisk(relpath, event === "add");
+    });
+    watcher.on("error", (error2) => this.log(`watcher error: ${errMsg(error2)}`));
+    await new Promise((resolve5) => watcher.on("ready", () => resolve5()));
+  }
+  scheduleDisk(relpath, isNew) {
+    const previous = this.debounce.get(relpath);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      this.debounce.delete(relpath);
+      this.onDiskChange(relpath, isNew).catch((error2) => this.log(`warn: ${relpath}: ${errMsg(error2)}`));
+    }, this.debounceMs);
+    this.debounce.set(relpath, timer);
+  }
+  async onDiskChange(relpath, isNew) {
+    if (this.stopped) return;
+    if (!this.tracked.has(relpath)) {
+      if (!isNew || !fs.existsSync(this.abs(relpath)) || await gitIgnored(this.dir, relpath)) return;
+      this.tracked.add(relpath);
+    }
+    await this.publishDiskState(relpath);
+  }
+  async refreshTracked() {
+    if (this.stopped) return;
+    try {
+      const next = await gitTracked(this.dir);
+      const added = Array.from(next).filter((relpath) => !this.tracked.has(relpath));
+      const removed = Array.from(this.tracked).filter((relpath) => !next.has(relpath));
+      this.tracked = next;
+      for (const relpath of added) {
+        if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) this.scheduleDisk(relpath, true);
+      }
+      for (const relpath of removed) {
+        if (this.roomDoc.overlayText(this.name, relpath) && !fs.existsSync(this.abs(relpath))) {
+          await this.publishDiskState(relpath);
+        }
+      }
+    } catch (error2) {
+      this.log(`warn: git ls-files: ${errMsg(error2)}`);
+    }
+  }
+};
+function errMsg(error2) {
+  return error2 instanceof Error ? error2.message : String(error2);
+}
+
+// packages/room-mcp/src/session.ts
+var DEFAULT_SERVER = "ws://localhost:1234";
+var DEFAULT_WEB = "http://localhost:5173";
+function findRoomFile(start) {
+  let d = resolve3(start);
+  for (; ; ) {
+    const f = resolve3(d, ".room.json");
+    if (existsSync(f)) {
+      try {
+        return { ...JSON.parse(readFileSync(f, "utf8")), _from: dirname3(f) };
+      } catch {
+      }
+    }
+    const up = dirname3(d);
+    if (up === d) return void 0;
+    d = up;
   }
 }
-function splitLines(text) {
-  const hasTrailingNl = text.endsWith("\n");
-  const result = text.split("\n").map((line) => line + "\n");
-  if (hasTrailingNl) {
-    result.pop();
-  } else {
-    result.push(result.pop().slice(0, -1));
+async function deriveRoomName(dir) {
+  const [repo, branch] = await Promise.all([gitOrigin(dir), gitBranch(dir)]);
+  return { repo, branch, roomName: repo ? `${repo}/${branch}` : void 0 };
+}
+async function defaultName(dir) {
+  try {
+    const n = (await git(dir, ["config", "user.name"])).trim();
+    if (n) return n;
+  } catch {
   }
-  return result;
+  return process.env.USER || process.env.USERNAME || void 0;
+}
+function encodeRoom(roomName) {
+  return encodeURIComponent(roomName);
+}
+function decodeRoom(encoded) {
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return encoded;
+  }
+}
+async function joinSession(opts) {
+  const dir = resolve3(opts.dir);
+  const server = (opts.server ?? process.env.ROOM_SERVER ?? DEFAULT_SERVER).replace(/\/+$/, "");
+  const web = (opts.web ?? process.env.ROOM_WEB ?? DEFAULT_WEB).replace(/\/+$/, "");
+  const name = opts.name ?? await defaultName(dir);
+  if (!name) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
+  let roomName = opts.room;
+  if (!roomName) {
+    const d = await deriveRoomName(dir);
+    if (!d.roomName) throw new RoomdError(`${dir} has no origin remote; pass room explicitly (e.g. room="myteam/shop/main")`, 2);
+    roomName = d.roomName;
+  }
+  const roomUrl = `${server}/${encodeRoom(roomName)}`;
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}`;
+  return {
+    room: daemon.roomDoc,
+    provider: daemon.provider,
+    awareness: daemon.provider.awareness,
+    daemon,
+    me: { name, kind: "agent" },
+    dir,
+    roomUrl,
+    roomName,
+    browserUrl
+  };
+}
+async function leaveSession(s) {
+  await s.daemon.stop();
 }
 
 // packages/room-mcp/src/tools.ts
-var exec = promisify(execFile);
 var RO = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 var RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 var str = (d) => ({ type: "string", description: d });
 var int2 = (d) => ({ type: "integer", description: d });
+var strs = (d) => ({ type: "array", items: { type: "string" }, description: d });
+var PLANS = {
+  type: "array",
+  description: "Changes you intend to make that others may depend on. Declare BEFORE editing.",
+  items: { type: "object", properties: {
+    kind: { type: "string", enum: ["rename", "signature", "delete", "add"] },
+    symbol: str("function/class/variable name as it is now"),
+    detail: str("new name, new signature, or why")
+  }, required: ["kind", "symbol"] }
+};
 var DEFS = [
   {
-    name: "room_state",
-    annotations: RO,
-    description: "Room overview: meta, participants (with cursors/status), open claims, last 10 bus messages, unread count. Call this before editing anything.",
+    name: "room_join",
+    annotations: RW,
+    description: "Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL.",
+    inputSchema: { type: "object", properties: { room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)") } }
+  },
+  {
+    name: "room_leave",
+    annotations: RW,
+    description: "Leave the room: releases your claims, clears your scope, stops the daemon.",
     inputSchema: { type: "object", properties: {} }
   },
   {
-    name: "room_read_live",
-    annotations: RO,
-    description: "Current live room text of a file with line numbers, plus claims and cursors in it.",
-    inputSchema: { type: "object", properties: { path: str("repo-relative path") }, required: ["path"] }
+    name: "room_scope",
+    annotations: RW,
+    description: 'Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. Do this before editing. Replaces your previous scope. The reply ends with the area ledger: what others changed there and their open plans.',
+    inputSchema: { type: "object", properties: { area: str("one word, lowercase"), summary: str("one line"), paths: strs("files or directories you expect to touch") }, required: ["area", "summary", "paths"] }
   },
   {
-    name: "room_read_committed",
+    name: "room_state",
     annotations: RO,
-    description: "File content at HEAD of the local clone (git show HEAD:path).",
-    inputSchema: { type: "object", properties: { path: str("repo-relative path") }, required: ["path"] }
+    description: "Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Call before editing and after any wait.",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "room_read",
+    annotations: RO,
+    description: "A file as a person sees it right now: base commit + their uncommitted edits (default: you). With line numbers, claims in the file, and the file ledger (recent changes by others, open plans).",
+    inputSchema: { type: "object", properties: { path: str("repo-relative path"), person: str("whose live version (default you)") }, required: ["path"] }
   },
   {
     name: "room_diff",
     annotations: RO,
-    description: "Unified diff from committed (HEAD) to live room text, for one path or all changed paths.",
-    inputSchema: { type: "object", properties: { path: str("optional repo-relative path") } }
+    description: "Unified diff from the base commit to a person's live version, for one path or all their changed paths.",
+    inputSchema: { type: "object", properties: { path: str("optional path"), person: str("default you") } }
   },
   {
     name: "room_who",
     annotations: RO,
-    description: "Who is active (cursor) or holds claims overlapping a file region.",
-    inputSchema: { type: "object", properties: { path: str("repo-relative path"), from: int2("first line (1-based), default 1"), to: int2("last line, default EOF") }, required: ["path"] }
+    description: "Who holds claims in a region of a file, whose scope covers it, and who has changed the file.",
+    inputSchema: { type: "object", properties: { path: str("repo-relative path"), from: int2("first line, default 1"), to: int2("last line, default EOF") }, required: ["path"] }
   },
   {
     name: "room_claim",
     annotations: RW,
-    description: "Claim a line range before editing it. Reports overlaps with other parties (and posts a conflict). Returns claimId.",
-    inputSchema: { type: "object", properties: { path: str("repo-relative path"), from: int2("first line"), to: int2("last line"), intent: str("what you are about to do") }, required: ["path", "from", "to", "intent"] }
+    description: "Claim a line range before editing it, saying what you will do. Declare renames/signature changes in `plans` so anyone who uses those symbols is told now. Reports overlaps (posting a conflict). Returns claimId.",
+    inputSchema: { type: "object", properties: { path: str("repo-relative path"), from: int2("first line"), to: int2("last line"), intent: str("what you are about to do"), plans: PLANS }, required: ["path", "from", "to", "intent"] }
   },
   {
     name: "room_release",
     annotations: RW,
-    description: "Release a claim you hold, optionally with a summary of what you did.",
-    inputSchema: { type: "object", properties: { claimId: str("claim id"), summary: str("optional summary") }, required: ["claimId"] }
+    description: "Release a claim with a summary of what you did. Plans whose symbol is not mentioned in the summary (or in `done`) are reported as not done.",
+    inputSchema: { type: "object", properties: { claimId: str("claim id"), summary: str("what changed, one line"), done: strs("symbols from your plans that you completed") }, required: ["claimId"] }
   },
   {
     name: "room_send",
     annotations: RW,
-    description: "Post a bus message: changed (paths+summary), question (to someone), or answer (inReplyTo a question).",
+    description: "Post to the bus. changed: paths + summary (+ symbols renamed/changed, which notifies whoever uses them). question: to a person's agent. answer: inReplyTo a question id. note: broadcast fyi.",
     inputSchema: { type: "object", properties: {
-      type: { type: "string", enum: ["changed", "question", "answer"] },
+      type: { type: "string", enum: ["changed", "question", "answer", "note"] },
       to: str("recipient person name (their agent); empty = broadcast"),
       text: str("message text / change summary"),
-      paths: { type: "array", items: { type: "string" }, description: "paths touched (changed)" },
-      inReplyTo: str("message id being answered (answer)")
+      paths: strs("paths touched (changed)"),
+      symbols: strs("symbols renamed or whose signature changed (changed)"),
+      inReplyTo: str("question id (answer)"),
+      priority: { type: "string", enum: ["fyi", "notify", "interrupt"], description: "override; defaults are usually right" }
     }, required: ["type", "text"] }
   },
   {
     name: "room_wait",
     annotations: RO,
-    description: "Sleep up to 30 seconds, e.g. to let a human finish in your region, then call room_state again.",
-    inputSchema: { type: "object", properties: { seconds: int2("1-30") } }
+    description: "Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). Returns what happened. Then call room_state.",
+    inputSchema: { type: "object", properties: { claimId: str("wait for this claim to be released"), questionId: str("wait for an answer to this question"), timeoutMs: int2("default 30000, max 120000") } }
+  },
+  {
+    name: "room_preview_merge",
+    annotations: RO,
+    description: "Would your uncommitted changes and another person's combine cleanly? Three-way merge in memory against the base commit; nothing is written. Reports clean paths and conflicting hunks.",
+    inputSchema: { type: "object", properties: { person: str("the other person") }, required: ["person"] }
   }
 ];
+var WAIT_DEFAULT = 3e4;
+var WAIT_MAX = 12e4;
+var STALE_MS = 10 * 60 * 1e3;
 function createTools(ctx) {
-  const { room, me, dir } = ctx;
-  const sleep = ctx.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-  let seenBus = room.bus.length;
-  const presences = () => {
-    if (!ctx.awareness) return [];
-    return Array.from(ctx.awareness.getStates().values()).filter((s) => !!s && typeof s === "object" && !!s.user);
+  const now = ctx.now ?? (() => Date.now());
+  const doJoin = ctx.join ?? joinSession;
+  const doLeave = ctx.leave ?? leaveSession;
+  let readCursor = 0;
+  const upgraded = /* @__PURE__ */ new Set();
+  const S = () => {
+    const s = ctx.getSession();
+    if (!s) throw new NotJoined();
+    return s;
   };
-  const isMe = (p) => p.name === me.name && p.kind === me.kind;
-  const myClaims = () => room.openClaims().filter((c) => c.by === me.name && c.byKind === me.kind);
-  const setPresence = (patch) => {
-    const a = ctx.awareness;
-    if (!a) return;
-    const cur = a.getLocalState() ?? {};
-    a.setLocalState({ ...cur, ...patch });
+  const isMe = (s, p) => p.name === s.me.name && p.kind === s.me.kind;
+  const mine = (s) => s.room.openClaims().filter((c) => c.by === s.me.name && c.byKind === s.me.kind);
+  const others = (s) => {
+    const names = /* @__PURE__ */ new Set();
+    for (const k of s.room.scopes.keys()) names.add(k);
+    for (const k of s.room.overlays.keys()) names.add(k);
+    for (const p of presences(s)) names.add(p.user.name);
+    names.delete(s.me.name);
+    return Array.from(names).sort();
   };
-  const requireFile = (path) => {
-    if (typeof path !== "string" || !path) return { err: "error: path is required" };
-    if (!room.hasFile(path)) return { err: `error: ${path} is not in the room (known: ${room.paths().slice(0, 20).join(", ") || "none"})` };
-    return path;
+  const presences = (s) => Array.from(s.awareness.getStates().values()).filter((x) => !!x && typeof x === "object" && !!x.user);
+  const setPresence = (s, patch) => {
+    const cur = s.awareness.getLocalState() ?? {};
+    s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() });
   };
-  const activityIn = (path, from2, to) => {
-    const lines = [];
-    for (const c of room.claimsFor(path)) if (rangesOverlap(c.from, c.to, from2, to)) lines.push(`claim ${c.id}: ${describeClaim(c)}`);
-    for (const p of presences()) {
-      if (!p.cursor || p.cursor.path !== path) continue;
-      if (!rangesOverlap(p.cursor.from, p.cursor.to, from2, to)) continue;
-      lines.push(`cursor: ${displayName(p.user)} at ${path}:${p.cursor.from}-${p.cursor.to}${p.status ? ` (${p.status})` : ""}`);
-    }
-    return lines;
+  const base = (s) => s.room.meta.base ?? "HEAD";
+  const baseText = async (s, path2) => gitShow(s.dir, base(s), path2);
+  const liveText = async (s, path2, person) => {
+    if (s.room.deleted.get(person)?.has(path2)) return null;
+    const ov = s.room.text(path2, person);
+    if (ov !== void 0) return ov;
+    return baseText(s, path2);
   };
-  const gitShow = async (path) => {
-    try {
-      const { stdout } = await exec("git", ["-C", dir, "show", `HEAD:${path}`], { maxBuffer: 8 * 1024 * 1024 });
-      return stdout;
-    } catch {
-      return null;
-    }
+  const lines = (t) => t.endsWith("\n") ? t.split("\n").length - 1 : t.split("\n").length;
+  const forMe = (s, m) => {
+    if (m.from === s.me.name && m.fromKind === "agent") return false;
+    if (m.to === s.me.name) return true;
+    if (m.type === "conflict") return mine(s).some((c) => c.id === m.claimId || c.id === m.otherClaimId);
+    return false;
   };
-  const diffOne = async (path) => {
-    const live = room.text(path) ?? "";
-    const committed = await gitShow(path) ?? "";
-    if (live === committed) return "";
-    return createTwoFilesPatch(`a/${path}`, `b/${path}`, committed, live, "HEAD", "live", { context: 3 });
+  const inbox = (s) => {
+    const all2 = s.room.messages();
+    const fresh = all2.slice(readCursor).filter((m) => forMe(s, m));
+    readCursor = all2.length;
+    if (!fresh.length) return "";
+    const rank = { interrupt: 0, notify: 1, fyi: 2 };
+    fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at);
+    return `[inbox ${fresh.length}]
+${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("\n")}
+
+`;
   };
-  const handlers = {
-    async room_state() {
-      const m = room.meta;
-      const out = [];
-      out.push(`you: ${displayName(me)}`);
-      out.push(`meta: repo=${m.repo ?? "?"} branch=${m.branch ?? "?"} base=${(m.base ?? "?").slice(0, 10)} files=${room.paths().length}`);
-      const ps = presences();
-      out.push(`participants (${ps.length}):`);
-      for (const p of ps) {
-        const cur = p.cursor ? ` cursor=${p.cursor.path}:${p.cursor.from}-${p.cursor.to}` : "";
-        out.push(`  - ${displayName(p.user)}${isMe(p.user) ? " (you)" : ""} [${p.user.kind}]${p.status ? ` status=${p.status}` : ""}${cur}`);
+  const affected = async (s, paths, symbols) => {
+    const out = /* @__PURE__ */ new Map();
+    for (const person of others(s)) {
+      const sc = s.room.scope(person);
+      const hitPath = sc && paths.find((p) => scopeCovers(sc, p));
+      if (hitPath) {
+        out.set(person, `scope ${sc.area} covers ${hitPath}`);
+        continue;
       }
-      const cs = room.openClaims();
-      out.push(`open claims (${cs.length}):`);
-      for (const c of cs) out.push(`  - ${c.id}: ${describeClaim(c)}${c.by === me.name && c.byKind === me.kind ? " (yours)" : ""}`);
-      const msgs = room.lastMessages(10);
-      out.push(`last ${msgs.length} bus messages:`);
-      for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`);
-      const unread = Math.max(0, room.bus.length - seenBus);
-      seenBus = room.bus.length;
-      out.push(`unread since your last room_state: ${unread}`);
+      if (!symbols.length) continue;
+      const files = new Set(s.room.changedPaths(person));
+      let hit;
+      for (const f of files) {
+        const t = s.room.text(f, person) ?? "";
+        const sym = symbols.find((x) => t.includes(x));
+        if (sym) {
+          hit = `${f} uses ${sym}`;
+          break;
+        }
+      }
+      if (!hit && sc?.paths.length) {
+        for (const sym of symbols) {
+          try {
+            const res = (await git(s.dir, ["grep", "-l", "--fixed-strings", sym, base(s), "--", ...sc.paths])).trim();
+            if (res) {
+              hit = `${res.split("\n")[0].replace(/^[^:]*:/, "")} uses ${sym}`;
+              break;
+            }
+          } catch {
+          }
+        }
+      }
+      if (hit) out.set(person, hit);
+    }
+    return out;
+  };
+  const upgrade = async (s, m, paths, symbols) => {
+    const notes = [];
+    for (const [person, why] of await affected(s, paths, symbols)) {
+      if (m.to === person) continue;
+      const key = `${m.id}:${person}`;
+      if (upgraded.has(key)) continue;
+      upgraded.add(key);
+      const { id: _id, at: _at, from: _f, fromKind: _k, ...body } = m;
+      s.room.post(s.me, { ...body, to: person, priority: "notify" });
+      notes.push(`notified ${person}'s agent (${why})`);
+    }
+    return notes;
+  };
+  const claimLine = (s, c) => {
+    const stale = !presences(s).some((p) => p.user.name === c.by) && now() - c.at > STALE_MS;
+    return `  - ${c.id}: ${describeClaim(c)}${isMe(s, { name: c.by, kind: c.byKind }) ? " (yours)" : ""}${stale ? " [stale: owner offline]" : ""}`;
+  };
+  const ledgerLines = (s, q, label) => {
+    const entries = s.room.ledger({ ...q, limit: q.limit ?? 10 }).filter((m) => !(m.to && m.to !== s.me.name && m.from !== s.me.name));
+    const plans = s.room.openClaims().filter((c) => c.plans?.length && !(c.by === s.me.name) && (q.path ? c.path === q.path : true) && (q.area ? s.room.allScopes().some((sc) => sc.area === q.area && scopeCovers(sc, c.path)) : true));
+    const out = [`${label} ledger (${entries.length}):`];
+    for (const m of entries) out.push(`  - ${new Date(m.at).toISOString().slice(11, 19)} ${formatMsg(m)}`);
+    if (plans.length) {
+      out.push("open plans by others:");
+      for (const c of plans) out.push(`  - ${c.by}'s agent in ${c.path}: ${formatPlans(c.plans)}`);
+    }
+    return out;
+  };
+  const scopeLine = (sc) => `${sc.area}: ${sc.summary} (${sc.paths.join(", ")})`;
+  const handlers = {
+    async room_join(a) {
+      const cur = ctx.getSession();
+      if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`;
+      const s = await doJoin({
+        dir: typeof a.dir === "string" && a.dir ? a.dir : ctx.cwd,
+        name: typeof a.name === "string" && a.name ? a.name : void 0,
+        room: typeof a.room === "string" && a.room ? a.room : void 0,
+        server: typeof a.server === "string" && a.server ? a.server : void 0
+      });
+      ctx.setSession(s);
+      readCursor = s.room.bus.length;
+      const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
+      const ps = presences(s).filter((p) => !isMe(s, p.user));
+      out.push(ps.length ? `here now: ${ps.map((p) => displayName(p.user)).join(", ")}` : "nobody else is here yet");
+      for (const sc of s.room.allScopes()) if (sc.by !== s.me.name) out.push(`  ${sc.by} is on ${scopeLine(sc)}`);
+      const cs = s.room.openClaims();
+      if (cs.length) {
+        out.push(`open claims (${cs.length}):`);
+        for (const c of cs) out.push(claimLine(s, c));
+      }
+      out.push(`browser view: ${s.browserUrl}`);
+      out.push("next: room_scope(area, summary, paths) before you edit.");
       return out.join("\n");
     },
-    async room_read_live(a) {
-      const p = requireFile(a.path);
-      if (typeof p !== "string") return p.err;
-      const text = room.text(p) ?? "";
-      const act = activityIn(p, 1, Number.MAX_SAFE_INTEGER);
-      return `${p} (${room.lineCount(p)} lines)
-${act.length ? act.map((l) => `! ${l}`).join("\n") + "\n" : ""}${withLineNumbers(text)}`;
-    },
-    async room_read_committed(a) {
-      if (typeof a.path !== "string" || !a.path) return "error: path is required";
-      const s = await gitShow(a.path);
-      return s === null ? `error: ${a.path} is not at HEAD in ${dir}` : withLineNumbers(s);
-    },
-    async room_diff(a) {
-      if (typeof a.path === "string" && a.path) {
-        const d = await diffOne(a.path);
-        return d || `${a.path}: no difference between HEAD and live`;
+    async room_leave() {
+      const s = S();
+      const released = mine(s);
+      for (const c of released) {
+        s.room.removeClaim(c.id);
+        s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, summary: "left the room" });
       }
-      const parts = [];
-      for (const p of room.paths()) {
-        const d = await diffOne(p);
-        if (d) parts.push(d);
+      s.room.clearScope(s.me.name);
+      ctx.setSession(null);
+      await doLeave(s);
+      return `left ${s.roomName}; released ${released.length} claim(s)`;
+    },
+    async room_scope(a) {
+      const s = S();
+      const area = String(a.area ?? "").trim().toLowerCase().split(/\s+/)[0];
+      const summary = String(a.summary ?? "").trim();
+      const paths = Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string" && !!x) : [];
+      if (!area || !summary || !paths.length) return "error: area, summary and paths are required";
+      s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths });
+      s.room.post(s.me, { type: "scope", area, summary, paths });
+      setPresence(s, { status: `on ${area}: ${summary}` });
+      const out = [`scope set: ${scopeLine({ area, summary, paths })}`];
+      const overlapping = s.room.allScopes().filter((sc) => sc.by !== s.me.name && paths.some((p) => scopeCovers(sc, p) || sc.paths.some((q) => scopeCovers({ paths }, q))));
+      for (const sc of overlapping) out.push(`overlaps ${sc.by}'s scope ${scopeLine(sc)} \u2014 coordinate before touching shared files`);
+      out.push(...ledgerLines(s, { area, limit: 20 }, area));
+      return out.join("\n");
+    },
+    async room_state() {
+      const s = S();
+      const m = s.room.meta;
+      const out = [];
+      out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? "?").slice(0, 10)})`);
+      const ps = presences(s);
+      const names = /* @__PURE__ */ new Set([...ps.map((p) => p.user.name), ...s.room.scopes.keys()]);
+      out.push(`participants (${names.size}):`);
+      for (const n of Array.from(names).sort()) {
+        const p = ps.find((x) => x.user.name === n && x.user.kind === "agent") ?? ps.find((x) => x.user.name === n);
+        const sc = s.room.scope(n);
+        const ago = p?.lastActive ? `${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
+        out.push(`  - ${n}${n === s.me.name ? " (you)" : ""}: ${p?.status ?? "offline"} \xB7 active ${ago}${sc ? ` \xB7 ${scopeLine(sc)}` : " \xB7 no scope"}`);
       }
-      return parts.length ? parts.join("\n") : "no differences between HEAD and live";
+      const areas = s.room.areaSummary();
+      if (areas.length) {
+        out.push("areas:");
+        for (const l of areas) out.push(`  - ${l}`);
+      }
+      const cs = s.room.openClaims();
+      out.push(`open claims (${cs.length}):`);
+      for (const c of cs) out.push(claimLine(s, c));
+      const changed = /* @__PURE__ */ new Map();
+      for (const person of [s.me.name, ...others(s)]) {
+        const ps2 = s.room.changedPaths(person);
+        if (ps2.length) changed.set(person, ps2);
+      }
+      out.push("uncommitted changes:");
+      if (!changed.size) out.push("  (none)");
+      for (const [person, ps2] of changed) out.push(`  - ${person}: ${ps2.join(", ")}`);
+      const msgs = s.room.lastMessages(10).filter((x) => !(x.to && x.to !== s.me.name && x.from !== s.me.name));
+      out.push(`recent bus (${msgs.length}):`);
+      for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`);
+      return out.join("\n");
     },
-    async room_who(a) {
-      const p = requireFile(a.path);
-      if (typeof p !== "string") return p.err;
-      const n = room.lineCount(p);
-      const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n);
-      const act = activityIn(p, r.from, r.to);
-      return act.length ? `${p}:${r.from}-${r.to}
-${act.join("\n")}` : `${p}:${r.from}-${r.to}: nobody active, no claims`;
-    },
-    async room_claim(a) {
+    async room_read(a) {
+      const s = S();
       if (typeof a.path !== "string" || !a.path) return "error: path is required";
       const p = a.path;
+      const person = typeof a.person === "string" && a.person ? a.person : s.me.name;
+      const t = await liveText(s, p, person);
+      if (t === null) return `${p}: deleted by ${person} (uncommitted)`;
+      if (t === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes`;
+      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== void 0 ? ", uncommitted edits" : ", unchanged from base"})`];
+      const who = s.room.whoChanged(p).filter((x) => x !== person);
+      if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(", ")} \u2014 room_read with person= to see theirs`);
+      for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`);
+      out.push(withLineNumbers(t));
+      out.push(...ledgerLines(s, { path: p, limit: 10 }, p));
+      return out.join("\n");
+    },
+    async room_diff(a) {
+      const s = S();
+      const person = typeof a.person === "string" && a.person ? a.person : s.me.name;
+      const one = async (p) => {
+        const b = await baseText(s, p) ?? "";
+        const l = await liveText(s, p, person);
+        const live = l === null ? "" : l ?? b;
+        return live === b ? "" : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, "base", person, { context: 3 });
+      };
+      if (typeof a.path === "string" && a.path) return await one(a.path) || `${a.path}: no difference between base and ${person}'s version`;
+      const parts = [];
+      for (const p of s.room.changedPaths(person)) {
+        const d = await one(p);
+        if (d) parts.push(d);
+      }
+      return parts.length ? parts.join("\n") : `${person} has no uncommitted changes`;
+    },
+    async room_who(a) {
+      const s = S();
+      if (typeof a.path !== "string" || !a.path) return "error: path is required";
+      const p = a.path;
+      const t = await liveText(s, p, s.me.name);
+      const n = t ? lines(t) : 1;
+      const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n);
+      const out = [];
+      for (const c of s.room.claimsFor(p)) if (rangesOverlap(c.from, c.to, r.from, r.to)) out.push(`claim ${c.id}: ${describeClaim(c)}`);
+      for (const sc of s.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(`scope: ${sc.by} is on ${scopeLine(sc)}`);
+      const who = s.room.whoChanged(p).filter((x) => x !== s.me.name);
+      if (who.length) out.push(`uncommitted changes by: ${who.join(", ")}`);
+      return out.length ? `${p}:${r.from}-${r.to}
+${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`;
+    },
+    async room_claim(a) {
+      const s = S();
+      if (typeof a.path !== "string" || !a.path) return "error: path is required";
       if (typeof a.intent !== "string" || !a.intent) return "error: intent is required";
-      const isNew = !room.hasFile(p);
-      const n = isNew ? 1 : room.lineCount(p);
+      const p = a.path, intent = a.intent;
+      const plans = parsePlans(a.plans);
+      if (typeof plans === "string") return plans;
+      const t = await liveText(s, p, s.me.name);
+      const isNew = t === void 0 || t === null;
+      const n = isNew ? 1 : lines(t);
       const r = clampRange(Number(a.from), Number(a.to), n);
       if (!Number.isFinite(r.from)) return "error: from/to must be numbers";
-      const others = room.claimsFor(p).filter((c) => !(c.by === me.name && c.byKind === me.kind) && claimsOverlap(c, { path: p, ...r }));
-      const claim2 = room.addClaim({ path: p, from: r.from, to: r.to, by: me.name, byKind: me.kind, intent: a.intent });
-      room.post(me, { type: "claim", claimId: claim2.id, path: p, from_line: r.from, to_line: r.to, intent: a.intent });
-      setPresence({ cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p} ${r.from}-${r.to}: ${a.intent}` });
-      const out = [`claimed ${claim2.id}: ${describeClaim(claim2)}${isNew ? " (new file, not in room yet)" : ""}`];
-      for (const o of others) {
-        const text = `${displayName(me)} claimed ${p}:${r.from}-${r.to} (${a.intent}) overlapping ${describeClaim(o)}`;
-        room.post(me, { type: "conflict", claimId: claim2.id, otherClaimId: o.id, path: p, text });
-        out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}) \u2014 conflict posted to bus. Stop and check with your human before editing.`);
-      }
+      const overl = s.room.claimsFor(p).filter((c) => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }));
+      let claim2;
+      let msg;
+      s.room.doc.transact(() => {
+        claim2 = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent, ...plans.length ? { plans } : {} });
+        msg = s.room.post(s.me, { type: "claim", claimId: claim2.id, path: p, from_line: r.from, to_line: r.to, intent, ...plans.length ? { plans } : {} });
+        for (const o of overl) {
+          const text = `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intent}) overlapping ${describeClaim(o)}`;
+          s.room.post(s.me, { type: "conflict", claimId: claim2.id, otherClaimId: o.id, path: p, text, to: o.by });
+        }
+      }, s.me);
+      s.daemon.touch();
+      setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${p}:${r.from}-${r.to} \u2014 ${intent}` });
+      const out = [`claimed ${claim2.id}: ${describeClaim(claim2)}${isNew ? " (new file)" : ""}`];
+      for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`);
+      const scopesHit = s.room.allScopes().filter((sc) => sc.by !== s.me.name && scopeCovers(sc, p));
+      for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`);
+      out.push(...await upgrade(s, msg, [p], plans.map((x) => x.symbol)));
       return out.join("\n");
     },
     async room_release(a) {
+      const s = S();
       if (typeof a.claimId !== "string") return "error: claimId is required";
-      const c = room.claims.get(a.claimId);
+      const c = s.room.claims.get(a.claimId);
       if (!c) return `error: no open claim ${a.claimId}`;
-      if (!(c.by === me.name && c.byKind === me.kind)) return `error: ${a.claimId} belongs to ${displayName({ name: c.by, kind: c.byKind })}`;
-      room.removeClaim(c.id);
+      if (!isMe(s, { name: c.by, kind: c.byKind })) return `error: ${a.claimId} belongs to ${displayName({ name: c.by, kind: c.byKind })}`;
       const summary = typeof a.summary === "string" && a.summary ? a.summary : void 0;
-      room.post(me, { type: "release", claimId: c.id, path: c.path, ...summary ? { summary } : {} });
-      const next = myClaims()[0];
-      setPresence(next ? { cursor: { path: next.path, from: next.from, to: next.to }, status: `editing ${next.path} ${next.from}-${next.to}: ${next.intent}` } : { cursor: void 0, status: "idle" });
-      return `released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` \u2014 ${summary}` : ""}`;
+      const done = new Set(Array.isArray(a.done) ? a.done.filter((x) => typeof x === "string") : []);
+      const unfulfilled = (c.plans ?? []).filter((pl2) => !done.has(pl2.symbol) && !(summary ?? "").includes(pl2.symbol) && !(pl2.detail && (summary ?? "").includes(pl2.detail)));
+      s.room.removeClaim(c.id);
+      s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, ...summary ? { summary } : {}, ...unfulfilled.length ? { unfulfilled } : {} });
+      s.daemon.touch();
+      const next = mine(s)[0];
+      setPresence(s, next ? { cursor: { path: next.path, from: next.from, to: next.to }, status: `editing ${next.path}:${next.from}-${next.to} \u2014 ${next.intent}` } : { cursor: void 0, status: s.room.scope(s.me.name) ? `on ${s.room.scope(s.me.name).area}` : "idle" });
+      const out = [`released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` \u2014 ${summary}` : ""}`];
+      if (unfulfilled.length) out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} \u2014 if you did them, room_send changed with symbols; if not, others were expecting them`);
+      if (c.plans?.length && !unfulfilled.length) out.push(`reminder: announce with room_send type=changed symbols=[${c.plans.map((x) => x.symbol).join(", ")}] so users of those symbols are told`);
+      return out.join("\n");
     },
     async room_send(a) {
+      const s = S();
       const text = typeof a.text === "string" ? a.text : "";
       if (!text) return "error: text is required";
       const to = typeof a.to === "string" && a.to ? a.to : void 0;
-      if (to === me.name) return `error: you cannot message yourself. To ask ${me.name} (your human) something, just say it in your reply; room_send is for other people's agents.`;
+      if (to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
+      const pr = typeof a.priority === "string" && ["fyi", "notify", "interrupt"].includes(a.priority) ? a.priority : void 0;
+      const withPr = (o) => pr ? { ...o, priority: pr } : o;
       let msg;
+      const notes = [];
       switch (a.type) {
         case "changed": {
           const paths = Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
+          const symbols = Array.isArray(a.symbols) ? a.symbols.filter((x) => typeof x === "string") : [];
           if (!paths.length) return "error: changed requires paths";
-          msg = room.post(me, { type: "changed", paths, summary: text, ...to ? { to } : {} });
+          msg = s.room.post(s.me, withPr({ type: "changed", paths, summary: text, ...symbols.length ? { symbols } : {}, ...to ? { to } : {} }));
+          notes.push(...await upgrade(s, msg, paths, symbols));
           break;
         }
         case "question":
-          msg = room.post(me, { type: "question", text, ...to ? { to } : {} });
+          if (!to) return "error: question requires to (whose agent)";
+          msg = s.room.post(s.me, withPr({ type: "question", text, to }));
+          notes.push(`room_wait questionId=${msg.id} to block for the answer`);
           break;
         case "answer": {
           if (typeof a.inReplyTo !== "string" || !a.inReplyTo) return "error: answer requires inReplyTo";
-          const orig = room.messages().find((m) => m.id === a.inReplyTo);
+          const orig = s.room.messages().find((m) => m.id === a.inReplyTo);
           const dest = to ?? orig?.from;
           if (!dest) return "error: answer requires to (could not infer from inReplyTo)";
-          msg = room.post(me, { type: "answer", to: dest, inReplyTo: a.inReplyTo, text });
+          msg = s.room.post(s.me, withPr({ type: "answer", to: dest, inReplyTo: a.inReplyTo, text }));
           break;
         }
+        case "note":
+          msg = s.room.post(s.me, withPr({ type: "note", text, ...to ? { to } : {} }));
+          break;
         default:
-          return `error: type must be changed|question|answer (got ${String(a.type)})`;
+          return `error: type must be changed|question|answer|note (got ${String(a.type)})`;
       }
-      seenBus = Math.max(seenBus, room.bus.length);
-      return `sent [${msg.id}] ${formatMsg(msg)}`;
+      s.daemon.touch();
+      return [`sent [${msg.id}] ${formatMsg(msg)}`, ...notes].join("\n");
     },
     async room_wait(a) {
-      const s = Math.min(30, Math.max(0, Number(a.seconds ?? 5) || 0));
-      const before = room.bus.length;
-      await sleep(s * 1e3);
-      const arrived = room.bus.length - before;
-      return `waited ${s}s; ${arrived} new bus message(s) arrived \u2014 call room_state`;
+      const s = S();
+      const claimId = typeof a.claimId === "string" && a.claimId ? a.claimId : void 0;
+      const questionId = typeof a.questionId === "string" && a.questionId ? a.questionId : void 0;
+      const timeoutMs2 = Math.min(WAIT_MAX, Math.max(0, Number(a.timeoutMs ?? WAIT_DEFAULT) || WAIT_DEFAULT));
+      if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`;
+      const answered = (id2) => s.room.messages().find((m) => m.type === "answer" && m.inReplyTo === id2);
+      if (questionId) {
+        const an = answered(questionId);
+        if (an) return `answered: ${formatMsg(an)}`;
+      }
+      setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
+      const busStart = s.room.bus.length;
+      const result = await new Promise((resolve5) => {
+        const finish = (r) => {
+          clearTimeout(timer);
+          s.room.claims.unobserve(onClaims);
+          s.room.bus.unobserve(onBus);
+          resolve5(r);
+        };
+        const timer = setTimeout(() => finish(`timeout after ${timeoutMs2}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : "nothing happened"}. Tell your human; proceed only where you do not depend on it.`), timeoutMs2);
+        const onClaims = () => {
+          if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`);
+        };
+        const onBus = () => {
+          for (const m of s.room.messages().slice(busStart)) {
+            if (questionId && m.type === "answer" && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`);
+            if (m.priority === "interrupt" && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`);
+          }
+        };
+        s.room.claims.observe(onClaims);
+        s.room.bus.observe(onBus);
+      });
+      setPresence(s, { status: "idle" });
+      return `${result}
+call room_state before continuing.`;
+    },
+    async room_preview_merge(a) {
+      const s = S();
+      const person = typeof a.person === "string" && a.person ? a.person : "";
+      if (!person || person === s.me.name) return "error: person is required (someone other than you)";
+      const paths = Array.from(/* @__PURE__ */ new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person)])).sort();
+      if (!paths.length) return `neither you nor ${person} has uncommitted changes`;
+      const clean = [], conflicts = [], onlyOne = [];
+      for (const p of paths) {
+        const b = await baseText(s, p) ?? "";
+        const m = await liveText(s, p, s.me.name), t = await liveText(s, p, person);
+        const mineT = m === null ? "" : m ?? b, theirs = t === null ? "" : t ?? b;
+        if (mineT === b || theirs === b) {
+          onlyOne.push(`${p} (${mineT === b ? person : "you"} only)`);
+          continue;
+        }
+        const res = diff3Merge(mineT.split("\n"), b.split("\n"), theirs.split("\n"));
+        const hunks = res.filter((r) => "conflict" in r);
+        if (!hunks.length) {
+          clean.push(p);
+          continue;
+        }
+        let line = 1;
+        const detail = [];
+        for (const r of res) {
+          if (r.ok) {
+            line += r.ok.length;
+            continue;
+          }
+          const c = r.conflict;
+          if (!c) continue;
+          detail.push(`  around line ${line}: you changed ${c.a.length} line(s), ${person} changed ${c.b.length} line(s)`);
+          line += c.o.length;
+        }
+        conflicts.push(`${p}
+${detail.join("\n")}`);
+      }
+      const out = [`preview merge of your changes with ${person}'s (base ${base(s).slice(0, 10)}):`];
+      if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(", ")}`);
+      if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(", ")}`);
+      if (conflicts.length) out.push(`CONFLICTS:
+${conflicts.join("\n")}`);
+      else out.push("no conflicts");
+      return out.join("\n");
     }
   };
   return {
@@ -29662,17 +33441,36 @@ ${act.join("\n")}` : `${p}:${r.from}-${r.to}: nobody active, no claims`;
     async call(name, args2) {
       const h = handlers[name];
       if (!h) return `error: unknown tool ${name}`;
+      const s = ctx.getSession();
+      if (s && !s.provider.synced && name !== "room_leave") return "error: room not synced yet, retry";
       try {
-        return await h(args2 ?? {});
+        const body = await h(args2 ?? {});
+        const s2 = ctx.getSession();
+        if (s2 && name !== "room_join") s2.daemon.touch();
+        return s2 && name !== "room_join" ? inbox(s2) + body : body;
       } catch (e) {
+        if (e instanceof NotJoined) return "error: not in a room. Call room_join first.";
         return `error: ${e instanceof Error ? e.message : String(e)}`;
       }
     }
   };
 }
+var NotJoined = class extends Error {
+};
+function parsePlans(v) {
+  if (v === void 0 || v === null) return [];
+  if (!Array.isArray(v)) return "error: plans must be an array";
+  const out = [];
+  for (const x of v) {
+    if (!x || typeof x !== "object") return "error: each plan needs kind and symbol";
+    const o = x;
+    if (!["rename", "signature", "delete", "add"].includes(String(o.kind)) || typeof o.symbol !== "string" || !o.symbol) return "error: each plan needs kind (rename|signature|delete|add) and symbol";
+    out.push({ kind: o.kind, symbol: o.symbol, ...typeof o.detail === "string" && o.detail ? { detail: o.detail } : {} });
+  }
+  return out;
+}
 
 // packages/room-mcp/src/wake.ts
-var WAKE_TYPES = /* @__PURE__ */ new Set(["claim", "release", "changed", "conflict", "question"]);
 function cleanMeta(m) {
   const out = {};
   for (const [k, v] of Object.entries(m)) {
@@ -29685,23 +33483,17 @@ function cleanMeta(m) {
 function shouldWake(me, ev, myClaims = []) {
   if (ev.kind === "msg") {
     const m = ev.msg;
-    if (m.from === me.name && m.fromKind === "agent") return null;
-    if (!WAKE_TYPES.has(m.type) && m.type !== "answer") return null;
-    const toMe = m.to === me.name;
-    const broadcast = !m.to;
-    if (m.type === "answer") {
-      if (!toMe) return null;
-    } else if (!(toMe || broadcast)) return null;
-    const path = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
+    if (!shouldWakeOnMsg(me, m, myClaims).wake) return null;
+    const path2 = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
     return {
       content: `${formatMsg(m)}
 ${JSON.stringify(m)}`,
-      meta: cleanMeta({ type: m.type, from: m.from, from_kind: m.fromKind, path, msg_id: m.id })
+      meta: cleanMeta({ type: m.type, from: m.from, from_kind: m.fromKind, path: path2, msg_id: m.id })
     };
   }
   if (ev.kind === "claim") {
     const c = ev.claim;
-    if (c.by === me.name && c.byKind === "agent") return null;
+    if (!shouldWakeOnClaim(me, c, myClaims).wake) return null;
     const hit = myClaims.find((mine) => claimsOverlap(mine, c));
     if (!hit) return null;
     return {
@@ -29726,125 +33518,82 @@ ${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
 }
 
 // packages/room-mcp/src/prompt.ts
-var AGENT_INSTRUCTIONS = (name) => `You are ${name}'s agent in a shared live room. Other people and their agents edit the same repo at the same time; their edits, cursors and claims are visible to you through the room_* tools.
+var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
+
 Rules:
-1. ALWAYS call room_state before editing anything, and again after any wait.
-2. Respect claims and live cursors. If a human or another agent is active in the lines you need, do not edit: room_wait (then re-check) or ask with room_send type=question.
-3. Claim before editing: room_claim(path, from, to, intent). New files can be claimed too (from=1,to=1). Keep claims small and short-lived. room_release when done (with a summary).
-4. Edit files with your normal file tools on disk; the room daemon syncs them live. Never write via the room.
-5. After changing anything others may depend on (signatures, names, tests), room_send type=changed with paths and a summary.
-6. Answer questions addressed to you promptly with room_send type=answer (inReplyTo the question id). room_send is for OTHER people's agents only; to ask your own human something, just say it in your reply and stop.
-7. If room_claim reports a CONFLICT or a conflict event arrives: stop, do not edit the region, tell your human and wait for their decision.
-8. Room events arrive as <channel source="room" type=... from=...> (or <room-event>) blocks: a claim/release/changed near your work, a question for you, a conflict, or a human entering your claimed lines. React with the tools; never ignore a question or conflict.
-9. room_read_live shows what others see right now; room_diff shows what is uncommitted. Prefer live text over your last read when in doubt.
-Be brief on the bus: one line, concrete paths and line numbers.`;
+1. room_join once (it derives the room from the git remote). Then room_scope(area, summary, paths) before editing: one word for the area (auth, orders, ...), one line, the paths you expect to touch. Read the area ledger it returns.
+2. Every tool reply starts with your inbox. interrupt: stop and re-plan before continuing. notify: check whether it touches what you are doing. fyi: nothing.
+3. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, from, to, intent, plans). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
+4. Never edit inside another party's claim. room_wait(claimId) or ask with room_send type=question to=<person>, then room_wait(questionId).
+5. room_release(claimId, summary, done) when finished, then room_send type=changed with paths, a one-line summary and symbols for anything others may depend on.
+6. Answer questions addressed to you on your next move: room_send type=answer inReplyTo=<id>. room_send is for OTHER people's agents; to ask your own human, say it in your reply and stop.
+7. If a wait times out, tell your human and proceed only where you do not depend on the answer.
+8. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
+9. When another person plans to rename a symbol you use, either adopt the new name now (and say so with a note) or ask. When their change lands, room_read their version (person=<name>) and update your callers.
+10. Before telling your human you are done: room_preview_merge(person) for anyone who changed the same files, and report the result. room_leave when your session ends.
+Be brief on the bus: one line, concrete paths, line numbers and symbol names.`;
 
 // packages/room-mcp/src/index.ts
-function findRoomFile() {
-  const env = process.env;
-  const starts = [env.ROOM_DIR, process.cwd(), env.PWD, env.INIT_CWD, env.CODEX_CWD].filter((d) => !!d);
-  for (const start of starts) {
-    let d = resolve(start);
-    for (; ; ) {
-      const f = resolve(d, ".room.json");
-      if (existsSync(f)) {
-        try {
-          return { ...JSON.parse(readFileSync(f, "utf8")), _from: dirname(f) };
-        } catch {
-        }
-      }
-      const up = dirname(d);
-      if (up === d) break;
-      d = up;
-    }
-  }
-  return {};
-}
-function loadConfig() {
-  const e = (k) => process.env[k] && process.env[k].trim() || void 0;
-  const file = findRoomFile();
-  const room = e("ROOM_URL") ?? file.room;
-  const name = e("ROOM_NAME") ?? file.name;
-  const dir = e("ROOM_DIR") ?? file.dir ?? file._from ?? process.cwd();
-  if (!room || !name) {
-    process.stderr.write(`room-mcp: need ROOM_URL and ROOM_NAME, or a .room.json {room,name,dir} in the clone (looked from cwd=${process.cwd()} PWD=${process.env.PWD ?? "-"})
+var log = (s) => process.stderr.write(`room-mcp: ${s}
 `);
-    process.exit(2);
-  }
-  return { room, name, dir: resolve(dir) };
-}
-function splitRoomUrl(url) {
-  const u = new URL(url);
-  const parts = u.pathname.split("/").filter(Boolean);
-  const roomName = parts.pop() ?? "room";
-  u.pathname = parts.length ? "/" + parts.join("/") : "";
-  return { serverUrl: u.toString().replace(/\/$/, ""), roomName };
+function cwd() {
+  const e = (k) => process.env[k] && process.env[k].trim() || void 0;
+  return resolve4(e("ROOM_DIR") ?? e("PWD") ?? e("INIT_CWD") ?? process.cwd());
 }
 async function main() {
-  const cfg = loadConfig();
-  const me = { name: cfg.name, kind: "agent" };
-  const doc = new Doc2();
-  const room = new RoomDoc(doc);
-  const { serverUrl, roomName } = splitRoomUrl(cfg.room);
-  const provider = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: import_websocket.default });
-  const awareness = provider.awareness;
-  awareness.setLocalState({ user: { name: me.name, kind: "agent", color: colorFor(me.name) }, status: "idle" });
-  const tools = createTools({ room, me, dir: cfg.dir, awareness });
+  let session = null;
+  const dir = cwd();
+  const tools = createTools({ getSession: () => session, setSession: (s) => {
+    session = s;
+    if (s) attachChannel(s);
+  }, cwd: dir });
   const mcp = new Server(
-    { name: "room", version: "0.1.0" },
-    { capabilities: { tools: {}, experimental: { "claude/channel": {} } }, instructions: AGENT_INSTRUCTIONS(me.name) }
+    { name: "room", version: "0.2.0" },
+    { capabilities: { tools: {}, experimental: { "claude/channel": {} } }, instructions: AGENT_INSTRUCTIONS() }
   );
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }));
   mcp.setRequestHandler(CallToolRequestSchema, async (req) => ({
     content: [{ type: "text", text: await tools.call(req.params.name, req.params.arguments ?? {}) }]
   }));
-  const push = (w) => {
-    if (!w) return;
-    mcp.notification({ method: "notifications/claude/channel", params: { content: w.content, meta: w.meta } }).catch(() => {
+  const attachChannel = (s) => {
+    const push = (w) => {
+      if (!w) return;
+      mcp.notification({ method: "notifications/claude/channel", params: { content: w.content, meta: w.meta } }).catch(() => {
+      });
+    };
+    const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && c.byKind === "agent");
+    s.room.bus.observe((ev) => {
+      if (ev.transaction.local) return;
+      for (const d of ev.changes.delta) for (const m of d.insert ?? []) push(shouldWake(s.me, { kind: "msg", msg: m }, myClaims()));
     });
+    log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
   };
-  const myClaims = () => room.openClaims().filter((c) => c.by === me.name && c.byKind === "agent");
-  room.bus.observe((ev) => {
-    if (ev.transaction.local) return;
-    for (const d of ev.changes.delta) {
-      if (!d.insert) continue;
-      for (const m of d.insert) push(shouldWake(me, { kind: "msg", msg: m }, myClaims()));
+  const env = (k) => process.env[k] && process.env[k].trim() || void 0;
+  const prior = findRoomFile(dir);
+  if (env("ROOM_URL") || prior) {
+    try {
+      const url = env("ROOM_URL") ?? prior.room;
+      const u = new URL(url);
+      const roomName = decodeRoom(u.pathname.replace(/^\/+/, ""));
+      const s = await joinSession({ dir: env("ROOM_DIR") ?? prior?.dir ?? dir, name: env("ROOM_NAME") ?? prior?.name, room: roomName, server: `${u.protocol}//${u.host}`, log });
+      session = s;
+      attachChannel(s);
+    } catch (e) {
+      log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`);
     }
-  });
-  room.claims.observe((ev) => {
-    if (ev.transaction.local) return;
-    for (const [k, ch] of ev.changes.keys) {
-      if (ch.action !== "add") continue;
-      const c = room.claims.get(k);
-      if (c) push(shouldWake(me, { kind: "claim", claim: c }, myClaims()));
-    }
-  });
-  const lastCursorWake = /* @__PURE__ */ new Map();
-  awareness.on("change", () => {
-    const mine = myClaims();
-    if (!mine.length) return;
-    for (const [clientId, s] of awareness.getStates()) {
-      if (clientId === awareness.clientID) continue;
-      const p = s;
-      if (!p?.user || p.user.kind !== "human" || !p.cursor) continue;
-      const w = shouldWake(me, { kind: "cursor", who: { name: p.user.name, kind: "human" }, cursor: p.cursor }, mine);
-      if (!w) continue;
-      const key = `${w.meta.msg_id}:${p.user.name}`;
-      const now = Date.now();
-      if ((lastCursorWake.get(key) ?? 0) + 3e3 > now) continue;
-      lastCursorWake.set(key, now);
-      push(w);
-    }
-  });
+  }
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
-  process.stderr.write(`room-mcp: ${displayName(me)} joined ${cfg.room} (dir ${cfg.dir})
-`);
-  const bye = () => {
-    try {
-      awareness.setLocalState(null);
-      provider.destroy();
-    } catch {
+  log(session ? "ready" : `ready; not in a room yet (cwd ${dir}) \u2014 call room_join`);
+  let closing = false;
+  const bye = async () => {
+    if (closing) return;
+    closing = true;
+    if (session) {
+      try {
+        await leaveSession(session);
+      } catch {
+      }
     }
     process.exit(0);
   };
@@ -29861,7 +33610,18 @@ if (isEntry) main().catch((e) => {
 });
 export {
   AGENT_INSTRUCTIONS,
+  DEFS,
   createTools,
-  shouldWake,
-  splitRoomUrl
+  decodeRoom,
+  deriveRoomName,
+  encodeRoom,
+  findRoomFile,
+  joinSession,
+  leaveSession,
+  shouldWake
 };
+/*! Bundled license information:
+
+chokidar/esm/index.js:
+  (*! chokidar - MIT License (c) 2012 Paul Miller (paulmillr.com) *)
+*/
