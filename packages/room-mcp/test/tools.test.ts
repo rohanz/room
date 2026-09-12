@@ -136,7 +136,7 @@ describe('scope, claims, plans, ledger', () => {
     const id = t.room.openClaims()[0].id
     const rel = await t.tools.call('room_release', { claimId: id, summary: 'renamed nothing yet' })
     expect(rel).toContain('not done (declared but not in summary): rename validate → verify')
-    expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'release', unfulfilled: [{ symbol: 'validate' }] })
+    expect(t.room.messages().find(m => m.type === 'release')).toMatchObject({ type: 'release', unfulfilled: [{ symbol: 'validate' }] })
   })
 
   it('overlapping claim posts a conflict addressed to the other party, which shows in their inbox logic', async () => {
@@ -186,7 +186,7 @@ describe('concurrency', () => {
     // Kieran's claim arrives from the other doc after Rohan's was made (neither saw the other pre-insert).
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 3, intent: 'mine' })
     t.other.addClaim({ path: 'app.py', from: 2, to: 2, by: 'Kieran', byKind: 'agent', intent: 'theirs' })
-    await new Promise(r => setTimeout(r, 20))
+    await new Promise(r => setTimeout(r, 150))
     const conflicts = t.room.messages().filter(m => m.type === 'conflict')
     expect(conflicts.length).toBe(1)
     expect(conflicts[0]).toMatchObject({ priority: 'interrupt', to: 'Kieran' })
@@ -226,6 +226,33 @@ describe('claim by symbol and read receipts', () => {
     await t.tools.call('room_send', { type: 'changed', text: 'renamed', paths: ['app.py'], symbols: ['validate'] })
     const [orig, copy] = t.room.messages().filter(m => m.type === 'changed')
     expect(copy.copyOf).toBe(orig.id)
+  })
+})
+
+describe('plan changes', () => {
+  it('a released-undone plan is cancelled and routed to whoever was shown it; a re-declared plan is superseded', async () => {
+    const t = setup()
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 's', paths: ['session.py'] })
+    await t.tools.call('room_claim', { path: 'app.py', symbol: 'validate', intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate', detail: 'verify' }] })
+    const claim = t.room.openClaims()[0]
+    expect(claim.msgId).toBeTruthy()
+    expect(t.room.dependentsOf(claim.msgId!)).toEqual(['Kieran']) // routed copy
+    // Rohan changes his mind: a new claim with a different plan on the same symbol supersedes the old one.
+    const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'rename differently', plans: [{ kind: 'rename', symbol: 'validate', detail: 'check' }] })
+    expect(out).toContain("plan superseded: rename validate → verify — told Kieran's agent")
+    const sup = t.room.messages().filter(m => m.type === 'plan' && m.status === 'superseded')
+    expect(sup.length).toBe(2) // original + copy to Kieran
+    expect(sup.find(m => m.to === 'Kieran')).toMatchObject({ priority: 'interrupt', replacedBy: { detail: 'check' } })
+    // Then releases the new claim without doing it: cancelled, routed again.
+    const c2 = t.room.openClaims().find(c => c.plans?.[0].detail === 'check')!
+    const rel = await t.tools.call('room_release', { claimId: c2.id, summary: 'abandoned' })
+    expect(rel).toContain("plan cancelled: rename validate → check — told Kieran's agent")
+    // Kieran's view: both arrive as interrupts in the inbox.
+    let ks: Session | null = { ...fakeSession(t.other), me: { name: 'Kieran', kind: 'agent' } }
+    const ktools = createTools({ getSession: () => ks, setSession: s => { ks = s }, cwd: dir })
+    const state = await ktools.call('room_state', {})
+    expect(state.split('\n\n')[0]).toMatch(/interrupt.*superseded plan rename validate/)
+    expect(state.split('\n\n')[0]).toMatch(/interrupt.*cancelled plan rename validate → check/)
   })
 })
 

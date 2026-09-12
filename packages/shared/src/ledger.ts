@@ -1,7 +1,7 @@
 import type { Msg, Scope } from './types.js'
 
 export type LedgerEntry = Msg
-const LEDGER_TYPES = new Set<Msg['type']>(['scope', 'claim', 'changed', 'release', 'conflict', 'base'])
+const LEDGER_TYPES = new Set<Msg['type']>(['scope', 'claim', 'changed', 'release', 'conflict', 'base', 'plan'])
 
 /** Paths a bus message touches. */
 export function msgPaths(m: Msg): string[] {

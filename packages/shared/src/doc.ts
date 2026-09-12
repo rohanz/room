@@ -20,7 +20,7 @@ type PostBody<T extends Msg> = Omit<T, 'id' | 'at' | 'from' | 'fromKind' | 'prio
 
 /** Default bus priority from spec §6. */
 export function defaultPriority(msg: { type: MsgType; symbols?: readonly string[]; [key: string]: unknown }): Priority {
-  if (msg.type === 'conflict') return 'interrupt'
+  if (msg.type === 'conflict' || msg.type === 'plan') return 'interrupt'
   if (msg.type === 'changed') return msg.symbols?.length ? 'notify' : 'fyi'
   if (msg.type === 'question' || msg.type === 'answer' || msg.type === 'scope' || msg.type === 'base') return 'notify'
   return 'fyi'
@@ -199,6 +199,18 @@ export class RoomDoc {
 
   claimsFor(relpath: string): Claim[] { return this.openClaims().filter(claim => claim.path === relpath) }
 
+  /** Everyone who was shown a message: recipients of routed copies plus agents with a read receipt for it or its copies. */
+  dependentsOf(msgId: string): string[] {
+    const out = new Set<string>(this.seenBy(msgId))
+    for (const m of this.messages()) if (m.copyOf === msgId) { if (m.to) out.add(m.to); for (const p of this.seenBy(m.id)) out.add(p) }
+    return Array.from(out).sort()
+  }
+
+  setClaimMsg(claimId: string, msgId: string, origin?: unknown): void {
+    const c = this.claims.get(claimId)
+    if (c) this.doc.transact(() => { this.claims.set(claimId, { ...c, msgId }) }, origin)
+  }
+
   addClaim(input: Omit<Claim, 'id' | 'at' | 'anchor'>, origin?: unknown): Claim {
     const text = this.overlayText(input.by, input.path)
     const anchor = text ? makeAnchor(text, input.from, input.to) : undefined
@@ -304,5 +316,5 @@ function makeAnchor(text: Y.Text, from: number, to: number): ClaimAnchor {
 }
 
 export function isMsgType(value: string): value is MsgType {
-  return ['claim', 'release', 'changed', 'question', 'answer', 'conflict', 'note', 'scope', 'base'].includes(value)
+  return ['claim', 'release', 'changed', 'question', 'answer', 'conflict', 'note', 'scope', 'base', 'plan'].includes(value)
 }

@@ -9,7 +9,7 @@ import {
 } from '@room/shared'
 import type {
   Claim, Identity, Presence, Msg, Plan, Priority, Scope,
-  ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg,
+  ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg, PlanMsg,
 } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { joinSession, leaveSession, type JoinOptions, type Session } from './session.js'
@@ -262,6 +262,14 @@ export function createTools(ctx: ToolCtx): Tools {
     for (const person of [s.me.name, ...others(s)]) for (const p of s.room.changedPaths(person)) set.add(p)
     return Array.from(set).filter(p => s.graph!.graph.has(p))
   }
+  /** A plan on a released-undone or re-declared claim: tell everyone who was shown the original, at interrupt. */
+  const planChanged = (s: Session, c: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan): string[] => {
+    const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter(p => p !== s.me.name)
+    const base: Omit<PlanMsg, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> = { type: 'plan', status, claimId: c.id, path: c.path, plan, text, ...(replacedBy ? { replacedBy } : {}) }
+    const orig = s.room.post<PlanMsg>(s.me, base)
+    for (const p of deps) s.room.post<PlanMsg>(s.me, { ...base, to: p, copyOf: orig.id })
+    return deps.length ? [`plan ${status}: ${formatPlans([plan])} — told ${deps.map(d => `${d}'s agent`).join(', ')} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} — nobody had been shown it`]
+  }
   const upgrade = async (s: Session, m: Msg, paths: string[], symbols: string[]): Promise<string[]> => {
     const notes: string[] = []
     for (const [person, why] of await affected(s, paths, symbols)) {
@@ -318,7 +326,11 @@ export function createTools(ctx: ToolCtx): Tools {
     async room_leave() {
       const s = S()
       const released = mine(s)
-      for (const c of released) { s.room.removeClaim(c.id); s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: 'left the room' }) }
+      for (const c of released) {
+        s.room.removeClaim(c.id)
+        s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: 'left the room', ...(c.plans?.length ? { unfulfilled: c.plans } : {}) })
+        for (const pl of c.plans ?? []) planChanged(s, c, pl, 'cancelled', 'left the room')
+      }
       s.room.clearScope(s.me.name)
       ctx.setSession(null)
       await doLeave(s)
@@ -447,9 +459,18 @@ export function createTools(ctx: ToolCtx): Tools {
           s.room.post<ConflictMsg>(s.me, { type: 'conflict', claimId: claim.id, otherClaimId: o.id, path: p, text, to: o.by })
         }
       }, s.me)
+      s.room.setClaimMsg(claim.id, msg.id)
       s.daemon.touch()
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} — ${intent}` })
       const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew ? ' (new file)' : ''}`]
+      // A new plan on a symbol I already have an open plan for supersedes the old one.
+      for (const pl of plans) {
+        for (const other of mine(s)) {
+          if (other.id === claim.id) continue
+          const old = other.plans?.find(x => x.symbol === pl.symbol && (x.kind !== pl.kind || x.detail !== pl.detail))
+          if (old) out.push(...planChanged(s, other, old, 'superseded', `replaced by ${formatPlans([pl])} in claim ${claim.id}`, pl))
+        }
+      }
       for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`)
       if (s.graph && plans.length) {
         await s.graph.ready
@@ -480,7 +501,10 @@ export function createTools(ctx: ToolCtx): Tools {
         ? { cursor: { path: next.path, from: next.from, to: next.to }, status: `editing ${next.path}:${next.from}-${next.to} — ${next.intent}` }
         : { cursor: undefined, status: s.room.scope(s.me.name) ? `on ${s.room.scope(s.me.name)!.area}` : 'idle' })
       const out = [`released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` — ${summary}` : ''}`]
-      if (unfulfilled.length) out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} — if you did them, room_send changed with symbols; if not, others were expecting them`)
+      if (unfulfilled.length) {
+        out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} — if you did them, room_send changed with symbols; if not, others were expecting them`)
+        for (const pl of unfulfilled) out.push(...planChanged(s, c, pl, 'cancelled', summary ?? 'released without doing it'))
+      }
       if (c.plans?.length && !unfulfilled.length) out.push(`reminder: announce with room_send type=changed symbols=[${c.plans.map(x => x.symbol).join(', ')}] so users of those symbols are told`)
       return out.join('\n')
     },

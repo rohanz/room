@@ -40,6 +40,8 @@ export interface Claim {
   /** Absent when the owner's overlay did not exist when the claim was made. */
   anchor?: ClaimAnchor
   plans?: Plan[]
+  /** Id of the bus message announcing this claim (dependents are found through it). */
+  msgId?: string
 }
 
 export interface Scope {
@@ -54,7 +56,7 @@ export interface Scope {
 }
 
 export type Priority = 'fyi' | 'notify' | 'interrupt'
-export type MsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'note' | 'scope' | 'base'
+export type MsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'note' | 'scope' | 'base' | 'plan'
 
 export interface MsgBase {
   id: string
@@ -78,7 +80,9 @@ export interface NoteMsg extends MsgBase { type: 'note'; text: string }
 export interface ScopeMsg extends MsgBase { type: 'scope'; area: string; summary: string; paths: string[] }
 /** The room's base commit moved forward (someone committed/pulled a descendant). */
 export interface BaseMsg extends MsgBase { type: 'base'; base: string; prev: string; commits: number; paths: string[]; summary: string }
-export type Msg = ClaimMsg | ReleaseMsg | ChangedMsg | QuestionMsg | AnswerMsg | ConflictMsg | NoteMsg | ScopeMsg | BaseMsg
+/** A declared plan changed: cancelled (released undone) or superseded by a new plan on the same symbol. Routed to everyone who was shown the original. */
+export interface PlanMsg extends MsgBase { type: 'plan'; status: 'cancelled' | 'superseded'; claimId: string; path: string; plan: Plan; replacedBy?: Plan; text: string }
+export type Msg = ClaimMsg | ReleaseMsg | ChangedMsg | QuestionMsg | AnswerMsg | ConflictMsg | NoteMsg | ScopeMsg | BaseMsg | PlanMsg
 
 export interface Meta {
   repo?: string
