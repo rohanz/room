@@ -36,9 +36,20 @@ async function githubCanRead(token: string, ownerRepo: string): Promise<boolean>
     return true
   } catch { return false }
 }
+/** Clients encode the room name once or twice; decode until it stops changing. */
+function roomNameOf(roomPath: string): string {
+  let name = roomPath.replace(/^\/+/, '')
+  for (let i = 0; i < 3; i++) {
+    let next: string
+    try { next = decodeURIComponent(name) } catch { break }
+    if (next === name) break
+    name = next
+  }
+  return name
+}
 /** "github.com%2Fowner%2Frepo%2Fbranch" (or decoded) -> "owner/repo" */
 function githubRepoOf(roomPath: string): string | undefined {
-  const name = (() => { try { return decodeURIComponent(roomPath) } catch { return roomPath } })().replace(/^\/+/, '')
+  const name = roomNameOf(roomPath)
   const m = name.match(/^github\.com\/([^/]+)\/([^/]+)\//)
   return m ? `${m[1]}/${m[2]}` : undefined
 }
@@ -73,7 +84,7 @@ const server = http.createServer((req, res) => {
           res.writeHead(403, { 'content-type': 'text/plain' }); res.end(why); return
         }
         const view = crypto.randomBytes(16).toString('hex')
-        viewTokens.set(view, { room: decodeURIComponent(room), exp: Date.now() + VIEW_TTL })
+        viewTokens.set(view, { room: roomNameOf(room), exp: Date.now() + VIEW_TTL })
         for (const [k, v] of viewTokens) if (v.exp < Date.now()) viewTokens.delete(k)
         saveViewTokens()
         res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ view, expiresIn: VIEW_TTL }))
@@ -107,7 +118,7 @@ server.on('upgrade', (req, socket, head) => {
   const view = url.searchParams.get('view')
   if (view) {
     const v = viewTokens.get(view)
-    const roomName = (() => { try { return decodeURIComponent(url.pathname.replace(/^\/+/, '')) } catch { return url.pathname } })()
+    const roomName = roomNameOf(url.pathname)
     if (v && v.exp > Date.now() && v.room === roomName) return accept()
     return refuse(socket, 403, 'Forbidden: view token invalid for this room')
   }
