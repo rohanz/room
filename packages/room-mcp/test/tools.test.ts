@@ -83,8 +83,35 @@ describe('session gating', () => {
     expect(t.session).toBeNull()
   })
 
-  it('lists the thirteen tools', () => {
-    expect(DEFS.map(d => d.name)).toEqual(['room_join', 'room_leave', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_impact', 'room_preview_merge'])
+  it('a fresh join clears stale claims and scope left under my name; shutdown leaves cleanly', async () => {
+    const t = setup({ joined: false })
+    t.room.setScope({ by: 'Rohan', byKind: 'agent', area: 'old', summary: 'from last time', paths: ['app.py'] })
+    t.room.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Rohan', byKind: 'agent', intent: 'ghost' })
+    await t.tools.call('room_join', {})
+    expect(t.room.scope('Rohan')).toBeUndefined()
+    expect(t.room.openClaims()).toEqual([])
+    expect(t.room.messages().some(m => m.type === 'release' && m.summary === 'stale from an earlier session')).toBe(true)
+    await t.tools.call('room_scope', { area: 'x', summary: 'y', paths: ['app.py'] })
+    await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'z' })
+    await t.tools.shutdown()
+    expect(t.session).toBeNull()
+    expect(t.room.scope('Rohan')).toBeUndefined()
+    expect(t.room.openClaims()).toEqual([])
+  })
+
+  it('room_done releases, clears scope, posts a done note, keeps the session', async () => {
+    const t = setup()
+    await t.tools.call('room_scope', { area: 'api', summary: 's', paths: ['app.py'] })
+    await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'x' })
+    const out = await t.tools.call('room_done', { summary: 'validation added, 4 tests pass' })
+    expect(out).toContain('marked done (api); released 1 claim(s)')
+    expect(t.room.scope('Rohan')).toBeUndefined()
+    expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'note', text: 'done (api): validation added, 4 tests pass' })
+    expect(t.session).not.toBeNull()
+  })
+
+  it('lists the fourteen tools', () => {
+    expect(DEFS.map(d => d.name)).toEqual(['room_join', 'room_leave', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_impact', 'room_preview_merge'])
   })
 })
 

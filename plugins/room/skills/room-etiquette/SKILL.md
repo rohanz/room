@@ -44,8 +44,9 @@ disk; edit files with your normal tools.
 12. Before telling your human you are done: `room_preview_merge(person, run=<tests>)`
     against each person who changed the same files, using their CURRENT state. Do not wait
     for them to finish their task and do not ask them to tell you when they are ready; if
-    their later work conflicts, they will see it in their own preview. `room_leave` when the
-    session ends.
+    their later work conflicts, they will see it in their own preview. Then
+    `room_done(summary)` so the room shows your task as finished; stay in the room for
+    questions. `room_leave` when the session ends.
 
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.
 

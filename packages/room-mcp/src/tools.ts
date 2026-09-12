@@ -48,6 +48,10 @@ export interface Tools {
   call(name: string, args: Record<string, unknown>): Promise<string>
   /** Attach the hooks bridge (state file + wake) to a session; idempotent. */
   attachHooks(s: Session): void
+  /** Release claims, clear scope, stop the bridge and daemon (process exit path). */
+  shutdown(): Promise<void>
+  /** For sessions joined outside room_join (auto-join): clear stale state under my name. */
+  clearStale(s: Session): number
 }
 
 const str = (d: string) => ({ type: 'string', description: d })
@@ -94,6 +98,8 @@ export const DEFS: ToolDef[] = [
     }, required: ['type', 'text'] } },
   { name: 'room_wait', annotations: RO, description: 'Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). Returns what happened. Then call room_state.',
     inputSchema: { type: 'object', properties: { claimId: str('wait for this claim to be released'), questionId: str('wait for an answer to this question'), timeoutMs: int('default 30000, max 120000') } } },
+  { name: 'room_done', annotations: RW, description: 'Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. Call after your final room_preview_merge, before reporting to your human. Stay in the room for questions.',
+    inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result') }, required: ['summary'] } },
   { name: 'room_impact', annotations: RO, description: 'Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
   { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and another person\'s combine cleanly? Three-way merge against the common base; nothing in any clone is written. Reports clean paths and conflicting hunks. With `run`, materialises the merged tree in a scratch directory and runs that command there (e.g. the tests), so you can verify code that depends on their unmerged work.',
@@ -283,6 +289,17 @@ export function createTools(ctx: ToolCtx): Tools {
     for (const p of deps) s.room.post<PlanMsg>(s.me, { ...base, to: p, copyOf: orig.id })
     return deps.length ? [`plan ${status}: ${formatPlans([plan])} — told ${deps.map(d => `${d}'s agent`).join(', ')} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} — nobody had been shown it`]
   }
+  /** Release my claims (cancelling their plans) and clear my scope. `why` goes in the release summary. */
+  const cleanupMine = (s: Session, why: string): number => {
+    const released = mine(s)
+    for (const c of released) {
+      s.room.removeClaim(c.id)
+      s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: why, ...(c.plans?.length ? { unfulfilled: c.plans } : {}) })
+      for (const pl of c.plans ?? []) planChanged(s, c, pl, 'cancelled', why)
+    }
+    s.room.clearScope(s.me.name)
+    return released.length
+  }
   const upgrade = async (s: Session, m: Msg, paths: string[], symbols: string[]): Promise<string[]> => {
     const notes: string[] = []
     for (const [person, why] of await affected(s, paths, symbols)) {
@@ -327,6 +344,8 @@ export function createTools(ctx: ToolCtx): Tools {
       for (const m of s.room.messages()) seen.add(m.id)
       observeClaims(s)
       attachHooks(s)
+      const stale = cleanupMine(s, 'stale from an earlier session')
+      if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
       const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
       const ps = presences(s).filter(p => !isMe(s, p.user))
       out.push(ps.length ? `here now: ${ps.map(p => displayName(p.user)).join(', ')}` : 'nobody else is here yet')
@@ -339,17 +358,11 @@ export function createTools(ctx: ToolCtx): Tools {
     },
     async room_leave() {
       const s = S()
-      const released = mine(s)
-      for (const c of released) {
-        s.room.removeClaim(c.id)
-        s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: 'left the room', ...(c.plans?.length ? { unfulfilled: c.plans } : {}) })
-        for (const pl of c.plans ?? []) planChanged(s, c, pl, 'cancelled', 'left the room')
-      }
-      s.room.clearScope(s.me.name)
+      const released = cleanupMine(s, 'left the room')
       ctx.setSession(null)
       bridge?.stop(); bridge = null
       await doLeave(s)
-      return `left ${s.roomName}; released ${released.length} claim(s)`
+      return `left ${s.roomName}; released ${released} claim(s)`
     },
     async room_scope(a) {
       const s = S()
@@ -587,6 +600,17 @@ export function createTools(ctx: ToolCtx): Tools {
       setPresence(s, { status: 'idle' })
       return `${result}\ncall room_state before continuing.`
     },
+    async room_done(a) {
+      const s = S()
+      const summary = String(a.summary ?? '').trim()
+      if (!summary) return 'error: summary is required'
+      const sc = s.room.scope(s.me.name)
+      const released = cleanupMine(s, `done: ${summary}`)
+      s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
+      setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
+      s.daemon.touch()
+      return `marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s), scope cleared. You are still in the room and will be woken for questions.`
+    },
     async room_impact(a) {
       const s = S()
       if (!s.graph) return 'error: no symbol graph in this session'
@@ -664,6 +688,15 @@ export function createTools(ctx: ToolCtx): Tools {
   return {
     list: () => DEFS,
     attachHooks,
+    clearStale: (s: Session) => cleanupMine(s, 'stale from an earlier session'),
+    async shutdown() {
+      const s = ctx.getSession()
+      if (!s) return
+      try { cleanupMine(s, 'session ended') } catch { /* best effort */ }
+      ctx.setSession(null)
+      bridge?.stop(); bridge = null
+      await doLeave(s)
+    },
     async call(name, args) {
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`

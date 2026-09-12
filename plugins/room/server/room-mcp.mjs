@@ -33652,6 +33652,12 @@ var DEFS = [
     inputSchema: { type: "object", properties: { claimId: str("wait for this claim to be released"), questionId: str("wait for an answer to this question"), timeoutMs: int2("default 30000, max 120000") } }
   },
   {
+    name: "room_done",
+    annotations: RW,
+    description: "Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. Call after your final room_preview_merge, before reporting to your human. Stay in the room for questions.",
+    inputSchema: { type: "object", properties: { summary: str("one line: what landed and the test result") }, required: ["summary"] }
+  },
+  {
     name: "room_impact",
     annotations: RO,
     description: "Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.",
@@ -33859,6 +33865,16 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     for (const p of deps) s.room.post(s.me, { ...base2, to: p, copyOf: orig.id });
     return deps.length ? [`plan ${status}: ${formatPlans([plan])} \u2014 told ${deps.map((d) => `${d}'s agent`).join(", ")} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} \u2014 nobody had been shown it`];
   };
+  const cleanupMine = (s, why) => {
+    const released = mine(s);
+    for (const c of released) {
+      s.room.removeClaim(c.id);
+      s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, summary: why, ...c.plans?.length ? { unfulfilled: c.plans } : {} });
+      for (const pl2 of c.plans ?? []) planChanged(s, c, pl2, "cancelled", why);
+    }
+    s.room.clearScope(s.me.name);
+    return released.length;
+  };
   const upgrade = async (s, m, paths, symbols) => {
     const notes = [];
     for (const [person, why] of await affected(s, paths, symbols)) {
@@ -33902,6 +33918,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       for (const m of s.room.messages()) seen.add(m.id);
       observeClaims(s);
       attachHooks(s);
+      const stale = cleanupMine(s, "stale from an earlier session");
+      if (stale || s.room.scope(s.me.name)) log2(`cleared ${stale} stale claim(s) and scope from an earlier session`);
       const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
       const ps = presences(s).filter((p) => !isMe(s, p.user));
       out.push(ps.length ? `here now: ${ps.map((p) => displayName(p.user)).join(", ")}` : "nobody else is here yet");
@@ -33917,18 +33935,12 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     },
     async room_leave() {
       const s = S();
-      const released = mine(s);
-      for (const c of released) {
-        s.room.removeClaim(c.id);
-        s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, summary: "left the room", ...c.plans?.length ? { unfulfilled: c.plans } : {} });
-        for (const pl2 of c.plans ?? []) planChanged(s, c, pl2, "cancelled", "left the room");
-      }
-      s.room.clearScope(s.me.name);
+      const released = cleanupMine(s, "left the room");
       ctx.setSession(null);
       bridge?.stop();
       bridge = null;
       await doLeave(s);
-      return `left ${s.roomName}; released ${released.length} claim(s)`;
+      return `left ${s.roomName}; released ${released} claim(s)`;
     },
     async room_scope(a) {
       const s = S();
@@ -34189,6 +34201,17 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       return `${result}
 call room_state before continuing.`;
     },
+    async room_done(a) {
+      const s = S();
+      const summary = String(a.summary ?? "").trim();
+      if (!summary) return "error: summary is required";
+      const sc = s.room.scope(s.me.name);
+      const released = cleanupMine(s, `done: ${summary}`);
+      s.room.post(s.me, { type: "note", text: `done${sc ? ` (${sc.area})` : ""}: ${summary}` });
+      setPresence(s, { cursor: void 0, status: `done: ${summary.slice(0, 60)}` });
+      s.daemon.touch();
+      return `marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s), scope cleared. You are still in the room and will be woken for questions.`;
+    },
     async room_impact(a) {
       const s = S();
       if (!s.graph) return "error: no symbol graph in this session";
@@ -34277,6 +34300,19 @@ ${conflicts.join("\n")}`);
   return {
     list: () => DEFS,
     attachHooks,
+    clearStale: (s) => cleanupMine(s, "stale from an earlier session"),
+    async shutdown() {
+      const s = ctx.getSession();
+      if (!s) return;
+      try {
+        cleanupMine(s, "session ended");
+      } catch {
+      }
+      ctx.setSession(null);
+      bridge?.stop();
+      bridge = null;
+      await doLeave(s);
+    },
     async call(name, args2) {
       const h = handlers[name];
       if (!h) return `error: unknown tool ${name}`;
@@ -34420,7 +34456,7 @@ Rules:
 9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
 10. Never re-create another person's change in your clone, and never edit lines that belong to their claim or announced change. When they declare or announce a rename, signature or new symbol, write your code against the declared name/signature and carry on. Your clone will lag until git merges; that is expected. To verify code that depends on their unmerged work, room_preview_merge(person, run="<test command>") runs the tests on the merged tree without touching any clone.
 11. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
-12. Before telling your human you are done: room_preview_merge(person, run=<tests>) against each person who changed the same files, using their CURRENT state. Do not wait for them to finish their task and do not ask them to tell you when they are ready; if their later work conflicts, they will see it in their own preview. room_leave when your session ends.
+12. Before telling your human you are done: room_preview_merge(person, run=<tests>) against each person who changed the same files, using their CURRENT state. Do not wait for them to finish their task and do not ask them to tell you when they are ready; if their later work conflicts, they will see it in their own preview. Then room_done(summary) so the room shows your task as finished; stay in the room. room_leave when your session ends.
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.`;
 
 // packages/room-mcp/src/index.ts
@@ -34441,6 +34477,8 @@ async function main() {
     session = s;
     attachChannel(s);
     tools.attachHooks(s);
+    const n = tools.clearStale(s);
+    if (n) log(`cleared ${n} stale claim(s) from an earlier session`);
   };
   const mcp = new Server(
     { name: "room", version: "0.2.0" },
@@ -34490,11 +34528,9 @@ async function main() {
   const bye = async () => {
     if (closing) return;
     closing = true;
-    if (session) {
-      try {
-        await leaveSession(session);
-      } catch {
-      }
+    try {
+      await tools.shutdown();
+    } catch {
     }
     process.exit(0);
   };

@@ -30,7 +30,7 @@ async function main() {
   let session: Session | null = null
   const dir = cwd()
   const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir })
-  const adopt = (s: Session) => { session = s; attachChannel(s); tools.attachHooks(s) }
+  const adopt = (s: Session) => { session = s; attachChannel(s); tools.attachHooks(s); const n = tools.clearStale(s); if (n) log(`cleared ${n} stale claim(s) from an earlier session`) }
 
   const mcp = new Server(
     { name: 'room', version: '0.2.0' },
@@ -86,7 +86,7 @@ async function main() {
   const bye = async () => {
     if (closing) return
     closing = true
-    if (session) { try { await leaveSession(session) } catch { /* ignore */ } }
+    try { await tools.shutdown() } catch { /* ignore */ }
     process.exit(0)
   }
   process.on('SIGINT', bye); process.on('SIGTERM', bye)
