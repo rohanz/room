@@ -40,6 +40,10 @@ export class RoomDoc {
   get claims(): Y.Map<Claim> { return this.doc.getMap<Claim>('claims') }
   get bus(): Y.Array<Msg> { return this.doc.getArray<Msg>('bus') }
   get metaMap(): Y.Map<string | number> { return this.doc.getMap<string | number>('meta') }
+  /** Each person's own HEAD: the commit their overlay is a delta from. */
+  get bases(): Y.Map<string> { return this.doc.getMap<string>('bases') }
+  baseOf(person: string): string | undefined { return this.bases.get(person) ?? this.meta.base }
+  setBaseOf(person: string, sha: string, origin?: unknown): void { this.doc.transact(() => { this.bases.set(person, sha) }, origin) }
 
   // ---- overlays ----------------------------------------------------------
 

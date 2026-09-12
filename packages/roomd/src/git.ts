@@ -102,3 +102,8 @@ export const gitPathsBetween = (dir: string, from: string, to: string) =>
   git(dir, ['diff', '--name-only', from, to]).then(s => s.split('\n').filter(Boolean))
 export const gitSubject = (dir: string, rev: string) =>
   git(dir, ['log', '-1', '--format=%s', rev]).then(s => s.trim())
+
+/** True when the commit exists on any remote-tracking branch (i.e. it has been pushed/fetched). */
+export async function gitIsOnRemote(dir: string, sha: string): Promise<boolean> {
+  try { return (await git(dir, ['branch', '-r', '--contains', sha])).trim().length > 0 } catch { return false }
+}

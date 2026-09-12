@@ -29148,6 +29148,18 @@ var RoomDoc = class {
   get metaMap() {
     return this.doc.getMap("meta");
   }
+  /** Each person's own HEAD: the commit their overlay is a delta from. */
+  get bases() {
+    return this.doc.getMap("bases");
+  }
+  baseOf(person) {
+    return this.bases.get(person) ?? this.meta.base;
+  }
+  setBaseOf(person, sha, origin) {
+    this.doc.transact(() => {
+      this.bases.set(person, sha);
+    }, origin);
+  }
   // ---- overlays ----------------------------------------------------------
   overlay(person) {
     let map2 = this.overlays.get(person);
@@ -30252,6 +30264,13 @@ async function gitRelation(dir, head, base) {
 var gitCountBetween = (dir, from2, to) => git(dir, ["rev-list", "--count", `${from2}..${to}`]).then((s) => Number(s.trim()) || 0);
 var gitPathsBetween = (dir, from2, to) => git(dir, ["diff", "--name-only", from2, to]).then((s) => s.split("\n").filter(Boolean));
 var gitSubject = (dir, rev) => git(dir, ["log", "-1", "--format=%s", rev]).then((s) => s.trim());
+async function gitIsOnRemote(dir, sha) {
+  try {
+    return (await git(dir, ["branch", "-r", "--contains", sha])).trim().length > 0;
+  } catch {
+    return false;
+  }
+}
 
 // packages/room-mcp/src/session.ts
 import { existsSync, readFileSync } from "node:fs";
@@ -32746,10 +32765,11 @@ var Daemon = class {
     this.base = base;
     this.tracked = tracked;
     await this.waitForSync();
+    this.roomDoc.setBaseOf(this.name, this.base, this);
     const roomBase = this.roomDoc.meta.base;
     if (roomBase && roomBase !== this.base) {
       const rel = await gitRelation(this.dir, this.base, roomBase);
-      if (rel === "ahead") await this.advanceBase(roomBase, this.base);
+      if (rel === "ahead") await this.maybeAdvance(roomBase, this.base);
       else if (rel === "behind") this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)}); git pull to catch up`);
       else {
         const message = rel === "unknown" ? `room base ${roomBase} is not in this clone (local HEAD ${this.base}) \u2014 git pull, then $room-join` : `local HEAD ${this.base} has diverged from room base ${roomBase} \u2014 rebase or merge onto the room base, then $room-join`;
@@ -32868,12 +32888,21 @@ var Daemon = class {
     this.base = head;
     this.branch = await gitBranch(this.dir);
     this.tracked = await gitTracked(this.dir);
+    this.roomDoc.setBaseOf(this.name, head, this);
     this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
     const roomBase = this.roomDoc.meta.base;
-    if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === "ahead") await this.advanceBase(roomBase, head);
+    if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === "ahead") await this.maybeAdvance(roomBase, head);
     await this.seedLocalOverlay();
     for (const relpath of this.roomDoc.changedPaths(this.name)) if (!this.tracked.has(relpath)) await this.publishDiskState(relpath);
     await this.refreshBaseStatus();
+  }
+  /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
+  async maybeAdvance(from2, to) {
+    if (await gitIsOnRemote(this.dir, to)) await this.advanceBase(from2, to);
+    else {
+      this.setStatus("ahead of base (unpushed): git push");
+      this.log(`HEAD ${to.slice(0, 10)} is ahead of the room base but not pushed; base stays at ${from2.slice(0, 10)}`);
+    }
   }
   async advanceBase(from2, to) {
     const [commits, paths, summary] = await Promise.all([
@@ -32900,6 +32929,7 @@ var Daemon = class {
       const n = await gitCountBetween(this.dir, this.base, roomBase).catch(() => 0);
       this.setStatus(`behind base by ${n || "?"} commit${n === 1 ? "" : "s"}: git pull`);
     } else if (rel === "ahead") {
+      await this.maybeAdvance(roomBase, this.base);
     } else this.setStatus(`${rel === "unknown" ? "behind base (fetch)" : "diverged from base"}: git pull`);
   }
   async seedLocalOverlay() {
@@ -33386,8 +33416,34 @@ function createTools(ctx) {
   const now = ctx.now ?? (() => Date.now());
   const doJoin = ctx.join ?? joinSession;
   const doLeave = ctx.leave ?? leaveSession;
-  let readCursor = 0;
+  const seen = /* @__PURE__ */ new Set();
   const upgraded = /* @__PURE__ */ new Set();
+  const conflictPairs = /* @__PURE__ */ new Set();
+  let observedSession = null;
+  const observeClaims = (s) => {
+    if (observedSession === s) return;
+    observedSession = s;
+    s.room.claims.observe((ev, tr) => {
+      if (tr.local) return;
+      for (const [id2, ch] of ev.changes.keys) {
+        if (ch.action !== "add") continue;
+        const arrived = s.room.openClaims().find((c) => c.id === id2);
+        if (!arrived || arrived.by === s.me.name && arrived.byKind === s.me.kind) continue;
+        for (const m of mine(s)) {
+          if (!claimsOverlap(m, arrived)) continue;
+          const key = [m.id, arrived.id].sort().join(":");
+          if (conflictPairs.has(key) || s.room.messages().some((x) => x.type === "conflict" && [x.claimId, x.otherClaimId].sort().join(":") === key)) {
+            conflictPairs.add(key);
+            continue;
+          }
+          conflictPairs.add(key);
+          if (m.id.localeCompare(arrived.id) > 0) continue;
+          const text = `concurrent overlapping claims: ${describeClaim(m)} and ${describeClaim(arrived)}`;
+          s.room.post(s.me, { type: "conflict", claimId: m.id, otherClaimId: arrived.id, path: m.path, text, to: arrived.by });
+        }
+      }
+    });
+  };
   const S = () => {
     const s = ctx.getSession();
     if (!s) throw new NotJoined();
@@ -33409,12 +33465,17 @@ function createTools(ctx) {
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() });
   };
   const base = (s) => s.room.meta.base ?? "HEAD";
-  const baseText = async (s, path2) => gitShow(s.dir, base(s), path2);
+  const baseFor = (s, person) => s.room.baseOf(person) ?? base(s);
+  const baseText = async (s, path2, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path2);
   const liveText = async (s, path2, person) => {
     if (s.room.deleted.get(person)?.has(path2)) return null;
     const ov = s.room.text(path2, person);
     if (ov !== void 0) return ov;
-    return baseText(s, path2);
+    try {
+      return await baseText(s, path2, person);
+    } catch (e) {
+      throw new NeedFetch(person, baseFor(s, person), e instanceof Error ? e.message : String(e));
+    }
   };
   const lines = (t) => t.endsWith("\n") ? t.split("\n").length - 1 : t.split("\n").length;
   const forMe = (s, m) => {
@@ -33425,9 +33486,17 @@ function createTools(ctx) {
     return false;
   };
   const inbox = (s) => {
-    const all2 = s.room.messages();
-    const fresh = all2.slice(readCursor).filter((m) => forMe(s, m));
-    readCursor = all2.length;
+    const fresh = [];
+    for (const m of s.room.messages()) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      if (forMe(s, m)) fresh.push(m);
+    }
+    if (seen.size > 5e3) {
+      const keep = s.room.lastMessages(2e3).map((m) => m.id);
+      seen.clear();
+      for (const k of keep) seen.add(k);
+    }
     if (!fresh.length) return "";
     const rank = { interrupt: 0, notify: 1, fyi: 2 };
     fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at);
@@ -33556,7 +33625,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         server: typeof a.server === "string" && a.server ? a.server : void 0
       });
       ctx.setSession(s);
-      readCursor = s.room.bus.length;
+      for (const m of s.room.messages()) seen.add(m.id);
+      observeClaims(s);
       const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
       const ps = presences(s).filter((p) => !isMe(s, p.user));
       out.push(ps.length ? `here now: ${ps.map((p) => displayName(p.user)).join(", ")}` : "nobody else is here yet");
@@ -33645,7 +33715,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const t = await liveText(s, p, person);
       if (t === null) return `${p}: deleted by ${person} (uncommitted)`;
       if (t === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes`;
-      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== void 0 ? ", uncommitted edits" : ", unchanged from base"})`];
+      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== void 0 ? ", uncommitted edits" : ", unchanged"} on their HEAD ${baseFor(s, person).slice(0, 10)})`];
       const who = s.room.whoChanged(p).filter((x) => x !== person);
       if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(", ")} \u2014 room_read with person= to see theirs`);
       for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`);
@@ -33796,7 +33866,6 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
         if (an) return `answered: ${formatMsg(an)}`;
       }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
-      const busStart = s.room.bus.length;
       const result = await new Promise((resolve5) => {
         const finish = (r) => {
           clearTimeout(timer);
@@ -33808,8 +33877,8 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
         const onClaims = () => {
           if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`);
         };
-        const onBus = () => {
-          for (const m of s.room.messages().slice(busStart)) {
+        const onBus = (ev) => {
+          for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
             if (questionId && m.type === "answer" && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`);
             if (m.priority === "interrupt" && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`);
           }
@@ -33846,11 +33915,21 @@ call room_state before continuing.`;
       const s = S();
       const person = typeof a.person === "string" && a.person ? a.person : "";
       if (!person || person === s.me.name) return "error: person is required (someone other than you)";
-      const paths = Array.from(/* @__PURE__ */ new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person)])).sort();
-      if (!paths.length) return `neither you nor ${person} has uncommitted changes`;
+      const myBase = baseFor(s, s.me.name), theirBase = baseFor(s, person);
+      let ancestor = myBase;
+      if (theirBase !== myBase) {
+        try {
+          ancestor = (await git(s.dir, ["merge-base", myBase, theirBase])).trim();
+        } catch {
+          return `error: ${person}'s HEAD ${theirBase.slice(0, 10)} is not in this clone; git fetch, then retry`;
+        }
+      }
+      const committedBetween = theirBase === myBase ? [] : (await git(s.dir, ["diff", "--name-only", ancestor, theirBase])).split("\n").filter(Boolean);
+      const paths = Array.from(/* @__PURE__ */ new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person), ...committedBetween])).sort();
+      if (!paths.length) return `neither you nor ${person} has changes relative to ${ancestor.slice(0, 10)}`;
       const clean = [], conflicts = [], onlyOne = [];
       for (const p of paths) {
-        const b = await baseText(s, p) ?? "";
+        const b = await gitShow(s.dir, ancestor, p) ?? "";
         const m = await liveText(s, p, s.me.name), t = await liveText(s, p, person);
         const mineT = m === null ? "" : m ?? b, theirs = t === null ? "" : t ?? b;
         if (mineT === b || theirs === b) {
@@ -33878,7 +33957,7 @@ call room_state before continuing.`;
         conflicts.push(`${p}
 ${detail.join("\n")}`);
       }
-      const out = [`preview merge of your changes with ${person}'s (base ${base(s).slice(0, 10)}):`];
+      const out = [`preview merge of your changes with ${person}'s (common ancestor ${ancestor.slice(0, 10)}${theirBase !== myBase ? `; ${person} is on ${theirBase.slice(0, 10)}, you on ${myBase.slice(0, 10)}` : ""}):`];
       if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(", ")}`);
       if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(", ")}`);
       if (conflicts.length) out.push(`CONFLICTS:
@@ -33894,6 +33973,7 @@ ${conflicts.join("\n")}`);
       if (!h) return `error: unknown tool ${name}`;
       const s = ctx.getSession();
       if (s && !s.provider.synced && name !== "room_leave") return "error: room not synced yet, retry";
+      if (s) observeClaims(s);
       try {
         const body = await h(args2 ?? {});
         const s2 = ctx.getSession();
@@ -33901,12 +33981,24 @@ ${conflicts.join("\n")}`);
         return s2 && name !== "room_join" ? inbox(s2) + body : body;
       } catch (e) {
         if (e instanceof NotJoined) return "error: not in a room. Call room_join first.";
+        if (e instanceof NeedFetch) return `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry`;
         return `error: ${e instanceof Error ? e.message : String(e)}`;
       }
     }
   };
 }
 var NotJoined = class extends Error {
+};
+var NeedFetch = class extends Error {
+  constructor(person, sha, detail) {
+    super(detail);
+    this.person = person;
+    this.sha = sha;
+    this.detail = detail;
+  }
+  person;
+  sha;
+  detail;
 };
 function parsePlans(v) {
   if (v === void 0 || v === null) return [];

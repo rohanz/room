@@ -99,7 +99,7 @@ export class Runner {
     this.log(`bus ${m.type} from ${m.from}/${m.fromKind}: ${d.wake ? 'wake' : 'skip'} (${d.reason})`)
     if (d.wake) {
       const queued = { kind: 'event' as const, msg: m, line: formatMsg(m) }
-      if (m.type === 'conflict') this.preemptForConflict(queued)
+      if (m.priority === 'interrupt') this.preemptForConflict(queued)
       else this.enqueue(queued)
     }
   }

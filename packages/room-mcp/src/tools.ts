@@ -7,7 +7,7 @@ import type {
   Claim, Identity, Presence, Msg, Plan, Priority, Scope,
   ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg,
 } from '@room/shared'
-import { gitShow } from '@room/roomd/git'
+import { git, gitShow } from '@room/roomd/git'
 import { joinSession, leaveSession, type JoinOptions, type Session } from './session.js'
 
 export interface ToolDef {
@@ -99,8 +99,33 @@ export function createTools(ctx: ToolCtx): Tools {
   const doLeave = ctx.leave ?? leaveSession
 
   // ---- per-session state --------------------------------------------------
-  let readCursor = 0 // bus index up to which the inbox has been shown
+  const seen = new Set<string>() // message ids already shown in the inbox (ids, not indexes: the bus is a concurrent array)
   const upgraded = new Set<string>() // "msgId:person" copies already posted
+  const conflictPairs = new Set<string>() // sorted "a:b" claim-id pairs already reported
+  let observedSession: Session | null = null
+  /** Two room_claim calls on different machines can both pass the overlap pre-check. When the
+   *  other claim arrives, the owner of the lexicographically smaller id reports the conflict. */
+  const observeClaims = (s: Session) => {
+    if (observedSession === s) return
+    observedSession = s
+    s.room.claims.observe((ev, tr) => {
+      if (tr.local) return
+      for (const [id, ch] of ev.changes.keys) {
+        if (ch.action !== 'add') continue
+        const arrived = s.room.openClaims().find(c => c.id === id)
+        if (!arrived || (arrived.by === s.me.name && arrived.byKind === s.me.kind)) continue
+        for (const m of mine(s)) {
+          if (!claimsOverlap(m, arrived)) continue
+          const key = [m.id, arrived.id].sort().join(':')
+          if (conflictPairs.has(key) || s.room.messages().some(x => x.type === 'conflict' && [x.claimId, x.otherClaimId].sort().join(':') === key)) { conflictPairs.add(key); continue }
+          conflictPairs.add(key)
+          if (m.id.localeCompare(arrived.id) > 0) continue
+          const text = `concurrent overlapping claims: ${describeClaim(m)} and ${describeClaim(arrived)}`
+          s.room.post<ConflictMsg>(s.me, { type: 'conflict', claimId: m.id, otherClaimId: arrived.id, path: m.path, text, to: arrived.by })
+        }
+      }
+    })
+  }
 
   const S = (): Session => {
     const s = ctx.getSession()
@@ -124,13 +149,17 @@ export function createTools(ctx: ToolCtx): Tools {
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() })
   }
   const base = (s: Session) => s.room.meta.base ?? 'HEAD'
-  const baseText = async (s: Session, path: string): Promise<string | undefined> => gitShow(s.dir, base(s), path)
-  /** HEAD + a person's overlay; undefined if the file exists nowhere; null if they deleted it. */
+  /** The commit a person's overlay is a delta from (their own HEAD), falling back to the room base. */
+  const baseFor = (s: Session, person: string) => s.room.baseOf(person) ?? base(s)
+  const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(s.dir, baseFor(s, person), path)
+  /** A person's HEAD + their overlay; undefined if the file exists nowhere; null if they deleted it.
+   *  Throws NeedFetch when their HEAD is not in this clone. */
   const liveText = async (s: Session, path: string, person: string): Promise<string | undefined | null> => {
     if (s.room.deleted.get(person)?.has(path)) return null
     const ov = s.room.text(path, person)
     if (ov !== undefined) return ov
-    return baseText(s, path)
+    try { return await baseText(s, path, person) }
+    catch (e) { throw new NeedFetch(person, baseFor(s, person), e instanceof Error ? e.message : String(e)) }
   }
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
@@ -143,9 +172,13 @@ export function createTools(ctx: ToolCtx): Tools {
     return false
   }
   const inbox = (s: Session): string => {
-    const all = s.room.messages()
-    const fresh = all.slice(readCursor).filter(m => forMe(s, m))
-    readCursor = all.length
+    const fresh: Msg[] = []
+    for (const m of s.room.messages()) {
+      if (seen.has(m.id)) continue
+      seen.add(m.id)
+      if (forMe(s, m)) fresh.push(m)
+    }
+    if (seen.size > 5000) { const keep = s.room.lastMessages(2000).map(m => m.id); seen.clear(); for (const k of keep) seen.add(k) }
     if (!fresh.length) return ''
     const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
     fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at)
@@ -261,7 +294,8 @@ export function createTools(ctx: ToolCtx): Tools {
         server: typeof a.server === 'string' && a.server ? a.server : undefined,
       })
       ctx.setSession(s)
-      readCursor = s.room.bus.length
+      for (const m of s.room.messages()) seen.add(m.id)
+      observeClaims(s)
       const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
       const ps = presences(s).filter(p => !isMe(s, p.user))
       out.push(ps.length ? `here now: ${ps.map(p => displayName(p.user)).join(', ')}` : 'nobody else is here yet')
@@ -335,7 +369,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const t = await liveText(s, p, person)
       if (t === null) return `${p}: deleted by ${person} (uncommitted)`
       if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes`
-      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== undefined ? ', uncommitted edits' : ', unchanged from base'})`]
+      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== undefined ? ', uncommitted edits' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})`]
       const who = s.room.whoChanged(p).filter(x => x !== person)
       if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(', ')} — room_read with person= to see theirs`)
       for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
@@ -480,13 +514,12 @@ export function createTools(ctx: ToolCtx): Tools {
       const answered = (id: string) => s.room.messages().find(m => m.type === 'answer' && m.inReplyTo === id)
       if (questionId) { const an = answered(questionId); if (an) return `answered: ${formatMsg(an)}` }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
-      const busStart = s.room.bus.length
       const result = await new Promise<string>(resolve => {
         const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); resolve(r) }
         const timer = setTimeout(() => finish(`timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Tell your human; proceed only where you do not depend on it.`), timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
-        const onBus = () => {
-          for (const m of s.room.messages().slice(busStart)) {
+        const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
+          for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
             if (questionId && m.type === 'answer' && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`)
             if (m.priority === 'interrupt' && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`)
           }
@@ -521,11 +554,18 @@ export function createTools(ctx: ToolCtx): Tools {
       const s = S()
       const person = typeof a.person === 'string' && a.person ? a.person : ''
       if (!person || person === s.me.name) return 'error: person is required (someone other than you)'
-      const paths = Array.from(new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person)])).sort()
-      if (!paths.length) return `neither you nor ${person} has uncommitted changes`
+      const myBase = baseFor(s, s.me.name), theirBase = baseFor(s, person)
+      let ancestor = myBase
+      if (theirBase !== myBase) {
+        try { ancestor = (await git(s.dir, ['merge-base', myBase, theirBase])).trim() }
+        catch { return `error: ${person}'s HEAD ${theirBase.slice(0, 10)} is not in this clone; git fetch, then retry` }
+      }
+      const committedBetween = theirBase === myBase ? [] : (await git(s.dir, ['diff', '--name-only', ancestor, theirBase])).split('\n').filter(Boolean)
+      const paths = Array.from(new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person), ...committedBetween])).sort()
+      if (!paths.length) return `neither you nor ${person} has changes relative to ${ancestor.slice(0, 10)}`
       const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = []
       for (const p of paths) {
-        const b = (await baseText(s, p)) ?? ''
+        const b = (await gitShow(s.dir, ancestor, p)) ?? ''
         const m = await liveText(s, p, s.me.name), t = await liveText(s, p, person)
         const mineT = m === null ? '' : m ?? b, theirs = t === null ? '' : t ?? b
         if (mineT === b || theirs === b) { onlyOne.push(`${p} (${mineT === b ? person : 'you'} only)`); continue }
@@ -543,7 +583,7 @@ export function createTools(ctx: ToolCtx): Tools {
         }
         conflicts.push(`${p}\n${detail.join('\n')}`)
       }
-      const out = [`preview merge of your changes with ${person}'s (base ${base(s).slice(0, 10)}):`]
+      const out = [`preview merge of your changes with ${person}'s (common ancestor ${ancestor.slice(0, 10)}${theirBase !== myBase ? `; ${person} is on ${theirBase.slice(0, 10)}, you on ${myBase.slice(0, 10)}` : ''}):`]
       if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
       if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
       if (conflicts.length) out.push(`CONFLICTS:\n${conflicts.join('\n')}`)
@@ -559,6 +599,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (!h) return `error: unknown tool ${name}`
       const s = ctx.getSession()
       if (s && !s.provider.synced && name !== 'room_leave') return 'error: room not synced yet, retry'
+      if (s) observeClaims(s)
       try {
         const body = await h(args ?? {})
         const s2 = ctx.getSession()
@@ -566,6 +607,7 @@ export function createTools(ctx: ToolCtx): Tools {
         return s2 && name !== 'room_join' ? inbox(s2) + body : body
       } catch (e) {
         if (e instanceof NotJoined) return 'error: not in a room. Call room_join first.'
+        if (e instanceof NeedFetch) return `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry`
         return `error: ${e instanceof Error ? e.message : String(e)}`
       }
     },
@@ -573,6 +615,7 @@ export function createTools(ctx: ToolCtx): Tools {
 }
 
 class NotJoined extends Error {}
+class NeedFetch extends Error { constructor(public person: string, public sha: string, public detail: string) { super(detail) } }
 
 function parsePlans(v: unknown): Plan[] | string {
   if (v === undefined || v === null) return []

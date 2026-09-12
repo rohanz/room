@@ -11,7 +11,7 @@ import { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { RoomDoc, colorFor, type BaseMsg, type Kind, type Presence } from '@room/shared'
-import { gitBranch, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitSubject, gitTracked } from './git.js'
+import { gitBranch, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitSubject, gitTracked } from './git.js'
 
 export interface RoomdOptions {
   /** Full room URL, e.g. ws://host:1234/my-room */
@@ -144,10 +144,11 @@ class Daemon implements Roomd {
     this.tracked = tracked
 
     await this.waitForSync()
+    this.roomDoc.setBaseOf(this.name, this.base, this)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== this.base) {
       const rel = await gitRelation(this.dir, this.base, roomBase)
-      if (rel === 'ahead') await this.advanceBase(roomBase, this.base)
+      if (rel === 'ahead') await this.maybeAdvance(roomBase, this.base)
       else if (rel === 'behind') this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)}); git pull to catch up`)
       else {
         const message = rel === 'unknown'
@@ -271,12 +272,19 @@ class Daemon implements Roomd {
     this.base = head
     this.branch = await gitBranch(this.dir)
     this.tracked = await gitTracked(this.dir)
+    this.roomDoc.setBaseOf(this.name, head, this)
     this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
     const roomBase = this.roomDoc.meta.base
-    if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.advanceBase(roomBase, head)
+    if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.maybeAdvance(roomBase, head)
     await this.seedLocalOverlay()
     for (const relpath of this.roomDoc.changedPaths(this.name)) if (!this.tracked.has(relpath)) await this.publishDiskState(relpath)
     await this.refreshBaseStatus()
+  }
+
+  /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
+  private async maybeAdvance(from: string, to: string): Promise<void> {
+    if (await gitIsOnRemote(this.dir, to)) await this.advanceBase(from, to)
+    else { this.setStatus('ahead of base (unpushed): git push'); this.log(`HEAD ${to.slice(0, 10)} is ahead of the room base but not pushed; base stays at ${from.slice(0, 10)}`) }
   }
 
   private async advanceBase(from: string, to: string): Promise<void> {
@@ -299,7 +307,7 @@ class Daemon implements Roomd {
     if (rel === 'behind') {
       const n = await gitCountBetween(this.dir, this.base, roomBase).catch(() => 0)
       this.setStatus(`behind base by ${n || '?'} commit${n === 1 ? '' : 's'}: git pull`)
-    } else if (rel === 'ahead') { /* pollHead will advance */ }
+    } else if (rel === 'ahead') { await this.maybeAdvance(roomBase, this.base) }
     else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}: git pull`)
   }
 

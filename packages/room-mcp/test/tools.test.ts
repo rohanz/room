@@ -95,7 +95,7 @@ describe('reading', () => {
     expect(mine).toContain('5|     return 22')
     expect(mine).toContain('uncommitted edits')
     const untouched = await t.tools.call('room_read', { path: 'session.py' })
-    expect(untouched).toContain('unchanged from base')
+    expect(untouched).toContain('unchanged on their HEAD')
     expect(untouched).toContain('1| from app import validate')
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     const theirs = await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' })
@@ -176,6 +176,36 @@ describe('graph', () => {
     const state = await ktools.call('room_state', {})
     expect(state).toContain("waiting on")
     expect(state).toContain("Rohan's agent plans rename validate → verify in app.py")
+  })
+})
+
+describe('concurrency', () => {
+  it('two claims that raced past the pre-check get exactly one conflict when the remote one arrives', async () => {
+    const t = setup()
+    await t.tools.call('room_state', {}) // attaches the claims observer
+    // Kieran's claim arrives from the other doc after Rohan's was made (neither saw the other pre-insert).
+    await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 3, intent: 'mine' })
+    t.other.addClaim({ path: 'app.py', from: 2, to: 2, by: 'Kieran', byKind: 'agent', intent: 'theirs' })
+    await new Promise(r => setTimeout(r, 20))
+    const conflicts = t.room.messages().filter(m => m.type === 'conflict')
+    expect(conflicts.length).toBe(1)
+    expect(conflicts[0]).toMatchObject({ priority: 'interrupt', to: 'Kieran' })
+  })
+
+  it('inbox tracks message ids, so a message inserted before an already-seen one is still delivered', async () => {
+    const t = setup()
+    const k = { name: 'Kieran', kind: 'agent' as const }
+    await t.tools.call('room_send', { type: 'note', text: 'mine' })
+    await t.tools.call('room_state', {}) // marks everything so far seen
+    // Insert a remote message at index 0 (before everything seen) by building it on a detached doc and merging.
+    t.other.bus.insert(0, [{ id: 'm_early', type: 'question', priority: 'notify', from: 'Kieran', fromKind: 'agent', to: 'Rohan', at: 1, text: 'inserted early' } as never])
+    t.other.post(k, { type: 'question', to: 'Rohan', text: 'appended late' } as never)
+    const out = await t.tools.call('room_state', {})
+    const block = out.split('\n\n')[0]
+    expect(block).toContain('[inbox 2]')
+    expect(block).toContain('inserted early')
+    expect(block).toContain('appended late')
+    expect((await t.tools.call('room_state', {})).startsWith('[inbox')).toBe(false)
   })
 })
 
