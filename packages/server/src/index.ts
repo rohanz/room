@@ -43,9 +43,16 @@ function githubRepoOf(roomPath: string): string | undefined {
   return m ? `${m[1]}/${m[2]}` : undefined
 }
 
-/** Short-lived, room-scoped tokens for the browser view (minted for GitHub-verified clients). */
+/** Room-scoped tokens for the browser view (minted for verified clients). Persisted next to the
+ *  room data so a redeploy does not invalidate links people already opened. */
 const viewTokens = new Map<string, { room: string; exp: number }>()
-const VIEW_TTL = 24 * 60 * 60 * 1000
+const VIEW_TTL = 7 * 24 * 60 * 60 * 1000
+const VIEW_FILE = process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'view-tokens.json') : undefined
+try { if (VIEW_FILE && fs.existsSync(VIEW_FILE)) for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(VIEW_FILE, 'utf8')) as Record<string, { room: string; exp: number }>)) if (v.exp > Date.now()) viewTokens.set(k, v) } catch { /* start empty */ }
+function saveViewTokens() {
+  if (!VIEW_FILE) return
+  try { fs.writeFileSync(VIEW_FILE, JSON.stringify(Object.fromEntries(viewTokens))) } catch { /* best effort */ }
+}
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://x')
@@ -68,6 +75,7 @@ const server = http.createServer((req, res) => {
         const view = crypto.randomBytes(16).toString('hex')
         viewTokens.set(view, { room: decodeURIComponent(room), exp: Date.now() + VIEW_TTL })
         for (const [k, v] of viewTokens) if (v.exp < Date.now()) viewTokens.delete(k)
+        saveViewTokens()
         res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ view, expiresIn: VIEW_TTL }))
       } catch { res.writeHead(400); res.end('bad request') }
     })
