@@ -58,7 +58,13 @@ const server = http.createServer((req, res) => {
         if (!room) { res.writeHead(400); res.end('room required'); return }
         const repo = githubRepoOf(room)
         const ok = (TOKEN && token === TOKEN) || (gh && repo && await githubCanRead(gh, repo)) || (!TOKEN && !repo)
-        if (!ok) { res.writeHead(403); res.end('forbidden'); return }
+        if (!ok) {
+          const why = repo && !gh && !token ? `no GitHub token: run \`gh auth login\` (room ${repo})`
+            : repo && gh ? `your GitHub account cannot read ${repo}: accept the repo invite, or check \`gh auth status\` is the right account`
+            : 'token required or wrong: set ROOM_SERVER=ws://host/?token=<shared token>'
+          console.log(`view-token refused: ${why}`)
+          res.writeHead(403, { 'content-type': 'text/plain' }); res.end(why); return
+        }
         const view = crypto.randomBytes(16).toString('hex')
         viewTokens.set(view, { room: decodeURIComponent(room), exp: Date.now() + VIEW_TTL })
         for (const [k, v] of viewTokens) if (v.exp < Date.now()) viewTokens.delete(k)
@@ -81,7 +87,8 @@ const server = http.createServer((req, res) => {
 })
 const wss = new WebSocketServer({ noServer: true })
 wss.on('connection', (conn, req) => setupWSConnection(conn, req, { gc: true }))
-const refuse = (socket: import('node:stream').Duplex, code: number, why: string) => {
+const refuse = (socket: import('node:stream').Duplex, code: number, why: string, room?: string) => {
+  console.log(`refused ${code} ${why}${room ? ` (room ${room})` : ''}`)
   socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`)
   socket.destroy()
 }
@@ -99,12 +106,11 @@ server.on('upgrade', (req, socket, head) => {
   const gh = url.searchParams.get('gh')
   const repo = githubRepoOf(url.pathname)
   if (gh && repo) {
-    githubCanRead(gh, repo).then(ok => ok ? accept() : refuse(socket, 403, 'Forbidden: GitHub token cannot read ' + repo)).catch(() => refuse(socket, 403, 'Forbidden'))
+    githubCanRead(gh, repo).then(ok => ok ? accept() : refuse(socket, 403, 'Forbidden: GitHub token cannot read ' + repo, repo)).catch(() => refuse(socket, 403, 'Forbidden', repo))
     return
   }
   if (!TOKEN && !repo) return accept() // open server, non-GitHub room
-  if (!TOKEN && repo) return refuse(socket, 401, 'Unauthorized: send ?gh=<GitHub token> for a github.com room')
-  refuse(socket, 401, 'Unauthorized')
+  refuse(socket, 401, repo ? `Unauthorized: no GitHub token for ${repo}` : 'Unauthorized: token required', repo ?? url.pathname)
 })
 server.listen(PORT, HOST, () => console.log(
   `room server listening on ws://${HOST}:${PORT}/<room>` +

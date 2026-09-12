@@ -33344,12 +33344,17 @@ async function deriveRoomName(dir) {
 async function githubToken() {
   const env = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
   if (env?.trim()) return env.trim();
-  try {
-    const { execFile: execFile5 } = await import("node:child_process");
-    return await new Promise((resolve5) => execFile5("gh", ["auth", "token"], { timeout: 5e3 }, (err, out) => resolve5(err ? void 0 : out.trim() || void 0)));
-  } catch {
-    return void 0;
-  }
+  const { execFile: execFile5 } = await import("node:child_process");
+  const run = (cmd, args2, input) => new Promise((resolve5) => {
+    const p = execFile5(cmd, args2, { timeout: 5e3 }, (err, out) => resolve5(err ? void 0 : out));
+    if (input !== void 0) p.stdin?.end(input);
+  });
+  const gh = (await run("gh", ["auth", "token"]))?.trim();
+  if (gh) return gh;
+  const cred = await run("git", ["credential", "fill"], "protocol=https\nhost=github.com\n\n");
+  const pw = cred?.match(/^password=(.+)$/m)?.[1]?.trim();
+  if (pw && /^(gh[pousr]_|github_pat_)/.test(pw)) return pw;
+  return void 0;
 }
 async function defaultName(dir) {
   try {
@@ -33405,7 +33410,8 @@ async function joinSession(opts) {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
   const gh = roomName.startsWith("github.com/") ? await githubToken() : void 0;
-  if (!token && roomName.startsWith("github.com/") && !gh) opts.log?.("no ROOM_TOKEN and no GitHub token (run `gh auth login`); the server may refuse");
+  const denied = await preflight(server, roomName, { gh, token });
+  if (denied) throw new RoomdError(`${server} refused ${roomName}: ${denied}`, 2);
   const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", token, githubToken: gh, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   const view = await viewToken(server, roomName, { gh, token });
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
@@ -33423,6 +33429,17 @@ async function joinSession(opts) {
     roomName,
     browserUrl
   };
+}
+async function preflight(server, roomName, auth) {
+  try {
+    const http = server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+    const res = await fetch(`${http}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
+    if (res.ok) return void 0;
+    if (res.status === 403) return (await res.text()).trim() || "forbidden";
+    return void 0;
+  } catch (e) {
+    return `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})`;
+  }
 }
 async function viewToken(server, roomName, auth) {
   if (!auth.gh && !auth.token) return void 0;

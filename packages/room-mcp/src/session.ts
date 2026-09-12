@@ -65,14 +65,22 @@ export async function deriveRoomName(dir: string): Promise<{ roomName?: string; 
   return { repo, branch, roomName: repo ? `${repo}/${branch}` : undefined }
 }
 
-/** The user's GitHub token from the gh CLI (or GH_TOKEN/GITHUB_TOKEN), if any. Proves repo access to the server. */
+/** The user's GitHub token: GH_TOKEN/GITHUB_TOKEN, else the gh CLI, else git's credential store for github.com. Proves repo access to the server. */
 export async function githubToken(): Promise<string | undefined> {
   const env = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN
   if (env?.trim()) return env.trim()
-  try {
-    const { execFile } = await import('node:child_process')
-    return await new Promise<string | undefined>(resolve => execFile('gh', ['auth', 'token'], { timeout: 5000 }, (err, out) => resolve(err ? undefined : out.trim() || undefined)))
-  } catch { return undefined }
+  const { execFile } = await import('node:child_process')
+  const run = (cmd: string, args: string[], input?: string) => new Promise<string | undefined>(resolve => {
+    const p = execFile(cmd, args, { timeout: 5000 }, (err, out) => resolve(err ? undefined : out))
+    if (input !== undefined) p.stdin?.end(input)
+  })
+  const gh = (await run('gh', ['auth', 'token']))?.trim()
+  if (gh) return gh
+  // git credential fill prints password=<token> when a helper (osxkeychain, manager, store) has one.
+  const cred = await run('git', ['credential', 'fill'], 'protocol=https\nhost=github.com\n\n')
+  const pw = cred?.match(/^password=(.+)$/m)?.[1]?.trim()
+  if (pw && /^(gh[pousr]_|github_pat_)/.test(pw)) return pw
+  return undefined
 }
 
 export async function defaultName(dir: string): Promise<string | undefined> {
@@ -122,7 +130,9 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
   const gh = roomName.startsWith('github.com/') ? await githubToken() : undefined
-  if (!token && roomName.startsWith('github.com/') && !gh) opts.log?.('no ROOM_TOKEN and no GitHub token (run `gh auth login`); the server may refuse')
+  // Preflight over HTTP: a refused websocket only shows up as a sync timeout, so ask the server first.
+  const denied = await preflight(server, roomName, { gh, token })
+  if (denied) throw new RoomdError(`${server} refused ${roomName}: ${denied}`, 2)
   const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', token, githubToken: gh, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
   const view = await viewToken(server, roomName, { gh, token })
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
@@ -139,6 +149,19 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     roomUrl,
     roomName,
     browserUrl,
+  }
+}
+
+/** Returns the server's refusal reason, or undefined when access is fine (or the server cannot be asked). */
+export async function preflight(server: string, roomName: string, auth: { gh?: string; token?: string }): Promise<string | undefined> {
+  try {
+    const http = server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
+    const res = await fetch(`${http}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
+    if (res.ok) return undefined
+    if (res.status === 403) return (await res.text()).trim() || 'forbidden'
+    return undefined // older server or unexpected status: let the websocket try
+  } catch (e) {
+    return `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})`
   }
 }
 
