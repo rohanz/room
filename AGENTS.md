@@ -64,23 +64,31 @@ AGENTS.md                this file (CLAUDE.md -> AGENTS.md)
 docs/decisions.md        idea, scope, findings from live runs, what-was-built-when
 docs/prior-art.md        AgentRoom, Zed Delta, etc. and the gap we fill
 docs/submission.md       deliverables checklist + demo script
-docs/superpowers/        design spec + implementation plan
-packages/shared/         one Y.Doc schema: files, claims, bus, chats, meta; typed accessors
+docs/superpowers/        design specs (v2: 2026-09-12-room-v2-design.md) + plans
+packages/shared/         one Y.Doc schema: overlays per person, scopes, claims (with plans),
+                         bus (with priorities), ledger view, wake rules; typed accessors
 packages/server/         stock y-websocket server (pinned @y/websocket-server 0.1.1)
-packages/roomd/          sync daemon: clone <-> room, both ways, git-aware
-packages/room-mcp/       MCP tools (room_*) + Claude Code channel; AGENT_INSTRUCTIONS
-packages/agent/          roomagent: Codex SDK thread per person, fed by chat + room events
-packages/web/            Vite + CodeMirror editor: cursors, claim gutters, feed, agent chat
+packages/roomd/          push-only daemon: clone -> my overlay; base tracking; never writes disk
+packages/room-mcp/       room_* tools, session/join, inbox, Claude Code channel; AGENT_INSTRUCTIONS
+packages/agent/          roomagent: on-duty Codex thread fed by chat + interrupts/addressed notifies
+packages/web/            read-only room view: participants, overlays with claim gutters, feed
+plugins/room/            Codex plugin: room-join + room-etiquette skills, bundled MCP server
 examples/demo-repo/      tiny Python service used in the demo (uv)
-scripts/demo.sh          server + two clones + two daemons on one machine
+scripts/demo.sh          server + shared origin + two clones on one machine
 scripts/say.mts          post a message into a person's agent chat and watch the room
+scripts/build-plugin.mjs esbuild bundle of room-mcp into plugins/room/server
 ```
 
 ## Running and testing
 
-- `npm test` runs every package's vitest suite (roomd spins up an in-process server).
-- `scripts/demo.sh` then two `roomagent`s then `npm run web`. See README.
-- `ROOM_URL=ws://localhost:1244/<room> npx tsx scripts/say.mts Kieran "do X" 200` drives an
-  agent without the browser and prints its chat and the bus. Costs Codex tokens.
-- Ports: server 1234 by default; the demo scripts in this repo have used 1244 to avoid a
-  stray server left by an earlier session. Rooms are in-memory; restart the server to reset.
+- `npm test` runs every package's vitest suite (in-memory transport; no sockets needed).
+- `npm run typecheck`; `npm run build:plugin` after touching `packages/room-mcp` or roomd.
+- `scripts/demo.sh` brings up a server and two clones and prints the join commands. Join
+  from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex`, then `$room-join`) or
+  with `npx tsx packages/agent/src/cli.ts --dir <clone>`.
+- Rooms are named `<host/owner/repo>/<branch>` from the clone's origin (filesystem remotes
+  become `local/<dir>`); URL-encoded in the ws path. In-memory; restart the server to reset.
+- Ports: server 1234 by default; demo scripts in this repo have used 1244 to avoid a stray
+  server from an earlier session.
+- Quick tool-level smoke without Codex: call `createTools` / `joinSession` from
+  `@room/room-mcp` in a tsx script (see the test in `packages/room-mcp/test/tools.test.ts`).

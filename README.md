@@ -1,93 +1,134 @@
 # room
 
-**Agents in the same room as the people they work for.**
+**Your coding agent, aware of your teammates' agents.**
 
-Two people, two laptops, one repo. Each person's own coding agent joins a shared live room
-where it can see the committed code, the live edits everyone is typing right now, who has
-claimed which lines and why, and what the other agents intend. So agents stop stepping on
-their teammates, and on each other.
+Two people, two laptops, one repo, each running their own Codex. Today the agents are blind
+to each other: both rewrite the same function, and you find out at merge time. Room gives
+every agent a live view of what everyone else is on, what they plan to change, and what
+they changed, so agents announce intent, claim what they edit, and negotiate when plans
+overlap. Same Codex, same prompts. The agent just knows more before it acts.
 
 Built for the "agents leaving the chatbox" hackathon (brief and rubric: `RULES.md`).
 
-![Two agents in one room](docs/img/room-live.png)
+## Before and after
 
-*Live screenshot: Rohan's and Kieran's Codex agents just finished overlapping edits to `create_order` without a conflict. Right: Rohan's agent transcript with its room tool calls.*
+Before:
+1. Pull. Ask Codex for the feature. It edits ten files.
+2. Your teammate does the same in parallel.
+3. Merge, resolve conflicts, discover you both rewrote `create_order`, redo one.
+
+After:
+1. Pull. In Codex: `$room-join`. "Joined rohanz/shop/main. Kieran's agent is here, on
+   payments: adding retry to the client."
+2. Ask Codex for the feature as usual. It declares its scope ("orders: validation in
+   create_order and its tests"), sees Kieran's agent holds the payment client, and stays
+   out. It claims its own lines, saying what it will do, works, releases with a summary,
+   announces what changed.
+3. If it needs lines someone holds, it asks and waits. The other agent answers on its next
+   move. If Kieran's agent plans to rename a function yours calls, yours is told before
+   the rename happens.
+4. Nothing is written to your disk by the room. Before saying "done", your agent checks
+   that your changes and Kieran's merge cleanly. You commit and merge with git as always.
 
 ## How it works
 
 ```
- your laptop                      room server                 teammate's laptop
- clone ⇄ roomd (sync daemon) ⇄  one Y.Doc: files, claims,  ⇄ roomd ⇄ clone
- roomagent (Codex + room MCP)     bus, chats, presence         roomagent
- browser editor (optional)                                     browser editor
+ your laptop                             room server                 teammate's laptop
+ clone ──push only──► overlay:you ◄──── one Y.Doc ────► overlay:them ◄──push only── clone
+ Codex + room plugin                  scopes, claims, bus,          Codex + room plugin
+ browser view (optional)              ledgers, presence            browser view (optional)
 ```
 
-- **server** — stock y-websocket server. Holds the live text of every tracked file as a
-  CRDT, plus claims, an agent message bus, per-person agent chats, and presence. Never runs
-  code.
-- **roomd** — keeps your clone and the room identical, both ways. Refuses to join if your
-  clone is on a different base commit.
-- **room-mcp** — MCP server giving any agent the room tools: `room_state`, `room_read_live`,
-  `room_read_committed`, `room_diff`, `room_who`, `room_claim`, `room_release`, `room_send`,
-  `room_wait`. Also a Claude Code channel, so Claude Code sessions get woken by room events.
-- **agent** (`roomagent`) — runs your Codex agent locally, with the room tools loaded, and
-  feeds it your messages (from the browser sidebar) and room events as turns. `/stop`
-  aborts work, releases its claims, and pauses new turns until the human sends `/resume`.
-- **web** — browser editor: CodeMirror on the same live files, coloured cursors, claim
-  gutters, the room feed, and your chat with your own agent.
+- **The room holds one live overlay per person**: your uncommitted files, as you have them
+  right now. Plus everyone's scope, claims, a message bus, and presence. All in a single
+  Yjs document on a stock y-websocket server with no custom logic.
+- **The daemon is push-only.** It watches your clone and publishes your changes. It never
+  writes to your disk. Merging stays git's job; the room makes sure there is nothing to
+  merge by hand.
+- **Agents coordinate through the bus and read ledgers when they need them.** A ledger is
+  the history of an area ("auth") or a file: who scoped it, claimed it, changed it, and
+  what they planned. An agent entering an area gets that history without asking anyone.
+- **Three priorities.** `fyi` wakes nobody and is read on the next action. `notify` is
+  flagged at the top of the next tool reply. `interrupt` (a conflict) preempts an on-duty
+  agent. The room upgrades a change that lands in your scope or touches a symbol you use.
+- **The base commit follows you.** When someone commits, the room base moves forward and
+  everyone's agent is told to pull. A clone behind the base may join and is marked so;
+  one that has diverged is refused with the fix.
 
-Design spec: `docs/superpowers/specs/2026-09-09-room-design.md`. Prior art: `docs/prior-art.md`.
+### The tools an agent gets (`room_*`)
 
-## Setup
+| Tool | What it does |
+|---|---|
+| `room_join` / `room_leave` | Join the room derived from `git remote origin` + branch; name from `git config`. Starts the daemon. |
+| `room_scope` | "I'm on `auth`: login flow; `auth/`, `tests/test_auth.py`". Returns the area ledger. |
+| `room_state` | Who is here and on what, per-area activity, open claims with plans, who changed which files. |
+| `room_read` / `room_diff` | A file as any person sees it right now, with claims and the file ledger. |
+| `room_claim` / `room_release` | Claim a line range with intent and **plans** (rename X to Y). Release with a summary; unfulfilled plans are flagged. |
+| `room_send` | `changed` (paths, summary, symbols), `question`, `answer`, `note`. |
+| `room_wait` | Block until a claim is released, a question is answered, or an interrupt arrives. |
+| `room_preview_merge` | Three-way merge of your changes and theirs against the base, in memory. |
+
+Every reply starts with the agent's inbox: messages addressed to it, highest priority
+first.
+
+## Use it
 
 ```sh
 npm install
-codex login              # roomagent uses your Codex CLI auth
-```
-
-Notes on how the agent runs: the Codex thread uses `workspace-write` sandbox with network
-on and `approval_policy=never`; room tools auto-approve because they carry MCP annotations
-and the server is configured with `default_tools_approval_mode = "auto"`. Claude Code users
-can load the same tools plus a channel with
-`claude --dangerously-load-development-channels server:room` (see `packages/room-mcp/README.md`).
-
-## Codex plugin (use your normal Codex in a room)
-
-The room tools and etiquette ship as a Codex plugin, so a plain `codex` session inside a
-synced clone already knows how to behave. Two commands:
-
-```sh
-codex plugin marketplace add rohanz/room     # or the local checkout path
+codex plugin marketplace add rohanz/room     # or the path to this checkout
 codex plugin add room@room
 ```
 
-Then start `roomd` for your clone and run `codex` in it. The plugin's MCP server reads the
-`.room.json` that roomd wrote, joins the room, and the `room-etiquette` skill tells Codex
-to check the room, claim, ask, and announce. This mode polls: Codex sees the room whenever
-it acts. For an agent that also *reacts* to room events (a teammate's question, a
-conflict), run `roomagent` instead, which drives a Codex thread and feeds it events.
+Run a room server somewhere both laptops can reach (`PORT=1234 npm run server`; rooms are
+in-memory and unauthenticated, demo-grade). Then in any clone:
 
-Rebuild the bundled server after changing `packages/room-mcp`: `npm run build:plugin`.
-
-## Run (one machine, two "people", for a quick look)
-
-See `scripts/demo.sh` (starts the server, seeds `examples/demo-repo` into two clones, runs
-two daemons, and prints the commands for the two agents and the browser).
-
-## Run (two machines)
-
-Machine A:
 ```sh
-PORT=1234 npm run server
-npm run roomd -- --room ws://<A-ip>:1234/demo --dir /path/to/clone --name Rohan
-npm run -w @room/agent start -- --name Rohan --dir /path/to/clone --room ws://<A-ip>:1234/demo
-npm run web   # open http://localhost:5173/?room=ws://<A-ip>:1234/demo&name=Rohan
+ROOM_SERVER=ws://<server>:1234 codex
+> $room-join
 ```
-Machine B: clone the same repo at the same commit, then the same three commands with
-`--name Kieran` and A's address.
 
-## Tests
+That's it. The `room-etiquette` skill tells Codex how to behave. Optional:
+
+- **Browser view**: `npm run web`, then open the URL `room_join` prints. Read-only: who is
+  on what, claims in the gutter, the feed with priorities, filter by area.
+- **Agent on duty**: `npx tsx packages/agent/src/cli.ts --dir <clone>` runs a Codex thread
+  that reacts to interrupts and questions while you're away.
+- **Claude Code**: the same MCP server exposes a channel; see `packages/room-mcp/README.md`.
+
+`scripts/demo.sh` sets up a server, a shared origin and two clones on one machine and
+prints the commands.
+
+## Failure paths, on purpose
+
+- Join on a base you haven't fetched, or a diverged branch: refused with both SHAs and the
+  command to run.
+- Server unreachable: join fails within 15s naming the URL.
+- Two agents claim overlapping lines: a conflict at `interrupt` reaches both; neither edit
+  is blocked, the etiquette says ask or wait.
+- A question gets no answer: `room_wait` returns `timeout`; the agent tells its human and
+  proceeds only where it doesn't depend on the answer.
+- An agent goes offline holding claims: after 10 minutes they show as stale.
+
+## Repo
+
+```
+packages/shared    the Y.Doc schema, typed accessors, ledger and wake rules
+packages/server    stock y-websocket server
+packages/roomd     push-only sync daemon, base tracking
+packages/room-mcp  the room_* tools, join/session, inbox, Claude Code channel
+packages/agent     roomagent: on-duty Codex thread
+packages/web       read-only room view (Vite + CodeMirror)
+plugins/room       Codex plugin: room-join + room-etiquette skills, bundled MCP server
+examples/demo-repo tiny Python service for the demo
+```
+
+Design: `docs/superpowers/specs/2026-09-12-room-v2-design.md`. Decisions and what was
+built when: `docs/decisions.md`. Prior art: `docs/prior-art.md`.
+
+Why Yjs when each overlay has one writer? It gives broadcast, presence and a stock server
+for free. The CRDT merge is no longer load-bearing, and that's deliberate.
 
 ```sh
-npm test
+npm test          # vitest across packages
+npm run typecheck
 ```

@@ -81,3 +81,26 @@ needs no runner: normal Codex, room-aware. The runner stays for reactive agents.
 use `cwd: "."` (plugin dir) with a relative script path. MCP servers get a clean env, so
 `env_vars: ["PWD", ...]` passes the user's directory through; room-mcp walks up from PWD to
 find `.room.json`. `codex exec` blocks on an open stdin; use `</dev/null` in scripts.
+
+## 2026-09-12 — v2: coordination, not sync
+**Decision:** Stop writing teammates' edits to each other's disks. The room holds one live
+overlay per person; agents read each other's versions through tools and preview-merge
+before committing. Git stays git. Spec: `superpowers/specs/2026-09-12-room-v2-design.md`.
+**Why:** Disk sync was the riskiest code (a Codex review found lost/duplicated edits on
+same-line merges), it broke tests with half-done teammate edits, and the product is
+agents coordinating, not text merging.
+**Also decided:** one-step join (`$room-join`, room derived from origin + branch); plugin
+mode is primary, the runner is "on duty" mode; intent first (scope with an area, claims
+with declared plans); three priorities (fyi / notify / interrupt) with the room upgrading
+changes that land in someone's scope or symbols; area and file ledgers read at the moment
+of need; blocking `room_wait`; base commit advances when a member commits and others are
+marked behind; browser becomes a read-only room view.
+**Cut:** browser editing and chat, cursors from the browser, enforcement of claims at the
+sync layer (advisory + conflict events instead; revisit if agents skip claims in rehearsal).
+
+## Built when (v2)
+- 12 Sep: Codex review pass and fixes (57 tests), v2 spec, phase 1 (overlays, push-only
+  daemon; Codex gpt-5.6-sol), phase 2 (join, inbox, scopes, plans, ledgers, wait, preview
+  merge, plugin skills; Claude), base tracking (Claude), phase 3 read-only web view
+  (Codex). Live two-clone smoke run of join → scope → claim with plan → read teammate's
+  version passed against a real server.
