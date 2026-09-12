@@ -22,6 +22,49 @@ and Git workflow.
 Built for the **“Agents leaving the chatbox”** hackathon.
 [Read the brief and judging criteria](RULES.md).
 
+## Quick start
+
+Prerequisites: Git, Node.js 24 LTS, Codex CLI with plugin support, and the GitHub CLI (`gh`)
+authenticated to an account that can read your shared repository. Python indexing needs
+Python 3; the Python demo uses `uv`.
+
+Install on each machine:
+
+```sh
+codex plugin marketplace add rohanz/room
+codex plugin add room@room
+```
+
+Already installed? Update before starting a new session:
+
+```sh
+codex plugin marketplace upgrade
+codex plugin add room@room
+```
+
+Review and trust Room’s hooks when prompted, or through `/hooks`. They deliver context
+before edit tools and record the session used for teammate wake-ups.
+
+In each developer’s clone, check out the same branch and start Codex:
+
+```sh
+cd /path/to/your/repo
+codex
+```
+
+The plugin attempts to join automatically using the clone’s origin and branch. A GitHub
+repo on `session-2` joins `github.com/<owner>/<repo>/session-2`. Your participant name
+comes from Git configuration. Use distinct names for separate developers.
+
+Ask **“Show room state”** and open the browser link it prints. Then ask for your feature
+as usual. If auto-join fails, ask the agent to call `room_join`; its error should explain
+what needs attention. No Room environment variables are needed for the default hosted
+GitHub flow.
+
+The hosted server checks repository access using your `gh` credentials. The browser link
+contains a room-scoped view key valid for 24 hours, rather than your GitHub token. Treat
+that link as access to the room’s shared code and activity.
+
 ## Why the environment matters
 
 A chat prompt does not contain your teammate’s uncommitted code or their latest change
@@ -38,6 +81,34 @@ to give agents that context while they work.
 
 Claims are advisory. Room helps agents coordinate; it does not lock files or guarantee
 that their changes are compatible.
+
+## Browser interface
+
+![Room file viewer showing two participants’ changes and the activity timeline](docs/img/room-v2-redesign.png)
+
+*File-view screenshot from an earlier two-agent run: participant changes, possible
+conflicts, and the coordination timeline. The current UI also includes the Network tab.*
+
+### Dependency network
+
+Choose a participant to explore three directions:
+
+| View | What it shows |
+|---|---|
+| **Upstream** | Dependencies of their work, including relevant teammates’ contract plans. |
+| **My edits & plans** | Their modified files and open claims, including plans declared before editing. |
+| **Downstream** | Potential consumers of their own declared contract changes. Ordinary edits alone do not imply breakage. |
+
+**Blue** means actual file edits; **purple** means a declared contract plan. A diagonal
+blue/purple fill means both. **Red** marks potential contract impact; affected nodes with
+edits or plans retain their fill and gain a red outline. Labels remain white on changed
+nodes. Declaring a plan does not prove it has been implemented.
+
+Hover or keyboard focus gives a preview; click or Enter opens dependencies, owners,
+plans, and consumer details. Search, participant selection, compact nodes, zoom, Fit,
+and Expand help navigate larger repos. Turn off **Relevant to my work** to explore all
+indexed files. **Changed files** opens the merged preview, diff, and file reader alongside
+the participant and timeline views.
 
 ## Implementation
 
@@ -85,34 +156,6 @@ clients. Yjs supplies shared state and presence; Git remains the integration mec
 | `room_impact` | Find symbol providers, consumers, dependencies, and owners. |
 | `room_preview_merge` | Preview the combined changes; optionally run checks. |
 
-## Browser interface
-
-![Room file viewer showing two participants’ changes and the activity timeline](docs/img/room-v2-redesign.png)
-
-*File-view screenshot from an earlier two-agent run: participant changes, possible
-conflicts, and the coordination timeline. The current UI also includes the Network tab.*
-
-### Dependency network
-
-Choose a participant to explore three directions:
-
-| View | What it shows |
-|---|---|
-| **Upstream** | Dependencies of their work, including relevant teammates’ contract plans. |
-| **My edits & plans** | Their modified files and open claims, including plans declared before editing. |
-| **Downstream** | Potential consumers of their own declared contract changes. Ordinary edits alone do not imply breakage. |
-
-**Blue** means actual file edits; **purple** means a declared contract plan. A diagonal
-blue/purple fill means both. **Red** marks potential contract impact; affected nodes with
-edits or plans retain their fill and gain a red outline. Labels remain white on changed
-nodes. Declaring a plan does not prove it has been implemented.
-
-Hover or keyboard focus gives a preview; click or Enter opens dependencies, owners,
-plans, and consumer details. Search, participant selection, compact nodes, zoom, Fit,
-and Expand help navigate larger repos. Turn off **Relevant to my work** to explore all
-indexed files. **Changed files** opens the merged preview, diff, and file reader alongside
-the participant and timeline views.
-
 ## Limitations and failure handling
 
 - **Potential impact is not verified breakage.** Symbol references are inferred, not a
@@ -159,50 +202,7 @@ with a clear distinction between current activity and retained history.
 These are proposed improvements to the prototype, not claims of capabilities already
 implemented.
 
-## Try it with a teammate
-
-Prerequisites: Git, Node.js 24 LTS, Codex CLI with plugin support, and the GitHub CLI (`gh`)
-authenticated to an account that can read your shared repository. Python indexing needs
-Python 3; the Python demo uses `uv`.
-
-Install on each machine:
-
-```sh
-codex plugin marketplace add rohanz/room
-codex plugin add room@room
-```
-
-Already installed? Update before starting a new session:
-
-```sh
-codex plugin marketplace upgrade
-codex plugin add room@room
-```
-
-Review and trust Room’s hooks when prompted, or through `/hooks`. They deliver context
-before edit tools and record the session used for teammate wake-ups.
-
-In each developer’s clone, check out the same branch and start Codex:
-
-```sh
-cd /path/to/your/repo
-codex
-```
-
-The plugin attempts to join automatically using the clone’s origin and branch. A GitHub
-repo on `session-2` joins `github.com/<owner>/<repo>/session-2`. Your participant name
-comes from Git configuration. Use distinct names for separate developers.
-
-Ask **“Show room state”** and open the browser link it prints. Then ask for your feature
-as usual. If auto-join fails, ask the agent to call `room_join`; its error should explain
-what needs attention. No Room environment variables are needed for the default hosted
-GitHub flow.
-
-The hosted server checks repository access using your `gh` credentials. The browser link
-contains a room-scoped view key valid for 24 hours, rather than your GitHub token. Treat
-that link as access to the room’s shared code and activity.
-
-## Run locally
+## Local development and verification
 
 ```sh
 git clone https://github.com/rohanz/room.git
@@ -251,7 +251,7 @@ The script prints a browser link and stays running so edits in the generated rep
 Kieran’s overlay. Each run gets a unique room unless you supply `--room`. Ctrl-C stops
 the publisher and leaves the generated repo intact.
 
-## Develop and verify
+### Checks and repository layout
 
 ```sh
 npm test
