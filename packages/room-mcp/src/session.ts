@@ -62,27 +62,41 @@ export class NotLoggedIn extends RoomdError {
 }
 
 export type AuthMode = 'device' | 'token'
-const modeCache = new Map<string, AuthMode>()
-/** How the server authenticates GitHub rooms: device login (it holds the tokens) or forwarded gh tokens. Older servers: token. */
-export async function serverAuthMode(server: string): Promise<AuthMode> {
-  const hit = modeCache.get(server)
+export type Provider = 'github' | 'oidc'
+export interface AuthConfig { mode: AuthMode; providers: Provider[] }
+const configCache = new Map<string, AuthConfig>()
+/** The server's login setup: how it authenticates GitHub rooms (device login, or forwarded gh tokens on
+ *  older/local servers) and which login providers it offers (github, oidc). */
+export async function serverAuthConfig(server: string): Promise<AuthConfig> {
+  const hit = configCache.get(server)
   if (hit) return hit
-  let mode: AuthMode = 'token'
+  const cfg: AuthConfig = { mode: 'token', providers: [] }
   try {
     const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(20000) })
-    if (res.ok) { const b = await res.json() as { github?: string }; if (b.github === 'device') mode = 'device' }
+    if (res.ok) {
+      const b = await res.json() as { github?: string; providers?: string[] }
+      if (b.github === 'device') cfg.mode = 'device'
+      cfg.providers = (b.providers ?? (cfg.mode === 'device' ? ['github'] : [])).filter((p): p is Provider => p === 'github' || p === 'oidc')
+    }
   } catch { /* unreachable: the join will report it */ }
-  modeCache.set(server, mode)
-  return mode
+  configCache.set(server, cfg)
+  return cfg
 }
+/** How the server authenticates GitHub rooms: device login (it holds the tokens) or forwarded gh tokens. Older servers: token. */
+export async function serverAuthMode(server: string): Promise<AuthMode> { return (await serverAuthConfig(server)).mode }
 
 export interface Creds { gh?: string; token?: string; session?: string; login?: string }
-/** Credentials for a server: a shared token, a Room session from device login, or (token-mode servers only) the local gh token. */
+/** Credentials for a server: a shared token, a Room session from a login, or (token-mode servers, GitHub rooms only) the local gh token.
+ *  Non-GitHub rooms (local/, git/) send the session when this machine holds one: servers with a login provider require it. */
 export async function resolveAuth(server: string, roomName: string, token?: string): Promise<Creds> {
   const github = roomName.startsWith('github.com/')
-  if (!github) return { token }
-  const mode = await serverAuthMode(server)
-  if (mode === 'device') {
+  const cfg = await serverAuthConfig(server)
+  if (!github) {
+    const c = cfg.providers.length ? getCredential(server) : undefined
+    if (!c) { if (token || !cfg.providers.length) return { token }; throw new NotLoggedIn(server) }
+    return { token, session: c.session, login: c.login }
+  }
+  if (cfg.mode === 'device') {
     const c = getCredential(server)
     if (!c) { if (token) return { token }; throw new NotLoggedIn(server) }
     return { token, session: c.session, login: c.login }
@@ -90,14 +104,21 @@ export async function resolveAuth(server: string, roomName: string, token?: stri
   return { token, gh: await githubToken() }
 }
 
-export interface LoginProgress { user_code: string; verification_uri: string; expires_in: number; interval: number; device: string }
-/** Start GitHub device login against the server. Show the user the code; then pollLogin until done. */
-export async function startLogin(server: string): Promise<LoginProgress> {
-  const res = await fetch(`${httpOf(server)}/auth/device`, { method: 'POST', signal: AbortSignal.timeout(15000) })
-  if (!res.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2)
-  return await res.json() as LoginProgress
+/** What a started login needs from the user: GitHub shows a code to enter at verification_uri; OIDC gives a URL to open. */
+export interface LoginProgress { provider: Provider; device: string; expires_in: number; interval: number; user_code?: string; verification_uri?: string; url?: string }
+/** Start a login against the server (default provider: the server's first). Show the user the code/URL; then pollLogin until done. */
+export async function startLogin(server: string, provider?: Provider): Promise<LoginProgress> {
+  const res = await fetch(`${httpOf(server)}/auth/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(provider ? { provider } : {}), signal: AbortSignal.timeout(15000) })
+  if (res.status === 404 && !provider) { // older server: only the GitHub device flow
+    const old = await fetch(`${httpOf(server)}/auth/device`, { method: 'POST', signal: AbortSignal.timeout(15000) })
+    if (!old.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await old.text()).trim() || `HTTP ${old.status}`}`, 2)
+    return { provider: 'github', ...(await old.json() as Omit<LoginProgress, 'provider'>) }
+  }
+  if (!res.ok) throw new RoomdError(`${server} could not start ${provider ?? ''} login: ${(await res.text()).trim() || `HTTP ${res.status}`}`.replace('  ', ' '), 2)
+  const p = await res.json() as LoginProgress
+  return { ...p, provider: p.provider ?? provider ?? 'github' }
 }
-/** Poll until GitHub confirms, the attempt fails, or maxMs passes. Saves the credential on success. */
+/** Poll until the provider confirms, the attempt fails, or maxMs passes. Saves the credential on success. */
 export async function pollLogin(server: string, p: LoginProgress, opts: { maxMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<{ login: string } | { pending: true } | { error: string }> {
   const sleep = opts.sleep ?? (ms => new Promise(r => setTimeout(r, ms)))
   const deadline = Date.now() + (opts.maxMs ?? 90_000)
@@ -105,7 +126,7 @@ export async function pollLogin(server: string, p: LoginProgress, opts: { maxMs?
     const res = await fetch(`${httpOf(server)}/auth/poll`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device: p.device }), signal: AbortSignal.timeout(15000) })
     if (!res.ok) return { error: (await res.text()).trim() || `HTTP ${res.status}` }
     const b = await res.json() as { pending?: boolean; error?: string; session?: string; login?: string }
-    if (b.session && b.login) { setCredential(server, { session: b.session, login: b.login, at: Date.now() }); modeCache.delete(server); return { login: b.login } }
+    if (b.session && b.login) { setCredential(server, { session: b.session, login: b.login, at: Date.now() }); configCache.delete(server); return { login: b.login } }
     if (b.error) return { error: b.error }
     if (Date.now() >= deadline) return { pending: true }
     await sleep(Math.max(1, p.interval) * 1000)

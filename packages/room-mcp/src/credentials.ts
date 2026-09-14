@@ -8,8 +8,9 @@ import os from 'node:os'
 import path from 'node:path'
 
 export interface Credential { session: string; login: string; at: number }
-/** A device login that was started but not yet confirmed; survives an MCP restart. Stored under "pending:<server>". */
-export interface PendingLogin { device: string; user_code: string; verification_uri: string; expires_in: number; interval: number; startedAt: number }
+/** A login that was started but not yet confirmed; survives an MCP restart. Stored under "pending:<server>".
+ *  GitHub device flow carries user_code + verification_uri; OIDC carries the authorize url. */
+export interface PendingLogin { provider: 'github' | 'oidc'; device: string; expires_in: number; interval: number; startedAt: number; user_code?: string; verification_uri?: string; url?: string }
 export function getPending(server: string): PendingLogin | undefined {
   const p = (loadCredentials() as Record<string, unknown>)[`pending:${serverKey(server)}`] as PendingLogin | undefined
   return p && Date.now() - p.startedAt < p.expires_in * 1000 ? p : undefined

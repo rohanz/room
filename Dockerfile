@@ -1,5 +1,6 @@
-# Room server only (stock y-websocket + token + optional LevelDB persistence).
-#   docker build -t room-server .    or    gcloud run deploy room --source .
+# Room server (y-websocket + GitHub/OIDC login + LevelDB persistence + optional Postgres store).
+#   docker build -t room-server .    or    docker compose -f deploy/docker-compose.yml up -d
+# See deploy/self-hosting.md.
 FROM node:22-slim
 WORKDIR /app
 COPY packages/server/package.json ./package.json

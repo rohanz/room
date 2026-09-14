@@ -4,13 +4,20 @@
  *  - Rooms named github.com/<owner>/<repo>/<branch> admit callers whose GitHub account has push
  *    access to the repo (checked against the GitHub API, cached 10 min). Read access is not
  *    enough: a public repo must not be an open room.
- *  - GITHUB_CLIENT_ID: if set, clients log in with GitHub's device flow (POST /auth/device, /auth/poll)
+ *  - GITHUB_CLIENT_ID: if set, clients log in with GitHub's device flow (POST /auth/start, /auth/poll)
  *    and the server keeps the GitHub token; clients hold only an opaque ?session=. Forwarded
  *    GitHub tokens (?gh=) are refused. Without it (local dev, tests) ?gh= is accepted as before.
- *    Logged-in connections may only announce presence under their GitHub login.
+ *    Logged-in connections may only announce presence under their login.
+ *  - OIDC_ISSUER + OIDC_CLIENT_ID + OIDC_CLIENT_SECRET + PUBLIC_URL: OIDC login (authorization code +
+ *    PKCE; GET /auth/callback is the redirect URI). OIDC_ALLOWED_DOMAINS limits who may log in.
+ *    Any logged-in user is admitted to non-GitHub rooms (local/..., git/<host>/<owner>/<repo>);
+ *    github.com rooms still need a GitHub login with push access.
  *  - ROOM_TOKEN: if set, ?token=<same> admits any room (fallback for non-GitHub repos, and override).
- *  - With neither a GitHub-verifiable room nor ROOM_TOKEN configured, the server is open.
- *  - YPERSISTENCE: if set to a directory, rooms are stored in LevelDB there and survive restarts.
+ *  - With no login provider and no ROOM_TOKEN configured, non-GitHub rooms are open.
+ *  - YPERSISTENCE: if set to a directory, rooms are stored in LevelDB there and survive restarts;
+ *    the repo registry, sessions and the audit log (audit.log, JSON lines) live there too unless
+ *    DATABASE_URL points at Postgres (see store.ts). GET /audit?session=<admin session>&since=<ms>
+ *    for logins in ROOM_ADMINS.
  *  - A repo is opened explicitly once (POST /rooms) before anyone can connect to any of its branch
  *    rooms; a websocket to a repo nobody opened is refused with 404. Joining a branch of an
  *    opened repo needs no further step. GET /rooms lists the caller's open repos; DELETE /rooms
@@ -26,13 +33,32 @@ import { WebSocketServer } from 'ws'
 import { setupWSConnection, docs, getPersistence } from '@y/websocket-server/utils'
 import { makeReadOnly, bindIdentity } from './readonly.js'
 import { Auth } from './auth.js'
+import type { Provider } from './auth.js'
+import { storeFromEnv, type AuditEntry, type OpenRepo } from './store.js'
 
 const PORT = Number(process.env.PORT ?? 1234)
 const HOST = process.env.HOST ?? '0.0.0.0'
 const TOKEN = process.env.ROOM_TOKEN?.trim() || undefined
+/** Ceiling on what clients may share: intent | declared | full (ROOM_SHARE_MAX). */
+const SHARE_MAX = (['intent', 'declared', 'full'] as const).find(l => l === process.env.ROOM_SHARE_MAX?.trim()) ?? 'full'
 /** Directory with the built browser view (packages/web/dist). Served at / when present. */
 const STATIC = process.env.ROOM_STATIC ?? path.resolve(process.cwd(), 'public')
-const auth = new Auth({ clientId: process.env.GITHUB_CLIENT_ID?.trim() || undefined, sessionsFile: process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'sessions.json') : undefined, log: l => console.log(l) })
+/** Logins allowed to read the audit log (ROOM_ADMINS, comma list). */
+const ADMINS = new Set((process.env.ROOM_ADMINS ?? '').split(',').map(s => s.trim()).filter(Boolean))
+const list = (v: string | undefined) => v?.split(',').map(s => s.trim()).filter(Boolean) ?? []
+const oidcIssuer = process.env.OIDC_ISSUER?.trim()
+if (oidcIssuer && !(process.env.OIDC_CLIENT_ID && process.env.OIDC_CLIENT_SECRET && process.env.PUBLIC_URL)) { console.error('OIDC_ISSUER is set but OIDC_CLIENT_ID, OIDC_CLIENT_SECRET or PUBLIC_URL is missing'); process.exit(1) }
+const store = storeFromEnv()
+const auth = new Auth({
+  clientId: process.env.GITHUB_CLIENT_ID?.trim() || undefined,
+  oidc: oidcIssuer ? { issuer: oidcIssuer, clientId: process.env.OIDC_CLIENT_ID!.trim(), clientSecret: process.env.OIDC_CLIENT_SECRET!.trim(), allowedDomains: list(process.env.OIDC_ALLOWED_DOMAINS), publicUrl: process.env.PUBLIC_URL!.trim() } : undefined,
+  store,
+  log: l => console.log(l),
+})
+/** Append-only audit trail: who logged in, which rooms were opened/closed, every websocket accepted or refused. */
+function audit(e: Omit<AuditEntry, 'at'>): void {
+  store.audit({ at: Date.now(), ...e }).catch(err => console.log(`audit: could not write: ${err instanceof Error ? err.message : err}`))
+}
 const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' }
 
 /** GitHub token -> (owner/repo -> admitted until). */
@@ -81,36 +107,41 @@ function saveViewTokens() {
   try { fs.writeFileSync(VIEW_FILE, JSON.stringify(Object.fromEntries(viewTokens))) } catch { /* best effort */ }
 }
 
-/** "github.com/owner/repo/feature/x" -> "github.com/owner/repo"; "local/dir/main" -> "local/dir". */
+/** "github.com/owner/repo/feature/x" -> "github.com/owner/repo"; "git/host/owner/repo/main" -> "git/host/owner/repo"; "local/dir/main" -> "local/dir". */
 function repoOf(roomName: string): string {
   const parts = roomName.split('/')
-  return parts.slice(0, roomName.startsWith('github.com/') ? 3 : 2).join('/')
+  return parts.slice(0, roomName.startsWith('github.com/') ? 3 : roomName.startsWith('git/') ? 4 : 2).join('/')
 }
-/** Repos someone has opened: repo -> who/when + the branch rooms seen since. Persisted next to the room data. */
-interface OpenRepo { by?: string; at: number; branches: string[]; lastSeen?: number }
+/** Repos someone has opened: repo -> who/when + the branch rooms seen since. Persisted through the store. */
 const rooms = new Map<string, OpenRepo>()
-const ROOMS_FILE = process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'rooms.json') : undefined
-try { if (ROOMS_FILE && fs.existsSync(ROOMS_FILE)) for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(ROOMS_FILE, 'utf8')) as Record<string, Partial<OpenRepo>>)) rooms.set(k, { by: v.by, at: v.at ?? Date.now(), branches: v.branches ?? [] }) } catch { /* start empty */ }
+const roomsLoaded = auth.ready.then(() => store.loadRooms()).then(all => { for (const [k, v] of Object.entries(all)) rooms.set(k, v) }).catch(e => console.log(`could not load the room registry: ${e instanceof Error ? e.message : e}`))
 function saveRooms() {
-  if (!ROOMS_FILE) return
-  try { fs.writeFileSync(ROOMS_FILE, JSON.stringify(Object.fromEntries(rooms))) } catch { /* best effort */ }
+  store.saveRooms(Object.fromEntries(rooms)).catch(e => console.log(`could not save the room registry: ${e instanceof Error ? e.message : e}`))
 }
 const NOT_OPEN = (room: string) => `no room for ${repoOf(room)} yet: open one with room_create (or POST /rooms)`
 
 interface Creds { gh?: string; token?: string; session?: string }
-type Verdict = { ok: true; login?: string } | { ok: false; status: 401 | 403; why: string }
+type Verdict = { ok: true; login?: string; provider?: Provider } | { ok: false; status: 401 | 403; why: string }
 /** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting.
- *  A verdict carries the verified GitHub login when the caller is logged in. */
+ *  A verdict carries the verified login when the caller is logged in.
+ *  github.com rooms: a GitHub login (or forwarded token) with push access. Other rooms: the shared
+ *  token, or any login when the server has a login provider, or open when it has neither. */
 async function admitted(room: string, c: Creds): Promise<Verdict> {
   const repo = githubRepoOf(room)
   if (TOKEN && c.token === TOKEN) return { ok: true }
-  if (!TOKEN && !repo) return { ok: true }
-  if (!repo) return { ok: false, status: 401, why: 'token required or wrong: set ROOM_SERVER=ws://host/?token=<shared token>' }
-  if (auth.mode === 'device') {
+  if (!repo) {
+    if (!auth.providers.length) return TOKEN ? { ok: false, status: 401, why: 'token required or wrong: set ROOM_SERVER=ws://host/?token=<shared token>' } : { ok: true }
+    if (!c.session) return { ok: false, status: 401, why: `not logged in: run room_login (room ${repoOf(roomNameOf(room))})` }
+    const st = auth.resolve(c.session)
+    if (!st) return { ok: false, status: 401, why: 'session expired or unknown: run room_login' }
+    return { ok: true, login: st.login, provider: st.provider }
+  }
+  if (auth.mode === 'device' || auth.providers.includes('oidc')) {
     if (!c.session) return { ok: false, status: 401, why: c.gh ? 'this server uses GitHub login: run room_login (forwarded GitHub tokens are not accepted)' : `not logged in: run room_login (room ${repo})` }
     const st = auth.resolve(c.session)
     if (!st) return { ok: false, status: 401, why: 'session expired or unknown: run room_login' }
-    if (await githubCanPush(st.ghToken, repo)) return { ok: true, login: st.login }
+    if (!st.ghToken) return { ok: false, status: 403, why: auth.mode === 'device' ? `${repo} is a GitHub repo: log in with GitHub (room_login provider=github) to prove push access` : `${repo} is a GitHub repo but this server has no GitHub login configured (GITHUB_CLIENT_ID)` }
+    if (await githubCanPush(st.ghToken, repo)) return { ok: true, login: st.login, provider: 'github' }
     return { ok: false, status: 403, why: `${st.login} cannot push to ${repo}: ask for write access` }
   }
   if (!c.gh) return { ok: false, status: 401, why: `no GitHub token: run \`gh auth login\` (room ${repo})` }
@@ -166,24 +197,52 @@ const server = http.createServer((req, res) => {
   const queryCreds = (): Creds => creds({ gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined })
   const json = (status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
   const text = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/plain' }); res.end(body) }
+  const html = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' }); res.end(`<!doctype html><title>Room</title><body style="font-family:system-ui;margin:3em">${body}</body>`) }
   const withBody = (fn: (o: Record<string, unknown>) => Promise<void>) => { void readBody(req).then(async body => { try { await fn(JSON.parse(body || '{}') as Record<string, unknown>) } catch { text(400, 'bad request') } }); return }
 
   // ---- auth ----
-  if (url.pathname === '/auth/config' && req.method === 'GET') return json(200, { github: auth.mode, clientIdSet: auth.mode === 'device' })
-  if (url.pathname === '/auth/device' && req.method === 'POST') {
-    if (auth.mode !== 'device') return text(404, 'this server does not use GitHub login (no GITHUB_CLIENT_ID)')
-    void auth.startDevice().then(d => json(200, d)).catch(e => text(502, `GitHub device flow failed: ${e instanceof Error ? e.message : e}`))
+  if (url.pathname === '/auth/config' && req.method === 'GET') return json(200, { github: auth.mode, clientIdSet: auth.mode === 'device', providers: auth.providers, shareMax: SHARE_MAX })
+  const startLogin = (provider: Provider | undefined) => {
+    if (!auth.providers.length) return text(404, 'this server has no login provider (set GITHUB_CLIENT_ID or OIDC_ISSUER)')
+    void auth.start(provider).then(d => json(200, d)).catch(e => text(502, `could not start ${provider ?? auth.providers[0]} login: ${e instanceof Error ? e.message : e}`))
+  }
+  if (url.pathname === '/auth/device' && req.method === 'POST') return startLogin('github') // older clients
+  if (url.pathname === '/auth/start' && req.method === 'POST') return withBody(async o => {
+    const p = str(o.provider)
+    if (p && p !== 'github' && p !== 'oidc') return text(400, `unknown provider ${p}`)
+    startLogin(p as Provider | undefined)
+  })
+  if (url.pathname === '/auth/callback' && req.method === 'GET') {
+    void auth.callbackOidc(url.searchParams.get('code') ?? undefined, url.searchParams.get('state') ?? undefined, url.searchParams.get('error') ?? undefined).then(r => {
+      if ('login' in r) { audit({ event: 'login', login: r.login, provider: 'oidc' }); return html(200, `<h1>Logged in as ${escapeHtml(r.login)}</h1><p>You can close this tab and go back to your agent.</p>`) }
+      return html(400, `<h1>Login failed</h1><p>${escapeHtml(r.error)}</p>`)
+    })
     return
   }
   if (url.pathname === '/auth/poll' && req.method === 'POST') return withBody(async o => {
     const device = str(o.device)
     if (!device) return text(400, 'device required')
-    json(200, await auth.poll(device))
+    const r = await auth.poll(device)
+    if ('session' in r && r.provider === 'github') audit({ event: 'login', login: r.login, provider: 'github' })
+    json(200, r)
   })
-  if (url.pathname === '/auth/logout' && req.method === 'POST') return withBody(async o => json(200, { ok: auth.logout(str(o.session)) }))
+  if (url.pathname === '/auth/logout' && req.method === 'POST') return withBody(async o => {
+    const was = auth.logout(str(o.session))
+    if (was) audit({ event: 'logout', login: was.login, provider: was.provider })
+    json(200, { ok: !!was })
+  })
   if (url.pathname === '/auth/me' && req.method === 'GET') {
     const st = auth.resolve(url.searchParams.get('session') ?? undefined)
-    return st ? json(200, { login: st.login }) : text(401, 'not logged in')
+    return st ? json(200, { login: st.login, provider: st.provider }) : text(401, 'not logged in')
+  }
+  if (url.pathname === '/audit' && req.method === 'GET') {
+    const st = auth.resolve(url.searchParams.get('session') ?? undefined)
+    if (!st) return text(401, 'not logged in: pass ?session=')
+    if (!ADMINS.has(st.login)) return text(403, `${st.login} is not in ROOM_ADMINS`)
+    const since = Number(url.searchParams.get('since') ?? 0) || 0
+    const limit = Math.min(10_000, Number(url.searchParams.get('limit') ?? 1000) || 1000)
+    void store.readAudit({ since, limit }).then(entries => json(200, entries)).catch(e => text(500, `audit unavailable: ${e instanceof Error ? e.message : e}`))
+    return
   }
 
   // ---- rooms ----
@@ -204,6 +263,7 @@ const server = http.createServer((req, res) => {
     const repo = repoOf(roomNameOf(room))
     if (!rooms.has(repo)) return text(404, NOT_OPEN(room))
     const closed = await closeRepo(repo)
+    audit({ event: 'room_closed', room: repo, login: v.login })
     json(200, { repo, closed, ...(v.login ? { login: v.login } : {}) })
   })
   if (url.pathname === '/rooms' && req.method === 'POST') return withBody(async o => {
@@ -214,7 +274,7 @@ const server = http.createServer((req, res) => {
     const by = v.login ?? str(o.by)
     const name = repoOf(roomNameOf(room))
     const existing = rooms.get(name)
-    if (!existing) { rooms.set(name, { by, at: Date.now(), branches: [] }); saveRooms(); console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`) }
+    if (!existing) { rooms.set(name, { by, at: Date.now(), branches: [] }); saveRooms(); console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`); audit({ event: 'room_opened', room: name, login: by }) }
     json(existing ? 200 : 201, { repo: name, created: !existing, ...(existing ?? {}), ...(v.login ? { login: v.login } : {}) })
   })
   if (url.pathname === '/view-token' && req.method === 'POST') return withBody(async o => {
@@ -254,6 +314,7 @@ const droppedWrite = (room: string) => () => {
 wss.on('connection', (conn, req) => setupWSConnection(conn, req, { gc: true }))
 const refuse = (socket: import('node:stream').Duplex, code: number, why: string, room?: string) => {
   console.log(`refused ${code} ${why}${room ? ` (room ${room})` : ''}`)
+  audit({ event: 'refused', room, reason: `${code} ${why}` })
   socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`)
   socket.destroy()
 }
@@ -261,9 +322,10 @@ const identityLog = new Map<string, number>()
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const roomName = roomNameOf(url.pathname)
-  const accept = (opts: { readOnly?: boolean; login?: string } = {}) => rooms.has(repoOf(roomName))
+  const accept = (opts: { readOnly?: boolean; login?: string; provider?: Provider } = {}) => rooms.has(repoOf(roomName))
     ? wss.handleUpgrade(req, socket, head, ws => {
       noteBranch(roomName)
+      audit({ event: 'join', room: roomName, login: opts.login, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
       if (opts.readOnly) makeReadOnly(ws, droppedWrite(roomName))
       if (opts.login) bindIdentity(ws, opts.login, login => {
         const now = Date.now()
@@ -282,12 +344,15 @@ server.on('upgrade', (req, socket, head) => {
   }
   const c: Creds = { gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined }
   admitted(roomName, c)
-    .then(v => v.ok ? accept({ login: v.login }) : refuse(socket, v.status, v.why, roomName))
+    .then(v => v.ok ? accept({ login: v.login, provider: v.provider }) : refuse(socket, v.status, v.why, roomName))
     .catch(() => refuse(socket, 403, 'Forbidden', roomName))
 })
-server.listen(PORT, HOST, () => console.log(
+function escapeHtml(s: string): string { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!) }
+void roomsLoaded.then(() => server.listen(PORT, HOST, () => console.log(
   `room server listening on ws://${HOST}:${PORT}/<room>` +
   (auth.mode === 'device' ? ' (GitHub login via device flow; forwarded tokens refused)' : ' (GitHub tokens forwarded by clients; set GITHUB_CLIENT_ID for device login)') +
+  (auth.providers.includes('oidc') ? ` (OIDC login via ${oidcIssuer})` : '') +
   (TOKEN ? ' (shared token also accepted)' : '') +
+  (process.env.DATABASE_URL ? ' registry/sessions/audit in Postgres' : '') +
   (process.env.YPERSISTENCE ? ` persisting to ${process.env.YPERSISTENCE}` : ' (in-memory: rooms reset on restart)'),
-))
+)))

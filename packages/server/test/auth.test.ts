@@ -74,9 +74,10 @@ describe('device-flow auth', () => {
     const { session } = await a.poll(device) as { session: string }
     expect(fs.statSync(file).mode & 0o777).toBe(0o600)
     expect(fs.readFileSync(file, 'utf8')).toContain('gho_1')
-    // a restarted server reloads it
+    // a restarted server reloads it (sessions load asynchronously through the store)
     const b = new Auth({ clientId: 'cid', fetch: gh.fetch, now: () => t, sessionsFile: file, sessionTtlMs: 10_000 })
-    expect(b.resolve(session)?.login).toBe('octo')
+    await b.ready
+    expect(b.resolve(session)).toMatchObject({ login: 'octo', provider: 'github' })
     // sliding: using it at t+8s keeps it alive past the original 10s
     t += 8_000; expect(b.resolve(session)).toBeTruthy()
     t += 8_000; expect(b.resolve(session)).toBeTruthy()
@@ -86,8 +87,8 @@ describe('device-flow auth', () => {
     const gh2 = fakeGitHub({ tokenResponses: [{ access_token: 'gho_2' }], login: 'octo' })
     const c = new Auth({ clientId: 'cid', fetch: gh2.fetch, sessionsFile: file })
     const { session: s2 } = await c.poll((await c.startDevice()).device) as { session: string }
-    expect(c.logout(s2)).toBe(true)
-    expect(c.logout(s2)).toBe(false)
+    expect(c.logout(s2)).toMatchObject({ login: 'octo' })
+    expect(c.logout(s2)).toBeUndefined()
     expect(c.resolve(s2)).toBeUndefined()
     expect(fs.readFileSync(file, 'utf8')).not.toContain('gho_2')
   })
