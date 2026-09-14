@@ -35,6 +35,10 @@ const STATIC = process.env.ROOM_STATIC ?? path.resolve(process.cwd(), 'public')
 const auth = new Auth({ clientId: process.env.GITHUB_CLIENT_ID?.trim() || undefined, sessionsFile: process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'sessions.json') : undefined, log: l => console.log(l) })
 const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' }
 
+// ---- github proxy (pull requests): the routes are in the "github" section of the request handler ----
+import { GitHubProxy } from './github.js'
+const github = new GitHubProxy({ log: l => console.log(l) })
+
 /** GitHub token -> (owner/repo -> admitted until). */
 const ghCache = new Map<string, Map<string, number>>()
 /** Can this token push to the repo? Read access alone would make every public repo an open room. */
@@ -229,6 +233,50 @@ const server = http.createServer((req, res) => {
     for (const [k, vv] of viewTokens) if (vv.exp < Date.now()) viewTokens.delete(k)
     saveViewTokens()
     json(200, { view, expiresIn: VIEW_TTL, ...(v.login ? { login: v.login } : {}) })
+  })
+
+  // ---- github (pull requests) ----
+  // Same admission rule as /rooms; the GitHub call uses the token behind the session (device
+  // login) or, on token-mode servers, the forwarded ?gh= token. Sessions without a GitHub token
+  // (OIDC) get 403: the proxy cannot act on GitHub for them.
+  const githubTokenFor = (c: Creds): string | undefined => (c.session ? auth.resolve(c.session)?.ghToken : undefined) ?? c.gh
+  const githubFail = (what: string, e: unknown) => { const st = (e as { status?: number }).status; console.log(`${what}: ${e instanceof Error ? e.message : e}`); text(st === 401 || st === 403 || st === 404 ? st : 502, `${what}: ${e instanceof Error ? e.message : String(e)}`) }
+  if (url.pathname === '/github/prs' && req.method === 'GET') {
+    const room = str(url.searchParams.get('room') ?? undefined)
+    if (!room) return text(400, 'room required')
+    const c = queryCreds()
+    void (async () => {
+      const name = roomNameOf(room)
+      const repo = githubRepoOf(name)
+      if (!repo) return text(400, `${name} is not a github.com room`)
+      const v = await admitted(name, c)
+      if (!v.ok) { console.log(`github/prs refused: ${v.why}`); return text(v.status, v.why) }
+      if (!rooms.has(repoOf(name))) return text(404, NOT_OPEN(name))
+      const token = githubTokenFor(c)
+      if (!token) return text(403, 'this session has no GitHub token; log in with GitHub to see pull requests')
+      try { json(200, await github.openPrs(token, repo, name.slice(`github.com/${repo}/`.length))) }
+      catch (e) { githubFail('github/prs', e) }
+    })()
+    return
+  }
+  if (url.pathname === '/github/pr-note' && req.method === 'POST') return withBody(async o => {
+    const room = str(o.room)
+    const number = Number(o.number)
+    const body = str(o.body)
+    if (!room) return text(400, 'room required')
+    if (!Number.isInteger(number) || number <= 0) return text(400, 'number required (positive PR number)')
+    if (!body) return text(400, 'body required')
+    const c = creds(o)
+    const name = roomNameOf(room)
+    const repo = githubRepoOf(name)
+    if (!repo) return text(400, `${name} is not a github.com room`)
+    const v = await admitted(name, c)
+    if (!v.ok) { console.log(`github/pr-note refused: ${v.why}`); return text(v.status, v.why) }
+    if (!rooms.has(repoOf(name))) return text(404, NOT_OPEN(name))
+    const token = githubTokenFor(c)
+    if (!token) return text(403, 'this session has no GitHub token; log in with GitHub to comment on pull requests')
+    try { json(200, { repo, number, ...(await github.upsertNote(token, repo, number, body)), ...(v.login ? { login: v.login } : {}) }) }
+    catch (e) { githubFail('github/pr-note', e) }
   })
   if (fs.existsSync(STATIC)) {
     const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)

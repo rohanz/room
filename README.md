@@ -187,9 +187,12 @@ clients. Yjs supplies shared state and presence; Git remains the integration mec
 | `room_claim` / `room_release` | Declare line ownership and plans; release work with a summary. |
 | `room_send` | Announce changes, ask questions, answer, or leave notes. |
 | `room_wait` | Wait for release, an answer, or an interrupt, with a timeout. |
-| `room_done` | Release remaining claims, clear scope, and mark the task finished while staying available for questions. |
+| `room_done` | Release remaining claims, clear scope, and mark the task finished while staying available for questions; `pr_note: true` also posts the branch ledger on its PR. |
+| `room_pr_note` | Post or update the one room comment on a GitHub PR with the branch’s story: scopes, claims and plan outcomes, questions and answers, passing merge previews. |
 | `room_impact` | Find symbol providers, consumers, dependencies, and owners. |
 | `room_preview_merge` | Preview the combined changes; optionally run checks. The room also runs it for you whenever two people change the same file and notifies you if the result conflicts. |
+
+**Pull requests are intent too.** Open PRs targeting the room’s branch are mirrored into the room as `pr#<n>` bot participants owned by their author, with a scope built from the files they touch, so a claim or a symbol change that lands on a file an open PR is rewriting is flagged the same way a teammate’s declared work is. The server fetches them with the GitHub token it holds from device login (`GET /github/prs`, cached a minute); one elected client keeps the mirror fresh every two minutes. In the other direction `room_pr_note` writes the branch’s coordination story onto its PR as a single comment that is edited in place, so reviewers see who declared what, which plans were fulfilled or cancelled, what was asked and answered, and which merge previews passed.
 
 ## Limitations and failure handling
 

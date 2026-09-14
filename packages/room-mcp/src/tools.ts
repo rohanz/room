@@ -17,6 +17,7 @@ import { getCredential, getPending, setPending } from './credentials.js'
 import { NotLoggedIn } from './session.js'
 import { HooksBridge } from './hooks-bridge.js'
 import { ConflictWatcher } from './conflicts.js'
+import { branchOf, fetchPrs, isPrName, openPrs, postPrNote, prLeader, renderPrNote, syncPrs, type PrInfo } from './prs.js'
 
 export interface ToolDef {
   name: string
@@ -48,6 +49,10 @@ export interface ToolCtx {
   queue?: (threadId: string, text: string) => Promise<void>
   /** Diagnostics (inbox deliveries etc.); default stderr. */
   log?: (line: string) => void
+  /** Pull-request integration; injectable for tests. fetch: open PRs targeting the room's branch
+   *  (default GET /github/prs on the server); post: the PR comment (default POST /github/pr-note);
+   *  intervalMs: mirror refresh period (default 2 min; 0 disables the timer). */
+  prs?: { fetch?: (s: Session) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
 }
 
 export interface Tools {
@@ -119,7 +124,9 @@ export const DEFS: ToolDef[] = [
   { name: 'room_wait', annotations: RO, description: 'Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). Returns what happened. Then call room_state.',
     inputSchema: { type: 'object', properties: { claimId: str('wait for this claim to be released'), questionId: str('wait for an answer to this question'), timeoutMs: int('default 30000, max 120000') } } },
   { name: 'room_done', annotations: RW, description: 'Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. Call after your final room_preview_merge, before reporting to your human. Stay in the room for questions.',
-    inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result') }, required: ['summary'] } },
+    inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'also post the branch ledger as a comment on the open PR whose head is this branch (room_pr_note), if there is one' } }, required: ['summary'] } },
+  { name: 'room_pr_note', annotations: { ...RW, openWorldHint: true }, description: 'Post (or update) ONE comment on a GitHub pull request with the branch\'s room story: who declared what, claims with plans and whether they were fulfilled, questions and answers, merge previews that passed, in bus order. Default PR: the open one whose head is this branch. The comment is authored by the logged-in user via the server; the GitHub token never leaves the server.',
+    inputSchema: { type: 'object', properties: { number: int('PR number (default: the open PR whose head is this branch)') } } },
   { name: 'room_impact', annotations: RO, description: 'Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
   { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and another person\'s combine cleanly? Three-way merge against the common base; nothing in any clone is written. Reports clean paths and conflicting hunks. With `run`, materialises the merged tree in a scratch directory and runs that command there (e.g. the tests), so you can verify code that depends on their unmerged work.',
@@ -161,8 +168,54 @@ export function createTools(ctx: ToolCtx): Tools {
       mergeBase: async (a, b) => (await git(s.dir, ['merge-base', a, b])).trim(),
     })
     watcher.start()
+    startPrSync(s)
   }
-  const detach = () => { bridge?.stop(); bridge = null; watcher?.stop(); watcher = null }
+  const detach = () => { bridge?.stop(); bridge = null; watcher?.stop(); watcher = null; stopPrSync() }
+
+  // ---- pull requests as intent ------------------------------------------------
+  /** Refresh the PR mirror in the doc when I am the elected maintainer (lowest present name). Never throws. */
+  let prTimer: ReturnType<typeof setInterval> | null = null
+  let prSyncedSession: Session | null = null
+  const fetchPrList = ctx.prs?.fetch ?? fetchPrs
+  const postNote = ctx.prs?.post ?? postPrNote
+  const refreshPrs = async (s: Session): Promise<string> => {
+    if (!s.roomName.startsWith('github.com/')) return ''
+    const present = presences(s).map(p => p.user.name)
+    const leader = prLeader(present.length ? present : [s.me.name])
+    if (leader !== s.me.name) return ''
+    let prs: PrInfo[]
+    try { prs = await fetchPrList(s) } catch (e) { log(`pull requests: ${e instanceof Error ? e.message : String(e)}`); return '' }
+    const r = syncPrs(s.room, prs, s.me)
+    const parts = [r.added.length ? `mirrored ${r.added.map(n => `#${n}`).join(', ')}` : '', r.removed.length ? `removed ${r.removed.map(n => `#${n}`).join(', ')}` : ''].filter(Boolean)
+    if (parts.length) log(`pull requests: ${parts.join('; ')}`)
+    return parts.join('; ')
+  }
+  const startPrSync = (s: Session) => {
+    if (prSyncedSession === s) return
+    stopPrSync()
+    prSyncedSession = s
+    const every = ctx.prs?.intervalMs ?? 2 * 60_000
+    void refreshPrs(s)
+    if (every > 0) { prTimer = setInterval(() => { void refreshPrs(s) }, every); prTimer.unref?.() }
+  }
+  const stopPrSync = () => { if (prTimer) clearInterval(prTimer); prTimer = null; prSyncedSession = null }
+  /** room_state section: open PRs targeting this branch, from the mirror. */
+  const prLines = (s: Session): string[] => {
+    const prs = openPrs(s.room)
+    if (!prs.length) return []
+    const out = [`open pull requests (${prs.length}):`]
+    for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head} → ${branchOf(s.roomName)}): ${pr.files.length ? pr.files.slice(0, 8).join(', ') + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : '') : 'no files'} · ${pr.url}`)
+    return out
+  }
+  /** The PR this branch is the head of, if it is mirrored. */
+  const myPr = (s: Session): PrInfo | undefined => openPrs(s.room).find(p => p.head === branchOf(s.roomName))
+  /** Render the ledger and post it as the one room comment on the PR. */
+  const postLedger = async (s: Session, pr: PrInfo): Promise<string> => {
+    const body = renderPrNote(s.room, { roomName: s.roomName, now: now() })
+    const r = await postNote(s, pr.number, body)
+    s.room.post<NoteMsg>(s.me, { type: 'note', text: `${r.updated ? 'updated' : 'posted'} the room ledger on PR #${pr.number}${r.url ? ` (${r.url})` : ''}`, priority: 'fyi' })
+    return `${r.updated ? 'updated' : 'posted'} the room ledger comment on PR #${pr.number} "${pr.title}"${r.url ? `: ${r.url}` : ''} (${body.split('\n').length} lines)`
+  }
   /** Two room_claim calls on different machines can both pass the overlap pre-check. When the
    *  other claim arrives, the owner of the lexicographically smaller id reports the conflict. */
   const observeClaims = (s: Session) => {
@@ -200,7 +253,7 @@ export function createTools(ctx: ToolCtx): Tools {
     for (const k of s.room.overlays.keys()) names.add(k)
     for (const p of presences(s)) names.add(p.user.name)
     names.delete(s.me.name)
-    return Array.from(names).sort()
+    return Array.from(names).filter(n => !isPrName(n)).sort() // PR mirrors are intent, not people: never routed to
   }
   const presences = (s: Session): SharePresence[] =>
     Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)
@@ -658,6 +711,7 @@ export function createTools(ctx: ToolCtx): Tools {
         .slice(-10)
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
+      out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
       return out.join('\n')
     },
     async room_read(a) {
@@ -881,7 +935,29 @@ export function createTools(ctx: ToolCtx): Tools {
       s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
       setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
       s.daemon.touch()
-      return `marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s), scope cleared. You are still in the room and will be woken for questions.`
+      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s), scope cleared. You are still in the room and will be woken for questions.`]
+      if (a.pr_note === true) {
+        await refreshPrs(s)
+        const pr = myPr(s)
+        if (!pr) out.push(`pr_note: no open PR has ${branchOf(s.roomName)} as its head; nothing posted (room_pr_note number=<n> to pick one)`)
+        else { try { out.push(await postLedger(s, pr)) } catch (e) { out.push(`pr_note failed: ${e instanceof Error ? e.message : String(e)}`) } }
+      }
+      return out.join('\n')
+    },
+    async room_pr_note(a) {
+      const s = S()
+      if (!s.roomName.startsWith('github.com/')) return 'error: this room is not a GitHub repo; there are no pull requests to annotate'
+      await refreshPrs(s)
+      let pr: PrInfo | undefined
+      if (a.number !== undefined) {
+        const n = Number(a.number)
+        if (!Number.isInteger(n) || n <= 0) return 'error: number must be a positive PR number'
+        pr = openPrs(s.room).find(p => p.number === n) ?? { number: n, title: `#${n}`, author: '', head: '', files: [], updatedAt: '', url: '' }
+      } else {
+        pr = myPr(s)
+        if (!pr) { const open = openPrs(s.room); return `no open PR has ${branchOf(s.roomName)} as its head${open.length ? `; open PRs targeting this branch: ${open.map(p => `#${p.number} (${p.head})`).join(', ')}. Pass number=<n>` : ''}` }
+      }
+      return postLedger(s, pr)
     },
     async room_impact(a) {
       const s = S()
@@ -969,10 +1045,13 @@ export function createTools(ctx: ToolCtx): Tools {
       if (resolvable.length && a.resolve !== true) out.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone (only your side changes).`)
       for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
+      let ranOk = !run
       if (run) {
         if (hard.length) out.push(`not running "${run}": ${hard.length} conflict(s) need a human first`)
-        else out.push(await runInMergedTree(s, ancestor, merged, run))
+        else { const r = await runInMergedTree(s, ancestor, merged, run); out.push(r); ranOk = /: exit 0\n/.test(r) }
       }
+      // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
+      if (!hard.length && ranOk) s.room.post<NoteMsg>(s.me, { type: 'note', text: `merge preview with ${person}: ${conflicts.length ? `${resolvable.length} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
       return out.join('\n')
     },
   }
