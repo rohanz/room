@@ -24,53 +24,79 @@ Built for the **“Agents leaving the chatbox”** hackathon.
 
 ## Quick start
 
-Prerequisites: Git, Node.js 24 LTS, Codex CLI with plugin support, and the GitHub CLI (`gh`)
-authenticated to an account that can read your shared repository. Python indexing needs
-Python 3; the Python demo uses `uv`.
+Prerequisites: Git, Node.js 24 LTS, and Codex CLI or Claude Code with plugin support.
+Python indexing needs Python 3; the Python demo uses `uv`.
 
-Install on each machine:
-
-```sh
-codex plugin marketplace add rohanz/room
-codex plugin add room@room
-```
-
-Already installed? Update before starting a new session:
+Install the plugin once per machine:
 
 ```sh
-codex plugin marketplace upgrade
-codex plugin add room@room
+codex plugin marketplace add rohanz/room && codex plugin add room@room      # Codex
+claude plugin marketplace add rohanz/room && claude plugin install room@room # Claude Code
 ```
 
-Review and trust Room’s hooks when prompted, or through `/hooks`. They deliver context
-before edit tools and record the session used for teammate wake-ups.
+Trust Room's hooks when prompted (or through `/hooks`). They put teammate claims and your
+unread room messages in front of the model before every edit, and record the session so
+it can be woken.
 
-In each developer’s clone, check out the same branch and start Codex:
+Then start your agent in any clone:
 
 ```sh
 cd /path/to/your/repo
-codex
+codex        # or: claude
 ```
 
-The first person on a repo opens it once: ask **“Open a room for this repo”** (the agent
-calls `room_create`). From then on every branch of that repo has a room, and each Codex
-session started in a clone joins the room for its current branch automatically:
-`github.com/<owner>/<repo>/<branch>`. Nothing about your clone leaves your machine until
-that join happens, and no session joins a repo nobody has opened. Your participant name
-comes from Git configuration; use distinct names for separate developers.
+That is the whole setup. **With no server configured, the session is in a local room:**
+no account, no login, nothing leaves your machine. The first session in a clone starts a
+tiny relay next to the clone's `.git`; any other session started in the same clone, or in
+a worktree of it, joins the same room. The room is named `local/<repo>/<branch>` after the
+main worktree's branch.
 
-Ask **“Show room state”** and open the browser link it prints. Then ask for your feature
-as usual. If auto-join fails, ask the agent to call `room_join`; its error should explain
-what needs attention. No Room environment variables are needed for the default hosted
-GitHub flow.
+Ask **"Show room state"** to see who is in the room. Then ask for your feature as usual.
+
+### Dispatching workers
+
+A session can fan work out to other agents through the room instead of around it:
+
+> Spawn a worker tagged `money` to switch prices to whole cents with a Money type, and one
+> tagged `tiers` to add gold/silver discounts on top of it. Wait for both, preview the
+> merges, and report.
+
+`room_spawn` creates a git worktree at `.room/workers/<tag>` on branch `room/<tag>`,
+starts a Claude Code or Codex agent there (`host` and `model` are arguments), and passes
+it the room. The worker joins as `<you>+<tag>`, declares a scope, claims what it edits,
+asks the lead questions on the bus, previews its merge, and calls `room_done`, which
+wakes the lead with an addressed message. `room_state` lists workers with status, branch,
+and their last message; `room_dismiss` stops one. Up to eight run at once
+(`ROOM_MAX_WORKERS`). Add `.room/` to `.gitignore`.
+
+Workers of one lead see each other, so two of them touching the same function get the
+same claims and conflict notices as two teammates would.
+
+## Team rooms
+
+To work with teammates on other machines, point the plugin at a server:
+
+```sh
+ROOM_SERVER=hosted codex          # the hosted server, wss://room-rohanz.fly.dev
+ROOM_SERVER=wss://room.example.com claude   # your own (see deploy/self-hosting.md)
+```
+
+The first person on a repo opens it once: ask **"Open a room for this repo"** (the agent
+calls `room_create`). From then on every branch of that repo has a room, and each session
+started in a clone joins the room for its current branch automatically:
+`github.com/<owner>/<repo>/<branch>`. Nothing about your clone leaves your machine until
+that join happens, and no session joins a repo nobody has opened.
 
 The first time you use a server, the agent runs `room_login`: open the GitHub device
 page it prints, enter the code, and approve Room. The server holds the resulting token
 (revocable under GitHub → Authorized OAuth Apps); your `gh` token is never sent anywhere.
 Your participant name is your GitHub login. To open or join a repo you need push access
-to it, so public repos are not open rooms. The browser link contains a room-scoped view key valid for 7 days,
-rather than your GitHub token. Treat that link as access to the room’s shared code and
-activity.
+to it, so public repos are not open rooms. The browser link `room_state` prints contains a
+room-scoped view key valid for 7 days, rather than your GitHub token. Treat that link as
+access to the room's shared code and activity.
+
+Everything from the local workflow applies unchanged: the same tools, etiquette, and
+workers. A lead's workers join the team room when the lead is in one.
 
 ### Claude Code
 

@@ -137,3 +137,18 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(await t.leadTools.call('room_dismiss', { tag: 'b' })).toContain('already dismissed')
   })
 })
+
+describe('pinned rooms', () => {
+  it('a local or explicitly named room does not follow the clone branch; a derived one does', async () => {
+    const { a } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base })
+    const pinned = { ...fakeSession(a, lead), roomName: 'local/x/other', pinnedRoom: true } as Session
+    let s1: Session | null = pinned
+    const t1 = createTools({ getSession: () => s1, setSession: x => { s1 = x }, cwd: dir })
+    expect(await t1.call('room_state', { all: true })).not.toContain('switched to branch')
+    const derived = { ...fakeSession(a, lead, false), roomName: 'github.com/o/x/other' } as Session
+    let s2: Session | null = derived
+    const t2 = createTools({ getSession: () => s2, setSession: x => { s2 = x }, cwd: dir, join: async o => ({ ...fakeSession(a, lead, false), roomName: o.room ?? '?' }), leave: async () => {} })
+    expect(await t2.call('room_state', { all: true })).toContain('switched to branch main')
+  })
+})

@@ -47,6 +47,8 @@ export interface Session {
   shareMax: ShareLevel
   /** Set in local mode (no server): the relay this session found or runs. */
   local?: LocalRelay
+  /** The room was chosen explicitly (room argument, ROOM_ROOM, or local naming): do not follow the clone's branch. */
+  pinnedRoom?: boolean
   /** The level asked for at join, before clamping (so the reply can say it was lowered). */
   shareRequested: ShareLevel
 }
@@ -309,6 +311,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     browserUrl,
     shareMax,
     shareRequested,
+    ...(opts.room ? { pinnedRoom: true } : {}),
   }
   watchClosed(session, opts.log)
   return session
@@ -350,6 +353,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     shareMax: 'full',
     shareRequested: share,
     local,
+    pinnedRoom: true,
   }
 }
 

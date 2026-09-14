@@ -169,3 +169,19 @@ problem a team outside ours would reject; self-declared names made every claim a
 message spoofable; and rooms lived forever.
 **Cut:** GitHub App installation tokens (finer permissions, more setup), server-side
 inspection of Yjs updates for message authorship.
+
+## 2026-09-15 — Local rooms are the default; leads dispatch workers through the room
+**Decision:** Without `ROOM_SERVER`, a session joins a local room: a relay in the clone's
+git dir, shared by every worktree of the clone, taken over by a survivor when its owner
+exits. The hosted server is opt-in (`ROOM_SERVER=hosted`). `room_spawn` starts a worker
+agent (Claude Code or Codex, any model) in a worktree on `room/<tag>`, passes it the lead's
+room, and the worker's `room_done` wakes the lead. Workers of one lead coordinate with each
+other exactly as teammates do.
+**Why:** The single-developer, many-agents case is the most common team of 2026 and the
+one with daily pain; it should cost nothing to try (no account, nothing leaves the
+laptop). Subagents in today's agent CLIs are blind to each other and report only at the
+end; through the room the lead sees progress, answers questions mid-flight, and previews
+the merge before it happens. One product, two modes: the server is a setting, not a
+different tool, so a solo room grows into a team room by opening the repo.
+**Cut:** nested rooms (a lead bridging its local workers into a team room), worker
+budgets in tokens rather than count, persistence of local rooms across reboots.

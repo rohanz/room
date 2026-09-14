@@ -33297,7 +33297,19 @@ var Daemon = class {
     }
   }
   excludeRoomFile() {
-    const exclude = path.join(this.dir, ".git", "info", "exclude");
+    let gitDir = path.join(this.dir, ".git");
+    try {
+      if (fs.statSync(gitDir).isFile()) {
+        const m = fs.readFileSync(gitDir, "utf8").match(/gitdir:\s*(.+)/);
+        if (m) {
+          gitDir = path.resolve(this.dir, m[1].trim());
+          const common = path.join(gitDir, "commondir");
+          if (fs.existsSync(common)) gitDir = path.resolve(gitDir, fs.readFileSync(common, "utf8").trim());
+        }
+      }
+    } catch {
+    }
+    const exclude = path.join(gitDir, "info", "exclude");
     try {
       fs.mkdirSync(path.dirname(exclude), { recursive: true });
       const current = fs.existsSync(exclude) ? fs.readFileSync(exclude, "utf8") : "";
@@ -34323,7 +34335,8 @@ async function joinSession(opts) {
     roomName,
     browserUrl,
     shareMax,
-    shareRequested
+    shareRequested,
+    ...opts.room ? { pinnedRoom: true } : {}
   };
   watchClosed(session, opts.log);
   return session;
@@ -34365,7 +34378,8 @@ async function joinLocal(dir, opts) {
     browserUrl,
     shareMax: "full",
     shareRequested: share,
-    local
+    local,
+    pinnedRoom: true
   };
 }
 var ROOM_CLOSED_CODE = 4001;
@@ -35612,7 +35626,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
   };
   const followBranch = async () => {
     const s = ctx.getSession();
-    if (!s || !s.roomName.includes("/")) return "";
+    if (!s || !s.roomName.includes("/") || s.pinnedRoom) return "";
     let branch = "";
     try {
       branch = (await git(s.dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();

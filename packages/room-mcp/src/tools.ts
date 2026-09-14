@@ -468,7 +468,7 @@ export function createTools(ctx: ToolCtx): Tools {
   /** If the clone's branch changed since we joined, move to that branch's room. Returns a note for the agent, or ''. */
   const followBranch = async (): Promise<string> => {
     const s = ctx.getSession()
-    if (!s || !s.roomName.includes('/')) return ''
+    if (!s || !s.roomName.includes('/') || s.pinnedRoom) return ''
     let branch = ''
     try { branch = (await git(s.dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { return '' }
     if (!branch || branch === 'HEAD') return ''
