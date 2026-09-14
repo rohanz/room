@@ -8,6 +8,17 @@ import os from 'node:os'
 import path from 'node:path'
 
 export interface Credential { session: string; login: string; at: number }
+/** A device login that was started but not yet confirmed; survives an MCP restart. Stored under "pending:<server>". */
+export interface PendingLogin { device: string; user_code: string; verification_uri: string; expires_in: number; interval: number; startedAt: number }
+export function getPending(server: string): PendingLogin | undefined {
+  const p = (loadCredentials() as Record<string, unknown>)[`pending:${serverKey(server)}`] as PendingLogin | undefined
+  return p && Date.now() - p.startedAt < p.expires_in * 1000 ? p : undefined
+}
+export function setPending(server: string, p: PendingLogin | undefined): void {
+  const all = loadCredentials() as Record<string, unknown>
+  if (p) all[`pending:${serverKey(server)}`] = p; else delete all[`pending:${serverKey(server)}`]
+  save(all as Record<string, Credential>)
+}
 
 export function credentialsPath(): string {
   const env = process.env.ROOM_CREDENTIALS?.trim()

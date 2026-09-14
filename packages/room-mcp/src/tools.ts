@@ -12,8 +12,8 @@ import type {
   ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg, PlanMsg,
 } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
-import { DEFAULT_SERVER, authFor, closeRoom, joinSession, leaveSession, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthMode, startLogin, type JoinOptions, type LoginProgress, type Session } from './session.js'
-import { getCredential } from './credentials.js'
+import { DEFAULT_SERVER, authFor, closeRoom, joinSession, leaveSession, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthMode, startLogin, type JoinOptions, type Session } from './session.js'
+import { getCredential, getPending, setPending } from './credentials.js'
 import { NotLoggedIn } from './session.js'
 import { HooksBridge } from './hooks-bridge.js'
 import { ConflictWatcher } from './conflicts.js'
@@ -421,8 +421,7 @@ export function createTools(ctx: ToolCtx): Tools {
 
   // ---- login ------------------------------------------------------------------
   const serverOf = (a: Record<string, unknown>) => parseServer(typeof a.server === 'string' && a.server ? a.server : process.env.ROOM_SERVER ?? DEFAULT_SERVER).server
-  let pendingLogin: { server: string; p: LoginProgress; startedAt: number } | null = null
-  const codeLine = (p: LoginProgress) => `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
+  const codeLine = (p: { verification_uri: string; user_code: string; expires_in: number }) => `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
 
   // ---- handlers -------------------------------------------------------------
   const handlers: Record<string, (a: Record<string, unknown>) => Promise<string>> = {
@@ -430,21 +429,22 @@ export function createTools(ctx: ToolCtx): Tools {
       const server = serverOf(a)
       if ((await serverAuthMode(server)) !== 'device') return `${server} does not use GitHub login; it accepts your local gh credentials (or a shared token), nothing to do`
       const cred = getCredential(server)
-      if (cred && !pendingLogin) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`
-      if (pendingLogin && pendingLogin.server === server && Date.now() - pendingLogin.startedAt < pendingLogin.p.expires_in * 1000) {
+      const pending = getPending(server)
+      if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`
+      if (pending) {
         const wait = Math.min(600, Math.max(5, typeof a.wait === 'number' ? a.wait : 90))
-        const r = await pollLogin(server, pendingLogin.p, { maxMs: wait * 1000 })
-        if ('login' in r) { pendingLogin = null; return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? '' : 'Next: room_join (or room_create if nobody has opened this repo).'}`.trim() }
-        if ('error' in r) { pendingLogin = null; return `login failed: ${r.error}. Call room_login to start again.` }
-        return `still waiting: ${codeLine(pendingLogin.p)}`
+        const r = await pollLogin(server, pending, { maxMs: wait * 1000 })
+        if ('login' in r) { setPending(server, undefined); return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? '' : 'Next: room_join (or room_create if nobody has opened this repo).'}`.trim() }
+        if ('error' in r) { setPending(server, undefined); return `login failed: ${r.error}. Call room_login to start again.` }
+        return `still waiting: ${codeLine(pending)}`
       }
       const p = await startLogin(server)
-      pendingLogin = { server, p, startedAt: Date.now() }
+      setPending(server, { ...p, startedAt: Date.now() })
       return `GitHub login for ${server}. Tell the user exactly this: ${codeLine(p)}`
     },
     async room_logout(a) {
       const server = serverOf(a)
-      pendingLogin = null
+      setPending(server, undefined)
       const r = await doLogout(server)
       return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ''}${ctx.getSession() ? '; the current session stays connected until room_leave' : ''}` : `no login stored for ${server}`
     },
