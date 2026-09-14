@@ -33592,19 +33592,24 @@ async function extractSymbols(path5, text) {
 var SOURCE_EXT = /\.(py|js|jsx|ts|tsx|mjs|mts|cjs)$/;
 var MAX_FILES = 3e3;
 var MAX_BYTES = 256 * 1024;
+var MAX_EDGES = 4e3;
+var MAX_SNAPSHOT_BYTES = 200 * 1024;
+var MIN_PUBLISH_MS = 2e4;
 var GraphIndex = class {
   constructor(room, me, dir, log2 = () => {
-  }) {
+  }, opts = {}) {
     this.room = room;
     this.me = me;
     this.dir = dir;
     this.log = log2;
+    this.opts = opts;
     this.graph = new SymbolGraph((path5) => this.cache.get(path5));
   }
   room;
   me;
   dir;
   log;
+  opts;
   graph;
   cache = /* @__PURE__ */ new Map();
   pending = /* @__PURE__ */ new Map();
@@ -33613,6 +33618,7 @@ var GraphIndex = class {
   generation = 0;
   truncated = false;
   publishing;
+  lastPublished = { at: 0, key: "", status: "" };
   phase = "indexing";
   base = "";
   stopped = false;
@@ -33745,19 +33751,44 @@ var GraphIndex = class {
     const edges = /* @__PURE__ */ new Map();
     let truncated = this.truncated;
     for (const target of paths) for (const dep of this.graph.dependenciesOf(target)) for (const source of dep.definedIn) {
-      const key = JSON.stringify([source, target]);
-      if (!edges.has(key)) {
-        if (edges.size >= 12e3) {
+      const key2 = JSON.stringify([source, target]);
+      if (!edges.has(key2)) {
+        if (edges.size >= MAX_EDGES) {
           truncated = true;
           continue;
         }
-        edges.set(key, { source, target, symbols: [] });
+        edges.set(key2, { source, target, symbols: [] });
       }
-      edges.get(key).symbols.push(dep.symbol);
+      edges.get(key2).symbols.push(dep.symbol);
     }
-    this.room.graphs.set(this.me, { version: 1, base: this.base, at: Date.now(), status, paths, edges: [...edges.values()], truncated });
+    let edgeList = [...edges.values()];
+    let body = JSON.stringify({ paths, edges: edgeList });
+    if (body.length > MAX_SNAPSHOT_BYTES) {
+      edgeList = [];
+      truncated = true;
+      body = JSON.stringify({ paths });
+    }
+    const key = `${this.base}|${status}|${body.length}|${hashOf(body)}`;
+    const now = Date.now();
+    if (key === this.lastPublished.key) return;
+    const minMs = this.opts.minPublishMs ?? MIN_PUBLISH_MS;
+    if (status === this.lastPublished.status && now - this.lastPublished.at < minMs) {
+      clearTimeout(this.publishing);
+      this.publishing = setTimeout(() => this.publish(this.phase), minMs - (now - this.lastPublished.at));
+      return;
+    }
+    this.lastPublished = { at: now, key, status };
+    this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, truncated });
   }
 };
+function hashOf(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
 
 // packages/room-mcp/src/credentials.ts
 import fs2 from "node:fs";

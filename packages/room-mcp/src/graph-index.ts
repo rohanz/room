@@ -9,6 +9,10 @@ import { extractSymbols } from './pyextract.js'
 const SOURCE_EXT = /\.(py|js|jsx|ts|tsx|mjs|mts|cjs)$/
 const MAX_FILES = 3000
 const MAX_BYTES = 256 * 1024
+/** Snapshot limits: every publish is appended to the room's persisted update log, so keep each one small and rare. */
+const MAX_EDGES = 4000
+const MAX_SNAPSHOT_BYTES = 200 * 1024
+const MIN_PUBLISH_MS = 20_000
 
 export class GraphIndex {
   readonly graph: SymbolGraph
@@ -19,6 +23,7 @@ export class GraphIndex {
   private generation = 0
   private truncated = false
   private publishing?: ReturnType<typeof setTimeout>
+  private lastPublished = { at: 0, key: '', status: '' }
   private phase: 'ready' | 'indexing' | 'error' = 'indexing'
   private base = ''
   private stopped = false
@@ -26,7 +31,7 @@ export class GraphIndex {
   /** Resolves when the initial build is done. */
   ready: Promise<void> = Promise.resolve()
 
-  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}) {
+  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number } = {}) {
     this.graph = new SymbolGraph(path => this.cache.get(path))
   }
 
@@ -129,11 +134,31 @@ export class GraphIndex {
     for (const target of paths) for (const dep of this.graph.dependenciesOf(target)) for (const source of dep.definedIn) {
       const key = JSON.stringify([source, target])
       if (!edges.has(key)) {
-        if (edges.size >= 12000) { truncated = true; continue }
+        if (edges.size >= MAX_EDGES) { truncated = true; continue }
         edges.set(key, { source, target, symbols: [] })
       }
       edges.get(key)!.symbols.push(dep.symbol)
     }
-    this.room.graphs.set(this.me, { version: 1, base: this.base, at: Date.now(), status, paths, edges: [...edges.values()], truncated })
+    let edgeList = [...edges.values()]
+    let body = JSON.stringify({ paths, edges: edgeList })
+    if (body.length > MAX_SNAPSHOT_BYTES) { edgeList = []; truncated = true; body = JSON.stringify({ paths }) }
+    // Same content as last time: nothing to write. Same status within the window: wait, then write once.
+    const key = `${this.base}|${status}|${body.length}|${hashOf(body)}`
+    const now = Date.now()
+    if (key === this.lastPublished.key) return
+    const minMs = this.opts.minPublishMs ?? MIN_PUBLISH_MS
+    if (status === this.lastPublished.status && now - this.lastPublished.at < minMs) {
+      clearTimeout(this.publishing)
+      this.publishing = setTimeout(() => this.publish(this.phase), minMs - (now - this.lastPublished.at))
+      return
+    }
+    this.lastPublished = { at: now, key, status }
+    this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, truncated })
   }
+}
+
+function hashOf(text: string): number {
+  let h = 2166136261
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619) }
+  return h >>> 0
 }

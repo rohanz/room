@@ -169,3 +169,15 @@ problem a team outside ours would reject; self-declared names made every claim a
 message spoofable; and rooms lived forever.
 **Cut:** GitHub App installation tokens (finer permissions, more setup), server-side
 inspection of Yjs updates for message authorship.
+
+## 2026-09-15 — Incident: graph snapshots bloated the persisted room
+**What happened:** After the four-agent run on `enterprise`, the hosted server died 35 s after
+every start (OOM at 256 MB, then CPU-bound at 512 MB) as soon as the projector page connected
+to that room. Cause: each agent's symbol graph was written into the shared document as a full
+snapshot (up to 12,000 edges) on every file change, and every version is appended to the
+persisted update log, so loading the room meant replaying hundreds of megabytes.
+**Fix:** snapshots are deduplicated by content, written at most every 20 s per agent, capped
+at 4,000 edges and 200 KB (paths only beyond that). The bloated repo was closed through the
+server's own API, which clears its documents. Machine memory stays at 512 MB.
+**Still to do:** a server-side cap on document size per room, and periodic compaction of
+the LevelDB update log, so a misbehaving client cannot take the server down.
