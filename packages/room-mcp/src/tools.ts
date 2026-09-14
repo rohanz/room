@@ -1008,6 +1008,7 @@ export function createTools(ctx: ToolCtx): Tools {
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
             if (questionId && m.type === 'answer' && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`)
             if (m.priority === 'interrupt' && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`)
+            if (m.type === 'done' && m.to === s.me.name) return finish(`worker done: ${formatMsg(m)}`)
           }
         }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus)

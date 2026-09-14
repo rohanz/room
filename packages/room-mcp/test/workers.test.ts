@@ -104,6 +104,17 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(await t.leadTools.call('room_spawn', { tag: 'c', task: 'z' })).toContain('max 2')
   })
 
+  it("the lead's room_wait returns as soon as a worker's done message arrives", async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
+    const waiting = t.leadTools.call('room_wait', { timeoutMs: 3000 })
+    await new Promise(r => setTimeout(r, 50))
+    await t.workerTools.call('room_done', { summary: 'done in cents' })
+    const out = await waiting
+    expect(out).toContain('worker done:')
+    expect(out).toContain('done in cents')
+  })
+
   it("a worker's room_done reaches its lead as an addressed done message that wakes it, and marks the worker done", async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })

@@ -36247,6 +36247,7 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
           for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
             if (questionId && m.type === "answer" && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`);
             if (m.priority === "interrupt" && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`);
+            if (m.type === "done" && m.to === s.me.name) return finish(`worker done: ${formatMsg(m)}`);
           }
         };
         s.room.claims.observe(onClaims);
