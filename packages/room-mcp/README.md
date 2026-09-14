@@ -21,7 +21,7 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_close` | DESTRUCTIVE: close the room for this whole repo, for everyone; all branch rooms and shared uncommitted work are removed from the server. Only on the user's explicit request. |
 | `room_leave` | Leave the room: releases your claims, clears your scope, stops the daemon. |
 | `room_scope` | Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. |
-| `room_state` | Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. |
+| `room_state` | Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Filtered to your areas; `all=true` shows everything. |
 | `room_read` | A file as a person sees it right now: base commit + their uncommitted edits (default: you). |
 | `room_diff` | Unified diff from the base commit to a person's live version, for one path or all their changed paths. |
 | `room_who` | Who holds claims in a region of a file, whose scope covers it, and who has changed the file. |
@@ -76,6 +76,31 @@ and the same preamble (`AGENT_INSTRUCTIONS(name)` from `@room/room-mcp`).
 ## Identity
 
 A participant is a principal: `{ name, kind, owner, label }`. `name` is the key everything in the room is filed under (overlays, claims, messages). `kind` is `human`, `agent`, `bot` or `ci`; anything that is not a human behaves like an agent for claims and wake-ups. `owner` is the verified GitHub login responsible for the participant: a person's own login, the runner of an agent, or the account that registered a bot. On a server with GitHub login the owner is always the login you signed in with; the first agent under a login takes the login as its name, and `ROOM_TAG=codex` makes a second one named `login+codex` (`ROOM_KIND` sets bot or ci). The server drops any presence whose owner is not the verified login. Display: `rohanz's agent (codex)`, `deploy [bot]`; participant lists show `rohanz+codex · agent of rohanz · codex`.
+
+## Sharing levels
+
+By default joining a room publishes the full text of every file you have changed (`full`). The dial has three positions:
+
+| level | what the room sees from you |
+|---|---|
+| `intent` | presence, scope, claims, plans and bus messages only; no file text at all, not even deletions |
+| `declared` | file text only for paths under your `room_scope` paths; everything else is withheld (`room_share` lists it) |
+| `full` | every changed file (the default for now) |
+
+**Teams should set `ROOM_SHARE=declared`**: teammates still see what you are on and what you plan to change, and get your text only where you said you would work. Set it with the `ROOM_SHARE` env, the `share` argument of `room_join` / `room_create`, or `room_share(level)` at any time: lowering the level withdraws overlays immediately, raising it republishes what your disk holds, and under `declared` the published set follows your scope as you re-declare it. Your presence carries the level, so `room_state` shows it next to each person.
+
+The server can cap it: `ROOM_SHARE_MAX` (advertised as `shareMax` in `GET /auth/config`). A client asking for more is clamped and told so in the join reply and in `room_share`.
+
+Reading someone who shares less than `full` degrades rather than errors: `room_read`, `room_diff` and `room_preview_merge` on an `intent` sharer answer with one line (`X shares intent only; ask them or wait for their push`); paths a `declared` sharer keeps outside their scope come back as `not shared`.
+
+## Areas (folder-scoped rooms)
+
+A room is still one document per branch, but what you see is scoped to the folders you work in.
+
+- **Where areas come from.** If the repo has a `CODEOWNERS` (`.github/CODEOWNERS`, `CODEOWNERS` or `docs/CODEOWNERS` at the room's base commit), every pattern is an area named by its path prefix (`packages/server/`, `docs/`, `/` for `*`-style patterns) with the owners listed there; gitignore-style patterns are supported (`*`, `**`, `?`, trailing `/`, leading `/` anchors, bare names match at any depth) and the longest matching pattern wins. Without CODEOWNERS every top-level directory is an area and `/` holds root files. Parsing lives in `packages/shared/src/areas.ts` (`Areas`, `areaOf`, `areasOf`, `ownersOf`).
+- **Membership.** You are in the areas covering your declared scope paths plus your changed paths. `room_scope` stores them on your scope record (`areas`) and in presence; `room_join` and `room_scope` say which areas you are in and who else is in them.
+- **Filtering.** `room_state` lists participants, claims, uncommitted changes and bus only for your areas, with one line for the rest (`3 others in 2 other areas (api/, web/)`). Pass `all: true` to see everything; with no scope and no changes yet you see everything. The inbox drops broadcast `notify` messages whose paths (or sender) are outside your areas; addressed messages and interrupts always arrive. `room_who` and `room_impact` are path-specific and unchanged.
+- **Ownership hint.** When you declare a scope or claim in an area you do not own per CODEOWNERS, the reply adds `owners of api/: @rohanz, @kieran` so your agent can ask them. Nothing is enforced.
 
 ## Limitations
 

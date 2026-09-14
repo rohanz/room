@@ -1,0 +1,15 @@
+# Areas of this repo. The room derives folder-scoped areas from these patterns
+# (packages/shared/src/areas.ts): each pattern is an area named by its path prefix,
+# and its owners are suggested (never enforced) when someone else works there.
+
+packages/shared/   @rohanz
+packages/server/   @rohanz
+packages/roomd/    @rohanz
+packages/room-mcp/ @rohanz
+packages/agent/    @rohanz
+packages/web/      @rohanz
+plugins/           @rohanz
+docs/              @rohanz
+scripts/           @rohanz
+examples/          @rohanz
+deploy/            @rohanz

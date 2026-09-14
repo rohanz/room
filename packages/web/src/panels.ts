@@ -240,6 +240,7 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
       participant.scope
         ? h('div', { class: 'scope-line' }, h('strong', {}, `${participant.scope.area}:`), ` ${participant.scope.summary}`)
         : h('div', { class: 'scope-line muted' }, 'no area declared'),
+      participant.scope?.areas?.length ? h('div', { class: 'micro muted' }, `in ${participant.scope.areas.join(', ')}`) : null,
       participant.claims.length
         ? h('div', { class: 'person-claims' }, ...participant.claims.map(claim => h('div', {
             class: `person-claim${claim.stale ? ' stale' : ''}`,

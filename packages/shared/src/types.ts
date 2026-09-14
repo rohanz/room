@@ -59,6 +59,8 @@ export interface Scope {
   area: string
   summary: string
   paths: string[]
+  /** Areas (CODEOWNERS prefixes or top-level dirs) covering `paths` plus the person's changed paths; see areas.ts. */
+  areas?: string[]
   /** epoch ms */
   at: number
 }
@@ -112,9 +114,15 @@ export interface Presence {
   user: Identity & { color: string }
   cursor?: Cursor
   status?: string
+  /** Sharing level this participant publishes its work at (roomd `share` option). */
+  share?: ShareLevel
+  /** Areas this participant is in (same rule as Scope.areas). */
+  areas?: string[]
   /** epoch ms */
   lastActive?: number
 }
+
+export type ShareLevel = 'intent' | 'declared' | 'full'
 
 export type ChatRole = 'human' | 'agent' | 'tool' | 'event' | 'status'
 export interface ChatItem {
