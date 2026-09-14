@@ -27087,9 +27087,9 @@ var YXmlFragment = class _YXmlFragment extends AbstractType {
    *
    * @public
    */
-  querySelector(query) {
-    query = query.toUpperCase();
-    const iterator = new YXmlTreeWalker(this, (element) => element.nodeName && element.nodeName.toUpperCase() === query);
+  querySelector(query2) {
+    query2 = query2.toUpperCase();
+    const iterator = new YXmlTreeWalker(this, (element) => element.nodeName && element.nodeName.toUpperCase() === query2);
     const next = iterator.next();
     if (next.done) {
       return null;
@@ -27108,9 +27108,9 @@ var YXmlFragment = class _YXmlFragment extends AbstractType {
    *
    * @public
    */
-  querySelectorAll(query) {
-    query = query.toUpperCase();
-    return from(new YXmlTreeWalker(this, (element) => element.nodeName && element.nodeName.toUpperCase() === query));
+  querySelectorAll(query2) {
+    query2 = query2.toUpperCase();
+    return from(new YXmlTreeWalker(this, (element) => element.nodeName && element.nodeName.toUpperCase() === query2));
   }
   /**
    * Creates YXmlEvent and calls observers.
@@ -29671,6 +29671,136 @@ function symbolRange(path5, text, symbol) {
   return void 0;
 }
 
+// packages/shared/src/areas.ts
+var CODEOWNERS_PATHS = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+function parseCodeowners(text) {
+  const rules = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    const tokens = splitLine(line);
+    if (!tokens.length) continue;
+    const [pattern, ...owners] = tokens;
+    rules.push({ pattern, area: areaNameOf(pattern), owners });
+  }
+  return rules;
+}
+function splitLine(line) {
+  const out = [];
+  let cur = "";
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "\\" && i + 1 < line.length) {
+      cur += line[++i];
+      continue;
+    }
+    if (ch === " " || ch === "	") {
+      if (cur) {
+        out.push(cur);
+        cur = "";
+      }
+      ;
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+function areaNameOf(pattern) {
+  const segs = pattern.replace(/^\//, "").split("/");
+  const lit = [];
+  for (const seg of segs) {
+    if (seg === "" || /[*?[\]]/.test(seg)) break;
+    lit.push(seg);
+  }
+  if (!lit.length) return "/";
+  const last2 = segs[lit.length - 1];
+  const isFile = lit.length === segs.length && !pattern.endsWith("/") && /\.[^/]+$/.test(last2);
+  return isFile ? lit.join("/") : `${lit.join("/")}/`;
+}
+function patternToRegExp(pattern) {
+  let p = pattern;
+  const dirOnly = p.endsWith("/");
+  if (dirOnly) p = p.slice(0, -1);
+  const anchored = p.startsWith("/") || p.includes("/");
+  if (p.startsWith("/")) p = p.slice(1);
+  let re = "";
+  for (let i = 0; i < p.length; i++) {
+    const ch = p[i];
+    if (ch === "*") {
+      if (p[i + 1] === "*") {
+        i++;
+        if (p[i + 1] === "/") {
+          i++;
+          re += "(?:.*/)?";
+        } else re += ".*";
+      } else re += "[^/]*";
+    } else if (ch === "?") re += "[^/]";
+    else if (/[.+^${}()|[\]\\]/.test(ch)) re += `\\${ch}`;
+    else re += ch;
+  }
+  const head = anchored ? "^" : "^(?:.*/)?";
+  return new RegExp(`${head}${re}(?:/.*)?$`);
+}
+var Areas = class _Areas {
+  rules;
+  res;
+  /** 'codeowners' when built from a CODEOWNERS file; 'toplevel' when areas are top-level directories. */
+  source;
+  constructor(rules = []) {
+    this.rules = rules;
+    this.res = rules.map((r) => patternToRegExp(r.pattern));
+    this.source = rules.length ? "codeowners" : "toplevel";
+  }
+  static fromCodeowners(text) {
+    return new _Areas(parseCodeowners(text));
+  }
+  static topLevel() {
+    return new _Areas([]);
+  }
+  /** Names of every declared area (top-level mode: derived per path, so none declared). */
+  get areas() {
+    return Array.from(new Set(this.rules.map((r) => r.area))).sort();
+  }
+  /** The area a path belongs to: the longest matching pattern (later wins on ties); top-level dir without CODEOWNERS. */
+  areaOf(path5) {
+    const p = path5.replace(/^\.?\//, "");
+    if (this.source === "codeowners") {
+      let best;
+      for (let i = 0; i < this.rules.length; i++) {
+        if (!this.res[i].test(p)) continue;
+        if (!best || this.rules[i].pattern.length >= best.pattern.length) best = this.rules[i];
+      }
+      if (best) return best.area;
+      return topLevelArea(p);
+    }
+    return topLevelArea(p);
+  }
+  areasOf(paths) {
+    return Array.from(new Set(paths.map((p) => this.areaOf(p)))).sort();
+  }
+  /** Owners declared for an area (union over its patterns). Empty without CODEOWNERS. */
+  ownersOf(area) {
+    const out = /* @__PURE__ */ new Set();
+    for (const r of this.rules) if (r.area === area) for (const o of r.owners) out.add(o);
+    return Array.from(out);
+  }
+  /** Does `login` own the area? Matches "@login" case-insensitively; team and email owners never match a login. */
+  owns(login, area) {
+    const me = `@${login.toLowerCase()}`;
+    return this.ownersOf(area).some((o) => o.toLowerCase() === me);
+  }
+};
+function topLevelArea(path5) {
+  const i = path5.indexOf("/");
+  return i < 0 ? "/" : `${path5.slice(0, i)}/`;
+}
+function sharesArea(a, b) {
+  if (!a?.length || !b?.length) return true;
+  return a.some((x) => b.includes(x));
+}
+
 // node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
@@ -30343,8 +30473,16 @@ var gitHead = (dir) => git(dir, ["rev-parse", "HEAD"]).then((s) => s.trim());
 var gitBranch = (dir) => git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).then((s) => s.trim());
 function normalizeGitOrigin(origin) {
   const value = origin.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+  const hosted = (host, rawPath) => {
+    const segs = rawPath.split("/").filter(Boolean);
+    if (!segs.length) return void 0;
+    const h = host.toLowerCase();
+    if (h === "github.com") return `${h}/${segs.join("/")}`;
+    if (segs.length === 1) return `git/${h}/${segs[0]}`;
+    return `git/${h}/${segs.slice(0, -1).join(".")}/${segs[segs.length - 1]}`;
+  };
   const scp = value.match(/^(?:[^@]+@)?([^:/]+):(.+)$/);
-  if (scp && !value.includes("://")) return `${scp[1]}/${scp[2].replace(/^\/+/, "")}`;
+  if (scp && !value.includes("://")) return hosted(scp[1], scp[2]);
   if (value.startsWith("/") || value.startsWith(".") || value.startsWith("file://")) {
     const name = value.replace(/^file:\/\//, "").split("/").filter(Boolean).pop();
     return name ? `local/${name}` : void 0;
@@ -30352,7 +30490,7 @@ function normalizeGitOrigin(origin) {
   try {
     const url = new URL(value);
     if (!url.hostname) return void 0;
-    return `${url.hostname}/${url.pathname.replace(/^\/+/, "")}`;
+    return hosted(url.hostname, url.pathname);
   } catch {
     return void 0;
   }
@@ -30417,10 +30555,6 @@ async function gitIsOnRemote(dir, sha) {
     return false;
   }
 }
-
-// packages/room-mcp/src/session.ts
-import { existsSync, readFileSync } from "node:fs";
-import { dirname as dirname3, resolve as resolve3 } from "node:path";
 
 // packages/roomd/src/index.ts
 import fs from "node:fs";
@@ -32860,6 +32994,15 @@ function parseRoomIgnore(text) {
 }
 
 // packages/roomd/src/index.ts
+var SHARE_LEVELS = ["intent", "declared", "full"];
+var SHARE_RANK = { intent: 0, declared: 1, full: 2 };
+function parseShare(v) {
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return SHARE_LEVELS.includes(s) ? s : void 0;
+}
+function clampShare(level, max2) {
+  return SHARE_RANK[level] > SHARE_RANK[max2] ? max2 : level;
+}
 var RoomdError = class extends Error {
   constructor(message, code) {
     super(message);
@@ -32912,8 +33055,11 @@ var Daemon = class {
   totalBudget;
   connectTimeoutMs;
   roomIgnore = parseRoomIgnore("");
-  skips = { size: /* @__PURE__ */ new Set(), budget: /* @__PURE__ */ new Set(), ignore: /* @__PURE__ */ new Set() };
+  skips = { size: /* @__PURE__ */ new Set(), budget: /* @__PURE__ */ new Set(), ignore: /* @__PURE__ */ new Set(), share: /* @__PURE__ */ new Set() };
   roomUrl;
+  share;
+  /** Explicit scope paths (option / setShare); when unset, the person's scope in the room doc decides. */
+  explicitScopePaths;
   tracked = /* @__PURE__ */ new Set();
   watcher = null;
   timers = /* @__PURE__ */ new Set();
@@ -32935,6 +33081,8 @@ var Daemon = class {
     this.sizeCap = options.sizeCap ?? 512 * 1024;
     this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15e3;
+    this.share = options.share ?? "full";
+    this.explicitScopePaths = options.scopePaths;
     const { serverUrl, roomName } = splitRoomUrl(options.room);
     this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
       WebSocketPolyfill: import_websocket.default,
@@ -32987,17 +33135,62 @@ var Daemon = class {
     this.roomDoc.metaMap.observe(() => {
       void this.refreshBaseStatus();
     });
+    this.roomDoc.scopes.observe((ev) => {
+      if (ev.keysChanged.has(this.name) && this.share === "declared" && !this.explicitScopePaths) void this.resharePaths();
+    });
     await this.refreshBaseStatus();
-    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)})${this.skipSummary()}`);
+    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`);
   }
   skipped() {
-    return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore) };
+    return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore), share: Array.from(this.skips.share).sort() };
   }
   skipSummary() {
-    const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size;
+    const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size + this.skips.share.size;
     if (!n) return "";
-    const parts = [["size", this.skips.size.size], ["budget", this.skips.budget.size], ["ignore", this.skips.ignore.size]].filter(([, c]) => c).map(([k, c]) => `${c} ${k}`);
+    const parts = [["size", this.skips.size.size], ["budget", this.skips.budget.size], ["ignore", this.skips.ignore.size], ["withheld", this.skips.share.size]].filter(([, c]) => c).map(([k, c]) => `${c} ${k}`);
     return `; skipped ${n} file(s) (${parts.join(", ")})`;
+  }
+  // ---- sharing level ----------------------------------------------------
+  async setShare(level, scopePaths) {
+    const before = this.share;
+    this.share = level;
+    if (scopePaths) this.explicitScopePaths = scopePaths;
+    this.setStatus(this.currentStatus());
+    if (before !== level) this.log(`sharing ${before} -> ${level}`);
+    await this.resharePaths();
+  }
+  /** Paths that decide what 'declared' publishes: explicit ones, else the scope in the room doc. */
+  scopePaths() {
+    return this.explicitScopePaths ?? this.roomDoc.scope(this.name)?.paths ?? [];
+  }
+  /** May this file's text (or its deletion) be published at the current level? */
+  isShared(relpath) {
+    if (this.share === "full") return true;
+    if (this.share === "intent") return false;
+    return scopeCovers({ paths: this.scopePaths() }, relpath);
+  }
+  /** Re-evaluate every tracked file against the current level: withdraw what is no longer allowed, publish what now is. */
+  async resharePaths() {
+    if (this.stopped) return;
+    const paths = /* @__PURE__ */ new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name), ...this.skips.share]);
+    for (const relpath of paths) {
+      if (this.stopped) return;
+      if (this.isIgnoredPath(relpath)) continue;
+      await this.publishDiskState(relpath);
+    }
+  }
+  /** Withdraw a file from the room without touching disk; remembers it as withheld when it differs from base. */
+  withhold(relpath, changed) {
+    const had = this.roomDoc.overlayText(this.name, relpath) !== void 0 || (this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false);
+    if (had) {
+      this.roomDoc.doc.transact(() => {
+        this.roomDoc.clearOverlay(this.name, relpath, this);
+        this.roomDoc.unmarkDeleted(this.name, relpath, this);
+      }, this);
+      this.log(`withdrew ${relpath} overlay (sharing ${this.share})`);
+    }
+    if (changed) this.skips.share.add(relpath);
+    else this.skips.share.delete(relpath);
   }
   loadRoomIgnore() {
     let text = "";
@@ -33041,9 +33234,13 @@ var Daemon = class {
       ...current,
       user: { name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {}, color: colorFor(this.name) },
       status,
+      share: this.share,
       lastActive: this.lastActive
     };
     this.provider.awareness.setLocalState(state);
+  }
+  currentStatus() {
+    return this.provider.awareness.getLocalState()?.status ?? "synced";
   }
   /** Mark this party active now (tool calls count as activity). */
   touch() {
@@ -33051,8 +33248,7 @@ var Daemon = class {
   }
   bumpLastActive() {
     this.lastActive = Date.now();
-    const current = this.provider.awareness.getLocalState();
-    this.setStatus(current?.status ?? "synced");
+    this.setStatus(this.currentStatus());
   }
   waitForSync() {
     if (this.provider.synced) return Promise.resolve();
@@ -33164,7 +33360,8 @@ var Daemon = class {
   /** Read UTF-8 text; undefined for missing, binary, or over-cap files. */
   readText(relpath, quiet = false) {
     try {
-      const stat4 = fs.statSync(this.abs(relpath));
+      const stat4 = fs.lstatSync(this.abs(relpath));
+      if (stat4.isSymbolicLink()) return fs.readlinkSync(this.abs(relpath));
       if (!stat4.isFile()) return void 0;
       if (stat4.size > this.sizeCap) {
         if (!this.skips.size.has(relpath) && !quiet) this.log(`skip ${relpath}: ${stat4.size} bytes > cap`);
@@ -33206,6 +33403,16 @@ var Daemon = class {
     const exists = fs.existsSync(this.abs(relpath));
     const beforeText = this.roomDoc.text(relpath, this.name);
     const beforeDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false;
+    if (!this.isShared(relpath)) {
+      if (!exists) {
+        this.withhold(relpath, this.tracked.has(relpath) && await gitShow(this.dir, this.base, relpath) !== void 0);
+        return;
+      }
+      const disk = this.readText(relpath, true);
+      this.withhold(relpath, disk !== void 0 && disk !== await gitShow(this.dir, this.base, relpath));
+      return;
+    }
+    this.skips.share.delete(relpath);
     if (!exists) {
       this.roomDoc.doc.transact(() => {
         this.roomDoc.markDeleted(this.name, relpath, this);
@@ -33322,6 +33529,10 @@ var Daemon = class {
 function errMsg(error2) {
   return error2 instanceof Error ? error2.message : String(error2);
 }
+
+// packages/room-mcp/src/session.ts
+import { existsSync, readFileSync } from "node:fs";
+import { dirname as dirname3, resolve as resolve3 } from "node:path";
 
 // packages/room-mcp/src/pyextract.ts
 import { execFile as execFile2 } from "node:child_process";
@@ -33626,27 +33837,38 @@ var NotLoggedIn = class extends RoomdError {
   }
   server;
 };
-var modeCache = /* @__PURE__ */ new Map();
-async function serverAuthMode(server) {
-  const hit = modeCache.get(server);
+var configCache = /* @__PURE__ */ new Map();
+async function serverAuthConfig(server) {
+  const hit = configCache.get(server);
   if (hit) return hit;
-  let mode = "token";
+  const cfg = { mode: "token", providers: [] };
   try {
     const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(2e4) });
     if (res.ok) {
       const b = await res.json();
-      if (b.github === "device") mode = "device";
+      if (b.github === "device") cfg.mode = "device";
+      cfg.providers = (b.providers ?? (cfg.mode === "device" ? ["github"] : [])).filter((p) => p === "github" || p === "oidc");
     }
   } catch {
   }
-  modeCache.set(server, mode);
-  return mode;
+  configCache.set(server, cfg);
+  return cfg;
+}
+async function serverAuthMode(server) {
+  return (await serverAuthConfig(server)).mode;
 }
 async function resolveAuth(server, roomName, token) {
   const github = roomName.startsWith("github.com/");
-  if (!github) return { token };
-  const mode = await serverAuthMode(server);
-  if (mode === "device") {
+  const cfg = await serverAuthConfig(server);
+  if (!github) {
+    const c = cfg.providers.length ? getCredential(server) : void 0;
+    if (!c) {
+      if (token || !cfg.providers.length) return { token };
+      throw new NotLoggedIn(server);
+    }
+    return { token, session: c.session, login: c.login };
+  }
+  if (cfg.mode === "device") {
     const c = getCredential(server);
     if (!c) {
       if (token) return { token };
@@ -33656,10 +33878,16 @@ async function resolveAuth(server, roomName, token) {
   }
   return { token, gh: await githubToken() };
 }
-async function startLogin(server) {
-  const res = await fetch(`${httpOf(server)}/auth/device`, { method: "POST", signal: AbortSignal.timeout(15e3) });
-  if (!res.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2);
-  return await res.json();
+async function startLogin(server, provider) {
+  const res = await fetch(`${httpOf(server)}/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(provider ? { provider } : {}), signal: AbortSignal.timeout(15e3) });
+  if (res.status === 404 && !provider) {
+    const old = await fetch(`${httpOf(server)}/auth/device`, { method: "POST", signal: AbortSignal.timeout(15e3) });
+    if (!old.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await old.text()).trim() || `HTTP ${old.status}`}`, 2);
+    return { provider: "github", ...await old.json() };
+  }
+  if (!res.ok) throw new RoomdError(`${server} could not start ${provider ?? ""} login: ${(await res.text()).trim() || `HTTP ${res.status}`}`.replace("  ", " "), 2);
+  const p = await res.json();
+  return { ...p, provider: p.provider ?? provider ?? "github" };
 }
 async function pollLogin(server, p, opts = {}) {
   const sleep2 = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -33670,7 +33898,7 @@ async function pollLogin(server, p, opts = {}) {
     const b = await res.json();
     if (b.session && b.login) {
       setCredential(server, { session: b.session, login: b.login, at: Date.now() });
-      modeCache.delete(server);
+      configCache.delete(server);
       return { login: b.login };
     }
     if (b.error) return { error: b.error };
@@ -33740,6 +33968,25 @@ function parseServer(raw) {
     return { server: raw.replace(/\/+$/, "") };
   }
 }
+var shareMaxCache = /* @__PURE__ */ new Map();
+async function serverShareMax(server) {
+  const hit = shareMaxCache.get(server);
+  if (hit) return hit;
+  let max2 = "full";
+  try {
+    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(2e4) });
+    if (res.ok) max2 = parseShare((await res.json()).shareMax) ?? "full";
+  } catch {
+  }
+  shareMaxCache.set(server, max2);
+  return max2;
+}
+function requestedShare(explicit) {
+  const raw = explicit?.trim() || process.env.ROOM_SHARE?.trim() || "full";
+  const level = parseShare(raw);
+  if (!level) throw new RoomdError(`share must be intent, declared or full (got "${raw}")`, 2);
+  return level;
+}
 function defaultWeb(server) {
   try {
     const u = new URL(server);
@@ -33791,7 +34038,11 @@ async function joinSession(opts) {
   if (pre?.missing) throw new NoRoom(roomName, pre.reason);
   if (pre?.loginNeeded) throw new NotLoggedIn(server);
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2);
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, githubToken: creds.gh, session: creds.session, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+  const shareRequested = requestedShare(opts.share);
+  const shareMax = await serverShareMax(server);
+  const share = clampShare(shareRequested, shareMax);
+  if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, githubToken: creds.gh, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   const view = await viewToken(server, roomName, creds);
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
@@ -33806,7 +34057,9 @@ async function joinSession(opts) {
     dir,
     roomUrl,
     roomName,
-    browserUrl
+    browserUrl,
+    shareMax,
+    shareRequested
   };
   watchClosed(session, opts.log);
   return session;
@@ -34313,6 +34566,139 @@ var ConflictWatcher = class {
   }
 };
 
+// packages/room-mcp/src/prs.ts
+var PR_PREFIX = "pr#";
+var isPrName = (name) => name.startsWith(PR_PREFIX);
+var prName = (number3) => `${PR_PREFIX}${number3}`;
+function prArea(files) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const f of files) {
+    const seg = f.includes("/") ? f.slice(0, f.indexOf("/")) : "root";
+    counts.set(seg, (counts.get(seg) ?? 0) + 1);
+  }
+  let best = "root", n = 0;
+  for (const [seg, c] of counts) if (c > n || c === n && seg < best) {
+    best = seg;
+    n = c;
+  }
+  return best.toLowerCase();
+}
+var prMap = (room) => room.doc.getMap("prs");
+function openPrs(room) {
+  return Array.from(prMap(room).values()).sort((a, b) => a.number - b.number);
+}
+function syncPrs(room, prs, origin) {
+  const map2 = prMap(room);
+  const keep = new Set(prs.map((p) => prName(p.number)));
+  const added = [], updated = [], removed = [];
+  room.doc.transact(() => {
+    for (const pr of prs) {
+      const name = prName(pr.number);
+      const prev = map2.get(name);
+      if (prev && prev.updatedAt === pr.updatedAt && prev.title === pr.title && sameList(prev.files, pr.files)) continue;
+      map2.set(name, pr);
+      room.scopes.set(name, { by: name, byKind: "bot", area: prArea(pr.files), summary: `PR #${pr.number}: ${pr.title}`, paths: pr.files, at: Date.parse(pr.updatedAt) || Date.now() });
+      (prev ? updated : added).push(pr.number);
+    }
+    for (const name of Array.from(map2.keys())) {
+      if (keep.has(name)) continue;
+      map2.delete(name);
+      room.scopes.delete(name);
+      removed.push(Number(name.slice(PR_PREFIX.length)));
+    }
+    for (const name of Array.from(room.scopes.keys())) if (isPrName(name) && !keep.has(name)) room.scopes.delete(name);
+  }, origin);
+  return { added, updated, removed };
+}
+var sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+function prLeader(present) {
+  return present.filter((n) => !isPrName(n)).sort()[0];
+}
+var httpOf2 = (server) => server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+var query = (o) => Object.entries(o).filter((e) => !!e[1]).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+async function fetchPrs(s) {
+  const a = await authFor(s);
+  const res = await fetch(`${httpOf2(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, gh: a.gh, token: a.token })}`, { signal: AbortSignal.timeout(2e4) });
+  if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
+  return await res.json();
+}
+async function postPrNote(s, number3, body) {
+  const a = await authFor(s);
+  const res = await fetch(`${httpOf2(a.server)}/github/pr-note`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: s.roomName, session: a.session, gh: a.gh, token: a.token, number: number3, body }), signal: AbortSignal.timeout(3e4) });
+  if (!res.ok) throw new Error(`${a.server} would not post the PR note: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
+  const b = await res.json().catch(() => ({}));
+  return { url: b.url ?? "", updated: !!b.updated };
+}
+function branchOf(roomName) {
+  const parts = roomName.split("/");
+  return parts.slice(roomName.startsWith("github.com/") ? 3 : 2).join("/") || roomName;
+}
+function renderPrNote(room, opts) {
+  const now = opts.now ?? Date.now();
+  const msgs = room.messages().filter((m) => !m.copyOf && !isPrName(m.from));
+  const releases = /* @__PURE__ */ new Map();
+  const answers = /* @__PURE__ */ new Map();
+  for (const m of msgs) {
+    if (m.type === "release") releases.set(m.claimId, m);
+    if (m.type === "answer") {
+      const arr = answers.get(m.inReplyTo) ?? [];
+      arr.push(m);
+      answers.set(m.inReplyTo, arr);
+    }
+  }
+  const open3 = new Map(room.openClaims().map((c) => [c.id, c]));
+  const who = (m) => `**${displayName({ name: m.from, kind: m.fromKind })}**`;
+  const t = (at) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
+  const lines = [];
+  for (const m of msgs) {
+    switch (m.type) {
+      case "scope":
+        lines.push(`- ${t(m.at)} ${who(m)} is on \`${m.area}\`: ${m.summary} (${m.paths.map((p) => `\`${p}\``).join(", ")})`);
+        break;
+      case "claim": {
+        const c = m;
+        const r = releases.get(c.claimId);
+        const status = r ? r.unfulfilled?.length ? `cancelled: ${formatPlans(r.unfulfilled)}${r.summary ? ` (${r.summary})` : ""}` : `done${r.summary ? `: ${r.summary}` : ""}` : open3.has(c.claimId) ? "still open" : "released";
+        lines.push(`- ${t(c.at)} ${who(c)} claimed \`${c.path}:${c.from_line}-${c.to_line}\` \u2014 ${c.intent}${c.plans?.length ? `; plans: ${formatPlans(c.plans)}` : ""} \u2192 ${status}`);
+        break;
+      }
+      case "changed":
+        lines.push(`- ${t(m.at)} ${who(m)} changed ${m.paths.map((p) => `\`${p}\``).join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}`);
+        break;
+      case "question": {
+        lines.push(`- ${t(m.at)} ${who(m)} asked ${m.to ? `${m.to}'s agent` : "the room"}: ${m.text}`);
+        for (const a of answers.get(m.id) ?? []) lines.push(`  - ${t(a.at)} ${who(a)} answered: ${a.text}`);
+        if (!(answers.get(m.id) ?? []).length) lines.push("  - (unanswered)");
+        break;
+      }
+      case "conflict":
+        lines.push(`- ${t(m.at)} conflict on \`${m.path}\`: ${m.text}`);
+        break;
+      case "base":
+        lines.push(`- ${t(m.at)} ${who(m)} moved the base to \`${m.base.slice(0, 10)}\` (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary})`);
+        break;
+      case "note":
+        if (/^merge preview with /.test(m.text)) lines.push(`- ${t(m.at)} ${who(m)}: ${m.text}`);
+        else if (/^done/.test(m.text)) lines.push(`- ${t(m.at)} ${who(m)} ${m.text}`);
+        break;
+      default:
+        break;
+    }
+  }
+  const stillOpen = Array.from(open3.values()).filter((c) => !isPrName(c.by));
+  const out = [
+    `### Room ledger for \`${branchOf(opts.roomName)}\``,
+    `_Generated by the room at ${t(now)} UTC from ${opts.roomName}. One comment per PR, updated in place._`,
+    "",
+    ...lines.length ? lines : ["- (nothing recorded on the bus yet)"]
+  ];
+  if (stillOpen.length) {
+    out.push("", "**Still claimed:**");
+    for (const c of stillOpen) out.push(`- ${displayName({ name: c.by, kind: c.byKind })}: \`${c.path}:${c.from}-${c.to}\` \u2014 ${c.intent}`);
+  }
+  return out.join("\n") + "\n";
+}
+
 // packages/room-mcp/src/tools.ts
 var RO = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 var RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -34328,12 +34714,13 @@ var PLANS = {
     detail: str("new name, new signature, or why")
   }, required: ["kind", "symbol"] }
 };
+var SHARE = { type: "string", enum: ["intent", "declared", "full"], description: "sharing level: intent (presence, scope, claims, plans, bus; no file text), declared (file text only under your declared scope paths), full (every changed file). Default ROOM_SHARE, then full; the server may cap it (ROOM_SHARE_MAX)." };
 var DEFS = [
   {
     name: "room_login",
     annotations: RW,
-    description: "Log in to the room server with GitHub (device flow). First call returns a one-time code and URL: show them to the user VERBATIM and ask them to enter the code. Call again to wait for GitHub to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your GitHub login.",
-    inputSchema: { type: "object", properties: { wait: int2("seconds to wait for confirmation on a follow-up call (default 90, max 600)"), server: str("override ws server URL") } }
+    description: "Log in to the room server. GitHub (device flow): the first call returns a one-time code and URL. OIDC (self-hosted servers with a company identity provider): the first call returns a URL to open. Show them to the user VERBATIM. Call again to wait for the login to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your login (GitHub login or email).",
+    inputSchema: { type: "object", properties: { provider: { type: "string", enum: ["github", "oidc"], description: "login provider (default: the server's first; github.com rooms need github)" }, wait: int2("seconds to wait for confirmation on a follow-up call (default 90, max 600)"), server: str("override ws server URL") } }
   },
   {
     name: "room_logout",
@@ -34345,13 +34732,13 @@ var DEFS = [
     name: "room_create",
     annotations: RW,
     description: "Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.",
-    inputSchema: { type: "object", properties: { room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)") } }
+    inputSchema: { type: "object", properties: { room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
   },
   {
     name: "room_join",
     annotations: RW,
     description: "Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL. Fails if nobody has opened a room for the repo yet: room_create does that.",
-    inputSchema: { type: "object", properties: { room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)") } }
+    inputSchema: { type: "object", properties: { room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
   },
   {
     name: "room_leave",
@@ -34374,8 +34761,8 @@ var DEFS = [
   {
     name: "room_state",
     annotations: RO,
-    description: "Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Call before editing and after any wait.",
-    inputSchema: { type: "object", properties: {} }
+    description: "Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Filtered to the areas you are in (your scope paths + changed paths; areas come from CODEOWNERS or top-level dirs) with one summary line for the rest; all=true shows everything. Call before editing and after any wait.",
+    inputSchema: { type: "object", properties: { all: { type: "boolean", description: "show every area, not just yours" } } }
   },
   {
     name: "room_read",
@@ -34431,7 +34818,13 @@ var DEFS = [
     name: "room_done",
     annotations: RW,
     description: "Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. Call after your final room_preview_merge, before reporting to your human. Stay in the room for questions.",
-    inputSchema: { type: "object", properties: { summary: str("one line: what landed and the test result") }, required: ["summary"] }
+    inputSchema: { type: "object", properties: { summary: str("one line: what landed and the test result"), pr_note: { type: "boolean", description: "also post the branch ledger as a comment on the open PR whose head is this branch (room_pr_note), if there is one" } }, required: ["summary"] }
+  },
+  {
+    name: "room_pr_note",
+    annotations: { ...RW, openWorldHint: true },
+    description: "Post (or update) ONE comment on a GitHub pull request with the branch's room story: who declared what, claims with plans and whether they were fulfilled, questions and answers, merge previews that passed, in bus order. Default PR: the open one whose head is this branch. The comment is authored by the logged-in user via the server; the GitHub token never leaves the server.",
+    inputSchema: { type: "object", properties: { number: int2("PR number (default: the open PR whose head is this branch)") } }
   },
   {
     name: "room_impact",
@@ -34444,6 +34837,12 @@ var DEFS = [
     annotations: RO,
     description: "Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. Reports clean paths and conflicting hunks. With `run`, materialises the merged tree in a scratch directory and runs that command there (e.g. the tests), so you can verify code that depends on their unmerged work.",
     inputSchema: { type: "object", properties: { person: str("the other person"), run: str('optional shell command to run in the merged tree, e.g. "uv run pytest -q"'), resolve: { type: "boolean", description: "when a conflicting region on one side contains the other side's lines in order (you built on their change), take the larger side and return the resolved file text so you can write it to your own clone" } }, required: ["person"] }
+  },
+  {
+    name: "room_share",
+    annotations: RW,
+    description: "Change how much of your clone the room sees, live. Lowering the level withdraws file text the new level no longer allows (intent: all of it; declared: everything outside your scope paths); raising it republishes what your disk holds. Never above the server's ceiling. Without `level`, reports the current level and what is withheld.",
+    inputSchema: { type: "object", properties: { level: SHARE } }
   }
 ];
 var WAIT_DEFAULT = 3e4;
@@ -34483,12 +34882,67 @@ function createTools(ctx) {
       mergeBase: async (a, b) => (await git(s.dir, ["merge-base", a, b])).trim()
     });
     watcher.start();
+    startPrSync(s);
   };
   const detach = () => {
     bridge?.stop();
     bridge = null;
     watcher?.stop();
     watcher = null;
+    stopPrSync();
+  };
+  let prTimer = null;
+  let prSyncedSession = null;
+  const fetchPrList = ctx.prs?.fetch ?? fetchPrs;
+  const postNote = ctx.prs?.post ?? postPrNote;
+  const refreshPrs = async (s) => {
+    if (!s.roomName.startsWith("github.com/")) return "";
+    const present = presences(s).map((p) => p.user.name);
+    const leader = prLeader(present.length ? present : [s.me.name]);
+    if (leader !== s.me.name) return "";
+    let prs;
+    try {
+      prs = await fetchPrList(s);
+    } catch (e) {
+      log2(`pull requests: ${e instanceof Error ? e.message : String(e)}`);
+      return "";
+    }
+    const r = syncPrs(s.room, prs, s.me);
+    const parts = [r.added.length ? `mirrored ${r.added.map((n) => `#${n}`).join(", ")}` : "", r.removed.length ? `removed ${r.removed.map((n) => `#${n}`).join(", ")}` : ""].filter(Boolean);
+    if (parts.length) log2(`pull requests: ${parts.join("; ")}`);
+    return parts.join("; ");
+  };
+  const startPrSync = (s) => {
+    if (prSyncedSession === s) return;
+    stopPrSync();
+    prSyncedSession = s;
+    const every2 = ctx.prs?.intervalMs ?? 2 * 6e4;
+    void refreshPrs(s);
+    if (every2 > 0) {
+      prTimer = setInterval(() => {
+        void refreshPrs(s);
+      }, every2);
+      prTimer.unref?.();
+    }
+  };
+  const stopPrSync = () => {
+    if (prTimer) clearInterval(prTimer);
+    prTimer = null;
+    prSyncedSession = null;
+  };
+  const prLines = (s) => {
+    const prs = openPrs(s.room);
+    if (!prs.length) return [];
+    const out = [`open pull requests (${prs.length}):`];
+    for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head} \u2192 ${branchOf(s.roomName)}): ${pr.files.length ? pr.files.slice(0, 8).join(", ") + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : "") : "no files"} \xB7 ${pr.url}`);
+    return out;
+  };
+  const myPr = (s) => openPrs(s.room).find((p) => p.head === branchOf(s.roomName));
+  const postLedger = async (s, pr) => {
+    const body = renderPrNote(s.room, { roomName: s.roomName, now: now() });
+    const r = await postNote(s, pr.number, body);
+    s.room.post(s.me, { type: "note", text: `${r.updated ? "updated" : "posted"} the room ledger on PR #${pr.number}${r.url ? ` (${r.url})` : ""}`, priority: "fyi" });
+    return `${r.updated ? "updated" : "posted"} the room ledger comment on PR #${pr.number} "${pr.title}"${r.url ? `: ${r.url}` : ""} (${body.split("\n").length} lines)`;
   };
   const observeClaims = (s) => {
     if (observedSession === s) return;
@@ -34527,9 +34981,26 @@ function createTools(ctx) {
     for (const k of s.room.overlays.keys()) names.add(k);
     for (const p of presences(s)) names.add(p.user.name);
     names.delete(s.me.name);
-    return Array.from(names).sort();
+    return Array.from(names).filter((n) => !isPrName(n)).sort();
   };
   const presences = (s) => Array.from(s.awareness.getStates().values()).filter((x) => !!x && typeof x === "object" && !!x.user);
+  const shareOf = (s, person) => {
+    if (person === s.me.name) return s.daemon.share ?? "full";
+    const p = presences(s).find((x) => x.user.name === person && isAgentic(x.user.kind)) ?? presences(s).find((x) => x.user.name === person);
+    return p?.share ?? "full";
+  };
+  const withheld = (s, person, p) => {
+    const level = shareOf(s, person);
+    if (level === "intent") return `${person} shares intent only; ask them or wait for their push`;
+    if (level === "declared" && p !== void 0 && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p)) return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`;
+    return void 0;
+  };
+  const shareLine = (s) => {
+    const level = s.daemon.share ?? "full";
+    const clamped = s.shareRequested && s.shareRequested !== level ? ` (asked for ${s.shareRequested}; the server caps sharing at ${s.shareMax}, ROOM_SHARE_MAX)` : "";
+    const held = s.daemon.skipped?.().share ?? [];
+    return `sharing: ${level}${clamped}${held.length ? `; withheld ${held.length} changed file(s): ${held.join(", ")}` : ""}`;
+  };
   const setPresence = (s, patch) => {
     const cur = s.awareness.getLocalState() ?? {};
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() });
@@ -34548,12 +35019,65 @@ function createTools(ctx) {
     }
   };
   const lines = (t) => t.endsWith("\n") ? t.split("\n").length - 1 : t.split("\n").length;
+  const areaIndex = /* @__PURE__ */ new WeakMap();
+  const loadAreas = async (s) => {
+    const hit = areaIndex.get(s);
+    if (hit) return hit;
+    let areas = Areas.topLevel();
+    for (const p of CODEOWNERS_PATHS) {
+      let text;
+      try {
+        text = await gitShow(s.dir, base(s), p);
+      } catch {
+        text = void 0;
+      }
+      if (text !== void 0) {
+        areas = Areas.fromCodeowners(text);
+        log2(`areas from ${p}: ${areas.areas.join(", ") || "(none)"}`);
+        break;
+      }
+    }
+    areaIndex.set(s, areas);
+    return areas;
+  };
+  const areasOf = (s) => areaIndex.get(s) ?? Areas.topLevel();
+  const areasFor = (s, person) => {
+    const sc = s.room.scope(person);
+    const paths = [...sc?.paths ?? [], ...s.room.changedPaths(person)];
+    const stored = sc?.areas ?? presences(s).find((p) => p.user.name === person)?.areas ?? [];
+    return Array.from(/* @__PURE__ */ new Set([...stored, ...areasOf(s).areasOf(paths)])).sort();
+  };
+  const myAreas = (s) => areasFor(s, s.me.name);
+  const inMyAreas = (s, person) => sharesArea(myAreas(s), areasFor(s, person));
+  const alsoIn = (s, areas) => others(s).map((n) => ({ n, shared: areasFor(s, n).filter((a) => areas.includes(a)) })).filter((x) => x.shared.length).map((x) => `${x.n} (${x.shared.join(", ")})`);
+  const ownerHints = (s, areas) => {
+    const ax = areasOf(s);
+    const login = s.me.owner ?? s.me.name;
+    return areas.filter((a) => ax.ownersOf(a).length && !ax.owns(login, a)).map((a) => `owners of ${a}: ${ax.ownersOf(a).join(", ")} \u2014 not enforced; ask them if you change their contract`);
+  };
+  const areaLines = (s, areas) => {
+    if (!areas.length) return ["areas: none yet (declare a scope or change a file)"];
+    const out = [`areas: ${areas.join(", ")} (${areasOf(s).source === "codeowners" ? "from CODEOWNERS" : "top-level dirs; no CODEOWNERS"})`];
+    const also = alsoIn(s, areas);
+    out.push(also.length ? `also in your areas: ${also.join("; ")}` : "nobody else is in your areas");
+    out.push(...ownerHints(s, areas));
+    return out;
+  };
+  const msgInMyAreas = (s, m) => {
+    const mineA = myAreas(s);
+    if (!mineA.length) return true;
+    const paths = msgPaths(m);
+    if (paths.length) return areasOf(s).areasOf(paths).some((a) => mineA.includes(a));
+    return sharesArea(mineA, areasFor(s, m.from));
+  };
   const forMe = (s, m) => {
     if (m.from === s.me.name && isAgentic(m.fromKind)) return false;
     if (m.to === s.me.name) return true;
     if (m.type === "base") return true;
     if (m.to) return false;
     if (m.type === "conflict") return mine(s).some((c) => c.id === m.claimId || c.id === m.otherClaimId);
+    if (m.priority === "interrupt") return true;
+    if (m.priority === "notify") return msgInMyAreas(s, m);
     return false;
   };
   const inbox = (s) => {
@@ -34762,18 +35286,23 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     else if (p?.status?.startsWith("done")) what = `${p.status}`;
     else if (lastDone && (!p || p.status === "idle" || p.status === "synced")) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`;
     else what = p ? `${p.status ?? "idle"}, no task declared` : "offline";
-    return `${what}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(", ")}` : ""}`;
+    const level = shareOf(s, name);
+    const share = level === "full" ? "" : `; shares ${level}${level === "intent" ? " (no file text)" : " (file text only under their scope paths)"}`;
+    return `${what}${share}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(", ")}` : ""}`;
   };
   const serverOf = (a) => parseServer(typeof a.server === "string" && a.server ? a.server : process.env.ROOM_SERVER ?? DEFAULT_SERVER).server;
-  const codeLine = (p) => `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`;
+  const codeLine = (p) => p.provider === "oidc" || p.url ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.` : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`;
   const handlers = {
     async room_login(a) {
       const server = serverOf(a);
-      if (await serverAuthMode(server) !== "device") return `${server} does not use GitHub login; it accepts your local gh credentials (or a shared token), nothing to do`;
+      const cfg = await serverAuthConfig(server);
+      if (!cfg.providers.length) return `${server} has no login provider; it accepts your local gh credentials (or a shared token), nothing to do`;
+      const provider = a.provider === "github" || a.provider === "oidc" ? a.provider : void 0;
+      if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(", ")})`;
       const cred = getCredential(server);
       const pending = getPending(server);
       if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`;
-      if (pending) {
+      if (pending && (!provider || provider === pending.provider)) {
         const wait = Math.min(600, Math.max(5, typeof a.wait === "number" ? a.wait : 90));
         const r = await pollLogin(server, pending, { maxMs: wait * 1e3 });
         if ("login" in r) {
@@ -34786,9 +35315,9 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         }
         return `still waiting: ${codeLine(pending)}`;
       }
-      const p = await startLogin(server);
+      const p = await startLogin(server, provider);
       setPending(server, { ...p, startedAt: Date.now() });
-      return `GitHub login for ${server}. Tell the user exactly this: ${codeLine(p)}`;
+      return `${p.provider === "oidc" ? "Single sign-on" : "GitHub"} login for ${server}. Tell the user exactly this: ${codeLine(p)}`;
     },
     async room_logout(a) {
       const server = serverOf(a);
@@ -34807,7 +35336,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         name: typeof a.name === "string" && a.name ? a.name : void 0,
         room: typeof a.room === "string" && a.room ? a.room : void 0,
         server: typeof a.server === "string" && a.server ? a.server : void 0,
-        create: a.create === true
+        create: a.create === true,
+        share: typeof a.share === "string" && a.share ? a.share : void 0
       });
       ctx.setSession(s);
       for (const m of s.room.messages()) seen.add(m.id);
@@ -34816,8 +35346,13 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const stale = cleanupMine(s, "stale from an earlier session");
       if (stale || s.room.scope(s.me.name)) log2(`cleared ${stale} stale claim(s) and scope from an earlier session`);
       evictStale(s);
+      await loadAreas(s);
       const out = [`${a.create ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
+      out.push(shareLine(s));
       const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
+      const mineA = myAreas(s);
+      setPresence(s, { areas: mineA });
+      out.push(...areaLines(s, mineA));
       out.push(here.length ? `here now: ${here.join(", ")}` : "nobody else is here yet");
       for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`);
       const away = others(s).filter((n) => !here.includes(n) && s.room.changedPaths(n).length);
@@ -34857,44 +35392,65 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const summary = String(a.summary ?? "").trim();
       const paths = Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string" && !!x) : [];
       if (!area || !summary || !paths.length) return "error: area, summary and paths are required";
-      s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths });
+      await loadAreas(s);
+      const areas = areasOf(s).areasOf([...paths, ...s.room.changedPaths(s.me.name)]);
+      s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas });
       s.room.post(s.me, { type: "scope", area, summary, paths });
-      setPresence(s, { status: `on ${area}: ${summary}` });
+      setPresence(s, { status: `on ${area}: ${summary}`, areas });
       const out = [`scope set: ${scopeLine({ area, summary, paths })}`];
+      out.push(...areaLines(s, areas));
       const overlapping = s.room.allScopes().filter((sc) => sc.by !== s.me.name && paths.some((p) => scopeCovers(sc, p) || sc.paths.some((q) => scopeCovers({ paths }, q))));
       for (const sc of overlapping) out.push(`overlaps ${sc.by}'s scope ${scopeLine(sc)} \u2014 coordinate before touching shared files`);
       out.push(...ledgerLines(s, { area, limit: 20 }, area));
       return out.join("\n");
     },
-    async room_state() {
+    async room_state(a) {
       const s = S();
+      await loadAreas(s);
       const m = s.room.meta;
       const out = [];
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? "?").slice(0, 10)})`);
+      const mineA = myAreas(s);
+      const all2 = a.all === true || !mineA.length;
       const ps = presences(s);
-      const names = /* @__PURE__ */ new Set([...ps.map((p) => p.user.name), ...s.room.scopes.keys()]);
-      out.push(`participants (${names.size}):`);
-      for (const n of Array.from(names).sort()) {
+      const inView = (person) => all2 || person === s.me.name || inMyAreas(s, person);
+      const pathInView = (p) => all2 || mineA.includes(areasOf(s).areaOf(p));
+      const everyone = Array.from(new Set([s.me.name, ...others(s)].filter((n) => ps.some((p) => p.user.name === n) || s.room.scopes.has(n)))).sort();
+      const names = everyone.filter(inView);
+      const hidden = everyone.filter((n) => !inView(n));
+      out.push(all2 ? `areas: ${mineA.length ? mineA.join(", ") : "none yet"} (showing all)` : `your areas: ${mineA.join(", ")} (room_state all=true for everything)`);
+      out.push(`participants${all2 ? "" : " in your areas"} (${names.length}):`);
+      for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
         const who = p ? describeIdentity(p.user) : n;
-        out.push(`  - ${who}${n === s.me.name ? " (you)" : ""}: ${personLine(s, n)} \xB7 ${ago}`);
+        const theirs = areasFor(s, n);
+        out.push(`  - ${who}${n === s.me.name ? " (you)" : ""}: ${personLine(s, n)}${theirs.length ? ` \xB7 areas ${theirs.join(", ")}` : ""} \xB7 ${ago}`);
+      }
+      if (hidden.length) {
+        const otherAreas = /* @__PURE__ */ new Set();
+        for (const n of hidden) for (const x of areasFor(s, n)) if (!mineA.includes(x)) otherAreas.add(x);
+        out.push(`  ${hidden.length} other${hidden.length === 1 ? "" : "s"} in ${otherAreas.size} other area${otherAreas.size === 1 ? "" : "s"}${otherAreas.size ? ` (${Array.from(otherAreas).sort().join(", ")})` : ""}`);
       }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`);
-      const areas = s.room.areaSummary();
-      if (areas.length) {
-        out.push("areas:");
-        for (const l of areas) out.push(`  - ${l}`);
+      const areaScopes = all2 ? s.room.allScopes() : s.room.allScopes().filter((sc) => inView(sc.by));
+      const summary = s.room.areaSummary().filter((l) => areaScopes.some((sc) => l.startsWith(`${sc.area} (`)));
+      if (summary.length) {
+        out.push("activity by scope area:");
+        for (const l of summary) out.push(`  - ${l}`);
       }
-      const cs = s.room.openClaims();
-      out.push(`open claims (${cs.length}):`);
+      const cs = s.room.openClaims().filter((c) => pathInView(c.path) || isMe(s, { name: c.by, kind: c.byKind }));
+      const hiddenClaims = s.room.openClaims().length - cs.length;
+      out.push(`open claims${all2 ? "" : " in your areas"} (${cs.length}${hiddenClaims ? `, ${hiddenClaims} elsewhere` : ""}):`);
       for (const c of cs) out.push(claimLine(s, c));
       const changed = /* @__PURE__ */ new Map();
+      let hiddenChanged = 0;
       for (const person of [s.me.name, ...others(s)]) {
-        const ps2 = s.room.changedPaths(person);
+        const ps2 = s.room.changedPaths(person).filter((p) => person === s.me.name || pathInView(p));
+        hiddenChanged += s.room.changedPaths(person).length - ps2.length;
         if (ps2.length) changed.set(person, ps2);
       }
-      out.push("uncommitted changes:");
+      out.push(`uncommitted changes${all2 ? "" : " in your areas"}${hiddenChanged ? ` (${hiddenChanged} file${hiddenChanged === 1 ? "" : "s"} elsewhere)` : ""}:`);
       if (!changed.size) out.push("  (none)");
       for (const [person, ps2] of changed) out.push(`  - ${person}: ${ps2.join(", ")}`);
       const waits = await waitingOn(s);
@@ -34902,9 +35458,10 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         out.push("waiting on (others' planned changes to symbols you use):");
         out.push(...waits);
       }
-      const msgs = s.room.lastMessages(10).filter((x) => !(x.to && x.to !== s.me.name && x.from !== s.me.name));
-      out.push(`recent bus (${msgs.length}):`);
+      const msgs = s.room.lastMessages(all2 ? 10 : 30).filter((x) => !(x.to && x.to !== s.me.name && x.from !== s.me.name)).filter((x) => all2 || x.to === s.me.name || x.from === s.me.name || x.type === "base" || msgInMyAreas(s, x)).slice(-10);
+      out.push(`recent bus${all2 ? "" : " in your areas"} (${msgs.length}):`);
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`);
+      out.push(...prLines(s));
       return out.join("\n");
     },
     async room_read(a) {
@@ -34912,6 +35469,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       if (typeof a.path !== "string" || !a.path) return "error: path is required";
       const p = a.path;
       const person = typeof a.person === "string" && a.person ? a.person : s.me.name;
+      const held = withheld(s, person, p);
+      if (held) return held;
       const t = await liveText(s, p, person);
       if (t === null) return `${p}: deleted by ${person} (uncommitted)`;
       if (t === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes`;
@@ -34932,13 +35491,31 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         const live = l === null ? "" : l ?? b;
         return live === b ? "" : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, "base", person, { context: 3 });
       };
+      const held = withheld(s, person, typeof a.path === "string" && a.path ? a.path : void 0);
+      if (held) return held;
       if (typeof a.path === "string" && a.path) return await one(a.path) || `${a.path}: no difference between base and ${person}'s version`;
       const parts = [];
       for (const p of s.room.changedPaths(person)) {
         const d = await one(p);
         if (d) parts.push(d);
       }
+      const level = shareOf(s, person);
+      if (level === "declared") parts.push(`(${person} shares declared paths only: changes outside their scope are not shared)`);
       return parts.length ? parts.join("\n") : `${person} has no uncommitted changes`;
+    },
+    async room_share(a) {
+      const s = S();
+      const before = s.daemon.share;
+      if (a.level === void 0) return shareLine(s);
+      const asked = parseShare(a.level);
+      if (!asked) return `error: level must be intent, declared or full (got ${String(a.level)})`;
+      const level = clampShare(asked, s.shareMax);
+      s.shareRequested = asked;
+      await s.daemon.setShare(level, s.room.scope(s.me.name)?.paths);
+      if (level !== before) s.room.post(s.me, { type: "note", text: `now sharing ${level}${level === "intent" ? " (withdrew all file text)" : level === "declared" ? " (file text only under declared scope paths)" : " (all changed files)"}`, priority: "fyi" });
+      const out = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`];
+      if (level === "declared" && !s.room.scope(s.me.name)) out.push("no scope declared yet, so nothing is shared until room_scope(area, summary, paths)");
+      return out.join("\n");
     },
     async room_who(a) {
       const s = S();
@@ -35009,6 +35586,8 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       }
       const scopesHit = s.room.allScopes().filter((sc) => sc.by !== s.me.name && scopeCovers(sc, p));
       for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`);
+      await loadAreas(s);
+      out.push(...ownerHints(s, [areasOf(s).areaOf(p)]));
       out.push(...await upgrade(s, msg, [p], plans.map((x) => x.symbol)));
       return out.join("\n");
     },
@@ -35120,7 +35699,38 @@ call room_state before continuing.`;
       s.room.post(s.me, { type: "note", text: `done${sc ? ` (${sc.area})` : ""}: ${summary}` });
       setPresence(s, { cursor: void 0, status: `done: ${summary.slice(0, 60)}` });
       s.daemon.touch();
-      return `marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s), scope cleared. You are still in the room and will be woken for questions.`;
+      const out = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s), scope cleared. You are still in the room and will be woken for questions.`];
+      if (a.pr_note === true) {
+        await refreshPrs(s);
+        const pr = myPr(s);
+        if (!pr) out.push(`pr_note: no open PR has ${branchOf(s.roomName)} as its head; nothing posted (room_pr_note number=<n> to pick one)`);
+        else {
+          try {
+            out.push(await postLedger(s, pr));
+          } catch (e) {
+            out.push(`pr_note failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+      }
+      return out.join("\n");
+    },
+    async room_pr_note(a) {
+      const s = S();
+      if (!s.roomName.startsWith("github.com/")) return "error: this room is not a GitHub repo; there are no pull requests to annotate";
+      await refreshPrs(s);
+      let pr;
+      if (a.number !== void 0) {
+        const n = Number(a.number);
+        if (!Number.isInteger(n) || n <= 0) return "error: number must be a positive PR number";
+        pr = openPrs(s.room).find((p) => p.number === n) ?? { number: n, title: `#${n}`, author: "", head: "", files: [], updatedAt: "", url: "" };
+      } else {
+        pr = myPr(s);
+        if (!pr) {
+          const open3 = openPrs(s.room);
+          return `no open PR has ${branchOf(s.roomName)} as its head${open3.length ? `; open PRs targeting this branch: ${open3.map((p) => `#${p.number} (${p.head})`).join(", ")}. Pass number=<n>` : ""}`;
+        }
+      }
+      return postLedger(s, pr);
     },
     async room_impact(a) {
       const s = S();
@@ -35147,6 +35757,9 @@ call room_state before continuing.`;
       const s = S();
       const person = typeof a.person === "string" && a.person ? a.person : "";
       if (!person || person === s.me.name) return "error: person is required (someone other than you)";
+      const held = withheld(s, person);
+      if (held) return held;
+      const declaredNote = shareOf(s, person) === "declared" ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : "";
       const myBase = baseFor(s, s.me.name), theirBase = baseFor(s, person);
       let ancestor = myBase;
       if (theirBase !== myBase) {
@@ -35211,6 +35824,7 @@ ${detail.join("\n")}`);
         if (!unresolved && a.resolve === true) resolvedText.set(p, merged.get(p));
       }
       const out = [`preview merge of your changes with ${person}'s (common ancestor ${ancestor.slice(0, 10)}${theirBase !== myBase ? `; ${person} is on ${theirBase.slice(0, 10)}, you on ${myBase.slice(0, 10)}` : ""}):`];
+      if (declaredNote) out.push(declaredNote);
       if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(", ")}`);
       if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(", ")}`);
       const hard = conflicts.filter((c) => !c.includes(" (resolvable)"));
@@ -35221,10 +35835,16 @@ ${conflicts.join("\n")}`);
       for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---
 ${text}--- end ${p} ---`);
       const run = typeof a.run === "string" && a.run.trim() ? a.run.trim() : "";
+      let ranOk = !run;
       if (run) {
         if (hard.length) out.push(`not running "${run}": ${hard.length} conflict(s) need a human first`);
-        else out.push(await runInMergedTree(s, ancestor, merged, run));
+        else {
+          const r = await runInMergedTree(s, ancestor, merged, run);
+          out.push(r);
+          ranOk = /: exit 0\n/.test(r);
+        }
       }
+      if (!hard.length && ranOk) s.room.post(s.me, { type: "note", text: `merge preview with ${person}: ${conflicts.length ? `${resolvable.length} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run ? `; "${run}" passed` : ""}`, priority: "fyi" });
       return out.join("\n");
     }
   };
@@ -35537,8 +36157,10 @@ export {
   parseServer,
   pollLogin,
   removeCredential,
+  requestedShare,
   resolveAuth,
   serverAuthMode,
+  serverShareMax,
   setCredential,
   shouldWake,
   startLogin
