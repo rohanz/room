@@ -81,7 +81,7 @@ function repoOf(roomName: string): string {
   return parts.slice(0, roomName.startsWith('github.com/') ? 3 : 2).join('/')
 }
 /** Repos someone has opened: repo -> who/when + the branch rooms seen since. Persisted next to the room data. */
-interface OpenRepo { by?: string; at: number; branches: string[] }
+interface OpenRepo { by?: string; at: number; branches: string[]; lastSeen?: number }
 const rooms = new Map<string, OpenRepo>()
 const ROOMS_FILE = process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'rooms.json') : undefined
 try { if (ROOMS_FILE && fs.existsSync(ROOMS_FILE)) for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(ROOMS_FILE, 'utf8')) as Record<string, Partial<OpenRepo>>)) rooms.set(k, { by: v.by, at: v.at ?? Date.now(), branches: v.branches ?? [] }) } catch { /* start empty */ }
@@ -103,8 +103,24 @@ async function admitted(room: string, auth: { gh?: string; token?: string }): Pr
 /** Remember which branch rooms of an open repo have been connected to, so closing can find their docs. */
 function noteBranch(roomName: string) {
   const r = rooms.get(repoOf(roomName))
-  if (r && !r.branches.includes(roomName)) { r.branches.push(roomName); saveRooms() }
+  if (!r) return
+  r.lastSeen = Date.now()
+  if (!r.branches.includes(roomName)) r.branches.push(roomName)
+  saveRooms()
 }
+/** Repos nobody has connected to for ROOM_IDLE_DAYS (default 30) are closed automatically: their
+ *  shared uncommitted work is deleted. 0 disables. Checked hourly and at startup. */
+const IDLE_MS = Number(process.env.ROOM_IDLE_DAYS ?? 30) * 24 * 60 * 60 * 1000
+async function expireIdle() {
+  if (!IDLE_MS) return
+  const cutoff = Date.now() - IDLE_MS
+  for (const [repo, r] of Array.from(rooms)) {
+    const live = Array.from(docs.keys()).some(n => repoOf(n) === repo && (docs.get(n)?.conns.size ?? 0) > 0)
+    if (!live && (r.lastSeen ?? r.at) < cutoff) { console.log(`room expired: ${repo} (idle since ${new Date(r.lastSeen ?? r.at).toISOString()})`); await closeRepo(repo) }
+  }
+}
+setInterval(() => { void expireIdle() }, 60 * 60 * 1000).unref()
+void expireIdle()
 /** Close a repo: forget it, drop every live connection to its branch rooms, delete their persisted docs. */
 async function closeRepo(repo: string): Promise<string[]> {
   const r = rooms.get(repo)
