@@ -4,13 +4,15 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": "./src/index.ts", "./git": "./src/git.ts" },
+  "exports": { ".": "./src/index.ts", "./git": "./src/git.ts", "./local": "./src/local.ts" },
   "bin": { "roomd": "./src/cli.ts" },
   "scripts": { "start": "tsx src/cli.ts" },
   "dependencies": {
     "@room/shared": "*",
     "chokidar": "^4.0.3",
+    "lib0": "^0.2.117",
     "ws": "^8.21.0",
+    "y-protocols": "^1.0.6",
     "y-websocket": "^3.0.0",
     "yjs": "^13.6.32"
   },

@@ -120,8 +120,8 @@ describe('session gating', () => {
     expect(t.session).not.toBeNull()
   })
 
-  it('lists the twenty tools', () => {
-    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share'])
+  it('lists the twenty-two tools', () => {
+    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss'])
   })
 })
 

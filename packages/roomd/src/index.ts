@@ -102,7 +102,7 @@ export class RoomdError extends Error {
   }
 }
 
-const IGNORED_DIRS = new Set(['.git', 'node_modules', '.venv'])
+const IGNORED_DIRS = new Set(['.git', 'node_modules', '.venv', '.room'])
 const ROOM_FILE = '.room.json'
 const ROOMIGNORE = '.roomignore'
 
