@@ -11,6 +11,7 @@ import { startRoomd, RoomdError, type Roomd } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import type { Identity, RoomDoc } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
+import { getCredential, removeCredential, setCredential } from './credentials.js'
 
 /** The hosted room server. Override with ROOM_SERVER (e.g. ws://localhost:1234 for local dev). */
 export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
@@ -50,6 +51,66 @@ export interface JoinOptions {
 /** The repo has not been opened on the server; room_create does that. */
 export class NoRoom extends RoomdError {
   constructor(public roomName: string, detail: string) { super(detail, 3) }
+}
+/** The server uses GitHub device login and this machine holds no session for it; room_login does that. */
+export class NotLoggedIn extends RoomdError {
+  constructor(public server: string) { super(`not logged in to ${server}: room_login first`, 4) }
+}
+
+export type AuthMode = 'device' | 'token'
+const modeCache = new Map<string, AuthMode>()
+/** How the server authenticates GitHub rooms: device login (it holds the tokens) or forwarded gh tokens. Older servers: token. */
+export async function serverAuthMode(server: string): Promise<AuthMode> {
+  const hit = modeCache.get(server)
+  if (hit) return hit
+  let mode: AuthMode = 'token'
+  try {
+    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(8000) })
+    if (res.ok) { const b = await res.json() as { github?: string }; if (b.github === 'device') mode = 'device' }
+  } catch { /* unreachable: the join will report it */ }
+  modeCache.set(server, mode)
+  return mode
+}
+
+export interface Creds { gh?: string; token?: string; session?: string; login?: string }
+/** Credentials for a server: a shared token, a Room session from device login, or (token-mode servers only) the local gh token. */
+export async function resolveAuth(server: string, roomName: string, token?: string): Promise<Creds> {
+  const github = roomName.startsWith('github.com/')
+  if (!github) return { token }
+  const mode = await serverAuthMode(server)
+  if (mode === 'device') {
+    const c = getCredential(server)
+    if (!c) { if (token) return { token }; throw new NotLoggedIn(server) }
+    return { token, session: c.session, login: c.login }
+  }
+  return { token, gh: await githubToken() }
+}
+
+export interface LoginProgress { user_code: string; verification_uri: string; expires_in: number; interval: number; device: string }
+/** Start GitHub device login against the server. Show the user the code; then pollLogin until done. */
+export async function startLogin(server: string): Promise<LoginProgress> {
+  const res = await fetch(`${httpOf(server)}/auth/device`, { method: 'POST', signal: AbortSignal.timeout(15000) })
+  if (!res.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2)
+  return await res.json() as LoginProgress
+}
+/** Poll until GitHub confirms, the attempt fails, or maxMs passes. Saves the credential on success. */
+export async function pollLogin(server: string, p: LoginProgress, opts: { maxMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<{ login: string } | { pending: true } | { error: string }> {
+  const sleep = opts.sleep ?? (ms => new Promise(r => setTimeout(r, ms)))
+  const deadline = Date.now() + (opts.maxMs ?? 90_000)
+  for (;;) {
+    const res = await fetch(`${httpOf(server)}/auth/poll`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device: p.device }), signal: AbortSignal.timeout(15000) })
+    if (!res.ok) return { error: (await res.text()).trim() || `HTTP ${res.status}` }
+    const b = await res.json() as { pending?: boolean; error?: string; session?: string; login?: string }
+    if (b.session && b.login) { setCredential(server, { session: b.session, login: b.login, at: Date.now() }); modeCache.delete(server); return { login: b.login } }
+    if (b.error) return { error: b.error }
+    if (Date.now() >= deadline) return { pending: true }
+    await sleep(Math.max(1, p.interval) * 1000)
+  }
+}
+export async function logout(server: string): Promise<{ login?: string; removed: boolean }> {
+  const c = getCredential(server)
+  if (c) { try { await fetch(`${httpOf(server)}/auth/logout`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: c.session }), signal: AbortSignal.timeout(8000) }) } catch { /* local removal still counts */ } }
+  return { login: c?.login, removed: removeCredential(server) }
 }
 
 /** `.room.json` written by the daemon; lets a later process rejoin the same room. */
@@ -128,8 +189,6 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const server = parsed.server
   const token = opts.token ?? process.env.ROOM_TOKEN?.trim() ?? parsed.token
   const web = (opts.web ?? process.env.ROOM_WEB ?? defaultWeb(server)).replace(/\/+$/, '')
-  const name = opts.name ?? await defaultName(dir)
-  if (!name) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
 
   let roomName = opts.room
   if (!roomName) {
@@ -138,17 +197,23 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     roomName = d.roomName
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
-  const gh = roomName.startsWith('github.com/') ? await githubToken() : undefined
+  const auth = await resolveAuth(server, roomName, token)
+  // Logged in with GitHub: the participant name is the verified login, whatever git config says.
+  const name = auth.login ?? opts.name ?? await defaultName(dir)
+  if (!name) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
+  if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`)
+  const { login: _login, ...creds } = auth
   if (opts.create) {
-    const err = await createRoom(server, roomName, { gh, token, by: name })
+    const err = await createRoom(server, roomName, { ...creds, by: name })
     if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}`, 2)
   }
   // Preflight over HTTP: a refused websocket only shows up as a sync timeout, so ask the server first.
-  const pre = await preflight(server, roomName, { gh, token })
+  const pre = await preflight(server, roomName, creds)
   if (pre?.missing) throw new NoRoom(roomName, pre.reason)
+  if (pre?.loginNeeded) throw new NotLoggedIn(server)
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2)
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', token, githubToken: gh, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
-  const view = await viewToken(server, roomName, { gh, token })
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', token, githubToken: creds.gh, session: creds.session, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+  const view = await viewToken(server, roomName, creds)
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
   graph.start()
@@ -181,13 +246,16 @@ export function watchClosed(s: Session, log?: (line: string) => void): void {
 }
 
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
+/** A session the server no longer knows is useless locally too. */
+function removeStaleCredential(server: string, reason: string): void { if (/expired or unknown/.test(reason)) removeCredential(server) }
 
 /** Why the server would refuse us, or undefined when access is fine (or the server cannot be asked).
  *  `missing`: access is fine but nobody has opened this repo yet. */
-export async function preflight(server: string, roomName: string, auth: { gh?: string; token?: string }): Promise<{ reason: string; missing?: boolean } | undefined> {
+export async function preflight(server: string, roomName: string, auth: Creds): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean } | undefined> {
   try {
     const res = await fetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
     if (res.ok) return undefined
+    if (res.status === 401) { const reason = (await res.text()).trim() || 'unauthorized'; if (/room_login/.test(reason)) { removeStaleCredential(server, reason); return { reason, loginNeeded: true } } return { reason } }
     if (res.status === 403) return { reason: (await res.text()).trim() || 'forbidden' }
     if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true }
     return undefined // older server or unexpected status: let the websocket try
@@ -197,7 +265,7 @@ export async function preflight(server: string, roomName: string, auth: { gh?: s
 }
 
 /** Open the repo on the server so its branch rooms can be joined. Idempotent. Returns the refusal, if any. */
-export async function createRoom(server: string, roomName: string, auth: { gh?: string; token?: string; by?: string }): Promise<string | undefined> {
+export async function createRoom(server: string, roomName: string, auth: Creds & { by?: string }): Promise<string | undefined> {
   try {
     const res = await fetch(`${httpOf(server)}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
     if (res.ok) return undefined
@@ -208,7 +276,7 @@ export async function createRoom(server: string, roomName: string, auth: { gh?: 
 }
 
 /** Close the repo on the server: every branch room, every overlay, every connection. Returns the rooms closed, or throws with the refusal. */
-export async function closeRoom(server: string, roomName: string, auth: { gh?: string; token?: string }): Promise<string[]> {
+export async function closeRoom(server: string, roomName: string, auth: Creds): Promise<string[]> {
   const res = await fetch(`${httpOf(server)}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
   if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2)
   const body = (await res.json().catch(() => ({}))) as { closed?: string[] }
@@ -216,16 +284,16 @@ export async function closeRoom(server: string, roomName: string, auth: { gh?: s
 }
 
 /** Auth the way joinSession resolves it, for HTTP calls made after the join. */
-export async function authFor(s: Session): Promise<{ gh?: string; token?: string; server: string }> {
+export async function authFor(s: Session): Promise<Creds & { server: string }> {
   const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
   const token = process.env.ROOM_TOKEN?.trim() ?? parseServer(process.env.ROOM_SERVER ?? '').token
-  const gh = s.roomName.startsWith('github.com/') ? await githubToken() : undefined
-  return { gh, token, server }
+  const { login: _login, ...creds } = await resolveAuth(server, s.roomName, token)
+  return { ...creds, server }
 }
 
 /** Ask the server for a room-scoped token (7 days) the browser can use (never the GitHub token itself). */
-export async function viewToken(server: string, roomName: string, auth: { gh?: string; token?: string }): Promise<string | undefined> {
-  if (!auth.gh && !auth.token) return undefined
+export async function viewToken(server: string, roomName: string, auth: Creds): Promise<string | undefined> {
+  if (!auth.gh && !auth.token && !auth.session) return undefined
   try {
     const res = await fetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
     if (!res.ok) return undefined
@@ -239,9 +307,8 @@ export async function refreshBrowserUrl(s: Session): Promise<string> {
     const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
     const u = new URL(s.browserUrl)
     const web = `${u.protocol}//${u.host}`
-    const token = process.env.ROOM_TOKEN?.trim() ?? parseServer(process.env.ROOM_SERVER ?? '').token
-    const gh = s.roomName.startsWith('github.com/') ? await githubToken() : undefined
-    const view = await viewToken(server, s.roomName, { gh, token })
+    const a = await authFor(s)
+    const view = await viewToken(server, s.roomName, a)
     if (view) s.browserUrl = `${web}/?room=${encodeURIComponent(s.roomUrl)}&view=${view}`
   } catch { /* keep the stored link */ }
   return s.browserUrl

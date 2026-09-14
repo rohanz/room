@@ -25,8 +25,10 @@ export interface RoomdOptions {
   kind?: Kind
   /** Shared room token, sent as ?token= on the websocket. Default: ROOM_TOKEN env. */
   token?: string
-  /** GitHub token proving read access to the repo, sent as ?gh=. */
+  /** GitHub token proving repo access, sent as ?gh= (servers without device login). */
   githubToken?: string
+  /** Room session id from GitHub device login, sent as ?session= (servers with GITHUB_CLIENT_ID). */
+  session?: string
   log?: (line: string) => void
   /** Max time to wait for the initial sync; default 15s. */
   connectTimeoutMs?: number
@@ -136,7 +138,7 @@ class Daemon implements Roomd {
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
       : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
           WebSocketPolyfill: WebSocket as any,
-          params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...(options.githubToken ? { gh: options.githubToken } : {}) },
+          params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...(options.session ? { session: options.session } : options.githubToken ? { gh: options.githubToken } : {}) },
         })
     this.setStatus('syncing')
   }

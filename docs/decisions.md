@@ -157,3 +157,15 @@ merge automatically when two people change the same file. Also: joining now requ
 push access to the GitHub repo, so public repos are not open rooms.
 **Cut:** GitLab/Bitbucket auth, OAuth instead of forwarding the gh token, diff-based
 overlay updates for large files.
+
+## 2026-09-14 — GitHub device login; names bound to login; idle repos expire
+**Decision:** The hosted server runs GitHub's OAuth device flow itself (`GITHUB_CLIENT_ID`)
+and keeps the resulting token; clients hold only an opaque Room session and never send a
+`gh` token. Participant identity is the verified GitHub login; the server drops awareness
+updates that claim another name. `ROOM_TOKEN` is unset on the hosted server. Repos nobody
+connects to for 30 days are closed automatically.
+**Why:** Forwarding personal `gh` tokens to a third-party server was the one trust
+problem a team outside ours would reject; self-declared names made every claim and
+message spoofable; and rooms lived forever.
+**Cut:** GitHub App installation tokens (finer permissions, more setup), server-side
+inspection of Yjs updates for message authorship.

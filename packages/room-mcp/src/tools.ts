@@ -12,7 +12,9 @@ import type {
   ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg, PlanMsg,
 } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
-import { authFor, closeRoom, joinSession, leaveSession, refreshBrowserUrl, type JoinOptions, type Session } from './session.js'
+import { DEFAULT_SERVER, authFor, closeRoom, joinSession, leaveSession, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthMode, startLogin, type JoinOptions, type LoginProgress, type Session } from './session.js'
+import { getCredential } from './credentials.js'
+import { NotLoggedIn } from './session.js'
 import { HooksBridge } from './hooks-bridge.js'
 import { ConflictWatcher } from './conflicts.js'
 
@@ -77,6 +79,10 @@ const PLANS = {
 }
 
 export const DEFS: ToolDef[] = [
+  { name: 'room_login', annotations: RW, description: 'Log in to the room server with GitHub (device flow). First call returns a one-time code and URL: show them to the user VERBATIM and ask them to enter the code. Call again to wait for GitHub to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your GitHub login.',
+    inputSchema: { type: 'object', properties: { wait: int('seconds to wait for confirmation on a follow-up call (default 90, max 600)'), server: str('override ws server URL') } } },
+  { name: 'room_logout', annotations: RW, description: 'Forget the GitHub login for the room server on this machine (and revoke the session on the server).',
+    inputSchema: { type: 'object', properties: { server: str('override ws server URL') } } },
   { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.',
     inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)') } } },
   { name: 'room_join', annotations: RW, description: 'Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL. Fails if nobody has opened a room for the repo yet: room_create does that.',
@@ -413,8 +419,35 @@ export function createTools(ctx: ToolCtx): Tools {
     return `${what}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(', ')}` : ''}`
   }
 
+  // ---- login ------------------------------------------------------------------
+  const serverOf = (a: Record<string, unknown>) => parseServer(typeof a.server === 'string' && a.server ? a.server : process.env.ROOM_SERVER ?? DEFAULT_SERVER).server
+  let pendingLogin: { server: string; p: LoginProgress; startedAt: number } | null = null
+  const codeLine = (p: LoginProgress) => `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
+
   // ---- handlers -------------------------------------------------------------
   const handlers: Record<string, (a: Record<string, unknown>) => Promise<string>> = {
+    async room_login(a) {
+      const server = serverOf(a)
+      if ((await serverAuthMode(server)) !== 'device') return `${server} does not use GitHub login; it accepts your local gh credentials (or a shared token), nothing to do`
+      const cred = getCredential(server)
+      if (cred && !pendingLogin) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`
+      if (pendingLogin && pendingLogin.server === server && Date.now() - pendingLogin.startedAt < pendingLogin.p.expires_in * 1000) {
+        const wait = Math.min(600, Math.max(5, typeof a.wait === 'number' ? a.wait : 90))
+        const r = await pollLogin(server, pendingLogin.p, { maxMs: wait * 1000 })
+        if ('login' in r) { pendingLogin = null; return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? '' : 'Next: room_join (or room_create if nobody has opened this repo).'}`.trim() }
+        if ('error' in r) { pendingLogin = null; return `login failed: ${r.error}. Call room_login to start again.` }
+        return `still waiting: ${codeLine(pendingLogin.p)}`
+      }
+      const p = await startLogin(server)
+      pendingLogin = { server, p, startedAt: Date.now() }
+      return `GitHub login for ${server}. Tell the user exactly this: ${codeLine(p)}`
+    },
+    async room_logout(a) {
+      const server = serverOf(a)
+      pendingLogin = null
+      const r = await doLogout(server)
+      return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ''}${ctx.getSession() ? '; the current session stays connected until room_leave' : ''}` : `no login stored for ${server}`
+    },
     async room_create(a) { return handlers.room_join({ ...a, create: true }) },
     async room_join(a) {
       const cur = ctx.getSession()
@@ -834,6 +867,7 @@ export function createTools(ctx: ToolCtx): Tools {
         return prefix + (s2 && name !== 'room_join' && name !== 'room_create' ? inbox(s2) + body : body)
       } catch (e) {
         if (e instanceof NotJoined) return 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
+        if (e instanceof NotLoggedIn) return `error: ${e.message}`
         if (e instanceof NeedFetch) return `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry`
         return `error: ${e instanceof Error ? e.message : String(e)}`
       }

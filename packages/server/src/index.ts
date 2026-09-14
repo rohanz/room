@@ -1,9 +1,13 @@
 #!/usr/bin/env tsx
 /**
  * Room server: a stock y-websocket server plus access control and persistence.
- *  - Rooms named github.com/<owner>/<repo>/<branch> admit a websocket carrying ?gh=<GitHub token>
- *    when that token has push access to the repo (checked against the GitHub API, cached 10 min).
- *    Read access is not enough: a public repo must not be an open room.
+ *  - Rooms named github.com/<owner>/<repo>/<branch> admit callers whose GitHub account has push
+ *    access to the repo (checked against the GitHub API, cached 10 min). Read access is not
+ *    enough: a public repo must not be an open room.
+ *  - GITHUB_CLIENT_ID: if set, clients log in with GitHub's device flow (POST /auth/device, /auth/poll)
+ *    and the server keeps the GitHub token; clients hold only an opaque ?session=. Forwarded
+ *    GitHub tokens (?gh=) are refused. Without it (local dev, tests) ?gh= is accepted as before.
+ *    Logged-in connections may only announce presence under their GitHub login.
  *  - ROOM_TOKEN: if set, ?token=<same> admits any room (fallback for non-GitHub repos, and override).
  *  - With neither a GitHub-verifiable room nor ROOM_TOKEN configured, the server is open.
  *  - YPERSISTENCE: if set to a directory, rooms are stored in LevelDB there and survive restarts.
@@ -20,13 +24,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, docs, getPersistence } from '@y/websocket-server/utils'
-import { makeReadOnly } from './readonly.js'
+import { makeReadOnly, bindIdentity } from './readonly.js'
+import { Auth } from './auth.js'
 
 const PORT = Number(process.env.PORT ?? 1234)
 const HOST = process.env.HOST ?? '0.0.0.0'
 const TOKEN = process.env.ROOM_TOKEN?.trim() || undefined
 /** Directory with the built browser view (packages/web/dist). Served at / when present. */
 const STATIC = process.env.ROOM_STATIC ?? path.resolve(process.cwd(), 'public')
+const auth = new Auth({ clientId: process.env.GITHUB_CLIENT_ID?.trim() || undefined, sessionsFile: process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'sessions.json') : undefined, log: l => console.log(l) })
 const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' }
 
 /** GitHub token -> (owner/repo -> admitted until). */
@@ -91,14 +97,25 @@ function saveRooms() {
 }
 const NOT_OPEN = (room: string) => `no room for ${repoOf(room)} yet: open one with room_create (or POST /rooms)`
 
-/** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting. */
-async function admitted(room: string, auth: { gh?: string; token?: string }): Promise<string | undefined> {
+interface Creds { gh?: string; token?: string; session?: string }
+type Verdict = { ok: true; login?: string } | { ok: false; status: 401 | 403; why: string }
+/** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting.
+ *  A verdict carries the verified GitHub login when the caller is logged in. */
+async function admitted(room: string, c: Creds): Promise<Verdict> {
   const repo = githubRepoOf(room)
-  const ok = (TOKEN && auth.token === TOKEN) || (auth.gh && repo && await githubCanPush(auth.gh, repo)) || (!TOKEN && !repo)
-  if (ok) return undefined
-  return repo && !auth.gh && !auth.token ? `no GitHub token: run \`gh auth login\` (room ${repo})`
-    : repo && auth.gh ? `your GitHub account cannot push to ${repo}: ask for write access, or check \`gh auth status\` is the right account`
-    : 'token required or wrong: set ROOM_SERVER=ws://host/?token=<shared token>'
+  if (TOKEN && c.token === TOKEN) return { ok: true }
+  if (!TOKEN && !repo) return { ok: true }
+  if (!repo) return { ok: false, status: 401, why: 'token required or wrong: set ROOM_SERVER=ws://host/?token=<shared token>' }
+  if (auth.mode === 'device') {
+    if (!c.session) return { ok: false, status: 401, why: c.gh ? 'this server uses GitHub login: run room_login (forwarded GitHub tokens are not accepted)' : `not logged in: run room_login (room ${repo})` }
+    const st = auth.resolve(c.session)
+    if (!st) return { ok: false, status: 401, why: 'session expired or unknown: run room_login' }
+    if (await githubCanPush(st.ghToken, repo)) return { ok: true, login: st.login }
+    return { ok: false, status: 403, why: `${st.login} cannot push to ${repo}: ask for write access` }
+  }
+  if (!c.gh) return { ok: false, status: 401, why: `no GitHub token: run \`gh auth login\` (room ${repo})` }
+  if (await githubCanPush(c.gh, repo)) return { ok: true }
+  return { ok: false, status: 403, why: `your GitHub account cannot push to ${repo}: ask for write access, or check \`gh auth status\` is the right account` }
 }
 /** Remember which branch rooms of an open repo have been connected to, so closing can find their docs. */
 function noteBranch(roomName: string) {
@@ -137,6 +154,7 @@ async function closeRepo(repo: string): Promise<string[]> {
   console.log(`room closed: ${repo} (${names.size} branch room(s))`)
   return Array.from(names)
 }
+const str = (v: unknown): string | undefined => typeof v === 'string' && v ? v : undefined
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise(resolve => { let body = ''; req.on('data', c => { body += c }); req.on('end', () => resolve(body)) })
 }
@@ -144,63 +162,74 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://x')
   if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); return }
+  const creds = (o: Record<string, unknown>): Creds => ({ gh: str(o.gh), token: str(o.token), session: str(o.session) })
+  const queryCreds = (): Creds => creds({ gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined })
+  const json = (status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
+  const text = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/plain' }); res.end(body) }
+  const withBody = (fn: (o: Record<string, unknown>) => Promise<void>) => { void readBody(req).then(async body => { try { await fn(JSON.parse(body || '{}') as Record<string, unknown>) } catch { text(400, 'bad request') } }); return }
+
+  // ---- auth ----
+  if (url.pathname === '/auth/config' && req.method === 'GET') return json(200, { github: auth.mode, clientIdSet: auth.mode === 'device' })
+  if (url.pathname === '/auth/device' && req.method === 'POST') {
+    if (auth.mode !== 'device') return text(404, 'this server does not use GitHub login (no GITHUB_CLIENT_ID)')
+    void auth.startDevice().then(d => json(200, d)).catch(e => text(502, `GitHub device flow failed: ${e instanceof Error ? e.message : e}`))
+    return
+  }
+  if (url.pathname === '/auth/poll' && req.method === 'POST') return withBody(async o => {
+    const device = str(o.device)
+    if (!device) return text(400, 'device required')
+    json(200, await auth.poll(device))
+  })
+  if (url.pathname === '/auth/logout' && req.method === 'POST') return withBody(async o => json(200, { ok: auth.logout(str(o.session)) }))
+  if (url.pathname === '/auth/me' && req.method === 'GET') {
+    const st = auth.resolve(url.searchParams.get('session') ?? undefined)
+    return st ? json(200, { login: st.login }) : text(401, 'not logged in')
+  }
+
+  // ---- rooms ----
   if (url.pathname === '/rooms' && req.method === 'GET') {
-    const auth = { gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined }
+    const c = queryCreds()
     void (async () => {
       const out: ({ repo: string } & OpenRepo)[] = []
-      for (const [repo, r] of rooms) if (!(await admitted(`${repo}/x`, auth))) out.push({ repo, ...r })
-      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(out))
+      for (const [repo, r] of rooms) if ((await admitted(`${repo}/x`, c)).ok) out.push({ repo, ...r })
+      json(200, out)
     })()
     return
   }
-  if (url.pathname === '/rooms' && req.method === 'DELETE') {
-    void readBody(req).then(async body => {
-      try {
-        const { room, gh, token } = JSON.parse(body || '{}') as { room?: string; gh?: string; token?: string }
-        if (!room) { res.writeHead(400); res.end('room required'); return }
-        const why = await admitted(room, { gh, token })
-        if (why) { console.log(`close refused: ${why}`); res.writeHead(403, { 'content-type': 'text/plain' }); res.end(why); return }
-        const repo = repoOf(roomNameOf(room))
-        if (!rooms.has(repo)) { res.writeHead(404, { 'content-type': 'text/plain' }); res.end(NOT_OPEN(room)); return }
-        const closed = await closeRepo(repo)
-        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ repo, closed }))
-      } catch { res.writeHead(400); res.end('bad request') }
-    })
-    return
-  }
-  if (url.pathname === '/rooms' && req.method === 'POST') {
-    void readBody(req).then(async body => {
-      try {
-        const { room, gh, token, by } = JSON.parse(body || '{}') as { room?: string; gh?: string; token?: string; by?: string }
-        if (!room) { res.writeHead(400); res.end('room required'); return }
-        const why = await admitted(room, { gh, token })
-        if (why) { console.log(`open refused: ${why}`); res.writeHead(403, { 'content-type': 'text/plain' }); res.end(why); return }
-        const name = repoOf(roomNameOf(room))
-        const existing = rooms.get(name)
-        if (!existing) { rooms.set(name, { by, at: Date.now(), branches: [] }); saveRooms(); console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`) }
-        res.writeHead(existing ? 200 : 201, { 'content-type': 'application/json' }); res.end(JSON.stringify({ repo: name, created: !existing, ...(existing ?? {}) }))
-      } catch { res.writeHead(400); res.end('bad request') }
-    })
-    return
-  }
-  if (url.pathname === '/view-token' && req.method === 'POST') {
-    void readBody(req).then(async body => {
-      try {
-        const { room, gh, token } = JSON.parse(body || '{}') as { room?: string; gh?: string; token?: string }
-        if (!room) { res.writeHead(400); res.end('room required'); return }
-        const why = await admitted(room, { gh, token })
-        if (why) { console.log(`view-token refused: ${why}`); res.writeHead(403, { 'content-type': 'text/plain' }); res.end(why); return }
-        const name = roomNameOf(room)
-        if (!rooms.has(repoOf(name))) { res.writeHead(404, { 'content-type': 'text/plain' }); res.end(NOT_OPEN(name)); return }
-        const view = crypto.randomBytes(16).toString('hex')
-        viewTokens.set(view, { room: name, exp: Date.now() + VIEW_TTL })
-        for (const [k, v] of viewTokens) if (v.exp < Date.now()) viewTokens.delete(k)
-        saveViewTokens()
-        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ view, expiresIn: VIEW_TTL }))
-      } catch { res.writeHead(400); res.end('bad request') }
-    })
-    return
-  }
+  if (url.pathname === '/rooms' && req.method === 'DELETE') return withBody(async o => {
+    const room = str(o.room)
+    if (!room) return text(400, 'room required')
+    const v = await admitted(room, creds(o))
+    if (!v.ok) { console.log(`close refused: ${v.why}`); return text(v.status, v.why) }
+    const repo = repoOf(roomNameOf(room))
+    if (!rooms.has(repo)) return text(404, NOT_OPEN(room))
+    const closed = await closeRepo(repo)
+    json(200, { repo, closed, ...(v.login ? { login: v.login } : {}) })
+  })
+  if (url.pathname === '/rooms' && req.method === 'POST') return withBody(async o => {
+    const room = str(o.room)
+    if (!room) return text(400, 'room required')
+    const v = await admitted(room, creds(o))
+    if (!v.ok) { console.log(`open refused: ${v.why}`); return text(v.status, v.why) }
+    const by = v.login ?? str(o.by)
+    const name = repoOf(roomNameOf(room))
+    const existing = rooms.get(name)
+    if (!existing) { rooms.set(name, { by, at: Date.now(), branches: [] }); saveRooms(); console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`) }
+    json(existing ? 200 : 201, { repo: name, created: !existing, ...(existing ?? {}), ...(v.login ? { login: v.login } : {}) })
+  })
+  if (url.pathname === '/view-token' && req.method === 'POST') return withBody(async o => {
+    const room = str(o.room)
+    if (!room) return text(400, 'room required')
+    const v = await admitted(room, creds(o))
+    if (!v.ok) { console.log(`view-token refused: ${v.why}`); return text(v.status, v.why) }
+    const name = roomNameOf(room)
+    if (!rooms.has(repoOf(name))) return text(404, NOT_OPEN(name))
+    const view = crypto.randomBytes(16).toString('hex')
+    viewTokens.set(view, { room: name, exp: Date.now() + VIEW_TTL })
+    for (const [k, vv] of viewTokens) if (vv.exp < Date.now()) viewTokens.delete(k)
+    saveViewTokens()
+    json(200, { view, expiresIn: VIEW_TTL, ...(v.login ? { login: v.login } : {}) })
+  })
   if (fs.existsSync(STATIC)) {
     const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
     const file = path.resolve(STATIC, rel)
@@ -228,29 +257,37 @@ const refuse = (socket: import('node:stream').Duplex, code: number, why: string,
   socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`)
   socket.destroy()
 }
+const identityLog = new Map<string, number>()
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const roomName = roomNameOf(url.pathname)
-  const accept = (readOnly = false) => rooms.has(repoOf(roomName))
+  const accept = (opts: { readOnly?: boolean; login?: string } = {}) => rooms.has(repoOf(roomName))
     ? wss.handleUpgrade(req, socket, head, ws => {
       noteBranch(roomName)
-      if (readOnly) makeReadOnly(ws, droppedWrite(roomName))
+      if (opts.readOnly) makeReadOnly(ws, droppedWrite(roomName))
+      if (opts.login) bindIdentity(ws, opts.login, login => {
+        const now = Date.now()
+        if ((identityLog.get(login) ?? 0) > now - 60_000) return
+        identityLog.set(login, now)
+        console.log(`dropped presence under a name other than ${login} (room ${roomName})`)
+      })
       wss.emit('connection', ws, req)
     })
     : refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
   const view = url.searchParams.get('view')
   if (view) {
     const v = viewTokens.get(view)
-    if (v && v.exp > Date.now() && v.room === roomName) return accept(true)
+    if (v && v.exp > Date.now() && v.room === roomName) return accept({ readOnly: true })
     return refuse(socket, 403, 'Forbidden: view token invalid for this room')
   }
-  const gh = url.searchParams.get('gh') ?? undefined, token = url.searchParams.get('token') ?? undefined
-  admitted(roomName, { gh, token })
-    .then(why => why ? refuse(socket, why.startsWith('no GitHub token') || why.startsWith('token required') ? 401 : 403, why, roomName) : accept())
+  const c: Creds = { gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined }
+  admitted(roomName, c)
+    .then(v => v.ok ? accept({ login: v.login }) : refuse(socket, v.status, v.why, roomName))
     .catch(() => refuse(socket, 403, 'Forbidden', roomName))
 })
 server.listen(PORT, HOST, () => console.log(
   `room server listening on ws://${HOST}:${PORT}/<room>` +
-  (TOKEN ? ' (token required)' : ' (no token: anyone with the URL can join)') +
+  (auth.mode === 'device' ? ' (GitHub login via device flow; forwarded tokens refused)' : ' (GitHub tokens forwarded by clients; set GITHUB_CLIENT_ID for device login)') +
+  (TOKEN ? ' (shared token also accepted)' : '') +
   (process.env.YPERSISTENCE ? ` persisting to ${process.env.YPERSISTENCE}` : ' (in-memory: rooms reset on restart)'),
 ))

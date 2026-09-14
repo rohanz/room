@@ -50,3 +50,31 @@ describe('read-only view connections', () => {
     expect(dropped).toBe(2)
   })
 })
+
+describe('identity-bound connections', () => {
+  const aw = (name: string | null) => {
+    const enc = encoding.createEncoder()
+    encoding.writeVarUint(enc, 1)
+    const a = new awarenessProtocol.Awareness(doc)
+    a.setLocalState(name === null ? null : { user: { name, kind: 'agent' }, status: 'x' })
+    encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(a, [doc.clientID]))
+    return encoding.toUint8Array(enc)
+  }
+  it('flags presence under another name, passes the login, null states and doc messages', async () => {
+    const { isForeignIdentity, bindIdentity } = await import('../src/readonly.js')
+    expect(isForeignIdentity(aw('octo'), 'octo')).toBe(false)
+    expect(isForeignIdentity(aw('kieran'), 'octo')).toBe(true)
+    expect(isForeignIdentity(aw(null), 'octo')).toBe(false)
+    expect(isForeignIdentity(step1, 'octo')).toBe(false)
+    expect(isForeignIdentity(update, 'octo')).toBe(false)
+    const conn = new EventEmitter()
+    const seen: string[] = []; const dropped: string[] = []
+    conn.on('message', () => seen.push('m'))
+    bindIdentity(conn, 'octo', n => dropped.push(n))
+    conn.emit('message', Buffer.from(aw('octo')))
+    conn.emit('message', Buffer.from(aw('kieran')))
+    conn.emit('message', Buffer.from(update))
+    expect(seen).toHaveLength(2)
+    expect(dropped).toEqual(['octo'])
+  })
+})

@@ -8,14 +8,15 @@ import type { Msg } from '@room/shared'
 import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { NoRoom, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
+import { NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
 export type { WakeEvent, RoomEvent } from './wake.js'
 export { createTools, DEFS } from './tools.js'
 export type { ToolCtx, ToolDef, Tools } from './tools.js'
-export { joinSession, leaveSession, createRoom, closeRoom, NoRoom, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer } from './session.js'
+export { joinSession, leaveSession, createRoom, closeRoom, NoRoom, NotLoggedIn, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer, serverAuthMode, resolveAuth, startLogin, pollLogin, logout } from './session.js'
+export { credentialsPath, getCredential, setCredential, removeCredential } from './credentials.js'
 export type { Session, JoinOptions } from './session.js'
 
 const log = (s: string) => process.stderr.write(`room-mcp: ${s}\n`)
@@ -80,6 +81,7 @@ async function main() {
       log('ready')
     } catch (e) {
       if (e instanceof NoRoom) log(`ready; ${e.message}`)
+      else if (e instanceof NotLoggedIn) log(`ready; not logged in: room_login`)
       else log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`)
     }
   })()

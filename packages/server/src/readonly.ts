@@ -38,3 +38,36 @@ export function makeReadOnly(conn: EmitterLike, onDrop: () => void): void {
     return emit(event, ...args)
   }) as EmitterLike['emit']
 }
+
+const MESSAGE_AWARENESS = 1
+
+/** Awareness updates whose `user.name` is not the verified login (message type 1: count, then
+ *  per client: clientID, clock, JSON state). `null` states (leaving) are fine. */
+export function isForeignIdentity(buf: Uint8Array, login: string): boolean {
+  try {
+    const d = decoding.createDecoder(buf)
+    if (decoding.readVarUint(d) !== MESSAGE_AWARENESS) return false
+    const inner = decoding.createDecoder(decoding.readVarUint8Array(d))
+    const n = decoding.readVarUint(inner)
+    for (let i = 0; i < n; i++) {
+      decoding.readVarUint(inner); decoding.readVarUint(inner)
+      const raw = decoding.readVarString(inner)
+      if (raw === 'null') continue
+      const state = JSON.parse(raw) as { user?: { name?: string } }
+      const name = state?.user?.name
+      if (name !== undefined && name !== login) return true
+    }
+    return false
+  } catch {
+    return true
+  }
+}
+
+/** Wrap a ws connection so presence announced under any name but `login` is dropped. */
+export function bindIdentity(conn: EmitterLike, login: string, onDrop: (name: string) => void): void {
+  const emit = conn.emit.bind(conn)
+  conn.emit = ((event: string | symbol, ...args: unknown[]) => {
+    if (event === 'message' && isForeignIdentity(toBytes(args[0]), login)) { onDrop(login); return false }
+    return emit(event, ...args)
+  }) as EmitterLike['emit']
+}

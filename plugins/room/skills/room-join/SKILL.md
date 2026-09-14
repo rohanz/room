@@ -10,6 +10,9 @@ push-only sync daemon, and returns who is here, their scopes, open claims, and t
 view URL. Nothing is written to disk by the room.
 
 If it fails:
+- "not logged in": the server uses GitHub login. Call `room_login`, show the user the code
+  and URL it returns exactly as written, then call `room_login` again to wait for GitHub to
+  confirm. Never ask the user for a token. Your name in the room is your GitHub login.
 - "no room for <repo> yet": nobody has opened this repo. Tell the user; if they want one,
   call `room_create` (once per repo; every branch then has a room and teammates join
   automatically).

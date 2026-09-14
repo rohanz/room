@@ -64,9 +64,11 @@ as usual. If auto-join fails, ask the agent to call `room_join`; its error shoul
 what needs attention. No Room environment variables are needed for the default hosted
 GitHub flow.
 
-The hosted server checks repository access using your `gh` credentials, both for opening
-a repo and for joining: you need push access to the repo, so public repos are not open
-rooms. The browser link contains a room-scoped view key valid for 7 days,
+The first time you use a server, the agent runs `room_login`: open the GitHub device
+page it prints, enter the code, and approve Room. The server holds the resulting token
+(revocable under GitHub → Authorized OAuth Apps); your `gh` token is never sent anywhere.
+Your participant name is your GitHub login. To open or join a repo you need push access
+to it, so public repos are not open rooms. The browser link contains a room-scoped view key valid for 7 days,
 rather than your GitHub token. Treat that link as access to the room’s shared code and
 activity.
 
