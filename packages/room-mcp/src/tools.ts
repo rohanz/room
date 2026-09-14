@@ -1116,6 +1116,45 @@ export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {
   return undefined
 }
 
+/**
+ * Give the scratch tree my clone's dependencies without letting them point back at my clone's sources.
+ * `.venv` is linked whole. Each `node_modules` (root, and one level down for workspaces) is rebuilt as a
+ * directory of links: third-party packages link to my clone's copies; workspace packages (links into the
+ * clone itself) are re-pointed at the same relative path inside the scratch tree, so tests there import
+ * the merged sources rather than mine.
+ */
+export function linkSharedDirs(cloneDir: string, scratchDir: string): void {
+  const venv = path.join(cloneDir, '.venv')
+  if (fs.existsSync(venv) && !fs.existsSync(path.join(scratchDir, '.venv'))) fs.symlinkSync(venv, path.join(scratchDir, '.venv'))
+  const candidates = ['node_modules']
+  for (const top of ['packages', 'apps', 'libs']) {
+    const d = path.join(cloneDir, top)
+    if (!fs.existsSync(d)) continue
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path.join(top, e.name, 'node_modules'))
+  }
+  for (const rel of candidates) {
+    const src = path.join(cloneDir, rel), dst = path.join(scratchDir, rel)
+    if (!fs.existsSync(src) || fs.existsSync(dst)) continue
+    mirrorLinks(cloneDir, scratchDir, src, dst)
+  }
+}
+function mirrorLinks(cloneDir: string, scratchDir: string, src: string, dst: string): void {
+  fs.mkdirSync(dst, { recursive: true })
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, e.name), to = path.join(dst, e.name)
+    if (e.isSymbolicLink()) {
+      const target = path.resolve(src, fs.readlinkSync(from))
+      const inside = path.relative(cloneDir, target)
+      const isWorkspace = inside && !inside.startsWith('..') && !inside.split(path.sep).includes('node_modules')
+      fs.symlinkSync(isWorkspace ? path.join(scratchDir, inside) : target, to)
+    } else if (e.isDirectory() && e.name.startsWith('@')) {
+      mirrorLinks(cloneDir, scratchDir, from, to) // scoped packages: one level deeper
+    } else {
+      fs.symlinkSync(from, to)
+    }
+  }
+}
+
 /** Materialise ancestor + merged files in a scratch dir (sharing .venv/node_modules from my clone) and run a command there. */
 async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string): Promise<string> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-'))
@@ -1131,10 +1170,7 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
       fs.mkdirSync(path.dirname(abs), { recursive: true })
       fs.writeFileSync(abs, text)
     }
-    for (const shared of ['.venv', 'node_modules']) {
-      const src = path.join(s.dir, shared)
-      if (fs.existsSync(src) && !fs.existsSync(path.join(dir, shared))) fs.symlinkSync(src, path.join(dir, shared))
-    }
+    linkSharedDirs(s.dir, dir)
     const result = await new Promise<{ code: number | null; out: string }>(resolve => {
       execFile('sh', ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ROOM_MERGED_TREE: dir } }, (err, stdout, stderr) => {
         const raw = err ? (err as { code?: unknown }).code : 0

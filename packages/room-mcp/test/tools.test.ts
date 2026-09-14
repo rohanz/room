@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
-import { createTools, DEFS } from '../src/tools.js'
+import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
 
@@ -427,5 +427,20 @@ describe('preview merge', () => {
     expect(readFileSync(`${dir}/app.py`, 'utf8')).toBe(COMMITTED) // clone untouched
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
     expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'true' })).toContain('need a human first')
+  })
+})
+
+describe('merge preview scratch tree', () => {
+  it('links third-party packages to my clone and workspace packages into the scratch tree', () => {
+    const clone = mkdtempSync(join(tmpdir(), 'room-clone-')), scratch = mkdtempSync(join(tmpdir(), 'room-scratch-'))
+    mkdirSync(join(clone, 'packages/shared'), { recursive: true })
+    mkdirSync(join(clone, 'node_modules/@room'), { recursive: true })
+    mkdirSync(join(clone, 'node_modules/vitest'), { recursive: true })
+    symlinkSync('../../packages/shared', join(clone, 'node_modules/@room/shared'))
+    mkdirSync(join(clone, 'packages/shared/node_modules/lib0'), { recursive: true })
+    linkSharedDirs(clone, scratch)
+    expect(readlinkSync(join(scratch, 'node_modules/vitest'))).toBe(join(clone, 'node_modules/vitest'))
+    expect(readlinkSync(join(scratch, 'node_modules/@room/shared'))).toBe(join(scratch, 'packages/shared'))
+    expect(readlinkSync(join(scratch, 'packages/shared/node_modules/lib0'))).toBe(join(clone, 'packages/shared/node_modules/lib0'))
   })
 })
