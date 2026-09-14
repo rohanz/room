@@ -5,7 +5,7 @@ messages, and event push. Agents edit files on disk with their normal tools; `ro
 syncs them. Agents get no write tool.
 
 Env: `ROOM_URL` (`ws://host:1234/<room>`), `ROOM_NAME` (owner's name; agent identity is
-`{name, kind:'agent'}`), `ROOM_DIR` (clone path). Falls back to `<cwd>/.room.json`
+`{name, kind:'agent'}`), `ROOM_DIR` (clone path), `ROOM_SHARE` (sharing level, see below). Falls back to `<cwd>/.room.json`
 `{ "room", "name", "dir" }` written by `roomd`.
 
 Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root).
@@ -32,6 +32,7 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_done` | Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. |
 | `room_impact` | Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. |
 | `room_preview_merge` | Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. |
+| `room_share` | Change how much of your clone the room sees, live: `intent`, `declared` or `full`. Without `level`, reports the current level and what is withheld. |
 
 Every reply (except join) starts with your unread inbox. Full descriptions are in `src/tools.ts`; the agent-facing rules are in `src/prompt.ts` and the plugin's `room-etiquette` skill.
 
@@ -77,11 +78,27 @@ and the same preamble (`AGENT_INSTRUCTIONS(name)` from `@room/room-mcp`).
 
 A participant is a principal: `{ name, kind, owner, label }`. `name` is the key everything in the room is filed under (overlays, claims, messages). `kind` is `human`, `agent`, `bot` or `ci`; anything that is not a human behaves like an agent for claims and wake-ups. `owner` is the verified GitHub login responsible for the participant: a person's own login, the runner of an agent, or the account that registered a bot. On a server with GitHub login the owner is always the login you signed in with; the first agent under a login takes the login as its name, and `ROOM_TAG=codex` makes a second one named `login+codex` (`ROOM_KIND` sets bot or ci). The server drops any presence whose owner is not the verified login. Display: `rohanz's agent (codex)`, `deploy [bot]`; participant lists show `rohanz+codex · agent of rohanz · codex`.
 
+## Sharing levels
+
+By default joining a room publishes the full text of every file you have changed (`full`). The dial has three positions:
+
+| level | what the room sees from you |
+|---|---|
+| `intent` | presence, scope, claims, plans and bus messages only; no file text at all, not even deletions |
+| `declared` | file text only for paths under your `room_scope` paths; everything else is withheld (`room_share` lists it) |
+| `full` | every changed file (the default for now) |
+
+**Teams should set `ROOM_SHARE=declared`**: teammates still see what you are on and what you plan to change, and get your text only where you said you would work. Set it with the `ROOM_SHARE` env, the `share` argument of `room_join` / `room_create`, or `room_share(level)` at any time: lowering the level withdraws overlays immediately, raising it republishes what your disk holds, and under `declared` the published set follows your scope as you re-declare it. Your presence carries the level, so `room_state` shows it next to each person.
+
+The server can cap it: `ROOM_SHARE_MAX` (advertised as `shareMax` in `GET /auth/config`). A client asking for more is clamped and told so in the join reply and in `room_share`.
+
+Reading someone who shares less than `full` degrades rather than errors: `room_read`, `room_diff` and `room_preview_merge` on an `intent` sharer answer with one line (`X shares intent only; ask them or wait for their push`); paths a `declared` sharer keeps outside their scope come back as `not shared`.
+
 ## Limitations
 
 Access: the server admits a GitHub-named room only to GitHub tokens that can read the repo
 with push access (or a shared `ROOM_TOKEN`), and only after someone has opened the repo with `room_create`.
-Inside a room everything in the doc is visible to every member. Claim ranges are not
+Inside a room everything in the doc is visible to every member (subject to each person's sharing level). Claim ranges are not
 remapped as files change. Disk edits are attributed to the machine's human; the agent is visible via claims,
 cursor, status and bus messages.
 

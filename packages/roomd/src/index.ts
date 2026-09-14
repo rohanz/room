@@ -10,9 +10,30 @@ import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, colorFor, type BaseMsg, type Kind, type Presence } from '@room/shared'
+import { RoomDoc, colorFor, scopeCovers, type BaseMsg, type Kind, type Presence } from '@room/shared'
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { gitBranch, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitSubject, gitTracked } from './git.js'
+
+/**
+ * How much of this clone the daemon publishes.
+ *  - intent: presence, scope, claims, plans and bus only; no file text at all.
+ *  - declared: overlays only for paths under the person's declared scope paths; the rest is withheld.
+ *  - full: every changed file (the original behaviour).
+ */
+export type ShareLevel = 'intent' | 'declared' | 'full'
+export const SHARE_LEVELS: readonly ShareLevel[] = ['intent', 'declared', 'full']
+const SHARE_RANK: Record<ShareLevel, number> = { intent: 0, declared: 1, full: 2 }
+/** A level from user input (env, tool argument); undefined when it is not one. */
+export function parseShare(v: unknown): ShareLevel | undefined {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
+  return (SHARE_LEVELS as readonly string[]).includes(s) ? s as ShareLevel : undefined
+}
+/** The level actually allowed: never above the server ceiling. */
+export function clampShare(level: ShareLevel, max: ShareLevel): ShareLevel {
+  return SHARE_RANK[level] > SHARE_RANK[max] ? max : level
+}
+/** Presence as this daemon publishes it: the shared Presence plus the sharing level. */
+export type SharePresence = Presence & { share?: ShareLevel }
 
 export interface RoomdOptions {
   /** Full room URL, e.g. ws://host:1234/my-room */
@@ -45,9 +66,15 @@ export interface RoomdOptions {
   sizeCap?: number
   /** Total text this person shares across all files; files that would exceed it are skipped. Default 8 MB. */
   totalBudget?: number
+  /** Sharing level; default 'full'. */
+  share?: ShareLevel
+  /** Paths whose files are published under 'declared'. Default: the person's scope in the room doc, kept in sync as it changes. */
+  scopePaths?: string[]
   /** In-memory transport override for tests that cannot open loopback sockets. */
   providerFactory?: (serverUrl: string, roomName: string, doc: Y.Doc) => WebsocketProvider
 }
+
+export interface Skipped { size: string[]; budget: string[]; ignore: string[]; share: string[] }
 
 export interface Roomd {
   stop(): Promise<void>
@@ -58,8 +85,14 @@ export interface Roomd {
   readonly provider: WebsocketProvider
   readonly branch: string
   readonly base: string
-  /** Files not shared and why: over the per-file cap, over the total budget, or matched by .roomignore. */
-  skipped(): { size: string[]; budget: string[]; ignore: string[] }
+  /** Current sharing level. */
+  readonly share: ShareLevel
+  /** Change the sharing level (and, under 'declared', the paths it covers). Dropping the level withdraws
+   *  overlays the new level no longer allows; raising it republishes what the disk holds. Resolves once
+   *  every tracked file has been re-evaluated. */
+  setShare(level: ShareLevel, scopePaths?: string[]): Promise<void>
+  /** Files not shared and why: over the per-file cap, over the total budget, matched by .roomignore, or withheld by the sharing level. */
+  skipped(): Skipped
 }
 
 export class RoomdError extends Error {
@@ -117,8 +150,11 @@ class Daemon implements Roomd {
   private readonly totalBudget: number
   private readonly connectTimeoutMs: number
   private roomIgnore: RoomIgnore = parseRoomIgnore('')
-  private readonly skips = { size: new Set<string>(), budget: new Set<string>(), ignore: new Set<string>() }
+  private readonly skips = { size: new Set<string>(), budget: new Set<string>(), ignore: new Set<string>(), share: new Set<string>() }
   private readonly roomUrl: string
+  share: ShareLevel
+  /** Explicit scope paths (option / setShare); when unset, the person's scope in the room doc decides. */
+  private explicitScopePaths?: string[]
 
   private tracked = new Set<string>()
   private watcher: FSWatcher | null = null
@@ -141,6 +177,8 @@ class Daemon implements Roomd {
     this.sizeCap = options.sizeCap ?? 512 * 1024
     this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000
+    this.share = options.share ?? 'full'
+    this.explicitScopePaths = options.scopePaths
     const { serverUrl, roomName } = splitRoomUrl(options.room)
     this.provider = options.providerFactory
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
@@ -199,19 +237,66 @@ class Daemon implements Roomd {
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
     this.every(this.basePollMs, () => this.pollHead())
     this.roomDoc.metaMap.observe(() => { void this.refreshBaseStatus() })
+    // Under 'declared' the published set follows the person's scope; re-evaluate when it changes.
+    this.roomDoc.scopes.observe(ev => { if (ev.keysChanged.has(this.name) && this.share === 'declared' && !this.explicitScopePaths) void this.resharePaths() })
     await this.refreshBaseStatus()
-    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)})${this.skipSummary()}`)
+    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`)
   }
 
-  skipped(): { size: string[]; budget: string[]; ignore: string[] } {
-    return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore) }
+  skipped(): Skipped {
+    return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore), share: Array.from(this.skips.share).sort() }
   }
 
   private skipSummary(): string {
-    const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size
+    const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size + this.skips.share.size
     if (!n) return ''
-    const parts = [['size', this.skips.size.size], ['budget', this.skips.budget.size], ['ignore', this.skips.ignore.size]].filter(([, c]) => c).map(([k, c]) => `${c} ${k}`)
+    const parts = [['size', this.skips.size.size], ['budget', this.skips.budget.size], ['ignore', this.skips.ignore.size], ['withheld', this.skips.share.size]].filter(([, c]) => c).map(([k, c]) => `${c} ${k}`)
     return `; skipped ${n} file(s) (${parts.join(', ')})`
+  }
+
+  // ---- sharing level ----------------------------------------------------
+
+  async setShare(level: ShareLevel, scopePaths?: string[]): Promise<void> {
+    const before = this.share
+    this.share = level
+    if (scopePaths) this.explicitScopePaths = scopePaths
+    this.setStatus(this.currentStatus())
+    if (before !== level) this.log(`sharing ${before} -> ${level}`)
+    await this.resharePaths()
+  }
+
+  /** Paths that decide what 'declared' publishes: explicit ones, else the scope in the room doc. */
+  private scopePaths(): string[] {
+    return this.explicitScopePaths ?? this.roomDoc.scope(this.name)?.paths ?? []
+  }
+
+  /** May this file's text (or its deletion) be published at the current level? */
+  private isShared(relpath: string): boolean {
+    if (this.share === 'full') return true
+    if (this.share === 'intent') return false
+    return scopeCovers({ paths: this.scopePaths() }, relpath)
+  }
+
+  /** Re-evaluate every tracked file against the current level: withdraw what is no longer allowed, publish what now is. */
+  private async resharePaths(): Promise<void> {
+    if (this.stopped) return
+    const paths = new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name), ...this.skips.share])
+    for (const relpath of paths) {
+      if (this.stopped) return
+      if (this.isIgnoredPath(relpath)) continue
+      await this.publishDiskState(relpath)
+    }
+  }
+
+  /** Withdraw a file from the room without touching disk; remembers it as withheld when it differs from base. */
+  private withhold(relpath: string, changed: boolean): void {
+    const had = this.roomDoc.overlayText(this.name, relpath) !== undefined || (this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false)
+    if (had) {
+      this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this) }, this)
+      this.log(`withdrew ${relpath} overlay (sharing ${this.share})`)
+    }
+    if (changed) this.skips.share.add(relpath)
+    else this.skips.share.delete(relpath)
   }
 
   private loadRoomIgnore(): void {
@@ -248,14 +333,19 @@ class Daemon implements Roomd {
   }
 
   private setStatus(status: string): void {
-    const current = (this.provider.awareness.getLocalState() ?? {}) as Partial<Presence>
-    const state: Presence = {
+    const current = (this.provider.awareness.getLocalState() ?? {}) as Partial<SharePresence>
+    const state: SharePresence = {
       ...current,
       user: { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}), color: colorFor(this.name) },
       status,
+      share: this.share,
       lastActive: this.lastActive,
     }
     this.provider.awareness.setLocalState(state)
+  }
+
+  private currentStatus(): string {
+    return (this.provider.awareness.getLocalState() as Presence | null)?.status ?? 'synced'
   }
 
   /** Mark this party active now (tool calls count as activity). */
@@ -263,8 +353,7 @@ class Daemon implements Roomd {
 
   private bumpLastActive(): void {
     this.lastActive = Date.now()
-    const current = this.provider.awareness.getLocalState() as Presence | null
-    this.setStatus(current?.status ?? 'synced')
+    this.setStatus(this.currentStatus())
   }
 
   private waitForSync(): Promise<void> {
@@ -421,6 +510,15 @@ class Daemon implements Roomd {
     const exists = fs.existsSync(this.abs(relpath))
     const beforeText = this.roomDoc.text(relpath, this.name)
     const beforeDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false
+
+    if (!this.isShared(relpath)) {
+      // Withheld by the sharing level: publish nothing, but remember whether it differs from base.
+      if (!exists) { this.withhold(relpath, this.tracked.has(relpath) && (await gitShow(this.dir, this.base, relpath)) !== undefined); return }
+      const disk = this.readText(relpath, true)
+      this.withhold(relpath, disk !== undefined && disk !== await gitShow(this.dir, this.base, relpath))
+      return
+    }
+    this.skips.share.delete(relpath)
 
     if (!exists) {
       this.roomDoc.doc.transact(() => {

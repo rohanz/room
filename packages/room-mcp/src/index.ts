@@ -15,7 +15,7 @@ export { shouldWake } from './wake.js'
 export type { WakeEvent, RoomEvent } from './wake.js'
 export { createTools, DEFS } from './tools.js'
 export type { ToolCtx, ToolDef, Tools } from './tools.js'
-export { joinSession, leaveSession, createRoom, closeRoom, NoRoom, NotLoggedIn, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer, serverAuthMode, resolveAuth, startLogin, pollLogin, logout } from './session.js'
+export { joinSession, leaveSession, createRoom, closeRoom, NoRoom, NotLoggedIn, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer, serverAuthMode, serverShareMax, requestedShare, resolveAuth, startLogin, pollLogin, logout } from './session.js'
 export { credentialsPath, getCredential, setCredential, removeCredential } from './credentials.js'
 export type { Session, JoinOptions } from './session.js'
 

@@ -6,7 +6,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
-import { startRoomd, RoomdError, type Roomd, type RoomdOptions } from '../src/index.js'
+import { startRoomd, RoomdError, clampShare, parseShare, type Roomd, type RoomdOptions } from '../src/index.js'
 import { normalizeGitOrigin } from '../src/git.js'
 
 function sh(dir: string, args: string[]): string {
@@ -323,5 +323,101 @@ describe('roomd v2 push-only overlays', () => {
     await start({ room: roomUrl, dir: ahead, name: 'Bob' })
     expect(alice.roomDoc.meta.base).toBe(newHead)
     await waitFor(() => /behind base/.test((alice.provider.awareness.getLocalState() as { status: string }).status))
+  })
+})
+
+describe('sharing levels', () => {
+  const daemons: Roomd[] = []
+  const hub = new MemoryHub()
+  const room = () => `ws://memory/share-${Math.random().toString(36).slice(2, 8)}`
+  const providerFactory: NonNullable<RoomdOptions['providerFactory']> = (server, name, doc) => hub.connect(`${server}/${name}`, doc)
+  const start = async (options: Omit<RoomdOptions, 'providerFactory'>) => {
+    const daemon = await startRoomd({ log: silent, debounceMs: 20, trackedRefreshMs: 100, providerFactory, ...options })
+    daemons.push(daemon)
+    return daemon
+  }
+  const presence = (d: Roomd) => d.provider.awareness.getLocalState() as { share?: string; status?: string }
+  afterAll(async () => { await Promise.all(daemons.map(daemon => daemon.stop())) })
+
+  it('parseShare and clampShare', () => {
+    expect(parseShare('Declared ')).toBe('declared')
+    expect(parseShare('everything')).toBeUndefined()
+    expect(parseShare(undefined)).toBeUndefined()
+    expect(clampShare('full', 'declared')).toBe('declared')
+    expect(clampShare('intent', 'full')).toBe('intent')
+    expect(clampShare('declared', 'declared')).toBe('declared')
+  })
+
+  it('full (default) publishes every changed file and says so in presence', async () => {
+    const dir = await makeRepo({ 'a.py': 'a\n' })
+    await fsp.writeFile(path.join(dir, 'a.py'), 'A\n')
+    const daemon = await start({ room: room(), dir, name: 'Full' })
+    expect(daemon.share).toBe('full')
+    expect(presence(daemon).share).toBe('full')
+    expect(daemon.roomDoc.changedPaths('Full')).toEqual(['a.py'])
+    expect(daemon.skipped().share).toEqual([])
+  })
+
+  it('intent publishes no file text at all, not even deletions, but tracks what is withheld', async () => {
+    const dir = await makeRepo({ 'a.py': 'a\n', 'gone.py': 'x\n' })
+    await fsp.writeFile(path.join(dir, 'a.py'), 'A\n')
+    await fsp.unlink(path.join(dir, 'gone.py'))
+    const daemon = await start({ room: room(), dir, name: 'Quiet', share: 'intent' })
+    expect(presence(daemon).share).toBe('intent')
+    expect(daemon.roomDoc.changedPaths('Quiet')).toEqual([])
+    expect(daemon.skipped().share).toEqual(['a.py', 'gone.py'])
+    // later disk edits stay private too
+    await fsp.writeFile(path.join(dir, 'new.py'), 'new\n')
+    await waitFor(() => daemon.skipped().share.includes('new.py'))
+    expect(daemon.roomDoc.changedPaths('Quiet')).toEqual([])
+    // scope, claims and bus still work: the doc is untouched by the level
+    daemon.roomDoc.setScope({ by: 'Quiet', byKind: 'agent', area: 'x', summary: 'y', paths: ['a.py'] })
+    expect(daemon.roomDoc.scope('Quiet')?.area).toBe('x')
+  })
+
+  it('declared publishes only paths under the scope in the doc, and follows scope changes', async () => {
+    const dir = await makeRepo({ 'src/a.py': 'a\n', 'docs/b.md': 'b\n' })
+    await fsp.writeFile(path.join(dir, 'src/a.py'), 'A\n')
+    await fsp.writeFile(path.join(dir, 'docs/b.md'), 'B\n')
+    const daemon = await start({ room: room(), dir, name: 'Decl', share: 'declared' })
+    // no scope yet: nothing is shared
+    expect(daemon.roomDoc.changedPaths('Decl')).toEqual([])
+    expect(daemon.skipped().share).toEqual(['docs/b.md', 'src/a.py'])
+    daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'src', summary: 's', paths: ['src/'] })
+    await waitFor(() => daemon.roomDoc.changedPaths('Decl').includes('src/a.py'))
+    expect(daemon.roomDoc.changedPaths('Decl')).toEqual(['src/a.py'])
+    expect(daemon.skipped().share).toEqual(['docs/b.md'])
+    // moving the scope withdraws src and publishes docs
+    daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'docs', summary: 'd', paths: ['docs'] })
+    await waitFor(() => daemon.roomDoc.changedPaths('Decl').includes('docs/b.md') && !daemon.roomDoc.changedPaths('Decl').includes('src/a.py'))
+    expect(daemon.skipped().share).toEqual(['src/a.py'])
+    // explicit scopePaths win over the doc
+    await daemon.setShare('declared', ['src/'])
+    expect(daemon.roomDoc.changedPaths('Decl')).toEqual(['src/a.py'])
+  })
+
+  it('setShare withdraws overlays when the level drops and republishes when it rises', async () => {
+    const dir = await makeRepo({ 'a.py': 'a\n', 'b.py': 'b\n' })
+    const daemon = await start({ room: room(), dir, name: 'Dial' })
+    await fsp.writeFile(path.join(dir, 'a.py'), 'A\n')
+    await fsp.writeFile(path.join(dir, 'b.py'), 'B\n')
+    await waitFor(() => daemon.roomDoc.changedPaths('Dial').length === 2)
+    await daemon.setShare('intent')
+    expect(daemon.share).toBe('intent')
+    expect(presence(daemon).share).toBe('intent')
+    expect(daemon.roomDoc.changedPaths('Dial')).toEqual([])
+    expect(daemon.skipped().share).toEqual(['a.py', 'b.py'])
+    await daemon.setShare('declared', ['b.py'])
+    expect(daemon.roomDoc.changedPaths('Dial')).toEqual(['b.py'])
+    expect(daemon.roomDoc.text('b.py', 'Dial')).toBe('B\n')
+    expect(daemon.skipped().share).toEqual(['a.py'])
+    await daemon.setShare('full')
+    expect(daemon.roomDoc.changedPaths('Dial')).toEqual(['a.py', 'b.py'])
+    expect(daemon.skipped().share).toEqual([])
+    // and a file restored to base drops out of the withheld list under intent
+    await daemon.setShare('intent')
+    await fsp.writeFile(path.join(dir, 'a.py'), 'a\n')
+    await waitFor(() => !daemon.skipped().share.includes('a.py'))
+    expect(daemon.skipped().share).toEqual(['b.py'])
   })
 })

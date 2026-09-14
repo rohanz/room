@@ -11,6 +11,7 @@ import type {
   ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg, PlanMsg,
 } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
+import { clampShare, parseShare, type ShareLevel, type SharePresence } from '@room/roomd'
 import { DEFAULT_SERVER, authFor, closeRoom, joinSession, leaveSession, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthMode, startLogin, type JoinOptions, type Session } from './session.js'
 import { getCredential, getPending, setPending } from './credentials.js'
 import { NotLoggedIn } from './session.js'
@@ -76,6 +77,7 @@ const PLANS = {
     detail: str('new name, new signature, or why'),
   }, required: ['kind', 'symbol'] },
 }
+const SHARE = { type: 'string', enum: ['intent', 'declared', 'full'], description: 'sharing level: intent (presence, scope, claims, plans, bus; no file text), declared (file text only under your declared scope paths), full (every changed file). Default ROOM_SHARE, then full; the server may cap it (ROOM_SHARE_MAX).' }
 
 export const DEFS: ToolDef[] = [
   { name: 'room_login', annotations: RW, description: 'Log in to the room server with GitHub (device flow). First call returns a one-time code and URL: show them to the user VERBATIM and ask them to enter the code. Call again to wait for GitHub to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your GitHub login.',
@@ -83,9 +85,9 @@ export const DEFS: ToolDef[] = [
   { name: 'room_logout', annotations: RW, description: 'Forget the GitHub login for the room server on this machine (and revoke the session on the server).',
     inputSchema: { type: 'object', properties: { server: str('override ws server URL') } } },
   { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.',
-    inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)') } } },
+    inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
   { name: 'room_join', annotations: RW, description: 'Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL. Fails if nobody has opened a room for the repo yet: room_create does that.',
-    inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)') } } },
+    inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
   { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user\'s explicit request; room_create reopens later.',
@@ -122,6 +124,8 @@ export const DEFS: ToolDef[] = [
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
   { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and another person\'s combine cleanly? Three-way merge against the common base; nothing in any clone is written. Reports clean paths and conflicting hunks. With `run`, materialises the merged tree in a scratch directory and runs that command there (e.g. the tests), so you can verify code that depends on their unmerged work.',
     inputSchema: { type: 'object', properties: { person: str('the other person'), run: str('optional shell command to run in the merged tree, e.g. "uv run pytest -q"'), resolve: { type: 'boolean', description: 'when a conflicting region on one side contains the other side\'s lines in order (you built on their change), take the larger side and return the resolved file text so you can write it to your own clone' } }, required: ['person'] } },
+  { name: 'room_share', annotations: RW, description: 'Change how much of your clone the room sees, live. Lowering the level withdraws file text the new level no longer allows (intent: all of it; declared: everything outside your scope paths); raising it republishes what your disk holds. Never above the server\'s ceiling. Without `level`, reports the current level and what is withheld.',
+    inputSchema: { type: 'object', properties: { level: SHARE } } },
 ]
 
 const WAIT_DEFAULT = 30_000
@@ -198,8 +202,28 @@ export function createTools(ctx: ToolCtx): Tools {
     names.delete(s.me.name)
     return Array.from(names).sort()
   }
-  const presences = (s: Session): Presence[] =>
-    Array.from(s.awareness.getStates().values()).filter((x): x is Presence => !!x && typeof x === 'object' && !!(x as Presence).user)
+  const presences = (s: Session): SharePresence[] =>
+    Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)
+  /** A person's sharing level as their presence announces it; absent presence or an older client means full. */
+  const shareOf = (s: Session, person: string): ShareLevel => {
+    if (person === s.me.name) return s.daemon.share ?? 'full'
+    const p = presences(s).find(x => x.user.name === person && isAgentic(x.user.kind)) ?? presences(s).find(x => x.user.name === person)
+    return p?.share ?? 'full'
+  }
+  /** Why a person's version of a path is not in the room, or undefined when it is (or could be). */
+  const withheld = (s: Session, person: string, p?: string): string | undefined => {
+    const level = shareOf(s, person)
+    if (level === 'intent') return `${person} shares intent only; ask them or wait for their push`
+    if (level === 'declared' && p !== undefined && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p)) return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`
+    return undefined
+  }
+  /** One line for join/room_share replies: the level, and whether the server lowered it. */
+  const shareLine = (s: Session): string => {
+    const level = s.daemon.share ?? 'full'
+    const clamped = s.shareRequested && s.shareRequested !== level ? ` (asked for ${s.shareRequested}; the server caps sharing at ${s.shareMax}, ROOM_SHARE_MAX)` : ''
+    const held = s.daemon.skipped?.().share ?? []
+    return `sharing: ${level}${clamped}${held.length ? `; withheld ${held.length} changed file(s): ${held.join(', ')}` : ''}`
+  }
   const setPresence = (s: Session, patch: Partial<Presence>) => {
     const cur = (s.awareness.getLocalState() ?? {}) as Partial<Presence>
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() })
@@ -416,7 +440,9 @@ export function createTools(ctx: ToolCtx): Tools {
     else if (p?.status?.startsWith('done')) what = `${p.status}`
     else if (lastDone && (!p || p.status === 'idle' || p.status === 'synced')) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`
     else what = p ? `${p.status ?? 'idle'}, no task declared` : 'offline'
-    return `${what}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(', ')}` : ''}`
+    const level = shareOf(s, name)
+    const share = level === 'full' ? '' : `; shares ${level}${level === 'intent' ? ' (no file text)' : ' (file text only under their scope paths)'}`
+    return `${what}${share}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(', ')}` : ''}`
   }
 
   // ---- login ------------------------------------------------------------------
@@ -467,6 +493,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
       evictStale(s)
       const out = [`${a.create ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
+      out.push(shareLine(s))
       const here = others(s).filter(n => presences(s).some(p => p.user.name === n))
       out.push(here.length ? `here now: ${here.join(', ')}` : 'nobody else is here yet')
       for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`)
@@ -550,6 +577,8 @@ export function createTools(ctx: ToolCtx): Tools {
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
       const p = a.path
       const person = typeof a.person === 'string' && a.person ? a.person : s.me.name
+      const held = withheld(s, person, p)
+      if (held) return held
       const t = await liveText(s, p, person)
       if (t === null) return `${p}: deleted by ${person} (uncommitted)`
       if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes`
@@ -570,10 +599,28 @@ export function createTools(ctx: ToolCtx): Tools {
         const live = l === null ? '' : l ?? b
         return live === b ? '' : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, 'base', person, { context: 3 })
       }
+      const held = withheld(s, person, typeof a.path === 'string' && a.path ? a.path : undefined)
+      if (held) return held
       if (typeof a.path === 'string' && a.path) return (await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`
       const parts: string[] = []
       for (const p of s.room.changedPaths(person)) { const d = await one(p); if (d) parts.push(d) }
+      const level = shareOf(s, person)
+      if (level === 'declared') parts.push(`(${person} shares declared paths only: changes outside their scope are not shared)`)
       return parts.length ? parts.join('\n') : `${person} has no uncommitted changes`
+    },
+    async room_share(a) {
+      const s = S()
+      const before = s.daemon.share
+      if (a.level === undefined) return shareLine(s)
+      const asked = parseShare(a.level)
+      if (!asked) return `error: level must be intent, declared or full (got ${String(a.level)})`
+      const level = clampShare(asked, s.shareMax)
+      s.shareRequested = asked
+      await s.daemon.setShare(level, s.room.scope(s.me.name)?.paths)
+      if (level !== before) s.room.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${level}${level === 'intent' ? ' (withdrew all file text)' : level === 'declared' ? ' (file text only under declared scope paths)' : ' (all changed files)'}`, priority: 'fyi' })
+      const out = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`]
+      if (level === 'declared' && !s.room.scope(s.me.name)) out.push('no scope declared yet, so nothing is shared until room_scope(area, summary, paths)')
+      return out.join('\n')
     },
     async room_who(a) {
       const s = S()
@@ -771,6 +818,9 @@ export function createTools(ctx: ToolCtx): Tools {
       const s = S()
       const person = typeof a.person === 'string' && a.person ? a.person : ''
       if (!person || person === s.me.name) return 'error: person is required (someone other than you)'
+      const held = withheld(s, person)
+      if (held) return held
+      const declaredNote = shareOf(s, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
       const myBase = baseFor(s, s.me.name), theirBase = baseFor(s, person)
       let ancestor = myBase
       if (theirBase !== myBase) {
@@ -820,6 +870,7 @@ export function createTools(ctx: ToolCtx): Tools {
         if (!unresolved && a.resolve === true) resolvedText.set(p, merged.get(p)!)
       }
       const out = [`preview merge of your changes with ${person}'s (common ancestor ${ancestor.slice(0, 10)}${theirBase !== myBase ? `; ${person} is on ${theirBase.slice(0, 10)}, you on ${myBase.slice(0, 10)}` : ''}):`]
+      if (declaredNote) out.push(declaredNote)
       if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
       if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
       const hard = conflicts.filter(c => !c.includes(' (resolvable)'))
