@@ -14,6 +14,8 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 
 | tool | what |
 |---|---|
+| `room_login` | GitHub device login to the room server (two calls: show the code, then wait for approval). |
+| `room_logout` | Forget the stored session for this server. |
 | `room_create` | Open a room for this repo on the server, then join the room for the current branch. |
 | `room_join` | Join the room for this clone. |
 | `room_close` | DESTRUCTIVE: close the room for this whole repo, for everyone; all branch rooms and shared uncommitted work are removed from the server. Only on the user's explicit request. |
