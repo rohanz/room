@@ -37,6 +37,24 @@ export class RoomDoc {
   }
 
   get overlays(): Y.Map<Y.Map<Y.Text>> { return this.doc.getMap<Y.Map<Y.Text>>('overlays') }
+  /** person -> ms of their last overlay write (set/clear/delete); lets a later joiner evict stale work. */
+  get overlayAt(): Y.Map<number> { return this.doc.getMap<number>('overlayAt') }
+  overlayAtOf(person: string): number | undefined { return this.overlayAt.get(person) }
+  /** ms since the person's last overlay write; undefined when they never wrote one. */
+  overlayAge(person: string, now = Date.now()): number | undefined {
+    const at = this.overlayAt.get(person)
+    return at === undefined ? undefined : Math.max(0, now - at)
+  }
+  /** Drop everything a person has shared: overlays, deletions and their timestamp. */
+  clearOverlays(person: string, origin?: unknown): number {
+    const n = this.changedPaths(person).length
+    this.doc.transact(() => {
+      this.overlays.delete(person)
+      this.deleted.delete(person)
+      this.overlayAt.delete(person)
+    }, origin)
+    return n
+  }
   get deleted(): Y.Map<Y.Map<true>> { return this.doc.getMap<Y.Map<true>>('deleted') }
   get scopes(): Y.Map<Scope> { return this.doc.getMap<Scope>('scopes') }
   get claims(): Y.Map<Claim> { return this.doc.getMap<Claim>('claims') }
@@ -89,13 +107,14 @@ export class RoomDoc {
           index += value.length
         }
       }
+      this.overlayAt.set(person, Date.now())
     }, origin)
   }
 
   clearOverlay(person: string, relpath: string, origin?: unknown): void {
     const map = this.overlays.get(person)
     if (!map?.has(relpath)) return
-    this.doc.transact(() => { map.delete(relpath) }, origin)
+    this.doc.transact(() => { map.delete(relpath); this.overlayAt.set(person, Date.now()) }, origin)
   }
 
   deletedFor(person: string): Y.Map<true> {
@@ -109,7 +128,7 @@ export class RoomDoc {
 
   markDeleted(person: string, relpath: string, origin?: unknown): void {
     if (this.deleted.get(person)?.has(relpath)) return
-    this.doc.transact(() => { this.deletedFor(person).set(relpath, true) }, origin)
+    this.doc.transact(() => { this.deletedFor(person).set(relpath, true); this.overlayAt.set(person, Date.now()) }, origin)
   }
 
   unmarkDeleted(person: string, relpath: string, origin?: unknown): void {

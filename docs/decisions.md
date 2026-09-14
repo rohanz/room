@@ -144,3 +144,16 @@ deliberate act; joining a branch of an opened repo is routine and should stay au
 Repo-level rather than branch-level because branches are where work lands, not a decision
 anyone should have to repeat.
 **Cut:** closing/archiving rooms, per-branch opt-out, an admin list of open repos.
+
+## 2026-09-14 — Post-event hardening
+**Decision:** Six changes in one pass. (1) The plugin directory carries a Claude Code
+manifest next to the Codex one; same skills, hooks and bundle. (2) Wake-ups are marked
+delivered only on success, retried with backoff, and wait for a fresh session file.
+(3) View-key connections are read-only at the server. (4) Repos can be closed
+(`room_close`, `DELETE /rooms`) and listed; overlays of people absent 7 days are evicted
+on join. (5) Per-person overlay budget (8 MB) and `.roomignore`. (7) The MCP process
+raises an interrupt when an edit lands inside someone else's claim, and previews the
+merge automatically when two people change the same file. Also: joining now requires
+push access to the GitHub repo, so public repos are not open rooms.
+**Cut:** GitLab/Bitbucket auth, OAuth instead of forwarding the gh token, diff-based
+overlay updates for large files.

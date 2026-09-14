@@ -67,12 +67,12 @@ docs/submission.md       deliverables checklist + demo script
 docs/superpowers/        design specs (v2: 2026-09-12-room-v2-design.md) + plans
 packages/shared/         one Y.Doc schema: overlays per person, scopes, claims (with plans),
                          bus (with priorities), ledger view, wake rules; typed accessors
-packages/server/         y-websocket server + GitHub repo-access auth, open-repo registry, view keys, LevelDB persistence
-packages/roomd/          push-only daemon: clone -> my overlay; base tracking; never writes disk
-packages/room-mcp/       room_* tools, session/join, inbox, Claude Code channel; AGENT_INSTRUCTIONS
+packages/server/         y-websocket server: GitHub push-access auth, open/close/list repos, read-only view keys, LevelDB
+packages/roomd/          push-only daemon: clone -> my overlay; base tracking; .roomignore + size budget; never writes disk
+packages/room-mcp/       room_* tools, session/join/close, inbox, wake bridge, conflict watcher, Claude channel
 packages/agent/          roomagent: on-duty Codex thread fed by chat + interrupts/addressed notifies
 packages/web/            read-only room view: participants, overlays with claim gutters, feed
-plugins/room/            Codex plugin: room-join + room-etiquette skills, bundled MCP server
+plugins/room/            Codex AND Claude Code plugin (both manifests): skills, hooks, bundled MCP server
 examples/demo-repo/      tiny Python service used in the demo (uv)
 scripts/demo.sh          server + shared origin + two clones on one machine
 scripts/say.mts          post a message into a person's agent chat and watch the room

@@ -29139,6 +29139,28 @@ var RoomDoc = class {
   get overlays() {
     return this.doc.getMap("overlays");
   }
+  /** person -> ms of their last overlay write (set/clear/delete); lets a later joiner evict stale work. */
+  get overlayAt() {
+    return this.doc.getMap("overlayAt");
+  }
+  overlayAtOf(person) {
+    return this.overlayAt.get(person);
+  }
+  /** ms since the person's last overlay write; undefined when they never wrote one. */
+  overlayAge(person, now = Date.now()) {
+    const at = this.overlayAt.get(person);
+    return at === void 0 ? void 0 : Math.max(0, now - at);
+  }
+  /** Drop everything a person has shared: overlays, deletions and their timestamp. */
+  clearOverlays(person, origin) {
+    const n = this.changedPaths(person).length;
+    this.doc.transact(() => {
+      this.overlays.delete(person);
+      this.deleted.delete(person);
+      this.overlayAt.delete(person);
+    }, origin);
+    return n;
+  }
   get deleted() {
     return this.doc.getMap("deleted");
   }
@@ -29211,6 +29233,7 @@ var RoomDoc = class {
           index += value.length;
         }
       }
+      this.overlayAt.set(person, Date.now());
     }, origin);
   }
   clearOverlay(person, relpath, origin) {
@@ -29218,6 +29241,7 @@ var RoomDoc = class {
     if (!map2?.has(relpath)) return;
     this.doc.transact(() => {
       map2.delete(relpath);
+      this.overlayAt.set(person, Date.now());
     }, origin);
   }
   deletedFor(person) {
@@ -29232,6 +29256,7 @@ var RoomDoc = class {
     if (this.deleted.get(person)?.has(relpath)) return;
     this.doc.transact(() => {
       this.deletedFor(person).set(relpath, true);
+      this.overlayAt.set(person, Date.now());
     }, origin);
   }
   unmarkDeleted(person, relpath, origin) {
@@ -32778,6 +32803,42 @@ function watch(paths, options = {}) {
 }
 var esm_default = { watch, FSWatcher };
 
+// packages/roomd/src/roomignore.ts
+function parseRoomIgnore(text) {
+  const rules = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line || line.startsWith("#")) continue;
+    const negate = line.startsWith("!");
+    let pat = negate ? line.slice(1) : line;
+    const dirOnly = pat.endsWith("/");
+    if (dirOnly) pat = pat.slice(0, -1);
+    const anchored = pat.startsWith("/") || pat.slice(0, -1).includes("/");
+    if (pat.startsWith("/")) pat = pat.slice(1);
+    let re = "";
+    for (let i = 0; i < pat.length; i++) {
+      const c = pat[i];
+      if (c === "*" && pat[i + 1] === "*") {
+        const slash = pat[i + 2] === "/";
+        re += slash ? "(?:.*/)?" : ".*";
+        i += slash ? 2 : 1;
+      } else if (c === "*") re += "[^/]*";
+      else if (c === "?") re += "[^/]";
+      else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+    const prefix = anchored ? "^" : "^(?:.*/)?";
+    rules.push({ re: new RegExp(`${prefix}${re}${dirOnly ? "/.+" : "(?:/.*)?"}$`), negate });
+  }
+  return {
+    patterns: rules.length,
+    ignores(relpath) {
+      let ignored = false;
+      for (const r of rules) if (r.re.test(relpath)) ignored = !r.negate;
+      return ignored;
+    }
+  };
+}
+
 // packages/roomd/src/index.ts
 var RoomdError = class extends Error {
   constructor(message, code) {
@@ -32789,6 +32850,7 @@ var RoomdError = class extends Error {
 };
 var IGNORED_DIRS = /* @__PURE__ */ new Set([".git", "node_modules", ".venv"]);
 var ROOM_FILE = ".room.json";
+var ROOMIGNORE = ".roomignore";
 function tokenParams(token) {
   const t = token?.trim();
   return t ? { token: t } : {};
@@ -32825,7 +32887,10 @@ var Daemon = class {
   trackedRefreshMs;
   basePollMs;
   sizeCap;
+  totalBudget;
   connectTimeoutMs;
+  roomIgnore = parseRoomIgnore("");
+  skips = { size: /* @__PURE__ */ new Set(), budget: /* @__PURE__ */ new Set(), ignore: /* @__PURE__ */ new Set() };
   roomUrl;
   tracked = /* @__PURE__ */ new Set();
   watcher = null;
@@ -32844,6 +32909,7 @@ var Daemon = class {
     this.trackedRefreshMs = options.trackedRefreshMs ?? 1e4;
     this.basePollMs = options.basePollMs ?? 3e3;
     this.sizeCap = options.sizeCap ?? 512 * 1024;
+    this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15e3;
     const { serverUrl, roomName } = splitRoomUrl(options.room);
     this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
@@ -32887,6 +32953,7 @@ var Daemon = class {
         seededBy: this.name
       }, this);
     }
+    this.loadRoomIgnore();
     await this.seedLocalOverlay();
     this.writeRoomFile();
     this.excludeRoomFile();
@@ -32897,7 +32964,31 @@ var Daemon = class {
       void this.refreshBaseStatus();
     });
     await this.refreshBaseStatus();
-    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)})`);
+    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)})${this.skipSummary()}`);
+  }
+  skipped() {
+    return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore) };
+  }
+  skipSummary() {
+    const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size;
+    if (!n) return "";
+    const parts = [["size", this.skips.size.size], ["budget", this.skips.budget.size], ["ignore", this.skips.ignore.size]].filter(([, c]) => c).map(([k, c]) => `${c} ${k}`);
+    return `; skipped ${n} file(s) (${parts.join(", ")})`;
+  }
+  loadRoomIgnore() {
+    let text = "";
+    try {
+      text = fs.readFileSync(this.abs(ROOMIGNORE), "utf8");
+    } catch {
+    }
+    this.roomIgnore = parseRoomIgnore(text);
+    if (this.roomIgnore.patterns) this.log(`${ROOMIGNORE}: ${this.roomIgnore.patterns} pattern(s)`);
+  }
+  /** Bytes of overlay text this person currently shares, excluding one path (about to be replaced). */
+  sharedBytes(except) {
+    let total = 0;
+    for (const [relpath, text] of this.roomDoc.overlay(this.name)) if (relpath !== except) total += text.length;
+    return total;
   }
   async stop() {
     if (this.stopped) return;
@@ -33052,9 +33143,11 @@ var Daemon = class {
       const stat4 = fs.statSync(this.abs(relpath));
       if (!stat4.isFile()) return void 0;
       if (stat4.size > this.sizeCap) {
-        if (!quiet) this.log(`skip ${relpath}: ${stat4.size} bytes > cap`);
+        if (!this.skips.size.has(relpath) && !quiet) this.log(`skip ${relpath}: ${stat4.size} bytes > cap`);
+        this.skips.size.add(relpath);
         return void 0;
       }
+      this.skips.size.delete(relpath);
       const bytes = fs.readFileSync(this.abs(relpath));
       try {
         return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -33068,7 +33161,15 @@ var Daemon = class {
   }
   isIgnoredPath(relpath) {
     if (!relpath || relpath === ROOM_FILE) return true;
-    return relpath.split("/").some((segment) => IGNORED_DIRS.has(segment));
+    if (relpath.split("/").some((segment) => IGNORED_DIRS.has(segment))) return true;
+    if (this.roomIgnore.ignores(relpath)) {
+      if (!this.skips.ignore.has(relpath)) {
+        this.skips.ignore.add(relpath);
+        this.log(`skip ${relpath}: ${ROOMIGNORE}`);
+      }
+      return true;
+    }
+    return false;
   }
   isSafeRoomPath(relpath) {
     if (this.isIgnoredPath(relpath)) return false;
@@ -33090,6 +33191,14 @@ var Daemon = class {
       const disk = this.readText(relpath);
       if (disk === void 0) return;
       const base = await gitShow(this.dir, this.base, relpath);
+      if (disk !== base && this.sharedBytes(relpath) + disk.length > this.totalBudget) {
+        if (!this.skips.budget.has(relpath)) {
+          this.skips.budget.add(relpath);
+          this.log(`skip ${relpath}: sharing it would exceed the ${Math.round(this.totalBudget / 1024)} KB total budget`);
+        }
+        return;
+      }
+      this.skips.budget.delete(relpath);
       this.roomDoc.doc.transact(() => {
         this.roomDoc.unmarkDeleted(this.name, relpath, this);
         if (disk === base) this.roomDoc.clearOverlay(this.name, relpath, this);
@@ -33124,10 +33233,30 @@ var Daemon = class {
       if (this.isIgnoredPath(relpath) || event === "addDir" || event === "unlinkDir") return;
       if (path.basename(relpath) === ".gitignore") this.refreshTracked().catch(() => {
       });
+      if (relpath === ROOMIGNORE) {
+        this.reloadRoomIgnore();
+        return;
+      }
       this.scheduleDisk(relpath, event === "add");
     });
     watcher.on("error", (error2) => this.log(`watcher error: ${errMsg(error2)}`));
     await new Promise((resolve5) => watcher.on("ready", () => resolve5()));
+  }
+  /** .roomignore changed: newly ignored files leave the room, newly allowed ones are published. */
+  reloadRoomIgnore() {
+    const before = new Set(this.skips.ignore);
+    this.skips.ignore.clear();
+    this.loadRoomIgnore();
+    for (const relpath of this.tracked) {
+      const nowIgnored = this.isIgnoredPath(relpath);
+      if (nowIgnored && this.roomDoc.overlayText(this.name, relpath)) {
+        this.roomDoc.doc.transact(() => {
+          this.roomDoc.clearOverlay(this.name, relpath, this);
+          this.roomDoc.unmarkDeleted(this.name, relpath, this);
+        }, this);
+        this.log(`cleared ${relpath} overlay (${ROOMIGNORE})`);
+      } else if (!nowIgnored && before.has(relpath)) this.scheduleDisk(relpath, false);
+    }
   }
   scheduleDisk(relpath, isNew) {
     const previous = this.debounce.get(relpath);
@@ -33505,7 +33634,7 @@ async function joinSession(opts) {
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
   graph.start();
-  return {
+  const session = {
     graph,
     room: daemon.roomDoc,
     provider: daemon.provider,
@@ -33517,6 +33646,21 @@ async function joinSession(opts) {
     roomName,
     browserUrl
   };
+  watchClosed(session, opts.log);
+  return session;
+}
+var ROOM_CLOSED_CODE = 4001;
+function watchClosed(s, log2) {
+  const p = s.provider;
+  p.on?.("connection-close", (e) => {
+    if (e?.code !== ROOM_CLOSED_CODE) return;
+    s.closed = { reason: e.reason || "room closed" };
+    try {
+      p.disconnect?.();
+    } catch {
+    }
+    log2?.(`${s.roomName}: ${s.closed.reason}; not reconnecting`);
+  });
 }
 var httpOf = (server) => server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
 async function preflight(server, roomName, auth) {
@@ -33538,6 +33682,18 @@ async function createRoom(server, roomName, auth) {
   } catch (e) {
     return `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})`;
   }
+}
+async function closeRoom(server, roomName, auth) {
+  const res = await fetch(`${httpOf(server)}/rooms`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
+  if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2);
+  const body = await res.json().catch(() => ({}));
+  return body.closed ?? [];
+}
+async function authFor(s) {
+  const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
+  const token = process.env.ROOM_TOKEN?.trim() ?? parseServer(process.env.ROOM_SERVER ?? "").token;
+  const gh = s.roomName.startsWith("github.com/") ? await githubToken() : void 0;
+  return { gh, token, server };
 }
 async function viewToken(server, roomName, auth) {
   if (!auth.gh && !auth.token) return void 0;
@@ -33583,6 +33739,7 @@ function gitStatePath(root, name) {
   }
   return path2.join(dotgit, name);
 }
+var SESSION_FRESH_MS = 10 * 60 * 1e3;
 var HooksBridge = class {
   constructor(s, o) {
     this.s = s;
@@ -33592,6 +33749,9 @@ var HooksBridge = class {
   o;
   timer = null;
   woken = /* @__PURE__ */ new Set();
+  /** Wakes that found no fresh session yet, with when they first arrived. */
+  pending = /* @__PURE__ */ new Map();
+  pendingTimer = null;
   startedAt = Date.now();
   unobserve = [];
   start() {
@@ -33614,6 +33774,8 @@ var HooksBridge = class {
     for (const u of this.unobserve) u();
     this.unobserve = [];
     if (this.timer) clearTimeout(this.timer);
+    if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    this.pending.clear();
     try {
       fs2.rmSync(this.stateFile(), { force: true });
     } catch {
@@ -33649,29 +33811,102 @@ var HooksBridge = class {
     if (!this.o.forMe(m)) return;
     const baseMoved = m.type === "base" && m.from !== this.s.me.name && this.s.room.changedPaths(this.s.me.name).length > 0;
     const wake = m.priority === "interrupt" || m.type === "question" && m.to === this.s.me.name || baseMoved;
-    if (!wake || this.woken.has(m.id)) return;
-    this.woken.add(m.id);
-    let session;
+    if (!wake || this.woken.has(m.id) || this.pending.has(m.id)) return;
+    const session = this.freshSession();
+    if (!session) {
+      this.pending.set(m.id, { msg: m, since: this.now() });
+      this.o.log?.(`cannot wake yet: no fresh session id for this clone; will retry for ${m.type} ${m.id}`);
+      this.schedulePending();
+      return;
+    }
+    await this.deliver(m, session);
+  }
+  /** The thread recorded by the SessionStart hook, if it is recent and for this clone; else a rollout scan. */
+  freshSession() {
+    let file;
     try {
-      session = JSON.parse(fs2.readFileSync(this.sessionFile(), "utf8"));
+      file = JSON.parse(fs2.readFileSync(this.sessionFile(), "utf8"));
     } catch {
     }
-    if (!session?.session_id) session = { session_id: findThreadForDir(this.s.dir, this.startedAt) };
-    if (!session?.session_id) {
-      this.o.log?.("cannot wake: no Codex thread id known for this clone (SessionStart hook not run and no rollout found)");
+    if (file?.session_id) {
+      const fresh = typeof file.at !== "number" || file.at >= this.startedAt - SESSION_FRESH_MS;
+      const here = !file.cwd || sameDir(file.cwd, this.s.dir);
+      if (fresh && here) return { id: file.session_id, host: file.host === "claude" ? "claude" : "codex" };
+      this.o.log?.(`ignoring ${fresh ? "foreign" : "stale"} session file ${this.sessionFile()}`);
+    }
+    const id2 = findThreadForDir(this.s.dir, this.startedAt);
+    return id2 ? { id: id2, host: "codex" } : void 0;
+  }
+  async deliver(m, session) {
+    if (session.host === "claude") {
+      this.woken.add(m.id);
+      this.o.log?.(`claude host: ${m.type} ${m.id} delivered via channel`);
       return;
     }
     const text = m.type === "base" ? `[room] ${formatMsg(m)}
 You have uncommitted work. Run git pull --ff-only, re-run room_preview_merge with the test command against anyone who changed the same files, then report and offer to commit and push.` : `[room] ${formatMsg(m)}
 Call room_state, then react per the room-etiquette skill.`;
-    try {
-      await (this.o.queue ?? defaultQueue)(session.session_id, text);
-      this.o.log?.(`woke session ${session.session_id.slice(0, 8)} for ${m.type} ${m.id}`);
-    } catch (e) {
-      this.o.log?.(`could not wake session: ${e instanceof Error ? e.message : e}`);
+    const delays = this.o.retryDelaysMs ?? [1e3, 3e3, 8e3];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await (this.o.queue ?? defaultQueue)(session.id, text);
+        this.woken.add(m.id);
+        this.o.log?.(`woke session ${session.id.slice(0, 8)} for ${m.type} ${m.id}${attempt ? ` (attempt ${attempt + 1})` : ""}`);
+        return;
+      } catch (e) {
+        const why = e instanceof Error ? e.message : String(e);
+        if (attempt >= delays.length) {
+          this.o.log?.(`could not wake session ${session.id.slice(0, 8)} for ${m.type} ${m.id} after ${attempt + 1} attempts: ${why}`);
+          return;
+        }
+        this.o.log?.(`wake attempt ${attempt + 1} failed (${why}); retrying in ${delays[attempt]}ms`);
+        await sleep(delays[attempt]);
+      }
     }
   }
+  schedulePending() {
+    if (this.pendingTimer || !this.pending.size) return;
+    this.pendingTimer = setTimeout(() => {
+      this.pendingTimer = null;
+      void this.retryPending();
+    }, this.o.pendingPollMs ?? 5e3);
+    this.pendingTimer.unref?.();
+  }
+  /** Re-check for a session file; deliver what we can, drop what is too old. */
+  async retryPending() {
+    const maxAge = this.o.pendingMaxMs ?? 10 * 60 * 1e3;
+    const session = this.freshSession();
+    for (const [id2, p] of Array.from(this.pending)) {
+      if (this.now() - p.since > maxAge) {
+        this.pending.delete(id2);
+        this.o.log?.(`gave up waking for ${p.msg.type} ${id2}: no session for ${Math.round(maxAge / 6e4)} min`);
+        continue;
+      }
+      if (!session) continue;
+      this.pending.delete(id2);
+      await this.deliver(p.msg, session);
+    }
+    this.schedulePending();
+  }
+  now() {
+    return this.o.now?.() ?? Date.now();
+  }
 };
+function sameDir(a, b) {
+  const norm = (d) => {
+    const r = path2.resolve(d.replace(/^file:\/\//, ""));
+    try {
+      return fs2.realpathSync.native(r);
+    } catch {
+      return r;
+    }
+  };
+  return norm(a) === norm(b);
+}
+var sleep = (ms) => new Promise((r) => {
+  const t = setTimeout(r, ms);
+  t.unref?.();
+});
 function defaultQueue(threadId, text) {
   return new Promise((resolve5, reject) => {
     execFile3("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve5());
@@ -33721,6 +33956,191 @@ function findThreadForDir(dir, since) {
   return best?.id;
 }
 
+// packages/room-mcp/src/conflicts.ts
+var ROOM = { name: "room", kind: "agent" };
+function changedRanges(base, live) {
+  const out = [];
+  for (const h of structuredPatch("a", "b", base, live, "", "", { context: 0 }).hunks) {
+    const from2 = h.newStart, to = h.newLines ? h.newStart + h.newLines - 1 : h.newStart;
+    out.push({ from: from2, to });
+  }
+  return out;
+}
+var overlaps = (a, b) => a.from <= b.to && b.from <= a.to;
+var covers = (c, r) => c.from <= r.from && c.to >= r.to;
+async function mergePath(d, person, path4) {
+  const myBase = d.baseFor(d.me.name), theirBase = d.baseFor(person);
+  let ancestor = myBase;
+  if (theirBase !== myBase) {
+    try {
+      ancestor = await d.mergeBase(myBase, theirBase);
+    } catch {
+      return { status: "unknown", lines: [] };
+    }
+  }
+  const b = await d.baseText(ancestor, path4) ?? "";
+  let m, t;
+  try {
+    m = await d.liveText(path4, d.me.name);
+    t = await d.liveText(path4, person);
+  } catch {
+    return { status: "unknown", lines: [] };
+  }
+  const mineT = m === null ? "" : m ?? b, theirs = t === null ? "" : t ?? b;
+  if (mineT === b || theirs === b) return { status: "one-side", lines: [] };
+  const res = diff3Merge(mineT.split("\n"), b.split("\n"), theirs.split("\n"));
+  const lines = [];
+  let line = 1;
+  for (const r of res) {
+    if (r.ok) {
+      line += r.ok.length;
+      continue;
+    }
+    if (r.conflict) {
+      lines.push(line);
+      line += r.conflict.o.length;
+    }
+  }
+  return { status: lines.length ? "conflict" : "clean", lines };
+}
+var ConflictWatcher = class {
+  constructor(d) {
+    this.d = d;
+  }
+  d;
+  stopFns = [];
+  timers = /* @__PURE__ */ new Map();
+  /** "path|claimId" pairs already reported. */
+  reported = /* @__PURE__ */ new Set();
+  /** "person|path" pairs currently known to conflict. */
+  conflicting = /* @__PURE__ */ new Set();
+  inflight = /* @__PURE__ */ new Set();
+  start() {
+    const onOverlays = (events) => {
+      const touched = /* @__PURE__ */ new Set();
+      for (const ev of events) {
+        if (ev.target === this.d.room.overlays) {
+          for (const person of ev.changes.keys.keys()) for (const p of this.d.room.changedPaths(person)) touched.add(`${person}|${p}`);
+        } else if (ev.path.length >= 2) {
+          touched.add(`${String(ev.path[0])}|${String(ev.path[1])}`);
+        } else if (ev.path.length === 1) {
+          for (const p of ev.changes.keys.keys()) touched.add(`${String(ev.path[0])}|${p}`);
+        }
+      }
+      for (const key of touched) {
+        const [person, p] = key.split("|");
+        this.schedule(person, p);
+      }
+    };
+    this.d.room.overlays.observeDeep(onOverlays);
+    this.stopFns.push(() => this.d.room.overlays.unobserveDeep(onOverlays));
+  }
+  stop() {
+    for (const f of this.stopFns) f();
+    this.stopFns = [];
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
+  }
+  /** Debounced per (person, path): a burst of keystrokes becomes one check. */
+  schedule(person, p) {
+    const key = `${person}|${p}`;
+    const prev = this.timers.get(key);
+    if (prev) clearTimeout(prev);
+    const t = setTimeout(() => {
+      this.timers.delete(key);
+      void this.check(person, p);
+    }, this.d.debounceMs ?? 2e3);
+    t.unref?.();
+    this.timers.set(key, t);
+  }
+  /** Runs every check for a (person, path) pair now; tests call this instead of waiting. */
+  async flush() {
+    const keys2 = Array.from(this.timers.keys());
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
+    for (const key of keys2) {
+      const [person, p] = key.split("|");
+      await this.check(person, p);
+    }
+  }
+  async check(person, p) {
+    const key = `${person}|${p}`;
+    if (this.inflight.has(key)) {
+      this.schedule(person, p);
+      return;
+    }
+    this.inflight.add(key);
+    try {
+      if (person === this.d.me.name) await this.checkOverlap(p);
+      const me = this.d.me.name;
+      const people = person === me ? this.d.room.whoChanged(p).filter((x) => x !== me) : [person];
+      if (this.d.room.changedPaths(me).includes(p)) for (const other of people) await this.checkMerge(other, p);
+    } catch (e) {
+      this.d.log?.(`conflict check ${key}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.inflight.delete(key);
+    }
+  }
+  async checkOverlap(p) {
+    const me = this.d.me;
+    const live = this.d.room.text(p, me.name);
+    if (live === void 0) return;
+    const base = await this.d.baseText(this.d.baseFor(me.name), p) ?? "";
+    const ranges = changedRanges(base, live);
+    if (!ranges.length) return;
+    const claims = this.d.room.openClaims().filter((c) => c.path === p);
+    const mine = claims.filter((c) => c.by === me.name && c.byKind === me.kind);
+    for (const c of claims) {
+      if (c.by === me.name && c.byKind === me.kind) continue;
+      const hit = ranges.find((r) => overlaps(r, { from: c.from, to: c.to }) && !mine.some((m) => covers(m, r)));
+      if (!hit) continue;
+      const k = `${p}|${c.id}`;
+      if (this.reported.has(k)) continue;
+      this.reported.add(k);
+      const who = c.byKind === "agent" ? `${c.by}'s agent` : c.by;
+      this.d.room.post(ROOM, {
+        type: "conflict",
+        claimId: c.id,
+        otherClaimId: "",
+        path: p,
+        to: me.name,
+        priority: "interrupt",
+        text: `you edited ${p}:${hit.from}-${hit.to} inside ${who}'s claim ${c.id} (${c.intent}); claim it or room_wait(${c.id})`
+      });
+      this.d.room.post(ROOM, {
+        type: "conflict",
+        claimId: c.id,
+        otherClaimId: "",
+        path: p,
+        to: c.by,
+        priority: "notify",
+        text: `${me.name}'s agent edited ${p}:${hit.from}-${hit.to} inside your claim ${c.id} (${c.intent}) without claiming`
+      });
+      this.d.log?.(`overlap: my edit ${p}:${hit.from}-${hit.to} inside ${c.by}'s claim ${c.id}`);
+    }
+  }
+  async checkMerge(person, p) {
+    if (!this.d.room.changedPaths(person).includes(p)) return;
+    const key = `${person}|${p}`;
+    const res = await mergePath(this.d, person, p);
+    if (res.status === "unknown") return;
+    const was = this.conflicting.has(key);
+    if (res.status === "conflict" && !was) {
+      this.conflicting.add(key);
+      this.d.room.post(ROOM, {
+        type: "note",
+        to: this.d.me.name,
+        priority: "notify",
+        text: `your ${p} and ${person}'s now conflict around line${res.lines.length === 1 ? "" : "s"} ${res.lines.join(", ")}; room_preview_merge(${person}) for detail`
+      });
+      this.d.log?.(`preview: ${p} conflicts with ${person}'s at ${res.lines.join(", ")}`);
+    } else if (res.status !== "conflict" && was) {
+      this.conflicting.delete(key);
+      this.d.room.post(ROOM, { type: "note", to: this.d.me.name, priority: "fyi", text: `your ${p} and ${person}'s merge cleanly again` });
+    }
+  }
+};
+
 // packages/room-mcp/src/tools.ts
 var RO = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 var RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -33754,6 +34174,12 @@ var DEFS = [
     annotations: RW,
     description: "Leave the room: releases your claims, clears your scope, stops the daemon.",
     inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "room_close",
+    annotations: { ...RW, destructiveHint: true, idempotentHint: false },
+    description: "DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user's explicit request; room_create reopens later.",
+    inputSchema: { type: "object", properties: { confirm: { type: "boolean", description: "must be true" } }, required: ["confirm"] }
   },
   {
     name: "room_scope",
@@ -33850,12 +34276,35 @@ function createTools(ctx) {
   const conflictPairs = /* @__PURE__ */ new Set();
   let observedSession = null;
   let bridge = null;
+  let watcher = null;
   let pendingJoin = null;
+  const doClose = ctx.close ?? (async (s) => {
+    const a = await authFor(s);
+    return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token });
+  });
   const attachHooks = (s) => {
     if (bridge && bridge.s === s) return;
     bridge?.stop();
     bridge = new HooksBridge(s, { forMe: (m) => forMe(s, m), isSeen: (id2) => seen.has(id2), log: log2, queue: ctx.queue });
     bridge.start();
+    watcher?.stop();
+    watcher = new ConflictWatcher({
+      room: s.room,
+      me: s.me,
+      log: log2,
+      debounceMs: ctx.conflictDebounceMs,
+      liveText: (p, person) => liveText(s, p, person),
+      baseText: (sha, p) => gitShow(s.dir, sha, p),
+      baseFor: (person) => baseFor(s, person),
+      mergeBase: async (a, b) => (await git(s.dir, ["merge-base", a, b])).trim()
+    });
+    watcher.start();
+  };
+  const detach = () => {
+    bridge?.stop();
+    bridge = null;
+    watcher?.stop();
+    watcher = null;
   };
   const observeClaims = (s) => {
     if (observedSession === s) return;
@@ -34049,8 +34498,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     log2(`branch changed ${current} -> ${branch}; moving room`);
     cleanupMine(s, `switched branch to ${branch}`);
     ctx.setSession(null);
-    bridge?.stop();
-    bridge = null;
+    detach();
     await doLeave(s);
     try {
       const n = await doJoin({ dir: s.dir, name: s.me.name, room: target, server: s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")) });
@@ -34063,6 +34511,22 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     } catch (e) {
       return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`;
     }
+  };
+  const STALE_MS2 = Number(process.env.ROOM_STALE_DAYS || 7) * 24 * 60 * 60 * 1e3;
+  const evictStale = (s) => {
+    const here = new Set(presences(s).map((p) => p.user.name));
+    const gone = [];
+    for (const person of Array.from(s.room.overlays.keys())) {
+      if (person === s.me.name || here.has(person)) continue;
+      const age = s.room.overlayAge(person, now());
+      if (age === void 0 || age < STALE_MS2) continue;
+      const n = s.room.clearOverlays(person);
+      const days = Math.round(age / 864e5);
+      s.room.post(s.me, { type: "note", text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? "" : "s"}; last seen ${days} day${days === 1 ? "" : "s"} ago)`, priority: "fyi" });
+      log2(`evicted ${person}'s ${n} stale overlay file(s), ${days} days old`);
+      gone.push(person);
+    }
+    return gone;
   };
   const cleanupMine = (s, why) => {
     const released = mine(s);
@@ -34088,7 +34552,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     return notes;
   };
   const claimLine = (s, c) => {
-    const stale = !presences(s).some((p) => p.user.name === c.by) && now() - c.at > STALE_MS;
+    const stale = !presences(s).some((p) => p.user.name === c.by) && now() - c.at > STALE_MS2;
     return `  - ${c.id}: ${describeClaim(c)}${isMe(s, { name: c.by, kind: c.byKind }) ? " (yours)" : ""}${stale ? " [stale: owner offline]" : ""}`;
   };
   const ledgerLines = (s, q, label) => {
@@ -34135,6 +34599,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       attachHooks(s);
       const stale = cleanupMine(s, "stale from an earlier session");
       if (stale || s.room.scope(s.me.name)) log2(`cleared ${stale} stale claim(s) and scope from an earlier session`);
+      evictStale(s);
       const out = [`${a.create ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
       const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
       out.push(here.length ? `here now: ${here.join(", ")}` : "nobody else is here yet");
@@ -34154,10 +34619,21 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const s = S();
       const released = cleanupMine(s, "left the room");
       ctx.setSession(null);
-      bridge?.stop();
-      bridge = null;
+      detach();
       await doLeave(s);
       return `left ${s.roomName}; released ${released} claim(s)`;
+    },
+    async room_close(a) {
+      const s = S();
+      if (a.confirm !== true) return "error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user's explicit request";
+      const repo = s.roomName.slice(0, s.roomName.lastIndexOf("/"));
+      cleanupMine(s, "closing the room");
+      s.room.post(s.me, { type: "note", text: `closing the room for ${repo}: every branch room and all shared work is being removed`, priority: "interrupt" });
+      ctx.setSession(null);
+      detach();
+      const closed = await doClose(s);
+      await doLeave(s);
+      return `closed ${repo} for everyone: removed ${closed.length ? closed.join(", ") : "its rooms"}; room_create reopens it`;
     },
     async room_scope(a) {
       const s = S();
@@ -34538,7 +35014,10 @@ ${text}--- end ${p} ---`);
   return {
     list: () => DEFS,
     attachHooks,
-    clearStale: (s) => cleanupMine(s, "stale from an earlier session"),
+    clearStale: (s) => {
+      evictStale(s);
+      return cleanupMine(s, "stale from an earlier session");
+    },
     setPendingJoin(p) {
       pendingJoin = p.catch(() => {
       });
@@ -34551,9 +35030,11 @@ ${text}--- end ${p} ---`);
       } catch {
       }
       ctx.setSession(null);
-      bridge?.stop();
-      bridge = null;
+      detach();
       await doLeave(s);
+    },
+    async flushConflicts() {
+      await watcher?.flush();
     },
     async call(name, args2) {
       const h = handlers[name];
@@ -34561,6 +35042,11 @@ ${text}--- end ${p} ---`);
       if (pendingJoin) {
         await pendingJoin;
         pendingJoin = null;
+      }
+      const closed = ctx.getSession()?.closed;
+      if (closed && name !== "room_leave") {
+        const rn = ctx.getSession().roomName;
+        return `error: the room for ${rn.slice(0, rn.lastIndexOf("/"))} was closed (${closed.reason}); room_leave, then room_create to reopen`;
       }
       const moved = await followBranch();
       const s = ctx.getSession();
@@ -34714,6 +35200,8 @@ Rules:
 6. room_release(claimId, summary, done) when finished, then room_send type=changed with paths, a one-line summary and symbols for anything others may depend on.
 7. Answer questions addressed to you on your next move: room_send type=answer inReplyTo=<id>. room_send is for OTHER people's agents; to ask your own human, say it in your reply and stop.
 8. If a wait times out, tell your human and proceed only where you do not depend on the answer.
+9. Conflict notices arrive on their own: an interrupt when your edit lands inside someone's claim, a notify when your file and theirs stop merging cleanly. Act on them like any interrupt or notify.
+10. room_close is destructive (every branch room of the repo and everyone's shared work): only when your human explicitly asks, never on your own.
 9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
 10. Never re-create another person's change in your clone, and never edit lines that belong to their claim or announced change. When they declare or announce a rename, signature or new symbol, write your code against the declared name/signature and carry on. Your clone will lag until git merges; that is expected. To verify code that depends on their unmerged work, room_preview_merge(person, run="<test command>") runs the tests on the merged tree without touching any clone. If you insert next to a line they changed, copy their version of that line exactly; the preview then reports the overlap as resolvable, and room_preview_merge(person, resolve=true) gives you the resolved file to write into your own clone.
 11. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
@@ -34814,6 +35302,7 @@ export {
   AGENT_INSTRUCTIONS,
   DEFS,
   NoRoom,
+  closeRoom,
   createRoom,
   createTools,
   decodeRoom,

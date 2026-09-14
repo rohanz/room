@@ -59,6 +59,76 @@ describe('hooks bridge + plugin hook scripts', () => {
     b.stop()
   })
 
+  it('a failed wake retries with backoff and marks the message only once it succeeds', async () => {
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'thread-2', at: Date.now(), cwd: dir, host: 'codex' }))
+    const room = new RoomDoc()
+    const s = session(room)
+    let calls = 0
+    const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan', isSeen: () => false, retryDelaysMs: [1, 1, 1], queue: async () => { calls++; if (calls < 3) throw new Error('codex busy') } })
+    b.start()
+    const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u))
+    other.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
+    await new Promise(r => setTimeout(r, 60))
+    expect(calls).toBe(3)
+    expect((b as unknown as { woken: Set<string> }).woken.size).toBe(1)
+    b.stop()
+  })
+
+  it('gives up after the retries are exhausted without marking the message', async () => {
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'thread-2', at: Date.now(), cwd: dir }))
+    const room = new RoomDoc()
+    const s = session(room)
+    let calls = 0
+    const logs: string[] = []
+    const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan', isSeen: () => false, retryDelaysMs: [1, 1], log: l => logs.push(l), queue: async () => { calls++; throw new Error('down') } })
+    b.start()
+    const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u))
+    other.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: '?' } as never)
+    await new Promise(r => setTimeout(r, 60))
+    expect(calls).toBe(3)
+    expect((b as unknown as { woken: Set<string> }).woken.size).toBe(0)
+    expect(logs.some(l => l.includes('after 3 attempts'))).toBe(true)
+    b.stop()
+  })
+
+  it('a stale or foreign session file is ignored; the wake stays pending until a fresh one appears', async () => {
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'old-thread', at: Date.now() - 60 * 60 * 1000, cwd: dir }))
+    const room = new RoomDoc()
+    const s = session(room)
+    const queued: string[] = []
+    const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan', isSeen: () => false, pendingPollMs: 10, retryDelaysMs: [], queue: async id => { queued.push(id) } })
+    b.start()
+    const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u))
+    other.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
+    await new Promise(r => setTimeout(r, 30))
+    expect(queued).toEqual([])
+    // a file for another clone is foreign too
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'elsewhere', at: Date.now(), cwd: '/somewhere/else' }))
+    await new Promise(r => setTimeout(r, 30))
+    expect(queued).toEqual([])
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'thread-3', at: Date.now(), cwd: dir }))
+    await new Promise(r => setTimeout(r, 40))
+    expect(queued).toEqual(['thread-3'])
+    b.stop()
+  })
+
+  it('a Claude Code host is not queued through codex; the channel already delivered it', async () => {
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-1', at: Date.now(), cwd: dir, host: 'claude' }))
+    const room = new RoomDoc()
+    const s = session(room)
+    const queued: string[] = []
+    const logs: string[] = []
+    const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan', isSeen: () => false, log: l => logs.push(l), queue: async id => { queued.push(id) } })
+    b.start()
+    const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u))
+    other.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
+    await new Promise(r => setTimeout(r, 30))
+    expect(queued).toEqual([])
+    expect(logs.some(l => l.includes('claude host') && l.includes('via channel'))).toBe(true)
+    expect((b as unknown as { woken: Set<string> }).woken.size).toBe(1)
+    b.stop()
+  })
+
   it('writes room-state.json and the PreToolUse hook injects unread messages and claims on edited files', async () => {
     const room = new RoomDoc()
     const s = session(room)

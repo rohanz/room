@@ -12,8 +12,9 @@ import type {
   ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg, PlanMsg,
 } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
-import { joinSession, leaveSession, refreshBrowserUrl, type JoinOptions, type Session } from './session.js'
+import { authFor, closeRoom, joinSession, leaveSession, refreshBrowserUrl, type JoinOptions, type Session } from './session.js'
 import { HooksBridge } from './hooks-bridge.js'
+import { ConflictWatcher } from './conflicts.js'
 
 export interface ToolDef {
   name: string
@@ -36,6 +37,10 @@ export interface ToolCtx {
   /** Injectable for tests. */
   join?: (o: JoinOptions) => Promise<Session>
   leave?: (s: Session) => Promise<void>
+  /** Injectable for tests (default: DELETE /rooms on the session's server). Returns the rooms closed. */
+  close?: (s: Session) => Promise<string[]>
+  /** Debounce for the automatic conflict checks; default 2s. */
+  conflictDebounceMs?: number
   now?: () => number
   /** Injectable wake for tests (default: `codex queue`). */
   queue?: (threadId: string, text: string) => Promise<void>
@@ -54,6 +59,8 @@ export interface Tools {
   clearStale(s: Session): number
   /** A join in progress at startup; tool calls wait for it before answering. */
   setPendingJoin(p: Promise<void>): void
+  /** Run any pending automatic conflict checks now (tests). */
+  flushConflicts(): Promise<void>
 }
 
 const str = (d: string) => ({ type: 'string', description: d })
@@ -76,6 +83,8 @@ export const DEFS: ToolDef[] = [
     inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)') } } },
   { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon.',
     inputSchema: { type: 'object', properties: {} } },
+  { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user\'s explicit request; room_create reopens later.',
+    inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'must be true' } }, required: ['confirm'] } },
   { name: 'room_scope', annotations: RW, description: 'Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. Do this before editing. Replaces your previous scope. The reply ends with the area ledger: what others changed there and their open plans.',
     inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('files or directories you expect to touch') }, required: ['area', 'summary', 'paths'] } },
   { name: 'room_state', annotations: RO, description: 'Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Call before editing and after any wait.',
@@ -126,13 +135,25 @@ export function createTools(ctx: ToolCtx): Tools {
   const conflictPairs = new Set<string>() // sorted "a:b" claim-id pairs already reported
   let observedSession: Session | null = null
   let bridge: HooksBridge | null = null
+  let watcher: ConflictWatcher | null = null
   let pendingJoin: Promise<void> | null = null
+  const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token }) })
   const attachHooks = (s: Session) => {
     if (bridge && (bridge as unknown as { s: Session }).s === s) return
     bridge?.stop()
     bridge = new HooksBridge(s, { forMe: m => forMe(s, m), isSeen: id => seen.has(id), log, queue: ctx.queue })
     bridge.start()
+    watcher?.stop()
+    watcher = new ConflictWatcher({
+      room: s.room, me: s.me, log, debounceMs: ctx.conflictDebounceMs,
+      liveText: (p, person) => liveText(s, p, person),
+      baseText: (sha, p) => gitShow(s.dir, sha, p),
+      baseFor: person => baseFor(s, person),
+      mergeBase: async (a, b) => (await git(s.dir, ['merge-base', a, b])).trim(),
+    })
+    watcher.start()
   }
+  const detach = () => { bridge?.stop(); bridge = null; watcher?.stop(); watcher = null }
   /** Two room_claim calls on different machines can both pass the overlap pre-check. When the
    *  other claim arrives, the owner of the lexicographically smaller id reports the conflict. */
   const observeClaims = (s: Session) => {
@@ -308,7 +329,7 @@ export function createTools(ctx: ToolCtx): Tools {
     log(`branch changed ${current} -> ${branch}; moving room`)
     cleanupMine(s, `switched branch to ${branch}`)
     ctx.setSession(null)
-    bridge?.stop(); bridge = null
+    detach()
     await doLeave(s)
     try {
       const n = await doJoin({ dir: s.dir, name: s.me.name, room: target, server: s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')) })
@@ -319,6 +340,24 @@ export function createTools(ctx: ToolCtx): Tools {
     } catch (e) {
       return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`
     }
+  }
+
+  /** Uncommitted work shared by people who are gone: no presence, and nothing written for ROOM_STALE_DAYS (7). Evicted on join. */
+  const STALE_MS = Number(process.env.ROOM_STALE_DAYS || 7) * 24 * 60 * 60 * 1000
+  const evictStale = (s: Session): string[] => {
+    const here = new Set(presences(s).map(p => p.user.name))
+    const gone: string[] = []
+    for (const person of Array.from(s.room.overlays.keys())) {
+      if (person === s.me.name || here.has(person)) continue
+      const age = s.room.overlayAge(person, now())
+      if (age === undefined || age < STALE_MS) continue
+      const n = s.room.clearOverlays(person)
+      const days = Math.round(age / 86_400_000)
+      s.room.post<NoteMsg>(s.me, { type: 'note', text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? '' : 's'}; last seen ${days} day${days === 1 ? '' : 's'} ago)`, priority: 'fyi' })
+      log(`evicted ${person}'s ${n} stale overlay file(s), ${days} days old`)
+      gone.push(person)
+    }
+    return gone
   }
 
   /** Release my claims (cancelling their plans) and clear my scope. `why` goes in the release summary. */
@@ -393,6 +432,7 @@ export function createTools(ctx: ToolCtx): Tools {
       attachHooks(s)
       const stale = cleanupMine(s, 'stale from an earlier session')
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
+      evictStale(s)
       const out = [`${a.create ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
       const here = others(s).filter(n => presences(s).some(p => p.user.name === n))
       out.push(here.length ? `here now: ${here.join(', ')}` : 'nobody else is here yet')
@@ -409,9 +449,21 @@ export function createTools(ctx: ToolCtx): Tools {
       const s = S()
       const released = cleanupMine(s, 'left the room')
       ctx.setSession(null)
-      bridge?.stop(); bridge = null
+      detach()
       await doLeave(s)
       return `left ${s.roomName}; released ${released} claim(s)`
+    },
+    async room_close(a) {
+      const s = S()
+      if (a.confirm !== true) return 'error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user\'s explicit request'
+      const repo = s.roomName.slice(0, s.roomName.lastIndexOf('/'))
+      cleanupMine(s, 'closing the room')
+      s.room.post<NoteMsg>(s.me, { type: 'note', text: `closing the room for ${repo}: every branch room and all shared work is being removed`, priority: 'interrupt' })
+      ctx.setSession(null)
+      detach()
+      const closed = await doClose(s)
+      await doLeave(s)
+      return `closed ${repo} for everyone: removed ${closed.length ? closed.join(', ') : 'its rooms'}; room_create reopens it`
     },
     async room_scope(a) {
       const s = S()
@@ -753,20 +805,23 @@ export function createTools(ctx: ToolCtx): Tools {
   return {
     list: () => DEFS,
     attachHooks,
-    clearStale: (s: Session) => cleanupMine(s, 'stale from an earlier session'),
+    clearStale: (s: Session) => { evictStale(s); return cleanupMine(s, 'stale from an earlier session') },
     setPendingJoin(p) { pendingJoin = p.catch(() => {}) },
     async shutdown() {
       const s = ctx.getSession()
       if (!s) return
       try { cleanupMine(s, 'session ended') } catch { /* best effort */ }
       ctx.setSession(null)
-      bridge?.stop(); bridge = null
+      detach()
       await doLeave(s)
     },
+    async flushConflicts() { await watcher?.flush() },
     async call(name, args) {
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
       if (pendingJoin) { await pendingJoin; pendingJoin = null }
+      const closed = ctx.getSession()?.closed
+      if (closed && name !== 'room_leave') { const rn = ctx.getSession()!.roomName; return `error: the room for ${rn.slice(0, rn.lastIndexOf('/'))} was closed (${closed.reason}); room_leave, then room_create to reopen` }
       const moved = await followBranch()
       const s = ctx.getSession()
       if (s && !s.provider.synced && name !== 'room_leave') return 'error: room not synced yet, retry'

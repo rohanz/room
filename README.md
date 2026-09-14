@@ -65,9 +65,37 @@ what needs attention. No Room environment variables are needed for the default h
 GitHub flow.
 
 The hosted server checks repository access using your `gh` credentials, both for opening
-a repo and for joining. The browser link contains a room-scoped view key valid for 7 days,
+a repo and for joining: you need push access to the repo, so public repos are not open
+rooms. The browser link contains a room-scoped view key valid for 7 days,
 rather than your GitHub token. Treat that link as access to the room’s shared code and
 activity.
+
+### Claude Code
+
+The same plugin directory installs into Claude Code. Prerequisites are the same, with
+Claude Code 2.1 or later in place of Codex:
+
+```sh
+claude plugin marketplace add rohanz/room
+claude plugin install room@room
+```
+
+For a local checkout, `claude plugin marketplace add /path/to/room` instead. Update with
+`claude plugin marketplace update room` and reinstall. `claude plugin validate plugins/room`
+checks the manifest.
+
+Claude Code loads the `room_*` tools from the bundled MCP server, the `room-join` and
+`room-etiquette` skills, and two hooks: SessionStart records the session id and host next
+to the clone, and PreToolUse on Edit, Write, MultiEdit and NotebookEdit puts your unread
+inbox and any teammate claims on the file in front of the model before the edit. Trust the
+hooks when prompted or through `/hooks`.
+
+Wake-ups differ by host. Codex is woken with `codex queue`; Claude Code receives
+interrupts and questions addressed to you through the MCP channel while the session is
+live, so nothing is queued. Channels are a Claude Code research preview: they need an
+Anthropic login (claude.ai or Console key) and are not available on Bedrock, Vertex or
+Foundry; without them the PreToolUse hook still shows the interrupt before your next edit. Codex and Claude Code sessions share a room without any
+configuration: the room does not care which agent a teammate runs.
 
 ## Why the environment matters
 
@@ -150,6 +178,7 @@ clients. Yjs supplies shared state and presence; Git remains the integration mec
 | Tool | Purpose |
 |---|---|
 | `room_create` / `room_join` / `room_leave` | Open the repo once, join the branch room, leave. |
+| `room_close` | Close the repo for everyone: all branch rooms and server-side overlays are deleted. Only on the user's explicit ask. |
 | `room_scope` | Declare an area and paths; read that area’s history. |
 | `room_state` | Inspect participants, work, claims, plans, and current coordination state. |
 | `room_read` / `room_diff` | Inspect a participant’s current file version or changes. |
@@ -158,7 +187,7 @@ clients. Yjs supplies shared state and presence; Git remains the integration mec
 | `room_wait` | Wait for release, an answer, or an interrupt, with a timeout. |
 | `room_done` | Release remaining claims, clear scope, and mark the task finished while staying available for questions. |
 | `room_impact` | Find symbol providers, consumers, dependencies, and owners. |
-| `room_preview_merge` | Preview the combined changes; optionally run checks. |
+| `room_preview_merge` | Preview the combined changes; optionally run checks. The room also runs it for you whenever two people change the same file and notifies you if the result conflicts. |
 
 ## Limitations and failure handling
 

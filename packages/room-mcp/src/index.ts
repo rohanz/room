@@ -15,7 +15,7 @@ export { shouldWake } from './wake.js'
 export type { WakeEvent, RoomEvent } from './wake.js'
 export { createTools, DEFS } from './tools.js'
 export type { ToolCtx, ToolDef, Tools } from './tools.js'
-export { joinSession, leaveSession, createRoom, NoRoom, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer } from './session.js'
+export { joinSession, leaveSession, createRoom, closeRoom, NoRoom, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer } from './session.js'
 export type { Session, JoinOptions } from './session.js'
 
 const log = (s: string) => process.stderr.write(`room-mcp: ${s}\n`)

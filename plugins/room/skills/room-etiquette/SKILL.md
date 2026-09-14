@@ -32,6 +32,8 @@ disk; edit files with your normal tools.
 8. If a wait times out, tell your human and proceed only where you do not depend on the
    answer.
 9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
+   Conflict notices arrive automatically when your edit overlaps someone's claim or your
+   file now conflicts with theirs; treat them like interrupts.
 10. Never re-create another person's change in your clone, and never edit lines that belong
     to their claim or announced change. When they declare or announce a rename, signature or
     new symbol, write your code against the declared name/signature and carry on. Your clone
@@ -53,7 +55,8 @@ disk; edit files with your normal tools.
 13. Report to your human in one line: what landed, the test count, and whether the merge
     preview with each teammate was clean (name any conflicting files). Then ask whether to
     commit and push. Never commit or push unless they say yes; after a push, teammates are
-    told the base moved. `room_leave` when the session ends.
+    told the base moved. `room_leave` when the session ends. `room_close` is destructive
+    (it removes every branch room of the repo for everyone); only on the user's explicit ask.
 
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.
 

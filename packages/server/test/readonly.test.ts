@@ -1,0 +1,52 @@
+import { describe, expect, it } from 'vitest'
+import { EventEmitter } from 'node:events'
+import * as encoding from 'lib0/encoding'
+import * as Y from 'yjs'
+import * as syncProtocol from 'y-protocols/sync'
+import * as awarenessProtocol from 'y-protocols/awareness'
+import { isWriteMessage, makeReadOnly } from '../src/readonly.js'
+
+const doc = new Y.Doc()
+doc.getText('t').insert(0, 'hello')
+
+function sync(build: (enc: encoding.Encoder) => void): Uint8Array {
+  const enc = encoding.createEncoder()
+  encoding.writeVarUint(enc, 0)
+  build(enc)
+  return encoding.toUint8Array(enc)
+}
+const step1 = sync(enc => syncProtocol.writeSyncStep1(enc, doc))
+const step2 = sync(enc => syncProtocol.writeSyncStep2(enc, doc))
+const update = sync(enc => syncProtocol.writeUpdate(enc, Y.encodeStateAsUpdate(doc)))
+const awareness = (() => {
+  const enc = encoding.createEncoder()
+  encoding.writeVarUint(enc, 1)
+  const a = new awarenessProtocol.Awareness(doc)
+  a.setLocalState({ user: { name: 'viewer' } })
+  encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(a, [doc.clientID]))
+  return encoding.toUint8Array(enc)
+})()
+
+describe('read-only view connections', () => {
+  it('classifies sync step2 and updates as writes, step1 and awareness as reads', () => {
+    expect(isWriteMessage(step1)).toBe(false)
+    expect(isWriteMessage(awareness)).toBe(false)
+    expect(isWriteMessage(step2)).toBe(true)
+    expect(isWriteMessage(update)).toBe(true)
+    expect(isWriteMessage(new Uint8Array())).toBe(true)
+  })
+
+  it('drops writes before message listeners and counts them', () => {
+    const conn = new EventEmitter()
+    const seen: Uint8Array[] = []
+    let dropped = 0
+    conn.on('message', (m: Uint8Array) => seen.push(m))
+    makeReadOnly(conn, () => dropped++)
+    conn.emit('message', Buffer.from(step1))
+    conn.emit('message', Buffer.from(update))
+    conn.emit('message', Buffer.from(step2))
+    conn.emit('message', Buffer.from(awareness))
+    expect(seen).toHaveLength(2)
+    expect(dropped).toBe(2)
+  })
+})

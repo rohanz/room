@@ -2,8 +2,11 @@
  * Bridge between the room and the Codex plugin hooks:
  *  - keeps <clone>/.git/room-state.json current (unread inbox for me, others' claims) so the
  *    PreToolUse hook can show them before an edit without a room tool call;
- *  - wakes the Codex thread recorded by the SessionStart hook (<clone>/.git/room-session.json)
- *    with `codex queue` when an interrupt or a question addressed to me arrives.
+ *  - wakes the thread recorded by the SessionStart hook (<clone>/.git/room-session.json)
+ *    when an interrupt or a question addressed to me arrives: `codex queue` for Codex, with
+ *    retries; Claude Code sessions are reached by the MCP channel notification instead.
+ *    A message is only marked delivered once the wake succeeded; with no fresh session
+ *    known it stays pending and is retried when a session file appears.
  */
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
@@ -32,11 +35,25 @@ export interface HooksBridgeOptions {
   /** Injectable for tests. */
   queue?: (threadId: string, text: string) => Promise<void>
   now?: () => number
+  /** Backoff between queue attempts (ms); default 1s, 3s, 8s. */
+  retryDelaysMs?: number[]
+  /** How often to look again for a session file while wakes are pending; default 5s. */
+  pendingPollMs?: number
+  /** Give up on a pending wake after this long; default 10 min. */
+  pendingMaxMs?: number
 }
+
+/** Written by the plugins' SessionStart hooks. `host` says which CLI owns the thread (missing = codex). */
+interface SessionFile { session_id?: string; at?: number; cwd?: string; host?: 'codex' | 'claude' }
+
+const SESSION_FRESH_MS = 10 * 60 * 1000
 
 export class HooksBridge {
   private timer: NodeJS.Timeout | null = null
   private woken = new Set<string>()
+  /** Wakes that found no fresh session yet, with when they first arrived. */
+  private pending = new Map<string, { msg: Msg; since: number }>()
+  private pendingTimer: NodeJS.Timeout | null = null
   private startedAt = Date.now()
   private unobserve: (() => void)[] = []
   constructor(private s: Session, private o: HooksBridgeOptions) {}
@@ -58,6 +75,8 @@ export class HooksBridge {
     for (const u of this.unobserve) u()
     this.unobserve = []
     if (this.timer) clearTimeout(this.timer)
+    if (this.pendingTimer) clearTimeout(this.pendingTimer)
+    this.pending.clear()
     try { fs.rmSync(this.stateFile(), { force: true }) } catch { /* ignore */ }
   }
 
@@ -84,21 +103,87 @@ export class HooksBridge {
     if (!this.o.forMe(m)) return
     const baseMoved = m.type === 'base' && m.from !== this.s.me.name && this.s.room.changedPaths(this.s.me.name).length > 0
     const wake = m.priority === 'interrupt' || (m.type === 'question' && m.to === this.s.me.name) || baseMoved
-    if (!wake || this.woken.has(m.id)) return
-    this.woken.add(m.id)
-    let session: { session_id?: string } | undefined
-    try { session = JSON.parse(fs.readFileSync(this.sessionFile(), 'utf8')) } catch { /* fall back below */ }
-    if (!session?.session_id) session = { session_id: findThreadForDir(this.s.dir, this.startedAt) }
-    if (!session?.session_id) { this.o.log?.('cannot wake: no Codex thread id known for this clone (SessionStart hook not run and no rollout found)'); return }
+    if (!wake || this.woken.has(m.id) || this.pending.has(m.id)) return
+    const session = this.freshSession()
+    if (!session) {
+      // Nothing to wake yet (hook not run, or a stale file from an earlier thread). Keep the
+      // message and try again when a session file shows up.
+      this.pending.set(m.id, { msg: m, since: this.now() })
+      this.o.log?.(`cannot wake yet: no fresh session id for this clone; will retry for ${m.type} ${m.id}`)
+      this.schedulePending()
+      return
+    }
+    await this.deliver(m, session)
+  }
+
+  /** The thread recorded by the SessionStart hook, if it is recent and for this clone; else a rollout scan. */
+  freshSession(): { id: string; host: 'codex' | 'claude' } | undefined {
+    let file: SessionFile | undefined
+    try { file = JSON.parse(fs.readFileSync(this.sessionFile(), 'utf8')) } catch { /* fall back below */ }
+    if (file?.session_id) {
+      const fresh = typeof file.at !== 'number' || file.at >= this.startedAt - SESSION_FRESH_MS
+      const here = !file.cwd || sameDir(file.cwd, this.s.dir)
+      if (fresh && here) return { id: file.session_id, host: file.host === 'claude' ? 'claude' : 'codex' }
+      this.o.log?.(`ignoring ${fresh ? 'foreign' : 'stale'} session file ${this.sessionFile()}`)
+    }
+    const id = findThreadForDir(this.s.dir, this.startedAt)
+    return id ? { id, host: 'codex' } : undefined
+  }
+
+  private async deliver(m: Msg, session: { id: string; host: 'codex' | 'claude' }): Promise<void> {
+    if (session.host === 'claude') {
+      // The MCP channel notification (index.ts attachChannel) reaches a live Claude Code session.
+      this.woken.add(m.id)
+      this.o.log?.(`claude host: ${m.type} ${m.id} delivered via channel`)
+      return
+    }
     const text = m.type === 'base'
       ? `[room] ${formatMsg(m)}\nYou have uncommitted work. Run git pull --ff-only, re-run room_preview_merge with the test command against anyone who changed the same files, then report and offer to commit and push.`
       : `[room] ${formatMsg(m)}\nCall room_state, then react per the room-etiquette skill.`
-    try {
-      await (this.o.queue ?? defaultQueue)(session.session_id, text)
-      this.o.log?.(`woke session ${session.session_id.slice(0, 8)} for ${m.type} ${m.id}`)
-    } catch (e) { this.o.log?.(`could not wake session: ${e instanceof Error ? e.message : e}`) }
+    const delays = this.o.retryDelaysMs ?? [1000, 3000, 8000]
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await (this.o.queue ?? defaultQueue)(session.id, text)
+        this.woken.add(m.id)
+        this.o.log?.(`woke session ${session.id.slice(0, 8)} for ${m.type} ${m.id}${attempt ? ` (attempt ${attempt + 1})` : ''}`)
+        return
+      } catch (e) {
+        const why = e instanceof Error ? e.message : String(e)
+        if (attempt >= delays.length) { this.o.log?.(`could not wake session ${session.id.slice(0, 8)} for ${m.type} ${m.id} after ${attempt + 1} attempts: ${why}`); return }
+        this.o.log?.(`wake attempt ${attempt + 1} failed (${why}); retrying in ${delays[attempt]}ms`)
+        await sleep(delays[attempt])
+      }
+    }
   }
+
+  private schedulePending(): void {
+    if (this.pendingTimer || !this.pending.size) return
+    this.pendingTimer = setTimeout(() => { this.pendingTimer = null; void this.retryPending() }, this.o.pendingPollMs ?? 5000)
+    this.pendingTimer.unref?.()
+  }
+
+  /** Re-check for a session file; deliver what we can, drop what is too old. */
+  async retryPending(): Promise<void> {
+    const maxAge = this.o.pendingMaxMs ?? 10 * 60 * 1000
+    const session = this.freshSession()
+    for (const [id, p] of Array.from(this.pending)) {
+      if (this.now() - p.since > maxAge) { this.pending.delete(id); this.o.log?.(`gave up waking for ${p.msg.type} ${id}: no session for ${Math.round(maxAge / 60000)} min`); continue }
+      if (!session) continue
+      this.pending.delete(id)
+      await this.deliver(p.msg, session)
+    }
+    this.schedulePending()
+  }
+
+  private now(): number { return this.o.now?.() ?? Date.now() }
 }
+
+function sameDir(a: string, b: string): boolean {
+  const norm = (d: string) => { const r = path.resolve(d.replace(/^file:\/\//, '')); try { return fs.realpathSync.native(r) } catch { return r } }
+  return norm(a) === norm(b)
+}
+
+const sleep = (ms: number) => new Promise<void>(r => { const t = setTimeout(r, ms); t.unref?.() })
 
 function defaultQueue(threadId: string, text: string): Promise<void> {
   return new Promise((resolve, reject) => {

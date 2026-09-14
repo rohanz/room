@@ -30,6 +30,8 @@ export interface Session {
   browserUrl: string
   /** Symbol graph over base + overlays; undefined in unit tests. */
   graph?: GraphIndex
+  /** Set when the server closed the repo (ws close 4001): the provider stops reconnecting. */
+  closed?: { reason: string }
 }
 
 export interface JoinOptions {
@@ -150,7 +152,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
   graph.start()
-  return {
+  const session: Session = {
     graph,
     room: daemon.roomDoc,
     provider: daemon.provider,
@@ -162,6 +164,20 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     roomName,
     browserUrl,
   }
+  watchClosed(session, opts.log)
+  return session
+}
+
+/** Server close code when a repo is closed (DELETE /rooms): stop reconnecting and remember why. */
+export const ROOM_CLOSED_CODE = 4001
+export function watchClosed(s: Session, log?: (line: string) => void): void {
+  const p = s.provider as unknown as { on?: (ev: string, fn: (e: { code?: number; reason?: string } | null) => void) => void; disconnect?: () => void }
+  p.on?.('connection-close', e => {
+    if (e?.code !== ROOM_CLOSED_CODE) return
+    s.closed = { reason: e.reason || 'room closed' }
+    try { p.disconnect?.() } catch { /* already gone */ }
+    log?.(`${s.roomName}: ${s.closed.reason}; not reconnecting`)
+  })
 }
 
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
@@ -189,6 +205,22 @@ export async function createRoom(server: string, roomName: string, auth: { gh?: 
   } catch (e) {
     return `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})`
   }
+}
+
+/** Close the repo on the server: every branch room, every overlay, every connection. Returns the rooms closed, or throws with the refusal. */
+export async function closeRoom(server: string, roomName: string, auth: { gh?: string; token?: string }): Promise<string[]> {
+  const res = await fetch(`${httpOf(server)}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
+  if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2)
+  const body = (await res.json().catch(() => ({}))) as { closed?: string[] }
+  return body.closed ?? []
+}
+
+/** Auth the way joinSession resolves it, for HTTP calls made after the join. */
+export async function authFor(s: Session): Promise<{ gh?: string; token?: string; server: string }> {
+  const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
+  const token = process.env.ROOM_TOKEN?.trim() ?? parseServer(process.env.ROOM_SERVER ?? '').token
+  const gh = s.roomName.startsWith('github.com/') ? await githubToken() : undefined
+  return { gh, token, server }
 }
 
 /** Ask the server for a room-scoped token (7 days) the browser can use (never the GitHub token itself). */

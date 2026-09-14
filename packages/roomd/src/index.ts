@@ -11,6 +11,7 @@ import { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { RoomDoc, colorFor, type BaseMsg, type Kind, type Presence } from '@room/shared'
+import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { gitBranch, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitSubject, gitTracked } from './git.js'
 
 export interface RoomdOptions {
@@ -34,7 +35,10 @@ export interface RoomdOptions {
   trackedRefreshMs?: number
   /** How often to check whether local HEAD moved (commit/pull); default 3s. */
   basePollMs?: number
+  /** Per-file cap in bytes; larger files are skipped. Default 512 KB. */
   sizeCap?: number
+  /** Total text this person shares across all files; files that would exceed it are skipped. Default 8 MB. */
+  totalBudget?: number
   /** In-memory transport override for tests that cannot open loopback sockets. */
   providerFactory?: (serverUrl: string, roomName: string, doc: Y.Doc) => WebsocketProvider
 }
@@ -48,6 +52,8 @@ export interface Roomd {
   readonly provider: WebsocketProvider
   readonly branch: string
   readonly base: string
+  /** Files not shared and why: over the per-file cap, over the total budget, or matched by .roomignore. */
+  skipped(): { size: string[]; budget: string[]; ignore: string[] }
 }
 
 export class RoomdError extends Error {
@@ -59,6 +65,7 @@ export class RoomdError extends Error {
 
 const IGNORED_DIRS = new Set(['.git', 'node_modules', '.venv'])
 const ROOM_FILE = '.room.json'
+const ROOMIGNORE = '.roomignore'
 
 export function tokenParams(token?: string): Record<string, string> {
   const t = token?.trim()
@@ -99,7 +106,10 @@ class Daemon implements Roomd {
   private readonly trackedRefreshMs: number
   private readonly basePollMs: number
   private readonly sizeCap: number
+  private readonly totalBudget: number
   private readonly connectTimeoutMs: number
+  private roomIgnore: RoomIgnore = parseRoomIgnore('')
+  private readonly skips = { size: new Set<string>(), budget: new Set<string>(), ignore: new Set<string>() }
   private readonly roomUrl: string
 
   private tracked = new Set<string>()
@@ -119,6 +129,7 @@ class Daemon implements Roomd {
     this.trackedRefreshMs = options.trackedRefreshMs ?? 10_000
     this.basePollMs = options.basePollMs ?? 3_000
     this.sizeCap = options.sizeCap ?? 512 * 1024
+    this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000
     const { serverUrl, roomName } = splitRoomUrl(options.room)
     this.provider = options.providerFactory
@@ -170,6 +181,7 @@ class Daemon implements Roomd {
       }, this)
     }
 
+    this.loadRoomIgnore()
     await this.seedLocalOverlay()
     this.writeRoomFile()
     this.excludeRoomFile()
@@ -178,7 +190,32 @@ class Daemon implements Roomd {
     this.every(this.basePollMs, () => this.pollHead())
     this.roomDoc.metaMap.observe(() => { void this.refreshBaseStatus() })
     await this.refreshBaseStatus()
-    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)})`)
+    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)})${this.skipSummary()}`)
+  }
+
+  skipped(): { size: string[]; budget: string[]; ignore: string[] } {
+    return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore) }
+  }
+
+  private skipSummary(): string {
+    const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size
+    if (!n) return ''
+    const parts = [['size', this.skips.size.size], ['budget', this.skips.budget.size], ['ignore', this.skips.ignore.size]].filter(([, c]) => c).map(([k, c]) => `${c} ${k}`)
+    return `; skipped ${n} file(s) (${parts.join(', ')})`
+  }
+
+  private loadRoomIgnore(): void {
+    let text = ''
+    try { text = fs.readFileSync(this.abs(ROOMIGNORE), 'utf8') } catch { /* none */ }
+    this.roomIgnore = parseRoomIgnore(text)
+    if (this.roomIgnore.patterns) this.log(`${ROOMIGNORE}: ${this.roomIgnore.patterns} pattern(s)`)
+  }
+
+  /** Bytes of overlay text this person currently shares, excluding one path (about to be replaced). */
+  private sharedBytes(except: string): number {
+    let total = 0
+    for (const [relpath, text] of this.roomDoc.overlay(this.name)) if (relpath !== except) total += text.length
+    return total
   }
 
   async stop(): Promise<void> {
@@ -335,9 +372,11 @@ class Daemon implements Roomd {
       const stat = fs.statSync(this.abs(relpath))
       if (!stat.isFile()) return undefined
       if (stat.size > this.sizeCap) {
-        if (!quiet) this.log(`skip ${relpath}: ${stat.size} bytes > cap`)
+        if (!this.skips.size.has(relpath) && !quiet) this.log(`skip ${relpath}: ${stat.size} bytes > cap`)
+        this.skips.size.add(relpath)
         return undefined
       }
+      this.skips.size.delete(relpath)
       const bytes = fs.readFileSync(this.abs(relpath))
       try {
         return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
@@ -352,7 +391,12 @@ class Daemon implements Roomd {
 
   private isIgnoredPath(relpath: string): boolean {
     if (!relpath || relpath === ROOM_FILE) return true
-    return relpath.split('/').some(segment => IGNORED_DIRS.has(segment))
+    if (relpath.split('/').some(segment => IGNORED_DIRS.has(segment))) return true
+    if (this.roomIgnore.ignores(relpath)) {
+      if (!this.skips.ignore.has(relpath)) { this.skips.ignore.add(relpath); this.log(`skip ${relpath}: ${ROOMIGNORE}`) }
+      return true
+    }
+    return false
   }
 
   private isSafeRoomPath(relpath: string): boolean {
@@ -377,6 +421,11 @@ class Daemon implements Roomd {
       const disk = this.readText(relpath)
       if (disk === undefined) return
       const base = await gitShow(this.dir, this.base, relpath)
+      if (disk !== base && this.sharedBytes(relpath) + disk.length > this.totalBudget) {
+        if (!this.skips.budget.has(relpath)) { this.skips.budget.add(relpath); this.log(`skip ${relpath}: sharing it would exceed the ${Math.round(this.totalBudget / 1024)} KB total budget`) }
+        return
+      }
+      this.skips.budget.delete(relpath)
       this.roomDoc.doc.transact(() => {
         this.roomDoc.unmarkDeleted(this.name, relpath, this)
         if (disk === base) this.roomDoc.clearOverlay(this.name, relpath, this)
@@ -413,10 +462,25 @@ class Daemon implements Roomd {
       const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
       if (this.isIgnoredPath(relpath) || event === 'addDir' || event === 'unlinkDir') return
       if (path.basename(relpath) === '.gitignore') this.refreshTracked().catch(() => {})
+      if (relpath === ROOMIGNORE) { this.reloadRoomIgnore(); return }
       this.scheduleDisk(relpath, event === 'add')
     })
     watcher.on('error', error => this.log(`watcher error: ${errMsg(error)}`))
     await new Promise<void>(resolve => watcher.on('ready', () => resolve()))
+  }
+
+  /** .roomignore changed: newly ignored files leave the room, newly allowed ones are published. */
+  private reloadRoomIgnore(): void {
+    const before = new Set(this.skips.ignore)
+    this.skips.ignore.clear()
+    this.loadRoomIgnore()
+    for (const relpath of this.tracked) {
+      const nowIgnored = this.isIgnoredPath(relpath)
+      if (nowIgnored && this.roomDoc.overlayText(this.name, relpath)) {
+        this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this) }, this)
+        this.log(`cleared ${relpath} overlay (${ROOMIGNORE})`)
+      } else if (!nowIgnored && before.has(relpath)) this.scheduleDisk(relpath, false)
+    }
   }
 
   private scheduleDisk(relpath: string, isNew: boolean): void {

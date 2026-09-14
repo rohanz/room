@@ -1,7 +1,7 @@
 {
   "name": "room",
-  "version": "0.3.11",
-  "description": "Room awareness for coding agents: one-step join, see what teammates and their agents are on, declare intent, claim lines, get told when your symbols are about to change.",
+  "version": "0.4.0",
+  "description": "Room awareness for coding agents: open a room for the repo once, auto-join per branch, see what teammates and their agents are on, declare intent, claim lines, get told when your symbols are about to change or your edits collide.",
   "author": {
     "name": "Rohan",
     "url": "https://github.com/rohanz/room"
@@ -15,7 +15,7 @@
     "agents"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./codex-mcp.json",
   "interface": {
     "displayName": "Room",
     "shortDescription": "Work in a shared live room without stepping on teammates",

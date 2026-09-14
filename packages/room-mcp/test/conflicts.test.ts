@@ -1,0 +1,148 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import * as Y from 'yjs'
+import { Awareness } from 'y-protocols/awareness'
+import { RoomDoc } from '@room/shared'
+import type { Identity } from '@room/shared'
+import { createTools } from '../src/tools.js'
+import { changedRanges } from '../src/conflicts.js'
+import type { Session } from '../src/session.js'
+
+const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
+const me: Identity = { name: 'Rohan', kind: 'agent' }
+let dir: string, base: string
+
+function pair() {
+  const a = new Y.Doc(), b = new Y.Doc()
+  a.on('update', (u: Uint8Array) => Y.applyUpdate(b, u))
+  b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
+  return { a: new RoomDoc(a), b: new RoomDoc(b) }
+}
+function fakeSession(room: RoomDoc, extra: Partial<Session> = {}): Session {
+  const awareness = new Awareness(room.doc)
+  awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle' })
+  return {
+    room, awareness, me, dir, roomUrl: 'ws://x/github.com%2Fo%2Fr%2Fmain', roomName: 'github.com/o/r/main', browserUrl: 'http://x',
+    provider: { synced: true, awareness } as unknown as Session['provider'],
+    daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
+    ...extra,
+  }
+}
+function setup(opts: { now?: () => number; joined?: boolean; session?: Partial<Session> } = {}) {
+  const { a, b } = pair()
+  a.setMeta({ repo: 'r', branch: 'main', base })
+  let session: Session | null = opts.joined === false ? null : fakeSession(a, opts.session)
+  const closed: string[] = []
+  const tools = createTools({
+    getSession: () => session, setSession: s => { session = s }, cwd: dir, now: opts.now, conflictDebounceMs: 5,
+    join: async () => fakeSession(a), leave: async () => {}, close: async s => { closed.push(s.roomName); return ['github.com/o/r/main', 'github.com/o/r/dev'] },
+    log: () => {},
+  })
+  if (session) tools.attachHooks(session)
+  return { room: a, other: b, tools, closed, get session() { return session } }
+}
+const kieran: Identity = { name: 'Kieran', kind: 'agent' }
+
+beforeAll(() => {
+  dir = mkdtempSync(join(tmpdir(), 'room-conf-'))
+  const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+  writeFileSync(join(dir, 'app.py'), COMMITTED)
+  git('add', '.'); git('commit', '-qm', 'init')
+  base = git('rev-parse', 'HEAD').trim()
+})
+afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+describe('changedRanges', () => {
+  it('reports live line ranges that differ from the base', () => {
+    expect(changedRanges('a\nb\nc\n', 'a\nB\nc\n')).toEqual([{ from: 2, to: 2 }])
+    expect(changedRanges('a\nb\nc\n', 'a\nb\nc\nd\ne\n')).toEqual([{ from: 4, to: 5 }])
+    expect(changedRanges('a\nb\n', 'a\nb\n')).toEqual([])
+  })
+})
+
+describe('automatic conflict notices', () => {
+  it('my edit inside a teammate\'s claim raises one interrupt to me and a notify to them, once', async () => {
+    const t = setup()
+    t.other.addClaim({ path: 'app.py', from: 4, to: 5, by: 'Kieran', byKind: 'agent', intent: 'rewrite b' })
+    t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
+    await t.tools.flushConflicts()
+    t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 222'))
+    await t.tools.flushConflicts()
+    const msgs = t.room.messages().filter(m => m.type === 'conflict')
+    expect(msgs).toHaveLength(2)
+    expect(msgs[0].to).toBe('Rohan'); expect(msgs[0].priority).toBe('interrupt')
+    expect(msgs[0].type === 'conflict' && msgs[0].text).toContain("you edited app.py:5-5 inside Kieran's agent's claim")
+    expect(msgs[1].to).toBe('Kieran'); expect(msgs[1].priority).toBe('notify')
+    // and it reaches my inbox on the next call
+    expect(await t.tools.call('room_state', {})).toContain('CONFLICT on app.py: you edited')
+  })
+
+  it('an edit I have claimed myself is not a conflict', async () => {
+    const t = setup()
+    t.other.addClaim({ path: 'app.py', from: 1, to: 2, by: 'Kieran', byKind: 'agent', intent: 'validate' })
+    await t.tools.call('room_claim', { path: 'app.py', from: 4, to: 5, intent: 'b' })
+    t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
+    await t.tools.flushConflicts()
+    expect(t.room.messages().filter(m => m.type === 'conflict')).toHaveLength(0)
+  })
+
+  it('both changing the same lines posts a notify when the preview conflicts and an fyi when it clears', async () => {
+    const t = setup()
+    t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
+    await t.tools.flushConflicts()
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 33'))
+    await t.tools.flushConflicts()
+    const notes = () => t.room.messages().filter(m => m.type === 'note' && m.from === 'room')
+    expect(notes()).toHaveLength(1)
+    expect(notes()[0].type === 'note' && notes()[0].text).toContain("your app.py and Kieran's now conflict around line 5; room_preview_merge(Kieran)")
+    // a further change while still conflicting says nothing new
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 34'))
+    await t.tools.flushConflicts()
+    expect(notes()).toHaveLength(1)
+    // Kieran moves to a different line: clean again
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    await t.tools.flushConflicts()
+    expect(notes()).toHaveLength(2)
+    expect(notes()[1].priority).toBe('fyi')
+    expect(notes()[1].type === 'note' && notes()[1].text).toContain('merge cleanly again')
+  })
+})
+
+describe('room lifecycle', () => {
+  it('room_close needs confirm=true, then closes for everyone and leaves', async () => {
+    const t = setup()
+    expect(await t.tools.call('room_close', {})).toContain('confirm=true')
+    expect(t.closed).toEqual([])
+    const out = await t.tools.call('room_close', { confirm: true })
+    expect(t.closed).toEqual(['github.com/o/r/main'])
+    expect(out).toContain('closed github.com/o/r for everyone: removed github.com/o/r/main, github.com/o/r/dev')
+    expect(t.session).toBeNull()
+    expect(t.room.messages().some(m => m.type === 'note' && m.priority === 'interrupt' && m.text.includes('closing the room'))).toBe(true)
+  })
+
+  it('a session whose room the server closed refuses tools until leave + create', async () => {
+    const t = setup({ session: { closed: { reason: 'room closed' } } })
+    expect(await t.tools.call('room_state', {})).toBe('error: the room for github.com/o/r was closed (room closed); room_leave, then room_create to reopen')
+    expect(await t.tools.call('room_leave', {})).toContain('left')
+  })
+
+  it('join evicts overlays of absent people older than 7 days, keeps recent and present ones', async () => {
+    const DAY = 86_400_000
+    let clock = 1_000_000_000_000
+    const t = setup({ joined: false, now: () => clock })
+    t.other.setOverlay('Kieran', 'app.py', 'old\n')
+    t.other.setOverlay('Hrishi', 'app.py', 'recent\n')
+    // timestamps are wall-clock; age them explicitly
+    t.other.overlayAt.set('Kieran', clock - 9 * DAY)
+    t.other.overlayAt.set('Hrishi', clock - 2 * DAY)
+    await t.tools.call('room_join', {})
+    expect(t.room.changedPaths('Kieran')).toEqual([])
+    expect(t.room.changedPaths('Hrishi')).toEqual(['app.py'])
+    const note = t.room.messages().find(m => m.type === 'note' && m.text.includes('evicted'))
+    expect(note && note.type === 'note' && note.text).toContain('evicted stale uncommitted work of Kieran (1 file; last seen 9 days ago)')
+  })
+})

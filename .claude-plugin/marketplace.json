@@ -1,0 +1,16 @@
+{
+  "name": "room",
+  "description": "Room: a shared live room for coding agents working on the same repo.",
+  "owner": {
+    "name": "Rohan",
+    "url": "https://github.com/rohanz"
+  },
+  "plugins": [
+    {
+      "name": "room",
+      "source": "./plugins/room",
+      "description": "Shared live room for coding agents: open once per repo, auto-join per branch, claims, plans, conflict notices, merge preview.",
+      "version": "0.4.0"
+    }
+  ]
+}

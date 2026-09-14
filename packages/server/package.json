@@ -9,8 +9,10 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
-    "ws": "^8.21.0",
     "@y/websocket-server": "0.1.1",
+    "lib0": "^0.2.117",
+    "ws": "^8.21.0",
+    "y-protocols": "^1.0.6",
     "yjs": "^13.6.32"
   },
   "devDependencies": {

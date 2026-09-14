@@ -107,6 +107,42 @@ describe('roomd v2 push-only overlays', () => {
 
   afterAll(async () => { await Promise.all(daemons.map(daemon => daemon.stop())) })
 
+  it('skips files matched by .roomignore and re-evaluates when it changes', async () => {
+    const dir = await makeRepo({ 'app.py': 'x = 1\n', 'fixtures/big.json': '{}\n', '.roomignore': 'fixtures/\n' })
+    const daemon = await start({ room: room(), dir, name: 'Ann' })
+    await fsp.writeFile(path.join(dir, 'fixtures/big.json'), '{"changed":true}\n')
+    await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
+    await waitFor(() => daemon.roomDoc.changedPaths('Ann').includes('app.py'))
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
+    expect(daemon.skipped().ignore).toEqual(['fixtures/big.json'])
+    // Lifting the rule publishes the file; adding one back clears its overlay.
+    await fsp.writeFile(path.join(dir, '.roomignore'), '')
+    await waitFor(() => daemon.roomDoc.changedPaths('Ann').includes('fixtures/big.json'))
+    await fsp.writeFile(path.join(dir, '.roomignore'), '*.json\n')
+    await waitFor(() => !daemon.roomDoc.changedPaths('Ann').includes('fixtures/big.json'))
+    expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
+  })
+
+  it('stops sharing once the total budget is reached and records what was skipped', async () => {
+    const dir = await makeRepo({ 'a.txt': 'a\n', 'b.txt': 'b\n', 'c.txt': 'c\n' })
+    const daemon = await start({ room: room(), dir, name: 'Bud', totalBudget: 250 })
+    await fsp.writeFile(path.join(dir, 'a.txt'), 'A'.repeat(100))
+    await waitFor(() => daemon.roomDoc.changedPaths('Bud').includes('a.txt'))
+    await fsp.writeFile(path.join(dir, 'b.txt'), 'B'.repeat(100))
+    await waitFor(() => daemon.roomDoc.changedPaths('Bud').includes('b.txt'))
+    await fsp.writeFile(path.join(dir, 'c.txt'), 'C'.repeat(100))
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(daemon.roomDoc.changedPaths('Bud').sort()).toEqual(['a.txt', 'b.txt'])
+    expect(daemon.skipped().budget).toEqual(['c.txt'])
+    // Freeing room lets the skipped file in on its next change.
+    await fsp.writeFile(path.join(dir, 'a.txt'), 'a\n')
+    await waitFor(() => !daemon.roomDoc.changedPaths('Bud').includes('a.txt'))
+    await fsp.writeFile(path.join(dir, 'c.txt'), 'C'.repeat(100) + '!')
+    await waitFor(() => daemon.roomDoc.changedPaths('Bud').includes('c.txt'))
+    expect(daemon.skipped().budget).toEqual([])
+  })
+
   it('sets base/branch/normalised repo but keeps a clean overlay empty', async () => {
     const dir = await makeRepo({ 'README.md': '# hello\n', 'src/app.py': 'line1\nline2\n' })
     sh(dir, ['remote', 'add', 'origin', 'git@github.com:openai/room.git'])

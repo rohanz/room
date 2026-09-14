@@ -1,5 +1,6 @@
-// PreToolUse on edit tools: put the agent's unread room messages, and any teammate claims on
-// the files it is about to edit, in front of the model before the edit happens.
+// PreToolUse on edit tools (Codex apply_patch/Write/Edit; Claude Code Edit/Write/MultiEdit/
+// NotebookEdit): put the agent's unread room messages, and any teammate claims on the files it
+// is about to edit, in front of the model before the edit happens.
 // Reads .git/room-state.json, which the room MCP server keeps current.
 import fs from 'node:fs'
 import { readStdinJson, gitRoot, gitStatePath, readJson, pathsOf } from './common.mjs'
