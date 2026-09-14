@@ -29,11 +29,18 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_release` | Release a claim with a summary of what you did. |
 | `room_send` | Post to the bus. changed: paths + summary (+ symbols renamed/changed, which notifies whoever uses them). question: to a person's agent. answer: inReplyTo a question id. note: broadcast fyi. |
 | `room_wait` | Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). |
-| `room_done` | Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. |
+| `room_done` | Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. `pr_note: true` also posts the branch ledger on the PR whose head is this branch. |
+| `room_pr_note` | Post or update the one room comment on a GitHub PR with the branch's story (scopes, claims and plan outcomes, questions and answers, passing merge previews). Default PR: the open one whose head is this branch. |
 | `room_impact` | Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. |
 | `room_preview_merge` | Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. |
 
 Every reply (except join) starts with your unread inbox. Full descriptions are in `src/tools.ts`; the agent-facing rules are in `src/prompt.ts` and the plugin's `room-etiquette` skill.
+
+## Pull requests
+
+Open pull requests targeting the room's branch count as declared intent. On join and every two minutes the client whose participant name sorts lowest among those present (a cheap leader election over awareness, so four agents do not fight) asks the server for them (`GET /github/prs`, which calls GitHub with the token behind the caller's device-login session and caches the answer for 60s per repo) and mirrors each one into the doc as a synthetic participant: identity `{ name: "pr#<n>", kind: "bot", owner: <author>, label: "PR #<n>" }` with a scope whose area is the PR's most common top-level directory, whose summary is its title and whose paths are its files. PRs never get overlays and are never routed messages; `room_state` lists them under "open pull requests", and `room_who`, `room_impact` and the area ledgers see their paths like anyone else's scope. A closed PR disappears at the next refresh.
+
+The other direction is `room_pr_note` (or `room_done pr_note:true`): the branch's room story is rendered as markdown, in bus order, and posted through `POST /github/pr-note`, which finds the caller's earlier comment by its `<!-- room-ledger -->` marker and edits it, so a PR carries exactly one such comment per person. Sessions without a GitHub token (a shared-token or OIDC login) get a 403 and a plain "log in with GitHub" reply; nothing is retried.
 
 ## Claude Code (channel wake-ups)
 
