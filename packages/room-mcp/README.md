@@ -33,6 +33,8 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_pr_note` | Post or update the one room comment on a GitHub PR with the branch's story (scopes, claims and plan outcomes, questions and answers, passing merge previews). Default PR: the open one whose head is this branch. |
 | `room_impact` | Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. |
 | `room_preview_merge` | Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. |
+| `room_spawn` | Dispatch a worker agent (claude or codex, optional model) into this room in its own worktree; it reports back with room_done. |
+| `room_dismiss` | Stop a worker you spawned; its worktree and branch are kept. |
 | `room_share` | Change how much of your clone the room sees, live: `intent`, `declared` or `full`. Without `level`, reports the current level and what is withheld. |
 
 Every reply (except join) starts with your unread inbox. Full descriptions are in `src/tools.ts`; the agent-facing rules are in `src/prompt.ts` and the plugin's `room-etiquette` skill.
@@ -109,6 +111,34 @@ A room is still one document per branch, but what you see is scoped to the folde
 - **Membership.** You are in the areas covering your declared scope paths plus your changed paths. `room_scope` stores them on your scope record (`areas`) and in presence; `room_join` and `room_scope` say which areas you are in and who else is in them.
 - **Filtering.** `room_state` lists participants, claims, uncommitted changes and bus only for your areas, with one line for the rest (`3 others in 2 other areas (api/, web/)`). Pass `all: true` to see everything; with no scope and no changes yet you see everything. The inbox drops broadcast `notify` messages whose paths (or sender) are outside your areas; addressed messages and interrupts always arrive. `room_who` and `room_impact` are path-specific and unchanged.
 - **Ownership hint.** When you declare a scope or claim in an area you do not own per CODEOWNERS, the reply adds `owners of api/: @rohanz, @kieran` so your agent can ask them. Nothing is enforced.
+
+## Local rooms (no server)
+
+Without `ROOM_SERVER`, a session joins a **local room**. The first session in a clone
+starts a relay on `127.0.0.1` (a minimal y-websocket server: in-memory, no auth, no
+persistence) and records `{port, pid}` in `<git common dir>/room-local.json`; later
+sessions in the same clone or any worktree of it probe that port and connect. When the
+relay's owner exits, a remaining session takes the port over within about two seconds and
+the others reconnect; every client holds the full document, so nothing is lost. The room
+is named `local/<repo basename>/<branch of the main worktree>`, so worktrees on other
+branches still share it. Identity is `git config user.name` (plus `ROOM_TAG`), there is no
+login, and `room_create` / `room_close` / `room_login` explain that they need a server.
+
+`ROOM_SERVER=hosted` selects the hosted server; any `ws://` or `wss://` URL selects another.
+
+## Workers
+
+`room_spawn(tag, task, host?, model?, share?, dir?)` makes a git worktree at
+`<repo>/.room/workers/<tag>` on branch `room/<tag>` from HEAD (or uses `dir`), and starts
+`claude -p` or `codex exec` there, detached, with `ROOM_ROOM`, `ROOM_TAG`, `ROOM_LEAD`,
+`ROOM_DIR` and the lead's `ROOM_SERVER` in its environment; output goes to
+`.room/workers/<tag>.log`. The worker's prompt is a fixed preamble (follow the etiquette,
+ask the lead with `room_send`, `room_preview_merge`, then `room_done`) followed by the
+task. The doc's `workers` map records tag, name, host, model, task, dir, branch, pid,
+status (running, done, failed, dismissed) and summary; the lead's MCP process updates the
+status on exit. A worker's `room_done` posts a `done` message addressed to its lead at
+notify priority, which wakes the lead. `ROOM_MAX_WORKERS` (default 8) caps running
+workers per lead. The daemon ignores `.room/`; add it to `.gitignore` too.
 
 ## Limitations
 

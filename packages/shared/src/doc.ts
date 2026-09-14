@@ -10,6 +10,7 @@ import type {
   MsgType,
   Priority,
   Scope,
+  Worker,
 } from './types.js'
 import { newId } from './identity.js'
 import type { GraphSnapshot } from './graph.js'
@@ -59,6 +60,17 @@ export class RoomDoc {
   get scopes(): Y.Map<Scope> { return this.doc.getMap<Scope>('scopes') }
   get claims(): Y.Map<Claim> { return this.doc.getMap<Claim>('claims') }
   get bus(): Y.Array<Msg> { return this.doc.getArray<Msg>('bus') }
+  /** Workers dispatched into this room by leads (room_spawn), keyed by tag. */
+  get workers(): Y.Map<Worker> { return this.doc.getMap<Worker>('workers') }
+  setWorker(w: Worker): void { this.workers.set(w.tag, w) }
+  updateWorker(tag: string, patch: Partial<Worker>): Worker | undefined {
+    const w = this.workers.get(tag)
+    if (!w) return undefined
+    const next = { ...w, ...patch }
+    this.workers.set(tag, next)
+    return next
+  }
+  workerOf(name: string): Worker | undefined { for (const w of this.workers.values()) if (w.name === name) return w; return undefined }
   get metaMap(): Y.Map<string | number> { return this.doc.getMap<string | number>('meta') }
   /** Base-commit text of files someone has changed, keyed "<sha>:<path>", so browsers can three-way merge. */
   get baseTexts(): Y.Map<string> { return this.doc.getMap<string>('basetext') }

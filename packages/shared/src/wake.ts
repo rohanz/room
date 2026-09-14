@@ -2,7 +2,7 @@ import { isAgentic } from './identity.js'
 import { claimsOverlap } from './claims.js'
 import type { Claim, ClaimMsg, Identity, Msg } from './types.js'
 
-const WAKE_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'conflict', 'question', 'scope'])
+const WAKE_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'conflict', 'question', 'scope', 'done'])
 
 export interface WakeDecision {
   wake: boolean

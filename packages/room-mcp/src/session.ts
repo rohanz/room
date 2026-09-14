@@ -8,13 +8,23 @@ import { dirname, resolve } from 'node:path'
 import type { WebsocketProvider } from 'y-websocket'
 import type { Awareness } from 'y-protocols/awareness'
 import { startRoomd, RoomdError, clampShare, parseShare, type Roomd, type ShareLevel } from '@room/roomd'
+import { ensureLocalRelay, gitCommonDir, localRoomName, type LocalRelay } from '@room/roomd/local'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import type { Identity, Kind, RoomDoc } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { getCredential, removeCredential, setCredential } from './credentials.js'
 
 /** The hosted room server. Override with ROOM_SERVER (e.g. ws://localhost:1234 for local dev). */
+/** The hosted server, used when ROOM_SERVER=hosted (or an explicit URL). Without ROOM_SERVER a session is LOCAL: no server at all. */
 export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
+export const LOCAL = 'local'
+/** Resolve ROOM_SERVER / the server argument: unset or "local" → local mode; "hosted" → DEFAULT_SERVER; else the URL. */
+export function resolveServer(raw?: string): string {
+  const v = raw?.trim()
+  if (!v || v === LOCAL) return LOCAL
+  if (v === 'hosted') return DEFAULT_SERVER
+  return v
+}
 export const DEFAULT_WEB = 'http://localhost:5173'
 
 export interface Session {
@@ -35,6 +45,10 @@ export interface Session {
   closed?: { reason: string }
   /** The server's ceiling on sharing levels (ROOM_SHARE_MAX); the daemon's level never exceeds it. */
   shareMax: ShareLevel
+  /** Set in local mode (no server): the relay this session found or runs. */
+  local?: LocalRelay
+  /** The room was chosen explicitly (room argument, ROOM_ROOM, or local naming): do not follow the clone's branch. */
+  pinnedRoom?: boolean
   /** The level asked for at join, before clamping (so the reply can say it was lowered). */
   shareRequested: ShareLevel
 }
@@ -48,6 +62,8 @@ export interface JoinOptions {
   token?: string
   /** Open the repo on the server first (room_create). Without it, joining an unopened repo fails with NoRoom. */
   create?: boolean
+  /** Local mode: the branch to name the room after (default: the main worktree's branch). */
+  localBranch?: string
   /** Label for a second principal under the same login: name becomes login+label. Default from ROOM_TAG. */
   tag?: string
   /** 'agent' (default), 'bot' or 'ci'. Default from ROOM_KIND. */
@@ -238,7 +254,9 @@ export function decodeRoom(encoded: string): string { try { return decodeURIComp
 
 export async function joinSession(opts: JoinOptions): Promise<Session> {
   const dir = resolve(opts.dir)
-  const parsed = parseServer(opts.server ?? process.env.ROOM_SERVER ?? DEFAULT_SERVER)
+  const chosen = resolveServer(opts.server ?? process.env.ROOM_SERVER)
+  if (chosen === LOCAL) return joinLocal(dir, opts)
+  const parsed = parseServer(chosen)
   const server = parsed.server
   const token = opts.token ?? process.env.ROOM_TOKEN?.trim() ?? parsed.token
   const web = (opts.web ?? process.env.ROOM_WEB ?? defaultWeb(server)).replace(/\/+$/, '')
@@ -293,9 +311,50 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     browserUrl,
     shareMax,
     shareRequested,
+    ...(opts.room ? { pinnedRoom: true } : {}),
   }
   watchClosed(session, opts.log)
   return session
+}
+
+/** Local mode: no server, no login. The clone's shared git dir hosts a relay; every worktree of the clone shares the room. */
+async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
+  const roomName = opts.room ?? await localRoomName(dir, opts.localBranch)
+  const owner = opts.name ?? await defaultName(dir)
+  if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
+  const label = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, '') || undefined
+  const kindEnv = (opts.kind ?? process.env.ROOM_KIND)?.trim()
+  const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
+  const name = label ? `${owner}+${label}` : owner
+  const me: Identity = { name, kind, owner, ...(label ? { label } : {}) }
+  const common = await gitCommonDir(dir)
+  const local = await ensureLocalRelay(common, roomName, { log: opts.log })
+  const roomUrl = `${local.url}/${encodeRoom(roomName)}`
+  const share = requestedShare(opts.share)
+  let daemon: Roomd
+  try {
+    daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+  } catch (e) { await local.stop(); throw e }
+  const web = (opts.web ?? process.env.ROOM_WEB ?? DEFAULT_WEB).replace(/\/+$/, '')
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}`
+  const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
+  graph.start()
+  return {
+    graph,
+    room: daemon.roomDoc,
+    provider: daemon.provider,
+    awareness: daemon.provider.awareness,
+    daemon,
+    me,
+    dir,
+    roomUrl,
+    roomName,
+    browserUrl,
+    shareMax: 'full',
+    shareRequested: share,
+    local,
+    pinnedRoom: true,
+  }
 }
 
 /** Server close code when a repo is closed (DELETE /rooms): stop reconnecting and remember why. */
@@ -350,6 +409,7 @@ export async function closeRoom(server: string, roomName: string, auth: Creds): 
 
 /** Auth the way joinSession resolves it, for HTTP calls made after the join. */
 export async function authFor(s: Session): Promise<Creds & { server: string }> {
+  if (s.local) throw new RoomdError('local room: no server to authenticate to', 2)
   const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
   const token = process.env.ROOM_TOKEN?.trim() ?? parseServer(process.env.ROOM_SERVER ?? '').token
   const { login: _login, ...creds } = await resolveAuth(server, s.roomName, token)
@@ -368,6 +428,7 @@ export async function viewToken(server: string, roomName: string, auth: Creds): 
 
 /** Re-mint the browser link (view keys can expire or be lost); falls back to the stored one. */
 export async function refreshBrowserUrl(s: Session): Promise<string> {
+  if (s.local) return s.browserUrl
   try {
     const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
     const u = new URL(s.browserUrl)
@@ -382,4 +443,5 @@ export async function refreshBrowserUrl(s: Session): Promise<string> {
 export async function leaveSession(s: Session): Promise<void> {
   s.graph?.stop()
   await s.daemon.stop()
+  await s.local?.stop()
 }

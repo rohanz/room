@@ -8,11 +8,11 @@ import {
   RoomDoc, formatMsg, formatPlans, withLineNumbers, claimsOverlap, clampRange, describeClaim, displayName, rangesOverlap, scopeCovers, msgPaths, symbolRange, isAgentic, describeIdentity, Areas, CODEOWNERS_PATHS, sharesArea } from '@room/shared'
 import type {
   Claim, Identity, Presence, Msg, Plan, Priority, Scope,
-  ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg, PlanMsg,
-} from '@room/shared'
+  ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg, PlanMsg, Worker, DoneMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { clampShare, parseShare, type ShareLevel, type SharePresence } from '@room/roomd'
-import { DEFAULT_SERVER, authFor, closeRoom, joinSession, leaveSession, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthMode, startLogin, type JoinOptions, type Session } from './session.js'
+import { DEFAULT_SERVER, LOCAL, authFor, closeRoom, joinSession, leaveSession, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, resolveServer, serverAuthMode, startLogin, type JoinOptions, type Session } from './session.js'
+import { DEFAULT_MAX_WORKERS, defaultSpawner, prepareWorktree, validTag, workerCommand, workerLines, workerPrompt, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
 import { getCredential, getPending, setPending } from './credentials.js'
 import { NotLoggedIn, serverAuthConfig } from './session.js'
 import { HooksBridge } from './hooks-bridge.js'
@@ -53,6 +53,10 @@ export interface ToolCtx {
    *  (default GET /github/prs on the server); post: the PR comment (default POST /github/pr-note);
    *  intervalMs: mirror refresh period (default 2 min; 0 disables the timer). */
   prs?: { fetch?: (s: Session) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
+  /** Workers (room_spawn): injectable process starter and worktree maker for tests; max running per lead (default ROOM_MAX_WORKERS or 8). */
+  spawner?: Spawner
+  worktree?: (repoDir: string, tag: string) => Promise<{ dir: string; branch: string; created: boolean }>
+  maxWorkers?: number
 }
 
 export interface Tools {
@@ -133,6 +137,10 @@ export const DEFS: ToolDef[] = [
     inputSchema: { type: 'object', properties: { person: str('the other person'), run: str('optional shell command to run in the merged tree, e.g. "uv run pytest -q"'), resolve: { type: 'boolean', description: 'when a conflicting region on one side contains the other side\'s lines in order (you built on their change), take the larger side and return the resolved file text so you can write it to your own clone' } }, required: ['person'] } },
   { name: 'room_share', annotations: RW, description: 'Change how much of your clone the room sees, live. Lowering the level withdraws file text the new level no longer allows (intent: all of it; declared: everything outside your scope paths); raising it republishes what your disk holds. Never above the server\'s ceiling. Without `level`, reports the current level and what is withheld.',
     inputSchema: { type: 'object', properties: { level: SHARE } } },
+  { name: 'room_spawn', annotations: RW, description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Max running workers per lead: ROOM_MAX_WORKERS (8).',
+    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), share: SHARE, dir: str('use this existing directory instead of creating a worktree') }, required: ['tag', 'task'] } },
+  { name: 'room_dismiss', annotations: RW, description: 'Stop a worker you spawned (SIGTERM to its process). Its worktree and branch are kept so you can inspect or merge what it did.',
+    inputSchema: { type: 'object', properties: { tag: str('the worker tag') }, required: ['tag'] } },
 ]
 
 const WAIT_DEFAULT = 30_000
@@ -247,6 +255,10 @@ export function createTools(ctx: ToolCtx): Tools {
   }
   const isMe = (s: Session, p: { name: string; kind: string }) => p.name === s.me.name && p.kind === s.me.kind
   const mine = (s: Session) => s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === s.me.kind)
+  const myWorkers = (s: Session): Worker[] => Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name)
+  /** Processes this MCP instance started (room_spawn); a lead that restarted only has the pid. */
+  const procs = new Map<string, SpawnedProcess>()
+  const gitignored = (dir: string): boolean => { try { return fs.readFileSync(path.join(dir, '.gitignore'), 'utf8').split('\n').some(l => l.trim() === '.room/' || l.trim() === '.room') } catch { return false } }
   const others = (s: Session): string[] => {
     const names = new Set<string>()
     for (const k of s.room.scopes.keys()) names.add(k)
@@ -456,7 +468,7 @@ export function createTools(ctx: ToolCtx): Tools {
   /** If the clone's branch changed since we joined, move to that branch's room. Returns a note for the agent, or ''. */
   const followBranch = async (): Promise<string> => {
     const s = ctx.getSession()
-    if (!s || !s.roomName.includes('/')) return ''
+    if (!s || !s.roomName.includes('/') || s.pinnedRoom) return ''
     let branch = ''
     try { branch = (await git(s.dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { return '' }
     if (!branch || branch === 'HEAD') return ''
@@ -554,15 +566,83 @@ export function createTools(ctx: ToolCtx): Tools {
   }
 
   // ---- login ------------------------------------------------------------------
-  const serverOf = (a: Record<string, unknown>) => parseServer(typeof a.server === 'string' && a.server ? a.server : process.env.ROOM_SERVER ?? DEFAULT_SERVER).server
+  const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }
+  const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`
   const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
     ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.`
     : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
 
   // ---- handlers -------------------------------------------------------------
   const handlers: Record<string, (a: Record<string, unknown>) => Promise<string>> = {
+    async room_spawn(a) {
+      const s = S()
+      const tag = validTag(a.tag)
+      if (!tag) return 'error: tag must be 1-40 chars of letters, digits, _ or -'
+      const task = String(a.task ?? '').trim()
+      if (!task) return 'error: task is required'
+      const host: WorkerHost = a.host === 'codex' ? 'codex' : 'claude'
+      const model = typeof a.model === 'string' && a.model.trim() ? a.model.trim() : undefined
+      const existing = s.room.workers.get(tag)
+      if (existing && existing.status === 'running') return `error: worker ${tag} is already running (pid ${existing.pid}); room_dismiss it first or pick another tag`
+      const running = myWorkers(s).filter(w => w.status === 'running')
+      const max = ctx.maxWorkers ?? Number(process.env.ROOM_MAX_WORKERS ?? DEFAULT_MAX_WORKERS)
+      if (running.length >= max) return `error: ${running.length} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`
+      const share = typeof a.share === 'string' && a.share ? parseShare(a.share) : undefined
+      if (typeof a.share === 'string' && a.share && !share) return 'error: share must be intent, declared or full'
+      let dir: string, branch: string, created = false
+      if (typeof a.dir === 'string' && a.dir) {
+        dir = path.resolve(a.dir)
+        if (!fs.existsSync(dir)) return `error: ${dir} does not exist`
+        try { branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { branch = '?' }
+      } else {
+        try { ({ dir, branch, created } = await (ctx.worktree ?? prepareWorktree)(s.dir, tag)) }
+        catch (e) { return `error: could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}` }
+      }
+      const owner = s.me.owner ?? s.me.name
+      const name = `${owner}+${tag}`
+      const prompt = workerPrompt(s.me.name, tag, task)
+      const { cmd, args } = workerCommand(host, model, prompt)
+      const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
+      const env: Record<string, string> = { ROOM_TAG: tag, ROOM_DIR: dir, PWD: dir, ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_LEAD: s.me.name, ...(share ? { ROOM_SHARE: share } : {}) }
+      const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
+      env.ROOM_LOG_FILE = path.join(s.dir, '.room', 'workers', `${tag}.mcp.log`)
+      let proc: SpawnedProcess
+      try { proc = (ctx.spawner ?? defaultSpawner)({ cmd, args, cwd: dir, env, logFile }) }
+      catch (e) { return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}` }
+      procs.set(tag, proc)
+      const w: Worker = { tag, name, host, ...(model ? { model } : {}), task, dir, branch, pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name }
+      s.room.setWorker(w)
+      proc.onExit(code => {
+        const cur = s.room.workers.get(tag)
+        if (!cur || cur.status !== 'running') { if (cur) s.room.updateWorker(tag, { exitCode: code ?? -1 }); return }
+        s.room.updateWorker(tag, { status: code === 0 ? 'done' : 'failed', exitCode: code ?? -1, summary: cur.summary ?? (code === 0 ? 'process exited without room_done' : `process exited with code ${code}`) })
+        s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? '' : `; see ${logFile}`}` })
+      })
+      s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
+      const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
+      out.push(`log: ${logFile}`)
+      out.push(`it joins this room on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`)
+      if (created && !gitignored(s.dir)) out.push('tip: add .room/ to .gitignore (the room already ignores it; git status will not).')
+      return out.join('\n')
+    },
+    async room_dismiss(a) {
+      const s = S()
+      const tag = validTag(a.tag)
+      if (!tag) return 'error: tag is required'
+      const w = s.room.workers.get(tag)
+      if (!w) return `error: no worker ${tag}`
+      if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`
+      if (w.status !== 'running') return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`
+      const proc = procs.get(tag)
+      if (proc) proc.kill()
+      else if (w.pid > 0) { try { process.kill(-w.pid, 'SIGTERM') } catch { try { process.kill(w.pid, 'SIGTERM') } catch { /* gone */ } } }
+      s.room.updateWorker(tag, { status: 'dismissed' })
+      s.room.post<NoteMsg>(s.me, { type: 'note', text: `dismissed worker ${tag} (${w.name})` })
+      return `dismissed ${tag} (pid ${w.pid}); its work is on branch ${w.branch} in ${w.dir}`
+    },
     async room_login(a) {
       const server = serverOf(a)
+      if (server === LOCAL) return LOCAL_LOGIN
       const cfg = await serverAuthConfig(server)
       if (!cfg.providers.length) return `${server} has no login provider; it accepts your local gh credentials (or a shared token), nothing to do`
       const provider = a.provider === 'github' || a.provider === 'oidc' ? a.provider : undefined
@@ -583,6 +663,7 @@ export function createTools(ctx: ToolCtx): Tools {
     },
     async room_logout(a) {
       const server = serverOf(a)
+      if (server === LOCAL) return LOCAL_LOGIN
       setPending(server, undefined)
       const r = await doLogout(server)
       return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ''}${ctx.getSession() ? '; the current session stays connected until room_leave' : ''}` : `no login stored for ${server}`
@@ -607,7 +688,8 @@ export function createTools(ctx: ToolCtx): Tools {
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
       evictStale(s)
       await loadAreas(s)
-      const out = [`${a.create ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
+      const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
+      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; ROOM_SERVER=hosted joins the team server instead.'}`)
       out.push(shareLine(s))
       const here = others(s).filter(n => presences(s).some(p => p.user.name === n))
       const mineA = myAreas(s)
@@ -633,6 +715,7 @@ export function createTools(ctx: ToolCtx): Tools {
     },
     async room_close(a) {
       const s = S()
+      if (s.local) return 'this is a local room (no server): there is nothing to close. room_leave ends your session; the relay stops with the last session.'
       if (a.confirm !== true) return 'error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user\'s explicit request'
       const repo = s.roomName.slice(0, s.roomName.lastIndexOf('/'))
       cleanupMine(s, 'closing the room')
@@ -717,6 +800,7 @@ export function createTools(ctx: ToolCtx): Tools {
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
+      out.push(...workerLines(myWorkers(s), n => { const last = s.room.messages().filter(x => x.from === n).slice(-1)[0]; return last ? formatMsg(last) : undefined }, n => s.room.changedPaths(n).length, now()))
       return out.join('\n')
     },
     async room_read(a) {
@@ -937,10 +1021,16 @@ export function createTools(ctx: ToolCtx): Tools {
       if (!summary) return 'error: summary is required'
       const sc = s.room.scope(s.me.name)
       const released = cleanupMine(s, `done: ${summary}`)
-      s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
+      const asWorker = s.room.workerOf(s.me.name)
+      if (asWorker) {
+        s.room.updateWorker(asWorker.tag, { status: 'done', summary })
+        s.room.post<DoneMsg>(s.me, { type: 'done', tag: asWorker.tag, summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: 'notify' })
+      } else {
+        s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
+      }
       setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
       s.daemon.touch()
-      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s), scope cleared. You are still in the room and will be woken for questions.`]
+      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s), scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Stay until asked, then finish.` : 'You are still in the room and will be woken for questions.'}`]
       if (a.pr_note === true) {
         await refreshPrs(s)
         const pr = myPr(s)

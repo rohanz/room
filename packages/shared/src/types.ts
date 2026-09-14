@@ -66,7 +66,7 @@ export interface Scope {
 }
 
 export type Priority = 'fyi' | 'notify' | 'interrupt'
-export type MsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'note' | 'scope' | 'base' | 'plan'
+export type MsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'note' | 'scope' | 'base' | 'plan' | 'done'
 
 export interface MsgBase {
   id: string
@@ -92,7 +92,29 @@ export interface ScopeMsg extends MsgBase { type: 'scope'; area: string; summary
 export interface BaseMsg extends MsgBase { type: 'base'; base: string; prev: string; commits: number; paths: string[]; summary: string }
 /** A declared plan changed: cancelled (released undone) or superseded by a new plan on the same symbol. Routed to everyone who was shown the original. */
 export interface PlanMsg extends MsgBase { type: 'plan'; status: 'cancelled' | 'superseded'; claimId: string; path: string; plan: Plan; replacedBy?: Plan; text: string }
-export type Msg = ClaimMsg | ReleaseMsg | ChangedMsg | QuestionMsg | AnswerMsg | ConflictMsg | NoteMsg | ScopeMsg | BaseMsg | PlanMsg
+/** A worker finished its task; addressed to the lead that dispatched it. */
+export interface DoneMsg extends MsgBase { type: 'done'; tag: string; summary: string; changed: string[] }
+export type Msg = ClaimMsg | ReleaseMsg | ChangedMsg | QuestionMsg | AnswerMsg | ConflictMsg | NoteMsg | ScopeMsg | BaseMsg | PlanMsg | DoneMsg
+
+/** A worker agent dispatched by a lead (room_spawn) into this room. Keyed by tag in RoomDoc.workers. */
+export type WorkerStatus = 'running' | 'done' | 'failed' | 'dismissed'
+export interface Worker {
+  tag: string
+  /** Participant name the worker joins as (lead's owner + tag). */
+  name: string
+  host: 'claude' | 'codex'
+  model?: string
+  task: string
+  dir: string
+  branch: string
+  pid: number
+  startedAt: number
+  status: WorkerStatus
+  summary?: string
+  exitCode?: number
+  /** Participant name of the lead that spawned it. */
+  lead: string
+}
 
 export interface Meta {
   repo?: string

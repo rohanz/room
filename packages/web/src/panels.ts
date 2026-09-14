@@ -448,6 +448,7 @@ function messageBody(message: Msg): (Node | string | null)[] {
     case 'base': return [`${message.from} pushed ${message.commits} commit${message.commits === 1 ? '' : 's'}: ${message.summary} (base → ${message.base.slice(0, 7)})`]
     case 'plan': return [h('strong', {}, `${message.status} plan `), formatPlans([message.plan]), message.replacedBy ? ` → now ${formatPlans([message.replacedBy])}` : '', ` · ${message.text}`]
     case 'scope': return []
+    case 'done': return [h('strong', {}, `worker ${message.tag} finished `), message.summary, message.changed.length ? h('span', { class: 'mono' }, ` · ${message.changed.join(', ')}`) : null]
   }
 }
 

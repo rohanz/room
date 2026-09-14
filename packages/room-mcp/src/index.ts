@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import fs from 'node:fs'
 import { resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -8,7 +9,7 @@ import type { Msg } from '@room/shared'
 import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
+import { LOCAL, NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, resolveServer, type Session } from './session.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
@@ -19,7 +20,12 @@ export { joinSession, leaveSession, createRoom, closeRoom, NoRoom, NotLoggedIn, 
 export { credentialsPath, getCredential, setCredential, removeCredential } from './credentials.js'
 export type { Session, JoinOptions } from './session.js'
 
-const log = (s: string) => process.stderr.write(`room-mcp: ${s}\n`)
+// ROOM_LOG_FILE: also append every log line to a file (workers spawned by room_spawn get one per tag).
+const LOG_FILE = process.env.ROOM_LOG_FILE?.trim()
+const log = (s: string) => {
+  process.stderr.write(`room-mcp: ${s}\n`)
+  if (LOG_FILE) { try { fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${s}\n`) } catch { /* best effort */ } }
+}
 
 /** Where the user is working: the runner passes ROOM_DIR; the Codex plugin passes PWD through. */
 function cwd(): string {
@@ -69,9 +75,15 @@ async function main() {
       // The clone's origin + current branch always decides the room. ROOM_URL (runner) or a
       // prior .room.json only fill in when the clone has no origin.
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
+      const chosen = resolveServer(env('ROOM_SERVER'))
       if (env('ROOM_URL')) {
         const u = new URL(env('ROOM_URL')!)
         adopt(await joinSession({ dir: env('ROOM_DIR') ?? dir, name: env('ROOM_NAME'), room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))
+      } else if (chosen === LOCAL) {
+        // No server configured: a local room on this machine (workers get the lead's room via ROOM_ROOM).
+        adopt(await joinSession({ dir, room: env('ROOM_ROOM'), log }))
+      } else if (env('ROOM_ROOM')) {
+        adopt(await joinSession({ dir, room: env('ROOM_ROOM'), log }))
       } else if (derived.roomName) {
         adopt(await joinSession({ dir, log }))
       } else if (prior) {

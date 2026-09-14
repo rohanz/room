@@ -102,7 +102,7 @@ export class RoomdError extends Error {
   }
 }
 
-const IGNORED_DIRS = new Set(['.git', 'node_modules', '.venv'])
+const IGNORED_DIRS = new Set(['.git', 'node_modules', '.venv', '.room'])
 const ROOM_FILE = '.room.json'
 const ROOMIGNORE = '.roomignore'
 
@@ -386,7 +386,19 @@ class Daemon implements Roomd {
   }
 
   private excludeRoomFile(): void {
-    const exclude = path.join(this.dir, '.git', 'info', 'exclude')
+    // Worktrees have a .git file pointing at <common>/.git/worktrees/<name>; excludes live in the common dir.
+    let gitDir = path.join(this.dir, '.git')
+    try {
+      if (fs.statSync(gitDir).isFile()) {
+        const m = fs.readFileSync(gitDir, 'utf8').match(/gitdir:\s*(.+)/)
+        if (m) {
+          gitDir = path.resolve(this.dir, m[1].trim())
+          const common = path.join(gitDir, 'commondir')
+          if (fs.existsSync(common)) gitDir = path.resolve(gitDir, fs.readFileSync(common, 'utf8').trim())
+        }
+      }
+    } catch { /* fall through to the plain path */ }
+    const exclude = path.join(gitDir, 'info', 'exclude')
     try {
       fs.mkdirSync(path.dirname(exclude), { recursive: true })
       const current = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''

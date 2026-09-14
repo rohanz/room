@@ -14,6 +14,7 @@ export function formatMsg(m: Msg): string {
     case 'answer': return `${priority}${who}${to} answers: ${m.text}`
     case 'conflict': return `${priority}CONFLICT on ${m.path}: ${m.text}`
     case 'note': return `${priority}${who}: ${m.text}`
+    case 'done': return `${priority}${who} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}`
     case 'base': return `${priority}${who} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — git pull to catch up`
     case 'plan': return `${priority}${who} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''} — ${m.text}`
     case 'scope': return `${priority}${who} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})`
