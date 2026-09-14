@@ -24,10 +24,26 @@ export function git(dir: string, args: string[], configuredTimeoutMs?: number): 
 export const gitHead = (dir: string) => git(dir, ['rev-parse', 'HEAD']).then(s => s.trim())
 export const gitBranch = (dir: string) => git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).then(s => s.trim())
 
+/**
+ * Origin URL -> repo prefix of the room name.
+ *  - github.com origins:   github.com/<owner>/<repo>            (the server checks push access)
+ *  - other git hosts:      git/<host>/<owner>/<repo>            (self-hosted GitLab, Gitea, Bitbucket...;
+ *    nested groups are joined with '.', so gitlab.example.com/grp/sub/app -> git/gitlab.example.com/grp.sub/app;
+ *    the server needs a login or shared token for these)
+ *  - filesystem remotes:   local/<repo dir name>                (demo scripts, tests)
+ */
 export function normalizeGitOrigin(origin: string): string | undefined {
   const value = origin.trim().replace(/\/+$/, '').replace(/\.git$/, '')
+  const hosted = (host: string, rawPath: string): string | undefined => {
+    const segs = rawPath.split('/').filter(Boolean)
+    if (!segs.length) return undefined
+    const h = host.toLowerCase()
+    if (h === 'github.com') return `${h}/${segs.join('/')}`
+    if (segs.length === 1) return `git/${h}/${segs[0]}`
+    return `git/${h}/${segs.slice(0, -1).join('.')}/${segs[segs.length - 1]}`
+  }
   const scp = value.match(/^(?:[^@]+@)?([^:/]+):(.+)$/)
-  if (scp && !value.includes('://')) return `${scp[1]}/${scp[2].replace(/^\/+/, '')}`
+  if (scp && !value.includes('://')) return hosted(scp[1], scp[2])
   // Filesystem remotes (demo scripts, tests): local/<repo dir name>.
   if (value.startsWith('/') || value.startsWith('.') || value.startsWith('file://')) {
     const name = value.replace(/^file:\/\//, '').split('/').filter(Boolean).pop()
@@ -36,7 +52,7 @@ export function normalizeGitOrigin(origin: string): string | undefined {
   try {
     const url = new URL(value)
     if (!url.hostname) return undefined
-    return `${url.hostname}/${url.pathname.replace(/^\/+/, '')}`
+    return hosted(url.hostname, url.pathname)
   } catch {
     return undefined
   }

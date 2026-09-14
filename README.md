@@ -270,6 +270,9 @@ URL. Set `YPERSISTENCE` to a directory to retain room state across server restar
 The [Dockerfile](Dockerfile) packages the server with a prebuilt browser view (run
 `npm run build -w @room/web` first);
 [Fly configuration](deploy/fly.toml) describes the hosted deployment.
+To run your own server with GitHub or company (OIDC) login, an audit log and optional
+Postgres, follow [deploy/self-hosting.md](deploy/self-hosting.md) (Docker Compose in
+`deploy/docker-compose.yml`).
 [The MCP README](packages/room-mcp/README.md) covers additional client integration.
 
 ### Explore a larger sample

@@ -14,7 +14,7 @@ import { git, gitShow } from '@room/roomd/git'
 import { clampShare, parseShare, type ShareLevel, type SharePresence } from '@room/roomd'
 import { DEFAULT_SERVER, authFor, closeRoom, joinSession, leaveSession, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthMode, startLogin, type JoinOptions, type Session } from './session.js'
 import { getCredential, getPending, setPending } from './credentials.js'
-import { NotLoggedIn } from './session.js'
+import { NotLoggedIn, serverAuthConfig } from './session.js'
 import { HooksBridge } from './hooks-bridge.js'
 import { ConflictWatcher } from './conflicts.js'
 import { branchOf, fetchPrs, isPrName, openPrs, postPrNote, prLeader, renderPrNote, syncPrs, type PrInfo } from './prs.js'
@@ -85,8 +85,8 @@ const PLANS = {
 const SHARE = { type: 'string', enum: ['intent', 'declared', 'full'], description: 'sharing level: intent (presence, scope, claims, plans, bus; no file text), declared (file text only under your declared scope paths), full (every changed file). Default ROOM_SHARE, then full; the server may cap it (ROOM_SHARE_MAX).' }
 
 export const DEFS: ToolDef[] = [
-  { name: 'room_login', annotations: RW, description: 'Log in to the room server with GitHub (device flow). First call returns a one-time code and URL: show them to the user VERBATIM and ask them to enter the code. Call again to wait for GitHub to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your GitHub login.',
-    inputSchema: { type: 'object', properties: { wait: int('seconds to wait for confirmation on a follow-up call (default 90, max 600)'), server: str('override ws server URL') } } },
+  { name: 'room_login', annotations: RW, description: 'Log in to the room server. GitHub (device flow): the first call returns a one-time code and URL. OIDC (self-hosted servers with a company identity provider): the first call returns a URL to open. Show them to the user VERBATIM. Call again to wait for the login to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your login (GitHub login or email).',
+    inputSchema: { type: 'object', properties: { provider: { type: 'string', enum: ['github', 'oidc'], description: 'login provider (default: the server\'s first; github.com rooms need github)' }, wait: int('seconds to wait for confirmation on a follow-up call (default 90, max 600)'), server: str('override ws server URL') } } },
   { name: 'room_logout', annotations: RW, description: 'Forget the GitHub login for the room server on this machine (and revoke the session on the server).',
     inputSchema: { type: 'object', properties: { server: str('override ws server URL') } } },
   { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.',
@@ -555,26 +555,31 @@ export function createTools(ctx: ToolCtx): Tools {
 
   // ---- login ------------------------------------------------------------------
   const serverOf = (a: Record<string, unknown>) => parseServer(typeof a.server === 'string' && a.server ? a.server : process.env.ROOM_SERVER ?? DEFAULT_SERVER).server
-  const codeLine = (p: { verification_uri: string; user_code: string; expires_in: number }) => `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
+  const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
+    ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.`
+    : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
 
   // ---- handlers -------------------------------------------------------------
   const handlers: Record<string, (a: Record<string, unknown>) => Promise<string>> = {
     async room_login(a) {
       const server = serverOf(a)
-      if ((await serverAuthMode(server)) !== 'device') return `${server} does not use GitHub login; it accepts your local gh credentials (or a shared token), nothing to do`
+      const cfg = await serverAuthConfig(server)
+      if (!cfg.providers.length) return `${server} has no login provider; it accepts your local gh credentials (or a shared token), nothing to do`
+      const provider = a.provider === 'github' || a.provider === 'oidc' ? a.provider : undefined
+      if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(', ')})`
       const cred = getCredential(server)
       const pending = getPending(server)
       if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`
-      if (pending) {
+      if (pending && (!provider || provider === pending.provider)) {
         const wait = Math.min(600, Math.max(5, typeof a.wait === 'number' ? a.wait : 90))
         const r = await pollLogin(server, pending, { maxMs: wait * 1000 })
         if ('login' in r) { setPending(server, undefined); return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? '' : 'Next: room_join (or room_create if nobody has opened this repo).'}`.trim() }
         if ('error' in r) { setPending(server, undefined); return `login failed: ${r.error}. Call room_login to start again.` }
         return `still waiting: ${codeLine(pending)}`
       }
-      const p = await startLogin(server)
+      const p = await startLogin(server, provider)
       setPending(server, { ...p, startedAt: Date.now() })
-      return `GitHub login for ${server}. Tell the user exactly this: ${codeLine(p)}`
+      return `${p.provider === 'oidc' ? 'Single sign-on' : 'GitHub'} login for ${server}. Tell the user exactly this: ${codeLine(p)}`
     },
     async room_logout(a) {
       const server = serverOf(a)

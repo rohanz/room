@@ -10,12 +10,15 @@
   },
   "dependencies": {
     "@y/websocket-server": "0.1.1",
+    "jose": "^6.2.12",
     "lib0": "^0.2.117",
+    "pg": "^8.23.0",
     "ws": "^8.21.0",
     "y-protocols": "^1.0.6",
     "yjs": "^13.6.32"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.0"
   }
 }

@@ -91,6 +91,11 @@ describe('git origin normalisation', () => {
     expect(normalizeGitOrigin('git@github.com:openai/room.git')).toBe('github.com/openai/room')
     expect(normalizeGitOrigin('https://github.com/openai/room.git')).toBe('github.com/openai/room')
     expect(normalizeGitOrigin('ssh://git@github.com/openai/room.git')).toBe('github.com/openai/room')
+    // self-hosted git servers: git/<host>/<owner>/<repo>; nested groups collapse into the owner
+    expect(normalizeGitOrigin('https://gitlab.example.com/team/app.git')).toBe('git/gitlab.example.com/team/app')
+    expect(normalizeGitOrigin('git@gitea.internal:team/app.git')).toBe('git/gitea.internal/team/app')
+    expect(normalizeGitOrigin('ssh://git@GitLab.example.com:2222/grp/sub/app.git')).toBe('git/gitlab.example.com/grp.sub/app')
+    expect(normalizeGitOrigin('https://git.example.com/app')).toBe('git/git.example.com/app')
   })
 })
 

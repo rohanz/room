@@ -1,0 +1,53 @@
+# Self-hosted room server. See deploy/self-hosting.md.
+#
+#   cp deploy/.env.example deploy/.env   # fill in the values
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Default: one container, state (LevelDB docs, registry, sessions, audit.log) on the `room_data` volume.
+# With Postgres for registry/sessions/audit:
+#   docker compose -f deploy/docker-compose.yml --profile postgres up -d
+# and set DATABASE_URL=postgres://room:room@postgres:5432/room in deploy/.env (docs stay on the volume).
+
+services:
+  room:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: room-server:latest
+    restart: unless-stopped
+    ports:
+      - "${ROOM_PORT:-8080}:8080"
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      YPERSISTENCE: /data
+    volumes:
+      - room_data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: room
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-room}
+      POSTGRES_DB: room
+    volumes:
+      - room_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U room"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  room_data:
+  room_pg:
