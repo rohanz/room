@@ -4,7 +4,7 @@ import * as encoding from 'lib0/encoding'
 import * as Y from 'yjs'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
-import { isWriteMessage, makeReadOnly } from '../src/readonly.js'
+import { isWriteMessage, makeReadOnly, ownsName } from '../src/readonly.js'
 
 const doc = new Y.Doc()
 doc.getText('t').insert(0, 'hello')
@@ -77,4 +77,12 @@ describe('identity-bound connections', () => {
     expect(seen).toHaveLength(2)
     expect(dropped).toEqual(['octo'])
   })
+})
+
+it('a login owns itself and login+tag, nothing else', () => {
+  expect(ownsName('rohanz', 'rohanz')).toBe(true)
+  expect(ownsName('rohanz+codex', 'rohanz')).toBe(true)
+  expect(ownsName('rohanz+', 'rohanz')).toBe(false)
+  expect(ownsName('rohanzz', 'rohanz')).toBe(false)
+  expect(ownsName('kieran', 'rohanz')).toBe(false)
 })

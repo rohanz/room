@@ -43,6 +43,11 @@ const MESSAGE_AWARENESS = 1
 
 /** Awareness updates whose `user.name` is not the verified login (message type 1: count, then
  *  per client: clientID, clock, JSON state). `null` states (leaving) are fine. */
+/** A logged-in user may appear as `login` or `login+<tag>` (one person running two agents, e.g. rohanz+codex). */
+export function ownsName(name: string, login: string): boolean {
+  return name === login || (name.startsWith(login + '+') && name.length > login.length + 1)
+}
+
 export function isForeignIdentity(buf: Uint8Array, login: string): boolean {
   try {
     const d = decoding.createDecoder(buf)
@@ -55,7 +60,7 @@ export function isForeignIdentity(buf: Uint8Array, login: string): boolean {
       if (raw === 'null') continue
       const state = JSON.parse(raw) as { user?: { name?: string } }
       const name = state?.user?.name
-      if (name !== undefined && name !== login) return true
+      if (name !== undefined && !ownsName(name, login)) return true
     }
     return false
   } catch {

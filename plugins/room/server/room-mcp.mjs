@@ -33750,7 +33750,8 @@ async function joinSession(opts) {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
   const auth = await resolveAuth(server, roomName, token);
-  const name = auth.login ?? opts.name ?? await defaultName(dir);
+  const tag = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, "");
+  const name = auth.login ? tag ? `${auth.login}+${tag}` : auth.login : opts.name ?? await defaultName(dir);
   if (!name) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`);
   const { login: _login, ...creds } = auth;
