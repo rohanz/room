@@ -97,11 +97,11 @@ describe('GraphIndex snapshot discipline', () => {
     room.setOverlay('Rohan', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return validate_token(t)  # same edge\n')
     await new Promise(r => setTimeout(r, 300))
     expect(writes).toBe(0) // identical snapshot: nothing written
+    const firstAt = room.graphs.get('Rohan')!.at
     room.setOverlay('Rohan', 'session.py', 'def login(t):\n    return t\n')
-    await new Promise(r => setTimeout(r, 150))
-    expect(writes).toBe(0) // changed, but inside the window: deferred
-    await new Promise(r => setTimeout(r, 600))
+    for (let i = 0; i < 60 && writes === 0; i++) await new Promise(r => setTimeout(r, 50)) // changed: written once the window has passed
     expect(writes).toBe(1)
+    expect(room.graphs.get('Rohan')!.at - firstAt).toBeGreaterThanOrEqual(400)
     expect(room.graphs.get('Rohan')!.edges).toEqual([])
     gi.stop()
   })
