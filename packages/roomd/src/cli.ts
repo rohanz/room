@@ -1,8 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * roomd CLI: `roomd --room ws://host:1234/<room> --dir <clone> --name <Name>`
+ * roomd CLI: `roomd --room ws://host:1234/<room> --dir <clone> --name <Name> [--share intent|declared|full]`
  */
-import { startRoomd, RoomdError } from './index.js'
+import { startRoomd, RoomdError, parseShare } from './index.js'
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {}
@@ -22,12 +22,14 @@ const args = parseArgs(process.argv.slice(2))
 const room = args.room ?? process.env.ROOM_URL
 const dir = args.dir ?? process.env.ROOM_DIR ?? process.cwd()
 const name = args.name ?? process.env.ROOM_NAME
-if (!room || !name || args.help) {
-  console.error('usage: roomd --room ws://host:1234/<room> --dir <clone> --name <Name>')
+const shareRaw = args.share ?? process.env.ROOM_SHARE
+const share = parseShare(shareRaw)
+if (!room || !name || args.help || (shareRaw && !share)) {
+  console.error('usage: roomd --room ws://host:1234/<room> --dir <clone> --name <Name> [--share intent|declared|full]')
   process.exit(args.help ? 0 : 1)
 }
 
-startRoomd({ room, dir, name })
+startRoomd({ room, dir, name, share })
   .then(d => {
     const stop = () => d.stop().then(() => process.exit(0))
     process.on('SIGINT', stop)

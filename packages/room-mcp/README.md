@@ -5,7 +5,7 @@ messages, and event push. Agents edit files on disk with their normal tools; `ro
 syncs them. Agents get no write tool.
 
 Env: `ROOM_URL` (`ws://host:1234/<room>`), `ROOM_NAME` (owner's name; agent identity is
-`{name, kind:'agent'}`), `ROOM_DIR` (clone path). Falls back to `<cwd>/.room.json`
+`{name, kind:'agent'}`), `ROOM_DIR` (clone path), `ROOM_SHARE` (sharing level, see below). Falls back to `<cwd>/.room.json`
 `{ "room", "name", "dir" }` written by `roomd`.
 
 Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root).
@@ -32,6 +32,7 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_done` | Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. |
 | `room_impact` | Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. |
 | `room_preview_merge` | Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. |
+| `room_share` | Change how much of your clone the room sees, live: `intent`, `declared` or `full`. Without `level`, reports the current level and what is withheld. |
 
 Every reply (except join) starts with your unread inbox. Full descriptions are in `src/tools.ts`; the agent-facing rules are in `src/prompt.ts` and the plugin's `room-etiquette` skill.
 
@@ -106,7 +107,7 @@ A room is still one document per branch, but what you see is scoped to the folde
 
 Access: the server admits a GitHub-named room only to GitHub tokens that can read the repo
 with push access (or a shared `ROOM_TOKEN`), and only after someone has opened the repo with `room_create`.
-Inside a room everything in the doc is visible to every member. Claim ranges are not
+Inside a room everything in the doc is visible to every member (subject to each person's sharing level). Claim ranges are not
 remapped as files change. Disk edits are attributed to the machine's human; the agent is visible via claims,
 cursor, status and bus messages.
 

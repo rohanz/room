@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import type { WebsocketProvider } from 'y-websocket'
 import type { Awareness } from 'y-protocols/awareness'
-import { startRoomd, RoomdError, type Roomd } from '@room/roomd'
+import { startRoomd, RoomdError, clampShare, parseShare, type Roomd, type ShareLevel } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import type { Identity, Kind, RoomDoc } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
@@ -33,6 +33,10 @@ export interface Session {
   graph?: GraphIndex
   /** Set when the server closed the repo (ws close 4001): the provider stops reconnecting. */
   closed?: { reason: string }
+  /** The server's ceiling on sharing levels (ROOM_SHARE_MAX); the daemon's level never exceeds it. */
+  shareMax: ShareLevel
+  /** The level asked for at join, before clamping (so the reply can say it was lowered). */
+  shareRequested: ShareLevel
 }
 
 export interface JoinOptions {
@@ -48,6 +52,8 @@ export interface JoinOptions {
   tag?: string
   /** 'agent' (default), 'bot' or 'ci'. Default from ROOM_KIND. */
   kind?: string
+  /** Sharing level: intent | declared | full. Default from ROOM_SHARE, then full. Clamped to the server's shareMax. */
+  share?: string
   connectTimeoutMs?: number
   log?: (line: string) => void
 }
@@ -174,6 +180,28 @@ export function parseServer(raw: string): { server: string; token?: string } {
   }
 }
 
+const shareMaxCache = new Map<string, ShareLevel>()
+/** The server's sharing ceiling (`shareMax` in GET /auth/config, from ROOM_SHARE_MAX). Older or unreachable servers: full. */
+export async function serverShareMax(server: string): Promise<ShareLevel> {
+  const hit = shareMaxCache.get(server)
+  if (hit) return hit
+  let max: ShareLevel = 'full'
+  try {
+    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(20000) })
+    if (res.ok) max = parseShare(((await res.json()) as { shareMax?: unknown }).shareMax) ?? 'full'
+  } catch { /* unreachable: the join will report it */ }
+  shareMaxCache.set(server, max)
+  return max
+}
+
+/** The level to join with: the explicit argument, else ROOM_SHARE, else full. Throws on an unknown value. */
+export function requestedShare(explicit?: string): ShareLevel {
+  const raw = explicit?.trim() || process.env.ROOM_SHARE?.trim() || 'full'
+  const level = parseShare(raw)
+  if (!level) throw new RoomdError(`share must be intent, declared or full (got "${raw}")`, 2)
+  return level
+}
+
 /** The server also serves the browser view: ws(s)://host -> http(s)://host. Local dev keeps the Vite port. */
 export function defaultWeb(server: string): string {
   try {
@@ -222,7 +250,11 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (pre?.missing) throw new NoRoom(roomName, pre.reason)
   if (pre?.loginNeeded) throw new NotLoggedIn(server)
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2)
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, githubToken: creds.gh, session: creds.session, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+  const shareRequested = requestedShare(opts.share)
+  const shareMax = await serverShareMax(server)
+  const share = clampShare(shareRequested, shareMax)
+  if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, githubToken: creds.gh, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
   const view = await viewToken(server, roomName, creds)
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
@@ -238,6 +270,8 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     roomUrl,
     roomName,
     browserUrl,
+    shareMax,
+    shareRequested,
   }
   watchClosed(session, opts.log)
   return session
