@@ -179,5 +179,6 @@ persisted update log, so loading the room meant replaying hundreds of megabytes.
 **Fix:** snapshots are deduplicated by content, written at most every 20 s per agent, capped
 at 4,000 edges and 200 KB (paths only beyond that). The bloated repo was closed through the
 server's own API, which clears its documents. Machine memory stays at 512 MB.
-**Still to do:** a server-side cap on document size per room, and periodic compaction of
-the LevelDB update log, so a misbehaving client cannot take the server down.
+**Also done:** the server refuses writes into any room document over `ROOM_DOC_MAX_MB`
+(default 64), measured at most every 30 s, so a misbehaving client cannot take the server
+down; y-leveldb already compacts the update log every 500 updates.

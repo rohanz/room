@@ -4,7 +4,7 @@ import * as encoding from 'lib0/encoding'
 import * as Y from 'yjs'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
-import { isWriteMessage, makeReadOnly, ownsName } from '../src/readonly.js'
+import { isWriteMessage, makeReadOnly, ownsName, capDocSize } from '../src/readonly.js'
 
 const doc = new Y.Doc()
 doc.getText('t').insert(0, 'hello')
@@ -92,4 +92,19 @@ it('a login owns itself and login+tag, nothing else', () => {
   expect(ownsName('rohanz+', 'rohanz')).toBe(false)
   expect(ownsName('rohanzz', 'rohanz')).toBe(false)
   expect(ownsName('kieran', 'rohanz')).toBe(false)
+})
+
+it('capDocSize drops writes once the room is over the cap and keeps reads flowing', () => {
+  const conn = new EventEmitter()
+  const seen: string[] = []; const capped: number[] = []
+  conn.on('message', (b: Uint8Array) => seen.push(isWriteMessage(b) ? 'write' : 'read'))
+  let size = 10
+  capDocSize(conn, () => size, 100, s => capped.push(s))
+  const update = encoding.createEncoder(); encoding.writeVarUint(update, 0); encoding.writeVarUint(update, 2); encoding.writeVarUint8Array(update, new Uint8Array([1]))
+  const step1 = encoding.createEncoder(); encoding.writeVarUint(step1, 0); encoding.writeVarUint(step1, 0); encoding.writeVarUint8Array(step1, new Uint8Array([]))
+  conn.emit('message', encoding.toUint8Array(update)); conn.emit('message', encoding.toUint8Array(step1))
+  size = 1000
+  conn.emit('message', encoding.toUint8Array(update)); conn.emit('message', encoding.toUint8Array(step1))
+  expect(seen).toEqual(['write', 'read', 'read'])
+  expect(capped).toEqual([1000])
 })

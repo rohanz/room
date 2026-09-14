@@ -78,3 +78,19 @@ export function bindIdentity(conn: EmitterLike, login: string, onDrop: (name: st
     return emit(event, ...args)
   }) as EmitterLike['emit']
 }
+
+/**
+ * Refuse writes into a room whose document has grown past `maxBytes`: the connection keeps
+ * reading, its sync updates are dropped, and `onCap` fires (rate-limit it in the caller). The
+ * size is asked for lazily so callers can cache an O(doc) measurement.
+ */
+export function capDocSize(conn: EmitterLike, sizeBytes: () => number, maxBytes: number, onCap: (size: number) => void): void {
+  const emit = conn.emit.bind(conn)
+  conn.emit = ((event: string | symbol, ...args: unknown[]) => {
+    if (event === 'message' && isWriteMessage(toBytes(args[0]))) {
+      const size = sizeBytes()
+      if (size > maxBytes) { onCap(size); return false }
+    }
+    return emit(event, ...args)
+  }) as EmitterLike['emit']
+}

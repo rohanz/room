@@ -31,7 +31,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, docs, getPersistence } from '@y/websocket-server/utils'
-import { makeReadOnly, bindIdentity } from './readonly.js'
+import { makeReadOnly, bindIdentity, capDocSize } from './readonly.js'
+import * as Y from 'yjs'
 import { Auth } from './auth.js'
 import type { Provider } from './auth.js'
 import { storeFromEnv, type AuditEntry, type OpenRepo } from './store.js'
@@ -350,6 +351,19 @@ const server = http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'text/plain' })
   res.end(`room server: connect a y-websocket client to ws://host:port/<room>${TOKEN ? '?token=...' : ''}\n`)
 })
+/** A room's document may not grow past this (ROOM_DOC_MAX_MB, default 64): a client that floods the doc
+ *  would otherwise make the room impossible to load. Measured at most every 30 s per room. */
+const DOC_MAX_BYTES = Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
+const docSizes = new Map<string, { at: number; bytes: number }>()
+const capLogged = new Map<string, number>()
+function docSize(roomName: string): number {
+  const cached = docSizes.get(roomName)
+  if (cached && Date.now() - cached.at < 30_000) return cached.bytes
+  const doc = docs.get(roomName)
+  const bytes = doc ? Y.encodeStateAsUpdate(doc).byteLength : 0
+  docSizes.set(roomName, { at: Date.now(), bytes })
+  return bytes
+}
 const wss = new WebSocketServer({ noServer: true })
 /** One log line per room per minute at most: a misbehaving viewer must not flood the log. */
 const dropLog = new Map<string, number>()
@@ -373,6 +387,10 @@ server.on('upgrade', (req, socket, head) => {
   const accept = (opts: { readOnly?: boolean; login?: string; provider?: Provider } = {}) => rooms.has(repoOf(roomName))
     ? wss.handleUpgrade(req, socket, head, ws => {
       noteBranch(roomName)
+      capDocSize(ws, () => docSize(roomName), DOC_MAX_BYTES, size => {
+        const now = Date.now()
+        if ((capLogged.get(roomName) ?? 0) < now - 60_000) { capLogged.set(roomName, now); console.log(`refusing writes: room ${roomName} is ${(size / 1048576).toFixed(1)} MB (cap ${(DOC_MAX_BYTES / 1048576).toFixed(0)} MB); close and reopen the repo, or raise ROOM_DOC_MAX_MB`) }
+      })
       audit({ event: 'join', room: roomName, login: opts.login, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
       if (opts.readOnly) makeReadOnly(ws, droppedWrite(roomName))
       if (opts.login) bindIdentity(ws, opts.login, login => {
