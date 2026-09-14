@@ -24,6 +24,8 @@ Built for the **“Agents leaving the chatbox”** hackathon.
 
 ## Quick start
 
+Short version for people trying it: [docs/onboarding.md](docs/onboarding.md).
+
 Prerequisites: Git, Node.js 24 LTS, and Codex CLI or Claude Code with plugin support.
 Python indexing needs Python 3; the Python demo uses `uv`.
 
