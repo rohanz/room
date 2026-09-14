@@ -23,6 +23,10 @@ export interface RoomdOptions {
   name: string
   /** Presence kind to publish; 'agent' when embedded in the MCP server. Default 'human'. */
   kind?: Kind
+  /** Verified login responsible for this participant (see Identity.owner). Default: name. */
+  owner?: string
+  /** Display hint, e.g. the tag of a second agent. */
+  label?: string
   /** Shared room token, sent as ?token= on the websocket. Default: ROOM_TOKEN env. */
   token?: string
   /** GitHub token proving repo access, sent as ?gh= (servers without device login). */
@@ -103,6 +107,8 @@ class Daemon implements Roomd {
   readonly dir: string
   readonly name: string
   private readonly kind: Kind
+  private readonly owner: string
+  private readonly label?: string
   private readonly log: (line: string) => void
   private readonly debounceMs: number
   private readonly trackedRefreshMs: number
@@ -125,6 +131,8 @@ class Daemon implements Roomd {
     this.dir = path.resolve(options.dir)
     this.name = options.name
     this.kind = options.kind ?? 'human'
+    this.owner = options.owner ?? options.name
+    this.label = options.label
     this.roomUrl = options.room
     this.log = options.log ?? (line => process.stderr.write(`[roomd] ${line}\n`))
     this.debounceMs = options.debounceMs ?? 50
@@ -243,7 +251,7 @@ class Daemon implements Roomd {
     const current = (this.provider.awareness.getLocalState() ?? {}) as Partial<Presence>
     const state: Presence = {
       ...current,
-      user: { name: this.name, kind: this.kind, color: colorFor(this.name) },
+      user: { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}), color: colorFor(this.name) },
       status,
       lastActive: this.lastActive,
     }
@@ -339,7 +347,7 @@ class Daemon implements Roomd {
     ])
     this.roomDoc.doc.transact(() => {
       this.roomDoc.setMeta({ base: to, branch: this.branch }, this)
-      this.roomDoc.post<BaseMsg>({ name: this.name, kind: this.kind }, { type: 'base', base: to, prev: from, commits, paths, summary }, this)
+      this.roomDoc.post<BaseMsg>({ name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }, { type: 'base', base: to, prev: from, commits, paths, summary }, this)
     }, this)
     this.log(`advanced room base to ${to.slice(0, 10)} (+${commits})`)
   }

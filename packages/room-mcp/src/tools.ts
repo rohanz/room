@@ -5,8 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { diff3Merge } from 'node-diff3'
 import {
-  RoomDoc, formatMsg, formatPlans, withLineNumbers, claimsOverlap, clampRange, describeClaim, displayName, rangesOverlap, scopeCovers, msgPaths, symbolRange,
-} from '@room/shared'
+  RoomDoc, formatMsg, formatPlans, withLineNumbers, claimsOverlap, clampRange, describeClaim, displayName, rangesOverlap, scopeCovers, msgPaths, symbolRange, isAgentic, describeIdentity } from '@room/shared'
 import type {
   Claim, Identity, Presence, Msg, Plan, Priority, Scope,
   ChangedMsg, QuestionMsg, AnswerMsg, ClaimMsg, ReleaseMsg, ConflictMsg, NoteMsg, ScopeMsg, PlanMsg,
@@ -222,7 +221,7 @@ export function createTools(ctx: ToolCtx): Tools {
 
   // ---- inbox ----------------------------------------------------------------
   const forMe = (s: Session, m: Msg) => {
-    if (m.from === s.me.name && m.fromKind === 'agent') return false
+    if (m.from === s.me.name && isAgentic(m.fromKind)) return false
     if (m.to === s.me.name) return true
     if (m.type === 'base') return true // someone committed: everyone should know to pull
     if (m.to) return false // addressed to someone else
@@ -409,7 +408,7 @@ export function createTools(ctx: ToolCtx): Tools {
   /** One line about what a person is doing: live scope, or their last done note, plus unpushed changes. */
   const personLine = (s: Session, name: string): string => {
     const sc = s.room.scope(name)
-    const p = presences(s).find(x => x.user.name === name && x.user.kind === 'agent') ?? presences(s).find(x => x.user.name === name)
+    const p = presences(s).find(x => x.user.name === name && isAgentic(x.user.kind)) ?? presences(s).find(x => x.user.name === name)
     const changed = s.room.changedPaths(name)
     const lastDone = [...s.room.messages()].reverse().find((m): m is NoteMsg => m.from === name && m.type === 'note' && m.text.startsWith('done'))
     let what: string
@@ -523,9 +522,10 @@ export function createTools(ctx: ToolCtx): Tools {
       const names = new Set<string>([...ps.map(p => p.user.name), ...s.room.scopes.keys()])
       out.push(`participants (${names.size}):`)
       for (const n of Array.from(names).sort()) {
-        const p = ps.find(x => x.user.name === n && x.user.kind === 'agent') ?? ps.find(x => x.user.name === n)
+        const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1000))}s ago` : 'offline'
-        out.push(`  - ${n}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)} · ${ago}`)
+        const who = p ? describeIdentity(p.user) : n
+        out.push(`  - ${who}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)} · ${ago}`)
       }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       const areas = s.room.areaSummary()

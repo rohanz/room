@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { Awareness } from 'y-protocols/awareness'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools, DEFS } from '../src/tools.js'
@@ -122,6 +122,41 @@ describe('session gating', () => {
 
   it('lists the eighteen tools', () => {
     expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_impact', 'room_preview_merge'])
+  })
+})
+
+describe('one login, two agents', () => {
+  it('rohanz and rohanz+codex are distinct participants with their own overlays and inboxes', async () => {
+    const { a, b } = pair()
+    a.setMeta({ repo: 'demo', branch: 'main', base })
+    const me1: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
+    const me2: Identity = { name: 'rohanz+codex', kind: 'agent', owner: 'rohanz', label: 'codex' }
+    a.setOverlay('rohanz', 'app.py', MINE)
+    b.setOverlay('rohanz+codex', 'session.py', 'from app import validate\n# codex\n')
+    const mk = (room: RoomDoc, id: Identity, awareness: Awareness) => {
+      awareness.setLocalState({ user: { ...id, color: '#000' }, status: 'idle', lastActive: Date.now() })
+      const graph = new GraphIndex(room, id.name, dir); graph.start()
+      const s: Session = { graph, room, awareness, me: id, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+        provider: { synced: true, awareness } as unknown as Session['provider'],
+        daemon: { touch() {}, async stop() {}, dir, name: id.name, roomDoc: room, provider: null as never, branch: 'main', base } }
+      return createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
+    }
+    const aw1 = new Awareness(a.doc), aw2 = new Awareness(b.doc)
+    const t1 = mk(a, me1, aw1), t2 = mk(b, me2, aw2)
+    // awareness is not carried by doc updates; hand the codex agent's presence to the first agent as a server would
+    applyAwarenessUpdate(aw1, encodeAwarenessUpdate(aw2, [b.doc.clientID]), 'test')
+    expect(a.changedPaths('rohanz')).toEqual(['app.py'])
+    expect(a.changedPaths('rohanz+codex')).toEqual(['session.py'])
+    const state = await t1.call('room_state', {})
+    expect(state).toContain("you: rohanz's agent in r")
+    expect(state).toContain('rohanz+codex · agent of rohanz · codex')
+    // a question to the codex agent reaches it, not the first agent
+    await t1.call('room_send', { type: 'question', text: 'which lines?', to: 'rohanz+codex' })
+    // the inbox is the prefix before the body ("you: ..."); the body's recent-bus section lists every message
+    const inboxOf = (out: string) => out.slice(0, out.indexOf('you: '))
+    expect(inboxOf(await t2.call('room_state', {}))).toContain('which lines?')
+    expect(inboxOf(await t1.call('room_state', {}))).not.toContain('which lines?')
+    await t1.shutdown(); await t2.shutdown()
   })
 })
 

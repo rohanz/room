@@ -9,6 +9,7 @@ import {
   type Msg,
   type Presence,
   type Scope,
+  describeIdentity,
 } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
 import { Editor } from './editor.ts'
@@ -73,6 +74,8 @@ export interface Participant {
   behindBase: boolean
   latestActive?: number
   kinds: Kind[]
+  /** e.g. "agent of rohanz · codex"; empty for a plain human. */
+  identity: string
   statuses: { kind: Kind; status: string }[]
   scope?: Scope
   files: string[]
@@ -121,6 +124,7 @@ export function deriveParticipants(input: ParticipantInput): Participant[] {
       behindBase: Boolean(input.roomBase && ownBase && ownBase !== input.roomBase),
       latestActive,
       kinds: Array.from(kinds).sort((a, b) => a.localeCompare(b)),
+      identity: identityLine(current, name),
       statuses: Array.from(latest.entries())
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([kind, presence]) => ({ kind, status: presence.status ?? 'online' })),
@@ -145,6 +149,14 @@ export function shortPill(state: string, max = 26): string {
 }
 
 /** Derives the single prominent state shown on a person card. */
+/** "agent of rohanz · codex" from the freshest presence that carries an owner/label; '' for a plain human. */
+function identityLine(current: Presence[], name: string): string {
+  const p = [...current].sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0)).find(x => x.user.owner || x.user.label) ?? current[0]
+  if (!p) return ''
+  const line = describeIdentity(p.user)
+  return line === name ? '' : line.slice(name.length + 3)
+}
+
 export function deriveStatePill(person: Pick<Participant, 'online' | 'behindBase' | 'statuses' | 'claims'>): string {
   if (!person.online) return 'offline'
   const statuses = person.statuses.map(item => item.status.trim()).filter(Boolean)
@@ -224,6 +236,7 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
       },
       h('div', { class: 'participant-head' }, dot(participant.name), h('strong', {}, participant.name), h('span', { class: 'sp' }),
         h('span', { class: `state-pill ${state.split(' ')[0]}`, title: state }, short)),
+      participant.identity ? h('div', { class: 'micro muted' }, participant.identity) : null,
       participant.scope
         ? h('div', { class: 'scope-line' }, h('strong', {}, `${participant.scope.area}:`), ` ${participant.scope.summary}`)
         : h('div', { class: 'scope-line muted' }, 'no area declared'),

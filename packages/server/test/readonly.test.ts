@@ -52,11 +52,11 @@ describe('read-only view connections', () => {
 })
 
 describe('identity-bound connections', () => {
-  const aw = (name: string | null) => {
+  const aw = (name: string | null, owner?: string) => {
     const enc = encoding.createEncoder()
     encoding.writeVarUint(enc, 1)
     const a = new awarenessProtocol.Awareness(doc)
-    a.setLocalState(name === null ? null : { user: { name, kind: 'agent' }, status: 'x' })
+    a.setLocalState(name === null ? null : { user: { name, kind: 'agent', ...(owner ? { owner } : {}) }, status: 'x' })
     encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(a, [doc.clientID]))
     return encoding.toUint8Array(enc)
   }
@@ -65,6 +65,11 @@ describe('identity-bound connections', () => {
     expect(isForeignIdentity(aw('octo'), 'octo')).toBe(false)
     expect(isForeignIdentity(aw('kieran'), 'octo')).toBe(true)
     expect(isForeignIdentity(aw(null), 'octo')).toBe(false)
+    // principals: admitted by owner, whatever the name; legacy login+label still passes; other owners do not
+    expect(isForeignIdentity(aw('octo+codex', 'octo'), 'octo')).toBe(false)
+    expect(isForeignIdentity(aw('deploy-bot', 'octo'), 'octo')).toBe(false)
+    expect(isForeignIdentity(aw('octo+codex'), 'octo')).toBe(false)
+    expect(isForeignIdentity(aw('kieran+codex', 'kieran'), 'octo')).toBe(true)
     expect(isForeignIdentity(step1, 'octo')).toBe(false)
     expect(isForeignIdentity(update, 'octo')).toBe(false)
     const conn = new EventEmitter()

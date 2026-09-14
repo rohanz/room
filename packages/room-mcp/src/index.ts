@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { displayName } from '@room/shared'
+import { displayName, isAgentic } from '@room/shared'
 import type { Msg } from '@room/shared'
 import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
@@ -48,7 +48,7 @@ async function main() {
       if (!w) return
       mcp.notification({ method: 'notifications/claude/channel', params: { content: w.content, meta: w.meta } }).catch(() => { /* no channel attached */ })
     }
-    const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === 'agent')
+    const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
     s.room.bus.observe(ev => {
       if (ev.transaction.local) return
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims()))

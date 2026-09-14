@@ -1,3 +1,4 @@
+import { displayName } from '@room/shared'
 /**
  * Conflicts the agents did not declare. Two watchers on the room doc:
  *  - overlap: my own edits landing inside someone else's open claim (I hold no claim there)
@@ -154,7 +155,7 @@ export class ConflictWatcher {
       const k = `${p}|${c.id}`
       if (this.reported.has(k)) continue
       this.reported.add(k)
-      const who = c.byKind === 'agent' ? `${c.by}'s agent` : c.by
+      const who = displayName({ name: c.by, kind: c.byKind })
       this.d.room.post<ConflictMsg>(ROOM, { type: 'conflict', claimId: c.id, otherClaimId: '', path: p, to: me.name, priority: 'interrupt',
         text: `you edited ${p}:${hit.from}-${hit.to} inside ${who}'s claim ${c.id} (${c.intent}); claim it or room_wait(${c.id})` })
       this.d.room.post<ConflictMsg>(ROOM, { type: 'conflict', claimId: c.id, otherClaimId: '', path: p, to: c.by, priority: 'notify',

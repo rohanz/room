@@ -1,5 +1,5 @@
 import type * as Y from 'yjs'
-import { formatMsg, type ChatItem, type Claim, type Identity, type Msg, type ReleaseMsg, RoomDoc } from '@room/shared'
+import { formatMsg, type ChatItem, type Claim, type Identity, type Msg, type ReleaseMsg, RoomDoc, isAgentic } from '@room/shared'
 import type { AgentBackend, AgentItem } from './backend.js'
 import { claimToMsg, shouldWakeOnClaim, shouldWakeOnMsg } from './wake.js'
 import { preamble } from './prompt.js'
@@ -149,7 +149,7 @@ export class Runner {
   stopTurn(): void {
     this.paused = true
     this.queue.length = 0
-    const mine = this.room.openClaims().filter(c => c.by === this.me.name && c.byKind === 'agent')
+    const mine = this.room.openClaims().filter(c => c.by === this.me.name && isAgentic(c.byKind))
     for (const c of mine) {
       this.room.removeClaim(c.id, this)
       this.room.post<ReleaseMsg>(this.me, { type: 'release', claimId: c.id, path: c.path, summary: 'released by /stop' }, this)

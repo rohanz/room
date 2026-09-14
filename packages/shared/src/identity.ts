@@ -12,8 +12,28 @@ export function colorFor(name: string): string {
   return PALETTE[(h >>> 0) % PALETTE.length]
 }
 
+/** Anything that is not a human acts like an agent: claims, wakes, "not me" in inbox rules. */
+export function isAgentic(kind: Kind | undefined): boolean {
+  return kind !== undefined && kind !== 'human'
+}
+
 export function displayName(id: Identity | { name: string; kind: Kind }): string {
-  return id.kind === 'agent' ? `${id.name}'s agent` : id.name
+  const owner = 'owner' in id ? id.owner : undefined
+  const label = 'label' in id ? id.label : undefined
+  switch (id.kind) {
+    case 'agent': return `${owner ?? id.name}'s agent${label ? ` (${label})` : ''}`
+    case 'bot': return `${label ?? id.name} [bot]`
+    case 'ci': return `${label ?? id.name} [ci]`
+    default: return id.name
+  }
+}
+
+/** One line for participant lists: "rohanz+codex · agent of rohanz · codex". */
+export function describeIdentity(id: Identity): string {
+  const parts = [id.name]
+  if (id.kind !== 'human') parts.push(id.owner && id.owner !== id.name ? `${id.kind} of ${id.owner}` : id.kind)
+  if (id.label) parts.push(id.label)
+  return parts.join(' · ')
 }
 
 export function sameParty(a: Identity, b: Identity): boolean {

@@ -12,7 +12,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { formatMsg, formatPlans, type Msg } from '@room/shared'
+import { formatMsg, formatPlans, type Msg, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 
 function gitStatePath(root: string, name: string): string {
@@ -93,7 +93,7 @@ export class HooksBridge {
   write(): void {
     const me = this.s.me.name
     const unread = this.s.room.messages().filter(m => !this.o.isSeen(m.id) && this.o.forMe(m)).map(m => ({ id: m.id, priority: m.priority, line: formatMsg(m) }))
-    const claims = this.s.room.openClaims().filter(c => !(c.by === me && c.byKind === 'agent')).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
+    const claims = this.s.room.openClaims().filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
     try { fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + '\n') }
     catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`) }
   }

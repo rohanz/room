@@ -1,3 +1,4 @@
+import { displayName } from './identity.js'
 import type { Claim, Cursor } from './types.js'
 import { formatPlans } from './format.js'
 
@@ -22,6 +23,6 @@ export function clampRange(from: number, to: number, lineCount: number): { from:
 }
 
 export function describeClaim(c: Claim): string {
-  const who = c.byKind === 'agent' ? `${c.by}'s agent` : c.by
+  const who = displayName({ name: c.by, kind: c.byKind })
   return `${who} · ${c.path}:${c.from}-${c.to} · ${c.intent}${c.plans?.length ? ` · plans: ${formatPlans(c.plans)}` : ''}`
 }

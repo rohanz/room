@@ -57,7 +57,7 @@ export function shouldWake(me: Identity, ev: RoomEvent, myClaims: Claim[] = []):
     if (!hit) return null
     return {
       content: `${ev.who.name} is editing ${ev.cursor.path}:${ev.cursor.from}-${ev.cursor.to}, inside your claim ${hit.id} (${hit.intent})\n${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
-      meta: cleanMeta({ type: 'cursor_in_claim', from: ev.who.name, from_kind: 'human', path: ev.cursor.path, msg_id: hit.id }),
+      meta: cleanMeta({ type: 'cursor_in_claim', from: ev.who.name, from_kind: ev.who.kind, path: ev.cursor.path, msg_id: hit.id }),
     }
   }
   return null

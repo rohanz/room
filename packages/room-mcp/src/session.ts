@@ -9,7 +9,7 @@ import type { WebsocketProvider } from 'y-websocket'
 import type { Awareness } from 'y-protocols/awareness'
 import { startRoomd, RoomdError, type Roomd } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
-import type { Identity, RoomDoc } from '@room/shared'
+import type { Identity, Kind, RoomDoc } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { getCredential, removeCredential, setCredential } from './credentials.js'
 
@@ -44,8 +44,10 @@ export interface JoinOptions {
   token?: string
   /** Open the repo on the server first (room_create). Without it, joining an unopened repo fails with NoRoom. */
   create?: boolean
-  /** Suffix for running a second agent under the same login: name becomes login+tag. Default from ROOM_TAG. */
+  /** Label for a second principal under the same login: name becomes login+label. Default from ROOM_TAG. */
   tag?: string
+  /** 'agent' (default), 'bot' or 'ci'. Default from ROOM_KIND. */
+  kind?: string
   connectTimeoutMs?: number
   log?: (line: string) => void
 }
@@ -200,11 +202,15 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
   const auth = await resolveAuth(server, roomName, token)
-  // Logged in with GitHub: the participant name is the verified login, whatever git config says.
-  // ROOM_TAG lets one person run two agents on the same branch (name becomes login+tag, e.g. rohanz+codex).
-  const tag = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, '')
-  const name = auth.login ? (tag ? `${auth.login}+${tag}` : auth.login) : opts.name ?? await defaultName(dir)
-  if (!name) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
+  // Logged in with GitHub: the owner is the verified login, whatever git config says. A label (ROOM_TAG)
+  // makes this a second principal under the same owner: name = login+label (e.g. rohanz+codex).
+  const label = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, '') || undefined
+  const kindEnv = (opts.kind ?? process.env.ROOM_KIND)?.trim()
+  const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
+  const owner = auth.login ?? opts.name ?? await defaultName(dir)
+  if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
+  const name = label ? `${owner}+${label}` : owner
+  const me: Identity = { name, kind, owner, ...(label ? { label } : {}) }
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`)
   const { login: _login, ...creds } = auth
   if (opts.create) {
@@ -216,7 +222,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (pre?.missing) throw new NoRoom(roomName, pre.reason)
   if (pre?.loginNeeded) throw new NotLoggedIn(server)
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2)
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', token, githubToken: creds.gh, session: creds.session, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, githubToken: creds.gh, session: creds.session, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
   const view = await viewToken(server, roomName, creds)
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
@@ -227,7 +233,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
     daemon,
-    me: { name, kind: 'agent' },
+    me,
     dir,
     roomUrl,
     roomName,

@@ -1,9 +1,17 @@
-export type Kind = 'human' | 'agent'
+export type Kind = 'human' | 'agent' | 'bot' | 'ci'
 
+/**
+ * A participant (principal). `name` is the unique key in the doc (overlays, claims, messages).
+ * A person's first agent shares the person's name with kind 'agent'; a second agent under the same
+ * login is `${owner}+${label}`. `owner` is the verified login of the human responsible (a human's own
+ * name; the runner of an agent; the account that registered a bot or CI). Older clients omit owner/label.
+ */
 export interface Identity {
-  /** Person's name. An agent uses its owner's name with kind 'agent'. */
   name: string
   kind: Kind
+  owner?: string
+  /** Display hint, e.g. "codex", "deploy bot". */
+  label?: string
 }
 
 export interface RelativePositionJson {

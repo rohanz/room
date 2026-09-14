@@ -73,6 +73,10 @@ using the same shared message/claim wake policy (`shouldWakeOnMsg` and `shouldWa
 from `@room/shared`) as the MCP channel's `shouldWake` wrapper
 and the same preamble (`AGENT_INSTRUCTIONS(name)` from `@room/room-mcp`).
 
+## Identity
+
+A participant is a principal: `{ name, kind, owner, label }`. `name` is the key everything in the room is filed under (overlays, claims, messages). `kind` is `human`, `agent`, `bot` or `ci`; anything that is not a human behaves like an agent for claims and wake-ups. `owner` is the verified GitHub login responsible for the participant: a person's own login, the runner of an agent, or the account that registered a bot. On a server with GitHub login the owner is always the login you signed in with; the first agent under a login takes the login as its name, and `ROOM_TAG=codex` makes a second one named `login+codex` (`ROOM_KIND` sets bot or ci). The server drops any presence whose owner is not the verified login. Display: `rohanz's agent (codex)`, `deploy [bot]`; participant lists show `rohanz+codex · agent of rohanz · codex`.
+
 ## Limitations
 
 Access: the server admits a GitHub-named room only to GitHub tokens that can read the repo

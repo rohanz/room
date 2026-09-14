@@ -21199,8 +21199,28 @@ function colorFor(name) {
   h ^= h >>> 15;
   return PALETTE[(h >>> 0) % PALETTE.length];
 }
+function isAgentic(kind) {
+  return kind !== void 0 && kind !== "human";
+}
 function displayName(id2) {
-  return id2.kind === "agent" ? `${id2.name}'s agent` : id2.name;
+  const owner = "owner" in id2 ? id2.owner : void 0;
+  const label = "label" in id2 ? id2.label : void 0;
+  switch (id2.kind) {
+    case "agent":
+      return `${owner ?? id2.name}'s agent${label ? ` (${label})` : ""}`;
+    case "bot":
+      return `${label ?? id2.name} [bot]`;
+    case "ci":
+      return `${label ?? id2.name} [ci]`;
+    default:
+      return id2.name;
+  }
+}
+function describeIdentity(id2) {
+  const parts = [id2.name];
+  if (id2.kind !== "human") parts.push(id2.owner && id2.owner !== id2.name ? `${id2.kind} of ${id2.owner}` : id2.kind);
+  if (id2.label) parts.push(id2.label);
+  return parts.join(" \xB7 ");
 }
 function newId(prefix = "") {
   const r = Math.random().toString(36).slice(2, 8);
@@ -21262,7 +21282,7 @@ function clampRange(from2, to, lineCount) {
   return { from: f, to: t };
 }
 function describeClaim(c) {
-  const who = c.byKind === "agent" ? `${c.by}'s agent` : c.by;
+  const who = displayName({ name: c.by, kind: c.byKind });
   return `${who} \xB7 ${c.path}:${c.from}-${c.to} \xB7 ${c.intent}${c.plans?.length ? ` \xB7 plans: ${formatPlans(c.plans)}` : ""}`;
 }
 
@@ -29477,7 +29497,7 @@ function makeAnchor(text, from2, to) {
 // packages/shared/src/wake.ts
 var WAKE_TYPES = /* @__PURE__ */ new Set(["claim", "release", "changed", "conflict", "question", "scope"]);
 function shouldWakeOnMsg(me, m, myClaims = []) {
-  if (m.from === me.name && m.fromKind === "agent") return { wake: false, mustAnswer: false, reason: "own message" };
+  if (m.from === me.name && isAgentic(m.fromKind)) return { wake: false, mustAnswer: false, reason: "own message" };
   const addressed = m.to === me.name;
   if (m.priority === "fyi") return { wake: false, mustAnswer: false, reason: "fyi does not wake" };
   if (m.priority === "notify" && !addressed) return { wake: false, mustAnswer: false, reason: m.to ? `addressed to ${m.to}` : "broadcast notify is read on next action" };
@@ -29491,14 +29511,14 @@ function shouldWakeOnMsg(me, m, myClaims = []) {
   if (!WAKE_TYPES.has(m.type)) return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` };
   if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` };
   if ((m.type === "claim" || m.type === "release") && !addressed && !(m.from === me.name && m.fromKind === "human")) {
-    const near = myClaims.some((c) => c.by === me.name && c.byKind === "agent" && c.path === m.path);
+    const near = myClaims.some((c) => c.by === me.name && isAgentic(c.byKind) && c.path === m.path);
     if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${m.path}, not near my claims` };
   }
   return { wake: true, mustAnswer: addressed, reason: addressed ? "addressed to me" : "broadcast" };
 }
 function shouldWakeOnClaim(me, claim2, myClaims) {
-  if (claim2.by === me.name && claim2.byKind === "agent") return { wake: false, mustAnswer: false, reason: "own agent" };
-  const hit = myClaims.find((c) => c.by === me.name && c.byKind === "agent" && c.id !== claim2.id && claimsOverlap(c, claim2));
+  if (claim2.by === me.name && isAgentic(claim2.byKind)) return { wake: false, mustAnswer: false, reason: "own agent" };
+  const hit = myClaims.find((c) => c.by === me.name && isAgentic(c.byKind) && c.id !== claim2.id && claimsOverlap(c, claim2));
   if (!hit) return { wake: false, mustAnswer: false, reason: "no overlap with my claims" };
   return { wake: true, mustAnswer: false, reason: `overlaps my claim ${hit.id}` };
 }
@@ -32882,6 +32902,8 @@ var Daemon = class {
   dir;
   name;
   kind;
+  owner;
+  label;
   log;
   debounceMs;
   trackedRefreshMs;
@@ -32902,6 +32924,8 @@ var Daemon = class {
     this.dir = path.resolve(options.dir);
     this.name = options.name;
     this.kind = options.kind ?? "human";
+    this.owner = options.owner ?? options.name;
+    this.label = options.label;
     this.roomUrl = options.room;
     this.log = options.log ?? ((line) => process.stderr.write(`[roomd] ${line}
 `));
@@ -33015,7 +33039,7 @@ var Daemon = class {
     const current = this.provider.awareness.getLocalState() ?? {};
     const state = {
       ...current,
-      user: { name: this.name, kind: this.kind, color: colorFor(this.name) },
+      user: { name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {}, color: colorFor(this.name) },
       status,
       lastActive: this.lastActive
     };
@@ -33108,7 +33132,7 @@ var Daemon = class {
     ]);
     this.roomDoc.doc.transact(() => {
       this.roomDoc.setMeta({ base: to, branch: this.branch }, this);
-      this.roomDoc.post({ name: this.name, kind: this.kind }, { type: "base", base: to, prev: from2, commits, paths, summary }, this);
+      this.roomDoc.post({ name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {} }, { type: "base", base: to, prev: from2, commits, paths, summary }, this);
     }, this);
     this.log(`advanced room base to ${to.slice(0, 10)} (+${commits})`);
   }
@@ -33750,9 +33774,13 @@ async function joinSession(opts) {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
   const auth = await resolveAuth(server, roomName, token);
-  const tag = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, "");
-  const name = auth.login ? tag ? `${auth.login}+${tag}` : auth.login : opts.name ?? await defaultName(dir);
-  if (!name) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
+  const label = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, "") || void 0;
+  const kindEnv = (opts.kind ?? process.env.ROOM_KIND)?.trim();
+  const kind = kindEnv === "bot" || kindEnv === "ci" ? kindEnv : "agent";
+  const owner = auth.login ?? opts.name ?? await defaultName(dir);
+  if (!owner) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
+  const name = label ? `${owner}+${label}` : owner;
+  const me = { name, kind, owner, ...label ? { label } : {} };
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`);
   const { login: _login, ...creds } = auth;
   if (opts.create) {
@@ -33763,7 +33791,7 @@ async function joinSession(opts) {
   if (pre?.missing) throw new NoRoom(roomName, pre.reason);
   if (pre?.loginNeeded) throw new NotLoggedIn(server);
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2);
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", token, githubToken: creds.gh, session: creds.session, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, githubToken: creds.gh, session: creds.session, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   const view = await viewToken(server, roomName, creds);
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
@@ -33774,7 +33802,7 @@ async function joinSession(opts) {
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
     daemon,
-    me: { name, kind: "agent" },
+    me,
     dir,
     roomUrl,
     roomName,
@@ -33943,7 +33971,7 @@ var HooksBridge = class {
   write() {
     const me = this.s.me.name;
     const unread = this.s.room.messages().filter((m) => !this.o.isSeen(m.id) && this.o.forMe(m)).map((m) => ({ id: m.id, priority: m.priority, line: formatMsg(m) }));
-    const claims = this.s.room.openClaims().filter((c) => !(c.by === me && c.byKind === "agent")).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
+    const claims = this.s.room.openClaims().filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
     try {
       fs3.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + "\n");
     } catch (e) {
@@ -34241,7 +34269,7 @@ var ConflictWatcher = class {
       const k = `${p}|${c.id}`;
       if (this.reported.has(k)) continue;
       this.reported.add(k);
-      const who = c.byKind === "agent" ? `${c.by}'s agent` : c.by;
+      const who = displayName({ name: c.by, kind: c.byKind });
       this.d.room.post(ROOM, {
         type: "conflict",
         claimId: c.id,
@@ -34521,7 +34549,7 @@ function createTools(ctx) {
   };
   const lines = (t) => t.endsWith("\n") ? t.split("\n").length - 1 : t.split("\n").length;
   const forMe = (s, m) => {
-    if (m.from === s.me.name && m.fromKind === "agent") return false;
+    if (m.from === s.me.name && isAgentic(m.fromKind)) return false;
     if (m.to === s.me.name) return true;
     if (m.type === "base") return true;
     if (m.to) return false;
@@ -34726,7 +34754,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
   const scopeLine = (sc) => `${sc.area}: ${sc.summary} (${sc.paths.join(", ")})`;
   const personLine = (s, name) => {
     const sc = s.room.scope(name);
-    const p = presences(s).find((x) => x.user.name === name && x.user.kind === "agent") ?? presences(s).find((x) => x.user.name === name);
+    const p = presences(s).find((x) => x.user.name === name && isAgentic(x.user.kind)) ?? presences(s).find((x) => x.user.name === name);
     const changed = s.room.changedPaths(name);
     const lastDone = [...s.room.messages()].reverse().find((m) => m.from === name && m.type === "note" && m.text.startsWith("done"));
     let what;
@@ -34847,9 +34875,10 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const names = /* @__PURE__ */ new Set([...ps.map((p) => p.user.name), ...s.room.scopes.keys()]);
       out.push(`participants (${names.size}):`);
       for (const n of Array.from(names).sort()) {
-        const p = ps.find((x) => x.user.name === n && x.user.kind === "agent") ?? ps.find((x) => x.user.name === n);
+        const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
-        out.push(`  - ${n}${n === s.me.name ? " (you)" : ""}: ${personLine(s, n)} \xB7 ${ago}`);
+        const who = p ? describeIdentity(p.user) : n;
+        out.push(`  - ${who}${n === s.me.name ? " (you)" : ""}: ${personLine(s, n)} \xB7 ${ago}`);
       }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`);
       const areas = s.room.areaSummary();
@@ -35371,7 +35400,7 @@ ${JSON.stringify({ claim: c, mine: hit })}`,
     return {
       content: `${ev.who.name} is editing ${ev.cursor.path}:${ev.cursor.from}-${ev.cursor.to}, inside your claim ${hit.id} (${hit.intent})
 ${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
-      meta: cleanMeta({ type: "cursor_in_claim", from: ev.who.name, from_kind: "human", path: ev.cursor.path, msg_id: hit.id })
+      meta: cleanMeta({ type: "cursor_in_claim", from: ev.who.name, from_kind: ev.who.kind, path: ev.cursor.path, msg_id: hit.id })
     };
   }
   return null;
@@ -35433,7 +35462,7 @@ async function main() {
       mcp.notification({ method: "notifications/claude/channel", params: { content: w.content, meta: w.meta } }).catch(() => {
       });
     };
-    const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && c.byKind === "agent");
+    const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
     s.room.bus.observe((ev) => {
       if (ev.transaction.local) return;
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) push(shouldWake(s.me, { kind: "msg", msg: m }, myClaims()));

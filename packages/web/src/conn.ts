@@ -93,7 +93,9 @@ export function presences(provider: WebsocketProvider): Presence[] {
     out.push({
       user: {
         name: user.name,
-        kind: user.kind === 'agent' ? 'agent' : 'human',
+        kind: user.kind === 'agent' || user.kind === 'bot' || user.kind === 'ci' ? user.kind : 'human',
+        ...(typeof user.owner === 'string' ? { owner: user.owner } : {}),
+        ...(typeof user.label === 'string' ? { label: user.label } : {}),
         color: typeof user.color === 'string' ? user.color : colorFor(user.name),
       },
       status: typeof value.status === 'string' ? value.status : undefined,
