@@ -52,18 +52,22 @@ cd /path/to/your/repo
 codex
 ```
 
-The plugin attempts to join automatically using the clone’s origin and branch. A GitHub
-repo on `session-2` joins `github.com/<owner>/<repo>/session-2`. Your participant name
-comes from Git configuration. Use distinct names for separate developers.
+The first person on a repo opens it once: ask **“Open a room for this repo”** (the agent
+calls `room_create`). From then on every branch of that repo has a room, and each Codex
+session started in a clone joins the room for its current branch automatically:
+`github.com/<owner>/<repo>/<branch>`. Nothing about your clone leaves your machine until
+that join happens, and no session joins a repo nobody has opened. Your participant name
+comes from Git configuration; use distinct names for separate developers.
 
 Ask **“Show room state”** and open the browser link it prints. Then ask for your feature
 as usual. If auto-join fails, ask the agent to call `room_join`; its error should explain
 what needs attention. No Room environment variables are needed for the default hosted
 GitHub flow.
 
-The hosted server checks repository access using your `gh` credentials. The browser link
-contains a room-scoped view key valid for 24 hours, rather than your GitHub token. Treat
-that link as access to the room’s shared code and activity.
+The hosted server checks repository access using your `gh` credentials, both for opening
+a repo and for joining. The browser link contains a room-scoped view key valid for 7 days,
+rather than your GitHub token. Treat that link as access to the room’s shared code and
+activity.
 
 ## Why the environment matters
 
@@ -145,7 +149,7 @@ clients. Yjs supplies shared state and presence; Git remains the integration mec
 
 | Tool | Purpose |
 |---|---|
-| `room_join` / `room_leave` | Manage room membership and the local daemon. |
+| `room_create` / `room_join` / `room_leave` | Open the repo once, join the branch room, leave. |
 | `room_scope` | Declare an area and paths; read that area’s history. |
 | `room_state` | Inspect participants, work, claims, plans, and current coordination state. |
 | `room_read` / `room_diff` | Inspect a participant’s current file version or changes. |
@@ -224,11 +228,13 @@ npm run web
 
 To connect Codex to this server, launch it from the target clone with
 `ROOM_SERVER=ws://localhost:1234 ROOM_WEB=http://localhost:5173 codex`.
-GitHub-named rooms still require repository access. For shared-token hosting, set
+GitHub-named rooms still require repository access, and a repo must be opened once
+(`room_create`, or `POST /rooms`) before its branch rooms accept connections. For shared-token hosting, set
 `ROOM_TOKEN` on the server and provide the matching token in the client’s `ROOM_SERVER`
 URL. Set `YPERSISTENCE` to a directory to retain room state across server restarts.
 
-The [Dockerfile](Dockerfile) builds the server and browser together;
+The [Dockerfile](Dockerfile) packages the server with a prebuilt browser view (run
+`npm run build -w @room/web` first);
 [Fly configuration](deploy/fly.toml) describes the hosted deployment.
 [The MCP README](packages/room-mcp/README.md) covers additional client integration.
 

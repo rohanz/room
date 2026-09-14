@@ -13,3 +13,4 @@ build/
 *.log
 *.tsbuildinfo
 dist/
+.playwright-mcp/

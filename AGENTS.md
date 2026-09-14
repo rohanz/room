@@ -67,7 +67,7 @@ docs/submission.md       deliverables checklist + demo script
 docs/superpowers/        design specs (v2: 2026-09-12-room-v2-design.md) + plans
 packages/shared/         one Y.Doc schema: overlays per person, scopes, claims (with plans),
                          bus (with priorities), ledger view, wake rules; typed accessors
-packages/server/         stock y-websocket server (pinned @y/websocket-server 0.1.1)
+packages/server/         y-websocket server + GitHub repo-access auth, open-repo registry, view keys, LevelDB persistence
 packages/roomd/          push-only daemon: clone -> my overlay; base tracking; never writes disk
 packages/room-mcp/       room_* tools, session/join, inbox, Claude Code channel; AGENT_INSTRUCTIONS
 packages/agent/          roomagent: on-duty Codex thread fed by chat + interrupts/addressed notifies
@@ -87,7 +87,9 @@ scripts/build-plugin.mjs esbuild bundle of room-mcp into plugins/room/server
   from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex`, then `$room-join`) or
   with `npx tsx packages/agent/src/cli.ts --dir <clone>`.
 - Rooms are named `<host/owner/repo>/<branch>` from the clone's origin (filesystem remotes
-  become `local/<dir>`); URL-encoded in the ws path. In-memory; restart the server to reset.
+  become `local/<dir>`); URL-encoded in the ws path. A repo must be opened once (`room_create`
+  / `POST /rooms`) before its branch rooms accept connections. Without `YPERSISTENCE` the
+  server is in-memory: restart it to reset.
 - Ports: server 1234 by default; demo scripts in this repo have used 1244 to avoid a stray
   server from an earlier session.
 - Quick tool-level smoke without Codex: call `createTools` / `joinSession` from

@@ -33398,6 +33398,13 @@ var GraphIndex = class {
 // packages/room-mcp/src/session.ts
 var DEFAULT_SERVER = "wss://room-rohanz.fly.dev";
 var DEFAULT_WEB = "http://localhost:5173";
+var NoRoom = class extends RoomdError {
+  constructor(roomName, detail) {
+    super(detail, 3);
+    this.roomName = roomName;
+  }
+  roomName;
+};
 function findRoomFile(start) {
   let d = resolve3(start);
   for (; ; ) {
@@ -33486,8 +33493,13 @@ async function joinSession(opts) {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
   const gh = roomName.startsWith("github.com/") ? await githubToken() : void 0;
-  const denied = await preflight(server, roomName, { gh, token });
-  if (denied) throw new RoomdError(`${server} refused ${roomName}: ${denied}`, 2);
+  if (opts.create) {
+    const err = await createRoom(server, roomName, { gh, token, by: name });
+    if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}`, 2);
+  }
+  const pre = await preflight(server, roomName, { gh, token });
+  if (pre?.missing) throw new NoRoom(roomName, pre.reason);
+  if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2);
   const daemon = await startRoomd({ room: roomUrl, dir, name, kind: "agent", token, githubToken: gh, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   const view = await viewToken(server, roomName, { gh, token });
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
@@ -33506,13 +33518,23 @@ async function joinSession(opts) {
     browserUrl
   };
 }
+var httpOf = (server) => server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
 async function preflight(server, roomName, auth) {
   try {
-    const http = server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
-    const res = await fetch(`${http}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
+    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
     if (res.ok) return void 0;
-    if (res.status === 403) return (await res.text()).trim() || "forbidden";
+    if (res.status === 403) return { reason: (await res.text()).trim() || "forbidden" };
+    if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true };
     return void 0;
+  } catch (e) {
+    return { reason: `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})` };
+  }
+}
+async function createRoom(server, roomName, auth) {
+  try {
+    const res = await fetch(`${httpOf(server)}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
+    if (res.ok) return void 0;
+    return (await res.text()).trim() || `HTTP ${res.status}`;
   } catch (e) {
     return `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})`;
   }
@@ -33520,8 +33542,7 @@ async function preflight(server, roomName, auth) {
 async function viewToken(server, roomName, auth) {
   if (!auth.gh && !auth.token) return void 0;
   try {
-    const http = server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
-    const res = await fetch(`${http}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }) });
+    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
     if (!res.ok) return void 0;
     return (await res.json()).view;
   } catch {
@@ -33717,9 +33738,15 @@ var PLANS = {
 };
 var DEFS = [
   {
+    name: "room_create",
+    annotations: RW,
+    description: "Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.",
+    inputSchema: { type: "object", properties: { room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)") } }
+  },
+  {
     name: "room_join",
     annotations: RW,
-    description: "Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL.",
+    description: "Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL. Fails if nobody has opened a room for the repo yet: room_create does that.",
     inputSchema: { type: "object", properties: { room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)") } }
   },
   {
@@ -34089,6 +34116,9 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     return `${what}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(", ")}` : ""}`;
   };
   const handlers = {
+    async room_create(a) {
+      return handlers.room_join({ ...a, create: true });
+    },
     async room_join(a) {
       const cur = ctx.getSession();
       if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`;
@@ -34096,7 +34126,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         dir: typeof a.dir === "string" && a.dir ? a.dir : ctx.cwd,
         name: typeof a.name === "string" && a.name ? a.name : void 0,
         room: typeof a.room === "string" && a.room ? a.room : void 0,
-        server: typeof a.server === "string" && a.server ? a.server : void 0
+        server: typeof a.server === "string" && a.server ? a.server : void 0,
+        create: a.create === true
       });
       ctx.setSession(s);
       for (const m of s.room.messages()) seen.add(m.id);
@@ -34104,7 +34135,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       attachHooks(s);
       const stale = cleanupMine(s, "stale from an earlier session");
       if (stale || s.room.scope(s.me.name)) log2(`cleared ${stale} stale claim(s) and scope from an earlier session`);
-      const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
+      const out = [`${a.create ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
       const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
       out.push(here.length ? `here now: ${here.join(", ")}` : "nobody else is here yet");
       for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`);
@@ -34538,13 +34569,13 @@ ${text}--- end ${p} ---`);
       try {
         const body = await h(args2 ?? {});
         const s2 = ctx.getSession();
-        if (s2 && name !== "room_join") s2.daemon.touch();
+        if (s2 && name !== "room_join" && name !== "room_create") s2.daemon.touch();
         const prefix = moved ? `${moved}
 
 ` : "";
-        return prefix + (s2 && name !== "room_join" ? inbox(s2) + body : body);
+        return prefix + (s2 && name !== "room_join" && name !== "room_create" ? inbox(s2) + body : body);
       } catch (e) {
-        if (e instanceof NotJoined) return "error: not in a room. Call room_join first.";
+        if (e instanceof NotJoined) return "error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.";
         if (e instanceof NeedFetch) return `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry`;
         return `error: ${e instanceof Error ? e.message : String(e)}`;
       }
@@ -34675,7 +34706,7 @@ ${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
 var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
 
 Rules:
-1. room_join once (it derives the room from the git remote). Then room_scope(area, summary, paths) before editing: one word for the area (auth, orders, ...), one line, the paths you expect to touch. Read the area ledger it returns.
+1. You are joined automatically when the repo has a room; if not, room_create opens one (once per repo, any teammate). room_join only if auto-join failed. Then room_scope(area, summary, paths) before editing: one word for the area (auth, orders, ...), one line, the paths you expect to touch. Read the area ledger it returns.
 2. Every tool reply starts with your inbox. interrupt: stop and re-plan before continuing. notify: check whether it touches what you are doing. fyi: nothing.
 3. Before renaming or changing a signature: room_impact(symbol) shows who defines and uses it and who owns those files. room_state lists what you are waiting on: others' planned changes to symbols your files use.
 4. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, symbol, intent, plans) (or from/to for a range). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
@@ -34753,7 +34784,8 @@ async function main() {
       }
       log("ready");
     } catch (e) {
-      log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`);
+      if (e instanceof NoRoom) log(`ready; ${e.message}`);
+      else log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`);
     }
   })();
   tools.setPendingJoin(autoJoin);
@@ -34781,6 +34813,8 @@ if (isEntry) main().catch((e) => {
 export {
   AGENT_INSTRUCTIONS,
   DEFS,
+  NoRoom,
+  createRoom,
   createTools,
   decodeRoom,
   deriveRoomName,

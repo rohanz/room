@@ -14,15 +14,23 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 
 | tool | what |
 |---|---|
-| `room_state()` | meta, participants (status/cursor), open claims, last 10 bus msgs, unread count |
-| `room_read_live(path)` | live text with line numbers + claims/cursors in the file |
-| `room_read_committed(path)` | `git show HEAD:path` from the local clone |
-| `room_diff(path?)` | unified diff HEAD → live, one file or all changed |
-| `room_who(path, from?, to?)` | cursors and claims overlapping a region |
-| `room_claim(path, from, to, intent)` | claim a range (clamped); overlap → `conflict` on the bus + warning in reply |
-| `room_release(claimId, summary?)` | release, posts `release` |
-| `room_send(type, text, to?, paths?, inReplyTo?)` | `changed` / `question` / `answer` |
-| `room_wait(seconds≤30)` | sleep, then reports how many bus messages arrived |
+| `room_create` | Open a room for this repo on the server, then join the room for the current branch. |
+| `room_join` | Join the room for this clone. |
+| `room_leave` | Leave the room: releases your claims, clears your scope, stops the daemon. |
+| `room_scope` | Declare what you are working on: a one-word area, a one-line summary, and the paths you expect to touch. |
+| `room_state` | Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. |
+| `room_read` | A file as a person sees it right now: base commit + their uncommitted edits (default: you). |
+| `room_diff` | Unified diff from the base commit to a person's live version, for one path or all their changed paths. |
+| `room_who` | Who holds claims in a region of a file, whose scope covers it, and who has changed the file. |
+| `room_claim` | Claim what you are about to edit, saying what you will do: either a symbol (function/class name; the room resolves its line range) or a line range. |
+| `room_release` | Release a claim with a summary of what you did. |
+| `room_send` | Post to the bus. |
+| `room_wait` | Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). |
+| `room_done` | Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. |
+| `room_impact` | Dependency graph query. |
+| `room_preview_merge` | Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. |
+
+Every reply (except join) starts with your unread inbox. Full descriptions are in `src/tools.ts`; the agent-facing rules are in `src/prompt.ts` and the plugin's `room-etiquette` skill.
 
 ## Claude Code (channel wake-ups)
 
@@ -64,6 +72,8 @@ and the same preamble (`AGENT_INSTRUCTIONS(name)` from `@room/room-mcp`).
 
 ## Limitations
 
-No auth: anything in the room doc is forwarded. Claim ranges are not remapped as files
-change. Disk edits are attributed to the machine's human; the agent is visible via claims,
+Access: the server admits a GitHub-named room only to GitHub tokens that can read the repo
+(or a shared `ROOM_TOKEN`), and only after someone has opened the repo with `room_create`.
+Inside a room everything in the doc is visible to every member. Claim ranges are not
+remapped as files change. Disk edits are attributed to the machine's human; the agent is visible via claims,
 cursor, status and bus messages.

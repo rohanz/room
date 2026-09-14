@@ -6,6 +6,9 @@
  *  - ROOM_TOKEN: if set, ?token=<same> admits any room (fallback for non-GitHub repos, and override).
  *  - With neither a GitHub-verifiable room nor ROOM_TOKEN configured, the server is open.
  *  - YPERSISTENCE: if set to a directory, rooms are stored in LevelDB there and survive restarts.
+ *  - A repo is opened explicitly once (POST /rooms) before anyone can connect to any of its branch
+ *    rooms; a websocket to a repo nobody opened is refused with 404. Joining a branch of an
+ *    opened repo needs no further step.
  * All coordination state lives inside the Y.Doc; room name = URL path.
  */
 import http from 'node:http'
@@ -65,26 +68,63 @@ function saveViewTokens() {
   try { fs.writeFileSync(VIEW_FILE, JSON.stringify(Object.fromEntries(viewTokens))) } catch { /* best effort */ }
 }
 
+/** "github.com/owner/repo/feature/x" -> "github.com/owner/repo"; "local/dir/main" -> "local/dir". */
+function repoOf(roomName: string): string {
+  const parts = roomName.split('/')
+  return parts.slice(0, roomName.startsWith('github.com/') ? 3 : 2).join('/')
+}
+/** Repos someone has opened: repo -> who/when. Persisted next to the room data. */
+const rooms = new Map<string, { by?: string; at: number }>()
+const ROOMS_FILE = process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'rooms.json') : undefined
+try { if (ROOMS_FILE && fs.existsSync(ROOMS_FILE)) for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(ROOMS_FILE, 'utf8')) as Record<string, { by?: string; at: number }>)) rooms.set(k, v) } catch { /* start empty */ }
+function saveRooms() {
+  if (!ROOMS_FILE) return
+  try { fs.writeFileSync(ROOMS_FILE, JSON.stringify(Object.fromEntries(rooms))) } catch { /* best effort */ }
+}
+const NOT_OPEN = (room: string) => `no room for ${repoOf(room)} yet: open one with room_create (or POST /rooms)`
+
+/** Is this caller allowed into `room`? Same rule for opening, viewing and connecting. */
+async function admitted(room: string, auth: { gh?: string; token?: string }): Promise<string | undefined> {
+  const repo = githubRepoOf(room)
+  const ok = (TOKEN && auth.token === TOKEN) || (auth.gh && repo && await githubCanRead(auth.gh, repo)) || (!TOKEN && !repo)
+  if (ok) return undefined
+  return repo && !auth.gh && !auth.token ? `no GitHub token: run \`gh auth login\` (room ${repo})`
+    : repo && auth.gh ? `your GitHub account cannot read ${repo}: accept the repo invite, or check \`gh auth status\` is the right account`
+    : 'token required or wrong: set ROOM_SERVER=ws://host/?token=<shared token>'
+}
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise(resolve => { let body = ''; req.on('data', c => { body += c }); req.on('end', () => resolve(body)) })
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://x')
   if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); return }
+  if (url.pathname === '/rooms' && req.method === 'POST') {
+    void readBody(req).then(async body => {
+      try {
+        const { room, gh, token, by } = JSON.parse(body || '{}') as { room?: string; gh?: string; token?: string; by?: string }
+        if (!room) { res.writeHead(400); res.end('room required'); return }
+        const why = await admitted(room, { gh, token })
+        if (why) { console.log(`open refused: ${why}`); res.writeHead(403, { 'content-type': 'text/plain' }); res.end(why); return }
+        const name = repoOf(roomNameOf(room))
+        const existing = rooms.get(name)
+        if (!existing) { rooms.set(name, { by, at: Date.now() }); saveRooms(); console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`) }
+        res.writeHead(existing ? 200 : 201, { 'content-type': 'application/json' }); res.end(JSON.stringify({ repo: name, created: !existing, ...(existing ?? {}) }))
+      } catch { res.writeHead(400); res.end('bad request') }
+    })
+    return
+  }
   if (url.pathname === '/view-token' && req.method === 'POST') {
-    let body = ''
-    req.on('data', c => { body += c }); req.on('end', async () => {
+    void readBody(req).then(async body => {
       try {
         const { room, gh, token } = JSON.parse(body || '{}') as { room?: string; gh?: string; token?: string }
         if (!room) { res.writeHead(400); res.end('room required'); return }
-        const repo = githubRepoOf(room)
-        const ok = (TOKEN && token === TOKEN) || (gh && repo && await githubCanRead(gh, repo)) || (!TOKEN && !repo)
-        if (!ok) {
-          const why = repo && !gh && !token ? `no GitHub token: run \`gh auth login\` (room ${repo})`
-            : repo && gh ? `your GitHub account cannot read ${repo}: accept the repo invite, or check \`gh auth status\` is the right account`
-            : 'token required or wrong: set ROOM_SERVER=ws://host/?token=<shared token>'
-          console.log(`view-token refused: ${why}`)
-          res.writeHead(403, { 'content-type': 'text/plain' }); res.end(why); return
-        }
+        const why = await admitted(room, { gh, token })
+        if (why) { console.log(`view-token refused: ${why}`); res.writeHead(403, { 'content-type': 'text/plain' }); res.end(why); return }
+        const name = roomNameOf(room)
+        if (!rooms.has(repoOf(name))) { res.writeHead(404, { 'content-type': 'text/plain' }); res.end(NOT_OPEN(name)); return }
         const view = crypto.randomBytes(16).toString('hex')
-        viewTokens.set(view, { room: roomNameOf(room), exp: Date.now() + VIEW_TTL })
+        viewTokens.set(view, { room: name, exp: Date.now() + VIEW_TTL })
         for (const [k, v] of viewTokens) if (v.exp < Date.now()) viewTokens.delete(k)
         saveViewTokens()
         res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ view, expiresIn: VIEW_TTL }))
@@ -113,23 +153,20 @@ const refuse = (socket: import('node:stream').Duplex, code: number, why: string,
 }
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://x')
-  const accept = () => wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
-  if (TOKEN && url.searchParams.get('token') === TOKEN) return accept()
+  const roomName = roomNameOf(url.pathname)
+  const accept = () => rooms.has(repoOf(roomName))
+    ? wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
+    : refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
   const view = url.searchParams.get('view')
   if (view) {
     const v = viewTokens.get(view)
-    const roomName = roomNameOf(url.pathname)
     if (v && v.exp > Date.now() && v.room === roomName) return accept()
     return refuse(socket, 403, 'Forbidden: view token invalid for this room')
   }
-  const gh = url.searchParams.get('gh')
-  const repo = githubRepoOf(url.pathname)
-  if (gh && repo) {
-    githubCanRead(gh, repo).then(ok => ok ? accept() : refuse(socket, 403, 'Forbidden: GitHub token cannot read ' + repo, repo)).catch(() => refuse(socket, 403, 'Forbidden', repo))
-    return
-  }
-  if (!TOKEN && !repo) return accept() // open server, non-GitHub room
-  refuse(socket, 401, repo ? `Unauthorized: no GitHub token for ${repo}` : 'Unauthorized: token required', repo ?? url.pathname)
+  const gh = url.searchParams.get('gh') ?? undefined, token = url.searchParams.get('token') ?? undefined
+  admitted(roomName, { gh, token })
+    .then(why => why ? refuse(socket, why.startsWith('no GitHub token') || why.startsWith('token required') ? 401 : 403, why, roomName) : accept())
+    .catch(() => refuse(socket, 403, 'Forbidden', roomName))
 })
 server.listen(PORT, HOST, () => console.log(
   `room server listening on ws://${HOST}:${PORT}/<room>` +

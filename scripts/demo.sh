@@ -30,10 +30,13 @@ for _ in $(seq 1 50); do
   if (echo > "/dev/tcp/127.0.0.1/$PORT") >/dev/null 2>&1; then break; fi
   sleep 0.1
 done
+# Rooms are opened per repo before anyone can join; do it here so both clones auto-join.
+curl -sf -X POST "http://localhost:$PORT/rooms" -H 'content-type: application/json' -d '{"room":"local/origin/main","by":"demo"}' >/dev/null \
+  || { echo "[demo] could not open the room on :$PORT" >&2; exit 1; }
 
 cat <<MSG
 
-Room server: ws://localhost:$PORT   (room name derives from the clone: local/origin.git/main)
+Room server: ws://localhost:$PORT   (room opened for local/origin; branch rooms derive from the clone, e.g. local/origin/main)
   Rohan's clone:  $A
   Kieran's clone: $B
 

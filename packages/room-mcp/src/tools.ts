@@ -70,7 +70,9 @@ const PLANS = {
 }
 
 export const DEFS: ToolDef[] = [
-  { name: 'room_join', annotations: RW, description: 'Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL.',
+  { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.',
+    inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)') } } },
+  { name: 'room_join', annotations: RW, description: 'Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL. Fails if nobody has opened a room for the repo yet: room_create does that.',
     inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)') } } },
   { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon.',
     inputSchema: { type: 'object', properties: {} } },
@@ -374,6 +376,7 @@ export function createTools(ctx: ToolCtx): Tools {
 
   // ---- handlers -------------------------------------------------------------
   const handlers: Record<string, (a: Record<string, unknown>) => Promise<string>> = {
+    async room_create(a) { return handlers.room_join({ ...a, create: true }) },
     async room_join(a) {
       const cur = ctx.getSession()
       if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`
@@ -382,6 +385,7 @@ export function createTools(ctx: ToolCtx): Tools {
         name: typeof a.name === 'string' && a.name ? a.name : undefined,
         room: typeof a.room === 'string' && a.room ? a.room : undefined,
         server: typeof a.server === 'string' && a.server ? a.server : undefined,
+        create: a.create === true,
       })
       ctx.setSession(s)
       for (const m of s.room.messages()) seen.add(m.id)
@@ -389,7 +393,7 @@ export function createTools(ctx: ToolCtx): Tools {
       attachHooks(s)
       const stale = cleanupMine(s, 'stale from an earlier session')
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
-      const out = [`joined ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
+      const out = [`${a.create ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
       const here = others(s).filter(n => presences(s).some(p => p.user.name === n))
       out.push(here.length ? `here now: ${here.join(', ')}` : 'nobody else is here yet')
       for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`)
@@ -770,11 +774,11 @@ export function createTools(ctx: ToolCtx): Tools {
       try {
         const body = await h(args ?? {})
         const s2 = ctx.getSession()
-        if (s2 && name !== 'room_join') s2.daemon.touch()
+        if (s2 && name !== 'room_join' && name !== 'room_create') s2.daemon.touch()
         const prefix = moved ? `${moved}\n\n` : ''
-        return prefix + (s2 && name !== 'room_join' ? inbox(s2) + body : body)
+        return prefix + (s2 && name !== 'room_join' && name !== 'room_create' ? inbox(s2) + body : body)
       } catch (e) {
-        if (e instanceof NotJoined) return 'error: not in a room. Call room_join first.'
+        if (e instanceof NotJoined) return 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
         if (e instanceof NeedFetch) return `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry`
         return `error: ${e instanceof Error ? e.message : String(e)}`
       }

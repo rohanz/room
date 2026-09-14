@@ -39,8 +39,15 @@ export interface JoinOptions {
   server?: string
   web?: string
   token?: string
+  /** Open the repo on the server first (room_create). Without it, joining an unopened repo fails with NoRoom. */
+  create?: boolean
   connectTimeoutMs?: number
   log?: (line: string) => void
+}
+
+/** The repo has not been opened on the server; room_create does that. */
+export class NoRoom extends RoomdError {
+  constructor(public roomName: string, detail: string) { super(detail, 3) }
 }
 
 /** `.room.json` written by the daemon; lets a later process rejoin the same room. */
@@ -130,9 +137,14 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
   const gh = roomName.startsWith('github.com/') ? await githubToken() : undefined
+  if (opts.create) {
+    const err = await createRoom(server, roomName, { gh, token, by: name })
+    if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}`, 2)
+  }
   // Preflight over HTTP: a refused websocket only shows up as a sync timeout, so ask the server first.
-  const denied = await preflight(server, roomName, { gh, token })
-  if (denied) throw new RoomdError(`${server} refused ${roomName}: ${denied}`, 2)
+  const pre = await preflight(server, roomName, { gh, token })
+  if (pre?.missing) throw new NoRoom(roomName, pre.reason)
+  if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2)
   const daemon = await startRoomd({ room: roomUrl, dir, name, kind: 'agent', token, githubToken: gh, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
   const view = await viewToken(server, roomName, { gh, token })
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
@@ -152,25 +164,38 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   }
 }
 
-/** Returns the server's refusal reason, or undefined when access is fine (or the server cannot be asked). */
-export async function preflight(server: string, roomName: string, auth: { gh?: string; token?: string }): Promise<string | undefined> {
+const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
+
+/** Why the server would refuse us, or undefined when access is fine (or the server cannot be asked).
+ *  `missing`: access is fine but nobody has opened this repo yet. */
+export async function preflight(server: string, roomName: string, auth: { gh?: string; token?: string }): Promise<{ reason: string; missing?: boolean } | undefined> {
   try {
-    const http = server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
-    const res = await fetch(`${http}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
+    const res = await fetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
     if (res.ok) return undefined
-    if (res.status === 403) return (await res.text()).trim() || 'forbidden'
+    if (res.status === 403) return { reason: (await res.text()).trim() || 'forbidden' }
+    if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true }
     return undefined // older server or unexpected status: let the websocket try
+  } catch (e) {
+    return { reason: `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})` }
+  }
+}
+
+/** Open the repo on the server so its branch rooms can be joined. Idempotent. Returns the refusal, if any. */
+export async function createRoom(server: string, roomName: string, auth: { gh?: string; token?: string; by?: string }): Promise<string | undefined> {
+  try {
+    const res = await fetch(`${httpOf(server)}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
+    if (res.ok) return undefined
+    return (await res.text()).trim() || `HTTP ${res.status}`
   } catch (e) {
     return `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})`
   }
 }
 
-/** Ask the server for a 24h room-scoped token the browser can use (never the GitHub token itself). */
+/** Ask the server for a room-scoped token (7 days) the browser can use (never the GitHub token itself). */
 export async function viewToken(server: string, roomName: string, auth: { gh?: string; token?: string }): Promise<string | undefined> {
   if (!auth.gh && !auth.token) return undefined
   try {
-    const http = server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
-    const res = await fetch(`${http}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }) })
+    const res = await fetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8000) })
     if (!res.ok) return undefined
     return ((await res.json()) as { view?: string }).view
   } catch { return undefined }

@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Room",
     "shortDescription": "Work in a shared live room without stepping on teammates",
-    "longDescription": "Gives Codex the room_* tools: join the room derived from the git remote, declare scope, claim line ranges with planned changes, read teammates' live versions and per-area ledgers, ask and wait, and preview-merge before committing. Nothing is written to your disk by the room.",
+    "longDescription": "Gives Codex the room_* tools: open a room for the repo once, auto-join the room for your branch after that, declare scope, claim line ranges with planned changes, read teammates' live versions and per-area ledgers, ask and wait, and preview-merge before committing. Nothing is written to your disk by the room.",
     "developerName": "Rohan",
     "category": "Productivity",
     "capabilities": [
@@ -27,6 +27,7 @@
       "Write"
     ],
     "defaultPrompt": [
+      "Open a room for this repo",
       "Join the room and tell me who is on what"
     ]
   },

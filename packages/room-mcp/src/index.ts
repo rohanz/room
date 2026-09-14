@@ -8,14 +8,14 @@ import type { Msg } from '@room/shared'
 import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
+import { NoRoom, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
 export type { WakeEvent, RoomEvent } from './wake.js'
 export { createTools, DEFS } from './tools.js'
 export type { ToolCtx, ToolDef, Tools } from './tools.js'
-export { joinSession, leaveSession, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer } from './session.js'
+export { joinSession, leaveSession, createRoom, NoRoom, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer } from './session.js'
 export type { Session, JoinOptions } from './session.js'
 
 const log = (s: string) => process.stderr.write(`room-mcp: ${s}\n`)
@@ -59,7 +59,8 @@ async function main() {
   const transport = new StdioServerTransport()
   await mcp.connect(transport)
 
-  // Auto-join: the runner's ROOM_URL, a prior .room.json, or simply a clone with a git origin.
+  // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
+  // simply a clone with a git origin. A repo nobody has opened waits for room_create.
   const env = (k: string) => (process.env[k] && process.env[k]!.trim()) || undefined
   const prior = findRoomFile(dir)
   const autoJoin = (async () => {
@@ -78,7 +79,8 @@ async function main() {
       } else { log(`ready; ${dir} has no git origin — call room_join with a room name`); return }
       log('ready')
     } catch (e) {
-      log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`)
+      if (e instanceof NoRoom) log(`ready; ${e.message}`)
+      else log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`)
     }
   })()
   tools.setPendingJoin(autoJoin)

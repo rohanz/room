@@ -128,3 +128,19 @@ trigger fresh indexing; snapshots expose base and readiness rather than implying
 **Limits:** Name-based inference and the indexer's existing mixed-overlay selection remain.
 No parser migration, automatic conflict resolution, or guaranteed message interruption.
 **Validation:** Model and indexer regression tests plus a live two-clone browser preview.
+
+## 2026-09-13 — Result
+Room placed third at the "Agents leaving the chatbox" hackathon. Live demo: two people,
+dependent tickets on one function, merge previewed and pushed clean with no merge step.
+
+## 2026-09-14 — Rooms are opened per repo, joined per branch
+**Decision:** A repo must be opened once on the server (`room_create`, `POST /rooms`)
+before any of its branch rooms accept connections. After that, a Codex session in a clone
+auto-joins the room for its current branch, as before. The registry persists with the
+room data.
+**Why:** Auto-creating a room for any clone with a git origin meant a session could start
+sharing uncommitted work with nobody having decided the repo uses Room. Opening is the
+deliberate act; joining a branch of an opened repo is routine and should stay automatic.
+Repo-level rather than branch-level because branches are where work lands, not a decision
+anyone should have to repeat.
+**Cut:** closing/archiving rooms, per-branch opt-out, an admin list of open repos.

@@ -43,12 +43,13 @@ function setup(opts: { synced?: boolean; joined?: boolean } = {}) {
   a.setOverlay('Rohan', 'app.py', MINE)
   let session: Session | null = opts.joined === false ? null : fakeSession(a, opts.synced)
   const joined: string[] = []
+  const created: boolean[] = []
   const tools = createTools({
     getSession: () => session, setSession: s => { session = s }, cwd: dir,
-    join: async o => { joined.push(o.dir); return fakeSession(a) },
+    join: async o => { joined.push(o.dir); created.push(!!o.create); return fakeSession(a) },
     leave: async () => {},
   })
-  return { room: a, other: b, tools, joined, get session() { return session } }
+  return { room: a, other: b, tools, joined, created, get session() { return session } }
 }
 
 beforeAll(() => {
@@ -65,7 +66,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 describe('session gating', () => {
   it('refuses tools before join and gates until synced', async () => {
     const t = setup({ joined: false })
-    expect(await t.tools.call('room_state', {})).toBe('error: not in a room. Call room_join first.')
+    expect(await t.tools.call('room_state', {})).toBe('error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.')
     const u = setup({ synced: false })
     expect(await u.tools.call('room_state', {})).toBe('error: room not synced yet, retry')
   })
@@ -81,6 +82,15 @@ describe('session gating', () => {
     expect(await t.tools.call('room_leave', {})).toBe('left r; released 1 claim(s)')
     expect(t.room.openClaims()).toEqual([])
     expect(t.session).toBeNull()
+  })
+
+  it('room_create opens the repo then joins; room_join never opens', async () => {
+    const t = setup({ joined: false })
+    expect(await t.tools.call('room_create', {})).toContain("opened and joined r as Rohan's agent")
+    expect(t.created).toEqual([true])
+    await t.tools.call('room_leave', {})
+    await t.tools.call('room_join', {})
+    expect(t.created).toEqual([true, false])
   })
 
   it('a fresh join clears stale claims and scope left under my name; shutdown leaves cleanly', async () => {
@@ -110,8 +120,8 @@ describe('session gating', () => {
     expect(t.session).not.toBeNull()
   })
 
-  it('lists the fourteen tools', () => {
-    expect(DEFS.map(d => d.name)).toEqual(['room_join', 'room_leave', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_impact', 'room_preview_merge'])
+  it('lists the fifteen tools', () => {
+    expect(DEFS.map(d => d.name)).toEqual(['room_create', 'room_join', 'room_leave', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_impact', 'room_preview_merge'])
   })
 })
 
