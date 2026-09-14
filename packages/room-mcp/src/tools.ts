@@ -225,6 +225,7 @@ export function createTools(ctx: ToolCtx): Tools {
     if (m.from === s.me.name && m.fromKind === 'agent') return false
     if (m.to === s.me.name) return true
     if (m.type === 'base') return true // someone committed: everyone should know to pull
+    if (m.to) return false // addressed to someone else
     if (m.type === 'conflict') return mine(s).some(c => c.id === m.claimId || c.id === m.otherClaimId)
     return false
   }

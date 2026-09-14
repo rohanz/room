@@ -33528,6 +33528,16 @@ var GraphIndex = class {
 import fs2 from "node:fs";
 import os from "node:os";
 import path2 from "node:path";
+function getPending(server) {
+  const p = loadCredentials()[`pending:${serverKey(server)}`];
+  return p && Date.now() - p.startedAt < p.expires_in * 1e3 ? p : void 0;
+}
+function setPending(server, p) {
+  const all2 = loadCredentials();
+  if (p) all2[`pending:${serverKey(server)}`] = p;
+  else delete all2[`pending:${serverKey(server)}`];
+  save(all2);
+}
 function credentialsPath() {
   const env = process.env.ROOM_CREDENTIALS?.trim();
   if (env) return env;
@@ -33598,7 +33608,7 @@ async function serverAuthMode(server) {
   if (hit) return hit;
   let mode = "token";
   try {
-    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(8e3) });
+    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(2e4) });
     if (res.ok) {
       const b = await res.json();
       if (b.github === "device") mode = "device";
@@ -33648,7 +33658,7 @@ async function logout(server) {
   const c = getCredential(server);
   if (c) {
     try {
-      await fetch(`${httpOf(server)}/auth/logout`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: c.session }), signal: AbortSignal.timeout(8e3) });
+      await fetch(`${httpOf(server)}/auth/logout`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: c.session }), signal: AbortSignal.timeout(2e4) });
     } catch {
     }
   }
@@ -33791,7 +33801,7 @@ function removeStaleCredential(server, reason) {
 }
 async function preflight(server, roomName, auth) {
   try {
-    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
+    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
     if (res.ok) return void 0;
     if (res.status === 401) {
       const reason = (await res.text()).trim() || "unauthorized";
@@ -33810,7 +33820,7 @@ async function preflight(server, roomName, auth) {
 }
 async function createRoom(server, roomName, auth) {
   try {
-    const res = await fetch(`${httpOf(server)}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
+    const res = await fetch(`${httpOf(server)}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
     if (res.ok) return void 0;
     return (await res.text()).trim() || `HTTP ${res.status}`;
   } catch (e) {
@@ -33818,7 +33828,7 @@ async function createRoom(server, roomName, auth) {
   }
 }
 async function closeRoom(server, roomName, auth) {
-  const res = await fetch(`${httpOf(server)}/rooms`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
+  const res = await fetch(`${httpOf(server)}/rooms`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
   if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2);
   const body = await res.json().catch(() => ({}));
   return body.closed ?? [];
@@ -33832,7 +33842,7 @@ async function authFor(s) {
 async function viewToken(server, roomName, auth) {
   if (!auth.gh && !auth.token && !auth.session) return void 0;
   try {
-    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(8e3) });
+    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
     if (!res.ok) return void 0;
     return (await res.json()).view;
   } catch {
@@ -34513,6 +34523,7 @@ function createTools(ctx) {
     if (m.from === s.me.name && m.fromKind === "agent") return false;
     if (m.to === s.me.name) return true;
     if (m.type === "base") return true;
+    if (m.to) return false;
     if (m.type === "conflict") return mine(s).some((c) => c.id === m.claimId || c.id === m.otherClaimId);
     return false;
   };
@@ -34725,34 +34736,34 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     return `${what}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(", ")}` : ""}`;
   };
   const serverOf = (a) => parseServer(typeof a.server === "string" && a.server ? a.server : process.env.ROOM_SERVER ?? DEFAULT_SERVER).server;
-  let pendingLogin = null;
   const codeLine = (p) => `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`;
   const handlers = {
     async room_login(a) {
       const server = serverOf(a);
       if (await serverAuthMode(server) !== "device") return `${server} does not use GitHub login; it accepts your local gh credentials (or a shared token), nothing to do`;
       const cred = getCredential(server);
-      if (cred && !pendingLogin) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`;
-      if (pendingLogin && pendingLogin.server === server && Date.now() - pendingLogin.startedAt < pendingLogin.p.expires_in * 1e3) {
+      const pending = getPending(server);
+      if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`;
+      if (pending) {
         const wait = Math.min(600, Math.max(5, typeof a.wait === "number" ? a.wait : 90));
-        const r = await pollLogin(server, pendingLogin.p, { maxMs: wait * 1e3 });
+        const r = await pollLogin(server, pending, { maxMs: wait * 1e3 });
         if ("login" in r) {
-          pendingLogin = null;
+          setPending(server, void 0);
           return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? "" : "Next: room_join (or room_create if nobody has opened this repo)."}`.trim();
         }
         if ("error" in r) {
-          pendingLogin = null;
+          setPending(server, void 0);
           return `login failed: ${r.error}. Call room_login to start again.`;
         }
-        return `still waiting: ${codeLine(pendingLogin.p)}`;
+        return `still waiting: ${codeLine(pending)}`;
       }
       const p = await startLogin(server);
-      pendingLogin = { server, p, startedAt: Date.now() };
+      setPending(server, { ...p, startedAt: Date.now() });
       return `GitHub login for ${server}. Tell the user exactly this: ${codeLine(p)}`;
     },
     async room_logout(a) {
       const server = serverOf(a);
-      pendingLogin = null;
+      setPending(server, void 0);
       const r = await logout(server);
       return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ""}${ctx.getSession() ? "; the current session stays connected until room_leave" : ""}` : `no login stored for ${server}`;
     },

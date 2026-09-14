@@ -17,7 +17,7 @@ primary_region = "sin"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "suspend"   # idle machine suspends; the next request (or websocket) resumes it in ~1s
+  auto_stop_machines = "stop"      # idle machine stops; the next request (or websocket) starts it in ~2s
   auto_start_machines = true
   min_machines_running = 0
 
