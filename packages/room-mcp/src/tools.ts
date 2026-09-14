@@ -605,6 +605,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
       const env: Record<string, string> = { ROOM_TAG: tag, ROOM_DIR: dir, PWD: dir, ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_LEAD: s.me.name, ...(share ? { ROOM_SHARE: share } : {}) }
       const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
+      env.ROOM_LOG_FILE = path.join(s.dir, '.room', 'workers', `${tag}.mcp.log`)
       let proc: SpawnedProcess
       try { proc = (ctx.spawner ?? defaultSpawner)({ cmd, args, cwd: dir, env, logFile }) }
       catch (e) { return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}` }

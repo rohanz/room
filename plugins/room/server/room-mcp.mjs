@@ -7192,12 +7192,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs7, exportName) {
+    function addFormats(ajv, list, fs8, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs7[f]);
+        ajv.addFormat(f, fs8[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -11645,6 +11645,7 @@ var require_websocket_server = __commonJS({
 });
 
 // packages/room-mcp/src/index.ts
+import fs7 from "node:fs";
 import { resolve as resolve4 } from "node:path";
 
 // node_modules/zod/v4/core/util.js
@@ -22220,14 +22221,14 @@ var deepFreeze = (o) => {
 };
 
 // node_modules/lib0/function.js
-var callAll = (fs7, args2, i = 0) => {
+var callAll = (fs8, args2, i = 0) => {
   try {
-    for (; i < fs7.length; i++) {
-      fs7[i](...args2);
+    for (; i < fs8.length; i++) {
+      fs8[i](...args2);
     }
   } finally {
-    if (i < fs7.length) {
-      callAll(fs7, args2, i + 1);
+    if (i < fs8.length) {
+      callAll(fs8, args2, i + 1);
     }
   }
 };
@@ -24211,15 +24212,15 @@ var cleanupTransactions = (transactionCleanups, i) => {
       sortAndMergeDeleteSet(ds);
       transaction.afterState = getStateVector(transaction.doc.store);
       doc.emit("beforeObserverCalls", [transaction, doc]);
-      const fs7 = [];
+      const fs8 = [];
       transaction.changed.forEach(
-        (subs, itemtype) => fs7.push(() => {
+        (subs, itemtype) => fs8.push(() => {
           if (itemtype._item === null || !itemtype._item.deleted) {
             itemtype._callObserver(transaction, subs);
           }
         })
       );
-      fs7.push(() => {
+      fs8.push(() => {
         transaction.changedParentTypes.forEach((events, type) => {
           if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
             events = events.filter(
@@ -24230,19 +24231,19 @@ var cleanupTransactions = (transactionCleanups, i) => {
               event._path = null;
             });
             events.sort((event1, event2) => event1.path.length - event2.path.length);
-            fs7.push(() => {
+            fs8.push(() => {
               callEventHandlerListeners(type._dEH, events, transaction);
             });
           }
         });
-        fs7.push(() => doc.emit("afterTransaction", [transaction, doc]));
-        fs7.push(() => {
+        fs8.push(() => doc.emit("afterTransaction", [transaction, doc]));
+        fs8.push(() => {
           if (transaction._needFormattingCleanup) {
             cleanupYTextAfterTransaction(transaction);
           }
         });
       });
-      callAll(fs7, []);
+      callAll(fs8, []);
     } finally {
       if (doc.gc) {
         tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -35769,6 +35770,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
       const env = { ROOM_TAG: tag, ROOM_DIR: dir, PWD: dir, ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_LEAD: s.me.name, ...share ? { ROOM_SHARE: share } : {} };
       const logFile = path6.join(s.dir, ".room", "workers", `${tag}.log`);
+      env.ROOM_LOG_FILE = path6.join(s.dir, ".room", "workers", `${tag}.mcp.log`);
       let proc;
       try {
         proc = (ctx.spawner ?? defaultSpawner)({ cmd, args: args2, cwd: dir, env, logFile });
@@ -36615,8 +36617,18 @@ Rules:
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.`;
 
 // packages/room-mcp/src/index.ts
-var log = (s) => process.stderr.write(`room-mcp: ${s}
+var LOG_FILE = process.env.ROOM_LOG_FILE?.trim();
+var log = (s) => {
+  process.stderr.write(`room-mcp: ${s}
 `);
+  if (LOG_FILE) {
+    try {
+      fs7.appendFileSync(LOG_FILE, `${(/* @__PURE__ */ new Date()).toISOString()} ${s}
+`);
+    } catch {
+    }
+  }
+};
 function cwd() {
   const e = (k) => process.env[k] && process.env[k].trim() || void 0;
   return resolve4(e("ROOM_DIR") ?? e("PWD") ?? e("INIT_CWD") ?? process.cwd());

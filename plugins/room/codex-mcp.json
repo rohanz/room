@@ -20,7 +20,13 @@
         "GH_TOKEN",
         "GITHUB_TOKEN",
         "XDG_CONFIG_HOME",
-        "HOME"
+        "HOME",
+        "ROOM_ROOM",
+        "ROOM_LEAD",
+        "ROOM_SHARE",
+        "ROOM_KIND",
+        "ROOM_MAX_WORKERS",
+        "ROOM_LOG_FILE"
       ],
       "startup_timeout_sec": 30
     }
