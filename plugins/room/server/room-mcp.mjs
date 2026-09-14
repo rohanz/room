@@ -33154,7 +33154,7 @@ var Daemon = class {
   async setShare(level, scopePaths) {
     const before = this.share;
     this.share = level;
-    if (scopePaths) this.explicitScopePaths = scopePaths;
+    this.explicitScopePaths = scopePaths;
     this.setStatus(this.currentStatus());
     if (before !== level) this.log(`sharing ${before} -> ${level}`);
     await this.resharePaths();
@@ -34631,7 +34631,7 @@ async function postPrNote(s, number3, body) {
 }
 function branchOf(roomName) {
   const parts = roomName.split("/");
-  return parts.slice(roomName.startsWith("github.com/") ? 3 : 2).join("/") || roomName;
+  return parts.slice(roomName.startsWith("github.com/") ? 3 : roomName.startsWith("git/") ? 4 : 2).join("/") || roomName;
 }
 function renderPrNote(room, opts) {
   const now = opts.now ?? Date.now();
@@ -35511,7 +35511,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       if (!asked) return `error: level must be intent, declared or full (got ${String(a.level)})`;
       const level = clampShare(asked, s.shareMax);
       s.shareRequested = asked;
-      await s.daemon.setShare(level, s.room.scope(s.me.name)?.paths);
+      await s.daemon.setShare(level);
       if (level !== before) s.room.post(s.me, { type: "note", text: `now sharing ${level}${level === "intent" ? " (withdrew all file text)" : level === "declared" ? " (file text only under declared scope paths)" : " (all changed files)"}`, priority: "fyi" });
       const out = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`];
       if (level === "declared" && !s.room.scope(s.me.name)) out.push("no scope declared yet, so nothing is shared until room_scope(area, summary, paths)");
@@ -35919,6 +35919,37 @@ function supersetSide(a, b) {
   if (b.length > a.length && contains(b, a)) return "b";
   return void 0;
 }
+function linkSharedDirs(cloneDir, scratchDir) {
+  const venv = path4.join(cloneDir, ".venv");
+  if (fs4.existsSync(venv) && !fs4.existsSync(path4.join(scratchDir, ".venv"))) fs4.symlinkSync(venv, path4.join(scratchDir, ".venv"));
+  const candidates = ["node_modules"];
+  for (const top of ["packages", "apps", "libs"]) {
+    const d = path4.join(cloneDir, top);
+    if (!fs4.existsSync(d)) continue;
+    for (const e of fs4.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path4.join(top, e.name, "node_modules"));
+  }
+  for (const rel of candidates) {
+    const src = path4.join(cloneDir, rel), dst = path4.join(scratchDir, rel);
+    if (!fs4.existsSync(src) || fs4.existsSync(dst)) continue;
+    mirrorLinks(cloneDir, scratchDir, src, dst);
+  }
+}
+function mirrorLinks(cloneDir, scratchDir, src, dst) {
+  fs4.mkdirSync(dst, { recursive: true });
+  for (const e of fs4.readdirSync(src, { withFileTypes: true })) {
+    const from2 = path4.join(src, e.name), to = path4.join(dst, e.name);
+    if (e.isSymbolicLink()) {
+      const target = path4.resolve(src, fs4.readlinkSync(from2));
+      const inside = path4.relative(cloneDir, target);
+      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path4.sep).includes("node_modules");
+      fs4.symlinkSync(isWorkspace ? path4.join(scratchDir, inside) : target, to);
+    } else if (e.isDirectory() && e.name.startsWith("@")) {
+      mirrorLinks(cloneDir, scratchDir, from2, to);
+    } else {
+      fs4.symlinkSync(from2, to);
+    }
+  }
+}
 async function runInMergedTree(s, ancestor, merged, cmd) {
   const dir = fs4.mkdtempSync(path4.join(os3.tmpdir(), "room-merge-"));
   try {
@@ -35936,10 +35967,7 @@ async function runInMergedTree(s, ancestor, merged, cmd) {
       fs4.mkdirSync(path4.dirname(abs2), { recursive: true });
       fs4.writeFileSync(abs2, text);
     }
-    for (const shared of [".venv", "node_modules"]) {
-      const src = path4.join(s.dir, shared);
-      if (fs4.existsSync(src) && !fs4.existsSync(path4.join(dir, shared))) fs4.symlinkSync(src, path4.join(dir, shared));
-    }
+    linkSharedDirs(s.dir, dir);
     const result = await new Promise((resolve5) => {
       execFile4("sh", ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ROOM_MERGED_TREE: dir } }, (err, stdout, stderr) => {
         const raw = err ? err.code : 0;

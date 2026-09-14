@@ -101,7 +101,7 @@ export async function postPrNote(s: Session, number: number, body: string): Prom
 /** The branch part of a room name ("github.com/o/r/feature/x" -> "feature/x"). */
 export function branchOf(roomName: string): string {
   const parts = roomName.split('/')
-  return parts.slice(roomName.startsWith('github.com/') ? 3 : 2).join('/') || roomName
+  return parts.slice(roomName.startsWith('github.com/') ? 3 : roomName.startsWith('git/') ? 4 : 2).join('/') || roomName
 }
 
 /**

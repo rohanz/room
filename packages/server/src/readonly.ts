@@ -60,7 +60,9 @@ export function isForeignIdentity(buf: Uint8Array, login: string): boolean {
       if (raw === 'null') continue
       const state = JSON.parse(raw) as { user?: { name?: string; owner?: string } }
       const name = state?.user?.name, owner = state?.user?.owner
-      if (name !== undefined && owner !== login && !ownsName(name, login)) return true
+      // The name must be one this login owns (login or login+label); a matching `owner` field alone proves nothing.
+      if (name !== undefined && !ownsName(name, login)) return true
+      if (owner !== undefined && owner !== login) return true
     }
     return false
   } catch {

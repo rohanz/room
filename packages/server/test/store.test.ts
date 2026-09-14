@@ -72,7 +72,9 @@ describe('PgStore', () => {
       else throw new Error(`unexpected SQL: ${text}`)
       return { rows }
     }
-    return { pool: { query, end: async () => { ended = true } }, log, isEnded: () => ended }
+    let clients = 0
+    const connect = async () => { clients++; return { query, release: () => { clients-- } } }
+    return { pool: { query, connect, end: async () => { ended = true } }, log, isEnded: () => ended, openClients: () => clients }
   }
 
   it('creates the tables and round-trips through the fake pool (no live Postgres in CI)', async () => {
@@ -92,5 +94,14 @@ describe('PgStore', () => {
     expect((await s.readAudit({ limit: 2 })).map(e => e.at)).toEqual([2, 3])
     await s.close()
     expect(pg.isEnded()).toBe(true)
+  })
+
+  it('PgStore.saveRooms runs its transaction on one client and releases it', async () => {
+    const pg = fakePg()
+    const s = new PgStore('postgres://x', async () => pg.pool)
+    await s.saveRooms({ 'github.com/a/b': { at: 1, branches: [] } })
+    expect(pg.openClients()).toBe(0)
+    expect(pg.log.some(l => l.startsWith('BEGIN'))).toBe(true)
+    expect(pg.log.some(l => l.startsWith('COMMIT'))).toBe(true)
   })
 })

@@ -259,7 +259,8 @@ class Daemon implements Roomd {
   async setShare(level: ShareLevel, scopePaths?: string[]): Promise<void> {
     const before = this.share
     this.share = level
-    if (scopePaths) this.explicitScopePaths = scopePaths
+    // Paths passed here are a one-off override; `undefined` keeps following the declared scope.
+    this.explicitScopePaths = scopePaths
     this.setStatus(this.currentStatus())
     if (before !== level) this.log(`sharing ${before} -> ${level}`)
     await this.resharePaths()

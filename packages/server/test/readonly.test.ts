@@ -65,9 +65,11 @@ describe('identity-bound connections', () => {
     expect(isForeignIdentity(aw('octo'), 'octo')).toBe(false)
     expect(isForeignIdentity(aw('kieran'), 'octo')).toBe(true)
     expect(isForeignIdentity(aw(null), 'octo')).toBe(false)
-    // principals: admitted by owner, whatever the name; legacy login+label still passes; other owners do not
+    // principals: the name must be one the login owns (login or login+label); a matching owner alone is not enough
     expect(isForeignIdentity(aw('octo+codex', 'octo'), 'octo')).toBe(false)
-    expect(isForeignIdentity(aw('deploy-bot', 'octo'), 'octo')).toBe(false)
+    expect(isForeignIdentity(aw('deploy-bot', 'octo'), 'octo')).toBe(true)
+    expect(isForeignIdentity(aw('octo+deploy', 'octo'), 'octo')).toBe(false)
+    expect(isForeignIdentity(aw('octo', 'kieran'), 'octo')).toBe(true)
     expect(isForeignIdentity(aw('octo+codex'), 'octo')).toBe(false)
     expect(isForeignIdentity(aw('kieran+codex', 'kieran'), 'octo')).toBe(true)
     expect(isForeignIdentity(step1, 'octo')).toBe(false)

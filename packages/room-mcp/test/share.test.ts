@@ -92,7 +92,7 @@ describe('room_share', () => {
     const out = t.body(await t.tools.call('room_share', { level: 'intent' }))
     expect(out).toContain('changed sharing full -> sharing: intent')
     expect(out).toContain('withheld 1 changed file(s): app.py')
-    expect(t.daemon.calls).toEqual([{ level: 'intent', paths: ['app.py'] }])
+    expect(t.daemon.calls).toEqual([{ level: 'intent', paths: undefined }]) // the daemon keeps following the declared scope
     expect(t.room.changedPaths('Rohan')).toEqual([])
     expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'note', text: 'now sharing intent (withdrew all file text)' })
     expect(t.body(await t.tools.call('room_share', { level: 'full' }))).toBe('changed sharing intent -> sharing: full')

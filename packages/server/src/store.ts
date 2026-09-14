@@ -99,7 +99,8 @@ export class FileStore implements Store {
 }
 
 /** Minimal shape of a `pg` Pool, so the driver is only loaded when DATABASE_URL is set. */
-interface PgLike { query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>; end(): Promise<void> }
+interface PgClientLike { query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>; release(): void }
+interface PgLike { query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>; connect(): Promise<PgClientLike>; end(): Promise<void> }
 
 export class PgStore implements Store {
   private pool?: PgLike
@@ -128,13 +129,15 @@ export class PgStore implements Store {
     return Object.fromEntries(rows.map(r => [r.repo as string, r.data as OpenRepo]))
   }
   async saveRooms(all: Record<string, OpenRepo>): Promise<void> {
-    const db = await this.db()
-    await db.query('BEGIN')
+    // One client for the whole transaction: on a Pool each query() may use a different connection.
+    const client = await (await this.db()).connect()
     try {
-      await db.query(`DELETE FROM room_repos`)
-      for (const [repo, data] of Object.entries(all)) await db.query(`INSERT INTO room_repos (repo, data) VALUES ($1, $2)`, [repo, JSON.stringify(data)])
-      await db.query('COMMIT')
-    } catch (e) { await db.query('ROLLBACK'); throw e }
+      await client.query('BEGIN')
+      await client.query(`DELETE FROM room_repos`)
+      for (const [repo, data] of Object.entries(all)) await client.query(`INSERT INTO room_repos (repo, data) VALUES ($1, $2)`, [repo, JSON.stringify(data)])
+      await client.query('COMMIT')
+    } catch (e) { try { await client.query('ROLLBACK') } catch { /* connection gone */ } throw e }
+    finally { client.release() }
   }
 
   async loadSessions(): Promise<Record<string, StoredSession>> {

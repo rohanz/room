@@ -763,7 +763,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (!asked) return `error: level must be intent, declared or full (got ${String(a.level)})`
       const level = clampShare(asked, s.shareMax)
       s.shareRequested = asked
-      await s.daemon.setShare(level, s.room.scope(s.me.name)?.paths)
+      await s.daemon.setShare(level) // keep following the declared scope
       if (level !== before) s.room.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${level}${level === 'intent' ? ' (withdrew all file text)' : level === 'declared' ? ' (file text only under declared scope paths)' : ' (all changed files)'}`, priority: 'fyi' })
       const out = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`]
       if (level === 'declared' && !s.room.scope(s.me.name)) out.push('no scope declared yet, so nothing is shared until room_scope(area, summary, paths)')
