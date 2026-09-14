@@ -379,7 +379,9 @@ class Daemon implements Roomd {
   /** Read UTF-8 text; undefined for missing, binary, or over-cap files. */
   private readText(relpath: string, quiet = false): string | undefined {
     try {
-      const stat = fs.statSync(this.abs(relpath))
+      const stat = fs.lstatSync(this.abs(relpath))
+      // git stores a symlink as its target path; compare the same thing, not the target's content.
+      if (stat.isSymbolicLink()) return fs.readlinkSync(this.abs(relpath))
       if (!stat.isFile()) return undefined
       if (stat.size > this.sizeCap) {
         if (!this.skips.size.has(relpath) && !quiet) this.log(`skip ${relpath}: ${stat.size} bytes > cap`)

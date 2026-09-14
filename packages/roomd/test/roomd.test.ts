@@ -107,6 +107,22 @@ describe('roomd v2 push-only overlays', () => {
 
   afterAll(async () => { await Promise.all(daemons.map(daemon => daemon.stop())) })
 
+  it('a committed symlink is not reported as changed, and a retargeted one is', async () => {
+    const dir = await makeRepo({ 'AGENTS.md': '# rules\n', 'app.py': 'x = 1\n' })
+    await fsp.symlink('AGENTS.md', path.join(dir, 'CLAUDE.md'))
+    execFileSync('git', ['-C', dir, 'add', 'CLAUDE.md'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'link'], { stdio: 'pipe' })
+    const daemon = await start({ room: room(), dir, name: 'Ann' })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
+    await waitFor(() => daemon.roomDoc.changedPaths('Ann').includes('app.py'))
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
+    await fsp.unlink(path.join(dir, 'CLAUDE.md'))
+    await fsp.symlink('app.py', path.join(dir, 'CLAUDE.md'))
+    await waitFor(() => daemon.roomDoc.changedPaths('Ann').includes('CLAUDE.md'))
+    expect(daemon.roomDoc.overlayText('Ann', 'CLAUDE.md')?.toString()).toBe('app.py')
+  })
+
   it('skips files matched by .roomignore and re-evaluates when it changes', async () => {
     const dir = await makeRepo({ 'app.py': 'x = 1\n', 'fixtures/big.json': '{}\n', '.roomignore': 'fixtures/\n' })
     const daemon = await start({ room: room(), dir, name: 'Ann' })
