@@ -13,7 +13,14 @@
         "ROOM_WEB",
         "ROOM_URL",
         "ROOM_NAME",
-        "ROOM_DIR"
+        "ROOM_DIR",
+        "ROOM_TAG",
+        "ROOM_CREDENTIALS",
+        "ROOM_STALE_DAYS",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "XDG_CONFIG_HOME",
+        "HOME"
       ],
       "startup_timeout_sec": 30
     }

@@ -10,7 +10,7 @@
       "name": "room",
       "source": "./plugins/room",
       "description": "Shared live room for coding agents: open once per repo, auto-join per branch, claims, plans, conflict notices, merge preview.",
-      "version": "0.4.0"
+      "version": "0.5.0"
     }
   ]
 }
