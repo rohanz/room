@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createTools } from '../src/tools.js'
 import { credentialsPath, getCredential, setCredential, removeCredential } from '../src/credentials.js'
-import { resolveAuth, NotLoggedIn } from '../src/session.js'
+import { resolveAuth, NotLoggedIn, serverFetch } from '../src/session.js'
 
 /** A stand-in room server: device login that confirms on the second poll. */
 let server: http.Server, url = '', polls = 0, loggedOut: string[] = []
@@ -66,5 +66,18 @@ describe('room_login / room_logout', () => {
   })
   it('logout with nothing stored says so', async () => {
     expect(await tools().call('room_logout', {})).toContain('no login stored')
+  })
+})
+
+describe('serverFetch retry policy', () => {
+  it('does not retry when told not to, so a device-code start never mints twice', async () => {
+    let hits = 0
+    const flaky = http.createServer((_q, res) => { hits++; res.writeHead(502); res.end('starting') })
+    await new Promise<void>(r => flaky.listen(0, '127.0.0.1', r))
+    const base = `http://127.0.0.1:${(flaky.address() as { port: number }).port}`
+    const res = await serverFetch(`${base}/auth/start`, { method: 'POST', retry: false, timeoutMs: 2000 })
+    expect(res.status).toBe(502)
+    expect(hits).toBe(1)
+    flaky.close()
   })
 })

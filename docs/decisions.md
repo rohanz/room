@@ -197,3 +197,31 @@ the merge before it happens. One product, two modes: the server is a setting, no
 different tool, so a solo room grows into a team room by opening the repo.
 **Cut:** nested rooms (a lead bridging its local workers into a team room), worker
 budgets in tokens rather than count, persistence of local rooms across reboots.
+
+## 2026-09-15 — Rooms by instruction; a lead in two rooms; the local relay serves the view
+**Decision:** Which room a clone joins is decided by instruction and remembered per clone
+(`room_join where=local|team|url`, `<git common dir>/room-choice.json`); `ROOM_SERVER`
+overrides for scripts and workers; nothing ever joins the team room uninstructed. A lead in
+a team room can dispatch workers into a local room (`room_spawn where=local`); a bridge
+presents the workers' scope and claims as the lead's in the team room and relays team
+messages about their files down as interrupts. The local relay serves the built browser
+view and accepts loopback websockets without a key, so local rooms have a projector link.
+**Why:** "join the team room" is what a person says; an environment variable is what a
+script says. Workers-local keeps a team's server free of every helper agent and keeps the
+helper's working trees on the machine that owns them, which is the smallest useful form of
+nested rooms.
+**Cut:** relaying workers' questions up to teammates; a lead in more than two rooms.
+
+## 2026-09-15 — Review fixes on rooms-by-instruction
+**Decision:** The local relay binds a port derived from the clone's git dir, so racing
+sessions collide on purpose and one relay wins; joiners recognise a relay by `/health`
+rather than by an open port; every websocket carries a key from the 0600 relay file, and
+the local browser link carries it too. Workers can only be signalled when this session
+spawned them or their pid is provably theirs; a lead cannot leave with workers running
+unless it dismisses them; a spawn failure is recorded as failed. The bridge posts a release
+when a mirrored claim ends and relays only plans, conflicts and base moves as interrupts.
+Remembered team joins warn once per worktree. Server waits cap at 45 s and never retry a
+device-code start.
+**Why:** A code review of the branch found two ways to signal the wrong process, a start
+race that split a clone into two rooms, and a bridge that turned a busy team room into a
+stream of worker interrupts.

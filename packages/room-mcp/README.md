@@ -17,9 +17,9 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_login` | GitHub device login to the room server (two calls: show the code, then wait for approval). |
 | `room_logout` | Forget the stored session for this server. |
 | `room_create` | Open a room for this repo on the server, then join the room for the current branch. |
-| `room_join` | Join the room for this clone. |
+| `room_join` | Join a room for this clone: `where=local` (default), `where=team`, or a server URL; a `team` choice is remembered for the clone. |
 | `room_close` | DESTRUCTIVE: close the room for this whole repo, for everyone; all branch rooms and shared uncommitted work are removed from the server. Only on the user's explicit request. |
-| `room_leave` | Leave the room: releases your claims, clears your scope, stops the daemon. |
+| `room_leave` | Leave the room (and the local workers room, if any); `forget=true` clears the remembered choice. |
 | `room_scope` | Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. |
 | `room_state` | Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Filtered to your areas; `all=true` shows everything. |
 | `room_read` | A file as a person sees it right now: base commit + their uncommitted edits (default: you). |
@@ -33,7 +33,7 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_pr_note` | Post or update the one room comment on a GitHub PR with the branch's story (scopes, claims and plan outcomes, questions and answers, passing merge previews). Default PR: the open one whose head is this branch. |
 | `room_impact` | Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. |
 | `room_preview_merge` | Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. |
-| `room_spawn` | Dispatch a worker agent (claude or codex, optional model) into this room in its own worktree; it reports back with room_done. |
+| `room_spawn` | Dispatch a worker agent (claude or codex, optional model) into this room, or with `where=local` into a local workers room while you stay in the team room; it reports back with room_done. |
 | `room_dismiss` | Stop a worker you spawned; its worktree and branch are kept. |
 | `room_share` | Change how much of your clone the room sees, live: `intent`, `declared` or `full`. Without `level`, reports the current level and what is withheld. |
 
@@ -115,16 +115,52 @@ A room is still one document per branch, but what you see is scoped to the folde
 ## Local rooms (no server)
 
 Without `ROOM_SERVER`, a session joins a **local room**. The first session in a clone
-starts a relay on `127.0.0.1` (a minimal y-websocket server: in-memory, no auth, no
-persistence) and records `{port, pid}` in `<git common dir>/room-local.json`; later
-sessions in the same clone or any worktree of it probe that port and connect. When the
-relay's owner exits, a remaining session takes the port over within about two seconds and
-the others reconnect; every client holds the full document, so nothing is lost. The room
+starts a relay on `127.0.0.1` (a minimal y-websocket server: in-memory, no persistence)
+on a port derived from the clone's git dir, and records `{port, pid, key}` in
+`<git common dir>/room-local.json` (mode 0600). Because the port is fixed per clone, two
+sessions that start at the same instant cannot end up in two rooms: one binds it, the
+other gets EADDRINUSE and joins. Later sessions in the same clone or any worktree of it
+check that a relay (not some other service) answers `/health` on that port and connect,
+presenting the key. When the relay's owner exits, a remaining session takes the port over
+within about two seconds and the others reconnect; every client holds the full document,
+so nothing is lost. The room
 is named `local/<repo basename>/<branch of the main worktree>`, so worktrees on other
 branches still share it. Identity is `git config user.name` (plus `ROOM_TAG`), there is no
 login, and `room_create` / `room_close` / `room_login` explain that they need a server.
 
 `ROOM_SERVER=hosted` selects the hosted server; any `ws://` or `wss://` URL selects another.
+
+The relay also serves the built browser view (shipped with the plugin under `web/`, or
+`packages/web/dist` for source runs) at `http://127.0.0.1:<port>/` plus `/health`, and
+accepts websocket connections from loopback only, each carrying the relay key. A local
+session's `browser view:` link points there and includes the key; it works on this machine
+only, and only for someone holding the link.
+
+## Choosing the room
+
+`room_join` takes `where`: `local`, `team` (the hosted server, what `ROOM_SERVER=hosted`
+means) or a server URL. Precedence: the `where` argument, then `ROOM_SERVER`, then the
+choice remembered in the clone (`<git common dir>/room-choice.json`, written when a join
+was asked for by argument), then local. Joining the team room from a clone that never has
+must be an explicit instruction, and the join reply says that uncommitted work in the clone
+is now visible to the repo's room members. `room_leave(forget=true)` clears the memory.
+`room_state` names the room on its first line. The skills map the phrases: "join the team
+room" / "join the web room" / "join the shared room" → `room_join(where="team")`; "work
+locally" / "leave the team room" → `room_leave(forget=true)` then `room_join(where="local")`.
+
+## Lead in two rooms
+
+`room_spawn(where="local")` while the lead is in a team room opens a local workers room
+for the clone as a second session in the same MCP process and dispatches the workers
+there; they never connect to the server. A `Bridge` keeps the team room informed: the
+lead's team scope is the union of its workers' declared and changed paths (summary "lead
+of N workers: …"); workers' claims are mirrored into the team room under the lead's name
+with the intent prefixed `[tag]`, and removed when the worker releases; team messages
+(claims, releases, changes, conflicts, plans, base moves, scopes) that touch a worker's
+paths are re-posted into the local room as interrupts addressed to that worker. Workers'
+questions to the lead and their `done` messages stay local; the lead's inbox, `room_wait`
+and `room_state` read both rooms. `room_leave`, `room_close` and process exit tear both
+down and drop the mirrored claims.
 
 ## Workers
 
@@ -156,3 +192,18 @@ Besides tool replies, the MCP process watches the room and posts on your behalf:
 - an `fyi` on join when it evicts uncommitted work of someone absent for more than `ROOM_STALE_DAYS` (default 7).
 
 Wake-ups: interrupts and questions addressed to you reach an idle Codex thread through `codex queue` (retried with backoff; the thread id comes from the SessionStart hook) and a Claude Code session through the MCP channel notification.
+
+## Workers: what a lead may and may not do
+
+- `room_leave` is refused while workers you spawned are running; `force=true` dismisses
+  them first (they are told why). Ending the lead's session dismisses them the same way.
+- `room_dismiss` signals a process this session spawned. A worker known only by pid (the
+  lead restarted) is signalled only if that pid is alive and started after the worker
+  record; otherwise it is marked dismissed and left alone, and the reply says so.
+- `room_spawn dir=` outside the repo needs `allowOutside=true`; no worktree or branch
+  bookkeeping is done for it.
+- Joining the team room on the choice remembered for a clone prints the same one-line
+  visibility notice as an explicit join, once per worktree.
+- The bridge relays team plans, conflicts and base moves to workers as interrupts; scopes,
+  claims and change notices arrive at notify, at most once a minute per worker, path and
+  type. When a worker's claim ends, the team gets a release naming any unfulfilled plans.

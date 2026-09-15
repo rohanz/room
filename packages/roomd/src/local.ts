@@ -1,12 +1,15 @@
 /**
  * Local rooms: no server. The first process to join a clone's local room starts a tiny
  * y-websocket relay on 127.0.0.1 (in-memory, no auth, no persistence) and records it in
- * `<git common dir>/room-local.json`. Later processes on the same clone (or any worktree of
- * it) find the file, check the relay answers, and connect. When the relay's owner exits,
- * any remaining client notices within a couple of seconds and races to start a relay on the
- * same port; the losers reconnect to the winner. Every client holds the full document, so a
- * relay restart loses nothing: clients sync their state back into the new one.
+ * `<git common dir>/room-local.json` (mode 0600, with a random key every websocket must
+ * present). The relay binds a port derived from the common dir, so two processes starting at
+ * the same moment cannot end up in two rooms: one binds, the other gets EADDRINUSE and joins.
+ * Later processes find the file, check the relay answers as a room relay, and connect. When
+ * the owner exits, any remaining client notices within a couple of seconds and races to start
+ * a relay on the same port; the losers reconnect to the winner. Every client holds the full
+ * document, so a relay restart loses nothing: clients sync their state back into the new one.
  */
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
@@ -100,12 +103,16 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
   }
 }
 
-export interface LocalRelayInfo { port: number; pid: number; room: string; startedAt: number }
+export interface LocalRelayInfo { port: number; pid: number; room: string; startedAt: number; key: string }
 
 export interface LocalRelay {
   /** ws://127.0.0.1:<port> */
   url: string
+  /** http://127.0.0.1:<port>: the browser view (same machine only). */
+  httpUrl: string
   port: number
+  /** Secret every websocket to this relay must carry as ?key=; lives in room-local.json (0600). */
+  key: string
   /** True when this process runs the relay. */
   owned: boolean
   stop(): Promise<void>
@@ -141,11 +148,21 @@ export function relayFile(commonDir: string): string { return path.join(commonDi
 export function readRelayInfo(commonDir: string): LocalRelayInfo | undefined {
   try {
     const v = JSON.parse(fs.readFileSync(relayFile(commonDir), 'utf8')) as Partial<LocalRelayInfo>
-    return typeof v.port === 'number' && typeof v.pid === 'number' ? { port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0) } : undefined
+    return typeof v.port === 'number' && typeof v.pid === 'number' && typeof v.key === 'string' && v.key
+      ? { port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0), key: v.key }
+      : undefined
   } catch { return undefined }
 }
 
-/** Does something accept TCP connections on 127.0.0.1:port? */
+/** The port a clone's relay binds: derived from the common git dir, so racers collide on purpose (40000-59999). */
+export function deterministicPort(commonDir: string): number {
+  let real = commonDir
+  try { real = fs.realpathSync.native(commonDir) } catch { /* use as given */ }
+  const h = crypto.createHash('sha1').update(real).digest()
+  return 40000 + (h.readUInt32BE(0) % 20000)
+}
+
+/** Does something accept TCP connections on 127.0.0.1:port? (Any listener counts; see relayAnswers.) */
 export function portAnswers(port: number, timeoutMs = 500): Promise<boolean> {
   return new Promise(resolve => {
     const sock = net.connect({ host: '127.0.0.1', port })
@@ -156,14 +173,75 @@ export function portAnswers(port: number, timeoutMs = 500): Promise<boolean> {
   })
 }
 
-/** Start a relay on 127.0.0.1:port (0 = any free port). Rejects with EADDRINUSE when someone else won the race. */
-export function startRelay(port: number): Promise<{ port: number; close(): Promise<void> }> {
+/** Is a room relay (not some unrelated service) answering on 127.0.0.1:port? Probes /health for {"local":true}. */
+export function relayAnswers(port: number, timeoutMs = 800): Promise<boolean> {
+  return new Promise(resolve => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs }, res => {
+      let body = ''
+      res.on('data', c => { body += c })
+      res.on('end', () => { try { resolve(res.statusCode === 200 && JSON.parse(body).local === true) } catch { resolve(false) } })
+    })
+    req.on('timeout', () => { req.destroy(); resolve(false) })
+    req.on('error', () => resolve(false))
+  })
+}
+
+const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.map': 'application/json' }
+
+/**
+ * Where the built browser view lives: ROOM_WEB_DIST, else `web/` next to the plugin bundle's
+ * `server/` dir (plugins/room/web), else packages/web/dist for source runs. Undefined when none exists.
+ */
+export function findWebDist(): string | undefined {
+  const here = path.dirname(new URL(import.meta.url).pathname)
+  const candidates = [
+    process.env.ROOM_WEB_DIST,
+    path.resolve(here, '..', 'web'),            // plugins/room/server/room-mcp.mjs -> plugins/room/web
+    path.resolve(here, '..', '..', 'web', 'dist'), // packages/roomd/src -> packages/web/dist
+    path.resolve(here, '..', '..', '..', 'web', 'dist'),
+  ]
+  for (const c of candidates) if (c && fs.existsSync(path.join(c, 'index.html'))) return c
+  return undefined
+}
+
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+function isLoopback(addr: string | undefined): boolean { return !!addr && LOOPBACK.has(addr) }
+
+/** Start a relay on 127.0.0.1:port (0 = any free port). Rejects with EADDRINUSE when someone else won the race.
+ *  Also serves the browser view (staticDir, default findWebDist()) at / and a /health line, so a local
+ *  room has a projector link like a hosted one. Websockets are accepted from loopback only, and when
+ *  `key` is set they must carry it as ?key= (the /health line stays open so joiners can recognise a relay). */
+export function startRelay(port: number, opts: { staticDir?: string; key?: string } = {}): Promise<{ port: number; close(): Promise<void> }> {
   return new Promise((resolve, reject) => {
-    const server = http.createServer((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true,"local":true}') })
+    const staticDir = opts.staticDir ? path.resolve(opts.staticDir) : findWebDist()
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://x')
+      if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true,"local":true}'); return }
+      if (staticDir) {
+        const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
+        const file = path.resolve(staticDir, rel)
+        if (file.startsWith(staticDir + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile()) {
+          res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-cache' })
+          fs.createReadStream(file).pipe(res)
+          return
+        }
+      }
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end(staticDir ? 'room local relay\n' : 'room local relay (no browser view built: run npm run build -w @room/web)\n')
+    })
     const wss = new WebSocketServer({ noServer: true })
     const docs = relayDocs()
     wss.on('connection', (conn, req) => attach(docs, conn, req))
-    server.on('upgrade', (req, socket, head) => wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req)))
+    server.on('upgrade', (req, socket, head) => {
+      const refuse = (code: number, why: string) => { socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`); socket.destroy() }
+      if (!isLoopback(req.socket.remoteAddress)) return refuse(403, 'Forbidden')
+      if (opts.key) {
+        const given = new URL(req.url ?? '/', 'http://x').searchParams.get('key') ?? ''
+        const a = Buffer.from(given), b = Buffer.from(opts.key)
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return refuse(403, 'Forbidden: local room key missing or wrong')
+      }
+      wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
+    })
     server.once('error', reject)
     server.listen(port, '127.0.0.1', () => {
       const addr = server.address()
@@ -184,33 +262,67 @@ function pidAlive(pid: number): boolean {
  * Find the clone's local relay or become it. Then keep watching: if the relay dies and this
  * process is still around, take over on the same port so connected providers reconnect
  * without a URL change.
+ *
+ * Starting is race-free: the port is derived from the common dir, so of two processes that
+ * start together exactly one binds; the other sees EADDRINUSE, waits for the winner's file,
+ * and joins. If that port is held by something that is not a room relay, any free port is used
+ * instead, and a short re-check afterwards adopts a relay another racer may have recorded.
  */
-export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number } = {}): Promise<LocalRelay> {
+export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string } = {}): Promise<LocalRelay> {
   const log = opts.log ?? (() => {})
   let owned: { port: number; close(): Promise<void> } | null = null
   let port = 0
-  const write = () => { try { fs.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now() } satisfies LocalRelayInfo) + '\n') } catch (e) { log(`local relay: could not write ${relayFile(commonDir)}: ${e instanceof Error ? e.message : e}`) } }
+  let key = ''
+  const write = () => {
+    try { fs.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key } satisfies LocalRelayInfo) + '\n', { mode: 0o600 }) }
+    catch (e) { log(`local relay: could not write ${relayFile(commonDir)}: ${e instanceof Error ? e.message : e}`) }
+  }
+  /** A live relay recorded in the file, if any. */
+  const recorded = async (): Promise<LocalRelayInfo | undefined> => {
+    const info = readRelayInfo(commonDir)
+    return info && (await relayAnswers(info.port)) ? info : undefined
+  }
+  const adopt = (info: LocalRelayInfo, how: string) => {
+    port = info.port; key = info.key
+    log(`local room ${room}: ${how} relay on 127.0.0.1:${port} (pid ${info.pid}${pidAlive(info.pid) ? '' : ', pid gone but relay answers'})`)
+  }
 
-  const existing = readRelayInfo(commonDir)
-  if (existing && (await portAnswers(existing.port))) {
-    port = existing.port
-    log(`local room ${room}: relay on 127.0.0.1:${port} (pid ${existing.pid}${pidAlive(existing.pid) ? '' : ', pid gone but port answers'})`)
-  } else {
-    // Prefer the recorded port so stale URLs keep working; fall back to any free port.
-    const want = existing?.port ?? 0
-    try { owned = await startRelay(want) } catch { owned = await startRelay(0) }
-    port = owned.port
-    write()
-    log(`local room ${room}: started relay on 127.0.0.1:${port}`)
+  const existing = await recorded()
+  if (existing) adopt(existing, 'joined')
+  else {
+    key = readRelayInfo(commonDir)?.key ?? crypto.randomBytes(16).toString('hex')
+    const want = deterministicPort(commonDir)
+    try {
+      owned = await startRelay(want, { key, staticDir: opts.staticDir })
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw e
+      // Someone else bound our port: a racer (give it a moment to write the file) or an unrelated service.
+      let winner: LocalRelayInfo | undefined
+      for (let i = 0; i < 20 && !winner; i++) { await new Promise(r => setTimeout(r, 100)); winner = await recorded() }
+      if (winner) adopt(winner, 'lost the start race; joined')
+      else { owned = await startRelay(0, { key, staticDir: opts.staticDir }); log(`local room ${room}: port ${want} is taken by something else; using a free port`) }
+    }
+    if (owned) {
+      port = owned.port
+      write()
+      log(`local room ${room}: started relay on 127.0.0.1:${port}`)
+      // Another racer that also fell back to a free port may have written after us: keep one relay.
+      await new Promise(r => setTimeout(r, 150))
+      const other = readRelayInfo(commonDir)
+      if (other && other.port !== port && other.pid !== process.pid && (await relayAnswers(other.port))) {
+        await owned.close(); owned = null
+        adopt(other, 'two relays started together; closed ours and joined the')
+      } else if (other?.port !== port) write()
+    }
   }
 
   let stopped = false
   const tick = async () => {
     if (stopped || owned) return
-    if (await portAnswers(port)) return
+    if (await relayAnswers(port)) return
     // Relay gone: race for its port. EADDRINUSE means another client won; we'll reconnect to it.
     try {
-      owned = await startRelay(port)
+      owned = await startRelay(port, { key, staticDir: opts.staticDir })
       write()
       log(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`)
     } catch { /* someone else did */ }
@@ -220,13 +332,15 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
 
   return {
     url: `ws://127.0.0.1:${port}`,
+    httpUrl: `http://127.0.0.1:${port}`,
     port,
+    key,
     get owned() { return owned !== null },
     async stop() {
       stopped = true
       clearInterval(timer)
-      // The file stays: it records the port the survivors will take over on, and new joiners
-      // probe the port before trusting it.
+      // The file stays: it records the port and key the survivors will take over with, and new
+      // joiners probe the port before trusting it.
       if (owned) { await owned.close(); owned = null }
     },
   }

@@ -10,7 +10,7 @@ import type { Identity, Msg } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorktree, workerCommand, workerPrompt, validTag, type SpawnSpec } from '../src/workers.js'
+import { prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, type SpawnSpec } from '../src/workers.js'
 
 let dir: string
 let base: string
@@ -97,6 +97,69 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(await t.leadTools.call('room_spawn', { tag: 'bad tag', task: 'x' })).toContain('error: tag')
   })
 
+  it('room_spawn where=local from a team room opens a local workers room, bridges it, and tears it down on leave', async () => {
+    const team = pair(), local = pair()
+    team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
+    let ls: Session | null = fakeSession(team.a, lead, false)
+    ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
+    const specs: SpawnSpec[] = []
+    const joins: { server?: string; name?: string }[] = []
+    const left: string[] = []
+    const leadTools = createTools({
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0,
+      join: async o => { joins.push({ server: o.server, name: o.name }); return fakeSession(local.a, lead) },
+      leave: async s => { left.push(s.roomName) },
+      spawner: spec => { specs.push(spec); return { pid: 99, onExit: () => {}, kill: () => {} } },
+      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+    })
+    const out = await leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents', where: 'local' })
+    expect(joins).toEqual([{ server: 'local', name: 'rohanz' }])
+    expect(out).toContain('local workers room local/x/main')
+    expect(specs[0].env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
+    expect(local.a.workers.get('money')).toMatchObject({ status: 'running', lead: 'rohanz' })
+    expect(team.a.workers.get('money')).toBeUndefined()
+    // the worker declares a scope and claims in the local room; the team room sees both as the lead's
+    local.b.setScope({ by: workerId.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
+    local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: workerId.name, byKind: 'agent', intent: 'bump' })
+    expect(team.b.scope('rohanz')?.paths).toEqual(['api/models.py'])
+    expect(team.b.openClaims().map(c => c.intent)).toEqual(['[money] bump'])
+    expect(team.b.scopes.has(workerId.name)).toBe(false)
+    const st = await leadTools.call('room_state', { all: true })
+    expect(st).toContain('workers room: local (local/x/main')
+    expect(st).toContain('money (claude, running')
+    // a worker's done message reaches the lead through the workers room inbox
+    let ws: Session | null = fakeSession(local.b, workerId)
+    const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
+    await workerTools.call('room_done', { summary: 'cents done' })
+    expect(await leadTools.call('room_state', {})).toContain('finished: cents done')
+    expect(await leadTools.call('room_leave', {})).toContain('left github.com/rohanz/x/main')
+    expect(left).toEqual(['local/x/main', 'github.com/rohanz/x/main'])
+    expect(team.b.openClaims()).toEqual([])
+  })
+
+  it("the lead's room_wait also returns on a question addressed to it", async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
+    const waiting = t.leadTools.call('room_wait', { timeoutMs: 3000 })
+    await new Promise(r => setTimeout(r, 50))
+    await t.workerTools.call('room_send', { type: 'question', text: 'which field carries the price?', to: 'rohanz' })
+    const out = await waiting
+    expect(out).toContain('question for you')
+    expect(out).toContain('which field carries the price?')
+  })
+
+  it("a worker that exits without room_done still ends the lead's wait, as a done message", async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
+    const waiting = t.leadTools.call('room_wait', { timeoutMs: 3000 })
+    await new Promise(r => setTimeout(r, 50))
+    t.exits[0](0)
+    const out = await waiting
+    expect(out).toContain('worker done:')
+    expect(out).toContain('exited without room_done')
+    expect(t.a.workers.get('money')).toMatchObject({ status: 'done', exitCode: 0 })
+  })
+
   it('refuses beyond the worker budget', async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
@@ -144,6 +207,7 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(t.a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && /worker a .*exited with code 1/.test(m.text))).toBe(true)
     const d = await t.leadTools.call('room_dismiss', { tag: 'b' })
     expect(d).toContain('dismissed b')
+    expect(t.killed).toHaveLength(1)
     expect(t.a.workers.get('b')?.status).toBe('dismissed')
     expect(await t.leadTools.call('room_dismiss', { tag: 'b' })).toContain('already dismissed')
   })
@@ -161,5 +225,95 @@ describe('pinned rooms', () => {
     let s2: Session | null = derived
     const t2 = createTools({ getSession: () => s2, setSession: x => { s2 = x }, cwd: dir, join: async o => ({ ...fakeSession(a, lead, false), roomName: o.room ?? '?' }), leave: async () => {} })
     expect(await t2.call('room_state', { all: true })).toContain('switched to branch main')
+  })
+})
+
+function setupLead() {
+  const { a, b } = pair()
+  a.setMeta({ repo: 'x', branch: 'main', base })
+  let ls: Session | null = fakeSession(a, lead)
+  const specs: SpawnSpec[] = []
+  const exits: ((code: number | null) => void)[] = []
+  const killed: number[] = []
+  const leadTools = createTools({
+    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2,
+    spawner: spec => { specs.push(spec); return { pid: 4242 + specs.length, onExit: cb => { exits.push(cb) }, kill: () => { killed.push(1) } } },
+    worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+  })
+  return { a, b, leadTools, specs, exits, killed }
+}
+
+describe('worker safety', () => {
+  it('a pid this session did not spawn is only signalled when it is alive and started after the worker record', () => {
+    // pid 1 (launchd/init) is alive but started long before now
+    expect(pidIsOurWorker(1, Date.now())).toBe(false)
+    expect(pidIsOurWorker(-1, 0)).toBe(false)
+    expect(pidIsOurWorker(0, 0)).toBe(false)
+    // our own process started before "now", but after a record from an hour ago
+    expect(pidIsOurWorker(process.pid, Date.now() - 3600_000)).toBe(true)
+  })
+
+  it('dismissing a worker whose process is unknown and old leaves the pid alone but marks it dismissed', async () => {
+    const { a, b } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base })
+    // a worker record left by a lead that has since restarted: pid 1 is alive but not ours
+    a.setWorker({ tag: 'ghost', name: 'rohanz+ghost', host: 'claude', task: 'x', dir, branch: 'room/ghost', pid: 1, startedAt: Date.now(), status: 'running', lead: 'rohanz' })
+    let ls: Session | null = fakeSession(b, lead)
+    const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir })
+    const out = await tools.call('room_dismiss', { tag: 'ghost' })
+    expect(out).toContain('not signalled')
+    expect(a.workers.get('ghost')?.status).toBe('dismissed')
+  })
+
+  it('room_leave refuses while workers run, force dismisses them; shutdown dismisses too', async () => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
+    const refused = await t.leadTools.call('room_leave', {})
+    expect(refused).toContain('error: 1 worker(s) still running: a')
+    expect(t.a.workers.get('a')?.status).toBe('running')
+    const left = await t.leadTools.call('room_leave', { force: true })
+    expect(left).toContain('left local/x/main')
+    expect(t.killed).toHaveLength(1)
+    expect(t.a.workers.get('a')?.status).toBe('dismissed')
+    expect(t.a.messages().some(m => m.type === 'note' && /dismissed worker a .*the lead left/.test((m as { text: string }).text))).toBe(true)
+    // shutdown path
+    const t2 = setupLead()
+    await t2.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
+    await t2.leadTools.shutdown()
+    expect(t2.killed).toHaveLength(1)
+    expect(t2.a.workers.get('b')?.status).toBe('dismissed')
+  })
+
+  it('a worker that cannot start is marked failed', async () => {
+    const { a } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base })
+    let ls: Session | null = fakeSession(a, lead)
+    let onErr: ((e: Error) => void) | undefined
+    const tools = createTools({
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
+      spawner: () => ({ pid: -1, onExit: () => {}, onError: cb => { onErr = cb }, kill: () => { throw new Error('must not signal') } }),
+      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+    })
+    await tools.call('room_spawn', { tag: 'nope', task: 'x', host: 'codex' })
+    onErr!(new Error('spawn codex ENOENT'))
+    expect(a.workers.get('nope')).toMatchObject({ status: 'failed', exitCode: -1 })
+    expect(a.messages().some(m => m.type === 'note' && /could not start: spawn codex ENOENT/.test((m as { text: string }).text))).toBe(true)
+    // dismissing it never signals anything
+    expect(await tools.call('room_dismiss', { tag: 'nope' })).toContain('already failed')
+  })
+
+  it('room_spawn refuses a dir outside the repo unless allowOutside, and then skips worktree bookkeeping', async () => {
+    const t = setupLead()
+    const outside = mkdtempSync(join(tmpdir(), 'room-outside-'))
+    execFileSync('git', ['-C', outside, 'init', '-q', '-b', 'elsewhere'], { stdio: 'pipe' })
+    writeFileSync(join(outside, 'f.txt'), 'x\n')
+    execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { stdio: 'pipe' })
+    const refused = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside })
+    expect(refused).toContain('outside this repo')
+    expect(t.specs).toHaveLength(0)
+    const ok = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside, allowOutside: true })
+    expect(ok).toContain('outside this repo, so no worktree was made')
+    expect(t.a.workers.get('far')).toMatchObject({ dir: outside, branch: 'elsewhere' })
   })
 })

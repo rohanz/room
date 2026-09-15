@@ -3269,8 +3269,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path7) {
-      let input = path7;
+    function removeDotSegments(path8) {
+      let input = path8;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3679,8 +3679,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path7 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path7 && path7 !== "/" ? path7 : void 0;
+        const path8 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path8 && path8 !== "/" ? path8 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7192,12 +7192,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs8, exportName) {
+    function addFormats(ajv, list, fs9, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs8[f]);
+        ajv.addFormat(f, fs9[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -10211,7 +10211,7 @@ var require_websocket = __commonJS({
     var EventEmitter2 = __require("events");
     var https = __require("https");
     var http2 = __require("http");
-    var net2 = __require("net");
+    var net = __require("net");
     var tls = __require("tls");
     var { randomBytes, createHash } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
@@ -10955,12 +10955,12 @@ var require_websocket = __commonJS({
     }
     function netConnect(options) {
       options.path = options.socketPath;
-      return net2.connect(options);
+      return net.connect(options);
     }
     function tlsConnect(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
-        options.servername = net2.isIP(options.host) ? "" : options.host;
+        options.servername = net.isIP(options.host) ? "" : options.host;
       }
       return tls.connect(options);
     }
@@ -11645,7 +11645,7 @@ var require_websocket_server = __commonJS({
 });
 
 // packages/room-mcp/src/index.ts
-import fs7 from "node:fs";
+import fs8 from "node:fs";
 import { resolve as resolve4 } from "node:path";
 
 // node_modules/zod/v4/core/util.js
@@ -11828,10 +11828,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path7) {
-  if (!path7)
+function getElementAtPath(obj, path8) {
+  if (!path8)
     return obj;
-  return path7.reduce((acc, key) => acc?.[key], obj);
+  return path8.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -12243,11 +12243,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path7, issues) {
+function prefixIssues(path8, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path7);
+    iss.path.unshift(path8);
     return iss;
   });
 }
@@ -12676,16 +12676,16 @@ function flattenError(error2, mapper = (issue2) => issue2.message) {
 }
 function formatError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error3, path7 = []) => {
+  const processError = (error3, path8 = []) => {
     for (const issue2 of error3.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path8, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
       } else {
-        const fullpath = [...path7, ...issue2.path];
+        const fullpath = [...path8, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -22221,14 +22221,14 @@ var deepFreeze = (o) => {
 };
 
 // node_modules/lib0/function.js
-var callAll = (fs8, args2, i = 0) => {
+var callAll = (fs9, args2, i = 0) => {
   try {
-    for (; i < fs8.length; i++) {
-      fs8[i](...args2);
+    for (; i < fs9.length; i++) {
+      fs9[i](...args2);
     }
   } finally {
-    if (i < fs8.length) {
-      callAll(fs8, args2, i + 1);
+    if (i < fs9.length) {
+      callAll(fs9, args2, i + 1);
     }
   }
 };
@@ -24212,15 +24212,15 @@ var cleanupTransactions = (transactionCleanups, i) => {
       sortAndMergeDeleteSet(ds);
       transaction.afterState = getStateVector(transaction.doc.store);
       doc.emit("beforeObserverCalls", [transaction, doc]);
-      const fs8 = [];
+      const fs9 = [];
       transaction.changed.forEach(
-        (subs, itemtype) => fs8.push(() => {
+        (subs, itemtype) => fs9.push(() => {
           if (itemtype._item === null || !itemtype._item.deleted) {
             itemtype._callObserver(transaction, subs);
           }
         })
       );
-      fs8.push(() => {
+      fs9.push(() => {
         transaction.changedParentTypes.forEach((events, type) => {
           if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
             events = events.filter(
@@ -24231,19 +24231,19 @@ var cleanupTransactions = (transactionCleanups, i) => {
               event._path = null;
             });
             events.sort((event1, event2) => event1.path.length - event2.path.length);
-            fs8.push(() => {
+            fs9.push(() => {
               callEventHandlerListeners(type._dEH, events, transaction);
             });
           }
         });
-        fs8.push(() => doc.emit("afterTransaction", [transaction, doc]));
-        fs8.push(() => {
+        fs9.push(() => doc.emit("afterTransaction", [transaction, doc]));
+        fs9.push(() => {
           if (transaction._needFormattingCleanup) {
             cleanupYTextAfterTransaction(transaction);
           }
         });
       });
-      callAll(fs8, []);
+      callAll(fs9, []);
     } finally {
       if (doc.gc) {
         tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -24826,10 +24826,10 @@ var YEvent = class {
   }
 };
 var getPathTo = (parent, child) => {
-  const path7 = [];
+  const path8 = [];
   while (child._item !== null && child !== parent) {
     if (child._item.parentSub !== null) {
-      path7.unshift(child._item.parentSub);
+      path8.unshift(child._item.parentSub);
     } else {
       let i = 0;
       let c = (
@@ -24842,12 +24842,12 @@ var getPathTo = (parent, child) => {
         }
         c = c.right;
       }
-      path7.unshift(i);
+      path8.unshift(i);
     }
     child = /** @type {AbstractType<any>} */
     child._item.parent;
   }
-  return path7;
+  return path8;
 };
 var warnPrematureAccess = () => {
   warn("Invalid access: Add Yjs type to a document before reading data.");
@@ -29115,8 +29115,8 @@ function msgPaths(m) {
   if ("path" in m) return [m.path];
   return [];
 }
-function scopeCovers(scope, path7) {
-  return scope.paths.some((p) => path7 === p || path7.startsWith(p.replace(/\/?$/, "/")));
+function scopeCovers(scope, path8) {
+  return scope.paths.some((p) => path8 === p || path8.startsWith(p.replace(/\/?$/, "/")));
 }
 function ledger(messages, scopes, q = {}) {
   const areaScopes = q.area ? scopes.filter((s) => s.area === q.area) : [];
@@ -29550,8 +29550,8 @@ var PY_DEF = /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
 var PY_ASSIGN = /^([A-Z_][A-Z0-9_]*)\s*(?::[^=]+)?=/gm;
 var JS_DEF = /\b(?:function\*?|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)|\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g;
 var KEYWORDS = new Set("def class return if else elif for while in not and or import from as with try except finally raise pass break continue lambda yield await async None True False self cls function const let var new this export default import from return if else for while do switch case break continue typeof instanceof void null undefined true false async await class extends super interface type enum implements".split(" "));
-var regexExtractor = (path7, text) => {
-  const ext = path7.slice(path7.lastIndexOf(".") + 1);
+var regexExtractor = (path8, text) => {
+  const ext = path8.slice(path8.lastIndexOf(".") + 1);
   const defs = /* @__PURE__ */ new Set();
   if (ext === "py") {
     for (const m of text.matchAll(PY_DEF)) defs.add(m[1]);
@@ -29578,28 +29578,28 @@ var SymbolGraph = class {
   get size() {
     return this.files.size;
   }
-  has(path7) {
-    return this.files.has(path7);
+  has(path8) {
+    return this.files.has(path8);
   }
   /** Index or re-index one file. Returns false when the extractor does not handle it. */
-  set(path7, text) {
-    this.remove(path7);
-    const syms = this.extract(path7, text);
+  set(path8, text) {
+    this.remove(path8);
+    const syms = this.extract(path8, text);
     if (!syms) return false;
-    this.files.set(path7, syms);
-    for (const d of syms.defs) add(this.definers, d, path7);
-    for (const r of syms.refs) add(this.users, r, path7);
+    this.files.set(path8, syms);
+    for (const d of syms.defs) add(this.definers, d, path8);
+    for (const r of syms.refs) add(this.users, r, path8);
     return true;
   }
-  remove(path7) {
-    const prev = this.files.get(path7);
+  remove(path8) {
+    const prev = this.files.get(path8);
     if (!prev) return;
-    for (const d of prev.defs) del(this.definers, d, path7);
-    for (const r of prev.refs) del(this.users, r, path7);
-    this.files.delete(path7);
+    for (const d of prev.defs) del(this.definers, d, path8);
+    for (const r of prev.refs) del(this.users, r, path8);
+    this.files.delete(path8);
   }
-  symbolsOf(path7) {
-    return this.files.get(path7);
+  symbolsOf(path8) {
+    return this.files.get(path8);
   }
   definersOf(symbol) {
     return Array.from(this.definers.get(symbol) ?? []).sort();
@@ -29610,24 +29610,24 @@ var SymbolGraph = class {
     return Array.from(this.users.get(symbol) ?? []).filter((p) => !defs.has(p)).sort();
   }
   /** Symbols a file uses that some other file defines. */
-  dependenciesOf(path7) {
-    const syms = this.files.get(path7);
+  dependenciesOf(path8) {
+    const syms = this.files.get(path8);
     if (!syms) return [];
     const out = [];
     for (const r of syms.refs) {
-      const definedIn = this.definersOf(r).filter((p) => p !== path7);
-      if (definedIn.length) out.push({ symbol: r, definedIn, usedIn: [path7] });
+      const definedIn = this.definersOf(r).filter((p) => p !== path8);
+      if (definedIn.length) out.push({ symbol: r, definedIn, usedIn: [path8] });
     }
     return out.sort((a, b) => a.symbol.localeCompare(b.symbol));
   }
   /** Symbols a file defines and the other files that use them. */
-  dependentsOf(path7) {
-    const syms = this.files.get(path7);
+  dependentsOf(path8) {
+    const syms = this.files.get(path8);
     if (!syms) return [];
     const out = [];
     for (const d of syms.defs) {
       const usedIn = this.usersOf(d);
-      if (usedIn.length) out.push({ symbol: d, definedIn: [path7], usedIn });
+      if (usedIn.length) out.push({ symbol: d, definedIn: [path8], usedIn });
     }
     return out.sort((a, b) => b.usedIn.length - a.usedIn.length || a.symbol.localeCompare(b.symbol));
   }
@@ -29649,9 +29649,9 @@ function del(m, k, v) {
   s.delete(v);
   if (!s.size) m.delete(k);
 }
-function symbolRange(path7, text, symbol) {
+function symbolRange(path8, text, symbol) {
   const lines = text.split("\n");
-  const ext = path7.slice(path7.lastIndexOf(".") + 1);
+  const ext = path8.slice(path8.lastIndexOf(".") + 1);
   const esc2 = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (ext === "py") {
     const re2 = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${esc2}\\b`);
@@ -29785,8 +29785,8 @@ var Areas = class _Areas {
     return Array.from(new Set(this.rules.map((r) => r.area))).sort();
   }
   /** The area a path belongs to: the longest matching pattern (later wins on ties); top-level dir without CODEOWNERS. */
-  areaOf(path7) {
-    const p = path7.replace(/^\.?\//, "");
+  areaOf(path8) {
+    const p = path8.replace(/^\.?\//, "");
     if (this.source === "codeowners") {
       let best;
       for (let i = 0; i < this.rules.length; i++) {
@@ -29813,9 +29813,9 @@ var Areas = class _Areas {
     return this.ownersOf(area).some((o) => o.toLowerCase() === me);
   }
 };
-function topLevelArea(path7) {
-  const i = path7.indexOf("/");
-  return i < 0 ? "/" : `${path7.slice(0, i)}/`;
+function topLevelArea(path8) {
+  const i = path8.indexOf("/");
+  return i < 0 ? "/" : `${path8.slice(0, i)}/`;
 }
 function sharesArea(a, b) {
   if (!a?.length || !b?.length) return true;
@@ -29922,16 +29922,16 @@ var Diff = class {
       }
     }
   }
-  addToPath(path7, added, removed, oldPosInc, options) {
-    const last2 = path7.lastComponent;
+  addToPath(path8, added, removed, oldPosInc, options) {
+    const last2 = path8.lastComponent;
     if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
       return {
-        oldPos: path7.oldPos + oldPosInc,
+        oldPos: path8.oldPos + oldPosInc,
         lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
       };
     } else {
       return {
-        oldPos: path7.oldPos + oldPosInc,
+        oldPos: path8.oldPos + oldPosInc,
         lastComponent: { count: 1, added, removed, previousComponent: last2 }
       };
     }
@@ -30254,9 +30254,9 @@ function splitLines(text) {
 
 // packages/room-mcp/src/tools.ts
 import { execFile as execFile4 } from "node:child_process";
-import fs6 from "node:fs";
+import fs7 from "node:fs";
 import os3 from "node:os";
-import path6 from "node:path";
+import path7 from "node:path";
 
 // node_modules/node-diff3/dist/diff3.mjs
 function LCS(buffer1, buffer2) {
@@ -31363,7 +31363,7 @@ var ReaddirpStream = class extends Readable {
     this._directoryFilter = normalizeFilter(opts.directoryFilter);
     const statMethod = opts.lstat ? lstat : stat;
     if (wantBigintFsStats) {
-      this._stat = (path7) => statMethod(path7, { bigint: true });
+      this._stat = (path8) => statMethod(path8, { bigint: true });
     } else {
       this._stat = statMethod;
     }
@@ -31388,8 +31388,8 @@ var ReaddirpStream = class extends Readable {
         const par = this.parent;
         const fil = par && par.files;
         if (fil && fil.length > 0) {
-          const { path: path7, depth } = par;
-          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path7));
+          const { path: path8, depth } = par;
+          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path8));
           const awaited = await Promise.all(slice);
           for (const entry of awaited) {
             if (!entry)
@@ -31429,20 +31429,20 @@ var ReaddirpStream = class extends Readable {
       this.reading = false;
     }
   }
-  async _exploreDir(path7, depth) {
+  async _exploreDir(path8, depth) {
     let files;
     try {
-      files = await readdir(path7, this._rdOptions);
+      files = await readdir(path8, this._rdOptions);
     } catch (error2) {
       this._onError(error2);
     }
-    return { files, depth, path: path7 };
+    return { files, depth, path: path8 };
   }
-  async _formatEntry(dirent, path7) {
+  async _formatEntry(dirent, path8) {
     let entry;
     const basename3 = this._isDirent ? dirent.name : dirent;
     try {
-      const fullPath = presolve(pjoin(path7, basename3));
+      const fullPath = presolve(pjoin(path8, basename3));
       entry = { path: prelative(this._root, fullPath), fullPath, basename: basename3 };
       entry[this._statsProp] = this._isDirent ? dirent : await this._stat(fullPath);
     } catch (err) {
@@ -31842,16 +31842,16 @@ var delFromSet = (main2, prop, item) => {
 };
 var isEmptySet = (val) => val instanceof Set ? val.size === 0 : !val;
 var FsWatchInstances = /* @__PURE__ */ new Map();
-function createFsWatchInstance(path7, options, listener, errHandler, emitRaw) {
+function createFsWatchInstance(path8, options, listener, errHandler, emitRaw) {
   const handleEvent = (rawEvent, evPath) => {
-    listener(path7);
-    emitRaw(rawEvent, evPath, { watchedPath: path7 });
-    if (evPath && path7 !== evPath) {
-      fsWatchBroadcast(sysPath.resolve(path7, evPath), KEY_LISTENERS, sysPath.join(path7, evPath));
+    listener(path8);
+    emitRaw(rawEvent, evPath, { watchedPath: path8 });
+    if (evPath && path8 !== evPath) {
+      fsWatchBroadcast(sysPath.resolve(path8, evPath), KEY_LISTENERS, sysPath.join(path8, evPath));
     }
   };
   try {
-    return fs_watch(path7, {
+    return fs_watch(path8, {
       persistent: options.persistent
     }, handleEvent);
   } catch (error2) {
@@ -31867,12 +31867,12 @@ var fsWatchBroadcast = (fullPath, listenerType, val1, val2, val3) => {
     listener(val1, val2, val3);
   });
 };
-var setFsWatchListener = (path7, fullPath, options, handlers) => {
+var setFsWatchListener = (path8, fullPath, options, handlers) => {
   const { listener, errHandler, rawEmitter } = handlers;
   let cont = FsWatchInstances.get(fullPath);
   let watcher;
   if (!options.persistent) {
-    watcher = createFsWatchInstance(path7, options, listener, errHandler, rawEmitter);
+    watcher = createFsWatchInstance(path8, options, listener, errHandler, rawEmitter);
     if (!watcher)
       return;
     return watcher.close.bind(watcher);
@@ -31883,7 +31883,7 @@ var setFsWatchListener = (path7, fullPath, options, handlers) => {
     addAndConvert(cont, KEY_RAW, rawEmitter);
   } else {
     watcher = createFsWatchInstance(
-      path7,
+      path8,
       options,
       fsWatchBroadcast.bind(null, fullPath, KEY_LISTENERS),
       errHandler,
@@ -31898,7 +31898,7 @@ var setFsWatchListener = (path7, fullPath, options, handlers) => {
         cont.watcherUnusable = true;
       if (isWindows && error2.code === "EPERM") {
         try {
-          const fd = await open2(path7, "r");
+          const fd = await open2(path8, "r");
           await fd.close();
           broadcastErr(error2);
         } catch (err) {
@@ -31929,7 +31929,7 @@ var setFsWatchListener = (path7, fullPath, options, handlers) => {
   };
 };
 var FsWatchFileInstances = /* @__PURE__ */ new Map();
-var setFsWatchFileListener = (path7, fullPath, options, handlers) => {
+var setFsWatchFileListener = (path8, fullPath, options, handlers) => {
   const { listener, rawEmitter } = handlers;
   let cont = FsWatchFileInstances.get(fullPath);
   const copts = cont && cont.options;
@@ -31951,7 +31951,7 @@ var setFsWatchFileListener = (path7, fullPath, options, handlers) => {
         });
         const currmtime = curr.mtimeMs;
         if (curr.size !== prev.size || currmtime > prev.mtimeMs || currmtime === 0) {
-          foreach(cont.listeners, (listener2) => listener2(path7, curr));
+          foreach(cont.listeners, (listener2) => listener2(path8, curr));
         }
       })
     };
@@ -31979,13 +31979,13 @@ var NodeFsHandler = class {
    * @param listener on fs change
    * @returns closer for the watcher instance
    */
-  _watchWithNodeFs(path7, listener) {
+  _watchWithNodeFs(path8, listener) {
     const opts = this.fsw.options;
-    const directory = sysPath.dirname(path7);
-    const basename3 = sysPath.basename(path7);
+    const directory = sysPath.dirname(path8);
+    const basename3 = sysPath.basename(path8);
     const parent = this.fsw._getWatchedDir(directory);
     parent.add(basename3);
-    const absolutePath = sysPath.resolve(path7);
+    const absolutePath = sysPath.resolve(path8);
     const options = {
       persistent: opts.persistent
     };
@@ -31995,12 +31995,12 @@ var NodeFsHandler = class {
     if (opts.usePolling) {
       const enableBin = opts.interval !== opts.binaryInterval;
       options.interval = enableBin && isBinaryPath(basename3) ? opts.binaryInterval : opts.interval;
-      closer = setFsWatchFileListener(path7, absolutePath, options, {
+      closer = setFsWatchFileListener(path8, absolutePath, options, {
         listener,
         rawEmitter: this.fsw._emitRaw
       });
     } else {
-      closer = setFsWatchListener(path7, absolutePath, options, {
+      closer = setFsWatchListener(path8, absolutePath, options, {
         listener,
         errHandler: this._boundHandleError,
         rawEmitter: this.fsw._emitRaw
@@ -32022,7 +32022,7 @@ var NodeFsHandler = class {
     let prevStats = stats;
     if (parent.has(basename3))
       return;
-    const listener = async (path7, newStats) => {
+    const listener = async (path8, newStats) => {
       if (!this.fsw._throttle(THROTTLE_MODE_WATCH, file, 5))
         return;
       if (!newStats || newStats.mtimeMs === 0) {
@@ -32036,11 +32036,11 @@ var NodeFsHandler = class {
             this.fsw._emit(EV.CHANGE, file, newStats2);
           }
           if ((isMacos || isLinux || isFreeBSD) && prevStats.ino !== newStats2.ino) {
-            this.fsw._closeFile(path7);
+            this.fsw._closeFile(path8);
             prevStats = newStats2;
             const closer2 = this._watchWithNodeFs(file, listener);
             if (closer2)
-              this.fsw._addPathCloser(path7, closer2);
+              this.fsw._addPathCloser(path8, closer2);
           } else {
             prevStats = newStats2;
           }
@@ -32072,7 +32072,7 @@ var NodeFsHandler = class {
    * @param item basename of this item
    * @returns true if no more processing is needed for this entry.
    */
-  async _handleSymlink(entry, directory, path7, item) {
+  async _handleSymlink(entry, directory, path8, item) {
     if (this.fsw.closed) {
       return;
     }
@@ -32082,7 +32082,7 @@ var NodeFsHandler = class {
       this.fsw._incrReadyCount();
       let linkPath;
       try {
-        linkPath = await fsrealpath(path7);
+        linkPath = await fsrealpath(path8);
       } catch (e) {
         this.fsw._emitReady();
         return true;
@@ -32092,12 +32092,12 @@ var NodeFsHandler = class {
       if (dir.has(item)) {
         if (this.fsw._symlinkPaths.get(full) !== linkPath) {
           this.fsw._symlinkPaths.set(full, linkPath);
-          this.fsw._emit(EV.CHANGE, path7, entry.stats);
+          this.fsw._emit(EV.CHANGE, path8, entry.stats);
         }
       } else {
         dir.add(item);
         this.fsw._symlinkPaths.set(full, linkPath);
-        this.fsw._emit(EV.ADD, path7, entry.stats);
+        this.fsw._emit(EV.ADD, path8, entry.stats);
       }
       this.fsw._emitReady();
       return true;
@@ -32126,9 +32126,9 @@ var NodeFsHandler = class {
         return;
       }
       const item = entry.path;
-      let path7 = sysPath.join(directory, item);
+      let path8 = sysPath.join(directory, item);
       current.add(item);
-      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path7, item)) {
+      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path8, item)) {
         return;
       }
       if (this.fsw.closed) {
@@ -32137,8 +32137,8 @@ var NodeFsHandler = class {
       }
       if (item === target || !target && !previous.has(item)) {
         this.fsw._incrReadyCount();
-        path7 = sysPath.join(dir, sysPath.relative(dir, path7));
-        this._addToNodeFs(path7, initialAdd, wh, depth + 1);
+        path8 = sysPath.join(dir, sysPath.relative(dir, path8));
+        this._addToNodeFs(path8, initialAdd, wh, depth + 1);
       }
     }).on(EV.ERROR, this._boundHandleError);
     return new Promise((resolve5, reject) => {
@@ -32207,13 +32207,13 @@ var NodeFsHandler = class {
    * @param depth Child path actually targeted for watch
    * @param target Child path actually targeted for watch
    */
-  async _addToNodeFs(path7, initialAdd, priorWh, depth, target) {
+  async _addToNodeFs(path8, initialAdd, priorWh, depth, target) {
     const ready = this.fsw._emitReady;
-    if (this.fsw._isIgnored(path7) || this.fsw.closed) {
+    if (this.fsw._isIgnored(path8) || this.fsw.closed) {
       ready();
       return false;
     }
-    const wh = this.fsw._getWatchHelpers(path7);
+    const wh = this.fsw._getWatchHelpers(path8);
     if (priorWh) {
       wh.filterPath = (entry) => priorWh.filterPath(entry);
       wh.filterDir = (entry) => priorWh.filterDir(entry);
@@ -32229,8 +32229,8 @@ var NodeFsHandler = class {
       const follow = this.fsw.options.followSymlinks;
       let closer;
       if (stats.isDirectory()) {
-        const absPath = sysPath.resolve(path7);
-        const targetPath = follow ? await fsrealpath(path7) : path7;
+        const absPath = sysPath.resolve(path8);
+        const targetPath = follow ? await fsrealpath(path8) : path8;
         if (this.fsw.closed)
           return;
         closer = await this._handleDir(wh.watchPath, stats, initialAdd, depth, target, wh, targetPath);
@@ -32240,29 +32240,29 @@ var NodeFsHandler = class {
           this.fsw._symlinkPaths.set(absPath, targetPath);
         }
       } else if (stats.isSymbolicLink()) {
-        const targetPath = follow ? await fsrealpath(path7) : path7;
+        const targetPath = follow ? await fsrealpath(path8) : path8;
         if (this.fsw.closed)
           return;
         const parent = sysPath.dirname(wh.watchPath);
         this.fsw._getWatchedDir(parent).add(wh.watchPath);
         this.fsw._emit(EV.ADD, wh.watchPath, stats);
-        closer = await this._handleDir(parent, stats, initialAdd, depth, path7, wh, targetPath);
+        closer = await this._handleDir(parent, stats, initialAdd, depth, path8, wh, targetPath);
         if (this.fsw.closed)
           return;
         if (targetPath !== void 0) {
-          this.fsw._symlinkPaths.set(sysPath.resolve(path7), targetPath);
+          this.fsw._symlinkPaths.set(sysPath.resolve(path8), targetPath);
         }
       } else {
         closer = this._handleFile(wh.watchPath, stats, initialAdd);
       }
       ready();
       if (closer)
-        this.fsw._addPathCloser(path7, closer);
+        this.fsw._addPathCloser(path8, closer);
       return false;
     } catch (error2) {
       if (this.fsw._handleError(error2)) {
         ready();
-        return path7;
+        return path8;
       }
     }
   }
@@ -32305,26 +32305,26 @@ function createPattern(matcher) {
   }
   return () => false;
 }
-function normalizePath(path7) {
-  if (typeof path7 !== "string")
+function normalizePath(path8) {
+  if (typeof path8 !== "string")
     throw new Error("string expected");
-  path7 = sysPath2.normalize(path7);
-  path7 = path7.replace(/\\/g, "/");
+  path8 = sysPath2.normalize(path8);
+  path8 = path8.replace(/\\/g, "/");
   let prepend = false;
-  if (path7.startsWith("//"))
+  if (path8.startsWith("//"))
     prepend = true;
   const DOUBLE_SLASH_RE2 = /\/\//;
-  while (path7.match(DOUBLE_SLASH_RE2))
-    path7 = path7.replace(DOUBLE_SLASH_RE2, "/");
+  while (path8.match(DOUBLE_SLASH_RE2))
+    path8 = path8.replace(DOUBLE_SLASH_RE2, "/");
   if (prepend)
-    path7 = "/" + path7;
-  return path7;
+    path8 = "/" + path8;
+  return path8;
 }
 function matchPatterns(patterns, testString, stats) {
-  const path7 = normalizePath(testString);
+  const path8 = normalizePath(testString);
   for (let index = 0; index < patterns.length; index++) {
     const pattern = patterns[index];
-    if (pattern(path7, stats)) {
+    if (pattern(path8, stats)) {
       return true;
     }
   }
@@ -32364,19 +32364,19 @@ var toUnix = (string3) => {
   }
   return str2;
 };
-var normalizePathToUnix = (path7) => toUnix(sysPath2.normalize(toUnix(path7)));
-var normalizeIgnored = (cwd2 = "") => (path7) => {
-  if (typeof path7 === "string") {
-    return normalizePathToUnix(sysPath2.isAbsolute(path7) ? path7 : sysPath2.join(cwd2, path7));
+var normalizePathToUnix = (path8) => toUnix(sysPath2.normalize(toUnix(path8)));
+var normalizeIgnored = (cwd2 = "") => (path8) => {
+  if (typeof path8 === "string") {
+    return normalizePathToUnix(sysPath2.isAbsolute(path8) ? path8 : sysPath2.join(cwd2, path8));
   } else {
-    return path7;
+    return path8;
   }
 };
-var getAbsolutePath = (path7, cwd2) => {
-  if (sysPath2.isAbsolute(path7)) {
-    return path7;
+var getAbsolutePath = (path8, cwd2) => {
+  if (sysPath2.isAbsolute(path8)) {
+    return path8;
   }
-  return sysPath2.join(cwd2, path7);
+  return sysPath2.join(cwd2, path8);
 };
 var EMPTY_SET = Object.freeze(/* @__PURE__ */ new Set());
 var DirEntry = class {
@@ -32431,10 +32431,10 @@ var DirEntry = class {
 var STAT_METHOD_F = "stat";
 var STAT_METHOD_L = "lstat";
 var WatchHelper = class {
-  constructor(path7, follow, fsw) {
+  constructor(path8, follow, fsw) {
     this.fsw = fsw;
-    const watchPath = path7;
-    this.path = path7 = path7.replace(REPLACER_RE, "");
+    const watchPath = path8;
+    this.path = path8 = path8.replace(REPLACER_RE, "");
     this.watchPath = watchPath;
     this.fullWatchPath = sysPath2.resolve(watchPath);
     this.dirParts = [];
@@ -32556,20 +32556,20 @@ var FSWatcher = class extends EventEmitter {
     this._closePromise = void 0;
     let paths = unifyPaths(paths_);
     if (cwd2) {
-      paths = paths.map((path7) => {
-        const absPath = getAbsolutePath(path7, cwd2);
+      paths = paths.map((path8) => {
+        const absPath = getAbsolutePath(path8, cwd2);
         return absPath;
       });
     }
-    paths.forEach((path7) => {
-      this._removeIgnoredPath(path7);
+    paths.forEach((path8) => {
+      this._removeIgnoredPath(path8);
     });
     this._userIgnored = void 0;
     if (!this._readyCount)
       this._readyCount = 0;
     this._readyCount += paths.length;
-    Promise.all(paths.map(async (path7) => {
-      const res = await this._nodeFsHandler._addToNodeFs(path7, !_internal, void 0, 0, _origAdd);
+    Promise.all(paths.map(async (path8) => {
+      const res = await this._nodeFsHandler._addToNodeFs(path8, !_internal, void 0, 0, _origAdd);
       if (res)
         this._emitReady();
       return res;
@@ -32591,17 +32591,17 @@ var FSWatcher = class extends EventEmitter {
       return this;
     const paths = unifyPaths(paths_);
     const { cwd: cwd2 } = this.options;
-    paths.forEach((path7) => {
-      if (!sysPath2.isAbsolute(path7) && !this._closers.has(path7)) {
+    paths.forEach((path8) => {
+      if (!sysPath2.isAbsolute(path8) && !this._closers.has(path8)) {
         if (cwd2)
-          path7 = sysPath2.join(cwd2, path7);
-        path7 = sysPath2.resolve(path7);
+          path8 = sysPath2.join(cwd2, path8);
+        path8 = sysPath2.resolve(path8);
       }
-      this._closePath(path7);
-      this._addIgnoredPath(path7);
-      if (this._watched.has(path7)) {
+      this._closePath(path8);
+      this._addIgnoredPath(path8);
+      if (this._watched.has(path8)) {
         this._addIgnoredPath({
-          path: path7,
+          path: path8,
           recursive: true
         });
       }
@@ -32665,38 +32665,38 @@ var FSWatcher = class extends EventEmitter {
    * @param stats arguments to be passed with event
    * @returns the error if defined, otherwise the value of the FSWatcher instance's `closed` flag
    */
-  async _emit(event, path7, stats) {
+  async _emit(event, path8, stats) {
     if (this.closed)
       return;
     const opts = this.options;
     if (isWindows)
-      path7 = sysPath2.normalize(path7);
+      path8 = sysPath2.normalize(path8);
     if (opts.cwd)
-      path7 = sysPath2.relative(opts.cwd, path7);
-    const args2 = [path7];
+      path8 = sysPath2.relative(opts.cwd, path8);
+    const args2 = [path8];
     if (stats != null)
       args2.push(stats);
     const awf = opts.awaitWriteFinish;
     let pw;
-    if (awf && (pw = this._pendingWrites.get(path7))) {
+    if (awf && (pw = this._pendingWrites.get(path8))) {
       pw.lastChange = /* @__PURE__ */ new Date();
       return this;
     }
     if (opts.atomic) {
       if (event === EVENTS.UNLINK) {
-        this._pendingUnlinks.set(path7, [event, ...args2]);
+        this._pendingUnlinks.set(path8, [event, ...args2]);
         setTimeout(() => {
-          this._pendingUnlinks.forEach((entry, path8) => {
+          this._pendingUnlinks.forEach((entry, path9) => {
             this.emit(...entry);
             this.emit(EVENTS.ALL, ...entry);
-            this._pendingUnlinks.delete(path8);
+            this._pendingUnlinks.delete(path9);
           });
         }, typeof opts.atomic === "number" ? opts.atomic : 100);
         return this;
       }
-      if (event === EVENTS.ADD && this._pendingUnlinks.has(path7)) {
+      if (event === EVENTS.ADD && this._pendingUnlinks.has(path8)) {
         event = EVENTS.CHANGE;
-        this._pendingUnlinks.delete(path7);
+        this._pendingUnlinks.delete(path8);
       }
     }
     if (awf && (event === EVENTS.ADD || event === EVENTS.CHANGE) && this._readyEmitted) {
@@ -32714,16 +32714,16 @@ var FSWatcher = class extends EventEmitter {
           this.emitWithAll(event, args2);
         }
       };
-      this._awaitWriteFinish(path7, awf.stabilityThreshold, event, awfEmit);
+      this._awaitWriteFinish(path8, awf.stabilityThreshold, event, awfEmit);
       return this;
     }
     if (event === EVENTS.CHANGE) {
-      const isThrottled = !this._throttle(EVENTS.CHANGE, path7, 50);
+      const isThrottled = !this._throttle(EVENTS.CHANGE, path8, 50);
       if (isThrottled)
         return this;
     }
     if (opts.alwaysStat && stats === void 0 && (event === EVENTS.ADD || event === EVENTS.ADD_DIR || event === EVENTS.CHANGE)) {
-      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path7) : path7;
+      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path8) : path8;
       let stats2;
       try {
         stats2 = await stat3(fullPath);
@@ -32754,23 +32754,23 @@ var FSWatcher = class extends EventEmitter {
    * @param timeout duration of time to suppress duplicate actions
    * @returns tracking object or false if action should be suppressed
    */
-  _throttle(actionType, path7, timeout) {
+  _throttle(actionType, path8, timeout) {
     if (!this._throttled.has(actionType)) {
       this._throttled.set(actionType, /* @__PURE__ */ new Map());
     }
     const action = this._throttled.get(actionType);
     if (!action)
       throw new Error("invalid throttle");
-    const actionPath = action.get(path7);
+    const actionPath = action.get(path8);
     if (actionPath) {
       actionPath.count++;
       return false;
     }
     let timeoutObject;
     const clear = () => {
-      const item = action.get(path7);
+      const item = action.get(path8);
       const count = item ? item.count : 0;
-      action.delete(path7);
+      action.delete(path8);
       clearTimeout(timeoutObject);
       if (item)
         clearTimeout(item.timeoutObject);
@@ -32778,7 +32778,7 @@ var FSWatcher = class extends EventEmitter {
     };
     timeoutObject = setTimeout(clear, timeout);
     const thr = { timeoutObject, clear, count: 0 };
-    action.set(path7, thr);
+    action.set(path8, thr);
     return thr;
   }
   _incrReadyCount() {
@@ -32792,44 +32792,44 @@ var FSWatcher = class extends EventEmitter {
    * @param event
    * @param awfEmit Callback to be called when ready for event to be emitted.
    */
-  _awaitWriteFinish(path7, threshold, event, awfEmit) {
+  _awaitWriteFinish(path8, threshold, event, awfEmit) {
     const awf = this.options.awaitWriteFinish;
     if (typeof awf !== "object")
       return;
     const pollInterval = awf.pollInterval;
     let timeoutHandler;
-    let fullPath = path7;
-    if (this.options.cwd && !sysPath2.isAbsolute(path7)) {
-      fullPath = sysPath2.join(this.options.cwd, path7);
+    let fullPath = path8;
+    if (this.options.cwd && !sysPath2.isAbsolute(path8)) {
+      fullPath = sysPath2.join(this.options.cwd, path8);
     }
     const now = /* @__PURE__ */ new Date();
     const writes = this._pendingWrites;
     function awaitWriteFinishFn(prevStat) {
       statcb(fullPath, (err, curStat) => {
-        if (err || !writes.has(path7)) {
+        if (err || !writes.has(path8)) {
           if (err && err.code !== "ENOENT")
             awfEmit(err);
           return;
         }
         const now2 = Number(/* @__PURE__ */ new Date());
         if (prevStat && curStat.size !== prevStat.size) {
-          writes.get(path7).lastChange = now2;
+          writes.get(path8).lastChange = now2;
         }
-        const pw = writes.get(path7);
+        const pw = writes.get(path8);
         const df = now2 - pw.lastChange;
         if (df >= threshold) {
-          writes.delete(path7);
+          writes.delete(path8);
           awfEmit(void 0, curStat);
         } else {
           timeoutHandler = setTimeout(awaitWriteFinishFn, pollInterval, curStat);
         }
       });
     }
-    if (!writes.has(path7)) {
-      writes.set(path7, {
+    if (!writes.has(path8)) {
+      writes.set(path8, {
         lastChange: now,
         cancelWait: () => {
-          writes.delete(path7);
+          writes.delete(path8);
           clearTimeout(timeoutHandler);
           return event;
         }
@@ -32840,8 +32840,8 @@ var FSWatcher = class extends EventEmitter {
   /**
    * Determines whether user has asked to ignore this path.
    */
-  _isIgnored(path7, stats) {
-    if (this.options.atomic && DOT_RE.test(path7))
+  _isIgnored(path8, stats) {
+    if (this.options.atomic && DOT_RE.test(path8))
       return true;
     if (!this._userIgnored) {
       const { cwd: cwd2 } = this.options;
@@ -32851,17 +32851,17 @@ var FSWatcher = class extends EventEmitter {
       const list = [...ignoredPaths.map(normalizeIgnored(cwd2)), ...ignored];
       this._userIgnored = anymatch(list, void 0);
     }
-    return this._userIgnored(path7, stats);
+    return this._userIgnored(path8, stats);
   }
-  _isntIgnored(path7, stat4) {
-    return !this._isIgnored(path7, stat4);
+  _isntIgnored(path8, stat4) {
+    return !this._isIgnored(path8, stat4);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
    * @param path file or directory pattern being watched
    */
-  _getWatchHelpers(path7) {
-    return new WatchHelper(path7, this.options.followSymlinks, this);
+  _getWatchHelpers(path8) {
+    return new WatchHelper(path8, this.options.followSymlinks, this);
   }
   // Directory helpers
   // -----------------
@@ -32893,63 +32893,63 @@ var FSWatcher = class extends EventEmitter {
    * @param item      base path of item/directory
    */
   _remove(directory, item, isDirectory) {
-    const path7 = sysPath2.join(directory, item);
-    const fullPath = sysPath2.resolve(path7);
-    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path7) || this._watched.has(fullPath);
-    if (!this._throttle("remove", path7, 100))
+    const path8 = sysPath2.join(directory, item);
+    const fullPath = sysPath2.resolve(path8);
+    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path8) || this._watched.has(fullPath);
+    if (!this._throttle("remove", path8, 100))
       return;
     if (!isDirectory && this._watched.size === 1) {
       this.add(directory, item, true);
     }
-    const wp = this._getWatchedDir(path7);
+    const wp = this._getWatchedDir(path8);
     const nestedDirectoryChildren = wp.getChildren();
-    nestedDirectoryChildren.forEach((nested) => this._remove(path7, nested));
+    nestedDirectoryChildren.forEach((nested) => this._remove(path8, nested));
     const parent = this._getWatchedDir(directory);
     const wasTracked = parent.has(item);
     parent.remove(item);
     if (this._symlinkPaths.has(fullPath)) {
       this._symlinkPaths.delete(fullPath);
     }
-    let relPath = path7;
+    let relPath = path8;
     if (this.options.cwd)
-      relPath = sysPath2.relative(this.options.cwd, path7);
+      relPath = sysPath2.relative(this.options.cwd, path8);
     if (this.options.awaitWriteFinish && this._pendingWrites.has(relPath)) {
       const event = this._pendingWrites.get(relPath).cancelWait();
       if (event === EVENTS.ADD)
         return;
     }
-    this._watched.delete(path7);
+    this._watched.delete(path8);
     this._watched.delete(fullPath);
     const eventName = isDirectory ? EVENTS.UNLINK_DIR : EVENTS.UNLINK;
-    if (wasTracked && !this._isIgnored(path7))
-      this._emit(eventName, path7);
-    this._closePath(path7);
+    if (wasTracked && !this._isIgnored(path8))
+      this._emit(eventName, path8);
+    this._closePath(path8);
   }
   /**
    * Closes all watchers for a path
    */
-  _closePath(path7) {
-    this._closeFile(path7);
-    const dir = sysPath2.dirname(path7);
-    this._getWatchedDir(dir).remove(sysPath2.basename(path7));
+  _closePath(path8) {
+    this._closeFile(path8);
+    const dir = sysPath2.dirname(path8);
+    this._getWatchedDir(dir).remove(sysPath2.basename(path8));
   }
   /**
    * Closes only file-specific watchers
    */
-  _closeFile(path7) {
-    const closers = this._closers.get(path7);
+  _closeFile(path8) {
+    const closers = this._closers.get(path8);
     if (!closers)
       return;
     closers.forEach((closer) => closer());
-    this._closers.delete(path7);
+    this._closers.delete(path8);
   }
-  _addPathCloser(path7, closer) {
+  _addPathCloser(path8, closer) {
     if (!closer)
       return;
-    let list = this._closers.get(path7);
+    let list = this._closers.get(path8);
     if (!list) {
       list = [];
-      this._closers.set(path7, list);
+      this._closers.set(path8, list);
     }
     list.push(closer);
   }
@@ -33107,7 +33107,7 @@ var Daemon = class {
     const { serverUrl, roomName } = splitRoomUrl(options.room);
     this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
       WebSocketPolyfill: import_websocket.default,
-      params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.session ? { session: options.session } : options.githubToken ? { gh: options.githubToken } : {} }
+      params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.localKey ? { key: options.localKey } : {}, ...options.session ? { session: options.session } : options.githubToken ? { gh: options.githubToken } : {} }
     });
     this.setStatus("syncing");
   }
@@ -33568,9 +33568,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname as dirname3, resolve as resolve3 } from "node:path";
 
 // packages/roomd/src/local.ts
+import crypto from "node:crypto";
 import fs2 from "node:fs";
 import http from "node:http";
-import net from "node:net";
 import path2 from "node:path";
 var MSG_SYNC = 0;
 var MSG_AWARENESS = 1;
@@ -33693,33 +33693,101 @@ function relayFile(commonDir) {
 function readRelayInfo(commonDir) {
   try {
     const v = JSON.parse(fs2.readFileSync(relayFile(commonDir), "utf8"));
-    return typeof v.port === "number" && typeof v.pid === "number" ? { port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0) } : void 0;
+    return typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key } : void 0;
   } catch {
     return void 0;
   }
 }
-function portAnswers(port, timeoutMs2 = 500) {
+function deterministicPort(commonDir) {
+  let real = commonDir;
+  try {
+    real = fs2.realpathSync.native(commonDir);
+  } catch {
+  }
+  const h = crypto.createHash("sha1").update(real).digest();
+  return 4e4 + h.readUInt32BE(0) % 2e4;
+}
+function relayAnswers(port, timeoutMs2 = 800) {
   return new Promise((resolve5) => {
-    const sock = net.connect({ host: "127.0.0.1", port });
-    const done = (ok) => {
-      sock.destroy();
-      resolve5(ok);
-    };
-    sock.once("connect", () => done(true));
-    sock.once("error", () => done(false));
-    sock.setTimeout(timeoutMs2, () => done(false));
+    const req = http.get({ host: "127.0.0.1", port, path: "/health", timeout: timeoutMs2 }, (res) => {
+      let body = "";
+      res.on("data", (c) => {
+        body += c;
+      });
+      res.on("end", () => {
+        try {
+          resolve5(res.statusCode === 200 && JSON.parse(body).local === true);
+        } catch {
+          resolve5(false);
+        }
+      });
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve5(false);
+    });
+    req.on("error", () => resolve5(false));
   });
 }
-function startRelay(port) {
+var MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
+function findWebDist() {
+  const here = path2.dirname(new URL(import.meta.url).pathname);
+  const candidates = [
+    process.env.ROOM_WEB_DIST,
+    path2.resolve(here, "..", "web"),
+    // plugins/room/server/room-mcp.mjs -> plugins/room/web
+    path2.resolve(here, "..", "..", "web", "dist"),
+    // packages/roomd/src -> packages/web/dist
+    path2.resolve(here, "..", "..", "..", "web", "dist")
+  ];
+  for (const c of candidates) if (c && fs2.existsSync(path2.join(c, "index.html"))) return c;
+  return void 0;
+}
+var LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+function isLoopback(addr) {
+  return !!addr && LOOPBACK.has(addr);
+}
+function startRelay(port, opts = {}) {
   return new Promise((resolve5, reject) => {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end('{"ok":true,"local":true}');
+    const staticDir = opts.staticDir ? path2.resolve(opts.staticDir) : findWebDist();
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://x");
+      if (url.pathname === "/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"ok":true,"local":true}');
+        return;
+      }
+      if (staticDir) {
+        const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+        const file = path2.resolve(staticDir, rel);
+        if (file.startsWith(staticDir + path2.sep) && fs2.existsSync(file) && fs2.statSync(file).isFile()) {
+          res.writeHead(200, { "content-type": MIME[path2.extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
+          fs2.createReadStream(file).pipe(res);
+          return;
+        }
+      }
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end(staticDir ? "room local relay\n" : "room local relay (no browser view built: run npm run build -w @room/web)\n");
     });
     const wss = new import_websocket_server.default({ noServer: true });
     const docs = relayDocs();
     wss.on("connection", (conn, req) => attach(docs, conn, req));
-    server.on("upgrade", (req, socket, head) => wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req)));
+    server.on("upgrade", (req, socket, head) => {
+      const refuse = (code, why) => {
+        socket.write(`HTTP/1.1 ${code} ${why}\r
+Connection: close\r
+\r
+`);
+        socket.destroy();
+      };
+      if (!isLoopback(req.socket.remoteAddress)) return refuse(403, "Forbidden");
+      if (opts.key) {
+        const given = new URL(req.url ?? "/", "http://x").searchParams.get("key") ?? "";
+        const a = Buffer.from(given), b = Buffer.from(opts.key);
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return refuse(403, "Forbidden: local room key missing or wrong");
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    });
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => {
       const addr = server.address();
@@ -33748,34 +33816,62 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   });
   let owned = null;
   let port = 0;
+  let key = "";
   const write2 = () => {
     try {
-      fs2.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now() }) + "\n");
+      fs2.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key }) + "\n", { mode: 384 });
     } catch (e) {
       log2(`local relay: could not write ${relayFile(commonDir)}: ${e instanceof Error ? e.message : e}`);
     }
   };
-  const existing = readRelayInfo(commonDir);
-  if (existing && await portAnswers(existing.port)) {
-    port = existing.port;
-    log2(`local room ${room}: relay on 127.0.0.1:${port} (pid ${existing.pid}${pidAlive(existing.pid) ? "" : ", pid gone but port answers"})`);
-  } else {
-    const want = existing?.port ?? 0;
+  const recorded = async () => {
+    const info = readRelayInfo(commonDir);
+    return info && await relayAnswers(info.port) ? info : void 0;
+  };
+  const adopt = (info, how) => {
+    port = info.port;
+    key = info.key;
+    log2(`local room ${room}: ${how} relay on 127.0.0.1:${port} (pid ${info.pid}${pidAlive(info.pid) ? "" : ", pid gone but relay answers"})`);
+  };
+  const existing = await recorded();
+  if (existing) adopt(existing, "joined");
+  else {
+    key = readRelayInfo(commonDir)?.key ?? crypto.randomBytes(16).toString("hex");
+    const want = deterministicPort(commonDir);
     try {
-      owned = await startRelay(want);
-    } catch {
-      owned = await startRelay(0);
+      owned = await startRelay(want, { key, staticDir: opts.staticDir });
+    } catch (e) {
+      if (e.code !== "EADDRINUSE") throw e;
+      let winner;
+      for (let i = 0; i < 20 && !winner; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        winner = await recorded();
+      }
+      if (winner) adopt(winner, "lost the start race; joined");
+      else {
+        owned = await startRelay(0, { key, staticDir: opts.staticDir });
+        log2(`local room ${room}: port ${want} is taken by something else; using a free port`);
+      }
     }
-    port = owned.port;
-    write2();
-    log2(`local room ${room}: started relay on 127.0.0.1:${port}`);
+    if (owned) {
+      port = owned.port;
+      write2();
+      log2(`local room ${room}: started relay on 127.0.0.1:${port}`);
+      await new Promise((r) => setTimeout(r, 150));
+      const other = readRelayInfo(commonDir);
+      if (other && other.port !== port && other.pid !== process.pid && await relayAnswers(other.port)) {
+        await owned.close();
+        owned = null;
+        adopt(other, "two relays started together; closed ours and joined the");
+      } else if (other?.port !== port) write2();
+    }
   }
   let stopped = false;
   const tick = async () => {
     if (stopped || owned) return;
-    if (await portAnswers(port)) return;
+    if (await relayAnswers(port)) return;
     try {
-      owned = await startRelay(port);
+      owned = await startRelay(port, { key, staticDir: opts.staticDir });
       write2();
       log2(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`);
     } catch {
@@ -33787,7 +33883,9 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   timer.unref?.();
   return {
     url: `ws://127.0.0.1:${port}`,
+    httpUrl: `http://127.0.0.1:${port}`,
     port,
+    key,
     get owned() {
       return owned !== null;
     },
@@ -33847,13 +33945,13 @@ async function runPython(text) {
     p.stdin?.end(text);
   });
 }
-async function extractSymbols(path7, text) {
-  if (path7.endsWith(".py")) {
+async function extractSymbols(path8, text) {
+  if (path8.endsWith(".py")) {
     const r = await runPython(text);
     if (r) return r;
-    if (r === null) return regexExtractor(path7, text);
+    if (r === null) return regexExtractor(path8, text);
   }
-  return regexExtractor(path7, text);
+  return regexExtractor(path8, text);
 }
 
 // packages/room-mcp/src/graph-index.ts
@@ -33871,7 +33969,7 @@ var GraphIndex = class {
     this.dir = dir;
     this.log = log2;
     this.opts = opts;
-    this.graph = new SymbolGraph((path7) => this.cache.get(path7));
+    this.graph = new SymbolGraph((path8) => this.cache.get(path8));
   }
   room;
   me;
@@ -33966,46 +34064,46 @@ var GraphIndex = class {
     this.previousChanged = changed;
   }
   /** Current text for a path as the index sees it. */
-  async textFor(path7) {
-    if (this.room.deleted.get(this.me)?.has(path7)) return void 0;
-    const mine = this.room.text(path7, this.me);
+  async textFor(path8) {
+    if (this.room.deleted.get(this.me)?.has(path8)) return void 0;
+    const mine = this.room.text(path8, this.me);
     if (mine !== void 0) return mine;
     for (const person of this.room.overlays.keys()) {
       if (person === this.me) continue;
-      const t = this.room.text(path7, person);
+      const t = this.room.text(path8, person);
       if (t !== void 0) return t;
     }
     if (!this.base) return void 0;
-    return gitShow(this.dir, this.base, path7);
+    return gitShow(this.dir, this.base, path8);
   }
-  refresh(path7) {
-    this.revisions.set(path7, (this.revisions.get(path7) ?? 0) + 1);
-    const inflight = this.pending.get(path7);
+  refresh(path8) {
+    this.revisions.set(path8, (this.revisions.get(path8) ?? 0) + 1);
+    const inflight = this.pending.get(path8);
     if (inflight) return inflight;
     const p = (async () => {
       while (!this.stopped) {
-        const revision = this.revisions.get(path7), generation = this.generation;
-        const text = await this.textFor(path7);
-        const symbols = text === void 0 || text.length > MAX_BYTES ? void 0 : await extractSymbols(path7, text);
+        const revision = this.revisions.get(path8), generation = this.generation;
+        const text = await this.textFor(path8);
+        const symbols = text === void 0 || text.length > MAX_BYTES ? void 0 : await extractSymbols(path8, text);
         if (this.stopped) return;
-        if (generation !== this.generation || revision !== this.revisions.get(path7)) continue;
+        if (generation !== this.generation || revision !== this.revisions.get(path8)) continue;
         if (!symbols || text === void 0) {
-          this.cache.delete(path7);
-          this.graph.remove(path7);
+          this.cache.delete(path8);
+          this.graph.remove(path8);
         } else {
-          this.cache.set(path7, symbols);
-          this.graph.set(path7, text);
+          this.cache.set(path8, symbols);
+          this.graph.set(path8, text);
         }
         break;
       }
-    })().catch((e) => this.log(`graph: ${path7}: ${e instanceof Error ? e.message : e}`)).finally(() => {
-      this.pending.delete(path7);
+    })().catch((e) => this.log(`graph: ${path8}: ${e instanceof Error ? e.message : e}`)).finally(() => {
+      this.pending.delete(path8);
       if (!this.stopped && !this.pending.size) {
         clearTimeout(this.publishing);
         this.publishing = setTimeout(() => this.publish(this.phase), 100);
       }
     });
-    this.pending.set(path7, p);
+    this.pending.set(path8, p);
     return p;
   }
   /** Wait for overlay work already queued as well as base rebuilds. */
@@ -34149,7 +34247,7 @@ async function serverAuthConfig(server) {
   if (hit) return hit;
   const cfg = { mode: "token", providers: [] };
   try {
-    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 2e4 });
     if (res.ok) {
       const b = await res.json();
       if (b.github === "device") cfg.mode = "device";
@@ -34185,7 +34283,7 @@ async function resolveAuth(server, roomName, token) {
   return { token, gh: await githubToken() };
 }
 async function startLogin(server, provider) {
-  const res = await fetch(`${httpOf(server)}/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(provider ? { provider } : {}), signal: AbortSignal.timeout(15e3) });
+  const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15e3, retry: false });
   if (res.status === 404 && !provider) {
     const old = await fetch(`${httpOf(server)}/auth/device`, { method: "POST", signal: AbortSignal.timeout(15e3) });
     if (!old.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await old.text()).trim() || `HTTP ${old.status}`}`, 2);
@@ -34280,7 +34378,7 @@ async function serverShareMax(server) {
   if (hit) return hit;
   let max2 = "full";
   try {
-    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 2e4 });
     if (res.ok) max2 = parseShare((await res.json()).shareMax) ?? "full";
   } catch {
   }
@@ -34303,6 +34401,31 @@ function defaultWeb(server) {
     return DEFAULT_WEB;
   }
 }
+var serverLog;
+function setServerLog(log2) {
+  serverLog = log2;
+}
+var SERVER_RETRY_MS = 45e3;
+async function serverFetch(url, init = {}, log2 = serverLog) {
+  const { timeoutMs: timeoutMs2 = 25e3, retry = true, ...rest } = init;
+  const deadline = Date.now() + SERVER_RETRY_MS;
+  let attempt = 0;
+  for (; ; ) {
+    attempt++;
+    try {
+      const res = await fetch(url, { ...rest, signal: AbortSignal.timeout(timeoutMs2) });
+      if (!retry || ![502, 503, 504].includes(res.status) || Date.now() > deadline) return res;
+      log2?.(`server answered ${res.status}; it is probably starting up (attempt ${attempt}), retrying for up to ${Math.round(SERVER_RETRY_MS / 1e3)}s`);
+    } catch (e) {
+      const name = e instanceof Error ? e.name : "";
+      const code = e?.cause?.code ?? e?.code ?? "";
+      const coldStart = name === "TimeoutError" || name === "AbortError" || code === "ECONNRESET" || code === "UND_ERR_SOCKET" || code === "UND_ERR_HEADERS_TIMEOUT";
+      if (!retry || !coldStart || Date.now() > deadline) throw e;
+      log2?.(`waiting for the server to wake (attempt ${attempt}: ${e instanceof Error ? e.message : String(e)})`);
+    }
+    await new Promise((r) => setTimeout(r, 3e3));
+  }
+}
 function encodeRoom(roomName) {
   return encodeURIComponent(roomName);
 }
@@ -34315,6 +34438,7 @@ function decodeRoom(encoded) {
 }
 async function joinSession(opts) {
   const dir = resolve3(opts.dir);
+  if (opts.log) setServerLog(opts.log);
   const chosen = resolveServer(opts.server ?? process.env.ROOM_SERVER);
   if (chosen === LOCAL) return joinLocal(dir, opts);
   const parsed = parseServer(chosen);
@@ -34388,13 +34512,13 @@ async function joinLocal(dir, opts) {
   const share = requestedShare(opts.share);
   let daemon;
   try {
-    daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+    daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   } catch (e) {
     await local.stop();
     throw e;
   }
-  const web = (opts.web ?? process.env.ROOM_WEB ?? DEFAULT_WEB).replace(/\/+$/, "");
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}`;
+  const web = (opts.web ?? process.env.ROOM_WEB ?? local.httpUrl).replace(/\/+$/, "");
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}&key=${encodeURIComponent(local.key)}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
   graph.start();
   return {
@@ -34433,7 +34557,7 @@ function removeStaleCredential(server, reason) {
 }
 async function preflight(server, roomName, auth) {
   try {
-    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
     if (res.ok) return void 0;
     if (res.status === 401) {
       const reason = (await res.text()).trim() || "unauthorized";
@@ -34452,7 +34576,7 @@ async function preflight(server, roomName, auth) {
 }
 async function createRoom(server, roomName, auth) {
   try {
-    const res = await fetch(`${httpOf(server)}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
     if (res.ok) return void 0;
     return (await res.text()).trim() || `HTTP ${res.status}`;
   } catch (e) {
@@ -34460,7 +34584,7 @@ async function createRoom(server, roomName, auth) {
   }
 }
 async function closeRoom(server, roomName, auth) {
-  const res = await fetch(`${httpOf(server)}/rooms`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
+  const res = await serverFetch(`${httpOf(server)}/rooms`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
   if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2);
   const body = await res.json().catch(() => ({}));
   return body.closed ?? [];
@@ -34475,7 +34599,7 @@ async function authFor(s) {
 async function viewToken(server, roomName, auth) {
   if (!auth.gh && !auth.token && !auth.session) return void 0;
   try {
-    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
     if (!res.ok) return void 0;
     return (await res.json()).view;
   } catch {
@@ -34502,7 +34626,7 @@ async function leaveSession(s) {
 }
 
 // packages/room-mcp/src/workers.ts
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs4 from "node:fs";
 import path4 from "node:path";
 var WORKERS_DIR = path4.join(".room", "workers");
@@ -34516,7 +34640,7 @@ function workerPrompt(lead, tag, task) {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
-    `room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
+    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     "",
     `TASK: ${task}`
@@ -34559,9 +34683,21 @@ var defaultSpawner = (spec) => {
         cb(code);
       });
     },
+    onError: (cb) => {
+      child.once("error", (err) => {
+        try {
+          fs4.closeSync(fd);
+        } catch {
+        }
+        cb(err);
+      });
+    },
+    // Only ever signal a real pid: kill(-0) would hit our own process group.
     kill: () => {
+      const pid = child.pid;
+      if (!pid || pid <= 0) return;
       try {
-        process.kill(-(child.pid ?? 0), "SIGTERM");
+        process.kill(-pid, "SIGTERM");
       } catch {
         try {
           child.kill("SIGTERM");
@@ -34572,13 +34708,30 @@ var defaultSpawner = (spec) => {
   };
 };
 function pidAlive2(pid) {
-  if (pid <= 0) return false;
+  if (!pid || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (e) {
     return e.code === "EPERM";
   }
+}
+function processStartTime(pid) {
+  if (!pid || pid <= 0) return void 0;
+  try {
+    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
+    if (!out) return void 0;
+    const t = Date.parse(out);
+    return Number.isFinite(t) ? t : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function pidIsOurWorker(pid, startedAt) {
+  if (!pidAlive2(pid)) return false;
+  const began = processStartTime(pid);
+  if (began === void 0) return false;
+  return began >= startedAt - 5e3;
 }
 function workerLines(workers, lastLineFrom, changedCount, now = Date.now()) {
   if (!workers.length) return [];
@@ -34593,21 +34746,91 @@ function workerLines(workers, lastLineFrom, changedCount, now = Date.now()) {
   return out;
 }
 
+// packages/room-mcp/src/choice.ts
+import fs5 from "node:fs";
+import path5 from "node:path";
+var CHOICE_FILE = "room-choice.json";
+function normaliseWhere(where) {
+  const w = where?.trim();
+  if (!w) return void 0;
+  if (w === "team" || w === "hosted" || w === "web" || w === "shared") return "team";
+  if (w === LOCAL) return LOCAL;
+  return w;
+}
+function serverFor(where) {
+  if (where === "team") return DEFAULT_SERVER;
+  return resolveServer(where);
+}
+async function choiceFile(dir) {
+  return path5.join(await gitCommonDir(dir), CHOICE_FILE);
+}
+async function readChoice(dir) {
+  try {
+    const c = JSON.parse(fs5.readFileSync(await choiceFile(dir), "utf8"));
+    return c && typeof c.where === "string" ? c : void 0;
+  } catch {
+    return void 0;
+  }
+}
+async function writeChoice(dir, where, by) {
+  const prev = await readChoice(dir);
+  const c = { where, at: Date.now(), ...by ? { by } : {}, ...prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {} };
+  fs5.writeFileSync(await choiceFile(dir), JSON.stringify(c) + "\n");
+  return c;
+}
+async function markWarned(dir, worktree) {
+  const c = await readChoice(dir);
+  if (!c) return true;
+  const key = path5.resolve(worktree);
+  const warned = c.warned ?? [];
+  if (warned.includes(key)) return false;
+  try {
+    fs5.writeFileSync(await choiceFile(dir), JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + "\n");
+  } catch {
+  }
+  return true;
+}
+async function clearChoice(dir) {
+  try {
+    fs5.rmSync(await choiceFile(dir));
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function chooseServer(dir, where, env) {
+  const arg = normaliseWhere(where);
+  if (arg) return { server: serverFor(arg), rule: "argument", where: arg };
+  const e = normaliseWhere(env);
+  if (e) return { server: serverFor(e), rule: "env", where: e };
+  const remembered = await readChoice(dir).catch(() => void 0);
+  if (remembered) {
+    const w = normaliseWhere(remembered.where) ?? LOCAL;
+    return { server: serverFor(w), rule: "remembered", where: w };
+  }
+  return { server: LOCAL, rule: "default", where: LOCAL };
+}
+function describeWhere(server) {
+  if (server === LOCAL) return "local (this machine)";
+  if (server === DEFAULT_SERVER) return `team (${DEFAULT_SERVER})`;
+  return `team (${server})`;
+}
+
 // packages/room-mcp/src/hooks-bridge.ts
 import { execFile as execFile3 } from "node:child_process";
-import fs5 from "node:fs";
+import fs6 from "node:fs";
 import os2 from "node:os";
-import path5 from "node:path";
+import path6 from "node:path";
 function gitStatePath(root, name) {
-  const dotgit = path5.join(root, ".git");
+  const dotgit = path6.join(root, ".git");
   try {
-    if (fs5.statSync(dotgit).isFile()) {
-      const m = fs5.readFileSync(dotgit, "utf8").match(/gitdir:\s*(.+)/);
-      if (m) return path5.join(path5.resolve(root, m[1].trim()), name);
+    if (fs6.statSync(dotgit).isFile()) {
+      const m = fs6.readFileSync(dotgit, "utf8").match(/gitdir:\s*(.+)/);
+      if (m) return path6.join(path6.resolve(root, m[1].trim()), name);
     }
   } catch {
   }
-  return path5.join(dotgit, name);
+  return path6.join(dotgit, name);
 }
 var SESSION_FRESH_MS = 10 * 60 * 1e3;
 var HooksBridge = class {
@@ -34647,7 +34870,7 @@ var HooksBridge = class {
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     this.pending.clear();
     try {
-      fs5.rmSync(this.stateFile(), { force: true });
+      fs6.rmSync(this.stateFile(), { force: true });
     } catch {
     }
   }
@@ -34671,7 +34894,7 @@ var HooksBridge = class {
     const unread = this.s.room.messages().filter((m) => !this.o.isSeen(m.id) && this.o.forMe(m)).map((m) => ({ id: m.id, priority: m.priority, line: formatMsg(m) }));
     const claims = this.s.room.openClaims().filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
     try {
-      fs5.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + "\n");
+      fs6.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + "\n");
     } catch (e) {
       this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`);
     }
@@ -34695,7 +34918,7 @@ var HooksBridge = class {
   freshSession() {
     let file;
     try {
-      file = JSON.parse(fs5.readFileSync(this.sessionFile(), "utf8"));
+      file = JSON.parse(fs6.readFileSync(this.sessionFile(), "utf8"));
     } catch {
     }
     if (file?.session_id) {
@@ -34764,9 +34987,9 @@ Call room_state, then react per the room-etiquette skill.`;
 };
 function sameDir(a, b) {
   const norm = (d) => {
-    const r = path5.resolve(d.replace(/^file:\/\//, ""));
+    const r = path6.resolve(d.replace(/^file:\/\//, ""));
     try {
-      return fs5.realpathSync.native(r);
+      return fs6.realpathSync.native(r);
     } catch {
       return r;
     }
@@ -34783,18 +35006,18 @@ function defaultQueue(threadId, text) {
   });
 }
 function findThreadForDir(dir, since) {
-  const root = path5.join(os2.homedir(), ".codex", "sessions");
-  const want = [path5.resolve(dir), fs5.realpathSync.native(path5.resolve(dir))];
+  const root = path6.join(os2.homedir(), ".codex", "sessions");
+  const want = [path6.resolve(dir), fs6.realpathSync.native(path6.resolve(dir))];
   let best;
   const walk = (d, depth) => {
     let entries = [];
     try {
-      entries = fs5.readdirSync(d, { withFileTypes: true });
+      entries = fs6.readdirSync(d, { withFileTypes: true });
     } catch {
       return;
     }
     for (const e of entries) {
-      const p = path5.join(d, e.name);
+      const p = path6.join(d, e.name);
       if (e.isDirectory() && depth < 3) {
         walk(p, depth + 1);
         continue;
@@ -34803,23 +35026,23 @@ function findThreadForDir(dir, since) {
       if (!m) continue;
       let st;
       try {
-        st = fs5.statSync(p);
+        st = fs6.statSync(p);
       } catch {
         continue;
       }
       if (st.mtimeMs < since - 5 * 60 * 1e3 || best && st.mtimeMs <= best.mtime) continue;
       let head = "";
       try {
-        const fd = fs5.openSync(p, "r");
+        const fd = fs6.openSync(p, "r");
         const buf = Buffer.alloc(4096);
-        const n = fs5.readSync(fd, buf, 0, 4096, 0);
-        fs5.closeSync(fd);
+        const n = fs6.readSync(fd, buf, 0, 4096, 0);
+        fs6.closeSync(fd);
         head = buf.toString("utf8", 0, n);
       } catch {
         continue;
       }
       const cwd2 = head.match(/"cwd":"([^"]+)"/)?.[1]?.replace(/^file:\/\//, "");
-      if (cwd2 && want.includes(path5.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
+      if (cwd2 && want.includes(path6.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
     }
   };
   walk(root, 0);
@@ -34838,7 +35061,7 @@ function changedRanges(base, live) {
 }
 var overlaps = (a, b) => a.from <= b.to && b.from <= a.to;
 var covers = (c, r) => c.from <= r.from && c.to >= r.to;
-async function mergePath(d, person, path7) {
+async function mergePath(d, person, path8) {
   const myBase = d.baseFor(d.me.name), theirBase = d.baseFor(person);
   let ancestor = myBase;
   if (theirBase !== myBase) {
@@ -34848,11 +35071,11 @@ async function mergePath(d, person, path7) {
       return { status: "unknown", lines: [] };
     }
   }
-  const b = await d.baseText(ancestor, path7) ?? "";
+  const b = await d.baseText(ancestor, path8) ?? "";
   let m, t;
   try {
-    m = await d.liveText(path7, d.me.name);
-    t = await d.liveText(path7, person);
+    m = await d.liveText(path8, d.me.name);
+    t = await d.liveText(path8, person);
   } catch {
     return { status: "unknown", lines: [] };
   }
@@ -35008,6 +35231,185 @@ var ConflictWatcher = class {
       this.conflicting.delete(key);
       this.d.room.post(ROOM, { type: "note", to: this.d.me.name, priority: "fyi", text: `your ${p} and ${person}'s merge cleanly again` });
     }
+  }
+};
+
+// packages/room-mcp/src/bridge.ts
+var RELAY_TYPES = /* @__PURE__ */ new Set(["claim", "release", "changed", "conflict", "plan", "base", "scope"]);
+var INTERRUPT_TYPES = /* @__PURE__ */ new Set(["plan", "conflict", "base"]);
+var RELAY_DEDUPE_MS = 6e4;
+var RELAYED_MAX = 2e3;
+var Bridge = class {
+  constructor(team, local, o = {}) {
+    this.team = team;
+    this.local = local;
+    this.o = o;
+  }
+  team;
+  local;
+  o;
+  /** local claim id -> mirrored team claim id */
+  mirrored = /* @__PURE__ */ new Map();
+  relayed = [];
+  /** worker|path|type -> last relay time, so a chatty team room does not become a stream of notices. */
+  recent = /* @__PURE__ */ new Map();
+  unobserve = [];
+  timer = null;
+  lastScopeKey = "";
+  stopped = false;
+  /** Workers of this lead, by their local participant name. */
+  workers() {
+    return Array.from(this.local.room.workers.values()).filter((w) => w.lead === this.local.me.name);
+  }
+  workerNames() {
+    return new Set(this.workers().map((w) => w.name));
+  }
+  tagOf(name) {
+    return this.workers().find((w) => w.name === name)?.tag;
+  }
+  /** Every path a worker has declared or changed. */
+  workerPaths() {
+    const out = /* @__PURE__ */ new Set();
+    for (const w of this.workers()) {
+      for (const p of this.local.room.scope(w.name)?.paths ?? []) out.add(p);
+      for (const p of this.local.room.changedPaths(w.name)) out.add(p);
+    }
+    return Array.from(out).sort();
+  }
+  start() {
+    const l = this.local.room, t = this.team.room;
+    const onLocalScopes = () => this.scheduleScope();
+    const onWorkers = () => this.scheduleScope();
+    const onLocalClaims = (ev) => {
+      for (const [id2, ch] of ev.changes.keys) {
+        if (ch.action === "add") this.mirrorClaim(id2);
+        else if (ch.action === "delete") this.unmirrorClaim(id2);
+      }
+    };
+    const onLocalOverlays = () => this.scheduleScope();
+    const onTeamBus = (ev) => {
+      if (ev.transaction.local) return;
+      for (const d of ev.changes.delta) for (const m of d.insert ?? []) this.relayDown(m);
+    };
+    l.scopes.observe(onLocalScopes);
+    l.workers.observe(onWorkers);
+    l.claims.observe(onLocalClaims);
+    l.overlays.observe(onLocalOverlays);
+    t.bus.observe(onTeamBus);
+    this.unobserve.push(
+      () => l.scopes.unobserve(onLocalScopes),
+      () => l.workers.unobserve(onWorkers),
+      () => l.claims.unobserve(onLocalClaims),
+      () => l.overlays.unobserve(onLocalOverlays),
+      () => t.bus.unobserve(onTeamBus)
+    );
+    for (const c of l.openClaims()) this.mirrorClaim(c.id);
+    this.scheduleScope();
+  }
+  /** Remove mirrored claims and stop observing. The team scope is left as it stands (the lead clears it on leave). */
+  stop() {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    for (const u of this.unobserve) u();
+    this.unobserve = [];
+    for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId);
+    this.mirrored.clear();
+  }
+  scheduleScope() {
+    if (this.stopped) return;
+    const ms = this.o.debounceMs ?? 300;
+    if (ms === 0) {
+      this.syncScope();
+      return;
+    }
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.syncScope();
+    }, ms);
+    this.timer.unref?.();
+  }
+  /** The lead's team scope = union of its workers' declared and changed paths. */
+  syncScope() {
+    if (this.stopped) return;
+    const ws = this.workers();
+    const paths = this.workerPaths();
+    const key = JSON.stringify([ws.map((w) => w.tag), paths]);
+    if (key === this.lastScopeKey) return;
+    this.lastScopeKey = key;
+    const me = this.team.me;
+    if (!paths.length) {
+      if (this.team.room.scope(me.name)) this.team.room.clearScope(me.name);
+      return;
+    }
+    const areas = ws.map((w) => this.local.room.scope(w.name)?.area).filter((a) => !!a);
+    const area = areas[0] ?? "workers";
+    const summary = `lead of ${ws.length} worker${ws.length === 1 ? "" : "s"}: ${ws.map((w) => `${w.tag} (${w.task.slice(0, 40)})`).join("; ")}`;
+    const prev = this.team.room.scope(me.name);
+    this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...prev?.areas ? { areas: prev.areas } : {} });
+    this.team.room.post(me, { type: "scope", area, summary, paths });
+    this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) from ${ws.length} worker(s)`);
+  }
+  mirrorClaim(localId) {
+    if (this.mirrored.has(localId)) return;
+    const c = this.local.room.claims.get(localId);
+    if (!c) return;
+    const tag = this.tagOf(c.by);
+    if (!tag) return;
+    const me = this.team.me;
+    const { id: _id, at: _at, anchor: _anchor, ...rest } = c;
+    const t = this.team.room.addClaim({ ...rest, by: me.name, byKind: me.kind, intent: `[${tag}] ${c.intent}` });
+    this.mirrored.set(localId, t.id);
+    this.o.log?.(`bridge: mirrored ${c.by}'s claim ${c.path}:${c.from}-${c.to} into the team room as ${t.id}`);
+  }
+  /** The local claim is gone: drop the mirror and tell the team what became of the plans it showed them. */
+  unmirrorClaim(localId) {
+    const teamId = this.mirrored.get(localId);
+    if (!teamId) return;
+    this.mirrored.delete(localId);
+    const mirrored = this.team.room.claims.get(teamId);
+    this.team.room.removeClaim(teamId);
+    if (!mirrored) return;
+    const local = [...this.local.room.messages()].reverse().find((m) => m.type === "release" && m.claimId === localId);
+    const tag = mirrored.intent.match(/^\[([^\]]+)\]/)?.[1];
+    this.team.room.post(this.team.me, {
+      type: "release",
+      claimId: teamId,
+      path: mirrored.path,
+      summary: `${tag ? `[${tag}] ` : ""}${local?.summary ?? "released"}`,
+      ...local?.unfulfilled?.length ? { unfulfilled: local.unfulfilled } : {}
+    });
+  }
+  /** A team message about a worker's paths is re-posted to that worker locally: plans, conflicts and base
+   *  moves as interrupts, the rest at notify. One per worker, path and type per minute. */
+  relayDown(m) {
+    if (this.relayed.includes(m.id) || !RELAY_TYPES.has(m.type)) return;
+    if (m.from === this.team.me.name) return;
+    const paths = msgPaths(m);
+    if (!paths.length) return;
+    const now = Date.now();
+    const hit = this.workers().filter((w) => {
+      const sc = this.local.room.scope(w.name);
+      const changed = this.local.room.changedPaths(w.name);
+      return paths.some((p) => sc && scopeCovers(sc, p) || changed.includes(p));
+    });
+    if (!hit.length) return;
+    this.relayed.push(m.id);
+    if (this.relayed.length > RELAYED_MAX) this.relayed.splice(0, this.relayed.length - RELAYED_MAX);
+    const priority = INTERRUPT_TYPES.has(m.type) ? "interrupt" : "notify";
+    const delivered = [];
+    for (const w of hit) {
+      const key = `${w.name}|${paths.slice().sort().join(",")}|${m.type}`;
+      const last2 = this.recent.get(key) ?? 0;
+      if (priority !== "interrupt" && now - last2 < RELAY_DEDUPE_MS) continue;
+      this.recent.set(key, now);
+      this.local.room.post(this.team.me, { type: "note", to: w.name, priority, text: `[team room] ${formatMsg(m)}` });
+      delivered.push(w.tag);
+    }
+    if (this.recent.size > RELAYED_MAX) {
+      for (const [k, t] of this.recent) if (now - t > RELAY_DEDUPE_MS) this.recent.delete(k);
+    }
+    if (delivered.length) this.o.log?.(`bridge: relayed team ${m.type} ${m.id} to ${delivered.join(", ")} at ${priority}`);
   }
 };
 
@@ -35182,14 +35584,14 @@ var DEFS = [
   {
     name: "room_join",
     annotations: RW,
-    description: "Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL. Fails if nobody has opened a room for the repo yet: room_create does that.",
-    inputSchema: { type: "object", properties: { room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
+    description: "Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo's room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: room_create does that.",
+    inputSchema: { type: "object", properties: { where: str("local | team | ws(s)://server"), room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("alias of where for a server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
   },
   {
     name: "room_leave",
     annotations: RW,
-    description: "Leave the room: releases your claims, clears your scope, stops the daemon.",
-    inputSchema: { type: "object", properties: {} }
+    description: "Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.",
+    inputSchema: { type: "object", properties: { forget: { type: "boolean", description: "also forget the remembered choice (local/team) for this clone" }, force: { type: "boolean", description: "dismiss running workers first instead of refusing" } } }
   },
   {
     name: "room_close",
@@ -35293,7 +35695,7 @@ var DEFS = [
     name: "room_spawn",
     annotations: RW,
     description: "Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Max running workers per lead: ROOM_MAX_WORKERS (8).",
-    inputSchema: { type: "object", properties: { tag: str("short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>"), task: str("what the worker should do, self-contained"), host: { type: "string", enum: ["claude", "codex"], description: "which agent runs it (default claude)" }, model: str("model override for that host (optional)"), share: SHARE, dir: str("use this existing directory instead of creating a worktree") }, required: ["tag", "task"] }
+    inputSchema: { type: "object", properties: { tag: str("short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>"), task: str("what the worker should do, self-contained"), host: { type: "string", enum: ["claude", "codex"], description: "which agent runs it (default claude)" }, model: str("model override for that host (optional)"), share: SHARE, allowOutside: { type: "boolean", description: "permit dir outside this repo (no worktree bookkeeping)" }, dir: str("use this existing directory instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims)." } }, required: ["tag", "task"] }
   },
   {
     name: "room_dismiss",
@@ -35318,6 +35720,8 @@ function createTools(ctx) {
   let bridge = null;
   let watcher = null;
   let pendingJoin = null;
+  let workersSession = null;
+  let roomBridge = null;
   const doClose = ctx.close ?? (async (s) => {
     const a = await authFor(s);
     return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token });
@@ -35434,9 +35838,62 @@ function createTools(ctx) {
   const mine = (s) => s.room.openClaims().filter((c) => c.by === s.me.name && c.byKind === s.me.kind);
   const myWorkers = (s) => Array.from(s.room.workers.values()).filter((w) => w.lead === s.me.name);
   const procs = /* @__PURE__ */ new Map();
+  const ensureWorkersRoom = async (lead) => {
+    if (lead.local) return lead;
+    if (workersSession) return workersSession;
+    const ws = await doJoin({ dir: lead.dir, server: LOCAL, name: lead.me.owner ?? lead.me.name, tag: lead.me.label, log: log2 });
+    for (const m of ws.room.messages()) seen.add(m.id);
+    workersSession = ws;
+    roomBridge = new Bridge(lead, ws, { log: log2, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : void 0 });
+    roomBridge.start();
+    log2(`workers room: ${ws.roomName} (${ws.local?.url ?? "local"}), bridged to ${lead.roomName}`);
+    return ws;
+  };
+  const closeWorkersRoom = async () => {
+    const ws = workersSession;
+    if (!ws) return;
+    workersSession = null;
+    roomBridge?.stop();
+    roomBridge = null;
+    try {
+      cleanupMine(ws, "lead left");
+    } catch {
+    }
+    await doLeave(ws);
+  };
+  const sessionOfWorker = (s, tag) => s.room.workers.get(tag) ? s : workersSession?.room.workers.get(tag) ? workersSession : s;
+  const runningWorkers = (s) => {
+    const out = [];
+    for (const sess of [s, workersSession]) if (sess) {
+      for (const w of myWorkers(sess)) if (w.status === "running") out.push({ s: sess, w });
+    }
+    return out;
+  };
+  const dismissWorker = (s, w, why) => {
+    const proc = procs.get(w.tag);
+    let how;
+    if (proc) {
+      proc.kill();
+      how = `pid ${w.pid} signalled`;
+    } else if (pidIsOurWorker(w.pid, w.startedAt)) {
+      try {
+        process.kill(-w.pid, "SIGTERM");
+      } catch {
+        try {
+          process.kill(w.pid, "SIGTERM");
+        } catch {
+        }
+      }
+      how = `pid ${w.pid} signalled`;
+    } else how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone`;
+    procs.delete(w.tag);
+    s.room.updateWorker(w.tag, { status: "dismissed" });
+    s.room.post(s.me, { type: "note", text: `dismissed worker ${w.tag} (${w.name}): ${why}` });
+    return how;
+  };
   const gitignored = (dir) => {
     try {
-      return fs6.readFileSync(path6.join(dir, ".gitignore"), "utf8").split("\n").some((l) => l.trim() === ".room/" || l.trim() === ".room");
+      return fs7.readFileSync(path7.join(dir, ".gitignore"), "utf8").split("\n").some((l) => l.trim() === ".room/" || l.trim() === ".room");
     } catch {
       return false;
     }
@@ -35473,13 +35930,13 @@ function createTools(ctx) {
   };
   const base = (s) => s.room.meta.base ?? "HEAD";
   const baseFor = (s, person) => s.room.baseOf(person) ?? base(s);
-  const baseText = async (s, path7, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path7);
-  const liveText = async (s, path7, person) => {
-    if (s.room.deleted.get(person)?.has(path7)) return null;
-    const ov = s.room.text(path7, person);
+  const baseText = async (s, path8, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path8);
+  const liveText = async (s, path8, person) => {
+    if (s.room.deleted.get(person)?.has(path8)) return null;
+    const ov = s.room.text(path8, person);
     if (ov !== void 0) return ov;
     try {
-      return await baseText(s, path7, person);
+      return await baseText(s, path8, person);
     } catch (e) {
       throw new NeedFetch(person, baseFor(s, person), e instanceof Error ? e.message : String(e));
     }
@@ -35552,6 +36009,12 @@ function createTools(ctx) {
       if (seen.has(m.id)) continue;
       seen.add(m.id);
       if (forMe(s, m)) fresh.push(m);
+    }
+    const ws = workersSession;
+    if (ws && ws !== s) for (const m of ws.room.messages()) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      if (forMe(ws, m)) fresh.push({ ...m, ..."text" in m ? { text: `[workers room] ${m.text}` } : {} });
     }
     if (seen.size > 5e3) {
       const keep = s.room.lastMessages(2e3).map((m) => m.id);
@@ -35764,7 +36227,16 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
   const codeLine = (p) => p.provider === "oidc" || p.url ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.` : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`;
   const handlers = {
     async room_spawn(a) {
-      const s = S();
+      const lead = S();
+      if (a.where !== void 0 && a.where !== "here" && a.where !== "local") return "error: where must be here or local";
+      let s = lead;
+      if (a.where === "local" && !lead.local) {
+        try {
+          s = await ensureWorkersRoom(lead);
+        } catch (e) {
+          return `error: could not open the local workers room: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
       const tag = validTag(a.tag);
       if (!tag) return "error: tag must be 1-40 chars of letters, digits, _ or -";
       const task = String(a.task ?? "").trim();
@@ -35778,10 +36250,13 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       if (running.length >= max2) return `error: ${running.length} workers already running (max ${max2}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`;
       const share = typeof a.share === "string" && a.share ? parseShare(a.share) : void 0;
       if (typeof a.share === "string" && a.share && !share) return "error: share must be intent, declared or full";
-      let dir, branch, created = false;
+      let dir, branch, created = false, outside = false;
       if (typeof a.dir === "string" && a.dir) {
-        dir = path6.resolve(a.dir);
-        if (!fs6.existsSync(dir)) return `error: ${dir} does not exist`;
+        dir = path7.resolve(a.dir);
+        if (!fs7.existsSync(dir)) return `error: ${dir} does not exist`;
+        const inside = path7.relative(s.dir, dir);
+        outside = inside.startsWith("..") || path7.isAbsolute(inside);
+        if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`;
         try {
           branch = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
         } catch {
@@ -35800,8 +36275,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const { cmd, args: args2 } = workerCommand(host, model, prompt);
       const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
       const env = { ROOM_TAG: tag, ROOM_DIR: dir, PWD: dir, ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_LEAD: s.me.name, ...share ? { ROOM_SHARE: share } : {} };
-      const logFile = path6.join(s.dir, ".room", "workers", `${tag}.log`);
-      env.ROOM_LOG_FILE = path6.join(s.dir, ".room", "workers", `${tag}.mcp.log`);
+      const logFile = path7.join(s.dir, ".room", "workers", `${tag}.log`);
+      env.ROOM_LOG_FILE = path7.join(s.dir, ".room", "workers", `${tag}.mcp.log`);
       let proc;
       try {
         proc = (ctx.spawner ?? defaultSpawner)({ cmd, args: args2, cwd: dir, env, logFile });
@@ -35811,45 +36286,41 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       procs.set(tag, proc);
       const w = { tag, name, host, ...model ? { model } : {}, task, dir, branch, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name };
       s.room.setWorker(w);
+      proc.onError?.((err) => {
+        procs.delete(tag);
+        const cur = s.room.workers.get(tag);
+        if (cur && cur.status === "running") s.room.updateWorker(tag, { status: "failed", exitCode: -1, summary: `could not start ${cmd}: ${err.message}` });
+        s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` });
+      });
       proc.onExit((code) => {
         const cur = s.room.workers.get(tag);
         if (!cur || cur.status !== "running") {
           if (cur) s.room.updateWorker(tag, { exitCode: code ?? -1 });
           return;
         }
-        s.room.updateWorker(tag, { status: code === 0 ? "done" : "failed", exitCode: code ?? -1, summary: cur.summary ?? (code === 0 ? "process exited without room_done" : `process exited with code ${code}`) });
+        const summary = cur.summary ?? (code === 0 ? "process exited without room_done" : `process exited with code ${code}`);
+        s.room.updateWorker(tag, { status: code === 0 ? "done" : "failed", exitCode: code ?? -1, summary });
         s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? "" : `; see ${logFile}`}` });
+        s.room.post({ name, kind: "agent", owner, label: tag }, { type: "done", tag, summary: `${summary} (exit ${code})`, changed: s.room.changedPaths(name), to: s.me.name, priority: "notify" });
       });
       s.room.post(s.me, { type: "note", text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ""}) as ${name}: ${task.slice(0, 100)}` });
       const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ""}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? " (new worktree)" : ""}`];
       out.push(`log: ${logFile}`);
-      out.push(`it joins this room on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`);
+      out.push(`it joins ${s === lead ? "this room" : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`);
       if (created && !gitignored(s.dir)) out.push("tip: add .room/ to .gitignore (the room already ignores it; git status will not).");
+      if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`);
       return out.join("\n");
     },
     async room_dismiss(a) {
-      const s = S();
       const tag = validTag(a.tag);
       if (!tag) return "error: tag is required";
+      const s = sessionOfWorker(S(), tag);
       const w = s.room.workers.get(tag);
       if (!w) return `error: no worker ${tag}`;
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`;
       if (w.status !== "running") return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`;
-      const proc = procs.get(tag);
-      if (proc) proc.kill();
-      else if (w.pid > 0) {
-        try {
-          process.kill(-w.pid, "SIGTERM");
-        } catch {
-          try {
-            process.kill(w.pid, "SIGTERM");
-          } catch {
-          }
-        }
-      }
-      s.room.updateWorker(tag, { status: "dismissed" });
-      s.room.post(s.me, { type: "note", text: `dismissed worker ${tag} (${w.name})` });
-      return `dismissed ${tag} (pid ${w.pid}); its work is on branch ${w.branch} in ${w.dir}`;
+      const how = dismissWorker(s, w, "dismissed by the lead");
+      return `dismissed ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`;
     },
     async room_login(a) {
       const server = serverOf(a);
@@ -35891,14 +36362,26 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     async room_join(a) {
       const cur = ctx.getSession();
       if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`;
+      const dir = typeof a.dir === "string" && a.dir ? a.dir : ctx.cwd;
+      const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
+      const choice = await chooseServer(dir, whereArg, process.env.ROOM_SERVER);
+      if (a.create === true && choice.server === LOCAL && choice.rule !== "argument") {
+        return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.';
+      }
       const s = await doJoin({
-        dir: typeof a.dir === "string" && a.dir ? a.dir : ctx.cwd,
+        dir,
         name: typeof a.name === "string" && a.name ? a.name : void 0,
         room: typeof a.room === "string" && a.room ? a.room : void 0,
-        server: typeof a.server === "string" && a.server ? a.server : void 0,
+        server: choice.server,
         create: a.create === true,
         share: typeof a.share === "string" && a.share ? a.share : void 0
       });
+      if (choice.rule === "argument") {
+        try {
+          await writeChoice(dir, choice.where, s.me.name);
+        } catch {
+        }
+      }
       ctx.setSession(s);
       for (const m of s.room.messages()) seen.add(m.id);
       observeClaims(s);
@@ -35908,7 +36391,12 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       evictStale(s);
       await loadAreas(s);
       const out = [`${a.create && !s.local ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
-      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : "room_spawn dispatches worker agents into it; ROOM_SERVER=hosted joins the team server instead."}`);
+      out.push(`room: ${describeWhere(choice.server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone)" : choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
+      if (!s.local && (choice.rule === "argument" || choice.rule === "remembered")) {
+        const fresh = await markWarned(dir, s.dir).catch(() => true);
+        if (fresh || choice.rule === "argument") out.push(`note for your human: uncommitted work in this clone${choice.rule === "remembered" ? " (joined on the choice remembered for this repo)" : ""} is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf("/"))}'s room.`);
+      }
+      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the team room" (room_join where=team) to work with teammates instead.'}`);
       out.push(shareLine(s));
       const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
       const mineA = myAreas(s);
@@ -35927,19 +36415,29 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       out.push("next: room_scope(area, summary, paths) before you edit.");
       return out.join("\n");
     },
-    async room_leave() {
+    async room_leave(a) {
       const s = S();
+      const running = runningWorkers(s);
+      if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map((r) => r.w.tag).join(", ")}. Wait for them (room_wait), room_dismiss them, or room_leave force=true to dismiss them all and leave.`;
+      for (const r of running) dismissWorker(r.s, r.w, "the lead left the room");
+      await closeWorkersRoom();
       const released = cleanupMine(s, "left the room");
       ctx.setSession(null);
       detach();
       await doLeave(s);
-      return `left ${s.roomName}; released ${released} claim(s)`;
+      let forgot = "";
+      if (a.forget === true) {
+        const had = await clearChoice(s.dir).catch(() => false);
+        forgot = had ? "; forgot the remembered room choice for this clone (next session starts local)" : "; nothing was remembered for this clone";
+      }
+      return `left ${s.roomName}; released ${released} claim(s)${forgot}`;
     },
     async room_close(a) {
       const s = S();
       if (s.local) return "this is a local room (no server): there is nothing to close. room_leave ends your session; the relay stops with the last session.";
       if (a.confirm !== true) return "error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user's explicit request";
       const repo = s.roomName.slice(0, s.roomName.lastIndexOf("/"));
+      await closeWorkersRoom();
       cleanupMine(s, "closing the room");
       s.room.post(s.me, { type: "note", text: `closing the room for ${repo}: every branch room and all shared work is being removed`, priority: "interrupt" });
       ctx.setSession(null);
@@ -35971,6 +36469,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       await loadAreas(s);
       const m = s.room.meta;
       const out = [];
+      out.push(`room: ${describeWhere(s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")))}${workersSession ? `; workers room: local (${workersSession.roomName}, this machine only)` : ""}`);
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? "?").slice(0, 10)})`);
       const mineA = myAreas(s);
       const all2 = a.all === true || !mineA.length;
@@ -36028,6 +36527,14 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
         const last2 = s.room.messages().filter((x) => x.from === n).slice(-1)[0];
         return last2 ? formatMsg(last2) : void 0;
       }, (n) => s.room.changedPaths(n).length, now()));
+      const ws = workersSession;
+      if (ws) {
+        out.push(`workers room ${ws.roomName}: your team scope covers ${roomBridge?.workerPaths().length ?? 0} path(s) from these workers; their claims appear in the team room under your name`);
+        out.push(...workerLines(myWorkers(ws), (n) => {
+          const last2 = ws.room.messages().filter((x) => x.from === n).slice(-1)[0];
+          return last2 ? formatMsg(last2) : void 0;
+        }, (n) => ws.room.changedPaths(n).length, now()));
+      }
       return out.join("\n");
     },
     async room_read(a) {
@@ -36233,11 +36740,21 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
       const result = await new Promise((resolve5) => {
+        const ws = workersSession && workersSession !== s ? workersSession : null;
         const finish = (r) => {
           clearTimeout(timer);
           s.room.claims.unobserve(onClaims);
           s.room.bus.unobserve(onBus);
+          ws?.room.bus.unobserve(onWorkersBus);
           resolve5(r);
+        };
+        const onWorkersBus = (ev) => {
+          if (!ws) return;
+          for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
+            if (m.type === "done" && m.to === ws.me.name) return finish(`worker done: ${formatMsg(m)}`);
+            if (m.priority === "interrupt" && forMe(ws, m)) return finish(`interrupt (workers room): ${formatMsg(m)}`);
+            if (m.type === "question" && m.to === ws.me.name) return finish(`question from a worker: ${formatMsg(m)}`);
+          }
         };
         const timer = setTimeout(() => finish(`timeout after ${timeoutMs2}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : "nothing happened"}. Tell your human; proceed only where you do not depend on it.`), timeoutMs2);
         const onClaims = () => {
@@ -36248,10 +36765,12 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
             if (questionId && m.type === "answer" && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`);
             if (m.priority === "interrupt" && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`);
             if (m.type === "done" && m.to === s.me.name) return finish(`worker done: ${formatMsg(m)}`);
+            if (m.type === "question" && m.to === s.me.name && !(questionId || claimId)) return finish(`question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`);
           }
         };
         s.room.claims.observe(onClaims);
         s.room.bus.observe(onBus);
+        ws?.room.bus.observe(onWorkersBus);
       });
       setPresence(s, { status: "idle" });
       return `${result}
@@ -36435,6 +36954,14 @@ ${text}--- end ${p} ---`);
     async shutdown() {
       const s = ctx.getSession();
       if (!s) return;
+      for (const r of runningWorkers(s)) {
+        try {
+          dismissWorker(r.s, r.w, "the lead's session ended");
+        } catch {
+        }
+      }
+      await closeWorkersRoom().catch(() => {
+      });
       try {
         cleanupMine(s, "session ended");
       } catch {
@@ -36493,52 +37020,52 @@ function supersetSide(a, b) {
   return void 0;
 }
 function linkSharedDirs(cloneDir, scratchDir) {
-  const venv = path6.join(cloneDir, ".venv");
-  if (fs6.existsSync(venv) && !fs6.existsSync(path6.join(scratchDir, ".venv"))) fs6.symlinkSync(venv, path6.join(scratchDir, ".venv"));
+  const venv = path7.join(cloneDir, ".venv");
+  if (fs7.existsSync(venv) && !fs7.existsSync(path7.join(scratchDir, ".venv"))) fs7.symlinkSync(venv, path7.join(scratchDir, ".venv"));
   const candidates = ["node_modules"];
   for (const top of ["packages", "apps", "libs"]) {
-    const d = path6.join(cloneDir, top);
-    if (!fs6.existsSync(d)) continue;
-    for (const e of fs6.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path6.join(top, e.name, "node_modules"));
+    const d = path7.join(cloneDir, top);
+    if (!fs7.existsSync(d)) continue;
+    for (const e of fs7.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path7.join(top, e.name, "node_modules"));
   }
   for (const rel of candidates) {
-    const src = path6.join(cloneDir, rel), dst = path6.join(scratchDir, rel);
-    if (!fs6.existsSync(src) || fs6.existsSync(dst)) continue;
+    const src = path7.join(cloneDir, rel), dst = path7.join(scratchDir, rel);
+    if (!fs7.existsSync(src) || fs7.existsSync(dst)) continue;
     mirrorLinks(cloneDir, scratchDir, src, dst);
   }
 }
 function mirrorLinks(cloneDir, scratchDir, src, dst) {
-  fs6.mkdirSync(dst, { recursive: true });
-  for (const e of fs6.readdirSync(src, { withFileTypes: true })) {
-    const from2 = path6.join(src, e.name), to = path6.join(dst, e.name);
+  fs7.mkdirSync(dst, { recursive: true });
+  for (const e of fs7.readdirSync(src, { withFileTypes: true })) {
+    const from2 = path7.join(src, e.name), to = path7.join(dst, e.name);
     if (e.isSymbolicLink()) {
-      const target = path6.resolve(src, fs6.readlinkSync(from2));
-      const inside = path6.relative(cloneDir, target);
-      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path6.sep).includes("node_modules");
-      fs6.symlinkSync(isWorkspace ? path6.join(scratchDir, inside) : target, to);
+      const target = path7.resolve(src, fs7.readlinkSync(from2));
+      const inside = path7.relative(cloneDir, target);
+      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path7.sep).includes("node_modules");
+      fs7.symlinkSync(isWorkspace ? path7.join(scratchDir, inside) : target, to);
     } else if (e.isDirectory() && e.name.startsWith("@")) {
       mirrorLinks(cloneDir, scratchDir, from2, to);
     } else {
-      fs6.symlinkSync(from2, to);
+      fs7.symlinkSync(from2, to);
     }
   }
 }
 async function runInMergedTree(s, ancestor, merged, cmd) {
-  const dir = fs6.mkdtempSync(path6.join(os3.tmpdir(), "room-merge-"));
+  const dir = fs7.mkdtempSync(path7.join(os3.tmpdir(), "room-merge-"));
   try {
     await new Promise((resolve5, reject) => {
       const p = execFile4("sh", ["-c", `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 6e4 }, (err) => err ? reject(err) : resolve5());
       p.unref?.();
     });
     for (const [rel, text] of merged) {
-      const abs2 = path6.resolve(dir, rel);
+      const abs2 = path7.resolve(dir, rel);
       if (!abs2.startsWith(dir)) continue;
       if (text === null) {
-        fs6.rmSync(abs2, { force: true });
+        fs7.rmSync(abs2, { force: true });
         continue;
       }
-      fs6.mkdirSync(path6.dirname(abs2), { recursive: true });
-      fs6.writeFileSync(abs2, text);
+      fs7.mkdirSync(path7.dirname(abs2), { recursive: true });
+      fs7.writeFileSync(abs2, text);
     }
     linkSharedDirs(s.dir, dir);
     const result = await new Promise((resolve5) => {
@@ -36553,7 +37080,7 @@ ${tail}`;
   } catch (e) {
     return `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
-    fs6.rmSync(dir, { recursive: true, force: true });
+    fs7.rmSync(dir, { recursive: true, force: true });
   }
 }
 var NeedFetch = class extends Error {
@@ -36594,11 +37121,11 @@ function shouldWake(me, ev, myClaims = []) {
   if (ev.kind === "msg") {
     const m = ev.msg;
     if (!shouldWakeOnMsg(me, m, myClaims).wake) return null;
-    const path7 = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
+    const path8 = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
     return {
       content: `${formatMsg(m)}
 ${JSON.stringify(m)}`,
-      meta: cleanMeta({ type: m.type, from: m.from, from_kind: m.fromKind, path: path7, msg_id: m.id })
+      meta: cleanMeta({ type: m.type, from: m.from, from_kind: m.fromKind, path: path8, msg_id: m.id })
     };
   }
   if (ev.kind === "claim") {
@@ -36631,7 +37158,7 @@ ${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
 var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
 
 Rules:
-1. You are joined automatically when the repo has a room; if not, room_create opens one (once per repo, any teammate). room_join only if auto-join failed. If a join fails with "not logged in", call room_login and show your human the code and URL verbatim; never ask them for a token. Then room_scope(area, summary, paths) before editing: one word for the area (auth, orders, ...), one line, the paths you expect to touch. Read the area ledger it returns.
+1. You are joined automatically: a local room on this machine unless ROOM_SERVER is set or the clone remembers a choice (room_state's first line says which). Where to be is your human's call: "join the team room" (or web/shared room) means room_leave, then room_join(where=team), and tell them uncommitted work in this clone is now visible to the repo's room members; "work locally" means room_leave(forget=true), then room_join(where=local). Never join the team room on your own initiative. On the team server, room_create(where=team) opens a repo nobody has opened (once per repo, any teammate). If a join fails with "not logged in", call room_login and show your human the code and URL verbatim; never ask them for a token. Then room_scope(area, summary, paths) before editing: one word for the area (auth, orders, ...), one line, the paths you expect to touch. Read the area ledger it returns.
 2. Every tool reply starts with your inbox. interrupt: stop and re-plan before continuing. notify: check whether it touches what you are doing. fyi: nothing.
 3. Before renaming or changing a signature: room_impact(symbol) shows who defines and uses it and who owns those files. room_state lists what you are waiting on: others' planned changes to symbols your files use.
 4. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, symbol, intent, plans) (or from/to for a range). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
@@ -36655,7 +37182,7 @@ var log = (s) => {
 `);
   if (LOG_FILE) {
     try {
-      fs7.appendFileSync(LOG_FILE, `${(/* @__PURE__ */ new Date()).toISOString()} ${s}
+      fs8.appendFileSync(LOG_FILE, `${(/* @__PURE__ */ new Date()).toISOString()} ${s}
 `);
     } catch {
     }
@@ -36707,16 +37234,18 @@ async function main() {
   const autoJoin = (async () => {
     try {
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
-      const chosen = resolveServer(env("ROOM_SERVER"));
+      const choice = await chooseServer(dir, void 0, env("ROOM_SERVER"));
+      const chosen = choice.server;
+      log(`room: ${choice.where} (${choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
       if (env("ROOM_URL")) {
         const u = new URL(env("ROOM_URL"));
         adopt(await joinSession({ dir: env("ROOM_DIR") ?? dir, name: env("ROOM_NAME"), room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: `${u.protocol}//${u.host}`, log }));
       } else if (chosen === LOCAL) {
-        adopt(await joinSession({ dir, room: env("ROOM_ROOM"), log }));
+        adopt(await joinSession({ dir, room: env("ROOM_ROOM"), server: LOCAL, log }));
       } else if (env("ROOM_ROOM")) {
-        adopt(await joinSession({ dir, room: env("ROOM_ROOM"), log }));
+        adopt(await joinSession({ dir, room: env("ROOM_ROOM"), server: chosen, log }));
       } else if (derived.roomName) {
-        adopt(await joinSession({ dir, log }));
+        adopt(await joinSession({ dir, server: chosen, log }));
       } else if (prior) {
         const u = new URL(prior.room);
         adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: `${u.protocol}//${u.host}`, log }));
