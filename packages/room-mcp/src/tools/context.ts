@@ -11,6 +11,7 @@ import { branchOf, fetchPrs, isPrName, openPrs, postPrNote, prLeader, renderPrNo
 import { Rooms, type Attachment, type Role } from '../registry.js'
 import { authFor, closeRoom, DEFAULT_SERVER, joinSession, leaveSession, LOCAL, parseServer, resolveServer, type JoinOptions, type Session } from '../session.js'
 import { pidIsOurWorker, signalWorker, type ProcessInfo, type Spawner } from '../workers.js'
+import type { ResolvedConfig } from '../config.js'
 
 export interface ToolDef {
   name: string
@@ -46,6 +47,8 @@ export interface ToolCtx {
   spawner?: Spawner
   worktree?: (repoDir: string, tag: string) => Promise<{ dir: string; branch: string; created: boolean }>
   maxWorkers?: number
+  /** Client settings resolved once at startup; tests may omit it to use defaults. */
+  config?: ResolvedConfig
   /** What `ps` knows about a pid; injectable for tests. */
   probe?: (pid: number) => ProcessInfo | undefined
 }

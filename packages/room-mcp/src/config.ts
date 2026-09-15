@@ -1,0 +1,75 @@
+/**
+ * Resolve every Room client setting in one place.
+ *
+ * Precedence is always: tool/caller argument > environment > remembered clone choice
+ * (`<git common dir>/room-choice.json`, for `where` only) > default.
+ */
+import os from 'node:os'
+import path from 'node:path'
+import fs from 'node:fs'
+import { gitCommonDir } from '@room/roomd/local'
+import type { ShareLevel } from '@room/roomd'
+
+export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
+export const LOCAL = 'local'
+export const DEFAULT_MAX_WORKERS = 8
+export const DEFAULT_STALE_DAYS = 7
+
+export type ConfigRule = 'argument' | 'env' | 'remembered' | 'default'
+export interface ConfigArgs {
+  server?: string; where?: string; name?: string; owner?: string; tag?: string; kind?: string
+  share?: string; credentialsPath?: string; credentials?: string; token?: string; logFile?: string
+  maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string
+}
+export interface ResolvedConfig {
+  dir: string; server: string; where: string; whereRule: ConfigRule
+  name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel
+  credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
+  room?: string; web?: string
+}
+
+const value = (v: unknown): string | undefined => typeof v === 'string' && v.trim() ? v.trim() : undefined
+const positive = (v: unknown, fallback: number): number => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : fallback }
+export function normaliseWhere(where?: string): string | undefined {
+  const w = value(where)
+  if (!w) return undefined
+  if (['team', 'hosted', 'web', 'shared'].includes(w)) return 'team'
+  return w
+}
+export function resolveServer(raw?: string): string {
+  const w = normaliseWhere(raw)
+  if (!w || w === LOCAL) return LOCAL
+  return w === 'team' ? DEFAULT_SERVER : w
+}
+
+async function rememberedWhere(dir: string): Promise<string | undefined> {
+  try {
+    const file = path.join(await gitCommonDir(dir), 'room-choice.json')
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown }
+    return value(parsed.where)
+  } catch { return undefined }
+}
+
+export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.ProcessEnv | Record<string, string | undefined>; args?: ConfigArgs; dir: string }): Promise<ResolvedConfig> {
+  const e = env ?? process.env
+  const argWhere = normaliseWhere(args.where ?? args.server)
+  const envWhere = normaliseWhere(e.ROOM_SERVER)
+  const remembered = !argWhere && !envWhere ? normaliseWhere(await rememberedWhere(dir)) : undefined
+  const where = argWhere ?? envWhere ?? remembered ?? LOCAL
+  const whereRule: ConfigRule = argWhere ? 'argument' : envWhere ? 'env' : remembered ? 'remembered' : 'default'
+  const rawKind = value(args.kind) ?? value(e.ROOM_KIND) ?? 'agent'
+  const kind = rawKind === 'bot' || rawKind === 'ci' ? rawKind : 'agent'
+  const rawShare = value(args.share) ?? value(e.ROOM_SHARE) ?? 'full'
+  const share: ShareLevel = rawShare === 'intent' || rawShare === 'declared' ? rawShare : 'full'
+  const credentialsPath = value(args.credentialsPath ?? args.credentials) ?? value(e.ROOM_CREDENTIALS)
+    ?? path.join(value(e.XDG_CONFIG_HOME) ?? path.join(os.homedir(), '.config'), 'room', 'credentials.json')
+  return {
+    dir: path.resolve(dir), server: resolveServer(where), where, whereRule,
+    name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
+    tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share, credentialsPath,
+    token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),
+    maxWorkers: positive(args.maxWorkers ?? e.ROOM_MAX_WORKERS, DEFAULT_MAX_WORKERS),
+    staleDays: positive(args.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),
+    room: value(args.room) ?? value(e.ROOM_ROOM), web: value(args.web) ?? value(e.ROOM_WEB),
+  }
+}

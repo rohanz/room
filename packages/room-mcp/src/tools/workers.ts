@@ -10,6 +10,7 @@ import { LOCAL, type Session } from '../session.js'
 import { DEFAULT_MAX_WORKERS, defaultSpawner, prepareWorktree, validTag, workerCommand, workerPrompt, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { resolveConfig } from '../config.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. Call after your final room_preview_merge, before reporting to your human. Stay in the room for questions.',
@@ -75,7 +76,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const gen = (existing?.gen ?? 0) + 1
       const id = workerId(s.me.name, tag, gen)
       const running = myWorkers(s).filter(w => w.status === 'running')
-      const max = ctx.maxWorkers ?? Number(process.env.ROOM_MAX_WORKERS ?? DEFAULT_MAX_WORKERS)
+      const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers: ctx.maxWorkers } })
+      const max = config.maxWorkers
       if (running.length >= max) return `error: ${running.length} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`
       const share = typeof a.share === 'string' && a.share ? parseShare(a.share) : undefined
       if (typeof a.share === 'string' && a.share && !share) return 'error: share must be intent, declared or full'

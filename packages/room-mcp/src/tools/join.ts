@@ -6,6 +6,7 @@ import { clearChoice, chooseServer, describeWhere, markWarned, writeChoice } fro
 import { getCredential, getPending, setPending } from '../credentials.js'
 import { LOCAL, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { resolveConfig } from '../config.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_login', annotations: RW, description: 'Log in to the room server. GitHub (device flow): the first call returns a one-time code and URL. OIDC (self-hosted servers with a company identity provider): the first call returns a URL to open. Show them to the user VERBATIM. Call again to wait for the login to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your login (GitHub login or email).',
@@ -59,18 +60,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : ctx.cwd
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
-      const choice = await chooseServer(dir, whereArg, process.env.ROOM_SERVER)
+      const resolved = await resolveConfig({ dir, env: process.env, args: { where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
+      const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule }
       if (a.create === true && choice.server === LOCAL && choice.rule !== 'argument') {
         // room_create with nothing chosen: opening a repo needs a server, and that is the team room.
         return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.'
       }
       const s = await doJoin({
         dir,
-        name: typeof a.name === 'string' && a.name ? a.name : undefined,
-        room: typeof a.room === 'string' && a.room ? a.room : undefined,
+        name: resolved.name,
+        room: resolved.room,
         server: choice.server,
         create: a.create === true,
-        share: typeof a.share === 'string' && a.share ? a.share : undefined,
+        share: resolved.share,
       })
       if (choice.rule === 'argument') { try { await writeChoice(dir, choice.where, s.me.name) } catch { /* not a repository? keep going */ } }
       for (const m of s.room.messages()) seen.add(m.id)
@@ -158,7 +160,7 @@ export function install(state: HandlerState): void {
         return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`
       }
     }
-  const STALE_MS = Number(process.env.ROOM_STALE_DAYS || 7) * 24 * 60 * 60 * 1000
+  const STALE_MS = (ctx.config?.staleDays ?? 7) * 24 * 60 * 60 * 1000
   const evictStale = (s: Session): string[] => {
       const here = new Set(presences(s).map(p => p.user.name))
       const gone: string[] = []
@@ -184,7 +186,7 @@ export function install(state: HandlerState): void {
       s.room.clearScope(s.me.name)
       return released.length
     }
-  const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }
+  const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server); return r === LOCAL ? LOCAL : parseServer(r).server }
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`
   const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
       ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.`

@@ -7,6 +7,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+let configuredPath: string | undefined
+/** Set by resolveConfig consumers so credential storage follows the same precedence as other settings. */
+export function configureCredentials(file?: string): void { configuredPath = file }
+
 export interface Credential { session: string; login: string; at: number }
 /** A login that was started but not yet confirmed; survives an MCP restart. Stored under "pending:<server>".
  *  GitHub device flow carries user_code + verification_uri; OIDC carries the authorize url. */
@@ -22,9 +26,8 @@ export function setPending(server: string, p: PendingLogin | undefined): void {
 }
 
 export function credentialsPath(): string {
-  const env = process.env.ROOM_CREDENTIALS?.trim()
-  if (env) return env
-  const base = process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), '.config')
+  if (configuredPath) return configuredPath
+  const base = path.join(os.homedir(), '.config')
   return path.join(base, 'room', 'credentials.json')
 }
 

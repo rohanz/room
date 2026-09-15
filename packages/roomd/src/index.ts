@@ -50,8 +50,6 @@ export interface RoomdOptions {
   label?: string
   /** Shared room token, sent as ?token= on the websocket. Default: ROOM_TOKEN env. */
   token?: string
-  /** GitHub token proving repo access, sent as ?gh= (servers without device login). */
-  githubToken?: string
   /** Room session id from GitHub device login, sent as ?session= (servers with GITHUB_CLIENT_ID). */
   session?: string
   /** Local relay key (room-local.json): sent as ?key= so only sessions that can read the clone's git dir connect. */
@@ -190,7 +188,7 @@ class Daemon implements Roomd {
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
       : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
           WebSocketPolyfill: WebSocket as any,
-          params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...(options.localKey ? { key: options.localKey } : {}), ...(options.session ? { session: options.session } : options.githubToken ? { gh: options.githubToken } : {}) },
+          params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...(options.localKey ? { key: options.localKey } : {}), ...(options.session ? { session: options.session } : {}) },
         })
     this.setStatus('syncing')
   }
