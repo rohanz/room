@@ -15,15 +15,15 @@ function environment(value: string | null = null) {
   return { attributes, document, localStorage }
 }
 afterEach(() => vi.unstubAllGlobals())
-it('applies and persists each state, removing the explicit theme for System', () => {
+it('applies and persists each state, including explicit System', () => {
   const { attributes, localStorage } = environment()
   for (const theme of ['dark', 'light', 'system'] as const) {
     applyTheme(theme)
-    expect(attributes.get('data-theme')).toBe(theme === 'system' ? undefined : theme)
+    expect(attributes.get('data-theme')).toBe(theme)
     expect(localStorage.setItem).toHaveBeenLastCalledWith('room.theme', theme)
   }
 })
-it('cycles System → Light → Dark → System', () => {
+it('cycles Light → Dark → System → Light', () => {
   expect(nextTheme('system')).toBe('light')
   expect(nextTheme('light')).toBe('dark')
   expect(nextTheme('dark')).toBe('system')
@@ -34,13 +34,13 @@ it.each(['light', 'dark', 'system', 'invalid', null])('restores %s consistently 
   const script = html.match(/<script>([\s\S]*?)<\/script>/)!
   expect(html.indexOf(script[0])).toBeLessThan(html.indexOf('rel="stylesheet"'))
   runInNewContext(script[1], env)
-  expect(env.attributes.get('data-theme')).toBe(value === 'light' || value === 'dark' ? value : undefined)
-  expect(readTheme()).toBe(value === 'light' || value === 'dark' ? value : 'system')
+  expect(env.attributes.get('data-theme')).toBe(value === 'light' || value === 'dark' || value === 'system' ? value : 'light')
+  expect(readTheme()).toBe(value === 'light' || value === 'dark' || value === 'system' ? value : 'light')
 })
 it('still applies themes when storage is blocked', () => {
   const env = environment()
   vi.stubGlobal('localStorage', { getItem() { throw Error('blocked') }, setItem() { throw Error('blocked') } })
-  expect(readTheme()).toBe('system')
+  expect(readTheme()).toBe('light')
   expect(() => applyTheme('dark')).not.toThrow()
   expect(env.attributes.get('data-theme')).toBe('dark')
 })
@@ -60,7 +60,33 @@ it('defines every dark-media token on a bare :root too (text-based CSS check)', 
   }
   expect(mediaBlocks.length).toBeGreaterThan(0)
   for (const block of mediaBlocks) {
-    expect(block).toContain(':root:not([data-theme="light"])')
+    expect(block).toContain(':root[data-theme="system"]')
     for (const token of tokens(block)) expect(light.has(token), token).toBe(true)
   }
+})
+
+it('defaults to light before paint even when the OS prefers dark; System requires opt-in', () => {
+  const env = environment()
+  const matchMedia = vi.fn(() => ({ matches: true }))
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
+  runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)![1], { ...env, matchMedia })
+  expect(readTheme()).toBe('light')
+  expect(env.attributes.get('data-theme')).toBe('light')
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  expect(css).not.toContain(':not([data-theme="light"])')
+  // Every OS-dark block requires the explicit System attribute set by the control.
+  const guards = [...css.matchAll(/@media \(prefers-color-scheme: dark\)\s*\{\s*([^{}]+)\{/g)].map(match => match[1].trim())
+  expect(guards.length).toBeGreaterThan(0)
+  expect(guards.every(guard => guard === ':root[data-theme="system"]')).toBe(true)
+  applyTheme('system')
+  expect(env.attributes.get('data-theme')).toBe('system')
+  expect(env.localStorage.setItem).toHaveBeenLastCalledWith('room.theme', 'system')
+})
+it('sets Light before paint when storage cannot be read', () => {
+  const env = environment()
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
+  runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)![1], {
+    ...env, localStorage: { getItem() { throw Error('blocked') } },
+  })
+  expect(env.attributes.get('data-theme')).toBe('light')
 })

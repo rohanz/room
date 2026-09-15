@@ -28,9 +28,9 @@ try {
   const boardButton = h('button', { title: 'Board (B)' }, 'Board'), codeButton = h('button', { title: 'Code (C)' }, 'Code')
   const themeSwitcher = h('div', { class: 'view-switcher theme-switcher', role: 'group', ariaLabel: 'Color theme' })
   let theme = readTheme()
-  const themeButtons = (['system', 'light', 'dark'] as const).map((value, i) => {
+  const themeButtons = (['light', 'dark', 'system'] as const).map((value, i) => {
     const label = value[0].toUpperCase() + value.slice(1)
-    const icon = h('span', {}, ['◐', '☀', '☾'][i])
+    const icon = h('span', {}, ['☀', '☾', '◐'][i])
     icon.setAttribute('aria-hidden', 'true')
     const button = h('button', { title: label + ' theme (T to cycle)', ariaLabel: label + ' theme', onclick: () => chooseTheme(value) }, icon, label)
     themeSwitcher.append(button)
@@ -39,7 +39,7 @@ try {
   function chooseTheme(value: Theme) {
     theme = value; applyTheme(value)
     themeButtons.forEach((button, i) => {
-      const active = ['system', 'light', 'dark'][i] === theme
+      const active = ['light', 'dark', 'system'][i] === theme
       button.classList.toggle('active', active); button.ariaPressed = String(active)
     })
   }

@@ -464,7 +464,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
   .cm-cursor { border-left-color: var(--code-ink); }
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root[data-theme="system"] {
     & { color-scheme: dark; --code-bg: #0b0d10; --code-gutter: #111418; --code-ink: #d4d7dd; --code-selection: #30353d; --bg: #0e1013; --surface: #16191e; --ink: #d4d7dd; --heading: #edf0f4; --muted: #adb3bd; --line: #343a43; --line-soft: #20242b; --floor: #1d355b; --accent-text: #8fb8ff; --danger: #ffada5; --ok: #88dca5; --warn: #f5cf89; --purple: #8fb8ff; }
     .reconnecting { background: #352914; border-color: #70572d; }
     .priority.interrupt, .timeline-item.conflict { background: #3e242b; color: var(--danger); }
@@ -513,7 +513,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
   & { --flash-background: var(--floor); }
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root[data-theme="system"] {
     .product-mark { width: 36px; height: 36px; padding: 3px; background: #fff; border-radius: 9px; }
     .product-mark img { width: 30px; height: 30px; }
     .network-controls button:hover, .network-tooltip, .activity-graph { background: var(--surface); }
