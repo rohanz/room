@@ -1,3 +1,6 @@
+import { ConflictWatcher } from '../conflicts.js'
+import { git, gitShow } from '@room/roomd/git'
+import type { Session } from '../session.js'
 import { claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -111,4 +114,48 @@ function parsePlans(v: unknown): Plan[] | string {
     out.push({ kind: o.kind as Plan['kind'], symbol: o.symbol, ...(typeof o.detail === 'string' && o.detail ? { detail: o.detail } : {}) })
   }
   return out
+}
+
+
+export function install(state: HandlerState): void {
+  const { conflictPairs, mine, log, ctx, liveText, baseFor, now } = state
+  const observeClaims = (s: Session) => {
+      s.room.claims.observe((ev, tr) => {
+        if (tr.local) return
+        for (const [id, ch] of ev.changes.keys) {
+          if (ch.action !== 'add') continue
+          const arrived = s.room.openClaims().find(c => c.id === id)
+          if (!arrived || (arrived.by === s.me.name && arrived.byKind === s.me.kind)) continue
+          for (const m of mine(s)) {
+            if (!claimsOverlap(m, arrived)) continue
+            const key = [m.id, arrived.id].sort().join(':')
+            if (conflictPairs.has(key) || s.room.messages().some(x => x.type === 'conflict' && [x.claimId, x.otherClaimId].sort().join(':') === key)) { conflictPairs.add(key); continue }
+            conflictPairs.add(key)
+            if (m.id.localeCompare(arrived.id) > 0) continue
+            const text = `concurrent overlapping claims: ${describeClaim(m)} and ${describeClaim(arrived)}`
+            s.room.post<ConflictMsg>(s.me, { type: 'conflict', claimId: m.id, otherClaimId: arrived.id, path: m.path, text, to: arrived.by })
+          }
+        }
+      })
+    }
+  const planChanged = (s: Session, c: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan): string[] => {
+      const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter(p => p !== s.me.name)
+      const base: Omit<PlanMsg, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> = { type: 'plan', status, claimId: c.id, path: c.path, plan, text, ...(replacedBy ? { replacedBy } : {}) }
+      const orig = s.room.post<PlanMsg>(s.me, base)
+      for (const p of deps) s.room.post<PlanMsg>(s.me, { ...base, to: p, copyOf: orig.id })
+      return deps.length ? [`plan ${status}: ${formatPlans([plan])} — told ${deps.map(d => `${d}'s agent`).join(', ')} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} — nobody had been shown it`]
+    }
+
+  const startConflictWatcher = (s: import('../session.js').Session): ConflictWatcher => {
+    const watcher = new ConflictWatcher({
+      room: s.room, me: s.me, log, debounceMs: ctx.conflictDebounceMs,
+      liveText: (p, person) => liveText(s, p, person),
+      baseText: (sha, p) => gitShow(s.dir, sha, p),
+      baseFor: person => baseFor(s, person),
+      mergeBase: async (a, b) => (await git(s.dir, ['merge-base', a, b])).trim(),
+    })
+    watcher.start()
+    return watcher
+  }
+  Object.assign(state, { observeClaims, planChanged, startConflictWatcher })
 }

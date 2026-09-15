@@ -1,13 +1,13 @@
 import { NotLoggedIn, type Session } from '../session.js'
 import { createHandlerState, NeedFetch, NotJoined, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
-import { defs as joinDefs, handlers as joinHandlers } from './join.js'
-import { defs as scopeDefs, handlers as scopeHandlers } from './scope.js'
-import { defs as claimDefs, handlers as claimHandlers } from './claims.js'
-import { defs as messagingDefs, handlers as messagingHandlers } from './messaging.js'
+import { defs as joinDefs, handlers as joinHandlers, install as installJoin } from './join.js'
+import { defs as scopeDefs, handlers as scopeHandlers, install as installScope } from './scope.js'
+import { defs as claimDefs, handlers as claimHandlers, install as installClaims } from './claims.js'
+import { defs as messagingDefs, handlers as messagingHandlers, install as installMessaging } from './messaging.js'
 import { defs as fileDefs, handlers as fileHandlers } from './files.js'
-import { defs as workerDefs, handlers as workerHandlers } from './workers.js'
-import { defs as shareDefs, handlers as shareHandlers } from './share.js'
-import { defs as prDefs, handlers as prHandlers } from './prs.js'
+import { defs as workerDefs, handlers as workerHandlers, install as installWorkers } from './workers.js'
+import { defs as shareDefs, handlers as shareHandlers, install as installShare } from './share.js'
+import { defs as prDefs, handlers as prHandlers, install as installPrs } from './prs.js'
 
 export interface Tools {
   list(): ToolDef[]
@@ -30,6 +30,13 @@ export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name =
 
 export function createTools(ctx: ToolCtx): Tools {
   const state: HandlerState = createHandlerState(ctx)
+  installScope(state)
+  installClaims(state)
+  installMessaging(state)
+  installPrs(state)
+  installJoin(state)
+  installWorkers(state)
+  installShare(state)
   const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), prHandlers(state), shareHandlers(state))
 
   return {

@@ -1,4 +1,7 @@
-import { displayName, type NoteMsg } from '@room/shared'
+import { formatPlans, type Claim, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { git } from '@room/roomd/git'
+import { DEFAULT_SERVER, resolveServer, type Session } from '../session.js'
+import { displayName } from '@room/shared'
 import { clearChoice, chooseServer, describeWhere, markWarned, writeChoice } from '../choice.js'
 import { getCredential, getPending, setPending } from '../credentials.js'
 import { LOCAL, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
@@ -127,4 +130,64 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
   }
   return handlers
+}
+
+
+export function install(state: HandlerState): void {
+  const { ctx, log, doJoin, doLeave, seen, rooms, now, presences, mine, planChanged } = state
+  const followBranch = async (): Promise<string> => {
+      const s = ctx.getSession()
+      if (!s || !s.roomName.includes('/') || s.pinnedRoom) return ''
+      let branch = ''
+      try { branch = (await git(s.dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { return '' }
+      if (!branch || branch === 'HEAD') return ''
+      const current = s.roomName.slice(s.roomName.lastIndexOf('/') + 1)
+      if (branch === current) return ''
+      const repo = s.roomName.slice(0, s.roomName.lastIndexOf('/'))
+      const target = `${repo}/${branch}`
+      log(`branch changed ${current} -> ${branch}; moving room`)
+      cleanupMine(s, `switched branch to ${branch}`)
+      rooms.remove(s)
+      await doLeave(s)
+      try {
+        const n = await doJoin({ dir: s.dir, name: s.me.name, room: target, server: s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')) })
+        for (const m of n.room.messages()) seen.add(m.id)
+        rooms.add(n, 'primary'); cleanupMine(n, 'stale from an earlier session')
+        return `[room] your clone switched to branch ${branch}: left ${current}, joined ${target}. Scope and claims were reset; declare a scope before editing.`
+      } catch (e) {
+        return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`
+      }
+    }
+  const STALE_MS = Number(process.env.ROOM_STALE_DAYS || 7) * 24 * 60 * 60 * 1000
+  const evictStale = (s: Session): string[] => {
+      const here = new Set(presences(s).map(p => p.user.name))
+      const gone: string[] = []
+      for (const person of Array.from(s.room.overlays.keys())) {
+        if (person === s.me.name || here.has(person)) continue
+        const age = s.room.overlayAge(person, now())
+        if (age === undefined || age < STALE_MS) continue
+        const n = s.room.clearOverlays(person)
+        const days = Math.round(age / 86_400_000)
+        s.room.post<NoteMsg>(s.me, { type: 'note', text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? '' : 's'}; last seen ${days} day${days === 1 ? '' : 's'} ago)`, priority: 'fyi' })
+        log(`evicted ${person}'s ${n} stale overlay file(s), ${days} days old`)
+        gone.push(person)
+      }
+      return gone
+    }
+  const cleanupMine = (s: Session, why: string, keep?: (c: Claim) => boolean): number => {
+      const released = keep ? mine(s).filter(c => !keep(c)) : mine(s)
+      for (const c of released) {
+        s.room.removeClaim(c.id)
+        s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: why, ...(c.plans?.length ? { unfulfilled: c.plans } : {}) })
+        for (const pl of c.plans ?? []) planChanged(s, c, pl, 'cancelled', why)
+      }
+      s.room.clearScope(s.me.name)
+      return released.length
+    }
+  const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }
+  const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`
+  const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
+      ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.`
+      : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
+  Object.assign(state, { followBranch, evictStale, cleanupMine, serverOf, LOCAL_LOGIN, codeLine })
 }

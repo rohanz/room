@@ -1,4 +1,5 @@
-import { formatMsg, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg } from '@room/shared'
+import { formatMsg, formatPlans, isAgentic, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg } from '@room/shared'
+import type { Session } from '../session.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 const WAIT_DEFAULT = 30_000
@@ -105,4 +106,119 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
   }
   return handlers
+}
+
+
+export function install(state: HandlerState): void {
+  const { seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas, others, upgraded } = state
+  const forMe = (s: Session, m: Msg) => {
+      if (m.from === s.me.name && isAgentic(m.fromKind)) return false
+      if (m.to === s.me.name) return true
+      if (m.type === 'base') return true // someone committed: everyone should know to pull
+      if (m.to) return false // addressed to someone else
+      if (m.type === 'conflict') return mine(s).some(c => c.id === m.claimId || c.id === m.otherClaimId)
+      if (m.priority === 'interrupt') return true // broadcast interrupts reach everyone, whatever the area
+      if (m.priority === 'notify') return msgInMyAreas(s, m) // broadcast notify only from my areas
+      return false // broadcast fyi is read in the ledger, never the inbox
+    }
+  const inbox = (s: Session): string => {
+      const fresh: Msg[] = []
+      for (const m of s.room.messages()) {
+        if (seen.has(m.id)) continue
+        seen.add(m.id)
+        if (forMe(s, m)) fresh.push(m)
+      }
+      const ws = rooms.workers()
+      if (ws && ws !== s) for (const m of ws.room.messages()) {
+        if (seen.has(m.id)) continue
+        seen.add(m.id)
+        if (forMe(ws, m)) fresh.push({ ...m, ...('text' in m ? { text: `[workers room] ${m.text}` } : {}) } as Msg)
+      }
+      if (seen.size > 5000) { const keep = s.room.lastMessages(2000).map(m => m.id); seen.clear(); for (const k of keep) seen.add(k) }
+      if (!fresh.length) return ''
+      const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
+      fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at)
+      s.room.markSeen(s.me.name, fresh.map(m => m.id))
+      for (const m of fresh) log(`inbox → ${s.me.name}: [${m.priority}] ${formatMsg(m)}`)
+      scheduleInboxWrite()
+      return `[inbox ${fresh.length}]\n${fresh.map(m => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
+    }
+  const affected = async (s: Session, paths: string[], symbols: string[]): Promise<Map<string, string>> => {
+      const out = new Map<string, string>()
+      for (const person of others(s)) {
+        const sc = s.room.scope(person)
+        const hitPath = sc && paths.find(p => scopeCovers(sc, p))
+        if (hitPath) { out.set(person, `scope ${sc.area} covers ${hitPath}`); continue }
+        if (!symbols.length) continue
+        // Files that use the symbol (graph), owned by this person: in their scope, changed by them, or claimed by them.
+        let hit: string | undefined
+        if (s.graph) {
+          await s.graph.ready
+          for (const sym of symbols) {
+            const f = s.graph.graph.usersOf(sym).find(u => ownsFile(s, person, u))
+            if (f) { hit = `${f} uses ${sym}`; break }
+          }
+        } else {
+          for (const f of s.room.changedPaths(person)) {
+            const t = s.room.text(f, person) ?? ''
+            const sym = symbols.find(x => t.includes(x))
+            if (sym) { hit = `${f} uses ${sym}`; break }
+          }
+        }
+        if (hit) out.set(person, hit)
+      }
+      return out
+    }
+  const ownsFile = (s: Session, person: string, f: string): boolean => {
+      const sc = s.room.scope(person)
+      return (!!sc && scopeCovers(sc, f)) || s.room.changedPaths(person).includes(f) || s.room.openClaims().some(c => c.by === person && c.path === f)
+    }
+  const owners = (s: Session, f: string): string[] => {
+      const out = new Set<string>()
+      for (const sc of s.room.allScopes()) if (scopeCovers(sc, f)) out.add(sc.by)
+      for (const c of s.room.claimsFor(f)) out.add(c.by)
+      for (const p of s.room.whoChanged(f)) out.add(p)
+      return Array.from(out).sort()
+    }
+  const describeUsers = (s: Session, files: string[]): string => files.map(f => { const o = owners(s, f).filter(x => x !== s.me.name); return o.length ? `${f} (${o.join(', ')})` : f }).join(', ')
+  const waitingOn = async (s: Session): Promise<string[]> => {
+      if (!s.graph) return []
+      await s.graph.ready
+      const g = s.graph.graph
+      const sc = s.room.scope(s.me.name)
+      const myFiles = new Set(s.room.changedPaths(s.me.name))
+      if (sc) for (const f of allIndexed(s)) if (scopeCovers(sc, f)) myFiles.add(f)
+      const needed = new Map<string, string[]>()
+      for (const f of myFiles) for (const d of g.dependenciesOf(f)) { const arr = needed.get(d.symbol) ?? []; arr.push(f); needed.set(d.symbol, arr) }
+      const out: string[] = []
+      for (const c of s.room.openClaims()) {
+        if (c.by === s.me.name || !c.plans?.length) continue
+        for (const pl of c.plans) {
+          const files = needed.get(pl.symbol)
+          if (files) out.push(`  - ${c.by}'s agent plans ${pl.kind} ${pl.symbol}${pl.detail ? ` → ${pl.detail}` : ''} in ${c.path} (claim ${c.id}); you use it in ${Array.from(new Set(files)).join(', ')}`)
+        }
+      }
+      return out
+    }
+  const allIndexed = (s: Session): string[] => {
+      const set = new Set<string>()
+      for (const sc of s.room.allScopes()) for (const p of sc.paths) set.add(p)
+      // The graph does not expose its file list; approximate via scope paths + changed paths + graph users/definers reached through them.
+      for (const person of [s.me.name, ...others(s)]) for (const p of s.room.changedPaths(person)) set.add(p)
+      return Array.from(set).filter(p => s.graph!.graph.has(p))
+    }
+  const upgrade = async (s: Session, m: Msg, paths: string[], symbols: string[]): Promise<string[]> => {
+      const notes: string[] = []
+      for (const [person, why] of await affected(s, paths, symbols)) {
+        if (m.to === person) continue
+        const key = `${m.id}:${person}`
+        if (upgraded.has(key)) continue
+        upgraded.add(key)
+        const { id: _id, at: _at, from: _f, fromKind: _k, ...body } = m as Msg & Record<string, unknown>
+        s.room.post(s.me, { ...(body as object), to: person, priority: 'notify', copyOf: m.id } as never)
+        notes.push(`notified ${person}'s agent (${why})`)
+      }
+      return notes
+    }
+  Object.assign(state, { forMe, inbox, describeUsers, waitingOn, upgrade })
 }

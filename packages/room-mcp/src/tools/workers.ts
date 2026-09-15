@@ -1,10 +1,12 @@
+import { Bridge } from '../bridge.js'
+import { pidIsOurWorker, signalWorker } from '../workers.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { workerId, workerIdBase } from '../registry.js'
-import { LOCAL } from '../session.js'
+import { LOCAL, type Session } from '../session.js'
 import { DEFAULT_MAX_WORKERS, defaultSpawner, prepareWorktree, validTag, workerCommand, workerPrompt, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -158,4 +160,60 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
   }
   return handlers
+}
+
+
+export function install(state: HandlerState): void {
+  const { ctx, rooms, doJoin, doLeave, seen, log, cleanupMine } = state
+  const myWorkers = (s: Session): Worker[] => Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name)
+  const workerAlive = (s: Session, w: Worker): boolean => rooms.hasHandle(s, w) || pidIsOurWorker(w.pid, w, ctx.probe)
+  const ensureWorkersRoom = async (lead: Session): Promise<Session> => {
+      if (lead.local) return lead
+      const have = rooms.workers()
+      if (have) return have
+      const ws = await doJoin({ dir: lead.dir, server: LOCAL, name: lead.me.owner ?? lead.me.name, tag: lead.me.label, log })
+      for (const m of ws.room.messages()) seen.add(m.id)
+      rooms.add(ws, 'workers', lead)
+      log(`workers room: ${ws.roomName} (${ws.local?.url ?? 'local'}), bridged to ${lead.roomName}`)
+      return ws
+    }
+  const closeWorkersRoom = async (): Promise<void> => {
+      const ws = rooms.workers()
+      if (!ws) return
+      rooms.remove(ws)
+      try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
+      await doLeave(ws)
+    }
+  const runningWorkers = (s: Session): { s: Session; w: Worker }[] => {
+      const out: { s: Session; w: Worker }[] = []
+      for (const sess of [s, ...rooms.all().filter(x => x !== s)]) for (const w of myWorkers(sess)) if (w.status === 'running' || workerAlive(sess, w)) out.push({ s: sess, w })
+      return out
+    }
+  const dismissWorker = (s: Session, w: Worker, why: string): string => {
+      const proc = rooms.handle(s, w.id)
+      let how: string, signalled: boolean
+      if (proc) {
+        signalled = proc.kill()
+        how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} could not be signalled: the process is already gone, so its status stands`
+      } else if (pidIsOurWorker(w.pid, w, ctx.probe)) {
+        signalled = signalWorker(w.pid)
+        how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} could not be signalled (it exited just now, or is not ours to signal), so its status stands`
+      } else {
+        signalled = false
+        how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone and its status stands`
+      }
+      if (signalled || !proc) rooms.dropHandle(s, w.id)
+      if (signalled && w.status === 'running') s.room.updateWorker(w.tag, { status: 'dismissed' }, w.id)
+      s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
+      return how
+    }
+  const gitignored = (dir: string): boolean => { try { return fs.readFileSync(path.join(dir, '.gitignore'), 'utf8').split('\n').some(l => l.trim() === '.room/' || l.trim() === '.room') } catch { return false } }
+
+  const startWorkersBridge = (lead: import('../session.js').Session, s: import('../session.js').Session): Bridge => {
+    const bridge = new Bridge(lead, s, { log, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : undefined })
+    bridge.start()
+    ctx.attachChannel?.(s)
+    return bridge
+  }
+  Object.assign(state, { myWorkers, workerAlive, ensureWorkersRoom, closeWorkersRoom, runningWorkers, dismissWorker, gitignored, startWorkersBridge })
 }

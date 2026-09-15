@@ -1,5 +1,6 @@
 import { type NoteMsg } from '@room/shared'
 import { clampShare, parseShare } from '@room/roomd'
+import type { Session } from '../session.js'
 import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -26,4 +27,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
   }
   return handlers
+}
+
+
+export function install(state: HandlerState): void {
+  const {  } = state
+  const shareLine = (s: Session): string => {
+      const level = s.daemon.share ?? 'full'
+      const clamped = s.shareRequested && s.shareRequested !== level ? ` (asked for ${s.shareRequested}; the server caps sharing at ${s.shareMax}, ROOM_SHARE_MAX)` : ''
+      const held = s.daemon.skipped?.().share ?? []
+      return `sharing: ${level}${clamped}${held.length ? `; withheld ${held.length} changed file(s): ${held.join(', ')}` : ''}`
+    }
+  Object.assign(state, { shareLine })
 }

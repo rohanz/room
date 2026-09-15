@@ -1,4 +1,5 @@
-import { clampRange, describeClaim, describeIdentity, displayName, formatMsg, isAgentic, rangesOverlap, scopeCovers, type Scope, type ScopeMsg } from '@room/shared'
+import { Areas, CODEOWNERS_PATHS, RoomDoc, clampRange, describeClaim, describeIdentity, displayName, formatMsg, formatPlans, isAgentic, msgPaths, rangesOverlap, scopeCovers, sharesArea, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
@@ -123,4 +124,84 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
   }
   return handlers
+}
+
+
+export function install(state: HandlerState): void {
+  const { log, base, presences, others, shareOf, now, isMe } = state
+  const STALE_MS = Number(process.env.ROOM_STALE_DAYS || 7) * 24 * 60 * 60 * 1000
+  const areaIndex = new WeakMap<Session, Areas>()
+  const loadAreas = async (s: Session): Promise<Areas> => {
+      const hit = areaIndex.get(s)
+      if (hit) return hit
+      let areas = Areas.topLevel()
+      for (const p of CODEOWNERS_PATHS) {
+        let text: string | undefined
+        try { text = await gitShow(s.dir, base(s), p) } catch { text = undefined }
+        if (text !== undefined) { areas = Areas.fromCodeowners(text); log(`areas from ${p}: ${areas.areas.join(', ') || '(none)'}`); break }
+      }
+      areaIndex.set(s, areas)
+      return areas
+    }
+  const areasOf = (s: Session): Areas => areaIndex.get(s) ?? Areas.topLevel()
+  const areasFor = (s: Session, person: string): string[] => {
+      const sc = s.room.scope(person)
+      const paths = [...(sc?.paths ?? []), ...s.room.changedPaths(person)]
+      const stored = sc?.areas ?? presences(s).find(p => p.user.name === person)?.areas ?? []
+      return Array.from(new Set([...stored, ...areasOf(s).areasOf(paths)])).sort()
+    }
+  const myAreas = (s: Session): string[] => areasFor(s, s.me.name)
+  const inMyAreas = (s: Session, person: string): boolean => sharesArea(myAreas(s), areasFor(s, person))
+  const alsoIn = (s: Session, areas: string[]): string[] => others(s)
+      .map(n => ({ n, shared: areasFor(s, n).filter(a => areas.includes(a)) }))
+      .filter(x => x.shared.length)
+      .map(x => `${x.n} (${x.shared.join(', ')})`)
+  const ownerHints = (s: Session, areas: string[]): string[] => {
+      const ax = areasOf(s)
+      const login = s.me.owner ?? s.me.name
+      return areas.filter(a => ax.ownersOf(a).length && !ax.owns(login, a)).map(a => `owners of ${a}: ${ax.ownersOf(a).join(', ')} — not enforced; ask them if you change their contract`)
+    }
+  const areaLines = (s: Session, areas: string[]): string[] => {
+      if (!areas.length) return ['areas: none yet (declare a scope or change a file)']
+      const out = [`areas: ${areas.join(', ')} (${areasOf(s).source === 'codeowners' ? 'from CODEOWNERS' : 'top-level dirs; no CODEOWNERS'})`]
+      const also = alsoIn(s, areas)
+      out.push(also.length ? `also in your areas: ${also.join('; ')}` : 'nobody else is in your areas')
+      out.push(...ownerHints(s, areas))
+      return out
+    }
+  const msgInMyAreas = (s: Session, m: Msg): boolean => {
+      const mineA = myAreas(s)
+      if (!mineA.length) return true
+      const paths = msgPaths(m)
+      if (paths.length) return areasOf(s).areasOf(paths).some(a => mineA.includes(a))
+      return sharesArea(mineA, areasFor(s, m.from))
+    }
+  const claimLine = (s: Session, c: Claim) => {
+      const stale = !presences(s).some(p => p.user.name === c.by) && now() - c.at > STALE_MS
+      return `  - ${c.id}: ${describeClaim(c)}${isMe(s, { name: c.by, kind: c.byKind }) ? ' (yours)' : ''}${stale ? ' [stale: owner offline]' : ''}`
+    }
+  const ledgerLines = (s: Session, q: NonNullable<Parameters<RoomDoc['ledger']>[0]>, label: string): string[] => {
+      const entries = s.room.ledger({ ...q, limit: q.limit ?? 10 }).filter(m => !(m.to && m.to !== s.me.name && m.from !== s.me.name))
+      const plans = s.room.openClaims().filter(c => c.plans?.length && !(c.by === s.me.name) && (q.path ? c.path === q.path : true) && (q.area ? s.room.allScopes().some(sc => sc.area === q.area && scopeCovers(sc, c.path)) : true))
+      const out = [`${label} ledger (${entries.length}):`]
+      for (const m of entries) out.push(`  - ${new Date(m.at).toISOString().slice(11, 19)} ${formatMsg(m)}`)
+      if (plans.length) { out.push('open plans by others:'); for (const c of plans) out.push(`  - ${c.by}'s agent in ${c.path}: ${formatPlans(c.plans!)}`) }
+      return out
+    }
+  const scopeLine = (sc: Scope) => `${sc.area}: ${sc.summary} (${sc.paths.join(', ')})`
+  const personLine = (s: Session, name: string): string => {
+      const sc = s.room.scope(name)
+      const p = presences(s).find(x => x.user.name === name && isAgentic(x.user.kind)) ?? presences(s).find(x => x.user.name === name)
+      const changed = s.room.changedPaths(name)
+      const lastDone = [...s.room.messages()].reverse().find((m): m is NoteMsg => m.from === name && m.type === 'note' && m.text.startsWith('done'))
+      let what: string
+      if (sc) what = `working on ${scopeLine(sc)}`
+      else if (p?.status?.startsWith('done')) what = `${p.status}`
+      else if (lastDone && (!p || p.status === 'idle' || p.status === 'synced')) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`
+      else what = p ? `${p.status ?? 'idle'}, no task declared` : 'offline'
+      const level = shareOf(s, name)
+      const share = level === 'full' ? '' : `; shares ${level}${level === 'intent' ? ' (no file text)' : ' (file text only under their scope paths)'}`
+      return `${what}${share}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(', ')}` : ''}`
+    }
+  Object.assign(state, { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine, ledgerLines, scopeLine, personLine })
 }
