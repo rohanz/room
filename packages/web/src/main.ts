@@ -1,3 +1,4 @@
+import { attach } from './resizable.ts'
 import { reconnectStatus } from './reconnect.ts'
 import { applyTheme, readTheme, nextTheme, type Theme } from './theme.ts'
 import { connect } from './conn.ts'
@@ -19,7 +20,19 @@ try {
   const workspace = h('div', { class: 'workspace' }, h('nav', { class: 'workspace-tabs', ariaLabel: 'Inspector view' }, filesButton, graphButton), network, files)
   const people = participantsPanel(conn, focus), timeline = timelinePanel(conn, focus)
   const mobile = h('nav', { class: 'mobile-tabs', ariaLabel: 'Code panels' })
-  const code = h('div', { class: 'code-layout', id: 'code-view' }, mobile, people, workspace, timeline)
+  const peopleHandle = h('div', { class: 'people-handle' }), timelineHandle = h('div', { class: 'timeline-handle' })
+  const filesHandle = h('div', { class: 'files-handle' })
+  const code = h('div', { class: 'code-layout', id: 'code-view' }, mobile, people, peopleHandle, workspace, timelineHandle, timeline)
+  const fileList = files.querySelector<HTMLElement>('.center-files')!
+  fileList.after(filesHandle)
+  const width = (element: HTMLElement) => element.getBoundingClientRect().width
+  const codeSpace = () => width(workspace) - (width(fileList) || 200) - 6
+  const cleanups = [
+    attach(peopleHandle, { left: people, right: null, min: 180, max: () => width(people) + codeSpace() - 360, key: 'people' }),
+    attach(filesHandle, { left: fileList, right: null, min: 200, max: () => width(files) - 366, key: 'files' }),
+    attach(timelineHandle, { left: null, right: timeline, min: 260, max: () => width(timeline) + codeSpace() - 360, key: 'timeline' }),
+  ]
+  conn.room.doc.on('destroy', () => cleanups.forEach(cleanup => cleanup()))
   const selectPanel = (value: string) => { code.dataset.panel = value; for (const button of mobile.querySelectorAll('button')) { button.classList.toggle('active', button.textContent === value); button.ariaPressed = String(button.textContent === value) } }
   for (const value of ['People', 'Inspector', 'Timeline']) mobile.append(h('button', { onclick: () => selectPanel(value) }, value))
   selectPanel('Inspector')
