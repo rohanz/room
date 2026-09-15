@@ -29910,6 +29910,9 @@ function sharesArea(a, b) {
 }
 
 // packages/shared/src/views.ts
+function formatCount(count, singular, plural = singular + "s") {
+  return count + " " + (count === 1 ? singular : plural);
+}
 var scopeLine = (scope) => `${scope.area}: ${scope.summary} (${scope.paths.join(", ")})`;
 function personLine(input) {
   const p = input.presences.find((x) => x.user.name === input.name && isAgentic(x.user.kind)) ?? input.presences.find((x) => x.user.name === input.name);
@@ -29933,7 +29936,7 @@ function workerLine({ worker: w, processGone = false, changedCount, last: last2,
   const alive = w.status === "running" && processGone ? " (process gone)" : "";
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
-    `      ${changedCount} changed file(s) \xB7 branch ${w.branch}${w.summary ? ` \xB7 ${w.summary.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
+    `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.summary ? ` \xB7 ${w.summary.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
   ];
 }
 function workerLines(inputs) {
