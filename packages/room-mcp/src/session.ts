@@ -5,7 +5,9 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import type { WebsocketProvider } from 'y-websocket'
+import { WebsocketProvider } from 'y-websocket'
+import WebSocket from 'ws'
+import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import { startRoomd, RoomdError, clampShare, parseShare, type Roomd, type ShareLevel } from '@room/roomd'
 import { ensureLocalRelay, type LocalRelay } from '@room/relay'
@@ -14,7 +16,7 @@ import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import type { Identity, Kind, RoomDoc } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
-import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveServer } from './config.js'
+import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveServer, resolveSessionHost } from './config.js'
 
 /** The hosted room server. Override with ROOM_SERVER (e.g. ws://localhost:1234 for local dev). */
 /** The hosted server, used when ROOM_SERVER=hosted (or an explicit URL). Without ROOM_SERVER a session is LOCAL: no server at all. */
@@ -47,6 +49,7 @@ export interface Session {
   shareRequested: ShareLevel
   /** The shared token this session joined with (argument, ROOM_TOKEN, or `?token=` on the server URL); workers get it as ROOM_TOKEN. Never printed. */
   token?: string
+  autoTagNote?: string
 }
 
 export interface JoinOptions {
@@ -263,6 +266,52 @@ export async function serverFetch(url: string, init: RequestInit & { timeoutMs?:
 export function encodeRoom(roomName: string): string { return encodeURIComponent(roomName) }
 export function decodeRoom(encoded: string): string { try { return decodeURIComponent(encoded) } catch { return encoded } }
 
+/** Resolve identity before roomd can publish any overlays under it. The probe never publishes a user. */
+export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string }> {
+  let name = options.name, label = options.label
+  let autoTagNote: string | undefined
+  if (!explicitTag) {
+    const doc = new Y.Doc()
+    const url = new URL(options.room)
+    const room = url.pathname.split('/').pop()!
+    url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf('/'))
+    const provider = options.providerFactory
+      ? options.providerFactory(url.toString().replace(/\/$/, ''), room, doc)
+      : new WebsocketProvider(url.toString().replace(/\/$/, ''), room, doc, {
+          WebSocketPolyfill: WebSocket as any,
+          params: { ...(options.token ? { token: options.token } : {}), ...(options.session ? { session: options.session } : {}), ...(options.localKey ? { key: options.localKey } : {}) },
+        })
+    try {
+      if (!provider.synced) await new Promise<void>((resolve, reject) => {
+        const onSync = (synced: boolean) => { if (synced) { clearTimeout(timer); provider.off('sync', onSync); resolve() } }
+        const timer = setTimeout(() => {
+          provider.off('sync', onSync)
+          reject(new RoomdError(`could not sync with ${options.room} within ${options.connectTimeoutMs ?? 15000}ms`, 1))
+        }, options.connectTimeoutMs ?? 15000)
+        provider.on('sync', onSync)
+      })
+      const names = new Set([...provider.awareness.getStates()]
+        .filter(([id]) => id !== provider.awareness.clientID)
+        .map(([, state]) => state.user?.name))
+      if (names.has(name)) {
+        const host = resolveSessionHost(options.dir)
+        label = host
+        let suffix = 2
+        while (names.has(`${options.name}+${label}`)) label = `${host}-${suffix++}`
+        name = `${options.name}+${label}`
+        autoTagNote = `joined as ${name} (${options.name} is already here from another session)`
+        ;(options.log ?? console.error)(autoTagNote)
+      }
+    } finally {
+      provider.destroy()
+      provider.awareness.destroy()
+      doc.destroy()
+    }
+  }
+  const daemon = await startRoomd({ ...options, name, label })
+  return { daemon, me: { name, kind: options.kind ?? 'agent', owner: options.owner, ...(label ? { label } : {}) }, autoTagNote }
+}
+
 export async function joinSession(opts: JoinOptions): Promise<Session> {
   const dir = resolve(opts.dir)
   const config = await resolveConfig({ dir, env: process.env, args: opts })
@@ -291,7 +340,6 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const owner = auth.login ?? config.owner ?? config.name ?? await defaultName(dir)
   if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
   const name = label ? `${owner}+${label}` : owner
-  const me: Identity = { name, kind, owner, ...(label ? { label } : {}) }
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`)
   const { login: _login, ...creds } = auth
   if (opts.create) {
@@ -307,10 +355,10 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await serverShareMax(server)
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+  const { daemon, me, autoTagNote } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag)
   const view = await viewToken(server, roomName, creds)
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
-  const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
+  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
   const session: Session = {
     graph,
@@ -318,7 +366,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
     daemon,
-    me,
+    me, autoTagNote,
     dir,
     roomUrl,
     roomName,
@@ -342,20 +390,19 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const kindEnv = opts.kind?.trim()
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
   const name = label ? `${owner}+${label}` : owner
-  const me: Identity = { name, kind, owner, ...(label ? { label } : {}) }
   const common = await gitCommonDir(dir)
   const local = await ensureLocalRelay(common, roomName, { log: opts.log })
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
-  let daemon: Roomd
+  let daemon: Roomd, me: Identity, autoTagNote: string | undefined
   try {
-    daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+    ;({ daemon, me, autoTagNote } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, '')
   // The link carries the relay key: it is machine-local, and anyone holding it can read the room.
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}&key=${encodeURIComponent(local.key)}`
-  const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&key=${encodeURIComponent(local.key)}`
+  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
   return {
     graph,
@@ -363,7 +410,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
     daemon,
-    me,
+    me, autoTagNote,
     dir,
     roomUrl,
     roomName,

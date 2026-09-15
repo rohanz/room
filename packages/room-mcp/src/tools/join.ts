@@ -116,6 +116,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`)
       const away = others(s).filter(n => !here.includes(n) && s.room.changedPaths(n).length)
       for (const n of away) out.push(`  ${n} (offline): ${personLine(s, n)}`)
+      if (s.autoTagNote) out.push(s.autoTagNote)
       const cs = s.room.openClaims()
       if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`)

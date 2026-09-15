@@ -85,3 +85,17 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     room: value(args.room) ?? value(e.ROOM_ROOM), web: value(args.web) ?? value(e.ROOM_WEB),
   }
 }
+
+/** SessionStart records the host in the worktree's own git directory. */
+export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process.env): string {
+  const host = (v: unknown) => v === 'claude' || v === 'codex' ? v : undefined
+  if (host(env.ROOM_HOST)) return env.ROOM_HOST!
+  try {
+    let gitDir = path.join(dir, '.git')
+    if (fs.statSync(gitDir).isFile()) {
+      const target = fs.readFileSync(gitDir, 'utf8').match(/gitdir:\s*(.+)/)?.[1].trim()
+      if (target) gitDir = path.resolve(dir, target)
+    }
+    return host(JSON.parse(fs.readFileSync(path.join(gitDir, 'room-session.json'), 'utf8')).host) ?? 'agent'
+  } catch { return 'agent' }
+}
