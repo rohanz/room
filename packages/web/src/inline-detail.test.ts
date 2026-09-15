@@ -164,10 +164,16 @@ it.each([true, false])('aligns detail bounds to the code text area (merged=%s)',
     const detailWidth = paneWidth - detailLeft - parseFloat(computed.marginRight)
     expect(detailWidth).toBe(paneWidth - 96 - codeTextLeft)
   }
-  expect(rule('.inline-detail-close')).toContain('width: 22px')
-  expect(rule('.inline-detail-close')).toContain('height: 22px')
-  expect(rule('.inline-detail-close')).toContain('border-radius: 50%')
-  expect(rule('.inline-detail-close:hover')).toContain('border-color: var(--accent)')
+  const close = host.querySelector<HTMLButtonElement>('.inline-detail-close')!
+  expect(close.textContent).toBe('×')
+  expect(close.getAttribute('aria-label')).toBe('Close')
+  const closeStyle = rule('.inline-detail-close')
+  for (const declaration of ['width: 24px', 'height: 24px', 'min-height: 0', 'border: 0', 'background: transparent', 'border-radius: 6px', 'color: var(--muted)', 'font: 500 16px/1 var(--sans)']) {
+    expect(closeStyle).toContain(declaration)
+  }
+  const activeStyle = rule('.inline-detail-close:hover, .inline-detail-close:focus-visible')
+  expect(activeStyle).toContain('color: var(--accent)')
+  expect(activeStyle).toContain('background: color-mix(in srgb, var(--accent) 8%, transparent)')
 })
 it('fades code only in the 24px before the annotation, without painting a box', () => {
   render(); const row = rows()[0], code = row.querySelector('code')!

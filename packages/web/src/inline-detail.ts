@@ -68,7 +68,7 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
       const button = document.createElement('button')
       button.className = 'inline-detail-close'
       button.textContent = '×'
-      button.setAttribute('aria-label', 'Close line details')
+      button.setAttribute('aria-label', 'Close')
       button.onclick = () => close(true)
       const content = document.createElement('div')
       for (const section of lineDetail(input).sections) {
