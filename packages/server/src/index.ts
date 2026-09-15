@@ -31,7 +31,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, docs, getPersistence } from '@y/websocket-server/utils'
-import { makeReadOnly, bindIdentity, capDocSize } from './readonly.js'
+import { makeReadOnly, bindIdentity, capDocSize, DocSizeMeter } from './readonly.js'
 import { docNameOf, roomNameOf, githubRepoOf, repoOf } from './names.js'
 import * as Y from 'yjs'
 import { Auth } from './auth.js'
@@ -47,6 +47,9 @@ const SHARE_MAX = (['intent', 'declared', 'full'] as const).find(l => l === proc
 const STATIC = process.env.ROOM_STATIC ?? path.resolve(process.cwd(), 'public')
 /** Logins allowed to read the audit log (ROOM_ADMINS, comma list). */
 const ADMINS = new Set((process.env.ROOM_ADMINS ?? '').split(',').map(s => s.trim()).filter(Boolean))
+/** An entry in ROOM_ADMINS may be the display login (GitHub login, verified email) or, for OIDC users,
+ *  the namespaced identity `oidc:<issuer-host>:<sub>`, which cannot be spoofed by a look-alike email. */
+const isAdmin = (st: { login: string; id?: string }) => ADMINS.has(st.login) || (!!st.id && ADMINS.has(st.id))
 const list = (v: string | undefined) => v?.split(',').map(s => s.trim()).filter(Boolean) ?? []
 const oidcIssuer = process.env.OIDC_ISSUER?.trim()
 if (oidcIssuer && !(process.env.OIDC_CLIENT_ID && process.env.OIDC_CLIENT_SECRET && process.env.PUBLIC_URL)) { console.error('OIDC_ISSUER is set but OIDC_CLIENT_ID, OIDC_CLIENT_SECRET or PUBLIC_URL is missing'); process.exit(1) }
@@ -105,7 +108,8 @@ function saveRooms() {
 const NOT_OPEN = (room: string) => `no room for ${repoOf(room)} yet: open one with room_create (or POST /rooms)`
 
 interface Creds { gh?: string; token?: string; session?: string }
-type Verdict = { ok: true; login?: string; provider?: Provider } | { ok: false; status: 401 | 403; why: string }
+/** `login` is the display name; `id` the namespaced identity (`oidc:<issuer-host>:<sub>`) when the provider has one. */
+type Verdict = { ok: true; login?: string; id?: string; provider?: Provider } | { ok: false; status: 401 | 403; why: string }
 /** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting.
  *  A verdict carries the verified login when the caller is logged in.
  *  github.com rooms: a GitHub login (or forwarded token) with push access. Other rooms: the shared
@@ -118,7 +122,7 @@ async function admitted(room: string, c: Creds): Promise<Verdict> {
     if (!c.session) return { ok: false, status: 401, why: `not logged in: run room_login (room ${repoOf(roomNameOf(room))})` }
     const st = auth.resolve(c.session)
     if (!st) return { ok: false, status: 401, why: 'session expired or unknown: run room_login' }
-    return { ok: true, login: st.login, provider: st.provider }
+    return { ok: true, login: st.login, id: st.id, provider: st.provider }
   }
   if (auth.mode === 'device' || auth.providers.includes('oidc')) {
     if (!c.session) return { ok: false, status: 401, why: c.gh ? 'this server uses GitHub login: run room_login (forwarded GitHub tokens are not accepted)' : `not logged in: run room_login (room ${repo})` }
@@ -201,7 +205,7 @@ const server = http.createServer((req, res) => {
   })
   if (url.pathname === '/auth/callback' && req.method === 'GET') {
     void auth.callbackOidc(url.searchParams.get('code') ?? undefined, url.searchParams.get('state') ?? undefined, url.searchParams.get('error') ?? undefined).then(r => {
-      if ('login' in r) { audit({ event: 'login', login: r.login, provider: 'oidc' }); return html(200, `<h1>Logged in as ${escapeHtml(r.login)}</h1><p>You can close this tab and go back to your agent.</p>`) }
+      if ('login' in r) { audit({ event: 'login', login: r.login, id: r.id, provider: 'oidc' }); return html(200, `<h1>Logged in as ${escapeHtml(r.login)}</h1><p>You can close this tab and go back to your agent.</p>`) }
       return html(400, `<h1>Login failed</h1><p>${escapeHtml(r.error)}</p>`)
     })
     return
@@ -215,7 +219,7 @@ const server = http.createServer((req, res) => {
   })
   if (url.pathname === '/auth/logout' && req.method === 'POST') return withBody(async o => {
     const was = auth.logout(str(o.session))
-    if (was) audit({ event: 'logout', login: was.login, provider: was.provider })
+    if (was) audit({ event: 'logout', login: was.login, id: was.id, provider: was.provider })
     json(200, { ok: !!was })
   })
   if (url.pathname === '/auth/me' && req.method === 'GET') {
@@ -225,7 +229,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/audit' && req.method === 'GET') {
     const st = auth.resolve(url.searchParams.get('session') ?? undefined)
     if (!st) return text(401, 'not logged in: pass ?session=')
-    if (!ADMINS.has(st.login)) return text(403, `${st.login} is not in ROOM_ADMINS`)
+    if (!isAdmin(st)) return text(403, `${st.login} is not in ROOM_ADMINS`)
     const since = Number(url.searchParams.get('since') ?? 0) || 0
     const limit = Math.min(10_000, Number(url.searchParams.get('limit') ?? 1000) || 1000)
     void store.readAudit({ since, limit }).then(entries => json(200, entries)).catch(e => text(500, `audit unavailable: ${e instanceof Error ? e.message : e}`))
@@ -250,7 +254,7 @@ const server = http.createServer((req, res) => {
     const repo = repoOf(roomNameOf(room))
     if (!rooms.has(repo)) return text(404, NOT_OPEN(room))
     const closed = await closeRepo(repo)
-    audit({ event: 'room_closed', room: repo, login: v.login })
+    audit({ event: 'room_closed', room: repo, login: v.login, id: v.id })
     json(200, { repo, closed, ...(v.login ? { login: v.login } : {}) })
   })
   if (url.pathname === '/rooms' && req.method === 'POST') return withBody(async o => {
@@ -261,7 +265,7 @@ const server = http.createServer((req, res) => {
     const by = v.login ?? str(o.by)
     const name = repoOf(roomNameOf(room))
     const existing = rooms.get(name)
-    if (!existing) { rooms.set(name, { by, at: Date.now(), branches: [] }); saveRooms(); console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`); audit({ event: 'room_opened', room: name, login: by }) }
+    if (!existing) { rooms.set(name, { by, at: Date.now(), branches: [] }); saveRooms(); console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`); audit({ event: 'room_opened', room: name, login: by, id: v.id }) }
     json(existing ? 200 : 201, { repo: name, created: !existing, ...(existing ?? {}), ...(v.login ? { login: v.login } : {}) })
   })
   if (url.pathname === '/view-token' && req.method === 'POST') return withBody(async o => {
@@ -334,17 +338,19 @@ const server = http.createServer((req, res) => {
   res.end(`room server: connect a y-websocket client to ws://host:port/<room>${TOKEN ? '?token=...' : ''}\n`)
 })
 /** A room's document may not grow past this (ROOM_DOC_MAX_MB, default 64): a client that floods the doc
- *  would otherwise make the room impossible to load. Measured at most every 30 s per room. */
+ *  would otherwise make the room impossible to load. Measured per room at most every 30 s, and again
+ *  after 200 write messages or 8 MB received, whichever comes first: a time-only cache would let an
+ *  unbounded amount through between two measurements. */
 const DOC_MAX_BYTES = Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
-const docSizes = new Map<string, { at: number; bytes: number }>()
+const docMeters = new Map<string, DocSizeMeter>()
 const capLogged = new Map<string, number>()
-function docSize(roomName: string): number {
-  const cached = docSizes.get(roomName)
-  if (cached && Date.now() - cached.at < 30_000) return cached.bytes
-  const doc = docs.get(roomName)
-  const bytes = doc ? Y.encodeStateAsUpdate(doc).byteLength : 0
-  docSizes.set(roomName, { at: Date.now(), bytes })
-  return bytes
+function docMeter(roomName: string): DocSizeMeter {
+  let m = docMeters.get(roomName)
+  if (!m) {
+    m = new DocSizeMeter(() => { const doc = docs.get(roomName); return doc ? Y.encodeStateAsUpdate(doc).byteLength : 0 })
+    docMeters.set(roomName, m)
+  }
+  return m
 }
 /** Largest websocket message accepted (ROOM_MAX_MESSAGE_MB, default 16). A client holding a bloated copy of
  *  a room, such as a browser tab left open, would otherwise push the whole thing back in one frame. */
@@ -361,9 +367,21 @@ const droppedWrite = (room: string) => () => {
 // The docs map (and persistence) is keyed by the DECODED room name, the same key admission, closing,
 // expiry and the size cap use; y-websocket's default would key by the raw, possibly double-encoded path.
 wss.on('connection', (conn, req) => setupWSConnection(conn, req, { gc: true, docName: docNameOf(req.url ?? '/') }))
+/** Refused connections are audited at most once per 10 s per remote address: a client retrying in a
+ *  loop (or a scanner) must not fill the audit log. The refusal itself is still logged and sent. */
+const refusedAudit = new Map<string, number>()
+const REFUSED_AUDIT_EVERY_MS = 10_000
+function auditRefused(remote: string | undefined, room: string | undefined, reason: string): void {
+  const key = remote ?? '?'
+  const now = Date.now()
+  if ((refusedAudit.get(key) ?? 0) > now - REFUSED_AUDIT_EVERY_MS) return
+  refusedAudit.set(key, now)
+  if (refusedAudit.size > 10_000) for (const [k, at] of refusedAudit) if (at <= now - REFUSED_AUDIT_EVERY_MS) refusedAudit.delete(k)
+  audit({ event: 'refused', room, reason })
+}
 const refuse = (socket: import('node:stream').Duplex, code: number, why: string, room?: string) => {
   console.log(`refused ${code} ${why}${room ? ` (room ${room})` : ''}`)
-  audit({ event: 'refused', room, reason: `${code} ${why}` })
+  auditRefused((socket as import('node:net').Socket).remoteAddress, room, `${code} ${why}`)
   socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`)
   socket.destroy()
 }
@@ -371,14 +389,15 @@ const identityLog = new Map<string, number>()
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const roomName = roomNameOf(url.pathname)
-  const accept = (opts: { readOnly?: boolean; login?: string; provider?: Provider } = {}) => rooms.has(repoOf(roomName))
+  const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider } = {}) => rooms.has(repoOf(roomName))
     ? wss.handleUpgrade(req, socket, head, ws => {
       noteBranch(roomName)
-      capDocSize(ws, () => docSize(roomName), DOC_MAX_BYTES, size => {
+      const meter = docMeter(roomName)
+      capDocSize(ws, bytes => meter.size(bytes), DOC_MAX_BYTES, size => {
         const now = Date.now()
         if ((capLogged.get(roomName) ?? 0) < now - 60_000) { capLogged.set(roomName, now); console.log(`refusing writes: room ${roomName} is ${(size / 1048576).toFixed(1)} MB (cap ${(DOC_MAX_BYTES / 1048576).toFixed(0)} MB); close and reopen the repo, or raise ROOM_DOC_MAX_MB`) }
       })
-      audit({ event: 'join', room: roomName, login: opts.login, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
+      audit({ event: 'join', room: roomName, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
       if (opts.readOnly) makeReadOnly(ws, droppedWrite(roomName))
       if (opts.login) bindIdentity(ws, opts.login, login => {
         const now = Date.now()
@@ -397,7 +416,7 @@ server.on('upgrade', (req, socket, head) => {
   }
   const c: Creds = { gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined }
   admitted(roomName, c)
-    .then(v => v.ok ? accept({ login: v.login, provider: v.provider }) : refuse(socket, v.status, v.why, roomName))
+    .then(v => v.ok ? accept({ login: v.login, id: v.id, provider: v.provider }) : refuse(socket, v.status, v.why, roomName))
     .catch(() => refuse(socket, 403, 'Forbidden', roomName))
 })
 function escapeHtml(s: string): string { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!) }

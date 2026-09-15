@@ -90,6 +90,7 @@ describe('device-flow auth', () => {
     expect(c.logout(s2)).toMatchObject({ login: 'octo' })
     expect(c.logout(s2)).toBeUndefined()
     expect(c.resolve(s2)).toBeUndefined()
+    await new Promise(r => setTimeout(r, 10)) // session writes are queued, in order
     expect(fs.readFileSync(file, 'utf8')).not.toContain('gho_2')
   })
 })

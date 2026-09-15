@@ -28,6 +28,11 @@ export interface GitHubProxyOptions {
 /** Marker that identifies the comment the room maintains on a PR. */
 export const LEDGER_MARKER = '<!-- room-ledger -->'
 const API = 'https://api.github.com'
+/** GitHub's largest page. Page ceilings keep one request from turning into hundreds of GitHub calls. */
+const PAGE = 100
+const MAX_PR_PAGES = 10
+const MAX_FILE_PAGES = 30
+const MAX_COMMENT_PAGES = 30
 
 export class GitHubProxy {
   private readonly fetch: typeof fetch
@@ -52,6 +57,22 @@ export class GitHubProxy {
     return { status: res.status, body }
   }
 
+  /** Every item of a paged list endpoint (`path` ends in `?` or `&...`), 100 per page, following pages until a
+   *  short one, `maxPages`, or (`until`) an item the caller was looking for. A non-200 first page is an error;
+   *  a later failure keeps what was read. */
+  private async pages<T>(token: string, path: string, maxPages: number, until?: (item: T) => boolean): Promise<{ items: T[] } | { error: number }> {
+    const items: T[] = []
+    const sep = path.endsWith('?') || path.endsWith('&') ? '' : '&'
+    for (let page = 1; page <= maxPages; page++) {
+      const r = await this.api(token, `${path}${sep}per_page=${PAGE}&page=${page}`)
+      if (r.status !== 200 || !Array.isArray(r.body)) { if (page === 1) return { error: r.status }; break }
+      const batch = r.body as T[]
+      items.push(...batch)
+      if (batch.length < PAGE || (until && batch.some(until))) break
+    }
+    return { items }
+  }
+
   /** Open PRs of owner/repo, newest update first, with their files. By default those whose base is `branch`;
    *  `{ head: true }` lists those whose HEAD is `branch` instead (any base). Cached per query. */
   async openPrs(token: string, ownerRepo: string, branch: string, opts: { head?: boolean } = {}): Promise<PullRequest[]> {
@@ -60,19 +81,14 @@ export class GitHubProxy {
     if (hit && hit.exp > this.now()) return hit.prs
     const owner = ownerRepo.split('/')[0]
     const filter = opts.head ? `head=${encodeURIComponent(`${owner}:${branch}`)}` : `base=${encodeURIComponent(branch)}`
-    const list = await this.api(token, `/repos/${ownerRepo}/pulls?state=open&${filter}&per_page=50&sort=updated&direction=desc`)
-    if (list.status !== 200 || !Array.isArray(list.body)) throw new GitHubError(list.status, `could not list pull requests of ${ownerRepo} (HTTP ${list.status})`)
+    // GitHub pages the list at 100; a busy repo has more open PRs than that.
+    const raws = await this.pages<RawPr>(token, `/repos/${ownerRepo}/pulls?state=open&${filter}&sort=updated&direction=desc`, MAX_PR_PAGES)
+    if ('error' in raws) throw new GitHubError(raws.error, `could not list pull requests of ${ownerRepo} (HTTP ${raws.error})`)
     const prs: PullRequest[] = []
-    for (const raw of list.body as RawPr[]) {
-      // GitHub pages the file list at 100; a large PR has more, and a mirrored scope must not silently drop them.
-      const paths: string[] = []
-      for (let page = 1; page <= 30; page++) {
-        const files = await this.api(token, `/repos/${ownerRepo}/pulls/${raw.number}/files?per_page=100&page=${page}`)
-        if (files.status !== 200 || !Array.isArray(files.body)) break
-        const batch = (files.body as { filename?: string }[]).map(f => f.filename).filter((f): f is string => !!f)
-        paths.push(...batch)
-        if ((files.body as unknown[]).length < 100) break
-      }
+    for (const raw of raws.items) {
+      // Same for the file list; a mirrored scope must not silently drop the files past the first page.
+      const files = await this.pages<{ filename?: string }>(token, `/repos/${ownerRepo}/pulls/${raw.number}/files?`, MAX_FILE_PAGES)
+      const paths = ('error' in files ? [] : files.items).map(f => f.filename).filter((f): f is string => !!f)
       prs.push({ number: raw.number, title: raw.title ?? '', author: raw.user?.login ?? '', head: raw.head?.ref ?? '', files: paths, updatedAt: raw.updated_at ?? '', url: raw.html_url ?? '' })
     }
     this.cache.set(key, { exp: this.now() + this.cacheMs, prs })
@@ -95,9 +111,10 @@ export class GitHubProxy {
   async upsertNote(token: string, ownerRepo: string, number: number, body: string): Promise<{ id: number; url: string; updated: boolean }> {
     const login = await this.loginOf(token)
     const text = body.includes(LEDGER_MARKER) ? body : `${LEDGER_MARKER}\n${body}`
-    const existing = await this.api(token, `/repos/${ownerRepo}/issues/${number}/comments?per_page=100`)
-    if (existing.status !== 200 || !Array.isArray(existing.body)) throw new GitHubError(existing.status, `could not read comments of ${ownerRepo}#${number} (HTTP ${existing.status})`)
-    const mine = (existing.body as RawComment[]).find(c => c.user?.login === login && typeof c.body === 'string' && c.body.includes(LEDGER_MARKER))
+    // A long-lived PR has more than one page of comments; the ledger may be on any of them.
+    const existing = await this.pages<RawComment>(token, `/repos/${ownerRepo}/issues/${number}/comments?`, MAX_COMMENT_PAGES, c => c.user?.login === login && typeof c.body === 'string' && c.body.includes(LEDGER_MARKER))
+    if ('error' in existing) throw new GitHubError(existing.error, `could not read comments of ${ownerRepo}#${number} (HTTP ${existing.error})`)
+    const mine = existing.items.find(c => c.user?.login === login && typeof c.body === 'string' && c.body.includes(LEDGER_MARKER))
     const r = mine
       ? await this.api(token, `/repos/${ownerRepo}/issues/comments/${mine.id}`, { method: 'PATCH', body: { body: text } })
       : await this.api(token, `/repos/${ownerRepo}/issues/${number}/comments`, { method: 'POST', body: { body: text } })

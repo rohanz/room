@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { SignJWT, exportJWK, generateKeyPair } from 'jose'
-import { Auth } from '../src/auth.js'
+import { Auth, oidcIdentity } from '../src/auth.js'
 import { FileStore } from '../src/store.js'
 
 const ISSUER = 'https://idp.example.com'
@@ -11,7 +11,7 @@ const CLIENT = 'room-client'
 const PUBLIC = 'https://room.example.com'
 
 /** A fake IdP: discovery, JWKS, token endpoint. `claims` shapes the ID token it mints for the next code exchange. */
-async function fakeIdp(claims: Record<string, unknown>, opts: { badSignature?: boolean; tokenError?: string } = {}) {
+async function fakeIdp(claims: Record<string, unknown>, opts: { badSignature?: boolean; tokenError?: string; noSub?: boolean } = {}) {
   const { publicKey, privateKey } = await generateKeyPair('RS256')
   const other = (await generateKeyPair('RS256')).privateKey
   const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' }
@@ -25,9 +25,9 @@ async function fakeIdp(claims: Record<string, unknown>, opts: { badSignature?: b
     if (url === `${ISSUER}/token`) {
       if (opts.tokenError) return json({ error: opts.tokenError, error_description: 'nope' }, 400)
       const form = new URLSearchParams(String(init?.body))
-      const id_token = await new SignJWT({ ...claims, nonce: lastNonce })
-        .setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(ISSUER).setAudience(CLIENT).setSubject('sub-1').setIssuedAt().setExpirationTime('5m')
-        .sign(opts.badSignature ? other : privateKey)
+      const jwt = new SignJWT({ ...claims, nonce: lastNonce }).setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(ISSUER).setAudience(CLIENT).setIssuedAt().setExpirationTime('5m')
+      if (!opts.noSub) jwt.setSubject('sub-1')
+      const id_token = await jwt.sign(opts.badSignature ? other : privateKey)
       return json({ access_token: 'at', id_token, token_type: 'Bearer', _form: Object.fromEntries(form) })
     }
     return json({}, 404)
@@ -70,7 +70,7 @@ describe('OIDC login', () => {
     const a = make(idp)
     const s = await a.start('oidc') as { url: string; device: string }
     const cb = await browserLogsIn(a, idp, s)
-    expect(cb).toEqual({ login: 'ann@example.com' })
+    expect(cb).toEqual({ login: 'ann@example.com', id: 'oidc:idp.example.com:sub-1' })
     const tokenCall = idp.calls.find(c => c.url === `${ISSUER}/token`)!
     const form = new URLSearchParams(tokenCall.body)
     expect(form.get('grant_type')).toBe('authorization_code')
@@ -80,7 +80,7 @@ describe('OIDC login', () => {
     const r = await a.poll(s.device)
     expect(r).toMatchObject({ login: 'ann@example.com', provider: 'oidc' })
     const session = (r as { session: string }).session
-    expect(a.resolve(session)).toMatchObject({ login: 'ann@example.com', provider: 'oidc' })
+    expect(a.resolve(session)).toMatchObject({ login: 'ann@example.com', id: 'oidc:idp.example.com:sub-1', provider: 'oidc' })
     expect(a.resolve(session)?.ghToken).toBeUndefined()
     expect(await a.poll(s.device)).toMatchObject({ error: expect.stringContaining('unknown') }) // single use
   })
@@ -89,7 +89,40 @@ describe('OIDC login', () => {
     const idp = await fakeIdp({ preferred_username: 'ann' })
     const a = make(idp)
     const s = await a.start() as { url: string; device: string }
-    expect(await browserLogsIn(a, idp, s)).toEqual({ login: 'ann' })
+    expect(await browserLogsIn(a, idp, s)).toEqual({ login: 'ann', id: 'oidc:idp.example.com:sub-1' })
+  })
+
+  it('the identity is namespaced by issuer host and sub; the display login is the email or username', async () => {
+    // Two users with the same-looking display names at different IdPs never share an identity,
+    // and an email change at the IdP does not change who the user is.
+    expect(oidcIdentity('https://idp.example.com', 'sub-1')).toBe('oidc:idp.example.com:sub-1')
+    expect(oidcIdentity('https://Accounts.Google.com/', '1234')).toBe('oidc:accounts.google.com:1234')
+    expect(oidcIdentity('https://acme.okta.com:8443/oauth2/default', 'u1')).toBe('oidc:acme.okta.com:8443:u1')
+    expect(oidcIdentity('idp.example.com', 'u1')).toBe('oidc:idp.example.com:u1')
+    const idp = await fakeIdp({ email: 'ann@example.com', email_verified: true, preferred_username: 'ann' })
+    const a = make(idp)
+    const s = await a.start() as { url: string; device: string }
+    await browserLogsIn(a, idp, s)
+    const r = await a.poll(s.device) as { session: string; login: string }
+    expect(r.login).toBe('ann@example.com')
+    const st = a.resolve(r.session)!
+    expect(st.id).toBe('oidc:idp.example.com:sub-1')
+    expect(st.login).toBe('ann@example.com')
+    // an ID token without sub is refused: there is nothing stable to key the identity on
+    const noSub = await fakeIdp({ email: 'ann@example.com', email_verified: true }, { noSub: true })
+    const b = make(noSub)
+    const s2 = await b.start() as { url: string; device: string }
+    expect(await browserLogsIn(b, noSub, s2)).toMatchObject({ error: expect.stringContaining('sub') })
+  })
+
+  it('sessions stored before identities existed still load, without an id', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-oidc-old-'))
+    fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify({ old: { login: 'ann@example.com', provider: 'oidc', at: Date.now() } }))
+    const idp = await fakeIdp({})
+    const a = make(idp, { store: new FileStore({ dir }) })
+    await a.ready
+    expect(a.resolve('old')).toMatchObject({ login: 'ann@example.com', provider: 'oidc' })
+    expect(a.resolve('old')?.id).toBeUndefined()
   })
 
   it('an unverified email is not an identity: refused by the allowlist, and never the login', async () => {
@@ -101,7 +134,7 @@ describe('OIDC login', () => {
     const idp2 = await fakeIdp({ email: 'admin@example.com', email_verified: false, preferred_username: 'mallory' })
     const c = make(idp2)
     const s2 = await c.start() as { url: string; device: string }
-    expect(await browserLogsIn(c, idp2, s2)).toEqual({ login: 'mallory' })
+    expect(await browserLogsIn(c, idp2, s2)).toEqual({ login: 'mallory', id: 'oidc:idp.example.com:sub-1' })
   })
 
   it('enforces the email domain allowlist', async () => {
@@ -115,7 +148,7 @@ describe('OIDC login', () => {
     const ok = await fakeIdp({ email: 'bob@EXAMPLE.ORG', email_verified: true })
     const b = make(ok, { oidc: { issuer: ISSUER, clientId: CLIENT, clientSecret: 'shh', publicUrl: PUBLIC, allowedDomains: ['example.com', 'example.org'] } })
     const s2 = await b.start() as { url: string; device: string }
-    expect(await browserLogsIn(b, ok, s2)).toEqual({ login: 'bob@example.org' })
+    expect(await browserLogsIn(b, ok, s2)).toEqual({ login: 'bob@example.org', id: 'oidc:idp.example.com:sub-1' })
     // no email at all is refused when a domain list is set
     const none = await fakeIdp({ preferred_username: 'ghost' })
     const c = make(none, { oidc: { issuer: ISSUER, clientId: CLIENT, clientSecret: 'shh', publicUrl: PUBLIC, allowedDomains: ['example.com'] } })

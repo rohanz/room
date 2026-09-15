@@ -9,9 +9,26 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 export interface OpenRepo { by?: string; at: number; branches: string[]; lastSeen?: number }
-export interface StoredSession { login: string; provider: 'github' | 'oidc'; ghToken?: string; at: number }
+/** `login` is the display name (GitHub login, verified email or preferred_username). `id` is the
+ *  namespaced identity used for admission and admin checks: `oidc:<issuer-host>:<sub>` for OIDC
+ *  sessions; absent (same as the login) for GitHub sessions and sessions written before it existed. */
+export interface StoredSession { login: string; id?: string; provider: 'github' | 'oidc'; ghToken?: string; at: number }
 export type AuditEvent = 'login' | 'logout' | 'room_opened' | 'room_closed' | 'join' | 'refused'
-export interface AuditEntry { at: number; event: AuditEvent; login?: string; provider?: string; room?: string; reason?: string; readOnly?: boolean }
+export interface AuditEntry { at: number; event: AuditEvent; login?: string; id?: string; provider?: string; room?: string; reason?: string; readOnly?: boolean }
+
+/** Most in-memory audit entries kept when there is no audit file: oldest are dropped past this. */
+export const MEM_AUDIT_MAX = 5000
+
+/** Runs async writes one after another, in call order, so overlapping fire-and-forget saves cannot
+ *  interleave (PgStore.saveRooms replaces the whole table; two in flight could leave the older state). */
+export class WriteQueue {
+  private tail: Promise<void> = Promise.resolve()
+  run<T>(fn: () => Promise<T>): Promise<T> {
+    const p = this.tail.then(fn)
+    this.tail = p.then(() => undefined, () => undefined)
+    return p
+  }
+}
 
 export interface Store {
   /** Create tables / directories. Called once before use. */
@@ -41,6 +58,7 @@ export class FileStore implements Store {
   private readonly auditFile?: string
   private sessions: Record<string, StoredSession> = {}
   private memAudit: AuditEntry[] = []
+  private readonly writes = new WriteQueue()
 
   constructor(o: FileStoreOptions = {}) {
     this.sessionsFile = o.sessionsFile ?? (o.dir ? path.join(o.dir, 'sessions.json') : undefined)
@@ -63,8 +81,9 @@ export class FileStore implements Store {
     for (const [k, v] of Object.entries(raw)) out[k] = { by: v.by, at: v.at ?? Date.now(), branches: v.branches ?? [], lastSeen: v.lastSeen }
     return out
   }
-  async saveRooms(all: Record<string, OpenRepo>): Promise<void> {
-    if (this.roomsFile) fs.writeFileSync(this.roomsFile, JSON.stringify(all))
+  saveRooms(all: Record<string, OpenRepo>): Promise<void> {
+    const text = JSON.stringify(all)
+    return this.writes.run(async () => { if (this.roomsFile) fs.writeFileSync(this.roomsFile, text) })
   }
 
   async loadSessions(): Promise<Record<string, StoredSession>> {
@@ -72,17 +91,21 @@ export class FileStore implements Store {
     return { ...this.sessions }
   }
   /** Sessions hold GitHub tokens: the file is 0600. */
-  private writeSessions(): void {
-    if (!this.sessionsFile) return
-    fs.writeFileSync(this.sessionsFile, JSON.stringify(this.sessions), { mode: 0o600 })
-    fs.chmodSync(this.sessionsFile, 0o600)
+  private writeSessions(): Promise<void> {
+    const text = JSON.stringify(this.sessions)
+    return this.writes.run(async () => {
+      if (!this.sessionsFile) return
+      fs.writeFileSync(this.sessionsFile, text, { mode: 0o600 })
+      fs.chmodSync(this.sessionsFile, 0o600)
+    })
   }
-  async putSession(id: string, s: StoredSession): Promise<void> { this.sessions[id] = s; this.writeSessions() }
-  async deleteSession(id: string): Promise<void> { delete this.sessions[id]; this.writeSessions() }
+  putSession(id: string, s: StoredSession): Promise<void> { this.sessions[id] = s; return this.writeSessions() }
+  deleteSession(id: string): Promise<void> { delete this.sessions[id]; return this.writeSessions() }
 
   async audit(e: AuditEntry): Promise<void> {
-    if (this.auditFile) fs.appendFileSync(this.auditFile, JSON.stringify(e) + '\n')
-    else this.memAudit.push(e)
+    if (this.auditFile) { fs.appendFileSync(this.auditFile, JSON.stringify(e) + '\n'); return }
+    this.memAudit.push(e)
+    if (this.memAudit.length > MEM_AUDIT_MAX) this.memAudit.splice(0, this.memAudit.length - MEM_AUDIT_MAX)
   }
   async readAudit(o: { since?: number; limit?: number } = {}): Promise<AuditEntry[]> {
     const since = o.since ?? 0
@@ -104,6 +127,7 @@ interface PgLike { query(text: string, values?: unknown[]): Promise<{ rows: Reco
 
 export class PgStore implements Store {
   private pool?: PgLike
+  private readonly writes = new WriteQueue()
   constructor(private readonly databaseUrl: string, private readonly connect?: (url: string) => Promise<PgLike>) {}
 
   private async db(): Promise<PgLike> {
@@ -128,26 +152,31 @@ export class PgStore implements Store {
     const { rows } = await (await this.db()).query(`SELECT repo, data FROM room_repos`)
     return Object.fromEntries(rows.map(r => [r.repo as string, r.data as OpenRepo]))
   }
-  async saveRooms(all: Record<string, OpenRepo>): Promise<void> {
-    // One client for the whole transaction: on a Pool each query() may use a different connection.
-    const client = await (await this.db()).connect()
-    try {
-      await client.query('BEGIN')
-      await client.query(`DELETE FROM room_repos`)
-      for (const [repo, data] of Object.entries(all)) await client.query(`INSERT INTO room_repos (repo, data) VALUES ($1, $2)`, [repo, JSON.stringify(data)])
-      await client.query('COMMIT')
-    } catch (e) { try { await client.query('ROLLBACK') } catch { /* connection gone */ } throw e }
-    finally { client.release() }
+  saveRooms(all: Record<string, OpenRepo>): Promise<void> {
+    // Snapshot now, write in turn: a full-table replacement must not overlap or reorder with the previous one.
+    const rows = Object.entries(all).map(([repo, data]) => [repo, JSON.stringify(data)] as const)
+    return this.writes.run(async () => {
+      // One client for the whole transaction: on a Pool each query() may use a different connection.
+      const client = await (await this.db()).connect()
+      try {
+        await client.query('BEGIN')
+        await client.query(`DELETE FROM room_repos`)
+        for (const [repo, data] of rows) await client.query(`INSERT INTO room_repos (repo, data) VALUES ($1, $2)`, [repo, data])
+        await client.query('COMMIT')
+      } catch (e) { try { await client.query('ROLLBACK') } catch { /* connection gone */ } throw e }
+      finally { client.release() }
+    })
   }
 
   async loadSessions(): Promise<Record<string, StoredSession>> {
     const { rows } = await (await this.db()).query(`SELECT id, data FROM room_sessions`)
     return Object.fromEntries(rows.map(r => [r.id as string, r.data as StoredSession]))
   }
-  async putSession(id: string, s: StoredSession): Promise<void> {
-    await (await this.db()).query(`INSERT INTO room_sessions (id, data, at) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, at = EXCLUDED.at`, [id, JSON.stringify(s), s.at])
+  putSession(id: string, s: StoredSession): Promise<void> {
+    const data = JSON.stringify(s)
+    return this.writes.run(async () => { await (await this.db()).query(`INSERT INTO room_sessions (id, data, at) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, at = EXCLUDED.at`, [id, data, s.at]) })
   }
-  async deleteSession(id: string): Promise<void> { await (await this.db()).query(`DELETE FROM room_sessions WHERE id = $1`, [id]) }
+  deleteSession(id: string): Promise<void> { return this.writes.run(async () => { await (await this.db()).query(`DELETE FROM room_sessions WHERE id = $1`, [id]) }) }
 
   async audit(e: AuditEntry): Promise<void> {
     await (await this.db()).query(`INSERT INTO room_audit (at, data) VALUES ($1, $2)`, [e.at, JSON.stringify(e)])

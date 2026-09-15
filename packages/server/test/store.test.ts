@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { FileStore, PgStore, storeFromEnv, type AuditEntry } from '../src/store.js'
+import { FileStore, PgStore, WriteQueue, MEM_AUDIT_MAX, storeFromEnv, type AuditEntry } from '../src/store.js'
 
 describe('FileStore', () => {
   it('round-trips rooms, sessions (0600) and audit lines through a directory', async () => {
@@ -41,6 +41,24 @@ describe('FileStore', () => {
     await s.audit({ at: 1, event: 'logout', login: 'a' })
     expect(await s.loadRooms()).toEqual({})
     expect(await s.readAudit()).toEqual([{ at: 1, event: 'logout', login: 'a' }])
+  })
+
+  it('keeps at most MEM_AUDIT_MAX in-memory audit entries, dropping the oldest', async () => {
+    const s = new FileStore()
+    for (let at = 1; at <= MEM_AUDIT_MAX + 25; at++) await s.audit({ at, event: 'join', room: 'r' })
+    const all = await s.readAudit({ limit: 100_000 })
+    expect(all).toHaveLength(MEM_AUDIT_MAX)
+    expect(all[0].at).toBe(26)
+    expect(all.at(-1)!.at).toBe(MEM_AUDIT_MAX + 25)
+  })
+
+  it('overlapping saveRooms calls land in order: the last call wins on disk', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-store-q-'))
+    const s = new FileStore({ dir })
+    await s.init()
+    const writes = [1, 2, 3].map(n => s.saveRooms({ [`local/${n}`]: { at: n, branches: [] } }))
+    await Promise.all(writes)
+    expect(Object.keys(await s.loadRooms())).toEqual(['local/3'])
   })
 
   it('storeFromEnv picks Postgres only with DATABASE_URL', () => {
@@ -94,6 +112,33 @@ describe('PgStore', () => {
     expect((await s.readAudit({ limit: 2 })).map(e => e.at)).toEqual([2, 3])
     await s.close()
     expect(pg.isEnded()).toBe(true)
+  })
+
+  it('overlapping PgStore writes never interleave: each full-table replacement completes before the next begins', async () => {
+    const pg = fakePg()
+    // a slow pool: every query yields, so two unqueued saveRooms would interleave their DELETE/INSERT
+    const slow = { ...pg.pool, connect: async () => { const c = await pg.pool.connect(); return { ...c, query: async (t: string, v?: unknown[]) => { await new Promise(r => setTimeout(r, 1)); return c.query(t, v) } } } }
+    const s = new PgStore('postgres://x', async () => slow)
+    const a = s.saveRooms({ 'github.com/a/one': { at: 1, branches: [] }, 'github.com/a/two': { at: 1, branches: [] } })
+    const b = s.saveRooms({ 'github.com/a/three': { at: 2, branches: [] } })
+    const c = s.putSession('s1', { login: 'ann', provider: 'github', at: 3 })
+    await Promise.all([a, b, c])
+    const tx = pg.log.filter(l => /^BEGIN|^COMMIT|^DELETE FROM room_repos|^INSERT INTO room_repos|^INSERT INTO room_sessions/.test(l))
+    expect(tx).toEqual(['BEGIN', 'DELETE FROM room_repos', 'INSERT INTO room_repos', 'INSERT INTO room_repos', 'COMMIT', 'BEGIN', 'DELETE FROM room_repos', 'INSERT INTO room_repos', 'COMMIT', 'INSERT INTO room_sessions'])
+    expect(await s.loadRooms()).toEqual({ 'github.com/a/three': { at: 2, branches: [] } })
+    expect(pg.openClients()).toBe(0)
+  })
+
+  it('WriteQueue runs jobs in order and a failure does not block the ones after it', async () => {
+    const q = new WriteQueue()
+    const order: string[] = []
+    const first = q.run(async () => { await new Promise(r => setTimeout(r, 5)); order.push('first') })
+    const second = q.run(async () => { order.push('second'); throw new Error('boom') })
+    const third = q.run(async () => { order.push('third'); return 3 })
+    await first
+    await expect(second).rejects.toThrow('boom')
+    expect(await third).toBe(3)
+    expect(order).toEqual(['first', 'second', 'third'])
   })
 
   it('PgStore.saveRooms runs its transaction on one client and releases it', async () => {

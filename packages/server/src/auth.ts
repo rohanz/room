@@ -50,6 +50,13 @@ export type OidcStart = { provider: 'oidc'; url: string; expires_in: number; int
 export type LoginStart = DeviceStart | OidcStart
 export type PollResult = { pending: true } | { error: string } | { session: string; login: string; provider: Provider; expiresIn: number }
 
+/** Namespaced identity of an OIDC user: `oidc:<issuer-host>:<sub>`. ROOM_ADMINS may list this form. */
+export function oidcIdentity(issuer: string, sub: string): string {
+  let host: string
+  try { host = new URL(issuer).host.toLowerCase() } catch { host = issuer.replace(/^[a-z]+:\/\//i, '').split('/')[0]!.toLowerCase() }
+  return `oidc:${host}:${sub}`
+}
+
 const GH_DEVICE = 'https://github.com/login/device/code'
 const GH_TOKEN = 'https://github.com/login/oauth/access_token'
 const GH_USER = 'https://api.github.com/user'
@@ -102,7 +109,7 @@ export class Auth {
     const stored: StoredSession = { ...s, at: this.now() }
     this.sessions.set(session, stored)
     this.persist(this.store.putSession(session, stored))
-    this.o.log?.(`login: ${s.login} (${s.provider})`)
+    this.o.log?.(`login: ${s.login} (${s.provider}${s.id ? `, ${s.id}` : ''})`)
     return { session, login: s.login, provider: s.provider, expiresIn: this.ttl }
   }
 
@@ -184,7 +191,7 @@ export class Auth {
   }
 
   /** Step 2 (browser -> server): exchange the code, verify the ID token, create the session the poller will pick up. */
-  async callbackOidc(code: string | undefined, state: string | undefined, error?: string): Promise<{ login: string } | { error: string }> {
+  async callbackOidc(code: string | undefined, state: string | undefined, error?: string): Promise<{ login: string; id: string } | { error: string }> {
     const fail = (d: Extract<Pending, { provider: 'oidc' }> | undefined, msg: string) => { if (d) d.result = { error: msg }; this.o.log?.(`oidc login failed: ${msg}`); return { error: msg } }
     const d = state ? this.devices.get(state) : undefined
     if (!d || d.provider !== 'oidc') return { error: 'unknown or expired login attempt: run room_login again' }
@@ -218,8 +225,12 @@ export class Auth {
     }
     const login = email || claims.preferred_username?.trim() || claims.sub
     if (!login) return fail(d, 'ID token has no email, preferred_username or sub')
-    d.result = this.newSession({ provider: 'oidc', login })
-    return { login }
+    if (!claims.sub) return fail(d, 'ID token has no sub')
+    // The identity is the issuer's stable subject, namespaced so it can never collide with a GitHub
+    // login or with a display login from another IdP; the login stays what people recognise.
+    const id = oidcIdentity(doc.issuer ?? oidc.issuer, claims.sub)
+    d.result = this.newSession({ provider: 'oidc', login, id })
+    return { login, id }
   }
 
   /** One poll for a pending login. GitHub: asks GitHub. OIDC: reports whether the callback has landed. */

@@ -82,15 +82,67 @@ export function bindIdentity(conn: EmitterLike, login: string, onDrop: (name: st
 /**
  * Refuse writes into a room whose document has grown past `maxBytes`: the connection keeps
  * reading, its sync updates are dropped, and `onCap` fires (rate-limit it in the caller). The
- * size is asked for lazily so callers can cache an O(doc) measurement.
+ * size is asked for lazily, with the write message's byte length, so callers can cache an
+ * O(doc) measurement and refresh it by traffic (see DocSizeMeter).
  */
-export function capDocSize(conn: EmitterLike, sizeBytes: () => number, maxBytes: number, onCap: (size: number) => void): void {
+export function capDocSize(conn: EmitterLike, sizeBytes: (messageBytes: number) => number, maxBytes: number, onCap: (size: number) => void): void {
   const emit = conn.emit.bind(conn)
   conn.emit = ((event: string | symbol, ...args: unknown[]) => {
-    if (event === 'message' && isWriteMessage(toBytes(args[0]))) {
-      const size = sizeBytes()
-      if (size > maxBytes) { onCap(size); return false }
+    if (event === 'message') {
+      const buf = toBytes(args[0])
+      if (isWriteMessage(buf)) {
+        const size = sizeBytes(buf.byteLength)
+        if (size > maxBytes) { onCap(size); return false }
+      }
     }
     return emit(event, ...args)
   }) as EmitterLike['emit']
+}
+
+export interface DocSizeMeterOptions {
+  /** Re-measure when the cached value is older than this. Default 30 s. */
+  maxAgeMs?: number
+  /** ... or after this many write messages since the last measurement. Default 200. */
+  maxWrites?: number
+  /** ... or after this many bytes of write messages since the last measurement. Default 8 MB. */
+  maxBytes?: number
+  now?: () => number
+}
+
+/**
+ * A cached document-size measurement for one room. A purely time-based cache would let a
+ * client push an unbounded amount through in the 30 s window between two measurements, so
+ * the cache also expires by traffic: whichever of age, write count or bytes received trips
+ * first forces a fresh measurement on the next write.
+ */
+export class DocSizeMeter {
+  private cached?: { at: number; bytes: number }
+  private writes = 0
+  private received = 0
+  private readonly maxAgeMs: number
+  private readonly maxWrites: number
+  private readonly maxBytes: number
+  private readonly now: () => number
+
+  constructor(private readonly measure: () => number, o: DocSizeMeterOptions = {}) {
+    this.maxAgeMs = o.maxAgeMs ?? 30_000
+    this.maxWrites = o.maxWrites ?? 200
+    this.maxBytes = o.maxBytes ?? 8 * 1048576
+    this.now = o.now ?? Date.now
+  }
+
+  /** Size of the document as of the last measurement, counting this write message towards the next one. */
+  size(messageBytes = 0): number {
+    const c = this.cached
+    const stale = !c || this.now() - c.at >= this.maxAgeMs || this.writes >= this.maxWrites || this.received >= this.maxBytes
+    if (stale) {
+      const bytes = this.measure()
+      this.cached = { at: this.now(), bytes }
+      this.writes = 0
+      this.received = 0
+    }
+    this.writes++
+    this.received += messageBytes
+    return this.cached!.bytes
+  }
 }
