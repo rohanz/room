@@ -17,9 +17,9 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_login` | GitHub device login to the room server (two calls: show the code, then wait for approval). |
 | `room_logout` | Forget the stored session for this server. |
 | `room_create` | Open a room for this repo on the server, then join the room for the current branch. |
-| `room_join` | Join the room for this clone. |
+| `room_join` | Join a room for this clone: `where=local` (default), `where=team`, or a server URL; a `team` choice is remembered for the clone. |
 | `room_close` | DESTRUCTIVE: close the room for this whole repo, for everyone; all branch rooms and shared uncommitted work are removed from the server. Only on the user's explicit request. |
-| `room_leave` | Leave the room: releases your claims, clears your scope, stops the daemon. |
+| `room_leave` | Leave the room (and the local workers room, if any); `forget=true` clears the remembered choice. |
 | `room_scope` | Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. |
 | `room_state` | Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Filtered to your areas; `all=true` shows everything. |
 | `room_read` | A file as a person sees it right now: base commit + their uncommitted edits (default: you). |
@@ -33,7 +33,7 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_pr_note` | Post or update the one room comment on a GitHub PR with the branch's story (scopes, claims and plan outcomes, questions and answers, passing merge previews). Default PR: the open one whose head is this branch. |
 | `room_impact` | Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. |
 | `room_preview_merge` | Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. |
-| `room_spawn` | Dispatch a worker agent (claude or codex, optional model) into this room in its own worktree; it reports back with room_done. |
+| `room_spawn` | Dispatch a worker agent (claude or codex, optional model) into this room, or with `where=local` into a local workers room while you stay in the team room; it reports back with room_done. |
 | `room_dismiss` | Stop a worker you spawned; its worktree and branch are kept. |
 | `room_share` | Change how much of your clone the room sees, live: `intent`, `declared` or `full`. Without `level`, reports the current level and what is withheld. |
 
@@ -125,6 +125,37 @@ branches still share it. Identity is `git config user.name` (plus `ROOM_TAG`), t
 login, and `room_create` / `room_close` / `room_login` explain that they need a server.
 
 `ROOM_SERVER=hosted` selects the hosted server; any `ws://` or `wss://` URL selects another.
+
+The relay also serves the built browser view (shipped with the plugin under `web/`, or
+`packages/web/dist` for source runs) at `http://127.0.0.1:<port>/` plus `/health`, and
+accepts websocket connections from loopback only, with no key. A local session's
+`browser view:` link points there; it works on this machine only.
+
+## Choosing the room
+
+`room_join` takes `where`: `local`, `team` (the hosted server, what `ROOM_SERVER=hosted`
+means) or a server URL. Precedence: the `where` argument, then `ROOM_SERVER`, then the
+choice remembered in the clone (`<git common dir>/room-choice.json`, written when a join
+was asked for by argument), then local. Joining the team room from a clone that never has
+must be an explicit instruction, and the join reply says that uncommitted work in the clone
+is now visible to the repo's room members. `room_leave(forget=true)` clears the memory.
+`room_state` names the room on its first line. The skills map the phrases: "join the team
+room" / "join the web room" / "join the shared room" → `room_join(where="team")`; "work
+locally" / "leave the team room" → `room_leave(forget=true)` then `room_join(where="local")`.
+
+## Lead in two rooms
+
+`room_spawn(where="local")` while the lead is in a team room opens a local workers room
+for the clone as a second session in the same MCP process and dispatches the workers
+there; they never connect to the server. A `Bridge` keeps the team room informed: the
+lead's team scope is the union of its workers' declared and changed paths (summary "lead
+of N workers: …"); workers' claims are mirrored into the team room under the lead's name
+with the intent prefixed `[tag]`, and removed when the worker releases; team messages
+(claims, releases, changes, conflicts, plans, base moves, scopes) that touch a worker's
+paths are re-posted into the local room as interrupts addressed to that worker. Workers'
+questions to the lead and their `done` messages stay local; the lead's inbox, `room_wait`
+and `room_state` read both rooms. `room_leave`, `room_close` and process exit tear both
+down and drop the mirrored claims.
 
 ## Workers
 

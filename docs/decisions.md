@@ -197,3 +197,17 @@ the merge before it happens. One product, two modes: the server is a setting, no
 different tool, so a solo room grows into a team room by opening the repo.
 **Cut:** nested rooms (a lead bridging its local workers into a team room), worker
 budgets in tokens rather than count, persistence of local rooms across reboots.
+
+## 2026-09-15 — Rooms by instruction; a lead in two rooms; the local relay serves the view
+**Decision:** Which room a clone joins is decided by instruction and remembered per clone
+(`room_join where=local|team|url`, `<git common dir>/room-choice.json`); `ROOM_SERVER`
+overrides for scripts and workers; nothing ever joins the team room uninstructed. A lead in
+a team room can dispatch workers into a local room (`room_spawn where=local`); a bridge
+presents the workers' scope and claims as the lead's in the team room and relays team
+messages about their files down as interrupts. The local relay serves the built browser
+view and accepts loopback websockets without a key, so local rooms have a projector link.
+**Why:** "join the team room" is what a person says; an environment variable is what a
+script says. Workers-local keeps a team's server free of every helper agent and keeps the
+helper's working trees on the machine that owns them, which is the smallest useful form of
+nested rooms.
+**Cut:** relaying workers' questions up to teammates; a lead in more than two rooms.

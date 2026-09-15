@@ -55,6 +55,21 @@ main worktree's branch.
 
 Ask **"Show room state"** to see who is in the room. Then ask for your feature as usual.
 
+Where you work is a matter of instruction. **"Join the team room"** (or the web room, the
+shared room) moves the session to the team server for this repo, and the agent tells you
+in one line that uncommitted work in this clone is now visible to the repo's room members.
+**"Work locally"** brings it back. The choice is remembered per clone, so the next session
+in that clone starts where you left it; `room_leave(forget=true)` clears it. An agent never
+joins the team room on its own initiative. `ROOM_SERVER` still overrides everything, for
+scripts and workers.
+
+### Watching a local room
+
+A local session prints a `browser view:` link like a hosted one, served by the relay itself:
+`http://127.0.0.1:<port>/?room=…`. Open it to see the participants, their claims and the
+feed. It is reachable from this machine only and needs no key; sharing it with someone
+else does nothing.
+
 ### Dispatching workers
 
 A session can fan work out to other agents through the room instead of around it:
@@ -98,7 +113,16 @@ room-scoped view key valid for 7 days, rather than your GitHub token. Treat that
 access to the room's shared code and activity.
 
 Everything from the local workflow applies unchanged: the same tools, etiquette, and
-workers. A lead's workers join the team room when the lead is in one.
+workers. A lead's workers join the team room when the lead is in one, unless you ask for
+them locally.
+
+**Workers stay local.** Say "spawn the workers locally" (or `room_spawn` with
+`where=local`) while you are in the team room: the lead opens a local workers room on
+your machine, dispatches into it, and bridges the two. Workers never touch the server. The
+team room sees the lead's scope as the union of its workers' paths, sees their claims under
+the lead's name (`[tag] intent`), and any team message that touches a worker's files is
+relayed to that worker as an interrupt. Questions from workers and their done messages
+stay on your machine; `room_state` shows both rooms.
 
 ### Claude Code
 
