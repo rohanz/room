@@ -64,9 +64,13 @@ export class HooksBridge {
     const kick = () => this.scheduleWrite()
     this.s.room.bus.observe(kick); this.s.room.claims.observe(kick)
     this.unobserve.push(() => { this.s.room.bus.unobserve(kick); this.s.room.claims.unobserve(kick) })
+    // A local transaction is usually my own post, which never wakes me. It can also be a message this
+    // process wrote on someone else's behalf (a worker's synthetic done on exit): that one must.
     const onBus = (ev: { changes: { delta: { insert?: unknown }[] }; transaction: { local: boolean } }) => {
-      if (ev.transaction.local) return
-      for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) void this.maybeWake(m)
+      for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
+        if (ev.transaction.local && m.from === this.s.me.name) continue
+        void this.maybeWake(m)
+      }
     }
     this.s.room.bus.observe(onBus)
     this.unobserve.push(() => this.s.room.bus.unobserve(onBus))

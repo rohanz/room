@@ -577,9 +577,10 @@ export function createTools(ctx: ToolCtx): Tools {
     return gone
   }
 
-  /** Release my claims (cancelling their plans) and clear my scope. `why` goes in the release summary. */
-  const cleanupMine = (s: Session, why: string): number => {
-    const released = mine(s)
+  /** Release my claims (cancelling their plans) and clear my scope. `why` goes in the release summary.
+   *  `keep` exempts claims (room_done keeps the mirrors of workers still running). */
+  const cleanupMine = (s: Session, why: string, keep?: (c: Claim) => boolean): number => {
+    const released = keep ? mine(s).filter(c => !keep(c)) : mine(s)
     for (const c of released) {
       s.room.removeClaim(c.id)
       s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: why, ...(c.plans?.length ? { unfulfilled: c.plans } : {}) })
@@ -1153,17 +1154,24 @@ export function createTools(ctx: ToolCtx): Tools {
       const summary = String(a.summary ?? '').trim()
       if (!summary) return 'error: summary is required'
       const sc = s.room.scope(s.me.name)
-      const released = cleanupMine(s, `done: ${summary}`)
+      // Claims mirroring a worker that is still running are the worker's, not this task's: they stay until it finishes.
+      const live = new Set(runningWorkers(s).map(x => x.w.tag))
+      const kept = mine(s).filter(c => c.mirrorOf && live.has(c.mirrorOf)).length
+      const released = cleanupMine(s, `done: ${summary}`, c => !!c.mirrorOf && live.has(c.mirrorOf))
       const asWorker = s.room.workerOf(s.me.name)
+      // A worker spawned with ROOM_GEN only finishes the record of its own generation: a stale process of a
+      // reused tag must not mark the lead's current worker done. Its report still reaches the lead.
+      const gen = process.env.ROOM_GEN?.trim()
+      const stale = !!asWorker && !!gen && asWorker.gen !== undefined && String(asWorker.gen) !== gen
       if (asWorker) {
-        s.room.updateWorker(asWorker.tag, { status: 'done', summary })
-        s.room.post<DoneMsg>(s.me, { type: 'done', tag: asWorker.tag, summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: 'notify' })
+        if (!stale) s.room.updateWorker(asWorker.tag, { status: 'done', summary })
+        s.room.post<DoneMsg>(s.me, { type: 'done', tag: asWorker.tag, summary: stale ? `${summary} (from an earlier generation of ${asWorker.tag}; the current worker's record was left alone)` : summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: 'notify' })
       } else {
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
       }
       setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
       s.daemon.touch()
-      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s), scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Stay until asked, then finish.` : 'You are still in the room and will be woken for questions.'}`]
+      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Stay until asked, then finish.` : 'You are still in the room and will be woken for questions.'}`]
       if (a.pr_note === true) {
         await refreshPrs(s)
         const pr = await myPr(s)

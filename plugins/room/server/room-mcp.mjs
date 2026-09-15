@@ -34874,8 +34874,10 @@ var HooksBridge = class {
       this.s.room.claims.unobserve(kick);
     });
     const onBus = (ev) => {
-      if (ev.transaction.local) return;
-      for (const d of ev.changes.delta) for (const m of d.insert ?? []) void this.maybeWake(m);
+      for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
+        if (ev.transaction.local && m.from === this.s.me.name) continue;
+        void this.maybeWake(m);
+      }
     };
     this.s.room.bus.observe(onBus);
     this.unobserve.push(() => this.s.room.bus.unobserve(onBus));
@@ -35280,6 +35282,23 @@ var Bridge = class {
   stopped = false;
   /** The lead's own team scope (declared by the lead itself), kept underneath the workers' union. */
   own;
+  /** True while the team scope record holds the union (coordination paths wider than the lead's own). */
+  unionPublished = false;
+  origSetShare;
+  /**
+   * What the lead's daemon may publish under `declared`: its own scope paths only, never the workers'.
+   * The union goes to the coordination record (scopes map + bus) so the team sees what the lead's side
+   * is on; it must not widen which of the lead's files are shared. `undefined` = follow the scope record.
+   */
+  sharePaths() {
+    return this.unionPublished ? this.own?.paths ?? [] : void 0;
+  }
+  /** Under `declared`, keep the daemon on the lead's own paths (or back on the scope record when no union is up). */
+  syncShare() {
+    const d = this.team.daemon;
+    if (d.share !== "declared") return;
+    void (this.origSetShare ?? d.setShare).call(d, d.share, this.sharePaths()).catch((e) => this.o.log?.(`bridge: could not re-share: ${e instanceof Error ? e.message : String(e)}`));
+  }
   /** Workers of this lead, by their local participant name. */
   workers() {
     return Array.from(this.local.room.workers.values()).filter((w) => w.lead === this.local.me.name);
@@ -35309,10 +35328,23 @@ var Bridge = class {
         else if (ch.action === "delete") this.unmirrorClaim(id2);
       }
     };
+    const onTeamClaims = (ev, tr) => {
+      if (tr.origin === this) return;
+      for (const [teamId, ch] of ev.changes.keys) {
+        if (ch.action !== "delete") continue;
+        const localId = this.localIdOf(teamId);
+        if (!localId) continue;
+        this.mirrored.delete(localId);
+        if (this.local.room.claims.has(localId)) {
+          this.mirrorClaim(localId);
+          this.o.log?.(`bridge: re-mirrored ${localId} (its mirror ${teamId} was removed by someone else)`);
+        }
+      }
+    };
     const onLocalOverlays = () => this.scheduleScope();
     const onTeamBus = (ev) => {
       if (ev.transaction.local) return;
-      for (const d of ev.changes.delta) for (const m of d.insert ?? []) this.relayDown(m);
+      for (const d2 of ev.changes.delta) for (const m of d2.insert ?? []) this.relayDown(m);
     };
     const onTeamScopes = (ev, tr) => {
       if (tr.origin === this || !ev.keysChanged.has(this.team.me.name)) return;
@@ -35329,6 +35361,7 @@ var Bridge = class {
     l.overlayAt.observe(onLocalOverlays);
     t.bus.observe(onTeamBus);
     t.scopes.observe(onTeamScopes);
+    t.claims.observe(onTeamClaims);
     this.unobserve.push(
       () => l.scopes.unobserve(onLocalScopes),
       () => l.workers.unobserve(onWorkers),
@@ -35337,8 +35370,15 @@ var Bridge = class {
       () => l.deleted.unobserveDeep(onLocalOverlays),
       () => l.overlayAt.unobserve(onLocalOverlays),
       () => t.bus.unobserve(onTeamBus),
-      () => t.scopes.unobserve(onTeamScopes)
+      () => t.scopes.unobserve(onTeamScopes),
+      () => t.claims.unobserve(onTeamClaims)
     );
+    const d = this.team.daemon;
+    if (typeof d.setShare === "function") {
+      const orig = d.setShare.bind(d);
+      this.origSetShare = orig;
+      d.setShare = (level, scopePaths) => orig(level, scopePaths ?? this.sharePaths());
+    }
     for (const c of l.openClaims()) this.mirrorClaim(c.id);
     this.scheduleScope();
   }
@@ -35348,11 +35388,23 @@ var Bridge = class {
     if (this.timer) clearTimeout(this.timer);
     for (const u of this.unobserve) u();
     this.unobserve = [];
-    for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId);
+    for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId, this);
     this.mirrored.clear();
     const me = this.team.me.name;
     if (this.own) this.team.room.setScope(this.own, this);
     else if (this.lastScopeKey && this.team.room.scope(me)) this.team.room.clearScope(me, this);
+    if (this.unionPublished) {
+      this.unionPublished = false;
+      this.syncShare();
+    }
+    if (this.origSetShare) {
+      this.team.daemon.setShare = this.origSetShare;
+      this.origSetShare = void 0;
+    }
+  }
+  localIdOf(teamId) {
+    for (const [l, t] of this.mirrored) if (t === teamId) return l;
+    return void 0;
   }
   scheduleScope() {
     if (this.stopped) return;
@@ -35379,21 +35431,25 @@ var Bridge = class {
     if (key === this.lastScopeKey) return;
     this.lastScopeKey = key;
     const me = this.team.me;
-    {
-      if (!workerPaths.length) {
-        if (own2) this.team.room.setScope(own2, this);
-        else if (this.team.room.scope(me.name)) this.team.room.clearScope(me.name, this);
-        return;
+    if (!workerPaths.length) {
+      if (own2) this.team.room.setScope(own2, this);
+      else if (this.team.room.scope(me.name)) this.team.room.clearScope(me.name, this);
+      if (this.unionPublished) {
+        this.unionPublished = false;
+        this.syncShare();
       }
-      const areas = ws.map((w) => this.local.room.scope(w.name)?.area).filter((a) => !!a);
-      const area = own2?.area ?? areas[0] ?? "workers";
-      const lead = `lead of ${ws.length} worker${ws.length === 1 ? "" : "s"}: ${ws.map((w) => `${w.tag} (${w.task.slice(0, 40)})`).join("; ")}`;
-      const summary = own2 ? `own: ${own2.summary} \xB7 ${lead}` : lead;
-      const prev = this.team.room.scope(me.name);
-      this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...prev?.areas ? { areas: prev.areas } : {} }, this);
-      this.team.room.post(me, { type: "scope", area, summary, paths });
-      this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) (${own2 ? `${own2.paths.length} own, ` : ""}${workerPaths.length} from ${ws.length} worker(s))`);
+      return;
     }
+    const areas = ws.map((w) => this.local.room.scope(w.name)?.area).filter((a) => !!a);
+    const area = own2?.area ?? areas[0] ?? "workers";
+    const lead = `lead of ${ws.length} worker${ws.length === 1 ? "" : "s"}: ${ws.map((w) => `${w.tag} (${w.task.slice(0, 40)})`).join("; ")}`;
+    const summary = own2 ? `own: ${own2.summary} \xB7 ${lead}` : lead;
+    const prev = this.team.room.scope(me.name);
+    this.unionPublished = true;
+    this.syncShare();
+    this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...prev?.areas ? { areas: prev.areas } : {} }, this);
+    this.team.room.post(me, { type: "scope", area, summary, paths });
+    this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) (${own2 ? `${own2.paths.length} own, ` : ""}${workerPaths.length} from ${ws.length} worker(s)); files shared stay under the lead's own ${own2?.paths.length ?? 0}`);
   }
   mirrorClaim(localId) {
     if (this.mirrored.has(localId)) return;
@@ -35403,7 +35459,7 @@ var Bridge = class {
     if (!tag) return;
     const me = this.team.me;
     const { id: _id, at: _at, anchor: _anchor, ...rest } = c;
-    const t = this.team.room.addClaim({ ...rest, by: me.name, byKind: me.kind, intent: `[${tag}] ${c.intent}` });
+    const t = this.team.room.addClaim({ ...rest, by: me.name, byKind: me.kind, intent: `[${tag}] ${c.intent}`, mirrorOf: tag }, this);
     this.mirrored.set(localId, t.id);
     this.o.log?.(`bridge: mirrored ${c.by}'s claim ${c.path}:${c.from}-${c.to} into the team room as ${t.id}`);
   }
@@ -35413,7 +35469,7 @@ var Bridge = class {
     if (!teamId) return;
     this.mirrored.delete(localId);
     const mirrored = this.team.room.claims.get(teamId);
-    this.team.room.removeClaim(teamId);
+    this.team.room.removeClaim(teamId, this);
     if (!mirrored) return;
     const local = [...this.local.room.messages()].reverse().find((m) => m.type === "release" && m.claimId === localId);
     const tag = mirrored.intent.match(/^\[([^\]]+)\]/)?.[1];
@@ -36231,8 +36287,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     }
     return gone;
   };
-  const cleanupMine = (s, why) => {
-    const released = mine(s);
+  const cleanupMine = (s, why, keep) => {
+    const released = keep ? mine(s).filter((c) => !keep(c)) : mine(s);
     for (const c of released) {
       s.room.removeClaim(c.id);
       s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, summary: why, ...c.plans?.length ? { unfulfilled: c.plans } : {} });
@@ -36858,17 +36914,21 @@ call room_state before continuing.`;
       const summary = String(a.summary ?? "").trim();
       if (!summary) return "error: summary is required";
       const sc = s.room.scope(s.me.name);
-      const released = cleanupMine(s, `done: ${summary}`);
+      const live = new Set(runningWorkers(s).map((x) => x.w.tag));
+      const kept = mine(s).filter((c) => c.mirrorOf && live.has(c.mirrorOf)).length;
+      const released = cleanupMine(s, `done: ${summary}`, (c) => !!c.mirrorOf && live.has(c.mirrorOf));
       const asWorker = s.room.workerOf(s.me.name);
+      const gen = process.env.ROOM_GEN?.trim();
+      const stale = !!asWorker && !!gen && asWorker.gen !== void 0 && String(asWorker.gen) !== gen;
       if (asWorker) {
-        s.room.updateWorker(asWorker.tag, { status: "done", summary });
-        s.room.post(s.me, { type: "done", tag: asWorker.tag, summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: "notify" });
+        if (!stale) s.room.updateWorker(asWorker.tag, { status: "done", summary });
+        s.room.post(s.me, { type: "done", tag: asWorker.tag, summary: stale ? `${summary} (from an earlier generation of ${asWorker.tag}; the current worker's record was left alone)` : summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: "notify" });
       } else {
         s.room.post(s.me, { type: "note", text: `done${sc ? ` (${sc.area})` : ""}: ${summary}` });
       }
       setPresence(s, { cursor: void 0, status: `done: ${summary.slice(0, 60)}` });
       s.daemon.touch();
-      const out = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s), scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Stay until asked, then finish.` : "You are still in the room and will be woken for questions."}`];
+      const out = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Stay until asked, then finish.` : "You are still in the room and will be woken for questions."}`];
       if (a.pr_note === true) {
         await refreshPrs(s);
         const pr = await myPr(s);
@@ -37275,7 +37335,7 @@ async function main() {
   const tools = createTools({ getSession: () => session, setSession: (s) => {
     session = s;
     if (s) attachChannel(s);
-  }, cwd: dir });
+  }, cwd: dir, attachChannel: (s) => attachChannel(s) });
   const adopt = (s) => {
     session = s;
     attachChannel(s);
@@ -37299,8 +37359,10 @@ async function main() {
     };
     const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
     s.room.bus.observe((ev) => {
-      if (ev.transaction.local) return;
-      for (const d of ev.changes.delta) for (const m of d.insert ?? []) push(shouldWake(s.me, { kind: "msg", msg: m }, myClaims()));
+      for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
+        if (ev.transaction.local && m.from === s.me.name) continue;
+        push(shouldWake(s.me, { kind: "msg", msg: m }, myClaims()));
+      }
     });
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
   };
