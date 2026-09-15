@@ -63,7 +63,7 @@ afterEach(() => vi.unstubAllGlobals())
 it('renders one right-edge tag and tints each conflict line by its participant', () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
   const host = new Element()
-  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 6 }, (_, i) => ({ text: 'changed', side: i < 3 ? 'a' : 'b', conflict: true })), ['money', 'tiers'])
+  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 6 }, (_, i) => ({ text: 'changed', side: i < 3 ? 'a' : 'b', changedBy: null, conflict: true })), ['money', 'tiers'])
   expect(host.find('conflict-tag').map(label => label.children[0])).toEqual(['conflict'])
   expect(host.find('conflict-bracket')).toHaveLength(0)
   expect(host.find('conflict-bar')).toHaveLength(1)
@@ -85,7 +85,7 @@ it('packs overlapping spans into right-edge lanes, reuses lanes, and includes in
   vi.stubGlobal('document', { createElement: () => new Element() })
   const host = new Element()
   const span = deriveConflictSpans([conflict], claims)[0]
-  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 12 }, (_, i) => ({ text: 'code', side: 'common', conflict: false, aLine: i + 1 })), ['money', 'tiers'], undefined, [
+  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 12 }, (_, i) => ({ text: 'code', side: 'common', changedBy: null, conflict: false, aLine: i + 1 })), ['money', 'tiers'], undefined, [
     span,
     { ...span, id: 'overlap', people: ['money', 'third'], from: 3, to: 6 },
     { ...span, id: 'resolved', from: 9, to: 11, resolvedBy: { how: 'released', who: 'money', at: 20 } },
@@ -128,7 +128,7 @@ it('does not duplicate a text region with a recorded conflict and preserves outs
   const host = new Element()
   const span = deriveConflictSpans([conflict], claims)[0]
   renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 8 }, (_, i) => ({
-    text: 'code', side: i < 4 ? 'a' : 'b', conflict: i >= 1 && i <= 6, aLine: i + 1,
+    text: 'code', side: i < 4 ? 'a' : 'b', changedBy: null, conflict: i >= 1 && i <= 6, aLine: i + 1,
   })), ['money', 'tiers'], undefined, [span])
   expect(host.find('conflict-tag')).toHaveLength(1)
   expect(host.find('conflict-tag')[0].children[0]).toBe('conflict')
@@ -199,4 +199,37 @@ it.each(['identical', 'clean', 'conflicting'])('classifies %s text with overlapp
   }
   if (kind !== 'conflicting') expect(host.find('conflict-line')).toHaveLength(0)
   else expect(red[0].style.gridRow).toBe('2 / 4')
+})
+
+it('tints all base-relative edits and keeps stronger conflict annotations', () => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const host = new Element()
+  const base = Array.from({ length: 12 }, (_, i) => `line ${i + 1}\n`).join('')
+  const a = base.replace('line 2\n', 'A only\n').replace('line 8\n', 'joint\n').replace('line 10\nline 11\n', 'A ten\nA eleven\n')
+  const b = base.replace('line 5\n', 'B only\n').replace('line 8\n', 'joint\n').replace('line 10\nline 11\n', 'B ten\nB eleven\n')
+  const lines = classifyThreeWay(base, a, b)
+  renderCodeLines(host as unknown as HTMLElement, lines, ['rohanz+a', 'rohanz+tiers'])
+  const rows = host.find('code-line')
+  for (const [index, author, color] of [[1, 'rohanz+a', colorFor('rohanz+a')], [4, 'rohanz+tiers', colorFor('rohanz+tiers')], [7, 'rohanz+a and rohanz+tiers', 'var(--muted)']] as const) {
+    expect(rows[index].className).toContain('changed-line')
+    expect(rows[index].className).not.toContain('conflict-line')
+    expect(rows[index].properties.get('--line-change-owner')).toBe(color)
+    expect(rows[index].find('dot')[0].attributes.get('title')).toBe(`changed by ${author}`)
+    expect(rows[index].find('dot')[0].style.background).toBe(color)
+  }
+  lines.forEach((line, i) => {
+    if (line.changedBy !== null) return
+    expect(rows[i].className).not.toContain('changed-line')
+    expect(rows[i].properties.has('--line-change-owner')).toBe(false)
+    expect(rows[i].find('dot')).toHaveLength(0)
+  })
+  expect(host.find('conflict-line')).toHaveLength(4)
+  expect(host.find('conflict-tag').map(t => t.textContent)).toEqual(['conflict'])
+  expect(host.find('conflict-bar')[0].style.gridRow).toBe('10 / 14')
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  expect(css).toContain('--change-tint: 7%')
+  expect(css).toContain('--change-tint: 12%')
+  expect(css).toContain('var(--line-change-owner) var(--change-tint)')
+  expect(css.indexOf('.conflict-code-grid :is(.conflict-line')).toBeGreaterThan(css.indexOf('.conflict-code-grid .changed-line'))
+  expect(css).toContain('.claim-overlap-line:not(.conflict-line):not(.changed-line)')
 })

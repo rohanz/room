@@ -6,6 +6,7 @@ export type MergedSide = 'common' | 'a' | 'b'
 export interface MergedLine {
   text: string
   side: MergedSide
+  changedBy: 'a' | 'b' | 'both' | null
   conflict: boolean
   aLine?: number
   bLine?: number
@@ -28,7 +29,7 @@ export function classifyMergedLines(a: string, b: string): MergedLine[] {
   for (let index = 0; index < changes.length;) {
     const change = changes[index]
     if (!change.added && !change.removed) {
-      for (const text of lines(change.value)) result.push({ text, side: 'common', conflict: false, aLine: aLine++, bLine: bLine++ })
+      for (const text of lines(change.value)) result.push({ text, side: 'common', changedBy: null, conflict: false, aLine: aLine++, bLine: bLine++ })
       index++
       continue
     }
@@ -42,6 +43,7 @@ export function classifyMergedLines(a: string, b: string): MergedLine[] {
         result.push({
           text,
           side,
+          changedBy: null,
           conflict,
           ...(side === 'a' ? { aLine: aLine++ } : { bLine: bLine++ }),
         })
@@ -64,7 +66,7 @@ export function unifiedDiffLines(before: string, after: string): UnifiedLine[] {
 /**
  * Three-way view when the base is known: lines only in A or only in B are tinted, lines
  * both sides changed differently are real conflicts (as git would see them), everything
- * else is plain.
+ * else is plain. Identical changes carry joint authorship.
  */
 export function classifyThreeWay(base: string, a: string, b: string): MergedLine[] {
   const A = lines(a), B = lines(b), O = lines(base)
@@ -81,12 +83,16 @@ export function classifyThreeWay(base: string, a: string, b: string): MergedLine
   // Which merged lines are new relative to base, and which side has them.
   const newVsBase = markAdded(base, mergedText)
   const inA = lineMap(a, mergedText), inB = lineMap(b, mergedText)
+  const addedA = markAdded(base, a), addedB = markAdded(base, b)
   return merged.map((m, i) => {
     const aLine = inA[i], bLine = inB[i]
     let side: MergedSide = 'common'
     if (m.conflict) side = m.conflict
     else if (newVsBase[i]) side = aLine !== undefined && bLine === undefined ? 'a' : bLine !== undefined && aLine === undefined ? 'b' : 'common'
-    return { text: m.text, side, conflict: !!m.conflict, ...(aLine !== undefined ? { aLine } : {}), ...(bLine !== undefined ? { bLine } : {}) }
+    const changedA = aLine !== undefined && addedA[aLine - 1]
+    const changedB = bLine !== undefined && addedB[bLine - 1]
+    const changedBy = changedA && changedB ? 'both' : changedA ? 'a' : changedB ? 'b' : null
+    return { text: m.text, side, changedBy, conflict: !!m.conflict, ...(aLine !== undefined ? { aLine } : {}), ...(bLine !== undefined ? { bLine } : {}) }
   })
 }
 

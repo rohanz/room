@@ -42,8 +42,23 @@ describe('lineHoverText', () => {
     const names: [string, string] = ['Rohan', 'Kieran']
     const claim = { id: 'c1', path: 'a.py', from: 3, to: 5, by: 'Kieran', byKind: 'agent' as const, intent: 'guard', at: 1, plans: [{ kind: 'add' as const, symbol: 'limit' }] }
     const claimsAt = (person: string, line: number) => person === 'Kieran' && line >= 3 && line <= 5 ? [claim] : []
-    expect(lineHoverText({ text: '', side: 'a', conflict: false, aLine: 1 }, names)).toBe('added by Rohan')
-    expect(lineHoverText({ text: '', side: 'common', conflict: false, aLine: 4, bLine: 4 }, names, claimsAt)).toBe('unchanged from base\nclaimed by Kieran: guard (plans: add limit)')
-    expect(lineHoverText({ text: '', side: 'b', conflict: true, bLine: 9 }, names)).toMatch(/^CONFLICT: Rohan and Kieran changed this differently; this is Kieran's version$/)
+    expect(lineHoverText({ text: '', side: 'a', changedBy: null, conflict: false, aLine: 1 }, names)).toBe('added by Rohan')
+    expect(lineHoverText({ text: '', side: 'common', changedBy: null, conflict: false, aLine: 4, bLine: 4 }, names, claimsAt)).toBe('unchanged from base\nclaimed by Kieran: guard (plans: add limit)')
+    expect(lineHoverText({ text: '', side: 'b', changedBy: null, conflict: true, bLine: 9 }, names)).toMatch(/^CONFLICT: Rohan and Kieran changed this differently; this is Kieran's version$/)
   })
+})
+
+it('tracks each author against base, including identical edits and expanded conflicts', () => {
+  const base = Array.from({ length: 12 }, (_, i) => `line ${i + 1}\n`).join('')
+  const a = base.replace('line 2\n', 'A only\n').replace('line 8\n', 'joint\n').replace('line 10\nline 11\n', 'A ten\nA eleven\n')
+  const b = base.replace('line 5\n', 'B only\n').replace('line 8\n', 'joint\n').replace('line 10\nline 11\n', 'B ten\nB eleven\n')
+  const out = classifyThreeWay(base, a, b)
+  expect(out.map(l => [l.text, l.changedBy, l.conflict])).toEqual([
+    ['line 1', null, false], ['A only', 'a', false], ['line 3', null, false],
+    ['line 4', null, false], ['B only', 'b', false], ['line 6', null, false],
+    ['line 7', null, false], ['joint', 'both', false], ['line 9', null, false],
+    ['A ten', 'a', true], ['A eleven', 'a', true], ['B ten', 'b', true],
+    ['B eleven', 'b', true], ['line 12', null, false],
+  ])
+  expect(lineHoverText(out[7], ['rohanz+a', 'rohanz+tiers'])).toBe('changed by rohanz+a and rohanz+tiers')
 })

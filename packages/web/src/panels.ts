@@ -208,6 +208,7 @@ export type ClaimsAt = (person: string, line: number) => readonly Claim[]
 export function lineHoverText(line: MergedLine, names: [string, string], claimsAt?: ClaimsAt): string {
   const parts: string[] = []
   if (line.conflict) parts.push(`CONFLICT: ${names[0]} and ${names[1]} changed this differently; this is ${line.side === 'a' ? names[0] : names[1]}'s version`)
+  else if (line.changedBy === 'both') parts.push(`changed by ${names[0]} and ${names[1]}`)
   else if (line.side === 'a') parts.push(`added by ${names[0]}`)
   else if (line.side === 'b') parts.push(`added by ${names[1]}`)
   else parts.push('unchanged from base')
@@ -222,13 +223,24 @@ export function lineHoverText(line: MergedLine, names: [string, string], claimsA
 
 function lineElement(line: MergedLine, names: [string, string], prefix = '', claimsAt?: ClaimsAt, mergedNumber?: number): HTMLElement {
   const owner = line.side === 'a' ? names[0] : line.side === 'b' ? names[1] : ''
-  const row = h('div', { class: `code-line side-${line.side}${line.conflict ? ' conflict-line' : ''}`, title: lineHoverText(line, names, claimsAt) },
+  const changedOwner = line.changedBy === 'a' ? names[0] : line.changedBy === 'b' ? names[1] : ''
+  const markerOwner = line.conflict ? owner : changedOwner || owner
+  const marker = markerOwner ? dot(markerOwner) : line.changedBy === 'both' ? h('span', { class: 'dot' }) : null
+  if (marker) {
+    marker.setAttribute('title', `changed by ${line.changedBy === 'both' && !line.conflict ? `${names[0]} and ${names[1]}` : markerOwner}`)
+    if (!markerOwner) marker.style.background = 'var(--muted)'
+  }
+  const row = h('div', { class: `code-line side-${line.side}${line.changedBy ? ' changed-line' : ''}${line.conflict ? ' conflict-line' : ''}`, title: lineHoverText(line, names, claimsAt) },
     h('span', { class: 'line-number' }, mergedNumber?.toString() ?? line.aLine?.toString() ?? ''),
     mergedNumber !== undefined
-      ? h('span', { class: 'side-marker' }, owner ? dot(owner) : null)
+      ? h('span', { class: 'side-marker' }, marker)
       : h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
     h('span', { class: 'diff-prefix' }, prefix),
     h('code', {}, line.text || ' '))
+  if (line.changedBy) {
+    row.dataset.changedBy = line.changedBy
+    row.style.setProperty('--line-change-owner', changedOwner ? colorFor(changedOwner) : 'var(--muted)')
+  }
   if (owner) { row.style.setProperty('--line-owner', colorFor(owner)); row.dataset.owner = owner }
   return row
 }
@@ -382,7 +394,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       if (text === undefined) return editor.empty(`No overlay available for ${person}`)
       if (!conflicts.some(s => !s.hidden)) { editor.show(selected.path, text, conn.room.claimsFor(selected.path)); return }
       editor.empty()
-      renderCodeLines(host, text.split('\n').map((text, i) => ({ text, side: 'common', conflict: false, aLine: i + 1 })), [person, person], undefined, conflicts, false)
+      renderCodeLines(host, text.split('\n').map((text, i) => ({ text, side: 'common', changedBy: null, conflict: false, aLine: i + 1 })), [person, person], undefined, conflicts, false)
       return
     }
     editor.empty()
@@ -391,7 +403,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       legend.replaceChildren(h('span', {}, dot(person), ` lines by ${person}`))
       const text = conn.room.text(selected.path, person) ?? ''
       renderCodeLines(host, text.split('\n').filter((_, index, all) => index < all.length - 1 || all[index] !== '').map((value, index) => ({
-        text: value, side: 'common' as const, conflict: false, aLine: index + 1,
+        text: value, side: 'common' as const, changedBy: null, conflict: false, aLine: index + 1,
       })), [person, person], undefined, conflicts, tab === 'Merged')
       return
     }
