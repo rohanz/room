@@ -9,7 +9,8 @@ import type { Msg } from '@room/shared'
 import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { LOCAL, NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, resolveServer, type Session } from './session.js'
+import { LOCAL, NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
+import { chooseServer } from './choice.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
@@ -75,17 +76,19 @@ async function main() {
       // The clone's origin + current branch always decides the room. ROOM_URL (runner) or a
       // prior .room.json only fill in when the clone has no origin.
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
-      const chosen = resolveServer(env('ROOM_SERVER'))
+      const choice = await chooseServer(dir, undefined, env('ROOM_SERVER'))
+      const chosen = choice.server
+      log(`room: ${choice.where} (${choice.rule === 'env' ? 'ROOM_SERVER' : choice.rule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
       if (env('ROOM_URL')) {
         const u = new URL(env('ROOM_URL')!)
         adopt(await joinSession({ dir: env('ROOM_DIR') ?? dir, name: env('ROOM_NAME'), room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))
       } else if (chosen === LOCAL) {
         // No server configured: a local room on this machine (workers get the lead's room via ROOM_ROOM).
-        adopt(await joinSession({ dir, room: env('ROOM_ROOM'), log }))
+        adopt(await joinSession({ dir, room: env('ROOM_ROOM'), server: LOCAL, log }))
       } else if (env('ROOM_ROOM')) {
-        adopt(await joinSession({ dir, room: env('ROOM_ROOM'), log }))
+        adopt(await joinSession({ dir, room: env('ROOM_ROOM'), server: chosen, log }))
       } else if (derived.roomName) {
-        adopt(await joinSession({ dir, log }))
+        adopt(await joinSession({ dir, server: chosen, log }))
       } else if (prior) {
         const u = new URL(prior.room)
         adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))

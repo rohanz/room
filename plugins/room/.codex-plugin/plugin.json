@@ -27,6 +27,7 @@
       "Write"
     ],
     "defaultPrompt": [
+      "Join the team room",
       "Open a room for this repo",
       "Join the room and tell me who is on what"
     ]

@@ -14,9 +14,11 @@ import { clampShare, parseShare, type ShareLevel, type SharePresence } from '@ro
 import { DEFAULT_SERVER, LOCAL, authFor, closeRoom, joinSession, leaveSession, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, resolveServer, serverAuthMode, startLogin, type JoinOptions, type Session } from './session.js'
 import { DEFAULT_MAX_WORKERS, defaultSpawner, prepareWorktree, validTag, workerCommand, workerLines, workerPrompt, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
 import { getCredential, getPending, setPending } from './credentials.js'
+import { chooseServer, clearChoice, describeWhere, writeChoice } from './choice.js'
 import { NotLoggedIn, serverAuthConfig } from './session.js'
 import { HooksBridge } from './hooks-bridge.js'
 import { ConflictWatcher } from './conflicts.js'
+import { Bridge } from './bridge.js'
 import { branchOf, fetchPrs, isPrName, openPrs, postPrNote, prLeader, renderPrNote, syncPrs, type PrInfo } from './prs.js'
 
 export interface ToolDef {
@@ -95,10 +97,10 @@ export const DEFS: ToolDef[] = [
     inputSchema: { type: 'object', properties: { server: str('override ws server URL') } } },
   { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.',
     inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
-  { name: 'room_join', annotations: RW, description: 'Join the room for this clone. Room name is derived from the git origin + branch; your name from git config. Starts the sync daemon (push-only: nothing is ever written to your disk). Returns who is here, their scopes, open claims, and the browser view URL. Fails if nobody has opened a room for the repo yet: room_create does that.',
-    inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
-  { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon.',
-    inputSchema: { type: 'object', properties: {} } },
+  { name: 'room_join', annotations: RW, description: 'Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo\'s room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: room_create does that.',
+    inputSchema: { type: 'object', properties: { where: str('local | team | ws(s)://server'), room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('alias of where for a server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
+  { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). forget=true also clears the remembered room choice for this clone, so the next session starts local again.',
+    inputSchema: { type: 'object', properties: { forget: { type: 'boolean', description: 'also forget the remembered choice (local/team) for this clone' } } } },
   { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user\'s explicit request; room_create reopens later.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'must be true' } }, required: ['confirm'] } },
   { name: 'room_scope', annotations: RW, description: 'Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. Do this before editing. Replaces your previous scope. The reply ends with the area ledger: what others changed there and their open plans.',
@@ -138,7 +140,7 @@ export const DEFS: ToolDef[] = [
   { name: 'room_share', annotations: RW, description: 'Change how much of your clone the room sees, live. Lowering the level withdraws file text the new level no longer allows (intent: all of it; declared: everything outside your scope paths); raising it republishes what your disk holds. Never above the server\'s ceiling. Without `level`, reports the current level and what is withheld.',
     inputSchema: { type: 'object', properties: { level: SHARE } } },
   { name: 'room_spawn', annotations: RW, description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Max running workers per lead: ROOM_MAX_WORKERS (8).',
-    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), share: SHARE, dir: str('use this existing directory instead of creating a worktree') }, required: ['tag', 'task'] } },
+    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), share: SHARE, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims).' } }, required: ['tag', 'task'] } },
   { name: 'room_dismiss', annotations: RW, description: 'Stop a worker you spawned (SIGTERM to its process). Its worktree and branch are kept so you can inspect or merge what it did.',
     inputSchema: { type: 'object', properties: { tag: str('the worker tag') }, required: ['tag'] } },
 ]
@@ -161,6 +163,9 @@ export function createTools(ctx: ToolCtx): Tools {
   let bridge: HooksBridge | null = null
   let watcher: ConflictWatcher | null = null
   let pendingJoin: Promise<void> | null = null
+  /** A local room on this machine holding this lead's workers while the lead itself is in a team room. */
+  let workersSession: Session | null = null
+  let roomBridge: Bridge | null = null
   const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token }) })
   const attachHooks = (s: Session) => {
     if (bridge && (bridge as unknown as { s: Session }).s === s) return
@@ -258,6 +263,28 @@ export function createTools(ctx: ToolCtx): Tools {
   const myWorkers = (s: Session): Worker[] => Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name)
   /** Processes this MCP instance started (room_spawn); a lead that restarted only has the pid. */
   const procs = new Map<string, SpawnedProcess>()
+  /** Open (once) the local workers room next to a team session and bridge the two. */
+  const ensureWorkersRoom = async (lead: Session): Promise<Session> => {
+    if (lead.local) return lead
+    if (workersSession) return workersSession
+    const ws = await doJoin({ dir: lead.dir, server: LOCAL, name: lead.me.owner ?? lead.me.name, tag: lead.me.label, log })
+    for (const m of ws.room.messages()) seen.add(m.id)
+    workersSession = ws
+    roomBridge = new Bridge(lead, ws, { log, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : undefined })
+    roomBridge.start()
+    log(`workers room: ${ws.roomName} (${ws.local?.url ?? 'local'}), bridged to ${lead.roomName}`)
+    return ws
+  }
+  const closeWorkersRoom = async (): Promise<void> => {
+    const ws = workersSession
+    if (!ws) return
+    workersSession = null
+    roomBridge?.stop(); roomBridge = null
+    try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
+    await doLeave(ws)
+  }
+  /** The session (mine, or the workers room) that holds a worker with this tag. */
+  const sessionOfWorker = (s: Session, tag: string): Session => (s.room.workers.get(tag) ? s : workersSession?.room.workers.get(tag) ? workersSession : s)
   const gitignored = (dir: string): boolean => { try { return fs.readFileSync(path.join(dir, '.gitignore'), 'utf8').split('\n').some(l => l.trim() === '.room/' || l.trim() === '.room') } catch { return false } }
   const others = (s: Session): string[] => {
     const names = new Set<string>()
@@ -378,6 +405,12 @@ export function createTools(ctx: ToolCtx): Tools {
       if (seen.has(m.id)) continue
       seen.add(m.id)
       if (forMe(s, m)) fresh.push(m)
+    }
+    const ws = workersSession
+    if (ws && ws !== s) for (const m of ws.room.messages()) {
+      if (seen.has(m.id)) continue
+      seen.add(m.id)
+      if (forMe(ws, m)) fresh.push({ ...m, ...('text' in m ? { text: `[workers room] ${m.text}` } : {}) } as Msg)
     }
     if (seen.size > 5000) { const keep = s.room.lastMessages(2000).map(m => m.id); seen.clear(); for (const k of keep) seen.add(k) }
     if (!fresh.length) return ''
@@ -575,7 +608,13 @@ export function createTools(ctx: ToolCtx): Tools {
   // ---- handlers -------------------------------------------------------------
   const handlers: Record<string, (a: Record<string, unknown>) => Promise<string>> = {
     async room_spawn(a) {
-      const s = S()
+      const lead = S()
+      if (a.where !== undefined && a.where !== 'here' && a.where !== 'local') return 'error: where must be here or local'
+      let s = lead
+      if (a.where === 'local' && !lead.local) {
+        try { s = await ensureWorkersRoom(lead) }
+        catch (e) { return `error: could not open the local workers room: ${e instanceof Error ? e.message : String(e)}` }
+      }
       const tag = validTag(a.tag)
       if (!tag) return 'error: tag must be 1-40 chars of letters, digits, _ or -'
       const task = String(a.task ?? '').trim()
@@ -621,14 +660,14 @@ export function createTools(ctx: ToolCtx): Tools {
       s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
       const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
       out.push(`log: ${logFile}`)
-      out.push(`it joins this room on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`)
+      out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`)
       if (created && !gitignored(s.dir)) out.push('tip: add .room/ to .gitignore (the room already ignores it; git status will not).')
       return out.join('\n')
     },
     async room_dismiss(a) {
-      const s = S()
       const tag = validTag(a.tag)
       if (!tag) return 'error: tag is required'
+      const s = sessionOfWorker(S(), tag)
       const w = s.room.workers.get(tag)
       if (!w) return `error: no worker ${tag}`
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`
@@ -672,14 +711,22 @@ export function createTools(ctx: ToolCtx): Tools {
     async room_join(a) {
       const cur = ctx.getSession()
       if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`
+      const dir = typeof a.dir === 'string' && a.dir ? a.dir : ctx.cwd
+      const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
+      const choice = await chooseServer(dir, whereArg, process.env.ROOM_SERVER)
+      if (a.create === true && choice.server === LOCAL && choice.rule !== 'argument') {
+        // room_create with nothing chosen: opening a repo needs a server, and that is the team room.
+        return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.'
+      }
       const s = await doJoin({
-        dir: typeof a.dir === 'string' && a.dir ? a.dir : ctx.cwd,
+        dir,
         name: typeof a.name === 'string' && a.name ? a.name : undefined,
         room: typeof a.room === 'string' && a.room ? a.room : undefined,
-        server: typeof a.server === 'string' && a.server ? a.server : undefined,
+        server: choice.server,
         create: a.create === true,
         share: typeof a.share === 'string' && a.share ? a.share : undefined,
       })
+      if (choice.rule === 'argument') { try { await writeChoice(dir, choice.where, s.me.name) } catch { /* not a repository? keep going */ } }
       ctx.setSession(s)
       for (const m of s.room.messages()) seen.add(m.id)
       observeClaims(s)
@@ -689,7 +736,9 @@ export function createTools(ctx: ToolCtx): Tools {
       evictStale(s)
       await loadAreas(s)
       const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
-      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; ROOM_SERVER=hosted joins the team server instead.'}`)
+      out.push(`room: ${describeWhere(choice.server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone)' : choice.rule === 'env' ? 'ROOM_SERVER' : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
+      if (!s.local && choice.rule === 'argument') out.push(`note for your human: uncommitted work in this clone is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf('/'))}'s room.`)
+      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the team room" (room_join where=team) to work with teammates instead.'}`)
       out.push(shareLine(s))
       const here = others(s).filter(n => presences(s).some(p => p.user.name === n))
       const mineA = myAreas(s)
@@ -705,19 +754,23 @@ export function createTools(ctx: ToolCtx): Tools {
       out.push('next: room_scope(area, summary, paths) before you edit.')
       return out.join('\n')
     },
-    async room_leave() {
+    async room_leave(a) {
       const s = S()
+      await closeWorkersRoom()
       const released = cleanupMine(s, 'left the room')
       ctx.setSession(null)
       detach()
       await doLeave(s)
-      return `left ${s.roomName}; released ${released} claim(s)`
+      let forgot = ''
+      if (a.forget === true) { const had = await clearChoice(s.dir).catch(() => false); forgot = had ? '; forgot the remembered room choice for this clone (next session starts local)' : '; nothing was remembered for this clone' }
+      return `left ${s.roomName}; released ${released} claim(s)${forgot}`
     },
     async room_close(a) {
       const s = S()
       if (s.local) return 'this is a local room (no server): there is nothing to close. room_leave ends your session; the relay stops with the last session.'
       if (a.confirm !== true) return 'error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user\'s explicit request'
       const repo = s.roomName.slice(0, s.roomName.lastIndexOf('/'))
+      await closeWorkersRoom()
       cleanupMine(s, 'closing the room')
       s.room.post<NoteMsg>(s.me, { type: 'note', text: `closing the room for ${repo}: every branch room and all shared work is being removed`, priority: 'interrupt' })
       ctx.setSession(null)
@@ -749,6 +802,7 @@ export function createTools(ctx: ToolCtx): Tools {
       await loadAreas(s)
       const m = s.room.meta
       const out: string[] = []
+      out.push(`room: ${describeWhere(s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')))}${workersSession ? `; workers room: local (${workersSession.roomName}, this machine only)` : ''}`)
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? '?').slice(0, 10)})`)
       // Folder-scoped view: only people, claims and changes in my areas, unless all=true (or I am in none yet).
       const mineA = myAreas(s)
@@ -801,6 +855,11 @@ export function createTools(ctx: ToolCtx): Tools {
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
       out.push(...workerLines(myWorkers(s), n => { const last = s.room.messages().filter(x => x.from === n).slice(-1)[0]; return last ? formatMsg(last) : undefined }, n => s.room.changedPaths(n).length, now()))
+      const ws = workersSession
+      if (ws) {
+        out.push(`workers room ${ws.roomName}: your team scope covers ${roomBridge?.workerPaths().length ?? 0} path(s) from these workers; their claims appear in the team room under your name`)
+        out.push(...workerLines(myWorkers(ws), n => { const last = ws.room.messages().filter(x => x.from === n).slice(-1)[0]; return last ? formatMsg(last) : undefined }, n => ws.room.changedPaths(n).length, now()))
+      }
       return out.join('\n')
     },
     async room_read(a) {
@@ -1001,7 +1060,16 @@ export function createTools(ctx: ToolCtx): Tools {
       if (questionId) { const an = answered(questionId); if (an) return `answered: ${formatMsg(an)}` }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
       const result = await new Promise<string>(resolve => {
-        const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); resolve(r) }
+        const ws = workersSession && workersSession !== s ? workersSession : null
+        const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); ws?.room.bus.unobserve(onWorkersBus); resolve(r) }
+        const onWorkersBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
+          if (!ws) return
+          for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
+            if (m.type === 'done' && m.to === ws.me.name) return finish(`worker done: ${formatMsg(m)}`)
+            if (m.priority === 'interrupt' && forMe(ws, m)) return finish(`interrupt (workers room): ${formatMsg(m)}`)
+            if (m.type === 'question' && m.to === ws.me.name) return finish(`question from a worker: ${formatMsg(m)}`)
+          }
+        }
         const timer = setTimeout(() => finish(`timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Tell your human; proceed only where you do not depend on it.`), timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
@@ -1011,7 +1079,7 @@ export function createTools(ctx: ToolCtx): Tools {
             if (m.type === 'done' && m.to === s.me.name) return finish(`worker done: ${formatMsg(m)}`)
           }
         }
-        s.room.claims.observe(onClaims); s.room.bus.observe(onBus)
+        s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)
       })
       setPresence(s, { status: 'idle' })
       return `${result}\ncall room_state before continuing.`
@@ -1160,6 +1228,7 @@ export function createTools(ctx: ToolCtx): Tools {
     async shutdown() {
       const s = ctx.getSession()
       if (!s) return
+      await closeWorkersRoom().catch(() => {})
       try { cleanupMine(s, 'session ended') } catch { /* best effort */ }
       ctx.setSession(null)
       detach()

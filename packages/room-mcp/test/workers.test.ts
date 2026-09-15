@@ -97,6 +97,46 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(await t.leadTools.call('room_spawn', { tag: 'bad tag', task: 'x' })).toContain('error: tag')
   })
 
+  it('room_spawn where=local from a team room opens a local workers room, bridges it, and tears it down on leave', async () => {
+    const team = pair(), local = pair()
+    team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
+    let ls: Session | null = fakeSession(team.a, lead, false)
+    ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
+    const specs: SpawnSpec[] = []
+    const joins: { server?: string; name?: string }[] = []
+    const left: string[] = []
+    const leadTools = createTools({
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0,
+      join: async o => { joins.push({ server: o.server, name: o.name }); return fakeSession(local.a, lead) },
+      leave: async s => { left.push(s.roomName) },
+      spawner: spec => { specs.push(spec); return { pid: 99, onExit: () => {}, kill: () => {} } },
+      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+    })
+    const out = await leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents', where: 'local' })
+    expect(joins).toEqual([{ server: 'local', name: 'rohanz' }])
+    expect(out).toContain('local workers room local/x/main')
+    expect(specs[0].env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
+    expect(local.a.workers.get('money')).toMatchObject({ status: 'running', lead: 'rohanz' })
+    expect(team.a.workers.get('money')).toBeUndefined()
+    // the worker declares a scope and claims in the local room; the team room sees both as the lead's
+    local.b.setScope({ by: workerId.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
+    local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: workerId.name, byKind: 'agent', intent: 'bump' })
+    expect(team.b.scope('rohanz')?.paths).toEqual(['api/models.py'])
+    expect(team.b.openClaims().map(c => c.intent)).toEqual(['[money] bump'])
+    expect(team.b.scopes.has(workerId.name)).toBe(false)
+    const st = await leadTools.call('room_state', { all: true })
+    expect(st).toContain('workers room: local (local/x/main')
+    expect(st).toContain('money (claude, running')
+    // a worker's done message reaches the lead through the workers room inbox
+    let ws: Session | null = fakeSession(local.b, workerId)
+    const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
+    await workerTools.call('room_done', { summary: 'cents done' })
+    expect(await leadTools.call('room_state', {})).toContain('finished: cents done')
+    expect(await leadTools.call('room_leave', {})).toContain('left github.com/rohanz/x/main')
+    expect(left).toEqual(['local/x/main', 'github.com/rohanz/x/main'])
+    expect(team.b.openClaims()).toEqual([])
+  })
+
   it('refuses beyond the worker budget', async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
