@@ -7,7 +7,6 @@ import path from 'node:path'
 import { ensureLocalRelay as relayEnsure, type LocalRelay } from '@room/relay'
 import { git } from './git.js'
 
-export { LOCAL_FILE, deterministicPort, findWebDist, portAnswers, readRelayInfo, relayAnswers, relayFile, startRelay } from '@room/relay'
 export type { LocalRelay, LocalRelayInfo } from '@room/relay'
 
 /** The git dir shared by every worktree of a clone; the relay file lives there. */

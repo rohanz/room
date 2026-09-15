@@ -4,7 +4,8 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { ensureLocalRelay, gitCommonDir, localRoomName, readRelayInfo } from '../src/local.js'
+import { readRelayInfo } from '@room/relay'
+import { ensureLocalRelay, gitCommonDir, localRoomName } from '../src/local.js'
 
 const sh = (dir: string, args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString().trim()
 
