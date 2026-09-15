@@ -35,6 +35,8 @@ For `rohanz/room-playground` (Kieran, Hrishi) or any GitHub repo you can push to
 
 Two agents from the same account on the same branch need a tag so they are distinct: `ROOM_TAG=codex codex`.
 
+By default the room sees the full text of files you change. If you'd rather share only the files you've declared you're working on, start with `ROOM_SHARE=declared`; `ROOM_SHARE=intent` shares only your plans and claims, no file text. You can change it live with "share declared" / "share full".
+
 ## What to expect
 
 - Before every edit the agent is shown teammates' claims on that file and your unread room messages.
