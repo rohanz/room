@@ -13,6 +13,7 @@ function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string,
 }
 const roles = ['upstream', 'work', 'downstream', 'context'] as const
 const labels = { upstream: 'UPSTREAM · WHAT I RELY ON', work: 'MY EDITS & PLANS', downstream: 'DOWNSTREAM · MY PLAN IMPACT', context: 'OTHER FILES' }
+let sessionZoom = 150
 
 export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   const person = h('select', { title: 'View changes as participant' })
@@ -20,10 +21,10 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   const search = h('input', { type: 'search', placeholder: 'Find a file…' })
   search.setAttribute('aria-label', 'Find a file in the network')
   const focus = h('input', { type: 'checkbox', checked: true })
-  let zoom = 100
+  let zoom = sessionZoom
   const minus = h('button', { ariaLabel: 'Zoom out' }, '−')
   const plus = h('button', { ariaLabel: 'Zoom in' }, '+')
-  const percentage = h('span', { class: 'network-percentage', ariaLive: 'polite' }, '100%')
+  const percentage = h('span', { class: 'network-percentage', ariaLive: 'polite' }, `${zoom}%`)
   const fit = h('button', { title: 'Fit the full network in the available width' }, 'Fit')
   const expand = h('button', { title: 'Give the network the full workspace width' }, 'Expand')
   expand.setAttribute('aria-pressed', 'false')
@@ -46,7 +47,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   let selectedPerson = new URLSearchParams(location.search).get('participant') ?? new URLSearchParams(location.search).get('name') ?? ''
   let selectedPath = ''
   let drawing: SVGSVGElement | undefined
-  let fitMode = true
+  let fitMode = false
   let fileSet = ''
   let impact: ReturnType<typeof deriveContractImpact>
   let workView: ReturnType<typeof deriveWorkImpact>
@@ -54,10 +55,11 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   const contractStyle = (path: string) => impact.contracts.has(path) ? 'contract' : impact.direct.has(path) ? 'direct' : impact.indirect.has(path) ? 'indirect' : 'neutral'
   const exposure = (path: string) => [...(impact.direct.get(path) ?? []), ...(impact.indirect.get(path) ?? [])]
   const sizeDrawing = () => {
-    if (!canvas.clientWidth) { fitMode = true; return }
+    if (!canvas.clientWidth) return
     if (!drawing) return
     const width = drawing.viewBox.baseVal.width
     if (fitMode) zoom = Math.max(1, Math.floor(canvas.clientWidth / width * 100))
+    sessionZoom = zoom
     percentage.textContent = `${zoom}%`
     fit.classList.toggle('active', fitMode)
     fit.ariaPressed = String(fitMode)
@@ -133,7 +135,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
       emptyDetails(); fileSet = ''; return
     }
     const nextFileSet = JSON.stringify([selectedPerson, nodes.map(n => n.path).sort()])
-    if (nextFileSet !== fileSet) { fitMode = true; fileSet = nextFileSet }
+    if (nextFileSet !== fileSet) fileSet = nextFileSet
     const compact = nodes.length > 30
     const nodeHeight = compact ? 30 : 60, rowGap = compact ? 42 : 88
     const columns = roles.filter(role => role !== 'context' || nodes.some(n => risk(n.path) === role))
@@ -215,8 +217,8 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   shared?.subscribe(() => { if (shared.person && shared.person !== selectedPerson) { selectedPerson = shared.person; selectedPath = ''; render() } })
   search.oninput = render; focus.onchange = render
   canvas.addEventListener('scroll', hideTooltip)
-  minus.onclick = () => { fitMode = false; zoom = Math.max(10, zoom - 10); sizeDrawing() }
-  plus.onclick = () => { fitMode = false; zoom = Math.min(200, zoom + 10); sizeDrawing() }
+  minus.onclick = () => { fitMode = false; zoom = Math.max(50, Math.min(300, zoom - 25)); sessionZoom = zoom; percentage.textContent = `${zoom}%`; sizeDrawing() }
+  plus.onclick = () => { fitMode = false; zoom = Math.max(50, Math.min(300, zoom + 25)); sessionZoom = zoom; percentage.textContent = `${zoom}%`; sizeDrawing() }
   fit.onclick = () => { fitMode = true; sizeDrawing() }
   expand.onclick = () => {
     const expanded = root.classList.toggle('expanded')

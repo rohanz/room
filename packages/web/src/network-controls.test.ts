@@ -15,19 +15,39 @@ class Element {
   find(cls: string): Element[] { return [...(this.className.split(' ').includes(cls) ? [this] : []), ...this.children.flatMap(c => typeof c === 'string' ? [] : c.find(cls))] }
 }
 afterEach(() => vi.unstubAllGlobals())
-it('renders compact zoom controls, help, three legend labels and details empty state', () => {
+const setup = () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
   vi.stubGlobal('location', { search: '' })
   vi.stubGlobal('ResizeObserver', class { observe() {} })
   const room = new RoomDoc()
   const conn = { room, provider: { awareness: { getStates: () => new Map(), on() {} } } } as unknown as Conn
-  const panel = networkPanel(conn) as unknown as Element
+  return { room, panel: networkPanel(conn) as unknown as Element }
+}
+it('renders compact zoom controls at 150%, help, three legend labels and details empty state', () => {
+  const { room, panel } = setup()
   expect(panel.find('network-zoom')[0].textContent).toBe('−Fit+')
-  expect(panel.find('network-percentage')[0].textContent).toBe('100%')
+  expect(panel.find('network-percentage')[0].textContent).toBe('150%')
   expect((panel.find('network-help')[0].children[0] as Element).attributes.get('data-tooltip')).toContain('Impact is inferred')
   expect(panel.find('network-legend')[0].children).toHaveLength(3)
   expect(panel.find('network-details')[0].textContent).toContain('Select a file')
   expect(panel.find('network-footnote')).toHaveLength(0)
   expect(panel.textContent).not.toContain('Auto size')
   room.doc.destroy()
+})
+it('steps zoom by 25, clamps it to 50..300, and remembers it for this page session', () => {
+  const { room, panel } = setup()
+  const controls = panel.find('network-zoom')[0].children as Element[]
+  const minus = controls[0] as Element & { onclick(): void }
+  const plus = controls[2] as Element & { onclick(): void }
+  minus.onclick()
+  expect(panel.find('network-percentage')[0].textContent).toBe('125%')
+  for (let i = 0; i < 10; i++) minus.onclick()
+  expect(panel.find('network-percentage')[0].textContent).toBe('50%')
+  for (let i = 0; i < 20; i++) plus.onclick()
+  expect(panel.find('network-percentage')[0].textContent).toBe('300%')
+  room.doc.destroy()
+
+  const next = setup()
+  expect(next.panel.find('network-percentage')[0].textContent).toBe('300%')
+  next.room.doc.destroy()
 })
