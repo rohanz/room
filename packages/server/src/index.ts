@@ -181,6 +181,9 @@ async function closeRepo(repo: string): Promise<string[]> {
   const names = new Set(r.branches)
   for (const name of docs.keys()) if (repoOf(name) === repo) names.add(name)
   rooms.delete(repo); saveRooms()
+  // Links minted for its rooms stop working too, so a stale tab cannot bring the old document back.
+  for (const [k, v] of Array.from(viewTokens)) if (names.has(v.room) || repoOf(v.room) === repo) viewTokens.delete(k)
+  saveViewTokens()
   for (const name of names) {
     const doc = docs.get(name)
     if (doc) for (const conn of Array.from(doc.conns.keys()) as { close(code?: number, reason?: string): void }[]) conn.close(4001, 'room closed')
@@ -364,7 +367,10 @@ function docSize(roomName: string): number {
   docSizes.set(roomName, { at: Date.now(), bytes })
   return bytes
 }
-const wss = new WebSocketServer({ noServer: true })
+/** Largest websocket message accepted (ROOM_MAX_MESSAGE_MB, default 16). A client holding a bloated copy of
+ *  a room, such as a browser tab left open, would otherwise push the whole thing back in one frame. */
+const MAX_MESSAGE_BYTES = Number(process.env.ROOM_MAX_MESSAGE_MB ?? 16) * 1048576
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES })
 /** One log line per room per minute at most: a misbehaving viewer must not flood the log. */
 const dropLog = new Map<string, number>()
 const droppedWrite = (room: string) => () => {
