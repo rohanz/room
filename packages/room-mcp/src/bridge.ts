@@ -36,8 +36,27 @@ export class Bridge {
   private stopped = false
   /** The lead's own team scope (declared by the lead itself), kept underneath the workers' union. */
   private own: Scope | undefined
+  /** True while the team scope record holds the union (coordination paths wider than the lead's own). */
+  private unionPublished = false
+  private origSetShare: Session['daemon']['setShare'] | undefined
 
   constructor(public team: Session, public local: Session, private o: BridgeOptions = {}) {}
+
+  /**
+   * What the lead's daemon may publish under `declared`: its own scope paths only, never the workers'.
+   * The union goes to the coordination record (scopes map + bus) so the team sees what the lead's side
+   * is on; it must not widen which of the lead's files are shared. `undefined` = follow the scope record.
+   */
+  sharePaths(): string[] | undefined {
+    return this.unionPublished ? (this.own?.paths ?? []) : undefined
+  }
+
+  /** Under `declared`, keep the daemon on the lead's own paths (or back on the scope record when no union is up). */
+  private syncShare(): void {
+    const d = this.team.daemon
+    if (d.share !== 'declared') return
+    void (this.origSetShare ?? d.setShare).call(d, d.share, this.sharePaths()).catch((e: unknown) => this.o.log?.(`bridge: could not re-share: ${e instanceof Error ? e.message : String(e)}`))
+  }
 
   /** Workers of this lead, by their local participant name. */
   workers(): Worker[] {
@@ -66,6 +85,18 @@ export class Bridge {
         else if (ch.action === 'delete') this.unmirrorClaim(id)
       }
     }
+    // A mirror removed by something other than this bridge (the lead's own room_done or a stale sweep)
+    // while the worker's claim is still open: put it back.
+    const onTeamClaims = (ev: { changes: { keys: Map<string, { action: string }> } }, tr: { origin: unknown }) => {
+      if (tr.origin === this) return
+      for (const [teamId, ch] of ev.changes.keys) {
+        if (ch.action !== 'delete') continue
+        const localId = this.localIdOf(teamId)
+        if (!localId) continue
+        this.mirrored.delete(localId)
+        if (this.local.room.claims.has(localId)) { this.mirrorClaim(localId); this.o.log?.(`bridge: re-mirrored ${localId} (its mirror ${teamId} was removed by someone else)`) }
+      }
+    }
     const onLocalOverlays = () => this.scheduleScope()
     const onTeamBus = (ev: { changes: { delta: { insert?: unknown }[] }; transaction: { local: boolean } }) => {
       if (ev.transaction.local) return
@@ -83,12 +114,20 @@ export class Bridge {
     l.scopes.observe(onLocalScopes); l.workers.observe(onWorkers); l.claims.observe(onLocalClaims)
     // Deep: a worker editing an already-shared file, deleting one, or its overlay clock ticking all change what it touches.
     l.overlays.observeDeep(onLocalOverlays); l.deleted.observeDeep(onLocalOverlays); l.overlayAt.observe(onLocalOverlays)
-    t.bus.observe(onTeamBus); t.scopes.observe(onTeamScopes)
+    t.bus.observe(onTeamBus); t.scopes.observe(onTeamScopes); t.claims.observe(onTeamClaims)
     this.unobserve.push(
       () => l.scopes.unobserve(onLocalScopes), () => l.workers.unobserve(onWorkers), () => l.claims.unobserve(onLocalClaims),
       () => l.overlays.unobserveDeep(onLocalOverlays), () => l.deleted.unobserveDeep(onLocalOverlays), () => l.overlayAt.unobserve(onLocalOverlays),
-      () => t.bus.unobserve(onTeamBus), () => t.scopes.unobserve(onTeamScopes),
+      () => t.bus.unobserve(onTeamBus), () => t.scopes.unobserve(onTeamScopes), () => t.claims.unobserve(onTeamClaims),
     )
+    // room_share (or anything else) changing the level while bridged: without explicit paths the daemon
+    // would follow the scope record, which holds the union. Keep the lead's own paths on it.
+    const d = this.team.daemon
+    if (typeof d.setShare === 'function') {
+      const orig = d.setShare.bind(d)
+      this.origSetShare = orig
+      d.setShare = (level, scopePaths) => orig(level, scopePaths ?? this.sharePaths())
+    }
     for (const c of l.openClaims()) this.mirrorClaim(c.id)
     this.scheduleScope()
   }
@@ -99,11 +138,18 @@ export class Bridge {
     if (this.timer) clearTimeout(this.timer)
     for (const u of this.unobserve) u()
     this.unobserve = []
-    for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId)
+    for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId, this)
     this.mirrored.clear()
     const me = this.team.me.name
     if (this.own) this.team.room.setScope(this.own, this)
     else if (this.lastScopeKey && this.team.room.scope(me)) this.team.room.clearScope(me, this)
+    if (this.unionPublished) { this.unionPublished = false; this.syncShare() }
+    if (this.origSetShare) { this.team.daemon.setShare = this.origSetShare; this.origSetShare = undefined }
+  }
+
+  private localIdOf(teamId: string): string | undefined {
+    for (const [l, t] of this.mirrored) if (t === teamId) return l
+    return undefined
   }
 
   private scheduleScope(): void {
@@ -126,22 +172,24 @@ export class Bridge {
     if (key === this.lastScopeKey) return
     this.lastScopeKey = key
     const me = this.team.me
-    {
-      if (!workerPaths.length) {
-        // No worker activity: the team sees exactly what the lead declared for itself.
-        if (own) this.team.room.setScope(own, this)
-        else if (this.team.room.scope(me.name)) this.team.room.clearScope(me.name, this)
-        return
-      }
-      const areas = ws.map(w => this.local.room.scope(w.name)?.area).filter((a): a is string => !!a)
-      const area = own?.area ?? areas[0] ?? 'workers'
-      const lead = `lead of ${ws.length} worker${ws.length === 1 ? '' : 's'}: ${ws.map(w => `${w.tag} (${w.task.slice(0, 40)})`).join('; ')}`
-      const summary = own ? `own: ${own.summary} · ${lead}` : lead
-      const prev = this.team.room.scope(me.name)
-      this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...(prev?.areas ? { areas: prev.areas } : {}) }, this)
-      this.team.room.post<ScopeMsg>(me, { type: 'scope', area, summary, paths })
-      this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) (${own ? `${own.paths.length} own, ` : ''}${workerPaths.length} from ${ws.length} worker(s))`)
+    if (!workerPaths.length) {
+      // No worker activity: the team sees exactly what the lead declared for itself, and the daemon follows the scope record again.
+      if (own) this.team.room.setScope(own, this)
+      else if (this.team.room.scope(me.name)) this.team.room.clearScope(me.name, this)
+      if (this.unionPublished) { this.unionPublished = false; this.syncShare() }
+      return
     }
+    const areas = ws.map(w => this.local.room.scope(w.name)?.area).filter((a): a is string => !!a)
+    const area = own?.area ?? areas[0] ?? 'workers'
+    const lead = `lead of ${ws.length} worker${ws.length === 1 ? '' : 's'}: ${ws.map(w => `${w.tag} (${w.task.slice(0, 40)})`).join('; ')}`
+    const summary = own ? `own: ${own.summary} · ${lead}` : lead
+    const prev = this.team.room.scope(me.name)
+    // The daemon is pinned to the lead's own paths BEFORE the widened record lands, so it never publishes under the union.
+    this.unionPublished = true
+    this.syncShare()
+    this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...(prev?.areas ? { areas: prev.areas } : {}) }, this)
+    this.team.room.post<ScopeMsg>(me, { type: 'scope', area, summary, paths })
+    this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) (${own ? `${own.paths.length} own, ` : ''}${workerPaths.length} from ${ws.length} worker(s)); files shared stay under the lead's own ${own?.paths.length ?? 0}`)
   }
 
   private mirrorClaim(localId: string): void {
@@ -152,7 +200,7 @@ export class Bridge {
     if (!tag) return
     const me = this.team.me
     const { id: _id, at: _at, anchor: _anchor, ...rest } = c as Claim & { anchor?: unknown }
-    const t = this.team.room.addClaim({ ...rest, by: me.name, byKind: me.kind, intent: `[${tag}] ${c.intent}` })
+    const t = this.team.room.addClaim({ ...rest, by: me.name, byKind: me.kind, intent: `[${tag}] ${c.intent}`, mirrorOf: tag }, this)
     this.mirrored.set(localId, t.id)
     this.o.log?.(`bridge: mirrored ${c.by}'s claim ${c.path}:${c.from}-${c.to} into the team room as ${t.id}`)
   }
@@ -163,7 +211,7 @@ export class Bridge {
     if (!teamId) return
     this.mirrored.delete(localId)
     const mirrored = this.team.room.claims.get(teamId)
-    this.team.room.removeClaim(teamId)
+    this.team.room.removeClaim(teamId, this)
     if (!mirrored) return
     const local = [...this.local.room.messages()].reverse().find((m): m is ReleaseMsg => m.type === 'release' && m.claimId === localId)
     const tag = mirrored.intent.match(/^\[([^\]]+)\]/)?.[1]

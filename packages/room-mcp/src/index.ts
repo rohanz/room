@@ -37,7 +37,8 @@ function cwd(): string {
 async function main() {
   let session: Session | null = null
   const dir = cwd()
-  const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir })
+  // attachChannel is also handed to the tools so the workers room (opened by room_spawn next to a team session) pushes its wake-ups too.
+  const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir, attachChannel: s => attachChannel(s) })
   const adopt = (s: Session) => { session = s; attachChannel(s); tools.attachHooks(s); const n = tools.clearStale(s); if (n) log(`cleared ${n} stale claim(s) from an earlier session`) }
 
   const mcp = new Server(
@@ -57,8 +58,11 @@ async function main() {
     }
     const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
     s.room.bus.observe(ev => {
-      if (ev.transaction.local) return
-      for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims()))
+      for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
+        // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
+        if (ev.transaction.local && m.from === s.me.name) continue
+        push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims()))
+      }
     })
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
   }

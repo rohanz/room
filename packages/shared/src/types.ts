@@ -50,6 +50,8 @@ export interface Claim {
   plans?: Plan[]
   /** Id of the bus message announcing this claim (dependents are found through it). */
   msgId?: string
+  /** Set on a lead's team-room claim that mirrors a worker's local claim: the worker's tag. */
+  mirrorOf?: string
 }
 
 export interface Scope {

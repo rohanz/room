@@ -181,3 +181,93 @@ describe('Bridge review fixes', () => {
     expect(t.team.b.scope('rohanz')!.paths).toEqual(['app.py'])
   })
 })
+
+/** A `declared` daemon stand-in: publishes the lead's changed files that fall under the paths it was last given
+ *  (explicit ones, else the scope record), exactly like roomd's resharePaths. */
+function declaredDaemon(room: RoomDoc, name: string, disk: Record<string, string>) {
+  const calls: { level: string; paths?: string[] }[] = []
+  const d = {
+    share: 'declared' as const, calls, touch() {}, async stop() {}, dir, name, roomDoc: room, provider: null as never, branch: 'main', base,
+    explicit: undefined as string[] | undefined,
+    async setShare(level: string, paths?: string[]) {
+      calls.push({ level, paths })
+      d.explicit = paths
+      d.reshare()
+    },
+    reshare() {
+      const allowed = d.explicit ?? room.scope(name)?.paths ?? []
+      for (const [p, text] of Object.entries(disk)) {
+        const ok = allowed.some(a => p === a || p.startsWith(a.endsWith('/') ? a : `${a}/`))
+        if (ok) room.setOverlay(name, p, text)
+        else if (room.overlayText(name, p)) room.clearOverlay(name, p)
+      }
+    },
+  }
+  // roomd follows the scope record while no explicit paths are set
+  room.scopes.observe(ev => { if (ev.keysChanged.has(name) && !d.explicit) d.reshare() })
+  return d
+}
+
+describe('Bridge: sharing stays the lead\'s own (B1)', () => {
+  it("a worker's paths widen the coordination scope but never what the lead's daemon publishes under declared", async () => {
+    const team = pair(), local = pair()
+    team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
+    const teamLead = fakeSession(team.a, lead, 'github.com/rohanz/x/main', false)
+    const localLead = fakeSession(local.a, lead, 'local/x/main', true)
+    // the lead has edited two files but declared only api/auth.py: api/secret.py is withheld
+    const daemon = declaredDaemon(team.a, lead.name, { 'api/auth.py': 'a\n', 'api/secret.py': 's\n' })
+    ;(teamLead as { daemon: unknown }).daemon = daemon
+    team.a.setScope({ by: lead.name, byKind: 'agent', area: 'api', summary: 'auth', paths: ['api/auth.py'] })
+    expect(team.b.changedPaths('rohanz')).toEqual(['api/auth.py'])
+    local.a.setWorker({ tag: 'money', name: worker.name, host: 'claude', task: 'cents', dir, branch: 'room/money', pid: 1, startedAt: 1, status: 'running', lead: lead.name })
+    const bridge = new Bridge(teamLead, localLead, { debounceMs: 0 })
+    bridge.start()
+    expect(bridge.sharePaths()).toBeUndefined()
+    // the worker declares the directory holding the withheld file
+    local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/'] })
+    await new Promise(r => setTimeout(r, 0))
+    expect(team.b.scope('rohanz')!.paths).toEqual(['api/', 'api/auth.py']) // coordination: the union
+    expect(bridge.sharePaths()).toEqual(['api/auth.py'])                   // sharing: the lead's own
+    expect(daemon.calls.at(-1)).toEqual({ level: 'declared', paths: ['api/auth.py'] })
+    expect(team.b.changedPaths('rohanz')).toEqual(['api/auth.py'])
+    expect(team.b.overlayText('rohanz', 'api/secret.py')).toBeUndefined()
+    // room_share while bridged (no explicit paths) still cannot follow the union
+    await teamLead.daemon.setShare('declared')
+    expect(daemon.calls.at(-1)).toEqual({ level: 'declared', paths: ['api/auth.py'] })
+    expect(team.b.overlayText('rohanz', 'api/secret.py')).toBeUndefined()
+    // the lead widens its own scope: that, and only that, shares more
+    team.a.setScope({ by: lead.name, byKind: 'agent', area: 'api', summary: 'auth + secret', paths: ['api/auth.py', 'api/secret.py'] })
+    await new Promise(r => setTimeout(r, 0))
+    expect(team.b.changedPaths('rohanz')).toEqual(['api/auth.py', 'api/secret.py'])
+    // worker quiet: the daemon follows the scope record again and the wrapper is gone after stop
+    local.a.clearScope(worker.name)
+    await new Promise(r => setTimeout(r, 0))
+    expect(bridge.sharePaths()).toBeUndefined()
+    expect(daemon.calls.at(-1)).toEqual({ level: 'declared', paths: undefined })
+    bridge.stop()
+    expect(teamLead.daemon.setShare).toBe(daemon.setShare)
+  })
+})
+
+describe('Bridge: mirrored claims survive the lead\'s own cleanup (B2)', () => {
+  it('mirrors carry mirrorOf and are put back when someone other than the bridge removes them', () => {
+    const t = setup()
+    t.local.b.setOverlay(worker.name, 'app.py', 'x = 2\n')
+    const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'bump x' })
+    const first = t.team.b.openClaims()[0]
+    expect(first).toMatchObject({ by: 'rohanz', mirrorOf: 'money', intent: '[money] bump x' })
+    // the lead's room_done (or any sweep) deletes the mirror without the bridge's origin
+    t.team.a.removeClaim(first.id)
+    const again = t.team.b.openClaims()
+    expect(again).toHaveLength(1)
+    expect(again[0].id).not.toBe(first.id)
+    expect(again[0]).toMatchObject({ mirrorOf: 'money', path: 'app.py', intent: '[money] bump x' })
+    // the worker releasing its claim still removes the mirror for good, with one release notice
+    t.local.b.removeClaim(c.id)
+    expect(t.team.b.openClaims()).toEqual([])
+    expect(t.team.b.messages().filter((m): m is ReleaseMsg => m.type === 'release')).toHaveLength(1)
+    // a mirror whose local claim is already gone is not resurrected
+    t.bridge.stop()
+    expect(t.team.b.openClaims()).toEqual([])
+  })
+})
