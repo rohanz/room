@@ -308,23 +308,45 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   }
   // Prefer the recorded region's richer tooltip over its duplicate merge preview.
   const regions = spans.filter((s, index) => !spans.some((other, j) => j > index &&
-    other.start === s.start && other.end === s.end &&
+    other.start === s.start && other.end === s.end && other.resolved === s.resolved &&
     other.people.length === s.people.length && other.people.every(p => s.people.includes(p))))
   const grid = h('div', { class: 'conflict-code-grid' + (merged ? ' merged-code' : '') }, ...rows)
   rows.forEach((row, i) => { row.style.gridRow = String(i + 1); row.style.gridColumn = '1' })
   const gutter = h('div', { class: 'conflict-edge' })
   gutter.style.gridRow = '1 / ' + (lines.length + 1)
   const laneEnds: number[] = []
-  regions.sort((a, b) => a.start - b.start || a.end - b.end).forEach(s => {
+  const tagOffsets = new Map<typeof regions[number], { top: number; text: string; detail: string }>()
+  regions.sort((a, b) => a.start - b.start || Number(a.resolved) - Number(b.resolved) || a.end - b.end)
+  for (const start of new Set(regions.map(s => s.start))) {
+    const group = regions.filter(s => s.start === start)
+    const resolved = group.filter(s => s.resolved)
+    const collapse = group.length > 2 && resolved.length > 0
+    let count = 0
+    for (const s of group) {
+      if (collapse && s.resolved && s !== resolved[0]) continue
+      tagOffsets.set(s, {
+        top: count++ * 20, // 16px tag height plus a 4px gap.
+        text: collapse && s.resolved ? resolved.length + ' resolved' : s.resolved ? 'resolved' : s.claimOnly ? 'both claimed' : 'conflict',
+        detail: collapse && s.resolved ? resolved.map(r => r.detail).join('\n\n') : s.detail,
+      })
+    }
+    // Reserve space so a stack cannot collide with tags on the following row.
+    rows[start].style.minHeight = Math.max(17, count * 20) + 'px'
+  }
+  regions.forEach(s => {
     let lane = laneEnds.findIndex(end => end < s.start)
     if (lane === -1) lane = laneEnds.length
     laneEnds[lane] = s.end
-    const label = h('button', { class: 'conflict-tag', ariaLabel: s.detail }, s.resolved ? 'resolved' : s.claimOnly ? 'both claimed' : 'conflict')
-    bindTooltip(label, s.detail)
-    const bar = h('div', { class: 'conflict-bar' + (s.claimOnly ? ' claim-overlap' : '') + (s.resolved ? ' resolved' : '') }, label)
-    // Tags stack at the start of overlapping regions; edge lanes stay 2px apart.
-    label.style.right = lane * 4 + 4 + 'px'
-    label.style.top = lane * 16 + 'px'
+    const bar = h('div', { class: 'conflict-bar' + (s.claimOnly ? ' claim-overlap' : '') + (s.resolved ? ' resolved' : '') })
+    const tag = tagOffsets.get(s)
+    if (tag) {
+      const label = h('button', { class: 'conflict-tag' + (s.resolved ? ' resolved' : ''), ariaLabel: tag.detail }, tag.text)
+      bindTooltip(label, tag.detail)
+      // Align tags to one right edge independently of their bar's lane.
+      label.style.right = lane * 4 + 4 + 'px'
+      label.style.top = tag.top + 'px'
+      bar.append(label)
+    }
     bar.style.gridRow = s.start + 1 + ' / ' + (s.end + 2)
     bar.style.gridColumn = String(lane + 1)
     for (let i = s.start; i <= s.end; i++) {

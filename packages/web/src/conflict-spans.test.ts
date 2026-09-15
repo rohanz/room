@@ -51,7 +51,7 @@ class Element {
   events = new Map<string, unknown>()
   setAttribute(name: string, value: string) { this.attributes.set(name, value) }
   addEventListener(name: string, fn: unknown) { this.events.set(name, fn) }
-  className = ''; children: (Element | string)[] = []; properties = new Map<string, string>(); style = { background: '', setProperty: (name: string, value: string) => this.properties.set(name, value), gridRow: '', gridColumn: '', gridTemplateColumns: '' }; dataset = {}
+  className = ''; children: (Element | string)[] = []; properties = new Map<string, string>(); style = { top: '', right: '', minHeight: '', background: '', setProperty: (name: string, value: string) => this.properties.set(name, value), gridRow: '', gridColumn: '', gridTemplateColumns: '' }; dataset = {}
   ariaLabel = ''; onfocus?: () => void; onmouseenter?: () => void
   get textContent(): string { return this.children.map(c => typeof c === 'string' ? c : c.textContent).join('') }
   classList = { add: (name: string) => { this.className += ` ${name}` } }
@@ -107,8 +107,8 @@ it('packs overlapping spans into right-edge lanes, reuses lanes, and includes in
 })
 it('uses theme-aware participant tints, slim separated edge lines, and accessible tooltips', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
-  expect(css).toContain('--conflict-tint: 12%')
-  expect(css).toContain('--conflict-tint: 18%')
+  expect(css).toContain('--conflict-tint: 22%')
+  expect(css).toContain('--conflict-tint: 28%')
   expect(css).toContain('--conflict-red: #B42318')
   expect(css).toContain('--conflict-red: #F97066')
   expect(css).toContain('--claim-amber: #B54708')
@@ -227,9 +227,75 @@ it('tints all base-relative edits and keeps stronger conflict annotations', () =
   expect(host.find('conflict-tag').map(t => t.textContent)).toEqual(['conflict'])
   expect(host.find('conflict-bar')[0].style.gridRow).toBe('10 / 14')
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
-  expect(css).toContain('--change-tint: 7%')
-  expect(css).toContain('--change-tint: 12%')
+  expect(css).toContain('--change-tint: 14%')
+  expect(css).toContain('--change-tint: 20%')
   expect(css).toContain('var(--line-change-owner) var(--change-tint)')
   expect(css.indexOf('.conflict-code-grid :is(.conflict-line')).toBeGreaterThan(css.indexOf('.conflict-code-grid .changed-line'))
   expect(css).toContain('.claim-overlap-line:not(.conflict-line):not(.changed-line)')
+})
+
+
+it.each([false, true])('stacks open tags above resolved tags at distinct offsets (text conflict: %s)', textConflict => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const host = new Element()
+  const span = deriveConflictSpans([conflict], claims)[0]
+  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 8 }, (_, i) => ({
+    text: 'code', side: 'a', changedBy: 'a', conflict: textConflict && i >= 1 && i <= 6, aLine: i + 1,
+  })), ['money', 'tiers'], undefined, [
+    { ...span, resolvedBy: { how: 'released', who: 'money', at: 20 } }, span,
+  ])
+  const tags = host.find('conflict-tag')
+  expect(tags.map(t => t.textContent)).toEqual([textConflict ? 'conflict' : 'both claimed', 'resolved'])
+  expect(tags.map(t => t.style.top)).toEqual(['0px', '20px'])
+  expect(host.find('code-line')[1].style.minHeight).toBe('40px')
+  expect(host.find('conflict-bar').map(b => b.style.gridColumn)).toEqual(['1', '2'])
+})
+
+it('collapses more than two same-line regions into one N resolved pill while retaining edge bars', () => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const host = new Element()
+  const span = deriveConflictSpans([conflict], claims)[0]
+  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 10 }, (_, i) => ({
+    text: 'code', side: 'common', changedBy: null, conflict: false, aLine: i + 1,
+  })), ['money', 'tiers'], undefined, [
+    ...[3, 4, 5].map(to => ({ ...span, to, resolvedBy: { how: 'released' as const, who: 'money', at: to } })),
+    span, { ...span, to: 8 },
+    { ...span, from: 3, to: 9 },
+  ])
+  const tags = host.find('conflict-tag')
+  expect(tags.map(t => t.textContent)).toEqual(['both claimed', 'both claimed', '3 resolved', 'both claimed'])
+  expect(tags.slice(0, 3).map(t => t.style.top)).toEqual(['0px', '20px', '40px'])
+  expect(tags[2].className).toContain('resolved')
+  expect(tags[2].ariaLabel.match(/money released/g)).toHaveLength(3)
+  expect(host.find('conflict-bar')).toHaveLength(6)
+  const rowHeights = host.find('code-line').map(r => parseFloat(r.style.minHeight) || 17)
+  const tops = host.find('conflict-bar').flatMap(bar => bar.find('conflict-tag').map(tag =>
+    rowHeights.slice(0, Number(bar.style.gridRow.split(' / ')[0]) - 1).reduce((a, b) => a + b, 0) + parseFloat(tag.style.top)))
+  expect(new Set(tops).size).toBe(tags.length)
+  const sorted = [...tops].sort((a, b) => a - b)
+  expect(sorted.slice(1).every((top, i) => top - sorted[i] >= 20)).toBe(true)
+})
+
+it('uses the specified theme tints and 60% owner borders with at least 4.5:1 code contrast', () => {
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  expect(css).toContain('--change-tint: 14%; --conflict-tint: 22%')
+  expect(css.match(/--change-tint: 20%; --conflict-tint: 28%/g)).toHaveLength(2)
+  expect(css).toContain('border-left: 2px solid transparent; box-shadow: none; color: var(--code-ink)')
+  expect(css).toContain('border-left-color: color-mix(in srgb, var(--line-change-owner) 60%, transparent)')
+  const rgb = (hex: string) => hex.match(/[a-f0-9]{2}/gi)!.map(c => parseInt(c, 16) / 255)
+  const luminance = (rgb: number[]) => rgb.map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
+    .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0)
+  const identity = readFileSync(new URL('../../shared/src/identity.ts', import.meta.url), 'utf8')
+  const palette = identity.match(/#[a-f0-9]{6}/gi)!.map(rgb).sort((a, b) => luminance(a) - luminance(b))
+  expect(palette.length).toBeGreaterThan(0)
+  // Check every owner, beginning with the darkest; dark mode's worst case may be brighter.
+  const themes = [...css.matchAll(/--code-bg: (#[a-f0-9]{6}); --code-gutter: #[a-f0-9]{6}; --code-ink: (#[a-f0-9]{6})/gi)]
+  expect(themes).toHaveLength(3)
+  for (const [index, theme] of themes.entries()) {
+    const bg = rgb(theme[1]), ink = luminance(rgb(theme[2]))
+    for (const tint of index === 0 ? [.14, .22] : [.20, .28]) for (const owner of palette) {
+      const background = luminance(bg.map((c, i) => c * (1 - tint) + owner[i] * tint))
+      expect((Math.max(ink, background) + .05) / (Math.min(ink, background) + .05)).toBeGreaterThanOrEqual(4.5)
+    }
+  }
 })
