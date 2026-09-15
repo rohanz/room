@@ -36126,8 +36126,10 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
           if (cur) s.room.updateWorker(tag, { exitCode: code ?? -1 });
           return;
         }
-        s.room.updateWorker(tag, { status: code === 0 ? "done" : "failed", exitCode: code ?? -1, summary: cur.summary ?? (code === 0 ? "process exited without room_done" : `process exited with code ${code}`) });
+        const summary = cur.summary ?? (code === 0 ? "process exited without room_done" : `process exited with code ${code}`);
+        s.room.updateWorker(tag, { status: code === 0 ? "done" : "failed", exitCode: code ?? -1, summary });
         s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? "" : `; see ${logFile}`}` });
+        s.room.post({ name, kind: "agent", owner, label: tag }, { type: "done", tag, summary: `${summary} (exit ${code})`, changed: s.room.changedPaths(name), to: s.me.name, priority: "notify" });
       });
       s.room.post(s.me, { type: "note", text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ""}) as ${name}: ${task.slice(0, 100)}` });
       const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ""}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? " (new worktree)" : ""}`];

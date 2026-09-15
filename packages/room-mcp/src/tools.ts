@@ -654,8 +654,11 @@ export function createTools(ctx: ToolCtx): Tools {
       proc.onExit(code => {
         const cur = s.room.workers.get(tag)
         if (!cur || cur.status !== 'running') { if (cur) s.room.updateWorker(tag, { exitCode: code ?? -1 }); return }
-        s.room.updateWorker(tag, { status: code === 0 ? 'done' : 'failed', exitCode: code ?? -1, summary: cur.summary ?? (code === 0 ? 'process exited without room_done' : `process exited with code ${code}`) })
+        const summary = cur.summary ?? (code === 0 ? 'process exited without room_done' : `process exited with code ${code}`)
+        s.room.updateWorker(tag, { status: code === 0 ? 'done' : 'failed', exitCode: code ?? -1, summary })
         s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? '' : `; see ${logFile}`}` })
+        // An exit without room_done still ends the lead's wait: post the done message the worker never sent, as the worker.
+        s.room.post<DoneMsg>({ name, kind: 'agent', owner, label: tag }, { type: 'done', tag, summary: `${summary} (exit ${code})`, changed: s.room.changedPaths(name), to: s.me.name, priority: 'notify' })
       })
       s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
       const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]

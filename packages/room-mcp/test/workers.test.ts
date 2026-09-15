@@ -148,6 +148,18 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(out).toContain('which field carries the price?')
   })
 
+  it("a worker that exits without room_done still ends the lead's wait, as a done message", async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
+    const waiting = t.leadTools.call('room_wait', { timeoutMs: 3000 })
+    await new Promise(r => setTimeout(r, 50))
+    t.exits[0](0)
+    const out = await waiting
+    expect(out).toContain('worker done:')
+    expect(out).toContain('exited without room_done')
+    expect(t.a.workers.get('money')).toMatchObject({ status: 'done', exitCode: 0 })
+  })
+
   it('refuses beyond the worker budget', async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
