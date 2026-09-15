@@ -335,7 +335,8 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   try {
     daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
   } catch (e) { await local.stop(); throw e }
-  const web = (opts.web ?? process.env.ROOM_WEB ?? DEFAULT_WEB).replace(/\/+$/, '')
+  // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
+  const web = (opts.web ?? process.env.ROOM_WEB ?? local.httpUrl).replace(/\/+$/, '')
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
   graph.start()

@@ -33710,16 +33710,57 @@ function portAnswers(port, timeoutMs2 = 500) {
     sock.setTimeout(timeoutMs2, () => done(false));
   });
 }
-function startRelay(port) {
+var MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
+function findWebDist() {
+  const here = path2.dirname(new URL(import.meta.url).pathname);
+  const candidates = [
+    process.env.ROOM_WEB_DIST,
+    path2.resolve(here, "..", "web"),
+    // plugins/room/server/room-mcp.mjs -> plugins/room/web
+    path2.resolve(here, "..", "..", "web", "dist"),
+    // packages/roomd/src -> packages/web/dist
+    path2.resolve(here, "..", "..", "..", "web", "dist")
+  ];
+  for (const c of candidates) if (c && fs2.existsSync(path2.join(c, "index.html"))) return c;
+  return void 0;
+}
+var LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+function isLoopback(addr) {
+  return !!addr && LOOPBACK.has(addr);
+}
+function startRelay(port, opts = {}) {
   return new Promise((resolve5, reject) => {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end('{"ok":true,"local":true}');
+    const staticDir = opts.staticDir ?? findWebDist();
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://x");
+      if (url.pathname === "/health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"ok":true,"local":true}');
+        return;
+      }
+      if (staticDir) {
+        const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+        const file = path2.resolve(staticDir, rel);
+        if (file.startsWith(staticDir) && fs2.existsSync(file) && fs2.statSync(file).isFile()) {
+          res.writeHead(200, { "content-type": MIME[path2.extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
+          fs2.createReadStream(file).pipe(res);
+          return;
+        }
+      }
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end(staticDir ? "room local relay\n" : "room local relay (no browser view built: run npm run build -w @room/web)\n");
     });
     const wss = new import_websocket_server.default({ noServer: true });
     const docs = relayDocs();
     wss.on("connection", (conn, req) => attach(docs, conn, req));
-    server.on("upgrade", (req, socket, head) => wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req)));
+    server.on("upgrade", (req, socket, head) => {
+      if (!isLoopback(req.socket.remoteAddress)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    });
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => {
       const addr = server.address();
@@ -33787,6 +33828,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   timer.unref?.();
   return {
     url: `ws://127.0.0.1:${port}`,
+    httpUrl: `http://127.0.0.1:${port}`,
     port,
     get owned() {
       return owned !== null;
@@ -34393,7 +34435,7 @@ async function joinLocal(dir, opts) {
     await local.stop();
     throw e;
   }
-  const web = (opts.web ?? process.env.ROOM_WEB ?? DEFAULT_WEB).replace(/\/+$/, "");
+  const web = (opts.web ?? process.env.ROOM_WEB ?? local.httpUrl).replace(/\/+$/, "");
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
   graph.start();
@@ -36169,7 +36211,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const out = [`${a.create && !s.local ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
       out.push(`room: ${describeWhere(choice.server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone)" : choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
       if (!s.local && choice.rule === "argument") out.push(`note for your human: uncommitted work in this clone is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf("/"))}'s room.`);
-      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the team room" (room_join where=team) to work with teammates instead.'}`);
+      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the team room" (room_join where=team) to work with teammates instead.'}`);
       out.push(shareLine(s));
       const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
       const mineA = myAreas(s);

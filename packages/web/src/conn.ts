@@ -51,7 +51,9 @@ export function connect(search = location.search): Conn {
   const token = q.get('token') ?? '', view = q.get('view') ?? ''
   const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: view ? { view } : token ? { token } : {} })
   // A refused websocket never surfaces a status code; ask the server over HTTP why, and say so.
-  void explainAccess(roomLocation, { view, token }, provider)
+  // A local relay (loopback) needs no key and has no /view-token endpoint.
+  const host = new URL(roomLocation.serverUrl).hostname
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]') void explainAccess(roomLocation, { view, token }, provider)
   // A successful sync supersedes any earlier HTTP preflight error.
   provider.on('sync', (synced: boolean) => {
     if (synced) document.getElementById('access-error')?.remove()

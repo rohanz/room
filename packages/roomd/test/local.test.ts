@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import WebSocket from 'ws'
 import { WebsocketProvider } from 'y-websocket'
-import { ensureLocalRelay, gitCommonDir, localRoomName, portAnswers, readRelayInfo } from '../src/local.js'
+import { ensureLocalRelay, gitCommonDir, localRoomName, portAnswers, readRelayInfo, startRelay } from '../src/local.js'
+import http from 'node:http'
 
 const sh = (dir: string, args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString().trim()
 
@@ -60,5 +61,31 @@ describe('local rooms', () => {
     p1.destroy(); p2.destroy()
     await b.stop()
     expect(fs.existsSync(path.join(common, 'room-local.json'))).toBe(true)
+  })
+})
+
+describe('local relay browser view', () => {
+  const get = (url: string) => new Promise<{ status: number; body: string; type: string }>((resolve, reject) => {
+    http.get(url, res => { let body = ''; res.on('data', c => { body += c }); res.on('end', () => resolve({ status: res.statusCode ?? 0, body, type: String(res.headers['content-type']) })) }).on('error', reject)
+  })
+  it('serves index.html and /health, and accepts a keyless websocket from loopback', async () => {
+    const dist = await fsp.mkdtemp(path.join(os.tmpdir(), 'room-dist-'))
+    await fsp.writeFile(path.join(dist, 'index.html'), '<!doctype html><title>Room</title>')
+    await fsp.writeFile(path.join(dist, 'app.js'), 'console.log(1)')
+    const relay = await startRelay(0, { staticDir: dist })
+    try {
+      const root = await get(`http://127.0.0.1:${relay.port}/`)
+      expect(root.status).toBe(200); expect(root.type).toContain('text/html'); expect(root.body).toContain('<title>Room</title>')
+      const js = await get(`http://127.0.0.1:${relay.port}/app.js`)
+      expect(js.type).toContain('javascript')
+      const health = await get(`http://127.0.0.1:${relay.port}/health`)
+      expect(JSON.parse(health.body)).toEqual({ ok: true, local: true })
+      const outside = await get(`http://127.0.0.1:${relay.port}/../../etc/passwd`)
+      expect(outside.body).not.toContain('root:')
+      const doc = new Y.Doc()
+      const provider = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent('local/x/main'), doc, { WebSocketPolyfill: WebSocket as never })
+      await until(() => provider.synced)
+      provider.destroy()
+    } finally { await relay.close() }
   })
 })

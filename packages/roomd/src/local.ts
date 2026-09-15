@@ -105,6 +105,8 @@ export interface LocalRelayInfo { port: number; pid: number; room: string; start
 export interface LocalRelay {
   /** ws://127.0.0.1:<port> */
   url: string
+  /** http://127.0.0.1:<port>: the browser view (same machine only). */
+  httpUrl: string
   port: number
   /** True when this process runs the relay. */
   owned: boolean
@@ -156,14 +158,55 @@ export function portAnswers(port: number, timeoutMs = 500): Promise<boolean> {
   })
 }
 
-/** Start a relay on 127.0.0.1:port (0 = any free port). Rejects with EADDRINUSE when someone else won the race. */
-export function startRelay(port: number): Promise<{ port: number; close(): Promise<void> }> {
+const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.map': 'application/json' }
+
+/**
+ * Where the built browser view lives: ROOM_WEB_DIST, else `web/` next to the plugin bundle's
+ * `server/` dir (plugins/room/web), else packages/web/dist for source runs. Undefined when none exists.
+ */
+export function findWebDist(): string | undefined {
+  const here = path.dirname(new URL(import.meta.url).pathname)
+  const candidates = [
+    process.env.ROOM_WEB_DIST,
+    path.resolve(here, '..', 'web'),            // plugins/room/server/room-mcp.mjs -> plugins/room/web
+    path.resolve(here, '..', '..', 'web', 'dist'), // packages/roomd/src -> packages/web/dist
+    path.resolve(here, '..', '..', '..', 'web', 'dist'),
+  ]
+  for (const c of candidates) if (c && fs.existsSync(path.join(c, 'index.html'))) return c
+  return undefined
+}
+
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+function isLoopback(addr: string | undefined): boolean { return !!addr && LOOPBACK.has(addr) }
+
+/** Start a relay on 127.0.0.1:port (0 = any free port). Rejects with EADDRINUSE when someone else won the race.
+ *  Also serves the browser view (staticDir, default findWebDist()) at / and a /health line, so a local
+ *  room has a projector link like a hosted one. Websockets are accepted from loopback only, with no key. */
+export function startRelay(port: number, opts: { staticDir?: string } = {}): Promise<{ port: number; close(): Promise<void> }> {
   return new Promise((resolve, reject) => {
-    const server = http.createServer((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true,"local":true}') })
+    const staticDir = opts.staticDir ?? findWebDist()
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://x')
+      if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true,"local":true}'); return }
+      if (staticDir) {
+        const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
+        const file = path.resolve(staticDir, rel)
+        if (file.startsWith(staticDir) && fs.existsSync(file) && fs.statSync(file).isFile()) {
+          res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-cache' })
+          fs.createReadStream(file).pipe(res)
+          return
+        }
+      }
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end(staticDir ? 'room local relay\n' : 'room local relay (no browser view built: run npm run build -w @room/web)\n')
+    })
     const wss = new WebSocketServer({ noServer: true })
     const docs = relayDocs()
     wss.on('connection', (conn, req) => attach(docs, conn, req))
-    server.on('upgrade', (req, socket, head) => wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req)))
+    server.on('upgrade', (req, socket, head) => {
+      if (!isLoopback(req.socket.remoteAddress)) { socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return }
+      wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
+    })
     server.once('error', reject)
     server.listen(port, '127.0.0.1', () => {
       const addr = server.address()
@@ -220,6 +263,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
 
   return {
     url: `ws://127.0.0.1:${port}`,
+    httpUrl: `http://127.0.0.1:${port}`,
     port,
     get owned() { return owned !== null },
     async stop() {
