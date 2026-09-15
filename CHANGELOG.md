@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.8 — 2026-09-15
+
+- Code pane: hovering a line shows a one-line annotation in the right column; clicking opens an inline detail row (owners, claims and plans, conflict pair and resolution). The floating card remains only on the Board and the Network tab.
+- Network tab: downstream impact now shows consumers of every plan seen in the session (released ones in grey) and matches symbols by bare name; zoom defaults to 150% with steps of 25.
+- Resize handles are short grips between the columns.
+
 ## 0.6.7 — 2026-09-15
 
 - Merge previews and the conflict watcher use git's own merge (`git merge-file`), so a clean preview means a clean push; the reply says so.
