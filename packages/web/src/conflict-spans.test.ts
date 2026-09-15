@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
 import { colorFor, type Claim, type Msg } from '@room/shared'
 import { collapseConflictTimeline } from './timeline.ts'
+import { classifyThreeWay } from './merged.ts'
 import { renderCodeLines } from './panels.ts'
 
 const claims: Claim[] = ['money', 'tiers'].map((by, i) => ({ id: `c${i}`, by, byKind: 'agent', path: 'a.ts', from: 2, to: 7, intent: `update ${by}`, at: 1 }))
@@ -46,7 +47,7 @@ it('folds pairwise merge notes and both addressed overlap notifications', () => 
 })
 
 class Element {
-  className = ''; children: (Element | string)[] = []; properties = new Map<string, string>(); style = { setProperty: (name: string, value: string) => this.properties.set(name, value), gridRow: '', gridColumn: '', gridTemplateColumns: '' }; dataset = {}
+  className = ''; children: (Element | string)[] = []; properties = new Map<string, string>(); style = { background: '', setProperty: (name: string, value: string) => this.properties.set(name, value), gridRow: '', gridColumn: '', gridTemplateColumns: '' }; dataset = {}
   ariaLabel = ''; onfocus?: () => void; onmouseenter?: () => void
   get textContent(): string { return this.children.map(c => typeof c === 'string' ? c : c.textContent).join('') }
   classList = { add: (name: string) => { this.className += ` ${name}` } }
@@ -93,7 +94,7 @@ it('packs overlapping spans into right-edge lanes, reuses lanes, and includes in
   expect(bars.map(bar => bar.style.gridColumn)).toEqual(['1', '2', '1'])
   expect(bars.map(bar => bar.style.gridRow)).toEqual(['2 / 8', '3 / 7', '9 / 12'])
   expect(host.find('conflict-tag')[1].ariaLabel).toContain('third')
-  expect(host.find('conflict-tag').map(label => label.children[0])).toEqual(['conflict', 'conflict', 'resolved'])
+  expect(host.find('conflict-tag').map(label => label.children[0])).toEqual(['both claimed', 'both claimed', 'resolved'])
   expect(host.find('conflict-tag')[0].ariaLabel).toContain('money: update money')
   expect(host.find('conflict-tag')[0].ariaLabel).toContain('tiers: update tiers')
   expect(bars[2].className).toContain('resolved')
@@ -106,6 +107,9 @@ it('uses theme-aware participant tints, slim separated edge lines, and accessibl
   expect(css).toContain('--conflict-tint: 18%')
   expect(css).toContain('--conflict-red: #B42318')
   expect(css).toContain('--conflict-red: #F97066')
+  expect(css).toContain('--claim-amber: #B54708')
+  expect(css).toContain('--claim-amber: #F79009')
+  expect(css).toContain('.conflict-bar.claim-overlap { background: var(--claim-amber); color: var(--claim-amber); }')
   expect(css).toContain('var(--line-owner) var(--conflict-tint)')
   expect(css).toContain('column-gap: 2px')
   expect(css).toContain('width: 2px')
@@ -122,6 +126,10 @@ it('does not duplicate a text region with a recorded conflict and preserves outs
     text: 'code', side: i < 4 ? 'a' : 'b', conflict: i >= 1 && i <= 6, aLine: i + 1,
   })), ['money', 'tiers'], undefined, [span])
   expect(host.find('conflict-tag')).toHaveLength(1)
+  expect(host.find('conflict-tag')[0].children[0]).toBe('conflict')
+  expect(host.find('conflict-bar')[0].className).not.toContain('claim-overlap')
+  expect(host.find('conflict-tag')[0].ariaLabel).toContain('both claimed')
+  expect(host.find('conflict-tag')[0].ariaLabel).toContain('update tiers')
   expect(host.find('conflict-tag')[0].ariaLabel).toContain('update money')
   const rows = host.find('code-line')
   expect(rows[0].className).not.toContain('conflict-line')
@@ -146,4 +154,44 @@ it('keeps earlier and current claim sessions separate even for one-claim edit co
   const spans = deriveConflictSpans([oldConflict, release, current], [oldClaim, claims[0]])
   expect(spans.find(s => s.claimIds.includes('old-c0'))?.resolvedBy?.how).toBe('released')
   expect(spans.find(s => s.claimIds.includes('c0'))?.resolvedBy).toBeUndefined()
+})
+
+it('numbers merged rows once and uses participant-colored dots only on divergent rows', () => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const host = new Element()
+  const lines = classifyThreeWay('same\nold\nend\n', 'same\nA\nend\n', 'same\nB\nend\n')
+  renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'])
+  expect(host.find('line-number').map(n => n.textContent)).toEqual(['1', '2', '3', '4'])
+  const rows = host.find('code-line')
+  expect(rows.map(r => r.find('line-number').length)).toEqual([1, 1, 1, 1])
+  expect(rows.map(r => r.find('dot').length)).toEqual([0, 1, 1, 0])
+  expect(rows[1].find('dot')[0].style.background).toBe(colorFor('money'))
+  expect(rows[2].find('dot')[0].style.background).toBe(colorFor('tiers'))
+  renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'], undefined, [], false)
+  expect(host.find('line-number')).toHaveLength(8)
+  expect(host.find('side-marker')).toHaveLength(0)
+})
+
+it.each(['identical', 'clean', 'conflicting'])('classifies %s text with overlapping claims and includes both intents and plans', kind => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const host = new Element()
+  const base = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n'
+  const a = kind === 'identical' ? base : base.replace('two', 'A')
+  const b = kind === 'conflicting' ? base.replace('two', 'B') : kind === 'clean' ? base.replace('seven', 'B') : base
+  const cs = claims.map(c => ({ ...c, plans: [{ kind: 'add' as const, symbol: c.by + 'Helper' }] }))
+  const spans = deriveConflictSpans([], cs)
+  renderCodeLines(host as unknown as HTMLElement, classifyThreeWay(base, a, b), ['money', 'tiers'],
+    (person, line) => cs.filter(c => c.by === person && c.from <= line && c.to >= line), spans)
+  const tags = host.find('conflict-tag')
+  const red = host.find('conflict-bar').filter(b => !b.className.includes('claim-overlap'))
+  expect(red).toHaveLength(kind === 'conflicting' ? 1 : 0)
+  expect(tags[0].children[0]).toBe(kind === 'conflicting' ? 'conflict' : 'both claimed')
+  for (const tag of tags) {
+    expect(tag.ariaLabel).toContain('money: update money (plans: add moneyHelper)')
+    expect(tag.ariaLabel).toContain('tiers: update tiers (plans: add tiersHelper)')
+    expect(tag.ariaLabel).toContain('a.ts:2-7')
+    expect(tag.ariaLabel).toContain('Unresolved: both claimed')
+  }
+  if (kind !== 'conflicting') expect(host.find('conflict-line')).toHaveLength(0)
+  else expect(red[0].style.gridRow).toBe('2 / 4')
 })

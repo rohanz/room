@@ -217,11 +217,13 @@ export function lineHoverText(line: MergedLine, names: [string, string], claimsA
   return parts.join('\n')
 }
 
-function lineElement(line: MergedLine, names: [string, string], prefix = '', claimsAt?: ClaimsAt): HTMLElement {
+function lineElement(line: MergedLine, names: [string, string], prefix = '', claimsAt?: ClaimsAt, mergedNumber?: number): HTMLElement {
   const owner = line.side === 'a' ? names[0] : line.side === 'b' ? names[1] : ''
   const row = h('div', { class: `code-line side-${line.side}${line.conflict ? ' conflict-line' : ''}`, title: lineHoverText(line, names, claimsAt) },
-    h('span', { class: 'line-number' }, line.aLine?.toString() ?? ''),
-    h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
+    h('span', { class: 'line-number' }, mergedNumber?.toString() ?? line.aLine?.toString() ?? ''),
+    mergedNumber !== undefined
+      ? h('span', { class: 'side-marker' }, owner ? dot(owner) : null)
+      : h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
     h('span', { class: 'diff-prefix' }, prefix),
     h('code', {}, line.text || ' '))
   if (owner) { row.style.setProperty('--line-owner', colorFor(owner)); row.dataset.owner = owner }
@@ -244,9 +246,9 @@ export function conflictCard(span: ConflictSpan, expanded?: Set<string>): HTMLEl
     h('div', {}, resolutionLabel(span)), details)
 }
 
-export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: [string, string], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = []): void {
-  const rows = lines.map(line => lineElement(line, names, line.prefix, claimsAt))
-  const spans: { start: number; end: number; people: readonly string[]; detail: string; resolved: boolean }[] = []
+export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: [string, string], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true): void {
+  const rows = lines.map((line, i) => lineElement(line, names, line.prefix, claimsAt, merged ? i + 1 : undefined))
+  const spans: { start: number; end: number; people: readonly string[]; detail: string; resolved: boolean; claimOnly?: boolean; textConflict?: boolean }[] = []
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].conflict) continue
     const start = i
@@ -257,19 +259,43 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
         if (line !== undefined) for (const claim of claimsAt?.(person, line) ?? []) intents.set(claim.id, person + ': ' + claim.intent + (claim.plans?.length ? ` (plans: ${formatPlans(claim.plans)})` : ''))
       }
     }
-    spans.push({ start, end: i, people: names, detail: names.join(' ↔ ') + '\nUnresolved: both sides changed these lines\n' + ([...intents.values()].join('\n') || 'Claim intents unavailable'), resolved: false })
+    spans.push({ start, end: i, people: names, detail: names.join(' ↔ ') + `\nMerged lines ${start + 1}-${i + 1}\nUnresolved: both sides changed these lines\n` + ([...intents.values()].join('\n') || 'Claim intents unavailable'), resolved: false, textConflict: true })
   }
   for (const s of conflicts) {
     if (s.hidden || s.from === undefined || s.to === undefined) continue
     const indices = lines.flatMap((line, i) => [line.aLine, line.bLine].some(n => n !== undefined && n >= s.from! && n <= s.to!) ? [i] : [])
     if (!indices.length) continue
-    spans.push({ start: indices[0], end: indices.at(-1)!, people: s.people, detail: s.people.join(' ↔ ') + '\n' + (s.resolvedBy ? resolutionLabel(s) : 'Unresolved conflict') + '\n' + s.claims.map(c => `${c.by}: ${c.intent}${c.plans?.length ? ` (plans: ${formatPlans(c.plans)})` : ''}`).join('\n'), resolved: !!s.resolvedBy })
+    const start = indices[0], end = indices.at(-1)!
+    const regionClaims = new Map(s.claims.map(c => [c.id, c]))
+    for (const i of indices) for (const [person, n] of [[names[0], lines[i].aLine], [names[1], lines[i].bLine]] as const) {
+      if (n !== undefined) for (const c of claimsAt?.(person, n) ?? []) regionClaims.set(c.id, c)
+    }
+    const claimOnly = merged && s.claims.some(a => s.claims.some(b => a.by !== b.by && a.path === b.path && a.from <= b.to && b.from <= a.to))
+    const people = [...new Set([...s.people, ...[...regionClaims.values()].map(c => c.by)])]
+    const detail = people.join(' ↔ ') + '\n' + s.path + ':' + s.from + '-' + s.to + '\n' +
+      (s.resolvedBy ? resolutionLabel(s) : claimOnly ? 'Unresolved: both claimed' : 'Unresolved conflict') + '\n' +
+      people.map(person => {
+        const cs = [...regionClaims.values()].filter(c => c.by === person)
+        return cs.length ? cs.map(c => person + ': ' + c.intent + (c.plans?.length ? ' (plans: ' + formatPlans(c.plans) + ')' : '')).join('\n') : person + ': intent unavailable'
+      }).join('\n')
+    // Text conflicts own their marker, including any intersecting claim details.
+    const textRegions = merged ? spans.filter(r => r.textConflict && !r.resolved && r.start <= end && r.end >= start && r.people.every(p => people.includes(p))) : []
+    if (textRegions.length && !s.resolvedBy) {
+      for (const r of textRegions) r.detail += '\n' + detail
+      // Keep claim-only portions outside the text conflict visible in amber.
+      let run = -1
+      for (let i = start; i <= end + 1; i++) {
+        const uncovered = i <= end && !textRegions.some(r => i >= r.start && i <= r.end)
+        if (uncovered && run < 0) run = i
+        if (!uncovered && run >= 0) { spans.push({ start: run, end: i - 1, people, detail, resolved: false, claimOnly }); run = -1 }
+      }
+    } else spans.push({ start, end, people, detail, resolved: !!s.resolvedBy, claimOnly })
   }
   // Prefer the recorded region's richer tooltip over its duplicate merge preview.
   const regions = spans.filter((s, index) => !spans.some((other, j) => j > index &&
     other.start === s.start && other.end === s.end &&
     other.people.length === s.people.length && other.people.every(p => s.people.includes(p))))
-  const grid = h('div', { class: 'conflict-code-grid' }, ...rows)
+  const grid = h('div', { class: 'conflict-code-grid' + (merged ? ' merged-code' : '') }, ...rows)
   rows.forEach((row, i) => { row.style.gridRow = String(i + 1); row.style.gridColumn = '1' })
   const gutter = h('div', { class: 'conflict-edge' })
   gutter.style.gridRow = '1 / ' + (lines.length + 1)
@@ -279,8 +305,8 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     if (lane === -1) lane = laneEnds.length
     laneEnds[lane] = s.end
     const tooltip = h('span', { class: 'conflict-tooltip', role: 'tooltip' }, s.detail)
-    const label = h('button', { class: 'conflict-tag', ariaLabel: s.detail }, s.resolved ? 'resolved' : 'conflict', tooltip)
-    const bar = h('div', { class: 'conflict-bar' + (s.resolved ? ' resolved' : '') }, label)
+    const label = h('button', { class: 'conflict-tag', ariaLabel: s.detail }, s.resolved ? 'resolved' : s.claimOnly ? 'both claimed' : 'conflict', tooltip)
+    const bar = h('div', { class: 'conflict-bar' + (s.claimOnly ? ' claim-overlap' : '') + (s.resolved ? ' resolved' : '') }, label)
     // Tags stack at the start of overlapping regions; edge lanes stay 2px apart.
     label.style.right = lane * 4 + 4 + 'px'
     label.style.top = lane * 16 + 'px'
@@ -292,7 +318,10 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     label.onmouseenter = positionTooltip; label.onfocus = positionTooltip
     bar.style.gridRow = s.start + 1 + ' / ' + (s.end + 2)
     bar.style.gridColumn = String(lane + 1)
-    for (let i = s.start; i <= s.end; i++) rows[i].classList.add(s.resolved ? 'resolved-conflict-line' : 'conflict-line')
+    for (let i = s.start; i <= s.end; i++) {
+      rows[i].classList.add(s.resolved ? 'resolved-conflict-line' : s.claimOnly ? 'claim-overlap-line' : 'conflict-line')
+      if (s.claimOnly) rows[i].classList.add('claim-overlap-line')
+    }
     gutter.append(bar)
   })
   gutter.style.gridTemplateColumns = 'repeat(' + Math.max(1, laneEnds.length) + ', 2px)'
@@ -356,7 +385,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       if (text === undefined) return editor.empty(`No overlay available for ${person}`)
       if (!conflicts.some(s => !s.hidden)) { editor.show(selected.path, text, conn.room.claimsFor(selected.path)); return }
       editor.empty()
-      renderCodeLines(host, text.split('\n').map((text, i) => ({ text, side: 'common', conflict: false, aLine: i + 1 })), [person, person], undefined, conflicts)
+      renderCodeLines(host, text.split('\n').map((text, i) => ({ text, side: 'common', conflict: false, aLine: i + 1 })), [person, person], undefined, conflicts, false)
       return
     }
     editor.empty()
@@ -366,7 +395,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const text = conn.room.text(selected.path, person) ?? ''
       renderCodeLines(host, text.split('\n').filter((_, index, all) => index < all.length - 1 || all[index] !== '').map((value, index) => ({
         text: value, side: 'common' as const, conflict: false, aLine: index + 1,
-      })), [person, person], undefined, conflicts)
+      })), [person, person], undefined, conflicts, tab === 'Merged')
       return
     }
 
@@ -385,7 +414,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person)!
     compareLabel.textContent = `vs ${other}`
     legend.replaceChildren(h('span', {}, dot(other), ` removed from ${other}`), h('span', {}, dot(person), ` added by ${person}`))
-    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to), conflicts)
+    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to), conflicts, false)
   }
 
   render = () => {

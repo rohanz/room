@@ -533,16 +533,21 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .code-line.side-a, .code-line.side-b { background: var(--code-bg); box-shadow: inset 3px 0 var(--line-owner); }
 
 /* Conflict annotations live at the right edge; ownership remains on each line. */
-:root { --conflict-tint: 12%; --conflict-red: #B42318; }
+:root { --conflict-tint: 12%; --conflict-red: #B42318; --claim-amber: #B54708; }
 .conflict-code-grid { display: grid; align-content: start; }
-:root[data-theme="dark"] { --conflict-tint: 18%; --conflict-red: #F97066; }
+:root[data-theme="dark"] { --conflict-tint: 18%; --conflict-red: #F97066; --claim-amber: #F79009; }
 @media (prefers-color-scheme: dark) {
-  :root[data-theme="system"] { --conflict-tint: 18%; --conflict-red: #F97066; }
+  :root[data-theme="system"] { --conflict-tint: 18%; --conflict-red: #F97066; --claim-amber: #F79009; }
 }
 .conflict-code-grid .code-line { grid-template-columns: 32px 32px 14px minmax(max-content, 1fr); border-left: 0; }
 .conflict-code-grid :is(.conflict-line, .resolved-conflict-line)[data-owner] { background: color-mix(in srgb, var(--line-owner) var(--conflict-tint), var(--code-bg)); }
 .conflict-edge { grid-column: 2; display: grid; grid-template-rows: subgrid; column-gap: 2px; position: sticky; right: 0; margin-left: 64px; }
 .conflict-bar { position: relative; width: 2px; min-width: 2px; min-height: 0; background: var(--conflict-red); color: var(--conflict-red); }
+.conflict-bar.claim-overlap { background: var(--claim-amber); color: var(--claim-amber); }
+.conflict-code-grid.merged-code .code-line { grid-template-columns: 32px 12px 14px minmax(max-content, 1fr); }
+.side-marker { display: flex; align-items: center; justify-content: center; }
+.side-marker .dot { width: 5px; height: 5px; margin: 0; }
+.merged-code .claim-overlap-line:not(.conflict-line) { background: var(--code-bg); }
 .conflict-bar.resolved { background: var(--muted); color: var(--muted); }
 .conflict-tag { position: absolute; padding: 0 2px; border: 0; border-radius: 0; font: 11px/16px var(--sans); color: inherit; background: var(--code-bg); white-space: nowrap; }
 .conflict-tooltip { display: none; position: fixed; z-index: 20; width: 280px; max-width: calc(100vw - 16px); max-height: 150px; overflow: auto; padding: 8px; white-space: pre-wrap; text-align: left; background: var(--surface); color: var(--ink); border: 1px solid var(--line); box-shadow: 0 3px 12px #0003; font: 12px/1.5 var(--sans); }
