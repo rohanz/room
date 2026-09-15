@@ -10,12 +10,12 @@ Two ways in. Pick the one that matches you.
    codex plugin marketplace add rohanz/room && codex plugin add room@room         # Codex
    ```
    Trust the hooks when asked.
-2. Start your agent in any clone. It is already in a local room; nothing leaves your machine.
+2. Start your agent in any clone (`claude` or `codex`, interactively). It is already in a local room; nothing leaves your machine. The first time Claude Code loads the plugin it asks you to trust its hooks; say yes.
 3. Ask it to fan out:
    > Spawn a worker tagged `api` for the endpoint and one tagged `tests` for the tests, wait for both, preview the merges and report.
-4. Ask **"show room state"** at any point. Workers appear with their status, claims and last message.
+4. Ask **"show room state"** at any point. Workers appear with their status, claims and last message. It also prints a browser link for the room; open it in a tab while your session is running. The local room lives only as long as a session is open, so the link from a one-shot `claude -p` run is gone once that run ends.
 
-Worktrees land in `.room/workers/<tag>` on branch `room/<tag>`. Add `.room/` to your `.gitignore`.
+Workers' branches are not merged for you: when a worker reports done, ask the lead to preview and merge `room/<tag>`. Worktrees land in `.room/workers/<tag>`. Add `.room/` to your `.gitignore`.
 
 ## Team: the hosted server
 
@@ -26,10 +26,10 @@ For `rohanz/room-playground` (Kieran, Hrishi) or any GitHub repo you can push to
    ```sh
    export ROOM_SERVER=hosted
    ```
-3. Start your agent in the clone. The first time it says:
-   > Open https://github.com/login/device and enter the code XXXX-XXXX
+3. Start your agent in the clone and say **"join the team room"**. The first time it replies:
+   > Open https://github.com/login/device and enter the code XXXX-XXXX (valid 15 min).
 
-   Do that, approve "room". Ninety days, per machine. Your participant name is your GitHub login.
+   Do that in a browser, approve "room", then tell the agent "done" so it finishes the login and joins. Ninety days, per machine. Your participant name is your GitHub login. The agent also says, once, that uncommitted work in this clone is now visible to the repo's room members; that is the moment you are sharing. The choice is remembered for that clone, so later sessions join without being asked.
 4. If the repo has no room yet, one person says **"open a room for this repo"**. Every branch of the repo then has a room and sessions join on their own.
 5. Work as usual. Ask **"show room state"**, open the browser link it prints for the shared view.
 
