@@ -1,8 +1,7 @@
 import { isAgentic } from './identity.js'
 import { claimsOverlap } from './claims.js'
+import { messageKind } from './messages.js'
 import type { Claim, ClaimMsg, Identity, Msg } from './types.js'
-
-const WAKE_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'conflict', 'question', 'scope', 'done'])
 
 export interface WakeDecision {
   wake: boolean
@@ -22,16 +21,14 @@ export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = []): W
     if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` }
     return { wake: true, mustAnswer: addressed, reason: addressed ? 'interrupt addressed to me' : 'broadcast interrupt' }
   }
-  if (m.type === 'answer') {
-    return addressed
-      ? { wake: true, mustAnswer: true, reason: 'answer addressed to me' }
-      : { wake: false, mustAnswer: false, reason: m.to ? `addressed to ${m.to}` : 'broadcast answer does not wake' }
-  }
-  if (!WAKE_TYPES.has(m.type)) return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` }
   if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` }
-  if ((m.type === 'claim' || m.type === 'release') && !addressed && !(m.from === me.name && m.fromKind === 'human')) {
-    const near = myClaims.some(c => c.by === me.name && isAgentic(c.byKind) && c.path === m.path)
-    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${m.path}, not near my claims` }
+  const kind = messageKind(m)
+  if (kind.wakes === 'never') return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` }
+  if (kind.wakes === 'addressed' && !addressed) return { wake: false, mustAnswer: false, reason: 'not addressed to me' }
+  if (kind.audience === 'claim-holders' && !addressed && !(m.from === me.name && m.fromKind === 'human')) {
+    const path = 'path' in m && typeof m.path === 'string' ? m.path : ''
+    const near = myClaims.some(c => c.by === me.name && isAgentic(c.byKind) && c.path === path)
+    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${path}, not near my claims` }
   }
   return { wake: true, mustAnswer: addressed, reason: addressed ? 'addressed to me' : 'broadcast' }
 }

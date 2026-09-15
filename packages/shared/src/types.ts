@@ -68,7 +68,8 @@ export interface Scope {
 }
 
 export type Priority = 'fyi' | 'notify' | 'interrupt'
-export type MsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'note' | 'scope' | 'base' | 'plan' | 'done'
+export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'note' | 'scope' | 'base' | 'plan' | 'done'
+export type MsgType = keyof MessageMap & string
 
 export interface MsgBase {
   id: string
@@ -96,7 +97,21 @@ export interface BaseMsg extends MsgBase { type: 'base'; base: string; prev: str
 export interface PlanMsg extends MsgBase { type: 'plan'; status: 'cancelled' | 'superseded'; claimId: string; path: string; plan: Plan; replacedBy?: Plan; text: string }
 /** A worker finished its task; addressed to the lead that dispatched it. */
 export interface DoneMsg extends MsgBase { type: 'done'; tag: string; summary: string; changed: string[] }
-export type Msg = ClaimMsg | ReleaseMsg | ChangedMsg | QuestionMsg | AnswerMsg | ConflictMsg | NoteMsg | ScopeMsg | BaseMsg | PlanMsg | DoneMsg
+/** Extensible mapping from a bus kind to its payload. Add a member alongside its MessageKinds entry. */
+export interface MessageMap {
+  claim: ClaimMsg
+  release: ReleaseMsg
+  changed: ChangedMsg
+  question: QuestionMsg
+  answer: AnswerMsg
+  conflict: ConflictMsg
+  note: NoteMsg
+  scope: ScopeMsg
+  base: BaseMsg
+  plan: PlanMsg
+  done: DoneMsg
+}
+export type Msg = MessageMap[MsgType]
 
 /** A worker agent dispatched by a lead (room_spawn) into this room. Keyed by tag in RoomDoc.workers. */
 export type WorkerStatus = 'running' | 'done' | 'failed' | 'dismissed'

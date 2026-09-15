@@ -1,4 +1,4 @@
-import { formatMsg, formatPlans, isAgentic, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg } from '@room/shared'
+import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg } from '@room/shared'
 import type { Session } from '../session.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -74,29 +74,33 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const timeoutMs = Math.min(WAIT_MAX, Math.max(0, Number(a.timeoutMs ?? WAIT_DEFAULT) || WAIT_DEFAULT))
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`
       const qRoom = (questionId && rooms.holdingQuestion(questionId, s)) || s
-      const answered = (id: string) => qRoom.room.messages().find(m => m.type === 'answer' && m.inReplyTo === id)
+      const answered = (id: string) => qRoom.room.messages().find(m => messageEndsWait(m, { questionId: id, me: qRoom.me.name, answersOnly: true }))
       if (questionId) { const an = answered(questionId); if (an) return `answered: ${formatMsg(an)}` }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
       const result = await new Promise<string>(resolve => {
         const ws = rooms.all().find(x => x !== s) ?? null
         const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); ws?.room.bus.unobserve(onWorkersBus); resolve(r) }
+        const waitResult = (m: Msg, workersRoom = false): string | undefined => {
+          if (!messageEndsWait(m, { claimId, questionId, me: workersRoom ? ws?.me.name : s.me.name, workersRoom })) return
+          if (m.type === 'answer') return `answered: ${formatMsg(m)}`
+          if (m.type === 'done') return `worker done: ${formatMsg(m)}`
+          return `${workersRoom ? 'question from a worker' : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`
+        }
         const onWorkersBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           if (!ws) return
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            if (questionId && m.type === 'answer' && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`)
-            if (m.type === 'done' && m.to === ws.me.name) return finish(`worker done: ${formatMsg(m)}`)
+            const ended = waitResult(m, true)
+            if (ended) return finish(ended)
             if (m.priority === 'interrupt' && forMe(ws, m)) return finish(`interrupt (workers room): ${formatMsg(m)}`)
-            if (m.type === 'question' && m.to === ws.me.name) return finish(`question from a worker: ${formatMsg(m)}`)
           }
         }
         const timer = setTimeout(() => finish(`timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Tell your human; proceed only where you do not depend on it.`), timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            if (questionId && m.type === 'answer' && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`)
+            const ended = waitResult(m)
+            if (ended) return finish(ended)
             if (m.priority === 'interrupt' && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`)
-            if (m.type === 'done' && m.to === s.me.name) return finish(`worker done: ${formatMsg(m)}`)
-            if (m.type === 'question' && m.to === s.me.name && !(questionId || claimId)) return finish(`question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`)
           }
         }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)
@@ -111,16 +115,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 
 export function install(state: HandlerState): void {
   const { seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas, others, upgraded } = state
-  const forMe = (s: Session, m: Msg) => {
-      if (m.from === s.me.name && isAgentic(m.fromKind)) return false
-      if (m.to === s.me.name) return true
-      if (m.type === 'base') return true // someone committed: everyone should know to pull
-      if (m.to) return false // addressed to someone else
-      if (m.type === 'conflict') return mine(s).some(c => c.id === m.claimId || c.id === m.otherClaimId)
-      if (m.priority === 'interrupt') return true // broadcast interrupts reach everyone, whatever the area
-      if (m.priority === 'notify') return msgInMyAreas(s, m) // broadcast notify only from my areas
-      return false // broadcast fyi is read in the ledger, never the inbox
-    }
+  const forMe = (s: Session, m: Msg) => messageForMe(s.me, m, { claims: mine(s), inMyAreas: x => msgInMyAreas(s, x) })
   const inbox = (s: Session): string => {
       const fresh: Msg[] = []
       for (const m of s.room.messages()) {

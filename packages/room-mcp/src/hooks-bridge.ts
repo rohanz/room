@@ -12,7 +12,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { formatMsg, formatPlans, type Msg, isAgentic } from '@room/shared'
+import { formatMsg, formatPlans, shouldWakeOnMsg, type Msg, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 
 function gitStatePath(root: string, name: string): string {
@@ -109,7 +109,8 @@ export class HooksBridge {
   async maybeWake(m: Msg): Promise<void> {
     if (!this.o.forMe(m)) return
     const baseMoved = m.type === 'base' && m.from !== this.s.me.name && this.s.room.changedPaths(this.s.me.name).length > 0
-    const wake = m.priority === 'interrupt' || (m.type === 'question' && m.to === this.s.me.name) || (m.type === 'done' && m.to === this.s.me.name) || baseMoved
+    const myClaims = this.s.room.openClaims().filter(c => c.by === this.s.me.name)
+    const wake = shouldWakeOnMsg(this.s.me, m, myClaims).wake || baseMoved
     if (!wake || this.woken.has(m.id) || this.pending.has(m.id)) return
     const session = this.freshSession()
     if (!session) {
