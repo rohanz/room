@@ -29948,20 +29948,6 @@ function workerLines(inputs) {
 import { existsSync, readFileSync } from "node:fs";
 import { dirname as dirname3, resolve as resolve3 } from "node:path";
 
-// packages/roomd/src/index.ts
-import fs from "node:fs";
-import path from "node:path";
-
-// node_modules/ws/wrapper.mjs
-var import_stream = __toESM(require_stream(), 1);
-var import_extension = __toESM(require_extension(), 1);
-var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
-var import_receiver = __toESM(require_receiver(), 1);
-var import_sender = __toESM(require_sender(), 1);
-var import_subprotocol = __toESM(require_subprotocol(), 1);
-var import_websocket = __toESM(require_websocket(), 1);
-var import_websocket_server = __toESM(require_websocket_server(), 1);
-
 // node_modules/lib0/broadcastchannel.js
 var channels = /* @__PURE__ */ new Map();
 var LocalStoragePolyfill = class {
@@ -30657,6 +30643,21 @@ var WebsocketProvider = class extends ObservableV2 {
     }
   }
 };
+
+// node_modules/ws/wrapper.mjs
+var import_stream = __toESM(require_stream(), 1);
+var import_extension = __toESM(require_extension(), 1);
+var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
+var import_receiver = __toESM(require_receiver(), 1);
+var import_sender = __toESM(require_sender(), 1);
+var import_subprotocol = __toESM(require_subprotocol(), 1);
+var import_websocket = __toESM(require_websocket(), 1);
+var import_websocket_server = __toESM(require_websocket_server(), 1);
+var wrapper_default = import_websocket.default;
+
+// packages/roomd/src/index.ts
+import fs from "node:fs";
+import path from "node:path";
 
 // node_modules/chokidar/esm/index.js
 import { stat as statcb } from "fs";
@@ -33691,6 +33692,7 @@ import path4 from "node:path";
 import fs3 from "node:fs";
 var DEFAULT_SERVER = "wss://room-rohanz.fly.dev";
 var LOCAL = "local";
+var DEFAULT_CLAUDE_CHANNEL = "plugin:room@room";
 var DEFAULT_MAX_WORKERS = 8;
 var DEFAULT_STALE_DAYS = 7;
 var value = (v) => typeof v === "string" && v.trim() ? v.trim() : void 0;
@@ -33735,6 +33737,8 @@ async function resolveConfig({ env, args: args2 = {}, dir }) {
   const share = rawShare === "intent" || rawShare === "declared" ? rawShare : "full";
   const credentialsPath2 = resolveCredentialsPath(args2, e);
   return {
+    // Empty explicitly disables development channels; do not discard it with value().
+    claudeChannel: (args2.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
     workerId: value(e.ROOM_WORKER_ID),
     gen: value(e.ROOM_GEN),
     roomUrl,
@@ -33755,6 +33759,20 @@ async function resolveConfig({ env, args: args2 = {}, dir }) {
     room: value(args2.room) ?? value(e.ROOM_ROOM),
     web: value(args2.web) ?? value(e.ROOM_WEB)
   };
+}
+function resolveSessionHost(dir, env = process.env) {
+  const host = (v) => v === "claude" || v === "codex" ? v : void 0;
+  if (host(env.ROOM_HOST)) return env.ROOM_HOST;
+  try {
+    let gitDir = path4.join(dir, ".git");
+    if (fs3.statSync(gitDir).isFile()) {
+      const target = fs3.readFileSync(gitDir, "utf8").match(/gitdir:\s*(.+)/)?.[1].trim();
+      if (target) gitDir = path4.resolve(dir, target);
+    }
+    return host(JSON.parse(fs3.readFileSync(path4.join(gitDir, "room-session.json"), "utf8")).host) ?? "agent";
+  } catch {
+    return "agent";
+  }
 }
 
 // packages/room-mcp/src/credentials.ts
@@ -34004,6 +34022,52 @@ function decodeRoom(encoded) {
     return encoded;
   }
 }
+async function startAutoTaggedRoomd(options, explicitTag) {
+  let name = options.name, label = options.label;
+  let autoTagNote;
+  if (!explicitTag) {
+    const doc = new Doc2();
+    const url = new URL(options.room);
+    const room = url.pathname.split("/").pop();
+    url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf("/"));
+    const provider = options.providerFactory ? options.providerFactory(url.toString().replace(/\/$/, ""), room, doc) : new WebsocketProvider(url.toString().replace(/\/$/, ""), room, doc, {
+      WebSocketPolyfill: wrapper_default,
+      params: { ...options.token ? { token: options.token } : {}, ...options.session ? { session: options.session } : {}, ...options.localKey ? { key: options.localKey } : {} }
+    });
+    try {
+      if (!provider.synced) await new Promise((resolve4, reject) => {
+        const onSync = (synced) => {
+          if (synced) {
+            clearTimeout(timer);
+            provider.off("sync", onSync);
+            resolve4();
+          }
+        };
+        const timer = setTimeout(() => {
+          provider.off("sync", onSync);
+          reject(new RoomdError(`could not sync with ${options.room} within ${options.connectTimeoutMs ?? 15e3}ms`, 1));
+        }, options.connectTimeoutMs ?? 15e3);
+        provider.on("sync", onSync);
+      });
+      const names = new Set([...provider.awareness.getStates()].filter(([id2]) => id2 !== provider.awareness.clientID).map(([, state]) => state.user?.name));
+      if (names.has(name)) {
+        const host = resolveSessionHost(options.dir);
+        label = host;
+        let suffix = 2;
+        while (names.has(`${options.name}+${label}`)) label = `${host}-${suffix++}`;
+        name = `${options.name}+${label}`;
+        autoTagNote = `joined as ${name} (${options.name} is already here from another session)`;
+        (options.log ?? console.error)(autoTagNote);
+      }
+    } finally {
+      provider.destroy();
+      provider.awareness.destroy();
+      doc.destroy();
+    }
+  }
+  const daemon = await startRoomd({ ...options, name, label });
+  return { daemon, me: { name, kind: options.kind ?? "agent", owner: options.owner, ...label ? { label } : {} }, autoTagNote };
+}
 async function joinSession(opts) {
   const dir = resolve3(opts.dir);
   const config2 = await resolveConfig({ dir, env: process.env, args: opts });
@@ -34029,7 +34093,6 @@ async function joinSession(opts) {
   const owner = auth.login ?? config2.owner ?? config2.name ?? await defaultName(dir);
   if (!owner) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
   const name = label ? `${owner}+${label}` : owner;
-  const me = { name, kind, owner, ...label ? { label } : {} };
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`);
   const { login: _login, ...creds } = auth;
   if (opts.create) {
@@ -34044,10 +34107,10 @@ async function joinSession(opts) {
   const shareMax = await serverShareMax(server);
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+  const { daemon, me, autoTagNote } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config2.tag);
   const view = await viewToken(server, roomName, creds);
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
-  const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
+  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
   graph.start();
   const session = {
     graph,
@@ -34056,6 +34119,7 @@ async function joinSession(opts) {
     awareness: daemon.provider.awareness,
     daemon,
     me,
+    autoTagNote,
     dir,
     roomUrl,
     roomName,
@@ -34076,21 +34140,21 @@ async function joinLocal(dir, opts) {
   const kindEnv = opts.kind?.trim();
   const kind = kindEnv === "bot" || kindEnv === "ci" ? kindEnv : "agent";
   const name = label ? `${owner}+${label}` : owner;
-  const me = { name, kind, owner, ...label ? { label } : {} };
   const common = await gitCommonDir(dir);
   const local = await ensureLocalRelay(common, roomName, { log: opts.log });
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`;
   const share = requestedShare(opts.share);
-  let daemon;
+  let daemon, me, autoTagNote;
   try {
-    daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+    ;
+    ({ daemon, me, autoTagNote } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag));
   } catch (e) {
     await local.stop();
     throw e;
   }
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, "");
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}&key=${encodeURIComponent(local.key)}`;
-  const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&key=${encodeURIComponent(local.key)}`;
+  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
   graph.start();
   return {
     graph,
@@ -34099,6 +34163,7 @@ async function joinLocal(dir, opts) {
     awareness: daemon.provider.awareness,
     daemon,
     me,
+    autoTagNote,
     dir,
     roomUrl,
     roomName,
@@ -34946,6 +35011,24 @@ function createHandlerState(ctx) {
   return runtime;
 }
 
+// packages/room-mcp/src/prompt.ts
+function claudeWakeNote(session, done = false) {
+  const host = new HooksBridge(session, { forMe: () => false, isSeen: () => true }).freshSession()?.host;
+  if (host !== "claude") return "";
+  return done ? "Note for the user: I will only see new room messages on your next message unless Claude Code was started with --dangerously-load-development-channels plugin:room@room." : "Wake-ups need Claude Code started with --dangerously-load-development-channels plugin:room@room.";
+}
+var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
+
+Rules:
+1. You are joined automatically. Only change local/team-room choice when your human asks; use room_join/room_leave and follow any login instructions.
+2. Call room_scope(area, summary, paths) before editing and read the ledger it returns.
+3. Call room_read, then room_claim before editing. Never edit another person's claim; declare public-symbol plans.
+4. Answer addressed questions promptly. When unsure, ask the relevant agent with room_send and wait for the answer.
+5. Before finishing, release claims, announce dependent changes, preview-merge teammates' current work, then call room_done.
+6. Tell your human whenever room information, an interrupt, or a conflict changes your plan.
+
+Load the room-etiquette skill for detailed coordination, inbox, conflict, waiting, merge, and safety rules.`;
+
 // packages/room-mcp/src/choice.ts
 import fs7 from "node:fs";
 import path8 from "node:path";
@@ -35095,7 +35178,7 @@ function handlers(state) {
     },
     async room_join(a) {
       const cur = ctx.getSession();
-      if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`;
+      if (cur) return [`already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`, claudeWakeNote(cur)].filter(Boolean).join("\n");
       const dir = typeof a.dir === "string" && a.dir ? a.dir : ctx.cwd;
       const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
@@ -35146,6 +35229,7 @@ function handlers(state) {
       for (const n of here) out.push(`  ${n}: ${personLine2(s, n)}`);
       const away = others(s).filter((n) => !here.includes(n) && s.room.changedPaths(n).length);
       for (const n of away) out.push(`  ${n} (offline): ${personLine2(s, n)}`);
+      if (s.autoTagNote) out.push(s.autoTagNote);
       const cs = s.room.openClaims();
       if (cs.length) {
         out.push(`open claims (${cs.length}):`);
@@ -35153,6 +35237,8 @@ function handlers(state) {
       }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`);
       out.push("next: room_scope(area, summary, paths) before you edit.");
+      const wakeNote = claudeWakeNote(s);
+      if (wakeNote) out.push(wakeNote);
       return out.join("\n");
     },
     async room_leave(a) {
@@ -35283,11 +35369,11 @@ function workerPrompt(lead, tag, task) {
     `TASK: ${task}`
   ].join("\n");
 }
-function workerCommand(host, model, prompt) {
+function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL) {
   if (host === "codex") return { cmd: "codex", args: ["exec", "-s", "workspace-write", ...model ? ["-m", model] : [], prompt] };
   return {
     cmd: "claude",
-    args: ["-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : []]
+    args: [...claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : []]
   };
 }
 async function prepareWorktree(repoDir, tag) {
@@ -37562,6 +37648,8 @@ function handlers6(state) {
           }
         }
       }
+      const wakeNote = claudeWakeNote(s, true);
+      if (wakeNote) out.push(wakeNote);
       return out.join("\n");
     },
     async room_spawn(a) {
@@ -37617,7 +37705,7 @@ function handlers6(state) {
         const owner = s.me.owner ?? s.me.name;
         const name = `${owner}+${tag}`;
         const prompt = workerPrompt(s.me.name, tag, task);
-        const { cmd, args: args2 } = workerCommand(host, model, prompt);
+        const { cmd, args: args2 } = workerCommand(host, model, prompt, config2.claudeChannel);
         const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
         const env = {
           ROOM_SERVER: server,
@@ -38000,19 +38088,6 @@ ${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
   }
   return null;
 }
-
-// packages/room-mcp/src/prompt.ts
-var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
-
-Rules:
-1. You are joined automatically. Only change local/team-room choice when your human asks; use room_join/room_leave and follow any login instructions.
-2. Call room_scope(area, summary, paths) before editing and read the ledger it returns.
-3. Call room_read, then room_claim before editing. Never edit another person's claim; declare public-symbol plans.
-4. Answer addressed questions promptly. When unsure, ask the relevant agent with room_send and wait for the answer.
-5. Before finishing, release claims, announce dependent changes, preview-merge teammates' current work, then call room_done.
-6. Tell your human whenever room information, an interrupt, or a conflict changes your plan.
-
-Load the room-etiquette skill for detailed coordination, inbox, conflict, waiting, merge, and safety rules.`;
 
 // packages/room-mcp/src/index.ts
 var LOG_FILE;

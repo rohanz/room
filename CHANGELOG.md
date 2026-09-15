@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.4 — 2026-09-15
+
+- Claude Code wake-ups: workers spawned by a lead start with the channels flag; join and done replies on a Claude host say when wake-ups need `--dangerously-load-development-channels plugin:room@room`; docs updated (Codex needs nothing).
+- A second session under the same login on the same branch is tagged automatically (`rohanz+claude`, `-2`, …); ROOM_TAG still wins.
+- Browser view: favicon is the cube; overlay layer for tooltips; header box equal in both themes; lighter theme fade; audit fixes.
+- Server: reconnecting clients keep their presence.
+
 ## 0.6.3 — 2026-09-15
 
 - Browser view: light theme by default with a Light/Dark/System control and a short fade; neutral code pane; conflicts rendered as author-tinted lines with one tag on the right, claim overlaps (amber "both claimed") distinguished from text conflicts (red); single line-number column with side dots in divergent regions; Network tab restyled (segmented zoom defaulting to Fit, stat chips, tooltip); presence in the people rail follows live presence; header shows the logo at 40px and `owner / repo` with a branch chip; reconnect notice waits two seconds; pluralised counts.

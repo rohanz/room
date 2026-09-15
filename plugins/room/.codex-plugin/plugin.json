@@ -1,6 +1,6 @@
 {
   "name": "room",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Room awareness for coding agents: open a room for the repo once, auto-join per branch, see what teammates and their agents are on, declare intent, claim lines, get told when your symbols are about to change or your edits collide.",
   "author": {
     "name": "Rohan",
