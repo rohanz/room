@@ -219,7 +219,6 @@ export function lineHoverText(line: MergedLine, names: [string, string], claimsA
 function lineElement(line: MergedLine, names: [string, string], prefix = '', claimsAt?: ClaimsAt): HTMLElement {
   const owner = line.side === 'a' ? names[0] : line.side === 'b' ? names[1] : ''
   const row = h('div', { class: `code-line side-${line.side}${line.conflict ? ' conflict-line' : ''}`, title: lineHoverText(line, names, claimsAt) },
-    h('span', { class: 'conflict-gutter' }, ''),
     h('span', { class: 'line-number' }, line.aLine?.toString() ?? ''),
     h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
     h('span', { class: 'diff-prefix' }, prefix),
@@ -254,7 +253,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     const intents = new Map<string, string>()
     for (let row = start; row <= i; row++) {
       for (const [person, line] of [[names[0], lines[row].aLine], [names[1], lines[row].bLine]] as const) {
-        if (line !== undefined) for (const claim of claimsAt?.(person, line) ?? []) intents.set(claim.id, person + ': ' + claim.intent)
+        if (line !== undefined) for (const claim of claimsAt?.(person, line) ?? []) intents.set(claim.id, person + ': ' + claim.intent + (claim.plans?.length ? ` (plans: ${formatPlans(claim.plans)})` : ''))
       }
     }
     spans.push({ start, end: i, people: names, detail: names.join(' ↔ ') + '\nUnresolved: both sides changed these lines\n' + ([...intents.values()].join('\n') || 'Claim intents unavailable'), resolved: false })
@@ -265,36 +264,38 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     if (!indices.length) continue
     spans.push({ start: indices[0], end: indices.at(-1)!, people: s.people, detail: s.people.join(' ↔ ') + '\n' + (s.resolvedBy ? resolutionLabel(s) : 'Unresolved conflict') + '\n' + s.claims.map(c => `${c.by}: ${c.intent}${c.plans?.length ? ` (plans: ${formatPlans(c.plans)})` : ''}`).join('\n'), resolved: !!s.resolvedBy })
   }
+  // Prefer the recorded region's richer tooltip over its duplicate merge preview.
+  const regions = spans.filter((s, index) => !spans.some((other, j) => j > index &&
+    other.start === s.start && other.end === s.end &&
+    other.people.length === s.people.length && other.people.every(p => s.people.includes(p))))
   const grid = h('div', { class: 'conflict-code-grid' }, ...rows)
-  rows.forEach((row, i) => { row.style.gridRow = String(i + 1); row.style.gridColumn = '2' })
-  const gutter = h('div', { class: 'conflict-span-gutter' })
+  rows.forEach((row, i) => { row.style.gridRow = String(i + 1); row.style.gridColumn = '1' })
+  const gutter = h('div', { class: 'conflict-edge' })
   gutter.style.gridRow = '1 / ' + (lines.length + 1)
   const laneEnds: number[] = []
-  spans.sort((a, b) => a.start - b.start || a.end - b.end).forEach(s => {
+  regions.sort((a, b) => a.start - b.start || a.end - b.end).forEach(s => {
     let lane = laneEnds.findIndex(end => end < s.start)
     if (lane === -1) lane = laneEnds.length
     laneEnds[lane] = s.end
     const tooltip = h('span', { class: 'conflict-tooltip', role: 'tooltip' }, s.detail)
-    const label = h('span', { class: 'conflict-span-label' }, s.resolved ? 'resolved' : 'conflict')
-    const bar = h('button', { class: 'conflict-bar' + (s.resolved ? ' resolved' : ''), ariaLabel: s.detail }, label, tooltip)
-    bar.style.setProperty('--conflict-a', colorFor(s.people[0] ?? names[0]))
-    bar.style.setProperty('--conflict-b', colorFor(s.people[1] ?? names[1]))
-    // Stagger labels within the top of overlapping spans, without widening the gutter.
-    label.style.left = -lane * 3 + 'px'
-    label.style.top = lane * 10 + 'px'
+    const label = h('button', { class: 'conflict-tag', ariaLabel: s.detail }, s.resolved ? 'resolved' : 'conflict', tooltip)
+    const bar = h('div', { class: 'conflict-bar' + (s.resolved ? ' resolved' : '') }, label)
+    // Tags stack at the start of overlapping regions; edge lanes stay 2px apart.
+    label.style.right = lane * 4 + 4 + 'px'
+    label.style.top = lane * 16 + 'px'
     const positionTooltip = () => {
-      const rect = bar.getBoundingClientRect()
+      const rect = label.getBoundingClientRect()
       tooltip.style.left = Math.max(8, Math.min(rect.right + 8, window.innerWidth - 300)) + 'px'
       tooltip.style.top = Math.max(8, Math.min(rect.top, window.innerHeight - 160)) + 'px'
     }
-    bar.onmouseenter = positionTooltip; bar.onfocus = positionTooltip
+    label.onmouseenter = positionTooltip; label.onfocus = positionTooltip
     bar.style.gridRow = s.start + 1 + ' / ' + (s.end + 2)
     bar.style.gridColumn = String(lane + 1)
     for (let i = s.start; i <= s.end; i++) rows[i].classList.add(s.resolved ? 'resolved-conflict-line' : 'conflict-line')
     gutter.append(bar)
   })
-  gutter.style.gridTemplateColumns = 'repeat(' + Math.max(1, laneEnds.length) + ', 3px)'
-  grid.style.gridTemplateColumns = (spans.length ? '32px' : '0') + ' minmax(max-content, 1fr)'
+  gutter.style.gridTemplateColumns = 'repeat(' + Math.max(1, laneEnds.length) + ', 2px)'
+  grid.style.gridTemplateColumns = 'minmax(max-content, 1fr)' + (regions.length ? ' max-content' : '')
   if (spans.length) grid.append(gutter)
   host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, grid))
 }
