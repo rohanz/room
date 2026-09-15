@@ -1,6 +1,6 @@
+import { deriveConflictSpans } from './conflicts.ts'
 import {
   RoomDoc,
-  deriveConflictSpans,
   type ConflictSpan,
   areaMembershipSummary,
   colorFor,
@@ -150,7 +150,8 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
   const list = h('div', { class: 'participant-list' })
   const element = h('aside', { class: 'participants scroll' }, h('div', { class: 'panel-title' }, 'People'), list)
   const render = () => {
-    const participants = deriveParticipants(participantInput(conn))
+    const input = participantInput(conn)
+    const participants = deriveParticipants(input).map(p => ({ ...p, online: input.presences.some(entry => entry.user.name === p.name) }))
     list.replaceChildren(...participants.map(participant => {
       const state = deriveStatePill(participant)
       const short = shortPill(state)
@@ -173,7 +174,7 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
         : h('div', { class: 'micro muted' }, 'no active claims'),
       h('div', { class: 'files-summary' }, h('span', { class: 'micro-label' }, 'FILES'),
         h('span', { class: `mono ${participant.files.length ? '' : 'muted'}` }, participant.files.join(', ') || 'none')),
-      h('div', { class: 'card-foot muted', title: participant.online ? 'Online' : 'Offline' }, participant.latestActive !== undefined ? `active ${relativeTime(participant.latestActive)}` : participant.online ? 'Online · activity unknown' : 'Offline'))
+      h('div', { class: 'card-foot muted', title: participant.online ? 'Online' : 'Offline' }, participant.online ? participant.latestActive !== undefined ? `Online · idle ${Math.max(0, Math.floor((Date.now() - participant.latestActive) / 1000))}s` : 'Online · activity unknown' : 'Offline'))
       card.onclick = () => focus.set(focus.person === participant.name ? null : participant.name)
       return card
     }))

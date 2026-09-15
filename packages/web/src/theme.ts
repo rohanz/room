@@ -9,7 +9,15 @@ export function readTheme(): Theme {
   return 'light'
 }
 
+let transitionTimer: ReturnType<typeof setTimeout> | undefined
+
 export function applyTheme(theme: Theme): void {
-  document.documentElement.setAttribute('data-theme', theme)
+  const root = document.documentElement
+  if (root.getAttribute('data-theme') && root.getAttribute('data-theme') !== theme && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    clearTimeout(transitionTimer)
+    root.classList.add('theme-transition')
+    transitionTimer = setTimeout(() => root.classList.remove('theme-transition'), 220)
+  }
+  root.setAttribute('data-theme', theme)
   try { localStorage.setItem('room.theme', theme) } catch { /* Keep the in-page choice. */ }
 }

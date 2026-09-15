@@ -568,3 +568,27 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .editor-wrap .cm-selectionBackground, .editor-wrap .cm-editor.cm-focused .cm-selectionBackground { background: var(--code-selection) !important; }
 .center-files .file-item:hover, .center-files .file-item.active { background: var(--code-gutter); color: var(--code-ink); }
 .viewer .tab.active { background: var(--code-gutter); color: var(--accent-text); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .theme-transition :is(body, .shell, header, .header, .participants, .participant, .board, .board-card, .center, .center-files, .viewer, .viewer-top, .editor-wrap, .code-scroll, .code-line, .cm-editor, .cm-gutters, .timeline, .timeline-item, .network-panel, .network-details, .network-canvas) {
+    transition: background-color .22s ease, color .22s ease, border-color .22s ease;
+  }
+}
+
+.network-heading select { appearance: none; border: 1px solid var(--line); border-radius: 8px; padding: 7px 28px 7px 10px; background: var(--surface); color: var(--ink); cursor: pointer; }
+.network-zoom { display: inline-flex; }
+.network-percentage { min-width: 4ch; font: 11px var(--mono); color: var(--muted); }
+.network-stats { gap: 8px; flex-wrap: wrap; }
+.network-stats > div { border: 1px solid var(--line); border-radius: 20px; padding: 4px 9px; gap: 5px; background: var(--surface); }
+.network-stats strong { font-size: 12px; }
+.network-legend { display: flex; gap: 14px; }
+.network-legend span::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; background: currentColor; }
+.network-help { position: relative; display: inline-flex; margin-left: 8px; vertical-align: middle; }
+.network-help button { border: 1px solid var(--line); border-radius: 50%; width: 20px; height: 20px; padding: 0; background: var(--surface); color: var(--muted); font-size: 12px; }
+.network-help-text { display: none; position: absolute; top: 100%; left: 0; width: min(300px, 60vw); padding: 10px; z-index: 30; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: 12px/1.5 var(--sans); letter-spacing: normal; }
+.network-help:hover .network-help-text, .network-help:focus-within .network-help-text { display: block; }
+.network-details-empty { padding: 16px 0; }
+.network-node.file-edited > rect, .network-node.contract.file-edited > rect { fill: color-mix(in srgb, var(--accent) 12%, var(--surface)); stroke: var(--accent); }
+.network-node.file-edited > .network-filename, .network-node.file-edited > .network-directory { fill: var(--ink); }
+.network-node.file-edited > circle, .network-node.file-edited .edit-badge text { fill: var(--accent-text); }
+.network-node.file-edited .edit-badge rect { fill: var(--surface); stroke: var(--accent); }

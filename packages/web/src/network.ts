@@ -19,30 +19,33 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   const search = h('input', { type: 'search', placeholder: 'Find a file…' })
   search.setAttribute('aria-label', 'Find a file in the network')
   const focus = h('input', { type: 'checkbox', checked: true })
-  const density = h('select', { title: 'Node density' }, h('option', { value: 'auto' }, 'Auto size'), h('option', { value: 'compact' }, 'Compact'), h('option', { value: 'comfortable' }, 'Comfortable'))
-  density.setAttribute('aria-label', 'Node density')
-  const zoom = h('input', { type: 'range', min: '30', max: '160', value: '100', title: 'Network zoom' })
+  let zoom = 100
+  const minus = h('button', { ariaLabel: 'Zoom out' }, '−')
+  const plus = h('button', { ariaLabel: 'Zoom in' }, '+')
+  const percentage = h('span', { class: 'network-percentage', ariaLive: 'polite' }, '100%')
   const fit = h('button', { title: 'Fit the full network in the available width' }, 'Fit')
   const expand = h('button', { title: 'Give the network the full workspace width' }, 'Expand')
   expand.setAttribute('aria-pressed', 'false')
-  zoom.setAttribute('aria-label', 'Network zoom')
   const status = h('div', { class: 'network-status' })
   const stats = h('div', { class: 'network-stats' })
   const canvas = h('div', { class: 'network-canvas' })
   const details = h('div', { class: 'network-details' })
   const tooltip = h('div', { class: 'network-tooltip', hidden: true })
   tooltip.id = 'network-tooltip'; tooltip.setAttribute('role', 'tooltip')
+  const help = h('span', { class: 'network-help' }, h('button', { ariaLabel: 'About contract risks' }, '?'),
+    h('span', { class: 'network-help-text', role: 'tooltip' }, 'No declared contract plans of yours; ordinary edits do not imply downstream breakage. Impact is inferred from declared plans and symbol references; the merged-tree test run is the proof.'))
+  const emptyDetails = () => details.replaceChildren(h('div', { class: 'network-details-empty muted' }, 'Select a file to inspect its dependencies, current owners, and declared plans.'))
   const root = h('section', { class: 'network-panel' },
-    h('div', { class: 'network-heading' }, h('div', {}, h('h2', {}, 'My work & contract risks'), h('p', { class: 'muted' }, 'Upstream risks to my work → my edits and plans → consumers of my planned changes.')), h('label', {}, 'Viewing as ', person)),
-    h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' Relevant to my work'), density, h('label', { class: 'network-zoom' }, 'Zoom ', zoom), fit, expand),
+    h('div', { class: 'network-heading' }, h('div', {}, h('h2', {}, 'My work & contract risks', help), h('p', { class: 'muted' }, 'Upstream risks → my edits and plans → consumers of my planned changes')), h('label', {}, 'Viewing as ', person)),
+    h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' Relevant to my work'), h('div', { class: 'view-switcher network-zoom', role: 'group', ariaLabel: 'Network zoom' }, minus, fit, plus), percentage, expand),
     stats,
-    h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Blue · Edits'), h('span', { class: 'legend-contract' }, 'Purple · Declared plan'), h('span', { class: 'legend-impact' }, 'Red · Uses a symbol someone plans to change'), h('span', {}, 'Provider → consumer · Hover to preview, click to inspect')),
-    status, canvas, details, tooltip,
-    h('div', { class: 'network-footnote' }, 'Impact is inferred from declared plans and symbol references; the merged-tree test run is the proof.'))
+    h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Edits'), h('span', { class: 'legend-contract' }, 'Declared plans'), h('span', { class: 'legend-impact' }, 'Consumers')),
+    status, canvas, details, tooltip)
   let selectedPerson = new URLSearchParams(location.search).get('participant') ?? new URLSearchParams(location.search).get('name') ?? ''
   let selectedPath = ''
   let drawing: SVGSVGElement | undefined
-  let fitMode = false
+  let fitMode = true
+  let fileSet = ''
   let impact: ReturnType<typeof deriveContractImpact>
   let workView: ReturnType<typeof deriveWorkImpact>
   const hideTooltip = () => { tooltip.hidden = true }
@@ -50,10 +53,14 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   const contractStyle = (path: string) => impact.contracts.has(path) ? 'contract' : impact.direct.has(path) ? 'direct' : impact.indirect.has(path) ? 'indirect' : 'neutral'
   const exposure = (path: string) => [...(impact.direct.get(path) ?? []), ...(impact.indirect.get(path) ?? [])]
   const sizeDrawing = () => {
-    if (!drawing || !canvas.clientWidth) return
+    if (!canvas.clientWidth) { fitMode = true; return }
+    if (!drawing) return
     const width = drawing.viewBox.baseVal.width
-    if (fitMode) zoom.value = String(Math.max(30, Math.min(160, Math.floor(canvas.clientWidth / width * 100))))
-    drawing.style.width = `${width * Number(zoom.value) / 100}px`
+    if (fitMode) zoom = Math.max(1, Math.floor(canvas.clientWidth / width * 100))
+    percentage.textContent = `${zoom}%`
+    fit.classList.toggle('active', fitMode)
+    fit.ariaPressed = String(fitMode)
+    drawing.style.width = `${width * zoom / 100}px`
   }
 
   const showDetails = (node: NetworkNode, snapshot: GraphSnapshot) => {
@@ -100,7 +107,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     if (!snapshot || snapshot.version !== 1) {
       stats.replaceChildren(); status.textContent = ''
       canvas.replaceChildren(h('div', { class: 'network-empty' }, h('h2', {}, 'Waiting for a dependency snapshot'), h('p', {}, 'Join with the updated Room MCP server to publish the source graph from your clone.'), h('p', { class: 'muted' }, 'Your changed files will be highlighted once indexing completes.')))
-      details.replaceChildren(); return
+      emptyDetails(); fileSet = ''; return
     }
     const changed = conn.room.changedPaths(selectedPerson)
     const model = deriveNetwork(snapshot, changed, [...(conn.room.deleted.get(selectedPerson)?.keys() ?? [])], false)
@@ -111,7 +118,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     const online = presences(conn.provider).some(p => p.user.name === selectedPerson)
     const notices = [snapshot.status === 'ready' ? '' : snapshot.status === 'error' ? 'Index failed — showing last available data.' : 'Indexing — dependencies may be incomplete.',
       !online ? 'Participant offline — retained snapshot.' : '', snapshot.base !== conn.room.meta.base ? 'Snapshot is on an older room base.' : '', snapshot.truncated ? 'Indexer limits reached; graph is partial.' : '',
-      !workView.work.size ? 'No edits or open claims for this participant. Turn off Relevant to my work to explore the repository.' : !workView.ownPlans ? 'No declared contract plans of yours; ordinary edits do not imply downstream breakage.' : '',
+      !workView.work.size ? 'No edits or open claims for this participant. Turn off Relevant to my work to explore the repository.' : '',
       workView.work.size && !workView.upstreamPlans ? 'No matching upstream contract risk in this snapshot.' : ''].filter(Boolean)
     status.textContent = `${notices.join(' ')} Snapshot ${new Date(snapshot.at).toLocaleTimeString()} · base ${snapshot.base.slice(0, 7)}`
     const query = search.value.toLowerCase().trim()
@@ -122,15 +129,17 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     if (matching.length > nodes.length) status.textContent += ` · Showing ${nodes.length} of ${matching.length} files; narrow the search.`
     if (!nodes.length) {
       canvas.replaceChildren(h('div', { class: 'network-empty' }, 'No matching work. Select a participant with edits or claims, clear the search, or turn off Relevant to my work.'))
-      details.replaceChildren(); return
+      emptyDetails(); fileSet = ''; return
     }
-    const compact = density.value === 'compact' || (density.value === 'auto' && nodes.length > 30)
+    const nextFileSet = JSON.stringify([selectedPerson, nodes.map(n => n.path).sort()])
+    if (nextFileSet !== fileSet) { fitMode = true; fileSet = nextFileSet }
+    const compact = nodes.length > 30
     const nodeHeight = compact ? 30 : 60, rowGap = compact ? 42 : 88
     const columns = roles.filter(role => role !== 'context' || nodes.some(n => risk(n.path) === role))
     const width = Math.max(740, columns.length * 300 + 50)
     const height = Math.max(380, Math.max(...columns.map(role => nodes.filter(n => risk(n.path) === role).length)) * rowGap + 105)
     drawing = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'group', 'aria-label': `Dependency network for ${selectedPerson}` })
-    drawing.style.width = `${width * Number(zoom.value) / 100}px`
+    drawing.style.width = `${width * zoom / 100}px`
     const defs = svg('defs')
     const bothFill = svg('linearGradient', { id: 'network-both-fill', x1: '0%', y1: '0%', x2: '100%', y2: '100%' })
     bothFill.append(svg('stop', { offset: '50%', 'stop-color': '#075fa8' }), svg('stop', { offset: '50%', 'stop-color': '#9624b5' }))
@@ -202,14 +211,15 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     sizeDrawing()
     const selection = nodes.find(n => n.path === selectedPath)
     if (selection) showDetails(selection, snapshot)
-    else details.replaceChildren(h('span', { class: 'muted' }, 'Select a file to inspect its dependencies, current owners, and declared plans.'))
+    else emptyDetails()
   }
   person.onchange = () => { selectedPerson = person.value; selectedPath = ''; shared?.set(selectedPerson || null); render() }
   // The People column's click-to-focus drives this view too.
   shared?.subscribe(() => { if (shared.person && shared.person !== selectedPerson) { selectedPerson = shared.person; selectedPath = ''; render() } })
-  search.oninput = render; focus.onchange = render; density.onchange = render
+  search.oninput = render; focus.onchange = render
   canvas.addEventListener('scroll', hideTooltip)
-  zoom.oninput = () => { fitMode = false; sizeDrawing() }
+  minus.onclick = () => { fitMode = false; zoom = Math.max(10, zoom - 10); sizeDrawing() }
+  plus.onclick = () => { fitMode = false; zoom = Math.min(200, zoom + 10); sizeDrawing() }
   fit.onclick = () => { fitMode = true; sizeDrawing() }
   expand.onclick = () => {
     const expanded = root.classList.toggle('expanded')

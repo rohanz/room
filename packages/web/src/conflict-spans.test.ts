@@ -1,7 +1,8 @@
+import { deriveConflictSpans } from './conflicts.ts'
 /// <reference types="node" />
 import { readFileSync } from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
-import { colorFor, deriveConflictSpans, type Claim, type Msg } from '@room/shared'
+import { colorFor, type Claim, type Msg } from '@room/shared'
 import { collapseConflictTimeline } from './timeline.ts'
 import { renderCodeLines } from './panels.ts'
 
@@ -23,19 +24,19 @@ it('detects narrowing', () => {
   expect(deriveConflictSpans([conflict], [claims[0], { ...claims[1], from: 8, to: 10, at: 20 }])[0].resolvedBy).toEqual({ how: 'narrowed', who: 'tiers', at: 20 })
 })
 it('only accepts later clean messages for the exact path and participants', () => {
-  expect(deriveConflictSpans([conflict, note("your a.ts and tiers's merge cleanly again")], claims)[0].resolvedBy?.how).toBe('merged clean')
+  expect(deriveConflictSpans([conflict, note("your a.ts and tiers's merge cleanly again")], claims)[0].resolvedBy).toBeUndefined()
   for (const m of [note("your b.ts and tiers's merge cleanly again"), note("your a.ts and other's merge cleanly again"), note("your a.ts and tiers's merge cleanly again", 5)]) expect(deriveConflictSpans([conflict, m], claims)[0].resolvedBy).toBeUndefined()
 })
 it('hides spans when the observed base advances, retaining resolution in history', () => {
   expect(deriveConflictSpans([conflict, base], claims, 'new')[0]).toMatchObject({ hidden: true, resolvedBy: { how: 'base moved', at: 30 } })
   expect(deriveConflictSpans([conflict, base], claims, 'old')[0].hidden).toBe(false)
-  expect(deriveConflictSpans([conflict, note("your a.ts and tiers's merge cleanly again"), base], claims, 'new')[0]).toMatchObject({ hidden: true, resolvedBy: { how: 'merged clean' } })
+  expect(deriveConflictSpans([conflict, note("your a.ts and tiers's merge cleanly again"), base], claims, 'new')[0]).toMatchObject({ hidden: true, resolvedBy: { how: 'base moved' } })
 })
-it('collapses three events into one card, preserving each event', () => {
+it('collapses matching conflicts but keeps pair-only resolution notes separate', () => {
   const events: Msg[] = [conflict, { ...conflict, id: 'copy', priority: 'notify', at: 11, claimId: 'c1', otherClaimId: 'c0' }, note("your a.ts and tiers's merge cleanly again")]
   const cards = collapseConflictTimeline(events, claims)
-  expect(cards).toHaveLength(1)
-  expect(cards[0].conflict?.events.map(m => m.id)).toEqual(['conflict', 'copy', 'note20'])
+  expect(cards).toHaveLength(2)
+  expect(cards.find(card => card.conflict)?.conflict?.events.map(m => m.id)).toEqual(['conflict', 'copy'])
 })
 it('folds pairwise merge notes and both addressed overlap notifications', () => {
   const notices = [note("your a.ts and tiers's now conflict around lines 2, 7; room_preview_merge(tiers) for detail", 10), note("your a.ts and tiers's merge cleanly again")]
@@ -127,4 +128,22 @@ it('does not duplicate a text region with a recorded conflict and preserves outs
   expect(rows[7].className).not.toContain('conflict-line')
   expect(rows[0].properties.get('--line-owner')).toBe(colorFor('money'))
   expect(rows[7].properties.get('--line-owner')).toBe(colorFor('tiers'))
+})
+
+it('ignores releases from earlier sessions and requires exact claim ids at or after opening', () => {
+  const oldRelease: Msg = { id: 'old-release', type: 'release', priority: 'fyi', from: 'money', fromKind: 'agent', at: 5, claimId: 'c0', path: 'a.ts' }
+  const unrelated = { ...oldRelease, id: 'unrelated', at: 11, claimId: 'previous-session' }
+  expect(deriveConflictSpans([oldRelease, conflict, unrelated], claims)[0].resolvedBy).toBeUndefined()
+  const exact = { ...oldRelease, id: 'exact', at: 10 }
+  expect(deriveConflictSpans([conflict, exact], claims)[0].resolvedBy).toMatchObject({ how: 'released', at: 10 })
+})
+
+it('keeps earlier and current claim sessions separate even for one-claim edit conflicts', () => {
+  const oldClaim = { ...claims[0], id: 'old-c0' }
+  const oldConflict = { ...conflict, id: 'old-conflict', claimId: oldClaim.id, otherClaimId: '', to: 'tiers', text: "you edited a.ts:2-7 inside money's claim", at: 2 }
+  const release: Msg = { id: 'release-old', type: 'release', priority: 'fyi', from: 'money', fromKind: 'agent', at: 5, claimId: oldClaim.id, path: 'a.ts' }
+  const current = { ...oldConflict, id: 'new-conflict', claimId: 'c0', at: 10 }
+  const spans = deriveConflictSpans([oldConflict, release, current], [oldClaim, claims[0]])
+  expect(spans.find(s => s.claimIds.includes('old-c0'))?.resolvedBy?.how).toBe('released')
+  expect(spans.find(s => s.claimIds.includes('c0'))?.resolvedBy).toBeUndefined()
 })
