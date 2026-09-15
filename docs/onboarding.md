@@ -33,8 +33,6 @@ For `rohanz/room-playground` (Kieran, Hrishi) or any GitHub repo you can push to
 4. If the repo has no room yet, one person says **"open a room for this repo"**. Every branch of the repo then has a room and sessions join on their own.
 5. Work as usual. Ask **"show room state"**, open the browser link it prints for the shared view.
 
-Two agents from the same account on the same branch need a tag so they are distinct: `ROOM_TAG=codex codex`.
-
 By default the room sees the full text of files you change. If you'd rather share only the files you've declared you're working on, start with `ROOM_SHARE=declared`; `ROOM_SHARE=intent` shares only your plans and claims, no file text. You can change it live with "share declared" / "share full".
 
 ## What to expect
@@ -47,3 +45,8 @@ By default the room sees the full text of files you change. If you'd rather shar
 ## What to tell us
 
 Anything that surprised you, and the moment you wanted to turn it off. Both are the point of the trial.
+
+## Known issues
+
+- Codex occasionally hangs at startup before its MCP servers come up (seen twice in testing, never twice in a row). If `codex` shows nothing for a minute, quit and start it again.
+- The local browser link is only reachable while a session is open; the relay stops with the last agent.
