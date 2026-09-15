@@ -23,13 +23,13 @@ var __export = (target, all2) => {
   for (var name in all2)
     __defProp(target, name, { get: all2[name], enumerable: true });
 };
-var __copyProps = (to, from2, except, desc) => {
+var __copyProps = (to2, from2, except, desc) => {
   if (from2 && typeof from2 === "object" || typeof from2 === "function") {
     for (let key of __getOwnPropNames(from2))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from2[key], enumerable: !(desc = __getOwnPropDesc(from2, key)) || desc.enumerable });
+      if (!__hasOwnProp.call(to2, key) && key !== except)
+        __defProp(to2, key, { get: () => from2[key], enumerable: !(desc = __getOwnPropDesc(from2, key)) || desc.enumerable });
   }
-  return to;
+  return to2;
 };
 var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
   // If the importer is in node compatibility mode or this is not an ESM
@@ -247,8 +247,8 @@ var require_scope = __commonJS({
         super(nameStr);
         this.prefix = prefix;
       }
-      setValue(value, { property, itemIndex }) {
-        this.value = value;
+      setValue(value2, { property, itemIndex }) {
+        this.value = value2;
         this.scopePath = (0, code_1._)`.${new code_1.Name(property)}[${itemIndex}]`;
       }
     };
@@ -267,13 +267,13 @@ var require_scope = __commonJS({
       name(prefix) {
         return new ValueScopeName(prefix, this._newName(prefix));
       }
-      value(nameOrPrefix, value) {
+      value(nameOrPrefix, value2) {
         var _a3;
-        if (value.ref === void 0)
+        if (value2.ref === void 0)
           throw new Error("CodeGen: ref must be passed in value");
         const name = this.toName(nameOrPrefix);
         const { prefix } = name;
-        const valueKey = (_a3 = value.key) !== null && _a3 !== void 0 ? _a3 : value.ref;
+        const valueKey = (_a3 = value2.key) !== null && _a3 !== void 0 ? _a3 : value2.ref;
         let vs = this._values[prefix];
         if (vs) {
           const _name = vs.get(valueKey);
@@ -285,8 +285,8 @@ var require_scope = __commonJS({
         vs.set(valueKey, name);
         const s = this._scope[prefix] || (this._scope[prefix] = []);
         const itemIndex = s.length;
-        s[itemIndex] = value.ref;
-        name.setValue(value, { property: prefix, itemIndex });
+        s[itemIndex] = value2.ref;
+        name.setValue(value2, { property: prefix, itemIndex });
         return name;
       }
       getValue(prefix, keyOrRef) {
@@ -629,17 +629,17 @@ var require_codegen = __commonJS({
       }
     };
     var ForRange = class extends For {
-      constructor(varKind, name, from2, to) {
+      constructor(varKind, name, from2, to2) {
         super();
         this.varKind = varKind;
         this.name = name;
         this.from = from2;
-        this.to = to;
+        this.to = to2;
       }
       render(opts) {
         const varKind = opts.es5 ? scope_1.varKinds.var : this.varKind;
-        const { name, from: from2, to } = this;
-        return `for(${varKind} ${name}=${from2}; ${name}<${to}; ${name}++)` + super.render(opts);
+        const { name, from: from2, to: to2 } = this;
+        return `for(${varKind} ${name}=${from2}; ${name}<${to2}; ${name}++)` + super.render(opts);
       }
       get names() {
         const names = addExprNames(super.names, this.from);
@@ -756,8 +756,8 @@ var require_codegen = __commonJS({
         return this._extScope.name(prefix);
       }
       // reserves unique name in the external scope and assigns value to it
-      scopeValue(prefixOrName, value) {
-        const name = this._extScope.value(prefixOrName, value);
+      scopeValue(prefixOrName, value2) {
+        const name = this._extScope.value(prefixOrName, value2);
         const vs = this._values[name.prefix] || (this._values[name.prefix] = /* @__PURE__ */ new Set());
         vs.add(name);
         return name;
@@ -811,13 +811,13 @@ var require_codegen = __commonJS({
       // returns code for object literal for the passed argument list of key-value pairs
       object(...keyValues) {
         const code = ["{"];
-        for (const [key, value] of keyValues) {
+        for (const [key, value2] of keyValues) {
           if (code.length > 1)
             code.push(",");
           code.push(key);
-          if (key !== value || this.opts.es5) {
+          if (key !== value2 || this.opts.es5) {
             code.push(":");
-            (0, code_1.addCodeArg)(code, value);
+            (0, code_1.addCodeArg)(code, value2);
           }
         }
         code.push("}");
@@ -858,9 +858,9 @@ var require_codegen = __commonJS({
         return this._for(new ForLoop(iteration), forBody);
       }
       // `for` statement for a range of values
-      forRange(nameOrPrefix, from2, to, forBody, varKind = this.opts.es5 ? scope_1.varKinds.var : scope_1.varKinds.let) {
+      forRange(nameOrPrefix, from2, to2, forBody, varKind = this.opts.es5 ? scope_1.varKinds.var : scope_1.varKinds.let) {
         const name = this._scope.toName(nameOrPrefix);
-        return this._for(new ForRange(varKind, name, from2, to), () => forBody(name));
+        return this._for(new ForRange(varKind, name, from2, to2), () => forBody(name));
       }
       // `for-of` statement (in es5 mode replace with a normal for loop)
       forOf(nameOrPrefix, iterable, forBody, varKind = scope_1.varKinds.const) {
@@ -896,10 +896,10 @@ var require_codegen = __commonJS({
         return this._leafNode(new Break(label));
       }
       // `return` statement
-      return(value) {
+      return(value2) {
         const node2 = new Return();
         this._blockNode(node2);
-        this.code(value);
+        this.code(value2);
         if (node2.nodes.length !== 1)
           throw new Error('CodeGen: "return" should have one node');
         return this._endBlockNode(Return);
@@ -1152,31 +1152,31 @@ var require_util = __commonJS({
     }
     exports.eachItem = eachItem;
     function makeMergeEvaluated({ mergeNames, mergeToName, mergeValues: mergeValues2, resultToName }) {
-      return (gen, from2, to, toName) => {
-        const res = to === void 0 ? from2 : to instanceof codegen_1.Name ? (from2 instanceof codegen_1.Name ? mergeNames(gen, from2, to) : mergeToName(gen, from2, to), to) : from2 instanceof codegen_1.Name ? (mergeToName(gen, to, from2), from2) : mergeValues2(from2, to);
+      return (gen, from2, to2, toName) => {
+        const res = to2 === void 0 ? from2 : to2 instanceof codegen_1.Name ? (from2 instanceof codegen_1.Name ? mergeNames(gen, from2, to2) : mergeToName(gen, from2, to2), to2) : from2 instanceof codegen_1.Name ? (mergeToName(gen, to2, from2), from2) : mergeValues2(from2, to2);
         return toName === codegen_1.Name && !(res instanceof codegen_1.Name) ? resultToName(gen, res) : res;
       };
     }
     exports.mergeEvaluated = {
       props: makeMergeEvaluated({
-        mergeNames: (gen, from2, to) => gen.if((0, codegen_1._)`${to} !== true && ${from2} !== undefined`, () => {
-          gen.if((0, codegen_1._)`${from2} === true`, () => gen.assign(to, true), () => gen.assign(to, (0, codegen_1._)`${to} || {}`).code((0, codegen_1._)`Object.assign(${to}, ${from2})`));
+        mergeNames: (gen, from2, to2) => gen.if((0, codegen_1._)`${to2} !== true && ${from2} !== undefined`, () => {
+          gen.if((0, codegen_1._)`${from2} === true`, () => gen.assign(to2, true), () => gen.assign(to2, (0, codegen_1._)`${to2} || {}`).code((0, codegen_1._)`Object.assign(${to2}, ${from2})`));
         }),
-        mergeToName: (gen, from2, to) => gen.if((0, codegen_1._)`${to} !== true`, () => {
+        mergeToName: (gen, from2, to2) => gen.if((0, codegen_1._)`${to2} !== true`, () => {
           if (from2 === true) {
-            gen.assign(to, true);
+            gen.assign(to2, true);
           } else {
-            gen.assign(to, (0, codegen_1._)`${to} || {}`);
-            setEvaluated(gen, to, from2);
+            gen.assign(to2, (0, codegen_1._)`${to2} || {}`);
+            setEvaluated(gen, to2, from2);
           }
         }),
-        mergeValues: (from2, to) => from2 === true ? true : { ...from2, ...to },
+        mergeValues: (from2, to2) => from2 === true ? true : { ...from2, ...to2 },
         resultToName: evaluatedPropsToName
       }),
       items: makeMergeEvaluated({
-        mergeNames: (gen, from2, to) => gen.if((0, codegen_1._)`${to} !== true && ${from2} !== undefined`, () => gen.assign(to, (0, codegen_1._)`${from2} === true ? true : ${to} > ${from2} ? ${to} : ${from2}`)),
-        mergeToName: (gen, from2, to) => gen.if((0, codegen_1._)`${to} !== true`, () => gen.assign(to, from2 === true ? true : (0, codegen_1._)`${to} > ${from2} ? ${to} : ${from2}`)),
-        mergeValues: (from2, to) => from2 === true ? true : Math.max(from2, to),
+        mergeNames: (gen, from2, to2) => gen.if((0, codegen_1._)`${to2} !== true && ${from2} !== undefined`, () => gen.assign(to2, (0, codegen_1._)`${from2} === true ? true : ${to2} > ${from2} ? ${to2} : ${from2}`)),
+        mergeToName: (gen, from2, to2) => gen.if((0, codegen_1._)`${to2} !== true`, () => gen.assign(to2, from2 === true ? true : (0, codegen_1._)`${to2} > ${from2} ? ${to2} : ${from2}`)),
+        mergeValues: (from2, to2) => from2 === true ? true : Math.max(from2, to2),
         resultToName: (gen, items) => gen.var("items", items)
       })
     };
@@ -2991,7 +2991,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve5.call(this, root, ref);
+      let _sch = resolve4.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3018,7 +3018,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve5(root, ref) {
+    function resolve4(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3269,8 +3269,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path10) {
-      let input = path10;
+    function removeDotSegments(path11) {
+      let input = path11;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3679,8 +3679,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path10 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path10 && path10 !== "/" ? path10 : void 0;
+        const path11 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -3848,7 +3848,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve5(baseURI, relativeURI, options) {
+    function resolve4(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -4204,19 +4204,19 @@ var require_fast_uri = __commonJS({
       if (typeof uri !== "string" && typeof uri !== "object") {
         return void 0;
       }
-      let value;
+      let value2;
       try {
-        value = typeof uri === "string" ? uri : serialize(uri, opts);
+        value2 = typeof uri === "string" ? uri : serialize(uri, opts);
       } catch {
         return void 0;
       }
-      const { normalized, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = normalizeStringWithStatus(value, opts);
+      const { normalized, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = normalizeStringWithStatus(value2, opts);
       return malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? void 0 : normalized;
     }
     var fastUri = {
       SCHEMES,
       normalize: normalize2,
-      resolve: resolve5,
+      resolve: resolve4,
       resolveComponent,
       equal,
       serialize,
@@ -5077,13 +5077,13 @@ var require_ucs2length = __commonJS({
       const len = str4.length;
       let length2 = 0;
       let pos = 0;
-      let value;
+      let value2;
       while (pos < len) {
         length2++;
-        value = str4.charCodeAt(pos++);
-        if (value >= 55296 && value <= 56319 && pos < len) {
-          value = str4.charCodeAt(pos);
-          if ((value & 64512) === 56320)
+        value2 = str4.charCodeAt(pos++);
+        if (value2 >= 55296 && value2 <= 56319 && pos < len) {
+          value2 = str4.charCodeAt(pos);
+          if ((value2 & 64512) === 56320)
             pos++;
         }
       }
@@ -7068,11 +7068,11 @@ var require_formats = __commonJS({
     }
     var MIN_INT32 = -(2 ** 31);
     var MAX_INT32 = 2 ** 31 - 1;
-    function validateInt32(value) {
-      return Number.isInteger(value) && value <= MAX_INT32 && value >= MIN_INT32;
+    function validateInt32(value2) {
+      return Number.isInteger(value2) && value2 <= MAX_INT32 && value2 >= MIN_INT32;
     }
-    function validateInt64(value) {
-      return Number.isInteger(value);
+    function validateInt64(value2) {
+      return Number.isInteger(value2);
     }
     function validateNumber() {
       return true;
@@ -7192,12 +7192,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs10, exportName) {
+    function addFormats(ajv, list, fs11, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs10[f]);
+        ajv.addFormat(f, fs11[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -8308,43 +8308,43 @@ var require_permessage_deflate = __commonJS({
       normalizeParams(configurations) {
         configurations.forEach((params2) => {
           Object.keys(params2).forEach((key) => {
-            let value = params2[key];
-            if (value.length > 1) {
+            let value2 = params2[key];
+            if (value2.length > 1) {
               throw new Error(`Parameter "${key}" must have only a single value`);
             }
-            value = value[0];
+            value2 = value2[0];
             if (key === "client_max_window_bits") {
-              if (value !== true) {
-                const num = +value;
+              if (value2 !== true) {
+                const num = +value2;
                 if (!Number.isInteger(num) || num < 8 || num > 15) {
                   throw new TypeError(
-                    `Invalid value for parameter "${key}": ${value}`
+                    `Invalid value for parameter "${key}": ${value2}`
                   );
                 }
-                value = num;
+                value2 = num;
               } else if (!this._isServer) {
                 throw new TypeError(
-                  `Invalid value for parameter "${key}": ${value}`
+                  `Invalid value for parameter "${key}": ${value2}`
                 );
               }
             } else if (key === "server_max_window_bits") {
-              const num = +value;
+              const num = +value2;
               if (!Number.isInteger(num) || num < 8 || num > 15) {
                 throw new TypeError(
-                  `Invalid value for parameter "${key}": ${value}`
+                  `Invalid value for parameter "${key}": ${value2}`
                 );
               }
-              value = num;
+              value2 = num;
             } else if (key === "client_no_context_takeover" || key === "server_no_context_takeover") {
-              if (value !== true) {
+              if (value2 !== true) {
                 throw new TypeError(
-                  `Invalid value for parameter "${key}": ${value}`
+                  `Invalid value for parameter "${key}": ${value2}`
                 );
               }
             } else {
               throw new Error(`Unknown parameter "${key}"`);
             }
-            params2[key] = value;
+            params2[key] = value2;
           });
         });
         return configurations;
@@ -8681,8 +8681,8 @@ var require_validation2 = __commonJS({
       }
       return true;
     }
-    function isBlob(value) {
-      return hasBlob && typeof value === "object" && typeof value.arrayBuffer === "function" && typeof value.type === "string" && typeof value.stream === "function" && (value[Symbol.toStringTag] === "Blob" || value[Symbol.toStringTag] === "File");
+    function isBlob(value2) {
+      return hasBlob && typeof value2 === "object" && typeof value2.arrayBuffer === "function" && typeof value2.type === "string" && typeof value2.stream === "function" && (value2[Symbol.toStringTag] === "Blob" || value2[Symbol.toStringTag] === "File");
     }
     module.exports = {
       isBlob,
@@ -10148,12 +10148,12 @@ var require_extension = __commonJS({
               throw new SyntaxError(`Unexpected character at index ${i}`);
             }
             if (end === -1) end = i;
-            let value = header.slice(start, end);
+            let value2 = header.slice(start, end);
             if (mustUnescape) {
-              value = value.replace(/\\/g, "");
+              value2 = value2.replace(/\\/g, "");
               mustUnescape = false;
             }
-            push(params2, paramName, value);
+            push(params2, paramName, value2);
             if (code === 44) {
               push(offers, extensionName, params2);
               params2 = /* @__PURE__ */ Object.create(null);
@@ -10813,8 +10813,8 @@ var require_websocket = __commonJS({
           const headers = options && options.headers;
           options = { ...options, headers: {} };
           if (headers) {
-            for (const [key2, value] of Object.entries(headers)) {
-              options.headers[key2.toLowerCase()] = value;
+            for (const [key2, value2] of Object.entries(headers)) {
+              options.headers[key2.toLowerCase()] = value2;
             }
           }
         } else if (websocket.listenerCount("redirect") === 0) {
@@ -11574,10 +11574,10 @@ var require_websocket_server = __commonJS({
         }
         if (extensions[PerMessageDeflate2.extensionName]) {
           const params2 = extensions[PerMessageDeflate2.extensionName].params;
-          const value = extension2.format({
+          const value2 = extension2.format({
             [PerMessageDeflate2.extensionName]: [params2]
           });
-          headers.push(`Sec-WebSocket-Extensions: ${value}`);
+          headers.push(`Sec-WebSocket-Extensions: ${value2}`);
           ws._extensions = extensions;
         }
         this.emit("headers", headers, req);
@@ -11645,8 +11645,7 @@ var require_websocket_server = __commonJS({
 });
 
 // packages/room-mcp/src/index.ts
-import fs9 from "node:fs";
-import { resolve as resolve4 } from "node:path";
+import fs10 from "node:fs";
 
 // node_modules/zod/v4/core/util.js
 var util_exports = {};
@@ -11749,19 +11748,19 @@ function getEnumValues(entries) {
 function joinValues(array2, separator = "|") {
   return array2.map((val) => stringifyPrimitive(val)).join(separator);
 }
-function jsonStringifyReplacer(_, value) {
-  if (typeof value === "bigint")
-    return value.toString();
-  return value;
+function jsonStringifyReplacer(_, value2) {
+  if (typeof value2 === "bigint")
+    return value2.toString();
+  return value2;
 }
 function cached(getter) {
   const set = false;
   return {
     get value() {
       if (!set) {
-        const value = getter();
-        Object.defineProperty(this, "value", { value });
-        return value;
+        const value2 = getter();
+        Object.defineProperty(this, "value", { value: value2 });
+        return value2;
       }
       throw new Error("cached value already set");
     }
@@ -11785,17 +11784,17 @@ function floatSafeRemainder(val, step) {
 }
 var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
 function defineLazy(object3, key, getter) {
-  let value = void 0;
+  let value2 = void 0;
   Object.defineProperty(object3, key, {
     get() {
-      if (value === EVALUATING) {
+      if (value2 === EVALUATING) {
         return void 0;
       }
-      if (value === void 0) {
-        value = EVALUATING;
-        value = getter();
+      if (value2 === void 0) {
+        value2 = EVALUATING;
+        value2 = getter();
       }
-      return value;
+      return value2;
     },
     set(v) {
       Object.defineProperty(object3, key, {
@@ -11809,9 +11808,9 @@ function defineLazy(object3, key, getter) {
 function objectClone(obj) {
   return Object.create(Object.getPrototypeOf(obj), Object.getOwnPropertyDescriptors(obj));
 }
-function assignProp(target, prop, value) {
+function assignProp(target, prop, value2) {
   Object.defineProperty(target, prop, {
-    value,
+    value: value2,
     writable: true,
     enumerable: true,
     configurable: true
@@ -11828,10 +11827,10 @@ function mergeDefs(...defs9) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path10) {
-  if (!path10)
+function getElementAtPath(obj, path11) {
+  if (!path11)
     return obj;
-  return path10.reduce((acc, key) => acc?.[key], obj);
+  return path11.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -11999,9 +11998,9 @@ function createTransparentProxy(getter) {
       target ?? (target = getter());
       return Reflect.get(target, prop, receiver);
     },
-    set(_, prop, value, receiver) {
+    set(_, prop, value2, receiver) {
       target ?? (target = getter());
-      return Reflect.set(target, prop, value, receiver);
+      return Reflect.set(target, prop, value2, receiver);
     },
     has(_, prop) {
       target ?? (target = getter());
@@ -12025,12 +12024,12 @@ function createTransparentProxy(getter) {
     }
   });
 }
-function stringifyPrimitive(value) {
-  if (typeof value === "bigint")
-    return value.toString() + "n";
-  if (typeof value === "string")
-    return `"${value}"`;
-  return `${value}`;
+function stringifyPrimitive(value2) {
+  if (typeof value2 === "bigint")
+    return value2.toString() + "n";
+  if (typeof value2 === "string")
+    return `"${value2}"`;
+  return `${value2}`;
 }
 function optionalKeys(shape) {
   return Object.keys(shape).filter((k) => {
@@ -12243,11 +12242,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path10, issues) {
+function prefixIssues(path11, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path10);
+    iss.path.unshift(path11);
     return iss;
   });
 }
@@ -12397,12 +12396,12 @@ function members(proto, table) {
       defineBound(proto, key, desc.value);
   }
 }
-function own(inst, key, value, enumerable = true) {
-  Object.defineProperty(inst, key, { configurable: true, writable: true, enumerable, value });
-  return value;
+function own(inst, key, value2, enumerable = true) {
+  Object.defineProperty(inst, key, { configurable: true, writable: true, enumerable, value: value2 });
+  return value2;
 }
-function hide(inst, key, value) {
-  return own(inst, key, value, false);
+function hide(inst, key, value2) {
+  return own(inst, key, value2, false);
 }
 function defineBound(proto, key, fn) {
   Object.defineProperty(proto, key, {
@@ -12410,8 +12409,8 @@ function defineBound(proto, key, fn) {
     get() {
       return this == null ? fn : own(this, key, fn.bind(this));
     },
-    set(value) {
-      own(this, key, value);
+    set(value2) {
+      own(this, key, value2);
     }
   });
 }
@@ -12442,21 +12441,21 @@ function defineLazyInternal(inst, key, compute) {
       const outer = broke;
       broke = false;
       try {
-        const value = compute(this);
+        const value2 = compute(this);
         if (broke)
           delete this[key];
         else
-          Object.defineProperty(this, key, { configurable: true, writable: true, value });
+          Object.defineProperty(this, key, { configurable: true, writable: true, value: value2 });
         broke = broke || outer;
-        return value;
+        return value2;
       } catch (err) {
         delete this[key];
         broke = broke || outer;
         throw err;
       }
     },
-    set(value) {
-      Object.defineProperty(this, key, { configurable: true, writable: true, value });
+    set(value2) {
+      Object.defineProperty(this, key, { configurable: true, writable: true, value: value2 });
     }
   });
 }
@@ -12473,14 +12472,14 @@ function installLazyProp(inst, key, make, enumerable) {
       Object.defineProperty(this, key, desc);
       return desc.value;
     },
-    set(value) {
-      Object.defineProperty(this, key, { configurable: true, writable: true, enumerable, value });
+    set(value2) {
+      Object.defineProperty(this, key, { configurable: true, writable: true, enumerable, value: value2 });
     }
   });
 }
 var CONSTANT_CATCH = "~constantCatch";
-function constantCatch(value) {
-  const fn = () => value;
+function constantCatch(value2) {
+  const fn = () => value2;
   fn[CONSTANT_CATCH] = true;
   return fn;
 }
@@ -12610,8 +12609,8 @@ function _getMessage() {
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
   return internals.message;
 }
-function _setMessage(value) {
-  this._zod.message = value;
+function _setMessage(value2) {
+  this._zod.message = value2;
 }
 var _messageDesc = {
   get: _getMessage,
@@ -12638,12 +12637,12 @@ var initializer = (inst, def) => {
       configurable: true,
       enumerable: false,
       get() {
-        const value = () => this.message;
-        Object.defineProperty(this, "toString", { value, configurable: true, writable: true });
-        return value;
+        const value2 = () => this.message;
+        Object.defineProperty(this, "toString", { value: value2, configurable: true, writable: true });
+        return value2;
       },
-      set(value) {
-        Object.defineProperty(this, "toString", { value, configurable: true, writable: true });
+      set(value2) {
+        Object.defineProperty(this, "toString", { value: value2, configurable: true, writable: true });
       }
     });
   }
@@ -12676,16 +12675,16 @@ function flattenError(error2, mapper = (issue2) => issue2.message) {
 }
 function formatError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error3, path10 = []) => {
+  const processError = (error3, path11 = []) => {
     for (const issue2 of error3.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -12728,9 +12727,9 @@ function finalizeParams(callee, params2) {
   return { callee: params2?.callee ?? callee, Err: params2?.Err };
 }
 var _parse = (_Err) => {
-  const fn = (schema, value, _ctx, _params) => {
+  const fn = (schema, value2, _ctx, _params) => {
     const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
-    const result = schema._zod.run({ value, issues: [] }, ctx);
+    const result = schema._zod.run({ value: value2, issues: [] }, ctx);
     if (result instanceof Promise) {
       throw new $ZodAsyncError();
     }
@@ -12744,9 +12743,9 @@ var _parse = (_Err) => {
   return fn;
 };
 var _parseAsync = (_Err) => {
-  const fn = async (schema, value, _ctx, params2) => {
+  const fn = async (schema, value2, _ctx, params2) => {
     const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
-    let result = schema._zod.run({ value, issues: [] }, ctx);
+    let result = schema._zod.run({ value: value2, issues: [] }, ctx);
     if (result instanceof Promise)
       result = await result;
     if (result.issues.length) {
@@ -12758,9 +12757,9 @@ var _parseAsync = (_Err) => {
   };
   return fn;
 };
-var _safeParse = (_Err) => (schema, value, _ctx) => {
+var _safeParse = (_Err) => (schema, value2, _ctx) => {
   const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
-  const result = schema._zod.run({ value, issues: [] }, ctx);
+  const result = schema._zod.run({ value: value2, issues: [] }, ctx);
   if (result instanceof Promise) {
     throw new $ZodAsyncError();
   }
@@ -12770,9 +12769,9 @@ var _safeParse = (_Err) => (schema, value, _ctx) => {
   } : { success: true, data: result.value };
 };
 var safeParse = /* @__PURE__ */ _safeParse($ZodRealError);
-var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
+var _safeParseAsync = (_Err) => async (schema, value2, _ctx) => {
   const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
-  let result = schema._zod.run({ value, issues: [] }, ctx);
+  let result = schema._zod.run({ value: value2, issues: [] }, ctx);
   if (result instanceof Promise)
     result = await result;
   return result.issues.length ? {
@@ -12783,47 +12782,47 @@ var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
 var safeParseAsync = /* @__PURE__ */ _safeParseAsync($ZodRealError);
 var _encode = (_Err) => {
   const parse3 = _parse(_Err);
-  const fn = (schema, value, _ctx, _params) => {
+  const fn = (schema, value2, _ctx, _params) => {
     const ctx = _ctx ? { ..._ctx, direction: "backward" } : { direction: "backward" };
-    return parse3(schema, value, ctx, finalizeParams(fn, _params));
+    return parse3(schema, value2, ctx, finalizeParams(fn, _params));
   };
   return fn;
 };
 var _decode = (_Err) => {
   const parse3 = _parse(_Err);
-  const fn = (schema, value, _ctx, _params) => {
-    return parse3(schema, value, _ctx, finalizeParams(fn, _params));
+  const fn = (schema, value2, _ctx, _params) => {
+    return parse3(schema, value2, _ctx, finalizeParams(fn, _params));
   };
   return fn;
 };
 var _encodeAsync = (_Err) => {
   const parseAsync3 = _parseAsync(_Err);
-  const fn = async (schema, value, _ctx, _params) => {
+  const fn = async (schema, value2, _ctx, _params) => {
     const ctx = _ctx ? { ..._ctx, direction: "backward" } : { direction: "backward" };
-    return await parseAsync3(schema, value, ctx, finalizeParams(fn, _params));
+    return await parseAsync3(schema, value2, ctx, finalizeParams(fn, _params));
   };
   return fn;
 };
 var _decodeAsync = (_Err) => {
   const parseAsync3 = _parseAsync(_Err);
-  const fn = async (schema, value, _ctx, _params) => {
-    return await parseAsync3(schema, value, _ctx, finalizeParams(fn, _params));
+  const fn = async (schema, value2, _ctx, _params) => {
+    return await parseAsync3(schema, value2, _ctx, finalizeParams(fn, _params));
   };
   return fn;
 };
-var _safeEncode = (_Err) => (schema, value, _ctx) => {
+var _safeEncode = (_Err) => (schema, value2, _ctx) => {
   const ctx = _ctx ? { ..._ctx, direction: "backward" } : { direction: "backward" };
-  return _safeParse(_Err)(schema, value, ctx);
+  return _safeParse(_Err)(schema, value2, ctx);
 };
-var _safeDecode = (_Err) => (schema, value, _ctx) => {
-  return _safeParse(_Err)(schema, value, _ctx);
+var _safeDecode = (_Err) => (schema, value2, _ctx) => {
+  return _safeParse(_Err)(schema, value2, _ctx);
 };
-var _safeEncodeAsync = (_Err) => async (schema, value, _ctx) => {
+var _safeEncodeAsync = (_Err) => async (schema, value2, _ctx) => {
   const ctx = _ctx ? { ..._ctx, direction: "backward" } : { direction: "backward" };
-  return _safeParseAsync(_Err)(schema, value, ctx);
+  return _safeParseAsync(_Err)(schema, value2, ctx);
 };
-var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
-  return _safeParseAsync(_Err)(schema, value, _ctx);
+var _safeDecodeAsync = (_Err) => async (schema, value2, _ctx) => {
+  return _safeParseAsync(_Err)(schema, value2, _ctx);
 };
 
 // node_modules/zod/v4/core/regexes.js
@@ -13429,18 +13428,18 @@ var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   get "~standard"() {
     return hide(this, "~standard", standardProps(this));
   },
-  set "~standard"(value) {
-    own(this, "~standard", value);
+  set "~standard"(value2) {
+    own(this, "~standard", value2);
   }
 });
 var toStandardResult = (r) => r.success ? { value: r.data } : { issues: r.error?.issues };
 function standardProps(inst) {
   return {
-    validate: (value) => {
+    validate: (value2) => {
       try {
-        return toStandardResult(safeParse(inst, value));
+        return toStandardResult(safeParse(inst, value2));
       } catch (_) {
-        return safeParseAsync(inst, value).then(toStandardResult);
+        return safeParseAsync(inst, value2).then(toStandardResult);
       }
     },
     vendor: "zod",
@@ -13512,8 +13511,8 @@ function parseURLObject(trimmed, def) {
   }
 }
 var asciiTabOrNewline = /[\t\n\r]/g;
-function stripTabAndNewline(value) {
-  return value.replace(asciiTabOrNewline, "");
+function stripTabAndNewline(value2) {
+  return value2.replace(asciiTabOrNewline, "");
 }
 function urlHostnameOk(url, hostname) {
   hostname.lastIndex = 0;
@@ -13643,11 +13642,11 @@ var $ZodIPv4 = /* @__PURE__ */ $constructor("$ZodIPv4", (inst, def) => {
   inst._zod.bag.format = `ipv4`;
 });
 var ipv6Alphabet = /^[0-9a-fA-F:.]+$/;
-function isValidIPv6(value) {
-  if (!ipv6Alphabet.test(value))
+function isValidIPv6(value2) {
+  if (!ipv6Alphabet.test(value2))
     return false;
   try {
-    new URL(`http://[${value}]`);
+    new URL(`http://[${value2}]`);
     return true;
   } catch {
     return false;
@@ -13673,8 +13672,8 @@ var $ZodCIDRv4 = /* @__PURE__ */ $constructor("$ZodCIDRv4", (inst, def) => {
   def.pattern ?? (def.pattern = cidrv4);
   $ZodStringFormat.init(inst, def);
 });
-function isValidCIDRv6(value) {
-  const parts = value.split("/");
+function isValidCIDRv6(value2) {
+  const parts = value2.split("/");
   if (parts.length !== 2)
     return false;
   const [address, prefix] = parts;
@@ -14049,11 +14048,11 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   });
   const isObject2 = isObject;
   const catchall = def.catchall;
-  let value;
+  let value2;
   const memo2 = globalConfig.memoizer;
   memo2?.attach(inst);
   inst._zod.parse = (payload, ctx) => {
-    value ?? (value = _normalized.value);
+    value2 ?? (value2 = _normalized.value);
     const input = payload.value;
     if (!isObject2(input)) {
       payload.issues.push({
@@ -14066,8 +14065,8 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     payload.value = memo2 ? memo2.alloc(inst, payload, {}, ctx) : {};
     const proms = [];
-    const shape = value.shape;
-    for (const key of value.allKeys) {
+    const shape = value2.shape;
+    for (const key of value2.allKeys) {
       if (key === "__proto__")
         continue;
       const el = shape[key];
@@ -14179,9 +14178,9 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
   const catchall = def.catchall;
-  let value;
+  let value2;
   inst._zod.parse = (payload, ctx) => {
-    value ?? (value = _normalized.value);
+    value2 ?? (value2 = _normalized.value);
     const input = payload.value;
     if (!isObject2(input)) {
       payload.issues.push({
@@ -14198,7 +14197,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
       payload = fastpass(payload, ctx);
       if (!catchall)
         return payload;
-      return handleCatchall([], input, payload, ctx, value, inst);
+      return handleCatchall([], input, payload, ctx, value2, inst);
     }
     return superParse(payload, ctx);
   };
@@ -15021,13 +15020,13 @@ function isRecursive(inst, stack) {
         const desc = Object.getOwnPropertyDescriptor(def, key);
         if (!desc || desc.get)
           continue;
-        const value = desc.value;
-        if (!value || typeof value !== "object")
+        const value2 = desc.value;
+        if (!value2 || typeof value2 !== "object")
           continue;
-        if (value._zod)
-          check(value);
-        else if (Array.isArray(value))
-          for (const el of value)
+        if (value2._zod)
+          check(value2);
+        else if (Array.isArray(value2))
+          for (const el of value2)
             check(el);
       }
     }
@@ -15144,9 +15143,9 @@ var memo = {
 function memoizer() {
   return memo;
 }
-function isBackEdge(ctx, value) {
+function isBackEdge(ctx, value2) {
   const backEdges = ctx[STATE]?.backEdges;
-  return backEdges !== void 0 && value !== null && typeof value === "object" && backEdges.has(value);
+  return backEdges !== void 0 && value2 !== null && typeof value2 === "object" && backEdges.has(value2);
 }
 
 // node_modules/zod/v4/locales/en.js
@@ -15637,47 +15636,47 @@ function _never(Class2, params2) {
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _lt(value, params2) {
+function _lt(value2, params2) {
   return new $ZodCheckLessThan({
     check: "less_than",
     ...normalizeParams(params2),
-    value,
+    value: value2,
     inclusive: false
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _lte(value, params2) {
+function _lte(value2, params2) {
   return new $ZodCheckLessThan({
     check: "less_than",
     ...normalizeParams(params2),
-    value,
+    value: value2,
     inclusive: true
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _gt(value, params2) {
+function _gt(value2, params2) {
   return new $ZodCheckGreaterThan({
     check: "greater_than",
     ...normalizeParams(params2),
-    value,
+    value: value2,
     inclusive: false
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _gte(value, params2) {
+function _gte(value2, params2) {
   return new $ZodCheckGreaterThan({
     check: "greater_than",
     ...normalizeParams(params2),
-    value,
+    value: value2,
     inclusive: true
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _multipleOf(value, params2) {
+function _multipleOf(value2, params2) {
   return new $ZodCheckMultipleOf({
     check: "multiple_of",
     ...normalizeParams(params2),
-    value
+    value: value2
   });
 }
 // @__NO_SIDE_EFFECTS__
@@ -16754,9 +16753,9 @@ var nonoptionalProcessor = (schema, ctx, _json, params2) => {
   seen.ref = def.innerType;
 };
 var UNREPRESENTABLE_DEFAULT = /* @__PURE__ */ Symbol();
-function serializeDefaultValue(value, schema, ctx, json, params2) {
+function serializeDefaultValue(value2, schema, ctx, json, params2) {
   let unrepresentable = false;
-  const serialized = JSON.stringify(value, (_, val) => {
+  const serialized = JSON.stringify(value2, (_, val) => {
     if (typeof val !== "bigint")
       return val;
     unrepresentable = true;
@@ -16772,9 +16771,9 @@ var defaultProcessor = (schema, ctx, json, params2) => {
   process2(def.innerType, ctx, params2);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
-  const value = serializeDefaultValue(def.defaultValue, schema, ctx, json, params2);
-  if (value !== UNREPRESENTABLE_DEFAULT)
-    json.default = value;
+  const value2 = serializeDefaultValue(def.defaultValue, schema, ctx, json, params2);
+  if (value2 !== UNREPRESENTABLE_DEFAULT)
+    json.default = value2;
 };
 var prefaultProcessor = (schema, ctx, json, params2) => {
   const def = schema._zod.def;
@@ -16783,9 +16782,9 @@ var prefaultProcessor = (schema, ctx, json, params2) => {
   seen.ref = def.innerType;
   if (ctx.io !== "input")
     return;
-  const value = serializeDefaultValue(def.defaultValue, schema, ctx, json, params2);
-  if (value !== UNREPRESENTABLE_DEFAULT)
-    json._prefault = value;
+  const value2 = serializeDefaultValue(def.defaultValue, schema, ctx, json, params2);
+  if (value2 !== UNREPRESENTABLE_DEFAULT)
+    json._prefault = value2;
 };
 var catchProcessor = (schema, ctx, json, params2) => {
   const def = schema._zod.def;
@@ -16893,12 +16892,12 @@ function _lazyMethod(proto, key, make) {
     configurable: true,
     enumerable: false,
     get() {
-      const value = make(this);
-      Object.defineProperty(this, key, { value, configurable: true, writable: true });
-      return value;
+      const value2 = make(this);
+      Object.defineProperty(this, key, { value: value2, configurable: true, writable: true });
+      return value2;
     },
-    set(value) {
-      Object.defineProperty(this, key, { value, configurable: true, writable: true });
+    set(value2) {
+      Object.defineProperty(this, key, { value: value2, configurable: true, writable: true });
     }
   });
 }
@@ -17065,8 +17064,8 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
       }
     });
   },
-  set "~standard"(value) {
-    util_exports.own(this, "~standard", value);
+  set "~standard"(value2) {
+    util_exports.own(this, "~standard", value2);
   },
   parse: function _parse2(data, params2) {
     return parse2(this, data, params2, { callee: _parse2 });
@@ -17084,8 +17083,8 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   get spa() {
     return this?.safeParseAsync;
   },
-  set spa(value) {
-    util_exports.own(this, "spa", value);
+  set spa(value2) {
+    util_exports.own(this, "spa", value2);
   },
   encode: function _encode2(data, params2) {
     return encode2(this, data, params2, { callee: _encode2 });
@@ -17371,23 +17370,23 @@ var ZodNumber = /* @__PURE__ */ $constructor("ZodNumber", (inst, def) => {
   inst.isFinite = true;
   inst.format = bag.format ?? null;
 }, {
-  gt(value, params2) {
-    return this.check(_gt(value, params2));
+  gt(value2, params2) {
+    return this.check(_gt(value2, params2));
   },
-  gte(value, params2) {
-    return this.check(_gte(value, params2));
+  gte(value2, params2) {
+    return this.check(_gte(value2, params2));
   },
-  min(value, params2) {
-    return this.check(_gte(value, params2));
+  min(value2, params2) {
+    return this.check(_gte(value2, params2));
   },
-  lt(value, params2) {
-    return this.check(_lt(value, params2));
+  lt(value2, params2) {
+    return this.check(_lt(value2, params2));
   },
-  lte(value, params2) {
-    return this.check(_lte(value, params2));
+  lte(value2, params2) {
+    return this.check(_lte(value2, params2));
   },
-  max(value, params2) {
-    return this.check(_lte(value, params2));
+  max(value2, params2) {
+    return this.check(_lte(value2, params2));
   },
   int(params2) {
     return this.check(int(params2));
@@ -17407,11 +17406,11 @@ var ZodNumber = /* @__PURE__ */ $constructor("ZodNumber", (inst, def) => {
   nonpositive(params2) {
     return this.check(_lte(0, params2));
   },
-  multipleOf(value, params2) {
-    return this.check(_multipleOf(value, params2));
+  multipleOf(value2, params2) {
+    return this.check(_multipleOf(value2, params2));
   },
-  step(value, params2) {
-    return this.check(_multipleOf(value, params2));
+  step(value2, params2) {
+    return this.check(_multipleOf(value2, params2));
   },
   finite() {
     return this;
@@ -17621,11 +17620,11 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   const keys2 = new Set(Object.keys(def.entries));
   inst.extract = (values, params2) => {
     const newEntries = {};
-    for (const value of values) {
-      if (keys2.has(value)) {
-        newEntries[value] = def.entries[value];
+    for (const value2 of values) {
+      if (keys2.has(value2)) {
+        newEntries[value2] = def.entries[value2];
       } else
-        throw new Error(`Key ${value} not found in enum`);
+        throw new Error(`Key ${value2} not found in enum`);
     }
     return new ZodEnum({
       ...def,
@@ -17636,11 +17635,11 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   };
   inst.exclude = (values, params2) => {
     const newEntries = { ...def.entries };
-    for (const value of values) {
-      if (keys2.has(value)) {
-        delete newEntries[value];
+    for (const value2 of values) {
+      if (keys2.has(value2)) {
+        delete newEntries[value2];
       } else
-        throw new Error(`Key ${value} not found in enum`);
+        throw new Error(`Key ${value2} not found in enum`);
     }
     return new ZodEnum({
       ...def,
@@ -17672,10 +17671,10 @@ var ZodLiteral = /* @__PURE__ */ $constructor("ZodLiteral", (inst, def) => {
     }
   });
 });
-function literal(value, params2) {
+function literal(value2, params2) {
   return new ZodLiteral({
     type: "literal",
-    values: Array.isArray(value) ? value : [value],
+    values: Array.isArray(value2) ? value2 : [value2],
     ...util_exports.normalizeParams(params2)
   });
 }
@@ -17942,7 +17941,7 @@ var TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
    */
   task: TaskMetadataSchema.optional()
 });
-var isTaskAugmentedRequestParams = (value) => TaskAugmentedRequestParamsSchema.safeParse(value).success;
+var isTaskAugmentedRequestParams = (value2) => TaskAugmentedRequestParamsSchema.safeParse(value2).success;
 var RequestSchema = object2({
   method: string2(),
   params: BaseRequestParamsSchema.loose().optional()
@@ -17971,18 +17970,18 @@ var JSONRPCRequestSchema = object2({
   id: RequestIdSchema,
   ...RequestSchema.shape
 }).strict();
-var isJSONRPCRequest = (value) => JSONRPCRequestSchema.safeParse(value).success;
+var isJSONRPCRequest = (value2) => JSONRPCRequestSchema.safeParse(value2).success;
 var JSONRPCNotificationSchema = object2({
   jsonrpc: literal(JSONRPC_VERSION),
   ...NotificationSchema.shape
 }).strict();
-var isJSONRPCNotification = (value) => JSONRPCNotificationSchema.safeParse(value).success;
+var isJSONRPCNotification = (value2) => JSONRPCNotificationSchema.safeParse(value2).success;
 var JSONRPCResultResponseSchema = object2({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   result: ResultSchema
 }).strict();
-var isJSONRPCResultResponse = (value) => JSONRPCResultResponseSchema.safeParse(value).success;
+var isJSONRPCResultResponse = (value2) => JSONRPCResultResponseSchema.safeParse(value2).success;
 var ErrorCode;
 (function(ErrorCode2) {
   ErrorCode2[ErrorCode2["ConnectionClosed"] = -32e3] = "ConnectionClosed";
@@ -18012,7 +18011,7 @@ var JSONRPCErrorResponseSchema = object2({
     data: unknown().optional()
   })
 }).strict();
-var isJSONRPCErrorResponse = (value) => JSONRPCErrorResponseSchema.safeParse(value).success;
+var isJSONRPCErrorResponse = (value2) => JSONRPCErrorResponseSchema.safeParse(value2).success;
 var JSONRPCMessageSchema = union([
   JSONRPCRequestSchema,
   JSONRPCNotificationSchema,
@@ -18109,13 +18108,13 @@ var ImplementationSchema = BaseMetadataSchema.extend({
 var FormElicitationCapabilitySchema = intersection(object2({
   applyDefaults: boolean2().optional()
 }), record(string2(), unknown()));
-var ElicitationCapabilitySchema = preprocess((value) => {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    if (Object.keys(value).length === 0) {
+var ElicitationCapabilitySchema = preprocess((value2) => {
+  if (value2 && typeof value2 === "object" && !Array.isArray(value2)) {
+    if (Object.keys(value2).length === 0) {
       return { form: {} };
     }
   }
-  return value;
+  return value2;
 }, intersection(object2({
   form: FormElicitationCapabilitySchema.optional(),
   url: AssertObjectSchema.optional()
@@ -19425,11 +19424,11 @@ function getMethodLiteral(schema) {
   if (!methodSchema) {
     throw new Error("Schema is missing a method literal");
   }
-  const value = getLiteralValue(methodSchema);
-  if (typeof value !== "string") {
+  const value2 = getLiteralValue(methodSchema);
+  if (typeof value2 !== "string") {
     throw new Error("Schema method literal must be a string");
   }
-  return value;
+  return value2;
 }
 function parseWithCompat(schema, data) {
   const result = safeParse2(schema, data);
@@ -19939,7 +19938,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
+        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -19956,7 +19955,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -20034,7 +20033,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve5(parseResult.data);
+            resolve4(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -20295,12 +20294,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve5, interval);
+      const timeoutId = setTimeout(resolve4, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -20373,8 +20372,8 @@ var Protocol = class {
     };
   }
 };
-function isPlainObject2(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+function isPlainObject2(value2) {
+  return value2 !== null && typeof value2 === "object" && !Array.isArray(value2);
 }
 function mergeCapabilities(base, additional) {
   const result = { ...base };
@@ -21176,12 +21175,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve5) => {
+    return new Promise((resolve4) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve5();
+        resolve4();
       } else {
-        this._stdout.once("drain", resolve5);
+        this._stdout.once("drain", resolve4);
       }
     });
   }
@@ -21228,44 +21227,62 @@ function newId(prefix = "") {
   return `${prefix}${Date.now().toString(36)}${r}`;
 }
 
-// packages/shared/src/format.ts
-function formatMsg(m) {
-  const who = displayName({ name: m.from, kind: m.fromKind });
-  const to = m.to ? ` \u2192 ${m.to}'s agent` : "";
-  const priority = `[${m.priority}] `;
-  switch (m.type) {
-    case "claim":
-      return `${priority}${who} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}`;
-    case "release":
-      return `${priority}${who} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}`;
-    case "changed":
-      return `${priority}${who} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}`;
-    case "question":
-      return `${priority}${who}${to} asks: ${m.text}`;
-    case "answer":
-      return `${priority}${who}${to} answers: ${m.text}`;
-    case "conflict":
-      return `${priority}CONFLICT on ${m.path}: ${m.text}`;
-    case "note":
-      return `${priority}${who}: ${m.text}`;
-    case "done":
-      return `${priority}${who} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}`;
-    case "base":
-      return `${priority}${who} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up`;
-    case "plan":
-      return `${priority}${who} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""} \u2014 ${m.text}`;
-    case "scope":
-      return `${priority}${who} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})`;
-  }
+// packages/shared/src/messages.ts
+var who = (m) => displayName({ name: m.from, kind: m.fromKind });
+var to = (m) => m.to ? ` \u2192 ${m.to}'s agent` : "";
+var priority = (m) => `[${m.priority}] `;
+var builtins = {
+  claim: { audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
+  release: { audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
+  changed: { audience: "broadcast", wakes: "always", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
+  question: { audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
+  answer: { audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
+  conflict: { audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
+  note: { audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)}: ${m.text}` },
+  done: { audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
+  base: { audience: "everyone", wakes: "never", format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up` },
+  plan: { audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""} \u2014 ${m.text}` },
+  scope: { audience: "broadcast", wakes: "always", format: (m) => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` }
+};
+var MessageKinds = builtins;
+function messageKind(m) {
+  const kind = MessageKinds[m.type];
+  if (!kind) throw new Error(`unregistered message kind: ${m.type}`);
+  return kind;
 }
+function holdsClaim(me, m, claims) {
+  const ids = "claimId" in m ? [m.claimId, ..."otherClaimId" in m ? [m.otherClaimId] : []] : [];
+  if (claims.some((c) => c.by === me && ids.includes(c.id))) return true;
+  return "path" in m && claims.some((c) => c.by === me && isAgentic(c.byKind) && c.path === m.path);
+}
+function messageForMe(me, m, context = {}) {
+  if (m.from === me.name && isAgentic(m.fromKind)) return false;
+  if (m.to === me.name) return true;
+  if (m.to) return false;
+  const kind = messageKind(m);
+  if (kind.audience === "everyone") return true;
+  if (kind.audience === "addressed") return false;
+  if (kind.audience === "claim-holders" && !holdsClaim(me.name, m, context.claims ?? [])) return false;
+  if (m.priority === "interrupt") return true;
+  if (m.priority === "notify") return context.inMyAreas?.(m) ?? false;
+  return false;
+}
+function messageEndsWait(m, waiting) {
+  return messageKind(m).endsWait?.(m, waiting) ?? false;
+}
+function formatMsg(m) {
+  return messageKind(m).format(m);
+}
+function formatPlans(plans) {
+  return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
+}
+
+// packages/shared/src/format.ts
 function withLineNumbers(text) {
   const lines = text.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   const w = String(lines.length).length;
   return lines.map((l, i) => `${String(i + 1).padStart(w)}| ${l}`).join("\n");
-}
-function formatPlans(plans) {
-  return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
 }
 
 // packages/shared/src/claims.ts
@@ -21278,15 +21295,15 @@ function claimsOverlap(a, b) {
 function cursorInClaim(c, claim2) {
   return c.path === claim2.path && rangesOverlap(c.from, c.to, claim2.from, claim2.to);
 }
-function clampRange(from2, to, lineCount) {
+function clampRange(from2, to2, lineCount) {
   const max2 = Math.max(1, lineCount);
   const f = Math.min(Math.max(1, Math.floor(from2)), max2);
-  const t = Math.min(Math.max(f, Math.floor(to)), max2);
+  const t = Math.min(Math.max(f, Math.floor(to2)), max2);
   return { from: f, to: t };
 }
 function describeClaim(c) {
-  const who = displayName({ name: c.by, kind: c.byKind });
-  return `${who} \xB7 ${c.path}:${c.from}-${c.to} \xB7 ${c.intent}${c.plans?.length ? ` \xB7 plans: ${formatPlans(c.plans)}` : ""}`;
+  const who2 = displayName({ name: c.by, kind: c.byKind });
+  return `${who2} \xB7 ${c.path}:${c.from}-${c.to} \xB7 ${c.intent}${c.plans?.length ? ` \xB7 plans: ${formatPlans(c.plans)}` : ""}`;
 }
 
 // packages/shared/src/doc.ts
@@ -21309,8 +21326,8 @@ var setIfUndefined = (map2, key, createT) => {
   return set;
 };
 var any = (m, f) => {
-  for (const [key, value] of m) {
-    if (f(value, key)) {
+  for (const [key, value2] of m) {
+    if (f(value2, key)) {
       return true;
     }
   }
@@ -22221,14 +22238,14 @@ var deepFreeze = (o) => {
 };
 
 // node_modules/lib0/function.js
-var callAll = (fs10, args2, i = 0) => {
+var callAll = (fs11, args2, i = 0) => {
   try {
-    for (; i < fs10.length; i++) {
-      fs10[i](...args2);
+    for (; i < fs11.length; i++) {
+      fs11[i](...args2);
     }
   } finally {
-    if (i < fs10.length) {
-      callAll(fs10, args2, i + 1);
+    if (i < fs11.length) {
+      callAll(fs11, args2, i + 1);
     }
   }
 };
@@ -22263,8 +22280,8 @@ var equalityDeep = (a, b) => {
       if (a.size !== b.size) {
         return false;
       }
-      for (const value of a) {
-        if (!b.has(value)) {
+      for (const value2 of a) {
+        if (!b.has(value2)) {
           return false;
         }
       }
@@ -22307,7 +22324,7 @@ var equalityDeep = (a, b) => {
   }
   return true;
 };
-var isOneOf = (value, options) => options.includes(value);
+var isOneOf = (value2, options) => options.includes(value2);
 
 // node_modules/lib0/environment.js
 var isNode = typeof process !== "undefined" && process.release && /node|io\.js/.test(process.release.name) && Object.prototype.toString.call(typeof process !== "undefined" ? process : 0) === "[object process]";
@@ -22344,9 +22361,9 @@ var computeParams = () => {
       params = create();
       (location.search || "?").slice(1).split("&").forEach((kv) => {
         if (kv.length !== 0) {
-          const [key, value] = kv.split("=");
-          params.set(`--${fromCamelCase(key, "-")}`, value);
-          params.set(`-${fromCamelCase(key, "-")}`, value);
+          const [key, value2] = kv.split("=");
+          params.set(`--${fromCamelCase(key, "-")}`, value2);
+          params.set(`-${fromCamelCase(key, "-")}`, value2);
         }
       });
     } else {
@@ -22515,8 +22532,8 @@ var iteratorFilter = (iterator, filter) => createIterator(() => {
   return res;
 });
 var iteratorMap = (iterator, fmap) => createIterator(() => {
-  const { done, value } = iterator.next();
-  return { done, value: done ? void 0 : fmap(value) };
+  const { done, value: value2 } = iterator.next();
+  return { done, value: done ? void 0 : fmap(value2) };
 });
 
 // node_modules/yjs/dist/yjs.mjs
@@ -22740,17 +22757,17 @@ var Doc2 = class _Doc extends ObservableV2 {
     this.isLoaded = false;
     this.isSynced = false;
     this.isDestroyed = false;
-    this.whenLoaded = create4((resolve5) => {
+    this.whenLoaded = create4((resolve4) => {
       this.on("load", () => {
         this.isLoaded = true;
-        resolve5(this);
+        resolve4(this);
       });
     });
-    const provideSyncedPromise = () => create4((resolve5) => {
+    const provideSyncedPromise = () => create4((resolve4) => {
       const eventHandler = (isSynced) => {
         if (isSynced === void 0 || isSynced === true) {
           this.off("sync", eventHandler);
-          resolve5();
+          resolve4();
         }
       };
       this.on("sync", eventHandler);
@@ -22945,8 +22962,8 @@ var Doc2 = class _Doc extends ObservableV2 {
    */
   toJSON() {
     const doc = {};
-    this.share.forEach((value, key) => {
-      doc[key] = value.toJSON();
+    this.share.forEach((value2, key) => {
+      doc[key] = value2.toJSON();
     });
     return doc;
   }
@@ -23815,8 +23832,8 @@ var ID = class {
 var compareIDs = (a, b) => a === b || a !== null && b !== null && a.client === b.client && a.clock === b.clock;
 var createID = (client, clock) => new ID(client, clock);
 var findRootTypeKey = (type) => {
-  for (const [key, value] of type.doc.share.entries()) {
-    if (value === type) {
+  for (const [key, value2] of type.doc.share.entries()) {
+    if (value2 === type) {
       return key;
     }
   }
@@ -24212,15 +24229,15 @@ var cleanupTransactions = (transactionCleanups, i) => {
       sortAndMergeDeleteSet(ds);
       transaction.afterState = getStateVector(transaction.doc.store);
       doc.emit("beforeObserverCalls", [transaction, doc]);
-      const fs10 = [];
+      const fs11 = [];
       transaction.changed.forEach(
-        (subs, itemtype) => fs10.push(() => {
+        (subs, itemtype) => fs11.push(() => {
           if (itemtype._item === null || !itemtype._item.deleted) {
             itemtype._callObserver(transaction, subs);
           }
         })
       );
-      fs10.push(() => {
+      fs11.push(() => {
         transaction.changedParentTypes.forEach((events, type) => {
           if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
             events = events.filter(
@@ -24231,19 +24248,19 @@ var cleanupTransactions = (transactionCleanups, i) => {
               event._path = null;
             });
             events.sort((event1, event2) => event1.path.length - event2.path.length);
-            fs10.push(() => {
+            fs11.push(() => {
               callEventHandlerListeners(type._dEH, events, transaction);
             });
           }
         });
-        fs10.push(() => doc.emit("afterTransaction", [transaction, doc]));
-        fs10.push(() => {
+        fs11.push(() => doc.emit("afterTransaction", [transaction, doc]));
+        fs11.push(() => {
           if (transaction._needFormattingCleanup) {
             cleanupYTextAfterTransaction(transaction);
           }
         });
       });
-      callAll(fs10, []);
+      callAll(fs11, []);
     } finally {
       if (doc.gc) {
         tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -24826,10 +24843,10 @@ var YEvent = class {
   }
 };
 var getPathTo = (parent, child) => {
-  const path10 = [];
+  const path11 = [];
   while (child._item !== null && child !== parent) {
     if (child._item.parentSub !== null) {
-      path10.unshift(child._item.parentSub);
+      path11.unshift(child._item.parentSub);
     } else {
       let i = 0;
       let c = (
@@ -24842,12 +24859,12 @@ var getPathTo = (parent, child) => {
         }
         c = c.right;
       }
-      path10.unshift(i);
+      path11.unshift(i);
     }
     child = /** @type {AbstractType<any>} */
     child._item.parent;
   }
-  return path10;
+  return path11;
 };
 var warnPrematureAccess = () => {
   warn("Invalid access: Add Yjs type to a document before reading data.");
@@ -25168,13 +25185,13 @@ var typeListCreateIterator = (type) => {
         currentContentIndex = 0;
         n = n.right;
       }
-      const value = currentContent[currentContentIndex++];
+      const value2 = currentContent[currentContentIndex++];
       if (currentContent.length <= currentContentIndex) {
         currentContent = null;
       }
       return {
         done: false,
-        value
+        value: value2
       };
     }
   };
@@ -25349,15 +25366,15 @@ var typeMapDelete = (transaction, parent, key) => {
     c.delete(transaction);
   }
 };
-var typeMapSet = (transaction, parent, key, value) => {
+var typeMapSet = (transaction, parent, key, value2) => {
   const left = parent._map.get(key) || null;
   const doc = transaction.doc;
   const ownClientId = doc.clientID;
   let content;
-  if (value == null) {
-    content = new ContentAny([value]);
+  if (value2 == null) {
+    content = new ContentAny([value2]);
   } else {
-    switch (value.constructor) {
+    switch (value2.constructor) {
       case Number:
       case Object:
       case Boolean:
@@ -25365,23 +25382,23 @@ var typeMapSet = (transaction, parent, key, value) => {
       case String:
       case Date:
       case BigInt:
-        content = new ContentAny([value]);
+        content = new ContentAny([value2]);
         break;
       case Uint8Array:
         content = new ContentBinary(
           /** @type {Uint8Array} */
-          value
+          value2
         );
         break;
       case Doc2:
         content = new ContentDoc(
           /** @type {Doc} */
-          value
+          value2
         );
         break;
       default:
-        if (value instanceof AbstractType) {
-          content = new ContentType(value);
+        if (value2 instanceof AbstractType) {
+          content = new ContentType(value2);
         } else {
           throw new Error("Unexpected content type");
         }
@@ -25397,9 +25414,9 @@ var typeMapGet = (parent, key) => {
 var typeMapGetAll = (parent) => {
   const res = {};
   parent.doc ?? warnPrematureAccess();
-  parent._map.forEach((value, key) => {
-    if (!value.deleted) {
-      res[key] = value.content.getContent()[value.length - 1];
+  parent._map.forEach((value2, key) => {
+    if (!value2.deleted) {
+      res[key] = value2.content.getContent()[value2.length - 1];
     }
   });
   return res;
@@ -25411,8 +25428,8 @@ var typeMapHas = (parent, key) => {
 };
 var typeMapGetAllSnapshot = (parent, snapshot) => {
   const res = {};
-  parent._map.forEach((value, key) => {
-    let v = value;
+  parent._map.forEach((value2, key) => {
+    let v = value2;
     while (v !== null && (!snapshot.sv.has(v.id.client) || v.id.clock >= (snapshot.sv.get(v.id.client) || 0))) {
       v = v.left;
     }
@@ -25691,8 +25708,8 @@ var YMap = class _YMap extends AbstractType {
    */
   _integrate(y, item) {
     super._integrate(y, item);
-    this._prelimContent.forEach((value, key) => {
-      this.set(key, value);
+    this._prelimContent.forEach((value2, key) => {
+      this.set(key, value2);
     });
     this._prelimContent = null;
   }
@@ -25711,11 +25728,11 @@ var YMap = class _YMap extends AbstractType {
    */
   clone() {
     const map2 = new _YMap();
-    this.forEach((value, key) => {
-      map2.set(key, value instanceof AbstractType ? (
+    this.forEach((value2, key) => {
+      map2.set(key, value2 instanceof AbstractType ? (
         /** @type {typeof value} */
-        value.clone()
-      ) : value);
+        value2.clone()
+      ) : value2);
     });
     return map2;
   }
@@ -25834,7 +25851,7 @@ var YMap = class _YMap extends AbstractType {
    * @param {VAL} value The value of the element to add
    * @return {VAL}
    */
-  set(key, value) {
+  set(key, value2) {
     if (this.doc !== null) {
       transact(this.doc, (transaction) => {
         typeMapSet(
@@ -25842,13 +25859,13 @@ var YMap = class _YMap extends AbstractType {
           this,
           key,
           /** @type {any} */
-          value
+          value2
         );
       });
     } else {
-      this._prelimContent.set(key, value);
+      this._prelimContent.set(key, value2);
     }
-    return value;
+    return value2;
   }
   /**
    * Returns a specified element from this YMap.
@@ -26001,11 +26018,11 @@ var insertNegatedAttributes = (transaction, parent, currPos, negatedAttributes) 
   });
 };
 var updateCurrentAttributes = (currentAttributes, format) => {
-  const { key, value } = format;
-  if (value === null) {
+  const { key, value: value2 } = format;
+  if (value2 === null) {
     currentAttributes.delete(key);
   } else {
-    currentAttributes.set(key, value);
+    currentAttributes.set(key, value2);
   }
 };
 var minimizeAttributeChanges = (currPos, attributes) => {
@@ -26077,23 +26094,23 @@ var formatText = (transaction, parent, currPos, length2, attributes) => {
     if (!currPos.right.deleted) {
       switch (currPos.right.content.constructor) {
         case ContentFormat: {
-          const { key, value } = (
+          const { key, value: value2 } = (
             /** @type {ContentFormat} */
             currPos.right.content
           );
           const attr = attributes[key];
           if (attr !== void 0) {
-            if (equalAttrs(attr, value)) {
+            if (equalAttrs(attr, value2)) {
               negatedAttributes.delete(key);
             } else {
               if (length2 === 0) {
                 break iterationLoop;
               }
-              negatedAttributes.set(key, value);
+              negatedAttributes.set(key, value2);
             }
             currPos.right.delete(transaction);
           } else {
-            currPos.currentAttributes.set(key, value);
+            currPos.currentAttributes.set(key, value2);
           }
           break;
         }
@@ -26141,15 +26158,15 @@ var cleanupFormattingGap = (transaction, start, curr, startAttributes, currAttri
       const content = start.content;
       switch (content.constructor) {
         case ContentFormat: {
-          const { key, value } = (
+          const { key, value: value2 } = (
             /** @type {ContentFormat} */
             content
           );
           const startAttrValue = startAttributes.get(key) ?? null;
-          if (endFormats.get(key) !== content || startAttrValue === value) {
+          if (endFormats.get(key) !== content || startAttrValue === value2) {
             start.delete(transaction);
             cleanups++;
-            if (!reachedCurr && (currAttributes.get(key) ?? null) === value && startAttrValue !== value) {
+            if (!reachedCurr && (currAttributes.get(key) ?? null) === value2 && startAttrValue !== value2) {
               if (startAttrValue === null) {
                 currAttributes.delete(key);
               } else {
@@ -26386,9 +26403,9 @@ var YTextEvent = class extends YEvent {
                   op = { insert };
                   if (currentAttributes.size > 0) {
                     op.attributes = {};
-                    currentAttributes.forEach((value, key) => {
-                      if (value !== null) {
-                        op.attributes[key] = value;
+                    currentAttributes.forEach((value2, key) => {
+                      if (value2 !== null) {
+                        op.attributes[key] = value2;
                       }
                     });
                   }
@@ -26459,47 +26476,47 @@ var YTextEvent = class extends YEvent {
               }
               break;
             case ContentFormat: {
-              const { key, value } = (
+              const { key, value: value2 } = (
                 /** @type {ContentFormat} */
                 item.content
               );
               if (this.adds(item)) {
                 if (!this.deletes(item)) {
                   const curVal = currentAttributes.get(key) ?? null;
-                  if (!equalAttrs(curVal, value)) {
+                  if (!equalAttrs(curVal, value2)) {
                     if (action === "retain") {
                       addOp();
                     }
-                    if (equalAttrs(value, oldAttributes.get(key) ?? null)) {
+                    if (equalAttrs(value2, oldAttributes.get(key) ?? null)) {
                       delete attributes[key];
                     } else {
-                      attributes[key] = value;
+                      attributes[key] = value2;
                     }
-                  } else if (value !== null) {
+                  } else if (value2 !== null) {
                     item.delete(transaction);
                   }
                 }
               } else if (this.deletes(item)) {
-                oldAttributes.set(key, value);
+                oldAttributes.set(key, value2);
                 const curVal = currentAttributes.get(key) ?? null;
-                if (!equalAttrs(curVal, value)) {
+                if (!equalAttrs(curVal, value2)) {
                   if (action === "retain") {
                     addOp();
                   }
                   attributes[key] = curVal;
                 }
               } else if (!item.deleted) {
-                oldAttributes.set(key, value);
+                oldAttributes.set(key, value2);
                 const attr = attributes[key];
                 if (attr !== void 0) {
-                  if (!equalAttrs(attr, value)) {
+                  if (!equalAttrs(attr, value2)) {
                     if (action === "retain") {
                       addOp();
                     }
-                    if (value === null) {
+                    if (value2 === null) {
                       delete attributes[key];
                     } else {
-                      attributes[key] = value;
+                      attributes[key] = value2;
                     }
                   } else if (attr !== null) {
                     item.delete(transaction);
@@ -26683,9 +26700,9 @@ var YText = class _YText extends AbstractType {
       if (str4.length > 0) {
         const attributes = {};
         let addAttributes = false;
-        currentAttributes.forEach((value, key) => {
+        currentAttributes.forEach((value2, key) => {
           addAttributes = true;
-          attributes[key] = value;
+          attributes[key] = value2;
         });
         const op = { insert: str4 };
         if (addAttributes) {
@@ -26731,8 +26748,8 @@ var YText = class _YText extends AbstractType {
                   {}
                 );
                 op.attributes = attrs;
-                currentAttributes.forEach((value, key) => {
-                  attrs[key] = value;
+                currentAttributes.forEach((value2, key) => {
+                  attrs[key] = value2;
                 });
               }
               ops.push(op);
@@ -27331,8 +27348,8 @@ var YXmlElement = class _YXmlElement extends YXmlFragment {
   _integrate(y, item) {
     super._integrate(y, item);
     /** @type {Map<string, any>} */
-    this._prelimAttrs.forEach((value, key) => {
-      this.setAttribute(key, value);
+    this._prelimAttrs.forEach((value2, key) => {
+      this.setAttribute(key, value2);
     });
     this._prelimAttrs = null;
   }
@@ -27354,11 +27371,11 @@ var YXmlElement = class _YXmlElement extends YXmlFragment {
   clone() {
     const el = new _YXmlElement(this.nodeName);
     const attrs = this.getAttributes();
-    forEach(attrs, (value, key) => {
+    forEach(attrs, (value2, key) => {
       el.setAttribute(
         key,
         /** @type {any} */
-        value
+        value2
       );
     });
     el.insert(0, this.toArray().map((v) => v instanceof AbstractType ? v.clone() : v));
@@ -27489,9 +27506,9 @@ var YXmlElement = class _YXmlElement extends YXmlFragment {
     const dom = _document.createElement(this.nodeName);
     const attrs = this.getAttributes();
     for (const key in attrs) {
-      const value = attrs[key];
-      if (typeof value === "string") {
-        dom.setAttribute(key, value);
+      const value2 = attrs[key];
+      if (typeof value2 === "string") {
+        dom.setAttribute(key, value2);
       }
     }
     typeListForEach(this, (yxml) => {
@@ -27560,8 +27577,8 @@ var YXmlHook = class _YXmlHook extends YMap {
    */
   clone() {
     const el = new _YXmlHook(this.hookName);
-    this.forEach((value, key) => {
-      el.set(key, value);
+    this.forEach((value2, key) => {
+      el.set(key, value2);
     });
     return el;
   }
@@ -28138,9 +28155,9 @@ var ContentFormat = class _ContentFormat {
    * @param {string} key
    * @param {Object} value
    */
-  constructor(key, value) {
+  constructor(key, value2) {
     this.key = key;
-    this.value = value;
+    this.value = value2;
   }
   /**
    * @return {number}
@@ -29115,8 +29132,8 @@ function msgPaths(m) {
   if ("path" in m) return [m.path];
   return [];
 }
-function scopeCovers(scope, path10) {
-  return scope.paths.some((p) => path10 === p || path10.startsWith(p.replace(/\/?$/, "/")));
+function scopeCovers(scope, path11) {
+  return scope.paths.some((p) => path11 === p || path11.startsWith(p.replace(/\/?$/, "/")));
 }
 function ledger(messages, scopes, q = {}) {
   const areaScopes = q.area ? scopes.filter((s) => s.area === q.area) : [];
@@ -29138,9 +29155,9 @@ function areaSummary(messages, scopes, windowMs = 10 * 60 * 1e3, now = Date.now(
   const areas = Array.from(new Set(scopes.map((s) => s.area))).sort();
   return areas.map((area) => {
     const recent = ledger(messages, scopes, { area, since: now - windowMs }).filter((m) => m.type === "changed");
-    const who = Array.from(new Set(recent.map((m) => m.from)));
+    const who2 = Array.from(new Set(recent.map((m) => m.from)));
     const owners = scopes.filter((s) => s.area === area).map((s) => s.by);
-    return `${area} (${owners.join(", ")}): ${recent.length} change${recent.length === 1 ? "" : "s"} in the last ${Math.round(windowMs / 6e4)} min${who.length ? ` by ${who.join(", ")}` : ""}`;
+    return `${area} (${owners.join(", ")}): ${recent.length} change${recent.length === 1 ? "" : "s"} in the last ${Math.round(windowMs / 6e4)} min${who2.length ? ` by ${who2.join(", ")}` : ""}`;
   });
 }
 
@@ -29271,12 +29288,12 @@ var RoomDoc = class {
         this.overlay(person).set(relpath, text);
       }
       let index = 0;
-      for (const [kind, value] of (0, import_fast_diff.default)(text.toString(), content)) {
-        if (kind === import_fast_diff.default.EQUAL) index += value.length;
-        else if (kind === import_fast_diff.default.DELETE) text.delete(index, value.length);
+      for (const [kind, value2] of (0, import_fast_diff.default)(text.toString(), content)) {
+        if (kind === import_fast_diff.default.EQUAL) index += value2.length;
+        else if (kind === import_fast_diff.default.DELETE) text.delete(index, value2.length);
         else {
-          text.insert(index, value);
-          index += value.length;
+          text.insert(index, value2);
+          index += value2.length;
         }
       }
       this.overlayAt.set(person, Date.now());
@@ -29337,12 +29354,12 @@ var RoomDoc = class {
     return areaSummary(this.messages(), this.allScopes(), windowMs);
   }
   setScope(personOrScope, scopeOrOrigin, origin) {
-    const value = typeof personOrScope === "string" ? { ...scopeOrOrigin, by: personOrScope, at: scopeOrOrigin.at ?? Date.now() } : { ...personOrScope, at: personOrScope.at ?? Date.now() };
+    const value2 = typeof personOrScope === "string" ? { ...scopeOrOrigin, by: personOrScope, at: scopeOrOrigin.at ?? Date.now() } : { ...personOrScope, at: personOrScope.at ?? Date.now() };
     const transactionOrigin = typeof personOrScope === "string" ? origin : scopeOrOrigin;
     this.doc.transact(() => {
-      this.scopes.set(value.by, value);
+      this.scopes.set(value2.by, value2);
     }, transactionOrigin);
-    return value;
+    return value2;
   }
   clearScope(person, origin) {
     const scope = this.scopes.get(person);
@@ -29384,8 +29401,8 @@ var RoomDoc = class {
   }
   setMeta(patch, origin) {
     this.doc.transact(() => {
-      for (const [key, value] of Object.entries(patch)) {
-        if (value !== void 0) this.metaMap.set(key, value);
+      for (const [key, value2] of Object.entries(patch)) {
+        if (value2 !== void 0) this.metaMap.set(key, value2);
       }
     }, origin);
   }
@@ -29428,13 +29445,13 @@ var RoomDoc = class {
         createRelativePositionFromJSON(claim2.anchor.from),
         this.doc
       );
-      const to = createAbsolutePositionFromRelativePosition(
+      const to2 = createAbsolutePositionFromRelativePosition(
         createRelativePositionFromJSON(claim2.anchor.to),
         this.doc
       );
-      if (!from2 || !to || from2.type !== text || to.type !== text) return { from: claim2.from, to: claim2.to };
+      if (!from2 || !to2 || from2.type !== text || to2.type !== text) return { from: claim2.from, to: claim2.to };
       const fromLine = lineAt(text.toString(), from2.index);
-      const toLine = lineAt(text.toString(), to.index);
+      const toLine = lineAt(text.toString(), to2.index);
       return { from: fromLine, to: Math.max(fromLine, toLine) };
     } catch {
       return { from: claim2.from, to: claim2.to };
@@ -29492,11 +29509,11 @@ var RoomDoc = class {
     return this.doc.getArray(`chat:${encodeURIComponent(name)}`);
   }
   say(name, item, origin) {
-    const value = { ...item, id: newId("h_"), at: Date.now() };
+    const value2 = { ...item, id: newId("h_"), at: Date.now() };
     this.doc.transact(() => {
-      this.chat(name).push([value]);
+      this.chat(name).push([value2]);
     }, origin);
-    return value;
+    return value2;
   }
 };
 function lineStart(text, oneBasedLine) {
@@ -29513,15 +29530,14 @@ function lineAt(text, index) {
   for (let i = 0; i < Math.min(index, text.length); i++) if (text[i] === "\n") line++;
   return line;
 }
-function makeAnchor(text, from2, to) {
+function makeAnchor(text, from2, to2) {
   return {
     from: relativePositionToJSON(createRelativePositionFromTypeIndex(text, lineStart(text.toString(), from2))),
-    to: relativePositionToJSON(createRelativePositionFromTypeIndex(text, lineStart(text.toString(), to)))
+    to: relativePositionToJSON(createRelativePositionFromTypeIndex(text, lineStart(text.toString(), to2)))
   };
 }
 
 // packages/shared/src/wake.ts
-var WAKE_TYPES = /* @__PURE__ */ new Set(["claim", "release", "changed", "conflict", "question", "scope", "done"]);
 function shouldWakeOnMsg(me, m, myClaims = []) {
   if (m.from === me.name && isAgentic(m.fromKind)) return { wake: false, mustAnswer: false, reason: "own message" };
   const addressed = m.to === me.name;
@@ -29531,14 +29547,14 @@ function shouldWakeOnMsg(me, m, myClaims = []) {
     if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` };
     return { wake: true, mustAnswer: addressed, reason: addressed ? "interrupt addressed to me" : "broadcast interrupt" };
   }
-  if (m.type === "answer") {
-    return addressed ? { wake: true, mustAnswer: true, reason: "answer addressed to me" } : { wake: false, mustAnswer: false, reason: m.to ? `addressed to ${m.to}` : "broadcast answer does not wake" };
-  }
-  if (!WAKE_TYPES.has(m.type)) return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` };
   if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` };
-  if ((m.type === "claim" || m.type === "release") && !addressed && !(m.from === me.name && m.fromKind === "human")) {
-    const near = myClaims.some((c) => c.by === me.name && isAgentic(c.byKind) && c.path === m.path);
-    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${m.path}, not near my claims` };
+  const kind = messageKind(m);
+  if (kind.wakes === "never") return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` };
+  if (kind.wakes === "addressed" && !addressed) return { wake: false, mustAnswer: false, reason: "not addressed to me" };
+  if (kind.audience === "claim-holders" && !addressed && !(m.from === me.name && m.fromKind === "human")) {
+    const path11 = "path" in m && typeof m.path === "string" ? m.path : "";
+    const near = myClaims.some((c) => c.by === me.name && isAgentic(c.byKind) && c.path === path11);
+    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${path11}, not near my claims` };
   }
   return { wake: true, mustAnswer: addressed, reason: addressed ? "addressed to me" : "broadcast" };
 }
@@ -29555,8 +29571,8 @@ var PY_DEF = /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
 var PY_ASSIGN = /^([A-Z_][A-Z0-9_]*)\s*(?::[^=]+)?=/gm;
 var JS_DEF = /\b(?:function\*?|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)|\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g;
 var KEYWORDS = new Set("def class return if else elif for while in not and or import from as with try except finally raise pass break continue lambda yield await async None True False self cls function const let var new this export default import from return if else for while do switch case break continue typeof instanceof void null undefined true false async await class extends super interface type enum implements".split(" "));
-var regexExtractor = (path10, text) => {
-  const ext = path10.slice(path10.lastIndexOf(".") + 1);
+var regexExtractor = (path11, text) => {
+  const ext = path11.slice(path11.lastIndexOf(".") + 1);
   const defs9 = /* @__PURE__ */ new Set();
   if (ext === "py") {
     for (const m of text.matchAll(PY_DEF)) defs9.add(m[1]);
@@ -29583,28 +29599,28 @@ var SymbolGraph = class {
   get size() {
     return this.files.size;
   }
-  has(path10) {
-    return this.files.has(path10);
+  has(path11) {
+    return this.files.has(path11);
   }
   /** Index or re-index one file. Returns false when the extractor does not handle it. */
-  set(path10, text) {
-    this.remove(path10);
-    const syms = this.extract(path10, text);
+  set(path11, text) {
+    this.remove(path11);
+    const syms = this.extract(path11, text);
     if (!syms) return false;
-    this.files.set(path10, syms);
-    for (const d of syms.defs) add(this.definers, d, path10);
-    for (const r of syms.refs) add(this.users, r, path10);
+    this.files.set(path11, syms);
+    for (const d of syms.defs) add(this.definers, d, path11);
+    for (const r of syms.refs) add(this.users, r, path11);
     return true;
   }
-  remove(path10) {
-    const prev = this.files.get(path10);
+  remove(path11) {
+    const prev = this.files.get(path11);
     if (!prev) return;
-    for (const d of prev.defs) del(this.definers, d, path10);
-    for (const r of prev.refs) del(this.users, r, path10);
-    this.files.delete(path10);
+    for (const d of prev.defs) del(this.definers, d, path11);
+    for (const r of prev.refs) del(this.users, r, path11);
+    this.files.delete(path11);
   }
-  symbolsOf(path10) {
-    return this.files.get(path10);
+  symbolsOf(path11) {
+    return this.files.get(path11);
   }
   definersOf(symbol) {
     return Array.from(this.definers.get(symbol) ?? []).sort();
@@ -29615,24 +29631,24 @@ var SymbolGraph = class {
     return Array.from(this.users.get(symbol) ?? []).filter((p) => !defs9.has(p)).sort();
   }
   /** Symbols a file uses that some other file defines. */
-  dependenciesOf(path10) {
-    const syms = this.files.get(path10);
+  dependenciesOf(path11) {
+    const syms = this.files.get(path11);
     if (!syms) return [];
     const out = [];
     for (const r of syms.refs) {
-      const definedIn = this.definersOf(r).filter((p) => p !== path10);
-      if (definedIn.length) out.push({ symbol: r, definedIn, usedIn: [path10] });
+      const definedIn = this.definersOf(r).filter((p) => p !== path11);
+      if (definedIn.length) out.push({ symbol: r, definedIn, usedIn: [path11] });
     }
     return out.sort((a, b) => a.symbol.localeCompare(b.symbol));
   }
   /** Symbols a file defines and the other files that use them. */
-  dependentsOf(path10) {
-    const syms = this.files.get(path10);
+  dependentsOf(path11) {
+    const syms = this.files.get(path11);
     if (!syms) return [];
     const out = [];
     for (const d of syms.defs) {
       const usedIn = this.usersOf(d);
-      if (usedIn.length) out.push({ symbol: d, definedIn: [path10], usedIn });
+      if (usedIn.length) out.push({ symbol: d, definedIn: [path11], usedIn });
     }
     return out.sort((a, b) => b.usedIn.length - a.usedIn.length || a.symbol.localeCompare(b.symbol));
   }
@@ -29654,9 +29670,9 @@ function del(m, k, v) {
   s.delete(v);
   if (!s.size) m.delete(k);
 }
-function symbolRange(path10, text, symbol) {
+function symbolRange(path11, text, symbol) {
   const lines = text.split("\n");
-  const ext = path10.slice(path10.lastIndexOf(".") + 1);
+  const ext = path11.slice(path11.lastIndexOf(".") + 1);
   const esc2 = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (ext === "py") {
     const re2 = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${esc2}\\b`);
@@ -29790,8 +29806,8 @@ var Areas = class _Areas {
     return Array.from(new Set(this.rules.map((r) => r.area))).sort();
   }
   /** The area a path belongs to: the longest matching pattern (later wins on ties); top-level dir without CODEOWNERS. */
-  areaOf(path10) {
-    const p = path10.replace(/^\.?\//, "");
+  areaOf(path11) {
+    const p = path11.replace(/^\.?\//, "");
     if (this.source === "codeowners") {
       let best;
       for (let i = 0; i < this.rules.length; i++) {
@@ -29818,13 +29834,49 @@ var Areas = class _Areas {
     return this.ownersOf(area).some((o) => o.toLowerCase() === me);
   }
 };
-function topLevelArea(path10) {
-  const i = path10.indexOf("/");
-  return i < 0 ? "/" : `${path10.slice(0, i)}/`;
+function topLevelArea(path11) {
+  const i = path11.indexOf("/");
+  return i < 0 ? "/" : `${path11.slice(0, i)}/`;
 }
 function sharesArea(a, b) {
   if (!a?.length || !b?.length) return true;
   return a.some((x) => b.includes(x));
+}
+
+// packages/shared/src/views.ts
+var scopeLine = (scope) => `${scope.area}: ${scope.summary} (${scope.paths.join(", ")})`;
+function personLine(input) {
+  const p = input.presences.find((x) => x.user.name === input.name && isAgentic(x.user.kind)) ?? input.presences.find((x) => x.user.name === input.name);
+  const lastDone = [...input.messages].reverse().find((m) => m.from === input.name && m.text.startsWith("done"));
+  let what;
+  if (input.scope) what = `working on ${scopeLine(input.scope)}`;
+  else if (p?.status?.startsWith("done")) what = p.status;
+  else if (lastDone && (!p || p.status === "idle" || p.status === "synced")) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`;
+  else what = p ? `${p.status ?? "idle"}, no task declared` : "offline";
+  const share = input.share === "full" ? "" : `; shares ${input.share}${input.share === "intent" ? " (no file text)" : " (file text only under their scope paths)"}`;
+  return `${what}${share}${input.changedPaths.length ? `; uncommitted, not yet pushed: ${input.changedPaths.join(", ")}` : ""}`;
+}
+function claimLine(claim2, options = {}) {
+  return `  - ${claim2.id}: ${describeClaim(claim2)}${options.yours ? " (yours)" : ""}${options.stale ? " [stale: owner offline]" : ""}`;
+}
+function areaMembershipSummary(areas) {
+  return areas.length ? `areas ${Array.from(new Set(areas)).sort().join(", ")}` : "";
+}
+function otherAreasLine(hiddenCount, areas) {
+  const unique = Array.from(new Set(areas)).sort();
+  return `${hiddenCount} other${hiddenCount === 1 ? "" : "s"} in ${unique.length} other area${unique.length === 1 ? "" : "s"}${unique.length ? ` (${unique.join(", ")})` : ""}`;
+}
+function workerLine({ worker: w, processGone = false, changedCount, last: last2, now = Date.now() }) {
+  const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
+  const alive = w.status === "running" && processGone ? " (process gone)" : "";
+  return [
+    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
+    `      ${changedCount} changed file(s) \xB7 branch ${w.branch}${w.summary ? ` \xB7 ${w.summary.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
+  ];
+}
+function workerLines(inputs) {
+  if (!inputs.length) return [];
+  return [`workers (${inputs.length}):`, ...[...inputs].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
 }
 
 // packages/room-mcp/src/session.ts
@@ -30041,12 +30093,12 @@ var Awareness = class extends Observable {
    * @param {string} field
    * @param {any} value
    */
-  setLocalStateField(field, value) {
+  setLocalStateField(field, value2) {
     const state = this.getLocalState();
     if (state !== null) {
       this.setLocalState({
         ...state,
-        [field]: value
+        [field]: value2
       });
     }
   }
@@ -30617,7 +30669,7 @@ var ReaddirpStream = class extends Readable {
     this._directoryFilter = normalizeFilter(opts.directoryFilter);
     const statMethod = opts.lstat ? lstat : stat;
     if (wantBigintFsStats) {
-      this._stat = (path10) => statMethod(path10, { bigint: true });
+      this._stat = (path11) => statMethod(path11, { bigint: true });
     } else {
       this._stat = statMethod;
     }
@@ -30642,8 +30694,8 @@ var ReaddirpStream = class extends Readable {
         const par = this.parent;
         const fil = par && par.files;
         if (fil && fil.length > 0) {
-          const { path: path10, depth } = par;
-          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path10));
+          const { path: path11, depth } = par;
+          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path11));
           const awaited = await Promise.all(slice);
           for (const entry of awaited) {
             if (!entry)
@@ -30683,20 +30735,20 @@ var ReaddirpStream = class extends Readable {
       this.reading = false;
     }
   }
-  async _exploreDir(path10, depth) {
+  async _exploreDir(path11, depth) {
     let files;
     try {
-      files = await readdir(path10, this._rdOptions);
+      files = await readdir(path11, this._rdOptions);
     } catch (error2) {
       this._onError(error2);
     }
-    return { files, depth, path: path10 };
+    return { files, depth, path: path11 };
   }
-  async _formatEntry(dirent, path10) {
+  async _formatEntry(dirent, path11) {
     let entry;
     const basename3 = this._isDirent ? dirent.name : dirent;
     try {
-      const fullPath = presolve(pjoin(path10, basename3));
+      const fullPath = presolve(pjoin(path11, basename3));
       entry = { path: prelative(this._root, fullPath), fullPath, basename: basename3 };
       entry[this._statsProp] = this._isDirent ? dirent : await this._stat(fullPath);
     } catch (err) {
@@ -31096,16 +31148,16 @@ var delFromSet = (main2, prop, item) => {
 };
 var isEmptySet = (val) => val instanceof Set ? val.size === 0 : !val;
 var FsWatchInstances = /* @__PURE__ */ new Map();
-function createFsWatchInstance(path10, options, listener, errHandler, emitRaw) {
+function createFsWatchInstance(path11, options, listener, errHandler, emitRaw) {
   const handleEvent = (rawEvent, evPath) => {
-    listener(path10);
-    emitRaw(rawEvent, evPath, { watchedPath: path10 });
-    if (evPath && path10 !== evPath) {
-      fsWatchBroadcast(sysPath.resolve(path10, evPath), KEY_LISTENERS, sysPath.join(path10, evPath));
+    listener(path11);
+    emitRaw(rawEvent, evPath, { watchedPath: path11 });
+    if (evPath && path11 !== evPath) {
+      fsWatchBroadcast(sysPath.resolve(path11, evPath), KEY_LISTENERS, sysPath.join(path11, evPath));
     }
   };
   try {
-    return fs_watch(path10, {
+    return fs_watch(path11, {
       persistent: options.persistent
     }, handleEvent);
   } catch (error2) {
@@ -31121,12 +31173,12 @@ var fsWatchBroadcast = (fullPath, listenerType, val1, val2, val3) => {
     listener(val1, val2, val3);
   });
 };
-var setFsWatchListener = (path10, fullPath, options, handlers9) => {
+var setFsWatchListener = (path11, fullPath, options, handlers9) => {
   const { listener, errHandler, rawEmitter } = handlers9;
   let cont = FsWatchInstances.get(fullPath);
   let watcher;
   if (!options.persistent) {
-    watcher = createFsWatchInstance(path10, options, listener, errHandler, rawEmitter);
+    watcher = createFsWatchInstance(path11, options, listener, errHandler, rawEmitter);
     if (!watcher)
       return;
     return watcher.close.bind(watcher);
@@ -31137,7 +31189,7 @@ var setFsWatchListener = (path10, fullPath, options, handlers9) => {
     addAndConvert(cont, KEY_RAW, rawEmitter);
   } else {
     watcher = createFsWatchInstance(
-      path10,
+      path11,
       options,
       fsWatchBroadcast.bind(null, fullPath, KEY_LISTENERS),
       errHandler,
@@ -31152,7 +31204,7 @@ var setFsWatchListener = (path10, fullPath, options, handlers9) => {
         cont.watcherUnusable = true;
       if (isWindows && error2.code === "EPERM") {
         try {
-          const fd = await open2(path10, "r");
+          const fd = await open2(path11, "r");
           await fd.close();
           broadcastErr(error2);
         } catch (err) {
@@ -31183,7 +31235,7 @@ var setFsWatchListener = (path10, fullPath, options, handlers9) => {
   };
 };
 var FsWatchFileInstances = /* @__PURE__ */ new Map();
-var setFsWatchFileListener = (path10, fullPath, options, handlers9) => {
+var setFsWatchFileListener = (path11, fullPath, options, handlers9) => {
   const { listener, rawEmitter } = handlers9;
   let cont = FsWatchFileInstances.get(fullPath);
   const copts = cont && cont.options;
@@ -31205,7 +31257,7 @@ var setFsWatchFileListener = (path10, fullPath, options, handlers9) => {
         });
         const currmtime = curr.mtimeMs;
         if (curr.size !== prev.size || currmtime > prev.mtimeMs || currmtime === 0) {
-          foreach(cont.listeners, (listener2) => listener2(path10, curr));
+          foreach(cont.listeners, (listener2) => listener2(path11, curr));
         }
       })
     };
@@ -31233,13 +31285,13 @@ var NodeFsHandler = class {
    * @param listener on fs change
    * @returns closer for the watcher instance
    */
-  _watchWithNodeFs(path10, listener) {
+  _watchWithNodeFs(path11, listener) {
     const opts = this.fsw.options;
-    const directory = sysPath.dirname(path10);
-    const basename3 = sysPath.basename(path10);
+    const directory = sysPath.dirname(path11);
+    const basename3 = sysPath.basename(path11);
     const parent = this.fsw._getWatchedDir(directory);
     parent.add(basename3);
-    const absolutePath = sysPath.resolve(path10);
+    const absolutePath = sysPath.resolve(path11);
     const options = {
       persistent: opts.persistent
     };
@@ -31249,12 +31301,12 @@ var NodeFsHandler = class {
     if (opts.usePolling) {
       const enableBin = opts.interval !== opts.binaryInterval;
       options.interval = enableBin && isBinaryPath(basename3) ? opts.binaryInterval : opts.interval;
-      closer = setFsWatchFileListener(path10, absolutePath, options, {
+      closer = setFsWatchFileListener(path11, absolutePath, options, {
         listener,
         rawEmitter: this.fsw._emitRaw
       });
     } else {
-      closer = setFsWatchListener(path10, absolutePath, options, {
+      closer = setFsWatchListener(path11, absolutePath, options, {
         listener,
         errHandler: this._boundHandleError,
         rawEmitter: this.fsw._emitRaw
@@ -31276,7 +31328,7 @@ var NodeFsHandler = class {
     let prevStats = stats;
     if (parent.has(basename3))
       return;
-    const listener = async (path10, newStats) => {
+    const listener = async (path11, newStats) => {
       if (!this.fsw._throttle(THROTTLE_MODE_WATCH, file, 5))
         return;
       if (!newStats || newStats.mtimeMs === 0) {
@@ -31290,11 +31342,11 @@ var NodeFsHandler = class {
             this.fsw._emit(EV.CHANGE, file, newStats2);
           }
           if ((isMacos || isLinux || isFreeBSD) && prevStats.ino !== newStats2.ino) {
-            this.fsw._closeFile(path10);
+            this.fsw._closeFile(path11);
             prevStats = newStats2;
             const closer2 = this._watchWithNodeFs(file, listener);
             if (closer2)
-              this.fsw._addPathCloser(path10, closer2);
+              this.fsw._addPathCloser(path11, closer2);
           } else {
             prevStats = newStats2;
           }
@@ -31326,7 +31378,7 @@ var NodeFsHandler = class {
    * @param item basename of this item
    * @returns true if no more processing is needed for this entry.
    */
-  async _handleSymlink(entry, directory, path10, item) {
+  async _handleSymlink(entry, directory, path11, item) {
     if (this.fsw.closed) {
       return;
     }
@@ -31336,7 +31388,7 @@ var NodeFsHandler = class {
       this.fsw._incrReadyCount();
       let linkPath;
       try {
-        linkPath = await fsrealpath(path10);
+        linkPath = await fsrealpath(path11);
       } catch (e) {
         this.fsw._emitReady();
         return true;
@@ -31346,12 +31398,12 @@ var NodeFsHandler = class {
       if (dir.has(item)) {
         if (this.fsw._symlinkPaths.get(full) !== linkPath) {
           this.fsw._symlinkPaths.set(full, linkPath);
-          this.fsw._emit(EV.CHANGE, path10, entry.stats);
+          this.fsw._emit(EV.CHANGE, path11, entry.stats);
         }
       } else {
         dir.add(item);
         this.fsw._symlinkPaths.set(full, linkPath);
-        this.fsw._emit(EV.ADD, path10, entry.stats);
+        this.fsw._emit(EV.ADD, path11, entry.stats);
       }
       this.fsw._emitReady();
       return true;
@@ -31380,9 +31432,9 @@ var NodeFsHandler = class {
         return;
       }
       const item = entry.path;
-      let path10 = sysPath.join(directory, item);
+      let path11 = sysPath.join(directory, item);
       current.add(item);
-      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path10, item)) {
+      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path11, item)) {
         return;
       }
       if (this.fsw.closed) {
@@ -31391,11 +31443,11 @@ var NodeFsHandler = class {
       }
       if (item === target || !target && !previous.has(item)) {
         this.fsw._incrReadyCount();
-        path10 = sysPath.join(dir, sysPath.relative(dir, path10));
-        this._addToNodeFs(path10, initialAdd, wh, depth + 1);
+        path11 = sysPath.join(dir, sysPath.relative(dir, path11));
+        this._addToNodeFs(path11, initialAdd, wh, depth + 1);
       }
     }).on(EV.ERROR, this._boundHandleError);
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       if (!stream)
         return reject();
       stream.once(STR_END, () => {
@@ -31404,7 +31456,7 @@ var NodeFsHandler = class {
           return;
         }
         const wasThrottled = throttler ? throttler.clear() : false;
-        resolve5(void 0);
+        resolve4(void 0);
         previous.getChildren().filter((item) => {
           return item !== directory && !current.has(item);
         }).forEach((item) => {
@@ -31461,13 +31513,13 @@ var NodeFsHandler = class {
    * @param depth Child path actually targeted for watch
    * @param target Child path actually targeted for watch
    */
-  async _addToNodeFs(path10, initialAdd, priorWh, depth, target) {
+  async _addToNodeFs(path11, initialAdd, priorWh, depth, target) {
     const ready = this.fsw._emitReady;
-    if (this.fsw._isIgnored(path10) || this.fsw.closed) {
+    if (this.fsw._isIgnored(path11) || this.fsw.closed) {
       ready();
       return false;
     }
-    const wh = this.fsw._getWatchHelpers(path10);
+    const wh = this.fsw._getWatchHelpers(path11);
     if (priorWh) {
       wh.filterPath = (entry) => priorWh.filterPath(entry);
       wh.filterDir = (entry) => priorWh.filterDir(entry);
@@ -31483,8 +31535,8 @@ var NodeFsHandler = class {
       const follow = this.fsw.options.followSymlinks;
       let closer;
       if (stats.isDirectory()) {
-        const absPath = sysPath.resolve(path10);
-        const targetPath = follow ? await fsrealpath(path10) : path10;
+        const absPath = sysPath.resolve(path11);
+        const targetPath = follow ? await fsrealpath(path11) : path11;
         if (this.fsw.closed)
           return;
         closer = await this._handleDir(wh.watchPath, stats, initialAdd, depth, target, wh, targetPath);
@@ -31494,29 +31546,29 @@ var NodeFsHandler = class {
           this.fsw._symlinkPaths.set(absPath, targetPath);
         }
       } else if (stats.isSymbolicLink()) {
-        const targetPath = follow ? await fsrealpath(path10) : path10;
+        const targetPath = follow ? await fsrealpath(path11) : path11;
         if (this.fsw.closed)
           return;
         const parent = sysPath.dirname(wh.watchPath);
         this.fsw._getWatchedDir(parent).add(wh.watchPath);
         this.fsw._emit(EV.ADD, wh.watchPath, stats);
-        closer = await this._handleDir(parent, stats, initialAdd, depth, path10, wh, targetPath);
+        closer = await this._handleDir(parent, stats, initialAdd, depth, path11, wh, targetPath);
         if (this.fsw.closed)
           return;
         if (targetPath !== void 0) {
-          this.fsw._symlinkPaths.set(sysPath.resolve(path10), targetPath);
+          this.fsw._symlinkPaths.set(sysPath.resolve(path11), targetPath);
         }
       } else {
         closer = this._handleFile(wh.watchPath, stats, initialAdd);
       }
       ready();
       if (closer)
-        this.fsw._addPathCloser(path10, closer);
+        this.fsw._addPathCloser(path11, closer);
       return false;
     } catch (error2) {
       if (this.fsw._handleError(error2)) {
         ready();
-        return path10;
+        return path11;
       }
     }
   }
@@ -31559,26 +31611,26 @@ function createPattern(matcher) {
   }
   return () => false;
 }
-function normalizePath(path10) {
-  if (typeof path10 !== "string")
+function normalizePath(path11) {
+  if (typeof path11 !== "string")
     throw new Error("string expected");
-  path10 = sysPath2.normalize(path10);
-  path10 = path10.replace(/\\/g, "/");
+  path11 = sysPath2.normalize(path11);
+  path11 = path11.replace(/\\/g, "/");
   let prepend = false;
-  if (path10.startsWith("//"))
+  if (path11.startsWith("//"))
     prepend = true;
   const DOUBLE_SLASH_RE2 = /\/\//;
-  while (path10.match(DOUBLE_SLASH_RE2))
-    path10 = path10.replace(DOUBLE_SLASH_RE2, "/");
+  while (path11.match(DOUBLE_SLASH_RE2))
+    path11 = path11.replace(DOUBLE_SLASH_RE2, "/");
   if (prepend)
-    path10 = "/" + path10;
-  return path10;
+    path11 = "/" + path11;
+  return path11;
 }
 function matchPatterns(patterns, testString, stats) {
-  const path10 = normalizePath(testString);
+  const path11 = normalizePath(testString);
   for (let index = 0; index < patterns.length; index++) {
     const pattern = patterns[index];
-    if (pattern(path10, stats)) {
+    if (pattern(path11, stats)) {
       return true;
     }
   }
@@ -31618,19 +31670,19 @@ var toUnix = (string3) => {
   }
   return str4;
 };
-var normalizePathToUnix = (path10) => toUnix(sysPath2.normalize(toUnix(path10)));
-var normalizeIgnored = (cwd2 = "") => (path10) => {
-  if (typeof path10 === "string") {
-    return normalizePathToUnix(sysPath2.isAbsolute(path10) ? path10 : sysPath2.join(cwd2, path10));
+var normalizePathToUnix = (path11) => toUnix(sysPath2.normalize(toUnix(path11)));
+var normalizeIgnored = (cwd2 = "") => (path11) => {
+  if (typeof path11 === "string") {
+    return normalizePathToUnix(sysPath2.isAbsolute(path11) ? path11 : sysPath2.join(cwd2, path11));
   } else {
-    return path10;
+    return path11;
   }
 };
-var getAbsolutePath = (path10, cwd2) => {
-  if (sysPath2.isAbsolute(path10)) {
-    return path10;
+var getAbsolutePath = (path11, cwd2) => {
+  if (sysPath2.isAbsolute(path11)) {
+    return path11;
   }
-  return sysPath2.join(cwd2, path10);
+  return sysPath2.join(cwd2, path11);
 };
 var EMPTY_SET = Object.freeze(/* @__PURE__ */ new Set());
 var DirEntry = class {
@@ -31685,10 +31737,10 @@ var DirEntry = class {
 var STAT_METHOD_F = "stat";
 var STAT_METHOD_L = "lstat";
 var WatchHelper = class {
-  constructor(path10, follow, fsw) {
+  constructor(path11, follow, fsw) {
     this.fsw = fsw;
-    const watchPath = path10;
-    this.path = path10 = path10.replace(REPLACER_RE, "");
+    const watchPath = path11;
+    this.path = path11 = path11.replace(REPLACER_RE, "");
     this.watchPath = watchPath;
     this.fullWatchPath = sysPath2.resolve(watchPath);
     this.dirParts = [];
@@ -31810,20 +31862,20 @@ var FSWatcher = class extends EventEmitter {
     this._closePromise = void 0;
     let paths = unifyPaths(paths_);
     if (cwd2) {
-      paths = paths.map((path10) => {
-        const absPath = getAbsolutePath(path10, cwd2);
+      paths = paths.map((path11) => {
+        const absPath = getAbsolutePath(path11, cwd2);
         return absPath;
       });
     }
-    paths.forEach((path10) => {
-      this._removeIgnoredPath(path10);
+    paths.forEach((path11) => {
+      this._removeIgnoredPath(path11);
     });
     this._userIgnored = void 0;
     if (!this._readyCount)
       this._readyCount = 0;
     this._readyCount += paths.length;
-    Promise.all(paths.map(async (path10) => {
-      const res = await this._nodeFsHandler._addToNodeFs(path10, !_internal, void 0, 0, _origAdd);
+    Promise.all(paths.map(async (path11) => {
+      const res = await this._nodeFsHandler._addToNodeFs(path11, !_internal, void 0, 0, _origAdd);
       if (res)
         this._emitReady();
       return res;
@@ -31845,17 +31897,17 @@ var FSWatcher = class extends EventEmitter {
       return this;
     const paths = unifyPaths(paths_);
     const { cwd: cwd2 } = this.options;
-    paths.forEach((path10) => {
-      if (!sysPath2.isAbsolute(path10) && !this._closers.has(path10)) {
+    paths.forEach((path11) => {
+      if (!sysPath2.isAbsolute(path11) && !this._closers.has(path11)) {
         if (cwd2)
-          path10 = sysPath2.join(cwd2, path10);
-        path10 = sysPath2.resolve(path10);
+          path11 = sysPath2.join(cwd2, path11);
+        path11 = sysPath2.resolve(path11);
       }
-      this._closePath(path10);
-      this._addIgnoredPath(path10);
-      if (this._watched.has(path10)) {
+      this._closePath(path11);
+      this._addIgnoredPath(path11);
+      if (this._watched.has(path11)) {
         this._addIgnoredPath({
-          path: path10,
+          path: path11,
           recursive: true
         });
       }
@@ -31919,38 +31971,38 @@ var FSWatcher = class extends EventEmitter {
    * @param stats arguments to be passed with event
    * @returns the error if defined, otherwise the value of the FSWatcher instance's `closed` flag
    */
-  async _emit(event, path10, stats) {
+  async _emit(event, path11, stats) {
     if (this.closed)
       return;
     const opts = this.options;
     if (isWindows)
-      path10 = sysPath2.normalize(path10);
+      path11 = sysPath2.normalize(path11);
     if (opts.cwd)
-      path10 = sysPath2.relative(opts.cwd, path10);
-    const args2 = [path10];
+      path11 = sysPath2.relative(opts.cwd, path11);
+    const args2 = [path11];
     if (stats != null)
       args2.push(stats);
     const awf = opts.awaitWriteFinish;
     let pw;
-    if (awf && (pw = this._pendingWrites.get(path10))) {
+    if (awf && (pw = this._pendingWrites.get(path11))) {
       pw.lastChange = /* @__PURE__ */ new Date();
       return this;
     }
     if (opts.atomic) {
       if (event === EVENTS.UNLINK) {
-        this._pendingUnlinks.set(path10, [event, ...args2]);
+        this._pendingUnlinks.set(path11, [event, ...args2]);
         setTimeout(() => {
-          this._pendingUnlinks.forEach((entry, path11) => {
+          this._pendingUnlinks.forEach((entry, path12) => {
             this.emit(...entry);
             this.emit(EVENTS.ALL, ...entry);
-            this._pendingUnlinks.delete(path11);
+            this._pendingUnlinks.delete(path12);
           });
         }, typeof opts.atomic === "number" ? opts.atomic : 100);
         return this;
       }
-      if (event === EVENTS.ADD && this._pendingUnlinks.has(path10)) {
+      if (event === EVENTS.ADD && this._pendingUnlinks.has(path11)) {
         event = EVENTS.CHANGE;
-        this._pendingUnlinks.delete(path10);
+        this._pendingUnlinks.delete(path11);
       }
     }
     if (awf && (event === EVENTS.ADD || event === EVENTS.CHANGE) && this._readyEmitted) {
@@ -31968,16 +32020,16 @@ var FSWatcher = class extends EventEmitter {
           this.emitWithAll(event, args2);
         }
       };
-      this._awaitWriteFinish(path10, awf.stabilityThreshold, event, awfEmit);
+      this._awaitWriteFinish(path11, awf.stabilityThreshold, event, awfEmit);
       return this;
     }
     if (event === EVENTS.CHANGE) {
-      const isThrottled = !this._throttle(EVENTS.CHANGE, path10, 50);
+      const isThrottled = !this._throttle(EVENTS.CHANGE, path11, 50);
       if (isThrottled)
         return this;
     }
     if (opts.alwaysStat && stats === void 0 && (event === EVENTS.ADD || event === EVENTS.ADD_DIR || event === EVENTS.CHANGE)) {
-      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path10) : path10;
+      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path11) : path11;
       let stats2;
       try {
         stats2 = await stat3(fullPath);
@@ -32008,23 +32060,23 @@ var FSWatcher = class extends EventEmitter {
    * @param timeout duration of time to suppress duplicate actions
    * @returns tracking object or false if action should be suppressed
    */
-  _throttle(actionType, path10, timeout) {
+  _throttle(actionType, path11, timeout) {
     if (!this._throttled.has(actionType)) {
       this._throttled.set(actionType, /* @__PURE__ */ new Map());
     }
     const action = this._throttled.get(actionType);
     if (!action)
       throw new Error("invalid throttle");
-    const actionPath = action.get(path10);
+    const actionPath = action.get(path11);
     if (actionPath) {
       actionPath.count++;
       return false;
     }
     let timeoutObject;
     const clear = () => {
-      const item = action.get(path10);
+      const item = action.get(path11);
       const count = item ? item.count : 0;
-      action.delete(path10);
+      action.delete(path11);
       clearTimeout(timeoutObject);
       if (item)
         clearTimeout(item.timeoutObject);
@@ -32032,7 +32084,7 @@ var FSWatcher = class extends EventEmitter {
     };
     timeoutObject = setTimeout(clear, timeout);
     const thr = { timeoutObject, clear, count: 0 };
-    action.set(path10, thr);
+    action.set(path11, thr);
     return thr;
   }
   _incrReadyCount() {
@@ -32046,44 +32098,44 @@ var FSWatcher = class extends EventEmitter {
    * @param event
    * @param awfEmit Callback to be called when ready for event to be emitted.
    */
-  _awaitWriteFinish(path10, threshold, event, awfEmit) {
+  _awaitWriteFinish(path11, threshold, event, awfEmit) {
     const awf = this.options.awaitWriteFinish;
     if (typeof awf !== "object")
       return;
     const pollInterval = awf.pollInterval;
     let timeoutHandler;
-    let fullPath = path10;
-    if (this.options.cwd && !sysPath2.isAbsolute(path10)) {
-      fullPath = sysPath2.join(this.options.cwd, path10);
+    let fullPath = path11;
+    if (this.options.cwd && !sysPath2.isAbsolute(path11)) {
+      fullPath = sysPath2.join(this.options.cwd, path11);
     }
     const now = /* @__PURE__ */ new Date();
     const writes = this._pendingWrites;
     function awaitWriteFinishFn(prevStat) {
       statcb(fullPath, (err, curStat) => {
-        if (err || !writes.has(path10)) {
+        if (err || !writes.has(path11)) {
           if (err && err.code !== "ENOENT")
             awfEmit(err);
           return;
         }
         const now2 = Number(/* @__PURE__ */ new Date());
         if (prevStat && curStat.size !== prevStat.size) {
-          writes.get(path10).lastChange = now2;
+          writes.get(path11).lastChange = now2;
         }
-        const pw = writes.get(path10);
+        const pw = writes.get(path11);
         const df = now2 - pw.lastChange;
         if (df >= threshold) {
-          writes.delete(path10);
+          writes.delete(path11);
           awfEmit(void 0, curStat);
         } else {
           timeoutHandler = setTimeout(awaitWriteFinishFn, pollInterval, curStat);
         }
       });
     }
-    if (!writes.has(path10)) {
-      writes.set(path10, {
+    if (!writes.has(path11)) {
+      writes.set(path11, {
         lastChange: now,
         cancelWait: () => {
-          writes.delete(path10);
+          writes.delete(path11);
           clearTimeout(timeoutHandler);
           return event;
         }
@@ -32094,8 +32146,8 @@ var FSWatcher = class extends EventEmitter {
   /**
    * Determines whether user has asked to ignore this path.
    */
-  _isIgnored(path10, stats) {
-    if (this.options.atomic && DOT_RE.test(path10))
+  _isIgnored(path11, stats) {
+    if (this.options.atomic && DOT_RE.test(path11))
       return true;
     if (!this._userIgnored) {
       const { cwd: cwd2 } = this.options;
@@ -32105,17 +32157,17 @@ var FSWatcher = class extends EventEmitter {
       const list = [...ignoredPaths.map(normalizeIgnored(cwd2)), ...ignored];
       this._userIgnored = anymatch(list, void 0);
     }
-    return this._userIgnored(path10, stats);
+    return this._userIgnored(path11, stats);
   }
-  _isntIgnored(path10, stat4) {
-    return !this._isIgnored(path10, stat4);
+  _isntIgnored(path11, stat4) {
+    return !this._isIgnored(path11, stat4);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
    * @param path file or directory pattern being watched
    */
-  _getWatchHelpers(path10) {
-    return new WatchHelper(path10, this.options.followSymlinks, this);
+  _getWatchHelpers(path11) {
+    return new WatchHelper(path11, this.options.followSymlinks, this);
   }
   // Directory helpers
   // -----------------
@@ -32147,63 +32199,63 @@ var FSWatcher = class extends EventEmitter {
    * @param item      base path of item/directory
    */
   _remove(directory, item, isDirectory) {
-    const path10 = sysPath2.join(directory, item);
-    const fullPath = sysPath2.resolve(path10);
-    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path10) || this._watched.has(fullPath);
-    if (!this._throttle("remove", path10, 100))
+    const path11 = sysPath2.join(directory, item);
+    const fullPath = sysPath2.resolve(path11);
+    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path11) || this._watched.has(fullPath);
+    if (!this._throttle("remove", path11, 100))
       return;
     if (!isDirectory && this._watched.size === 1) {
       this.add(directory, item, true);
     }
-    const wp = this._getWatchedDir(path10);
+    const wp = this._getWatchedDir(path11);
     const nestedDirectoryChildren = wp.getChildren();
-    nestedDirectoryChildren.forEach((nested) => this._remove(path10, nested));
+    nestedDirectoryChildren.forEach((nested) => this._remove(path11, nested));
     const parent = this._getWatchedDir(directory);
     const wasTracked = parent.has(item);
     parent.remove(item);
     if (this._symlinkPaths.has(fullPath)) {
       this._symlinkPaths.delete(fullPath);
     }
-    let relPath = path10;
+    let relPath = path11;
     if (this.options.cwd)
-      relPath = sysPath2.relative(this.options.cwd, path10);
+      relPath = sysPath2.relative(this.options.cwd, path11);
     if (this.options.awaitWriteFinish && this._pendingWrites.has(relPath)) {
       const event = this._pendingWrites.get(relPath).cancelWait();
       if (event === EVENTS.ADD)
         return;
     }
-    this._watched.delete(path10);
+    this._watched.delete(path11);
     this._watched.delete(fullPath);
     const eventName = isDirectory ? EVENTS.UNLINK_DIR : EVENTS.UNLINK;
-    if (wasTracked && !this._isIgnored(path10))
-      this._emit(eventName, path10);
-    this._closePath(path10);
+    if (wasTracked && !this._isIgnored(path11))
+      this._emit(eventName, path11);
+    this._closePath(path11);
   }
   /**
    * Closes all watchers for a path
    */
-  _closePath(path10) {
-    this._closeFile(path10);
-    const dir = sysPath2.dirname(path10);
-    this._getWatchedDir(dir).remove(sysPath2.basename(path10));
+  _closePath(path11) {
+    this._closeFile(path11);
+    const dir = sysPath2.dirname(path11);
+    this._getWatchedDir(dir).remove(sysPath2.basename(path11));
   }
   /**
    * Closes only file-specific watchers
    */
-  _closeFile(path10) {
-    const closers = this._closers.get(path10);
+  _closeFile(path11) {
+    const closers = this._closers.get(path11);
     if (!closers)
       return;
     closers.forEach((closer) => closer());
-    this._closers.delete(path10);
+    this._closers.delete(path11);
   }
-  _addPathCloser(path10, closer) {
+  _addPathCloser(path11, closer) {
     if (!closer)
       return;
-    let list = this._closers.get(path10);
+    let list = this._closers.get(path11);
     if (!list) {
       list = [];
-      this._closers.set(path10, list);
+      this._closers.set(path11, list);
     }
     list.push(closer);
   }
@@ -32277,20 +32329,20 @@ function timeoutMs(configured) {
 }
 function git(dir, args2, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve4, reject) => {
     execFile("git", args2, { cwd: dir, maxBuffer: 64 * 1024 * 1024, timeout }, (err, stdout, stderr) => {
       if (err) {
         const stopped = err;
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr || err.message).trim();
         reject(new Error(`git ${args2.join(" ")} failed: ${detail}`));
-      } else resolve5(stdout);
+      } else resolve4(stdout);
     });
   });
 }
 var gitHead = (dir) => git(dir, ["rev-parse", "HEAD"]).then((s) => s.trim());
 var gitBranch = (dir) => git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).then((s) => s.trim());
 function normalizeGitOrigin(origin) {
-  const value = origin.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+  const value2 = origin.trim().replace(/\/+$/, "").replace(/\.git$/, "");
   const hosted = (host, rawPath) => {
     const segs = rawPath.split("/").filter(Boolean);
     if (!segs.length) return void 0;
@@ -32299,14 +32351,14 @@ function normalizeGitOrigin(origin) {
     if (segs.length === 1) return `git/${h}/${segs[0]}`;
     return `git/${h}/${segs.slice(0, -1).join(".")}/${segs[segs.length - 1]}`;
   };
-  const scp = value.match(/^(?:[^@]+@)?([^:/]+):(.+)$/);
-  if (scp && !value.includes("://")) return hosted(scp[1], scp[2]);
-  if (value.startsWith("/") || value.startsWith(".") || value.startsWith("file://")) {
-    const name = value.replace(/^file:\/\//, "").split("/").filter(Boolean).pop();
+  const scp = value2.match(/^(?:[^@]+@)?([^:/]+):(.+)$/);
+  if (scp && !value2.includes("://")) return hosted(scp[1], scp[2]);
+  if (value2.startsWith("/") || value2.startsWith(".") || value2.startsWith("file://")) {
+    const name = value2.replace(/^file:\/\//, "").split("/").filter(Boolean).pop();
     return name ? `local/${name}` : void 0;
   }
   try {
-    const url = new URL(value);
+    const url = new URL(value2);
     if (!url.hostname) return void 0;
     return hosted(url.hostname, url.pathname);
   } catch {
@@ -32336,11 +32388,11 @@ async function gitTracked(dir) {
 }
 async function gitIgnored(dir, rel, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve4, reject) => {
     execFile("git", ["check-ignore", "-q", "--", rel], { cwd: dir, timeout }, (err) => {
       const stopped = err;
       if (stopped?.killed || stopped?.signal) reject(new Error(`git check-ignore timed out after ${timeout}ms`));
-      else resolve5(!err);
+      else resolve4(!err);
     });
   });
 }
@@ -32363,8 +32415,8 @@ async function gitRelation(dir, head, base) {
   if (await isAncestor(head, base)) return "behind";
   return "diverged";
 }
-var gitCountBetween = (dir, from2, to) => git(dir, ["rev-list", "--count", `${from2}..${to}`]).then((s) => Number(s.trim()) || 0);
-var gitPathsBetween = (dir, from2, to) => git(dir, ["diff", "--name-only", from2, to]).then((s) => s.split("\n").filter(Boolean));
+var gitCountBetween = (dir, from2, to2) => git(dir, ["rev-list", "--count", `${from2}..${to2}`]).then((s) => Number(s.trim()) || 0);
+var gitPathsBetween = (dir, from2, to2) => git(dir, ["diff", "--name-only", from2, to2]).then((s) => s.split("\n").filter(Boolean));
 var gitSubject = (dir, rev) => git(dir, ["log", "-1", "--format=%s", rev]).then((s) => s.trim());
 async function gitIsOnRemote(dir, sha) {
   try {
@@ -32469,7 +32521,7 @@ var Daemon = class {
     const { serverUrl, roomName } = splitRoomUrl(options.room);
     this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
       WebSocketPolyfill: import_websocket.default,
-      params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.localKey ? { key: options.localKey } : {}, ...options.session ? { session: options.session } : options.githubToken ? { gh: options.githubToken } : {} }
+      params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.localKey ? { key: options.localKey } : {}, ...options.session ? { session: options.session } : {} }
     });
     this.setStatus("syncing");
   }
@@ -32635,7 +32687,7 @@ var Daemon = class {
   }
   waitForSync() {
     if (this.provider.synced) return Promise.resolve();
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       const timer = setTimeout(() => {
         this.provider.off("sync", onSync);
         reject(new RoomdError(`could not sync with ${this.roomUrl} within ${this.connectTimeoutMs}ms`, 1));
@@ -32644,7 +32696,7 @@ var Daemon = class {
         if (!synced) return;
         clearTimeout(timer);
         this.provider.off("sync", onSync);
-        resolve5();
+        resolve4();
       };
       this.provider.on("sync", onSync);
     });
@@ -32708,24 +32760,24 @@ var Daemon = class {
     await this.refreshBaseStatus();
   }
   /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
-  async maybeAdvance(from2, to) {
-    if (await gitIsOnRemote(this.dir, to)) await this.advanceBase(from2, to);
+  async maybeAdvance(from2, to2) {
+    if (await gitIsOnRemote(this.dir, to2)) await this.advanceBase(from2, to2);
     else {
       this.setStatus("ahead of base (unpushed): git push");
-      this.log(`HEAD ${to.slice(0, 10)} is ahead of the room base but not pushed; base stays at ${from2.slice(0, 10)}`);
+      this.log(`HEAD ${to2.slice(0, 10)} is ahead of the room base but not pushed; base stays at ${from2.slice(0, 10)}`);
     }
   }
-  async advanceBase(from2, to) {
+  async advanceBase(from2, to2) {
     const [commits, paths, summary] = await Promise.all([
-      gitCountBetween(this.dir, from2, to),
-      gitPathsBetween(this.dir, from2, to),
-      gitSubject(this.dir, to)
+      gitCountBetween(this.dir, from2, to2),
+      gitPathsBetween(this.dir, from2, to2),
+      gitSubject(this.dir, to2)
     ]);
     this.roomDoc.doc.transact(() => {
-      this.roomDoc.setMeta({ base: to, branch: this.branch }, this);
-      this.roomDoc.post({ name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {} }, { type: "base", base: to, prev: from2, commits, paths, summary }, this);
+      this.roomDoc.setMeta({ base: to2, branch: this.branch }, this);
+      this.roomDoc.post({ name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {} }, { type: "base", base: to2, prev: from2, commits, paths, summary }, this);
     }, this);
-    this.log(`advanced room base to ${to.slice(0, 10)} (+${commits})`);
+    this.log(`advanced room base to ${to2.slice(0, 10)} (+${commits})`);
   }
   /** Presence status reflects where this clone stands relative to the room base. */
   async refreshBaseStatus() {
@@ -32871,7 +32923,7 @@ var Daemon = class {
       this.scheduleDisk(relpath, event === "add");
     });
     watcher.on("error", (error2) => this.log(`watcher error: ${errMsg(error2)}`));
-    await new Promise((resolve5) => watcher.on("ready", () => resolve5()));
+    await new Promise((resolve4) => watcher.on("ready", () => resolve4()));
   }
   /** .roomignore changed: newly ignored files leave the room, newly allowed ones are published. */
   reloadRoomIgnore() {
@@ -33050,7 +33102,7 @@ function deterministicPort(commonDir) {
   return 4e4 + h.readUInt32BE(0) % 2e4;
 }
 function relayAnswers(port, timeoutMs2 = 800) {
-  return new Promise((resolve5) => {
+  return new Promise((resolve4) => {
     const req = http.get({ host: "127.0.0.1", port, path: "/health", timeout: timeoutMs2 }, (res) => {
       let body = "";
       res.on("data", (c) => {
@@ -33058,17 +33110,17 @@ function relayAnswers(port, timeoutMs2 = 800) {
       });
       res.on("end", () => {
         try {
-          resolve5(res.statusCode === 200 && JSON.parse(body).local === true);
+          resolve4(res.statusCode === 200 && JSON.parse(body).local === true);
         } catch {
-          resolve5(false);
+          resolve4(false);
         }
       });
     });
     req.on("timeout", () => {
       req.destroy();
-      resolve5(false);
+      resolve4(false);
     });
-    req.on("error", () => resolve5(false));
+    req.on("error", () => resolve4(false));
   });
 }
 var MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
@@ -33090,7 +33142,7 @@ function isLoopback(addr) {
   return !!addr && LOOPBACK.has(addr);
 }
 function startRelay(port, opts = {}) {
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve4, reject) => {
     const staticDir = opts.staticDir ? path2.resolve(opts.staticDir) : findWebDist();
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://x");
@@ -33134,7 +33186,7 @@ Connection: close\r
     server.listen(port, "127.0.0.1", () => {
       const addr = server.address();
       const bound = typeof addr === "object" && addr ? addr.port : port;
-      resolve5({
+      resolve4({
         port: bound,
         close: () => new Promise((done) => {
           for (const c of wss.clients) c.terminate();
@@ -33296,29 +33348,29 @@ print(json.dumps({"defs": sorted(defs), "refs": sorted(refs - defs)}))
 var pythonOk;
 async function runPython(text) {
   if (pythonOk === false) return void 0;
-  return new Promise((resolve5) => {
+  return new Promise((resolve4) => {
     const p = execFile2("python3", ["-c", SCRIPT], { timeout: 5e3, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
       if (err) {
         if (err.code === "ENOENT") pythonOk = false;
-        return resolve5(void 0);
+        return resolve4(void 0);
       }
       pythonOk = true;
       try {
-        resolve5(JSON.parse(stdout));
+        resolve4(JSON.parse(stdout));
       } catch {
-        resolve5(void 0);
+        resolve4(void 0);
       }
     });
     p.stdin?.end(text);
   });
 }
-async function extractSymbols(path10, text) {
-  if (path10.endsWith(".py")) {
+async function extractSymbols(path11, text) {
+  if (path11.endsWith(".py")) {
     const r = await runPython(text);
     if (r) return r;
-    if (r === null) return regexExtractor(path10, text);
+    if (r === null) return regexExtractor(path11, text);
   }
-  return regexExtractor(path10, text);
+  return regexExtractor(path11, text);
 }
 
 // packages/room-mcp/src/graph-index.ts
@@ -33336,7 +33388,7 @@ var GraphIndex = class {
     this.dir = dir;
     this.log = log2;
     this.opts = opts;
-    this.graph = new SymbolGraph((path10) => this.cache.get(path10));
+    this.graph = new SymbolGraph((path11) => this.cache.get(path11));
   }
   room;
   me;
@@ -33431,46 +33483,46 @@ var GraphIndex = class {
     this.previousChanged = changed;
   }
   /** Current text for a path as the index sees it. */
-  async textFor(path10) {
-    if (this.room.deleted.get(this.me)?.has(path10)) return void 0;
-    const mine = this.room.text(path10, this.me);
+  async textFor(path11) {
+    if (this.room.deleted.get(this.me)?.has(path11)) return void 0;
+    const mine = this.room.text(path11, this.me);
     if (mine !== void 0) return mine;
     for (const person of this.room.overlays.keys()) {
       if (person === this.me) continue;
-      const t = this.room.text(path10, person);
+      const t = this.room.text(path11, person);
       if (t !== void 0) return t;
     }
     if (!this.base) return void 0;
-    return gitShow(this.dir, this.base, path10);
+    return gitShow(this.dir, this.base, path11);
   }
-  refresh(path10) {
-    this.revisions.set(path10, (this.revisions.get(path10) ?? 0) + 1);
-    const inflight = this.pending.get(path10);
+  refresh(path11) {
+    this.revisions.set(path11, (this.revisions.get(path11) ?? 0) + 1);
+    const inflight = this.pending.get(path11);
     if (inflight) return inflight;
     const p = (async () => {
       while (!this.stopped) {
-        const revision = this.revisions.get(path10), generation = this.generation;
-        const text = await this.textFor(path10);
-        const symbols = text === void 0 || text.length > MAX_BYTES ? void 0 : await extractSymbols(path10, text);
+        const revision = this.revisions.get(path11), generation = this.generation;
+        const text = await this.textFor(path11);
+        const symbols = text === void 0 || text.length > MAX_BYTES ? void 0 : await extractSymbols(path11, text);
         if (this.stopped) return;
-        if (generation !== this.generation || revision !== this.revisions.get(path10)) continue;
+        if (generation !== this.generation || revision !== this.revisions.get(path11)) continue;
         if (!symbols || text === void 0) {
-          this.cache.delete(path10);
-          this.graph.remove(path10);
+          this.cache.delete(path11);
+          this.graph.remove(path11);
         } else {
-          this.cache.set(path10, symbols);
-          this.graph.set(path10, text);
+          this.cache.set(path11, symbols);
+          this.graph.set(path11, text);
         }
         break;
       }
-    })().catch((e) => this.log(`graph: ${path10}: ${e instanceof Error ? e.message : e}`)).finally(() => {
-      this.pending.delete(path10);
+    })().catch((e) => this.log(`graph: ${path11}: ${e instanceof Error ? e.message : e}`)).finally(() => {
+      this.pending.delete(path11);
       if (!this.stopped && !this.pending.size) {
         clearTimeout(this.publishing);
         this.publishing = setTimeout(() => this.publish(this.phase), 100);
       }
     });
-    this.pending.set(path10, p);
+    this.pending.set(path11, p);
     return p;
   }
   /** Wait for overlay work already queued as well as base rebuilds. */
@@ -33527,6 +33579,10 @@ function hashOf(text) {
 import fs3 from "node:fs";
 import os from "node:os";
 import path4 from "node:path";
+var configuredPath;
+function configureCredentials(file) {
+  configuredPath = file;
+}
 function getPending(server) {
   const p = loadCredentials()[`pending:${serverKey(server)}`];
   return p && Date.now() - p.startedAt < p.expires_in * 1e3 ? p : void 0;
@@ -33538,8 +33594,9 @@ function setPending(server, p) {
   save(all2);
 }
 function credentialsPath() {
-  const env = process.env.ROOM_CREDENTIALS?.trim();
-  if (env) return env;
+  if (configuredPath) return configuredPath;
+  const fromEnv = process.env.ROOM_CREDENTIALS?.trim();
+  if (fromEnv) return fromEnv;
   const base = process.env.XDG_CONFIG_HOME?.trim() || path4.join(os.homedir(), ".config");
   return path4.join(base, "room", "credentials.json");
 }
@@ -33584,15 +33641,72 @@ function removeCredential(server) {
   return true;
 }
 
-// packages/room-mcp/src/session.ts
+// packages/room-mcp/src/config.ts
+import os2 from "node:os";
+import path5 from "node:path";
+import fs4 from "node:fs";
 var DEFAULT_SERVER = "wss://room-rohanz.fly.dev";
 var LOCAL = "local";
-function resolveServer(raw) {
-  const v = raw?.trim();
-  if (!v || v === LOCAL) return LOCAL;
-  if (v === "hosted") return DEFAULT_SERVER;
-  return v;
+var DEFAULT_MAX_WORKERS = 8;
+var DEFAULT_STALE_DAYS = 7;
+var value = (v) => typeof v === "string" && v.trim() ? v.trim() : void 0;
+var positive = (v, fallback) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+function normaliseWhere(where) {
+  const w = value(where);
+  if (!w) return void 0;
+  if (["team", "hosted", "web", "shared"].includes(w)) return "team";
+  return w;
 }
+function resolveServer(raw) {
+  const w = normaliseWhere(raw);
+  if (!w || w === LOCAL) return LOCAL;
+  return w === "team" ? DEFAULT_SERVER : w;
+}
+async function rememberedWhere(dir) {
+  try {
+    const file = path5.join(await gitCommonDir(dir), "room-choice.json");
+    const parsed = JSON.parse(fs4.readFileSync(file, "utf8"));
+    return value(parsed.where);
+  } catch {
+    return void 0;
+  }
+}
+async function resolveConfig({ env, args: args2 = {}, dir }) {
+  const e = env ?? process.env;
+  const argWhere = normaliseWhere(args2.where ?? args2.server);
+  const envWhere = normaliseWhere(e.ROOM_SERVER);
+  const remembered = !argWhere && !envWhere ? normaliseWhere(await rememberedWhere(dir)) : void 0;
+  const where = argWhere ?? envWhere ?? remembered ?? LOCAL;
+  const whereRule = argWhere ? "argument" : envWhere ? "env" : remembered ? "remembered" : "default";
+  const rawKind = value(args2.kind) ?? value(e.ROOM_KIND) ?? "agent";
+  const kind = rawKind === "bot" || rawKind === "ci" ? rawKind : "agent";
+  const rawShare = value(args2.share) ?? value(e.ROOM_SHARE) ?? "full";
+  const share = rawShare === "intent" || rawShare === "declared" ? rawShare : "full";
+  const credentialsPath2 = value(args2.credentialsPath ?? args2.credentials) ?? value(e.ROOM_CREDENTIALS) ?? path5.join(value(e.XDG_CONFIG_HOME) ?? path5.join(os2.homedir(), ".config"), "room", "credentials.json");
+  return {
+    dir: path5.resolve(dir),
+    server: resolveServer(where),
+    where,
+    whereRule,
+    name: value(args2.name) ?? value(e.ROOM_NAME),
+    owner: value(args2.owner) ?? value(e.ROOM_OWNER),
+    tag: value(args2.tag) ?? value(e.ROOM_TAG),
+    kind,
+    share,
+    credentialsPath: credentialsPath2,
+    token: value(args2.token) ?? value(e.ROOM_TOKEN),
+    logFile: value(args2.logFile) ?? value(e.ROOM_LOG_FILE),
+    maxWorkers: positive(args2.maxWorkers ?? e.ROOM_MAX_WORKERS, DEFAULT_MAX_WORKERS),
+    staleDays: positive(args2.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),
+    room: value(args2.room) ?? value(e.ROOM_ROOM),
+    web: value(args2.web) ?? value(e.ROOM_WEB)
+  };
+}
+
+// packages/room-mcp/src/session.ts
 var DEFAULT_WEB = "http://localhost:5173";
 var NoRoom = class extends RoomdError {
   constructor(roomName, detail) {
@@ -33729,7 +33843,7 @@ async function serverShareMax(server) {
   return max2;
 }
 function requestedShare(explicit) {
-  const raw = explicit?.trim() || process.env.ROOM_SHARE?.trim() || "full";
+  const raw = explicit?.trim() || "full";
   const level = parseShare(raw);
   if (!level) throw new RoomdError(`share must be intent, declared or full (got "${raw}")`, 2);
   return level;
@@ -33781,13 +33895,15 @@ function decodeRoom(encoded) {
 }
 async function joinSession(opts) {
   const dir = resolve3(opts.dir);
+  const config2 = await resolveConfig({ dir, env: process.env, args: opts });
+  configureCredentials(config2.credentialsPath);
   if (opts.log) setServerLog(opts.log);
-  const chosen = resolveServer(opts.server ?? process.env.ROOM_SERVER);
-  if (chosen === LOCAL) return joinLocal(dir, opts);
+  const chosen = config2.server;
+  if (chosen === LOCAL) return joinLocal(dir, { ...opts, name: config2.owner ?? config2.name, tag: config2.tag, kind: config2.kind, share: config2.share, web: config2.web });
   const parsed = parseServer(chosen);
   const server = parsed.server;
-  const token = opts.token ?? process.env.ROOM_TOKEN?.trim() ?? parsed.token;
-  const web = (opts.web ?? process.env.ROOM_WEB ?? defaultWeb(server)).replace(/\/+$/, "");
+  const token = config2.token ?? parsed.token;
+  const web = (config2.web ?? defaultWeb(server)).replace(/\/+$/, "");
   let roomName = opts.room;
   if (!roomName) {
     const d = await deriveRoomName(dir);
@@ -33796,10 +33912,10 @@ async function joinSession(opts) {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
   const auth = await resolveAuth(server, roomName, token);
-  const label = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, "") || void 0;
-  const kindEnv = (opts.kind ?? process.env.ROOM_KIND)?.trim();
+  const label = config2.tag?.replace(/[^A-Za-z0-9_-]/g, "") || void 0;
+  const kindEnv = config2.kind;
   const kind = kindEnv === "bot" || kindEnv === "ci" ? kindEnv : "agent";
-  const owner = auth.login ?? opts.name ?? await defaultName(dir);
+  const owner = auth.login ?? config2.owner ?? config2.name ?? await defaultName(dir);
   if (!owner) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
   const name = label ? `${owner}+${label}` : owner;
   const me = { name, kind, owner, ...label ? { label } : {} };
@@ -33813,7 +33929,7 @@ async function joinSession(opts) {
   if (pre?.missing) throw new NoRoom(roomName, pre.reason);
   if (pre?.loginNeeded) throw new NotLoggedIn(server);
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2);
-  const shareRequested = requestedShare(opts.share);
+  const shareRequested = requestedShare(config2.share);
   const shareMax = await serverShareMax(server);
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
@@ -33843,10 +33959,10 @@ async function joinSession(opts) {
 }
 async function joinLocal(dir, opts) {
   const roomName = opts.room ?? await localRoomName(dir, opts.localBranch);
-  const owner = opts.name ?? (process.env.ROOM_OWNER?.trim() || await defaultName(dir));
+  const owner = opts.name ?? await defaultName(dir);
   if (!owner) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
-  const label = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, "") || void 0;
-  const kindEnv = (opts.kind ?? process.env.ROOM_KIND)?.trim();
+  const label = opts.tag?.trim().replace(/[^A-Za-z0-9_-]/g, "") || void 0;
+  const kindEnv = opts.kind?.trim();
   const kind = kindEnv === "bot" || kindEnv === "ci" ? kindEnv : "agent";
   const name = label ? `${owner}+${label}` : owner;
   const me = { name, kind, owner, ...label ? { label } : {} };
@@ -33861,7 +33977,7 @@ async function joinLocal(dir, opts) {
     await local.stop();
     throw e;
   }
-  const web = (opts.web ?? process.env.ROOM_WEB ?? local.httpUrl).replace(/\/+$/, "");
+  const web = (opts.web ?? local.httpUrl).replace(/\/+$/, "");
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}&key=${encodeURIComponent(local.key)}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
   graph.start();
@@ -33936,7 +34052,7 @@ async function closeRoom(server, roomName, auth) {
 async function authFor(s) {
   if (s.local) throw new RoomdError("local room: no server to authenticate to", 2);
   const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
-  const token = process.env.ROOM_TOKEN?.trim() ?? parseServer(process.env.ROOM_SERVER ?? "").token;
+  const token = s.token;
   const { login: _login, ...creds } = await resolveAuth(server, s.roomName, token);
   return { ...creds, server };
 }
@@ -33971,19 +34087,19 @@ async function leaveSession(s) {
 
 // packages/room-mcp/src/hooks-bridge.ts
 import { execFile as execFile3 } from "node:child_process";
-import fs4 from "node:fs";
-import os2 from "node:os";
-import path5 from "node:path";
+import fs5 from "node:fs";
+import os3 from "node:os";
+import path6 from "node:path";
 function gitStatePath(root, name) {
-  const dotgit = path5.join(root, ".git");
+  const dotgit = path6.join(root, ".git");
   try {
-    if (fs4.statSync(dotgit).isFile()) {
-      const m = fs4.readFileSync(dotgit, "utf8").match(/gitdir:\s*(.+)/);
-      if (m) return path5.join(path5.resolve(root, m[1].trim()), name);
+    if (fs5.statSync(dotgit).isFile()) {
+      const m = fs5.readFileSync(dotgit, "utf8").match(/gitdir:\s*(.+)/);
+      if (m) return path6.join(path6.resolve(root, m[1].trim()), name);
     }
   } catch {
   }
-  return path5.join(dotgit, name);
+  return path6.join(dotgit, name);
 }
 var SESSION_FRESH_MS = 10 * 60 * 1e3;
 var HooksBridge = class {
@@ -34026,7 +34142,7 @@ var HooksBridge = class {
     this.pending.clear();
     if (this.o.writeState !== false) {
       try {
-        fs4.rmSync(this.stateFile(), { force: true });
+        fs5.rmSync(this.stateFile(), { force: true });
       } catch {
       }
     }
@@ -34052,7 +34168,7 @@ var HooksBridge = class {
     const unread = this.s.room.messages().filter((m) => !this.o.isSeen(m.id) && this.o.forMe(m)).map((m) => ({ id: m.id, priority: m.priority, line: formatMsg(m) }));
     const claims = this.s.room.openClaims().filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
     try {
-      fs4.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + "\n");
+      fs5.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + "\n");
     } catch (e) {
       this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`);
     }
@@ -34061,7 +34177,8 @@ var HooksBridge = class {
   async maybeWake(m) {
     if (!this.o.forMe(m)) return;
     const baseMoved = m.type === "base" && m.from !== this.s.me.name && this.s.room.changedPaths(this.s.me.name).length > 0;
-    const wake = m.priority === "interrupt" || m.type === "question" && m.to === this.s.me.name || m.type === "done" && m.to === this.s.me.name || baseMoved;
+    const myClaims = this.s.room.openClaims().filter((c) => c.by === this.s.me.name);
+    const wake = shouldWakeOnMsg(this.s.me, m, myClaims).wake || baseMoved;
     if (!wake || this.woken.has(m.id) || this.pending.has(m.id)) return;
     const session = this.freshSession();
     if (!session) {
@@ -34076,7 +34193,7 @@ var HooksBridge = class {
   freshSession() {
     let file;
     try {
-      file = JSON.parse(fs4.readFileSync(this.sessionFile(), "utf8"));
+      file = JSON.parse(fs5.readFileSync(this.sessionFile(), "utf8"));
     } catch {
     }
     if (file?.session_id) {
@@ -34145,9 +34262,9 @@ Call room_state, then react per the room-etiquette skill.`;
 };
 function sameDir(a, b) {
   const norm = (d) => {
-    const r = path5.resolve(d.replace(/^file:\/\//, ""));
+    const r = path6.resolve(d.replace(/^file:\/\//, ""));
     try {
-      return fs4.realpathSync.native(r);
+      return fs5.realpathSync.native(r);
     } catch {
       return r;
     }
@@ -34159,23 +34276,23 @@ var sleep = (ms) => new Promise((r) => {
   t.unref?.();
 });
 function defaultQueue(threadId, text) {
-  return new Promise((resolve5, reject) => {
-    execFile3("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve5());
+  return new Promise((resolve4, reject) => {
+    execFile3("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve4());
   });
 }
 function findThreadForDir(dir, since) {
-  const root = path5.join(os2.homedir(), ".codex", "sessions");
-  const want = [path5.resolve(dir), fs4.realpathSync.native(path5.resolve(dir))];
+  const root = path6.join(os3.homedir(), ".codex", "sessions");
+  const want = [path6.resolve(dir), fs5.realpathSync.native(path6.resolve(dir))];
   let best;
   const walk = (d, depth) => {
     let entries = [];
     try {
-      entries = fs4.readdirSync(d, { withFileTypes: true });
+      entries = fs5.readdirSync(d, { withFileTypes: true });
     } catch {
       return;
     }
     for (const e of entries) {
-      const p = path5.join(d, e.name);
+      const p = path6.join(d, e.name);
       if (e.isDirectory() && depth < 3) {
         walk(p, depth + 1);
         continue;
@@ -34184,23 +34301,23 @@ function findThreadForDir(dir, since) {
       if (!m) continue;
       let st;
       try {
-        st = fs4.statSync(p);
+        st = fs5.statSync(p);
       } catch {
         continue;
       }
       if (st.mtimeMs < since - 5 * 60 * 1e3 || best && st.mtimeMs <= best.mtime) continue;
       let head = "";
       try {
-        const fd = fs4.openSync(p, "r");
+        const fd = fs5.openSync(p, "r");
         const buf = Buffer.alloc(4096);
-        const n = fs4.readSync(fd, buf, 0, 4096, 0);
-        fs4.closeSync(fd);
+        const n = fs5.readSync(fd, buf, 0, 4096, 0);
+        fs5.closeSync(fd);
         head = buf.toString("utf8", 0, n);
       } catch {
         continue;
       }
       const cwd2 = head.match(/"cwd":"([^"]+)"/)?.[1]?.replace(/^file:\/\//, "");
-      if (cwd2 && want.includes(path5.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
+      if (cwd2 && want.includes(path6.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
     }
   };
   walk(root, 0);
@@ -34290,27 +34407,27 @@ function renderPrNote(room, opts) {
     }
   }
   const open3 = new Map(room.openClaims().map((c) => [c.id, c]));
-  const who = (m) => `**${displayName({ name: m.from, kind: m.fromKind })}**`;
+  const who2 = (m) => `**${displayName({ name: m.from, kind: m.fromKind })}**`;
   const t = (at) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
   const lines = [];
   for (const m of msgs) {
     switch (m.type) {
       case "scope":
-        lines.push(`- ${t(m.at)} ${who(m)} is on \`${m.area}\`: ${m.summary} (${m.paths.map((p) => `\`${p}\``).join(", ")})`);
+        lines.push(`- ${t(m.at)} ${who2(m)} is on \`${m.area}\`: ${m.summary} (${m.paths.map((p) => `\`${p}\``).join(", ")})`);
         break;
       case "claim": {
         const c = m;
         const r = releases.get(c.claimId);
         const status = r ? r.unfulfilled?.length ? `cancelled: ${formatPlans(r.unfulfilled)}${r.summary ? ` (${r.summary})` : ""}` : `done${r.summary ? `: ${r.summary}` : ""}` : open3.has(c.claimId) ? "still open" : "released";
-        lines.push(`- ${t(c.at)} ${who(c)} claimed \`${c.path}:${c.from_line}-${c.to_line}\` \u2014 ${c.intent}${c.plans?.length ? `; plans: ${formatPlans(c.plans)}` : ""} \u2192 ${status}`);
+        lines.push(`- ${t(c.at)} ${who2(c)} claimed \`${c.path}:${c.from_line}-${c.to_line}\` \u2014 ${c.intent}${c.plans?.length ? `; plans: ${formatPlans(c.plans)}` : ""} \u2192 ${status}`);
         break;
       }
       case "changed":
-        lines.push(`- ${t(m.at)} ${who(m)} changed ${m.paths.map((p) => `\`${p}\``).join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}`);
+        lines.push(`- ${t(m.at)} ${who2(m)} changed ${m.paths.map((p) => `\`${p}\``).join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}`);
         break;
       case "question": {
-        lines.push(`- ${t(m.at)} ${who(m)} asked ${m.to ? `${m.to}'s agent` : "the room"}: ${m.text}`);
-        for (const a of answers.get(m.id) ?? []) lines.push(`  - ${t(a.at)} ${who(a)} answered: ${a.text}`);
+        lines.push(`- ${t(m.at)} ${who2(m)} asked ${m.to ? `${m.to}'s agent` : "the room"}: ${m.text}`);
+        for (const a of answers.get(m.id) ?? []) lines.push(`  - ${t(a.at)} ${who2(a)} answered: ${a.text}`);
         if (!(answers.get(m.id) ?? []).length) lines.push("  - (unanswered)");
         break;
       }
@@ -34318,11 +34435,11 @@ function renderPrNote(room, opts) {
         lines.push(`- ${t(m.at)} conflict on \`${m.path}\`: ${m.text}`);
         break;
       case "base":
-        lines.push(`- ${t(m.at)} ${who(m)} moved the base to \`${m.base.slice(0, 10)}\` (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary})`);
+        lines.push(`- ${t(m.at)} ${who2(m)} moved the base to \`${m.base.slice(0, 10)}\` (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary})`);
         break;
       case "note":
-        if (/^merge preview with /.test(m.text)) lines.push(`- ${t(m.at)} ${who(m)}: ${m.text}`);
-        else if (/^done/.test(m.text)) lines.push(`- ${t(m.at)} ${who(m)} ${m.text}`);
+        if (/^merge preview with /.test(m.text)) lines.push(`- ${t(m.at)} ${who2(m)}: ${m.text}`);
+        else if (/^done/.test(m.text)) lines.push(`- ${t(m.at)} ${who2(m)} ${m.text}`);
         break;
       default:
         break;
@@ -34585,13 +34702,13 @@ function createHandlerState(ctx) {
   };
   const base = (s) => s.room.meta.base ?? "HEAD";
   const baseFor = (s, person) => s.room.baseOf(person) ?? base(s);
-  const baseText = async (s, path10, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path10);
-  const liveText = async (s, path10, person) => {
-    if (s.room.deleted.get(person)?.has(path10)) return null;
-    const ov = s.room.text(path10, person);
+  const baseText = async (s, path11, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path11);
+  const liveText = async (s, path11, person) => {
+    if (s.room.deleted.get(person)?.has(path11)) return null;
+    const ov = s.room.text(path11, person);
     if (ov !== void 0) return ov;
     try {
-      return await baseText(s, path10, person);
+      return await baseText(s, path11, person);
     } catch (e) {
       throw new NeedFetch(person, baseFor(s, person), e instanceof Error ? e.message : String(e));
     }
@@ -34667,8 +34784,8 @@ function createHandlerState(ctx) {
     get pendingJoin() {
       return pendingJoin;
     },
-    set pendingJoin(value) {
-      pendingJoin = value;
+    set pendingJoin(value2) {
+      pendingJoin = value2;
     },
     attachHooks: (s) => rooms.add(s, "primary"),
     clearStale: (s) => {
@@ -34701,26 +34818,15 @@ function createHandlerState(ctx) {
 }
 
 // packages/room-mcp/src/choice.ts
-import fs5 from "node:fs";
-import path6 from "node:path";
+import fs6 from "node:fs";
+import path7 from "node:path";
 var CHOICE_FILE = "room-choice.json";
-function normaliseWhere(where) {
-  const w = where?.trim();
-  if (!w) return void 0;
-  if (w === "team" || w === "hosted" || w === "web" || w === "shared") return "team";
-  if (w === LOCAL) return LOCAL;
-  return w;
-}
-function serverFor(where) {
-  if (where === "team") return DEFAULT_SERVER;
-  return resolveServer(where);
-}
 async function choiceFile(dir) {
-  return path6.join(await gitCommonDir(dir), CHOICE_FILE);
+  return path7.join(await gitCommonDir(dir), CHOICE_FILE);
 }
 async function readChoice(dir) {
   try {
-    const c = JSON.parse(fs5.readFileSync(await choiceFile(dir), "utf8"));
+    const c = JSON.parse(fs6.readFileSync(await choiceFile(dir), "utf8"));
     return c && typeof c.where === "string" ? c : void 0;
   } catch {
     return void 0;
@@ -34731,9 +34837,9 @@ async function writeChoice(dir, where, by) {
   const prev = await readChoice(dir);
   const c = { where, at: Date.now(), ...by ? { by } : {}, ...prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {} };
   const file = await choiceFile(dir);
-  fs5.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
+  fs6.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
   try {
-    fs5.chmodSync(file, 384);
+    fs6.chmodSync(file, 384);
   } catch {
   }
   return c;
@@ -34741,36 +34847,24 @@ async function writeChoice(dir, where, by) {
 async function markWarned(dir, worktree) {
   const c = await readChoice(dir);
   if (!c) return true;
-  const key = path6.resolve(worktree);
+  const key = path7.resolve(worktree);
   const warned = c.warned ?? [];
   if (warned.includes(key)) return false;
   try {
     const file = await choiceFile(dir);
-    fs5.writeFileSync(file, JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + "\n", { mode: 384 });
-    fs5.chmodSync(file, 384);
+    fs6.writeFileSync(file, JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + "\n", { mode: 384 });
+    fs6.chmodSync(file, 384);
   } catch {
   }
   return true;
 }
 async function clearChoice(dir) {
   try {
-    fs5.rmSync(await choiceFile(dir));
+    fs6.rmSync(await choiceFile(dir));
     return true;
   } catch {
     return false;
   }
-}
-async function chooseServer(dir, where, env) {
-  const arg = normaliseWhere(where);
-  if (arg) return { server: serverFor(arg), rule: "argument", where: arg };
-  const e = normaliseWhere(env);
-  if (e) return { server: serverFor(e), rule: "env", where: e };
-  const remembered = await readChoice(dir).catch(() => void 0);
-  if (remembered) {
-    const w = normaliseWhere(remembered.where) ?? LOCAL;
-    return { server: serverFor(w), rule: "remembered", where: w };
-  }
-  return { server: LOCAL, rule: "default", where: LOCAL };
 }
 function describeWhere(server) {
   if (server === LOCAL) return "local (this machine)";
@@ -34818,7 +34912,7 @@ var defs = [
   }
 ];
 function handlers(state) {
-  const { ctx, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log: log2, evictStale, loadAreas, shareLine, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
+  const { ctx, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log: log2, evictStale, loadAreas, shareLine, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
   const handlers9 = {
     async room_login(a) {
       const server = serverOf(a);
@@ -34862,17 +34956,18 @@ function handlers(state) {
       if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`;
       const dir = typeof a.dir === "string" && a.dir ? a.dir : ctx.cwd;
       const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
-      const choice = await chooseServer(dir, whereArg, process.env.ROOM_SERVER);
+      const resolved = await resolveConfig({ dir, env: process.env, args: { where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
+      const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule };
       if (a.create === true && choice.server === LOCAL && choice.rule !== "argument") {
         return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.';
       }
       const s = await doJoin({
         dir,
-        name: typeof a.name === "string" && a.name ? a.name : void 0,
-        room: typeof a.room === "string" && a.room ? a.room : void 0,
+        name: resolved.name,
+        room: resolved.room,
         server: choice.server,
         create: a.create === true,
-        share: typeof a.share === "string" && a.share ? a.share : void 0
+        share: resolved.share
       });
       if (choice.rule === "argument") {
         try {
@@ -34899,13 +34994,13 @@ function handlers(state) {
       setPresence(s, { areas: mineA });
       out.push(...areaLines(s, mineA));
       out.push(here.length ? `here now: ${here.join(", ")}` : "nobody else is here yet");
-      for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`);
+      for (const n of here) out.push(`  ${n}: ${personLine2(s, n)}`);
       const away = others(s).filter((n) => !here.includes(n) && s.room.changedPaths(n).length);
-      for (const n of away) out.push(`  ${n} (offline): ${personLine(s, n)}`);
+      for (const n of away) out.push(`  ${n} (offline): ${personLine2(s, n)}`);
       const cs = s.room.openClaims();
       if (cs.length) {
         out.push(`open claims (${cs.length}):`);
-        for (const c of cs) out.push(claimLine(s, c));
+        for (const c of cs) out.push(claimLine2(s, c));
       }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`);
       out.push("next: room_scope(area, summary, paths) before you edit.");
@@ -34973,7 +35068,8 @@ function install(state) {
       return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`;
     }
   };
-  const STALE_MS = Number(process.env.ROOM_STALE_DAYS || 7) * 24 * 60 * 60 * 1e3;
+  const envStaleDays = Number(process.env.ROOM_STALE_DAYS);
+  const STALE_MS = (ctx.config?.staleDays ?? (Number.isFinite(envStaleDays) && envStaleDays > 0 ? envStaleDays : 7)) * 24 * 60 * 60 * 1e3;
   const evictStale = (s) => {
     const here = new Set(presences(s).map((p) => p.user.name));
     const gone = [];
@@ -35000,7 +35096,7 @@ function install(state) {
     return released.length;
   };
   const serverOf = (a) => {
-    const r = resolveServer(typeof a.server === "string" && a.server ? a.server : process.env.ROOM_SERVER);
+    const r = resolveServer(typeof a.server === "string" && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER);
     return r === LOCAL ? LOCAL : parseServer(r).server;
   };
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`;
@@ -35010,10 +35106,9 @@ function install(state) {
 
 // packages/room-mcp/src/workers.ts
 import { execFileSync, spawn } from "node:child_process";
-import fs6 from "node:fs";
-import path7 from "node:path";
-var WORKERS_DIR = path7.join(".room", "workers");
-var DEFAULT_MAX_WORKERS = 8;
+import fs7 from "node:fs";
+import path8 from "node:path";
+var WORKERS_DIR = path8.join(".room", "workers");
 function validTag(tag) {
   if (typeof tag !== "string") return void 0;
   const t = tag.trim();
@@ -35037,10 +35132,10 @@ function workerCommand(host, model, prompt) {
   };
 }
 async function prepareWorktree(repoDir, tag) {
-  const dir = path7.join(repoDir, WORKERS_DIR, tag);
+  const dir = path8.join(repoDir, WORKERS_DIR, tag);
   const branch = `room/${tag}`;
-  if (fs6.existsSync(path7.join(dir, ".git"))) return { dir, branch, created: false };
-  fs6.mkdirSync(path7.dirname(dir), { recursive: true });
+  if (fs7.existsSync(path8.join(dir, ".git"))) return { dir, branch, created: false };
+  fs7.mkdirSync(path8.dirname(dir), { recursive: true });
   let hasBranch = false;
   try {
     await git(repoDir, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
@@ -35071,8 +35166,8 @@ function signalWorker(pid) {
   }
 }
 var defaultSpawner = (spec) => {
-  fs6.mkdirSync(path7.dirname(spec.logFile), { recursive: true });
-  const fd = fs6.openSync(spec.logFile, "a");
+  fs7.mkdirSync(path8.dirname(spec.logFile), { recursive: true });
+  const fd = fs7.openSync(spec.logFile, "a");
   const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ["ignore", fd, fd] });
   child.unref();
   return {
@@ -35080,7 +35175,7 @@ var defaultSpawner = (spec) => {
     onExit: (cb) => {
       child.once("exit", (code) => {
         try {
-          fs6.closeSync(fd);
+          fs7.closeSync(fd);
         } catch {
         }
         cb(code);
@@ -35089,7 +35184,7 @@ var defaultSpawner = (spec) => {
     onError: (cb) => {
       child.once("error", (err) => {
         try {
-          fs6.closeSync(fd);
+          fs7.closeSync(fd);
         } catch {
         }
         cb(err);
@@ -35126,18 +35221,6 @@ function pidIsOurWorker(pid, w, probe = probeProcess) {
   if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info.command)) return false;
   return info.command.includes(w.tag) || info.command.includes(w.dir);
 }
-function workerLines(workers, lastLineFrom, changedCount, now = Date.now()) {
-  if (!workers.length) return [];
-  const out = [`workers (${workers.length}):`];
-  for (const w of workers.sort((a, b) => a.startedAt - b.startedAt)) {
-    const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
-    const alive = w.status === "running" ? pidAlive2(w.pid) ? "" : " (process gone)" : "";
-    const last2 = lastLineFrom(w.name);
-    out.push(`  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`);
-    out.push(`      ${changedCount(w.name)} changed file(s) \xB7 branch ${w.branch}${w.summary ? ` \xB7 ${w.summary.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`);
-  }
-  return out;
-}
 
 // packages/room-mcp/src/tools/scope.ts
 var defs2 = [
@@ -35161,7 +35244,7 @@ var defs2 = [
   }
 ];
 function handlers2(state) {
-  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines } = state;
+  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine: scopeLine2, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine: personLine2, claimLine: claimLine2, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines } = state;
   const handlers9 = {
     async room_scope(a) {
       const s = S();
@@ -35174,10 +35257,10 @@ function handlers2(state) {
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas });
       s.room.post(s.me, { type: "scope", area, summary, paths });
       setPresence(s, { status: `on ${area}: ${summary}`, areas });
-      const out = [`scope set: ${scopeLine({ area, summary, paths })}`];
+      const out = [`scope set: ${scopeLine2({ area, summary, paths })}`];
       out.push(...areaLines(s, areas));
       const overlapping = s.room.allScopes().filter((sc) => sc.by !== s.me.name && paths.some((p) => scopeCovers(sc, p) || sc.paths.some((q) => scopeCovers({ paths }, q))));
-      for (const sc of overlapping) out.push(`overlaps ${sc.by}'s scope ${scopeLine(sc)} \u2014 coordinate before touching shared files`);
+      for (const sc of overlapping) out.push(`overlaps ${sc.by}'s scope ${scopeLine2(sc)} \u2014 coordinate before touching shared files`);
       out.push(...ledgerLines(s, { area, limit: 20 }, area));
       return out.join("\n");
     },
@@ -35202,14 +35285,15 @@ function handlers2(state) {
       for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
-        const who = p ? describeIdentity(p.user) : n;
+        const who2 = p ? describeIdentity(p.user) : n;
         const theirs = areasFor(s, n);
-        out.push(`  - ${who}${n === s.me.name ? " (you)" : ""}: ${personLine(s, n)}${theirs.length ? ` \xB7 areas ${theirs.join(", ")}` : ""} \xB7 ${ago}`);
+        const areaSummary2 = areaMembershipSummary(theirs);
+        out.push(`  - ${who2}${n === s.me.name ? " (you)" : ""}: ${personLine2(s, n)}${areaSummary2 ? ` \xB7 ${areaSummary2}` : ""} \xB7 ${ago}`);
       }
       if (hidden.length) {
         const otherAreas = /* @__PURE__ */ new Set();
         for (const n of hidden) for (const x of areasFor(s, n)) if (!mineA.includes(x)) otherAreas.add(x);
-        out.push(`  ${hidden.length} other${hidden.length === 1 ? "" : "s"} in ${otherAreas.size} other area${otherAreas.size === 1 ? "" : "s"}${otherAreas.size ? ` (${Array.from(otherAreas).sort().join(", ")})` : ""}`);
+        out.push(`  ${otherAreasLine(hidden.length, Array.from(otherAreas))}`);
       }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`);
       const areaScopes = all2 ? s.room.allScopes() : s.room.allScopes().filter((sc) => inView(sc.by));
@@ -35221,7 +35305,7 @@ function handlers2(state) {
       const cs = s.room.openClaims().filter((c) => pathInView(c.path) || isMe(s, { name: c.by, kind: c.byKind }));
       const hiddenClaims = s.room.openClaims().length - cs.length;
       out.push(`open claims${all2 ? "" : " in your areas"} (${cs.length}${hiddenClaims ? `, ${hiddenClaims} elsewhere` : ""}):`);
-      for (const c of cs) out.push(claimLine(s, c));
+      for (const c of cs) out.push(claimLine2(s, c));
       const changed = /* @__PURE__ */ new Map();
       let hiddenChanged = 0;
       for (const person of [s.me.name, ...others(s)]) {
@@ -35241,17 +35325,17 @@ function handlers2(state) {
       out.push(`recent bus${all2 ? "" : " in your areas"} (${msgs.length}):`);
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`);
       out.push(...prLines(s));
-      out.push(...workerLines(myWorkers(s), (n) => {
-        const last2 = s.room.messages().filter((x) => x.from === n).slice(-1)[0];
-        return last2 ? formatMsg(last2) : void 0;
-      }, (n) => s.room.changedPaths(n).length, now()));
+      out.push(...workerLines(myWorkers(s).map((worker) => ({ worker, processGone: worker.status === "running" && !pidAlive2(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => {
+        const message = s.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
+        return message ? formatMsg(message) : void 0;
+      })(), now: now() }))));
       const ws = wsRoom;
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`);
-        out.push(...workerLines(myWorkers(ws), (n) => {
-          const last2 = ws.room.messages().filter((x) => x.from === n).slice(-1)[0];
-          return last2 ? formatMsg(last2) : void 0;
-        }, (n) => ws.room.changedPaths(n).length, now()));
+        out.push(...workerLines(myWorkers(ws).map((worker) => ({ worker, processGone: worker.status === "running" && !pidAlive2(worker.pid), changedCount: ws.room.changedPaths(worker.name).length, last: (() => {
+          const message = ws.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
+          return message ? formatMsg(message) : void 0;
+        })(), now: now() }))));
       }
       return out.join("\n");
     },
@@ -35265,13 +35349,13 @@ function handlers2(state) {
       const out = [];
       const inRooms = [s, ...rooms.all().filter((x) => x !== s)];
       const tagged = (x, line) => x === s ? line : `${line} (workers room)`;
-      const who = /* @__PURE__ */ new Set();
+      const who2 = /* @__PURE__ */ new Set();
       for (const x of inRooms) {
         for (const c of x.room.claimsFor(p)) if (rangesOverlap(c.from, c.to, r.from, r.to)) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`));
-        for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`));
-        for (const n2 of x.room.whoChanged(p)) if (n2 !== s.me.name) who.add(n2);
+        for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine2(sc)}`));
+        for (const n2 of x.room.whoChanged(p)) if (n2 !== s.me.name) who2.add(n2);
       }
-      if (who.size) out.push(`uncommitted changes by: ${Array.from(who).sort().join(", ")}`);
+      if (who2.size) out.push(`uncommitted changes by: ${Array.from(who2).sort().join(", ")}`);
       return out.length ? `${p}:${r.from}-${r.to}
 ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`;
     }
@@ -35332,9 +35416,9 @@ function install2(state) {
     if (paths.length) return areasOf(s).areasOf(paths).some((a) => mineA.includes(a));
     return sharesArea(mineA, areasFor(s, m.from));
   };
-  const claimLine = (s, c) => {
+  const claimLine2 = (s, c) => {
     const stale = !presences(s).some((p) => p.user.name === c.by) && now() - c.at > STALE_MS;
-    return `  - ${c.id}: ${describeClaim(c)}${isMe(s, { name: c.by, kind: c.byKind }) ? " (yours)" : ""}${stale ? " [stale: owner offline]" : ""}`;
+    return claimLine(c, { yours: isMe(s, { name: c.by, kind: c.byKind }), stale });
   };
   const ledgerLines = (s, q, label) => {
     const entries = s.room.ledger({ ...q, limit: q.limit ?? 10 }).filter((m) => !(m.to && m.to !== s.me.name && m.from !== s.me.name));
@@ -35347,22 +35431,18 @@ function install2(state) {
     }
     return out;
   };
-  const scopeLine = (sc) => `${sc.area}: ${sc.summary} (${sc.paths.join(", ")})`;
-  const personLine = (s, name) => {
-    const sc = s.room.scope(name);
-    const p = presences(s).find((x) => x.user.name === name && isAgentic(x.user.kind)) ?? presences(s).find((x) => x.user.name === name);
-    const changed = s.room.changedPaths(name);
-    const lastDone = [...s.room.messages()].reverse().find((m) => m.from === name && m.type === "note" && m.text.startsWith("done"));
-    let what;
-    if (sc) what = `working on ${scopeLine(sc)}`;
-    else if (p?.status?.startsWith("done")) what = `${p.status}`;
-    else if (lastDone && (!p || p.status === "idle" || p.status === "synced")) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`;
-    else what = p ? `${p.status ?? "idle"}, no task declared` : "offline";
-    const level = shareOf(s, name);
-    const share = level === "full" ? "" : `; shares ${level}${level === "intent" ? " (no file text)" : " (file text only under their scope paths)"}`;
-    return `${what}${share}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(", ")}` : ""}`;
+  const scopeLine2 = scopeLine;
+  const personLine2 = (s, name) => {
+    return personLine({
+      name,
+      scope: s.room.scope(name),
+      presences: presences(s),
+      changedPaths: s.room.changedPaths(name),
+      messages: s.room.messages().filter((m) => m.type === "note"),
+      share: shareOf(s, name)
+    });
   };
-  Object.assign(state, { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine, ledgerLines, scopeLine, personLine });
+  Object.assign(state, { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine: claimLine2, ledgerLines, scopeLine: scopeLine2, personLine: personLine2 });
 }
 
 // node_modules/diff/libesm/diff/base.js
@@ -35383,15 +35463,15 @@ var Diff = class {
   }
   diffWithOptionsObj(oldTokens, newTokens, options, callback) {
     var _a3;
-    const done = (value) => {
-      value = this.postProcess(value, options);
+    const done = (value2) => {
+      value2 = this.postProcess(value2, options);
       if (callback) {
         setTimeout(function() {
-          callback(value);
+          callback(value2);
         }, 0);
         return void 0;
       } else {
-        return value;
+        return value2;
       }
     };
     const newLen = newTokens.length, oldLen = oldTokens.length;
@@ -35465,16 +35545,16 @@ var Diff = class {
       }
     }
   }
-  addToPath(path10, added, removed, oldPosInc, options) {
-    const last2 = path10.lastComponent;
+  addToPath(path11, added, removed, oldPosInc, options) {
+    const last2 = path11.lastComponent;
     if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
       return {
-        oldPos: path10.oldPos + oldPosInc,
+        oldPos: path11.oldPos + oldPosInc,
         lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
       };
     } else {
       return {
-        oldPos: path10.oldPos + oldPosInc,
+        oldPos: path11.oldPos + oldPosInc,
         lastComponent: { count: 1, added, removed, previousComponent: last2 }
       };
     }
@@ -35513,12 +35593,12 @@ var Diff = class {
     return ret;
   }
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  castInput(value, options) {
-    return value;
+  castInput(value2, options) {
+    return value2;
   }
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  tokenize(value, options) {
-    return Array.from(value);
+  tokenize(value2, options) {
+    return Array.from(value2);
   }
   join(chars) {
     return chars.join("");
@@ -35545,12 +35625,12 @@ var Diff = class {
       const component = components[componentPos];
       if (!component.removed) {
         if (!component.added && this.useLongestToken) {
-          let value = newTokens.slice(newPos, newPos + component.count);
-          value = value.map(function(value2, i) {
+          let value2 = newTokens.slice(newPos, newPos + component.count);
+          value2 = value2.map(function(value3, i) {
             const oldValue = oldTokens[oldPos + i];
-            return oldValue.length > value2.length ? oldValue : value2;
+            return oldValue.length > value3.length ? oldValue : value3;
           });
-          component.value = this.join(value);
+          component.value = this.join(value2);
         } else {
           component.value = this.join(newTokens.slice(newPos, newPos + component.count));
         }
@@ -35596,11 +35676,11 @@ var lineDiff = new LineDiff();
 function diffLines(oldStr, newStr, options) {
   return lineDiff.diff(oldStr, newStr, options);
 }
-function tokenize(value, options) {
+function tokenize(value2, options) {
   if (options.stripTrailingCr) {
-    value = value.replace(/\r\n/g, "\n");
+    value2 = value2.replace(/\r\n/g, "\n");
   }
-  const retLines = [], linesAndNewlines = value.split(/(\n|\r\n)/);
+  const retLines = [], linesAndNewlines = value2.split(/(\n|\r\n)/);
   if (!linesAndNewlines[linesAndNewlines.length - 1]) {
     linesAndNewlines.pop();
   }
@@ -36013,14 +36093,14 @@ var ROOM = { name: "room", kind: "agent" };
 function changedRanges(base, live) {
   const out = [];
   for (const h of structuredPatch("a", "b", base, live, "", "", { context: 0 }).hunks) {
-    const from2 = h.newStart, to = h.newLines ? h.newStart + h.newLines - 1 : h.newStart;
-    out.push({ from: from2, to });
+    const from2 = h.newStart, to2 = h.newLines ? h.newStart + h.newLines - 1 : h.newStart;
+    out.push({ from: from2, to: to2 });
   }
   return out;
 }
 var overlaps = (a, b) => a.from <= b.to && b.from <= a.to;
 var covers = (c, r) => c.from <= r.from && c.to >= r.to;
-async function mergePath(d, person, path10) {
+async function mergePath(d, person, path11) {
   const myBase = d.baseFor(d.me.name), theirBase = d.baseFor(person);
   let ancestor = myBase;
   if (theirBase !== myBase) {
@@ -36030,11 +36110,11 @@ async function mergePath(d, person, path10) {
       return { status: "unknown", lines: [] };
     }
   }
-  const b = await d.baseText(ancestor, path10) ?? "";
+  const b = await d.baseText(ancestor, path11) ?? "";
   let m, t;
   try {
-    m = await d.liveText(path10, d.me.name);
-    t = await d.liveText(path10, person);
+    m = await d.liveText(path11, d.me.name);
+    t = await d.liveText(path11, person);
   } catch {
     return { status: "unknown", lines: [] };
   }
@@ -36149,7 +36229,7 @@ var ConflictWatcher = class {
       const k = `${p}|${c.id}`;
       if (this.reported.has(k)) continue;
       this.reported.add(k);
-      const who = displayName({ name: c.by, kind: c.byKind });
+      const who2 = displayName({ name: c.by, kind: c.byKind });
       this.d.room.post(ROOM, {
         type: "conflict",
         claimId: c.id,
@@ -36157,7 +36237,7 @@ var ConflictWatcher = class {
         path: p,
         to: me.name,
         priority: "interrupt",
-        text: `you edited ${p}:${hit.from}-${hit.to} inside ${who}'s claim ${c.id} (${c.intent}); claim it or room_wait(${c.id})`
+        text: `you edited ${p}:${hit.from}-${hit.to} inside ${who2}'s claim ${c.id} (${c.intent}); claim it or room_wait(${c.id})`
       });
       this.d.room.post(ROOM, {
         type: "conflict",
@@ -36385,13 +36465,13 @@ function handlers4(state) {
   const handlers9 = {
     async room_send(a) {
       const lead = S();
-      const to = typeof a.to === "string" && a.to ? a.to : void 0;
+      const to2 = typeof a.to === "string" && a.to ? a.to : void 0;
       const wsr = rooms.workers();
       const byQuestion = typeof a.inReplyTo === "string" && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : void 0;
-      const s = byQuestion ?? (wsr && wsr !== lead && to && myWorkers(wsr).some((w) => w.name === to) ? wsr : lead);
+      const s = byQuestion ?? (wsr && wsr !== lead && to2 && myWorkers(wsr).some((w) => w.name === to2) ? wsr : lead);
       const text = typeof a.text === "string" ? a.text : "";
       if (!text) return "error: text is required";
-      if (to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
+      if (to2 === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
       const pr = typeof a.priority === "string" && ["fyi", "notify", "interrupt"].includes(a.priority) ? a.priority : void 0;
       const withPr = (o) => pr ? { ...o, priority: pr } : o;
       let msg;
@@ -36401,25 +36481,25 @@ function handlers4(state) {
           const paths = Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
           const symbols = Array.isArray(a.symbols) ? a.symbols.filter((x) => typeof x === "string") : [];
           if (!paths.length) return "error: changed requires paths";
-          msg = s.room.post(s.me, withPr({ type: "changed", paths, summary: text, ...symbols.length ? { symbols } : {}, ...to ? { to } : {} }));
+          msg = s.room.post(s.me, withPr({ type: "changed", paths, summary: text, ...symbols.length ? { symbols } : {}, ...to2 ? { to: to2 } : {} }));
           notes.push(...await upgrade(s, msg, paths, symbols));
           break;
         }
         case "question":
-          if (!to) return "error: question requires to (whose agent)";
-          msg = s.room.post(s.me, withPr({ type: "question", text, to }));
+          if (!to2) return "error: question requires to (whose agent)";
+          msg = s.room.post(s.me, withPr({ type: "question", text, to: to2 }));
           notes.push(`room_wait questionId=${msg.id} to block for the answer`);
           break;
         case "answer": {
           if (typeof a.inReplyTo !== "string" || !a.inReplyTo) return "error: answer requires inReplyTo";
           const orig = s.room.messages().find((m) => m.id === a.inReplyTo);
-          const dest = to ?? orig?.from;
+          const dest = to2 ?? orig?.from;
           if (!dest) return "error: answer requires to (could not infer from inReplyTo)";
           msg = s.room.post(s.me, withPr({ type: "answer", to: dest, inReplyTo: a.inReplyTo, text }));
           break;
         }
         case "note":
-          msg = s.room.post(s.me, withPr({ type: "note", text, ...to ? { to } : {} }));
+          msg = s.room.post(s.me, withPr({ type: "note", text, ...to2 ? { to: to2 } : {} }));
           break;
         default:
           return `error: type must be changed|question|answer|note (got ${String(a.type)})`;
@@ -36434,28 +36514,33 @@ function handlers4(state) {
       const timeoutMs2 = Math.min(WAIT_MAX, Math.max(0, Number(a.timeoutMs ?? WAIT_DEFAULT) || WAIT_DEFAULT));
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`;
       const qRoom = questionId && rooms.holdingQuestion(questionId, s) || s;
-      const answered = (id2) => qRoom.room.messages().find((m) => m.type === "answer" && m.inReplyTo === id2);
+      const answered = (id2) => qRoom.room.messages().find((m) => messageEndsWait(m, { questionId: id2, me: qRoom.me.name, answersOnly: true }));
       if (questionId) {
         const an = answered(questionId);
         if (an) return `answered: ${formatMsg(an)}`;
       }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
-      const result = await new Promise((resolve5) => {
+      const result = await new Promise((resolve4) => {
         const ws = rooms.all().find((x) => x !== s) ?? null;
         const finish = (r) => {
           clearTimeout(timer);
           s.room.claims.unobserve(onClaims);
           s.room.bus.unobserve(onBus);
           ws?.room.bus.unobserve(onWorkersBus);
-          resolve5(r);
+          resolve4(r);
+        };
+        const waitResult = (m, workersRoom = false) => {
+          if (!messageEndsWait(m, { claimId, questionId, me: workersRoom ? ws?.me.name : s.me.name, workersRoom })) return;
+          if (m.type === "answer") return `answered: ${formatMsg(m)}`;
+          if (m.type === "done") return `worker done: ${formatMsg(m)}`;
+          return `${workersRoom ? "question from a worker" : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`;
         };
         const onWorkersBus = (ev) => {
           if (!ws) return;
           for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-            if (questionId && m.type === "answer" && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`);
-            if (m.type === "done" && m.to === ws.me.name) return finish(`worker done: ${formatMsg(m)}`);
+            const ended = waitResult(m, true);
+            if (ended) return finish(ended);
             if (m.priority === "interrupt" && forMe(ws, m)) return finish(`interrupt (workers room): ${formatMsg(m)}`);
-            if (m.type === "question" && m.to === ws.me.name) return finish(`question from a worker: ${formatMsg(m)}`);
           }
         };
         const timer = setTimeout(() => finish(`timeout after ${timeoutMs2}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : "nothing happened"}. Tell your human; proceed only where you do not depend on it.`), timeoutMs2);
@@ -36464,10 +36549,9 @@ function handlers4(state) {
         };
         const onBus = (ev) => {
           for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-            if (questionId && m.type === "answer" && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`);
+            const ended = waitResult(m);
+            if (ended) return finish(ended);
             if (m.priority === "interrupt" && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`);
-            if (m.type === "done" && m.to === s.me.name) return finish(`worker done: ${formatMsg(m)}`);
-            if (m.type === "question" && m.to === s.me.name && !(questionId || claimId)) return finish(`question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`);
           }
         };
         s.room.claims.observe(onClaims);
@@ -36483,16 +36567,7 @@ call room_state before continuing.`;
 }
 function install4(state) {
   const { seen, rooms, log: log2, scheduleInboxWrite, mine, msgInMyAreas, others, upgraded } = state;
-  const forMe = (s, m) => {
-    if (m.from === s.me.name && isAgentic(m.fromKind)) return false;
-    if (m.to === s.me.name) return true;
-    if (m.type === "base") return true;
-    if (m.to) return false;
-    if (m.type === "conflict") return mine(s).some((c) => c.id === m.claimId || c.id === m.otherClaimId);
-    if (m.priority === "interrupt") return true;
-    if (m.priority === "notify") return msgInMyAreas(s, m);
-    return false;
-  };
+  const forMe = (s, m) => messageForMe(s.me, m, { claims: mine(s), inMyAreas: (x) => msgInMyAreas(s, x) });
   const inbox = (s) => {
     const fresh = [];
     for (const m of s.room.messages()) {
@@ -36620,9 +36695,9 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
 
 // packages/room-mcp/src/tools/files.ts
 import { execFile as execFile4 } from "node:child_process";
-import fs7 from "node:fs";
-import os3 from "node:os";
-import path8 from "node:path";
+import fs8 from "node:fs";
+import os4 from "node:os";
+import path9 from "node:path";
 var defs5 = [
   {
     name: "room_read",
@@ -36663,8 +36738,8 @@ function handlers5(state) {
       if (t === null) return `${p}: deleted by ${person} (uncommitted)`;
       if (t === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes`;
       const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== void 0 ? ", uncommitted edits" : ", unchanged"} on their HEAD ${baseFor(s, person).slice(0, 10)})`];
-      const who = s.room.whoChanged(p).filter((x) => x !== person);
-      if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(", ")} \u2014 room_read with person= to see theirs`);
+      const who2 = s.room.whoChanged(p).filter((x) => x !== person);
+      if (who2.length) out.push(`! also changed (uncommitted) by: ${who2.join(", ")} \u2014 room_read with person= to see theirs`);
       for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`);
       out.push(withLineNumbers(t));
       out.push(...ledgerLines(s, { path: p, limit: 10 }, p));
@@ -36821,58 +36896,58 @@ function supersetSide(a, b) {
   return void 0;
 }
 function linkSharedDirs(cloneDir, scratchDir) {
-  const venv = path8.join(cloneDir, ".venv");
-  if (fs7.existsSync(venv) && !fs7.existsSync(path8.join(scratchDir, ".venv"))) fs7.symlinkSync(venv, path8.join(scratchDir, ".venv"));
+  const venv = path9.join(cloneDir, ".venv");
+  if (fs8.existsSync(venv) && !fs8.existsSync(path9.join(scratchDir, ".venv"))) fs8.symlinkSync(venv, path9.join(scratchDir, ".venv"));
   const candidates = ["node_modules"];
   for (const top of ["packages", "apps", "libs"]) {
-    const d = path8.join(cloneDir, top);
-    if (!fs7.existsSync(d)) continue;
-    for (const e of fs7.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path8.join(top, e.name, "node_modules"));
+    const d = path9.join(cloneDir, top);
+    if (!fs8.existsSync(d)) continue;
+    for (const e of fs8.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path9.join(top, e.name, "node_modules"));
   }
   for (const rel of candidates) {
-    const src = path8.join(cloneDir, rel), dst = path8.join(scratchDir, rel);
-    if (!fs7.existsSync(src) || fs7.existsSync(dst)) continue;
+    const src = path9.join(cloneDir, rel), dst = path9.join(scratchDir, rel);
+    if (!fs8.existsSync(src) || fs8.existsSync(dst)) continue;
     mirrorLinks(cloneDir, scratchDir, src, dst);
   }
 }
 function mirrorLinks(cloneDir, scratchDir, src, dst) {
-  fs7.mkdirSync(dst, { recursive: true });
-  for (const e of fs7.readdirSync(src, { withFileTypes: true })) {
-    const from2 = path8.join(src, e.name), to = path8.join(dst, e.name);
+  fs8.mkdirSync(dst, { recursive: true });
+  for (const e of fs8.readdirSync(src, { withFileTypes: true })) {
+    const from2 = path9.join(src, e.name), to2 = path9.join(dst, e.name);
     if (e.isSymbolicLink()) {
-      const target = path8.resolve(src, fs7.readlinkSync(from2));
-      const inside = path8.relative(cloneDir, target);
-      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path8.sep).includes("node_modules");
-      fs7.symlinkSync(isWorkspace ? path8.join(scratchDir, inside) : target, to);
+      const target = path9.resolve(src, fs8.readlinkSync(from2));
+      const inside = path9.relative(cloneDir, target);
+      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path9.sep).includes("node_modules");
+      fs8.symlinkSync(isWorkspace ? path9.join(scratchDir, inside) : target, to2);
     } else if (e.isDirectory() && e.name.startsWith("@")) {
-      mirrorLinks(cloneDir, scratchDir, from2, to);
+      mirrorLinks(cloneDir, scratchDir, from2, to2);
     } else {
-      fs7.symlinkSync(from2, to);
+      fs8.symlinkSync(from2, to2);
     }
   }
 }
 async function runInMergedTree(s, ancestor, merged, cmd) {
-  const dir = fs7.mkdtempSync(path8.join(os3.tmpdir(), "room-merge-"));
+  const dir = fs8.mkdtempSync(path9.join(os4.tmpdir(), "room-merge-"));
   try {
-    await new Promise((resolve5, reject) => {
-      const p = execFile4("sh", ["-c", `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 6e4 }, (err) => err ? reject(err) : resolve5());
+    await new Promise((resolve4, reject) => {
+      const p = execFile4("sh", ["-c", `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 6e4 }, (err) => err ? reject(err) : resolve4());
       p.unref?.();
     });
     for (const [rel, text] of merged) {
-      const abs2 = path8.resolve(dir, rel);
+      const abs2 = path9.resolve(dir, rel);
       if (!abs2.startsWith(dir)) continue;
       if (text === null) {
-        fs7.rmSync(abs2, { force: true });
+        fs8.rmSync(abs2, { force: true });
         continue;
       }
-      fs7.mkdirSync(path8.dirname(abs2), { recursive: true });
-      fs7.writeFileSync(abs2, text);
+      fs8.mkdirSync(path9.dirname(abs2), { recursive: true });
+      fs8.writeFileSync(abs2, text);
     }
     linkSharedDirs(s.dir, dir);
-    const result = await new Promise((resolve5) => {
+    const result = await new Promise((resolve4) => {
       execFile4("sh", ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ROOM_MERGED_TREE: dir } }, (err, stdout, stderr) => {
         const raw = err ? err.code : 0;
-        resolve5({ code: typeof raw === "number" ? raw : err ? 1 : 0, out: `${stdout}${stderr}` });
+        resolve4({ code: typeof raw === "number" ? raw : err ? 1 : 0, out: `${stdout}${stderr}` });
       });
     });
     const tail = result.out.trim().split("\n").slice(-25).join("\n");
@@ -36881,7 +36956,7 @@ ${tail}`;
   } catch (e) {
     return `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
-    fs7.rmSync(dir, { recursive: true, force: true });
+    fs8.rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -37125,26 +37200,26 @@ var Bridge = class {
     if (!hit.length) return;
     this.relayed.push(m.id);
     if (this.relayed.length > RELAYED_MAX) this.relayed.splice(0, this.relayed.length - RELAYED_MAX);
-    const priority = INTERRUPT_TYPES.has(m.type) ? "interrupt" : "notify";
+    const priority2 = INTERRUPT_TYPES.has(m.type) ? "interrupt" : "notify";
     const delivered = [];
     for (const w of hit) {
       const key = `${w.name}|${paths.slice().sort().join(",")}|${m.type}`;
       const last2 = this.recent.get(key) ?? 0;
-      if (priority !== "interrupt" && now - last2 < RELAY_DEDUPE_MS) continue;
+      if (priority2 !== "interrupt" && now - last2 < RELAY_DEDUPE_MS) continue;
       this.recent.set(key, now);
-      this.local.room.post(this.team.me, { type: "note", to: w.name, priority, text: `[team room] ${formatMsg(m)}` });
+      this.local.room.post(this.team.me, { type: "note", to: w.name, priority: priority2, text: `[team room] ${formatMsg(m)}` });
       delivered.push(w.tag);
     }
     if (this.recent.size > RELAYED_MAX) {
       for (const [k, t] of this.recent) if (now - t > RELAY_DEDUPE_MS) this.recent.delete(k);
     }
-    if (delivered.length) this.o.log?.(`bridge: relayed team ${m.type} ${m.id} to ${delivered.join(", ")} at ${priority}`);
+    if (delivered.length) this.o.log?.(`bridge: relayed team ${m.type} ${m.id} to ${delivered.join(", ")} at ${priority2}`);
   }
 };
 
 // packages/room-mcp/src/tools/workers.ts
-import fs8 from "node:fs";
-import path9 from "node:path";
+import fs9 from "node:fs";
+import path10 from "node:path";
 var defs6 = [
   {
     name: "room_done",
@@ -37226,7 +37301,8 @@ function handlers6(state) {
       const gen = (existing?.gen ?? 0) + 1;
       const id2 = workerId(s.me.name, tag, gen);
       const running = myWorkers(s).filter((w) => w.status === "running");
-      const max2 = ctx.maxWorkers ?? Number(process.env.ROOM_MAX_WORKERS ?? DEFAULT_MAX_WORKERS);
+      const config2 = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers: ctx.maxWorkers } });
+      const max2 = config2.maxWorkers;
       if (running.length >= max2) return `error: ${running.length} workers already running (max ${max2}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`;
       const share = typeof a.share === "string" && a.share ? parseShare(a.share) : void 0;
       if (typeof a.share === "string" && a.share && !share) return "error: share must be intent, declared or full";
@@ -37234,10 +37310,10 @@ function handlers6(state) {
       try {
         let dir, branch, created = false, outside = false;
         if (typeof a.dir === "string" && a.dir) {
-          dir = path9.resolve(a.dir);
-          if (!fs8.existsSync(dir)) return `error: ${dir} does not exist`;
-          const inside = path9.relative(s.dir, dir);
-          outside = inside.startsWith("..") || path9.isAbsolute(inside);
+          dir = path10.resolve(a.dir);
+          if (!fs9.existsSync(dir)) return `error: ${dir} does not exist`;
+          const inside = path10.relative(s.dir, dir);
+          outside = inside.startsWith("..") || path10.isAbsolute(inside);
           if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`;
           try {
             branch = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
@@ -37268,9 +37344,9 @@ function handlers6(state) {
           ROOM_GEN: String(gen),
           ROOM_WORKER_ID: id2,
           ...s.token && !s.local ? { ROOM_TOKEN: s.token } : {},
-          ROOM_LOG_FILE: path9.join(s.dir, ".room", "workers", `${tag}.mcp.log`)
+          ROOM_LOG_FILE: path10.join(s.dir, ".room", "workers", `${tag}.mcp.log`)
         };
-        const logFile = path9.join(s.dir, ".room", "workers", `${tag}.log`);
+        const logFile = path10.join(s.dir, ".room", "workers", `${tag}.log`);
         let proc;
         try {
           proc = (ctx.spawner ?? defaultSpawner)({ cmd, args: args2, cwd: dir, env, logFile });
@@ -37374,7 +37450,7 @@ function install5(state) {
   };
   const gitignored = (dir) => {
     try {
-      return fs8.readFileSync(path9.join(dir, ".gitignore"), "utf8").split("\n").some((l) => l.trim() === ".room/" || l.trim() === ".room");
+      return fs9.readFileSync(path10.join(dir, ".gitignore"), "utf8").split("\n").some((l) => l.trim() === ".room/" || l.trim() === ".room");
     } catch {
       return false;
     }
@@ -37600,11 +37676,11 @@ function shouldWake(me, ev, myClaims = []) {
   if (ev.kind === "msg") {
     const m = ev.msg;
     if (!shouldWakeOnMsg(me, m, myClaims).wake) return null;
-    const path10 = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
+    const path11 = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
     return {
       content: `${formatMsg(m)}
 ${JSON.stringify(m)}`,
-      meta: cleanMeta({ type: m.type, from: m.from, from_kind: m.fromKind, path: path10, msg_id: m.id })
+      meta: cleanMeta({ type: m.type, from: m.from, from_kind: m.fromKind, path: path11, msg_id: m.id })
     };
   }
   if (ev.kind === "claim") {
@@ -37655,13 +37731,13 @@ Rules:
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.`;
 
 // packages/room-mcp/src/index.ts
-var LOG_FILE = process.env.ROOM_LOG_FILE?.trim();
+var LOG_FILE;
 var log = (s) => {
   process.stderr.write(`room-mcp: ${s}
 `);
   if (LOG_FILE) {
     try {
-      fs9.appendFileSync(LOG_FILE, `${(/* @__PURE__ */ new Date()).toISOString()} ${s}
+      fs10.appendFileSync(LOG_FILE, `${(/* @__PURE__ */ new Date()).toISOString()} ${s}
 `);
     } catch {
     }
@@ -37669,15 +37745,17 @@ var log = (s) => {
 };
 function cwd() {
   const e = (k) => process.env[k] && process.env[k].trim() || void 0;
-  return resolve4(e("ROOM_DIR") ?? e("PWD") ?? e("INIT_CWD") ?? process.cwd());
+  return e("ROOM_DIR") ?? e("PWD") ?? e("INIT_CWD") ?? process.cwd();
 }
 async function main() {
   let session = null;
   const dir = cwd();
+  const startup = await resolveConfig({ dir, env: process.env });
+  LOG_FILE = startup.logFile;
   const tools = createTools({ getSession: () => session, setSession: (s) => {
     session = s;
     if (s) attachChannel(s);
-  }, cwd: dir, attachChannel: (s) => attachChannel(s) });
+  }, cwd: dir, config: startup, attachChannel: (s) => attachChannel(s) });
   const adopt = (s) => {
     session = s;
     attachChannel(s);
@@ -37710,21 +37788,20 @@ async function main() {
   };
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
-  const env = (k) => process.env[k] && process.env[k].trim() || void 0;
   const prior = findRoomFile(dir);
   const autoJoin = (async () => {
     try {
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
-      const choice = await chooseServer(dir, void 0, env("ROOM_SERVER"));
-      const chosen = choice.server;
-      log(`room: ${choice.where.replace(/\?.*$/, "")} (${choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
-      if (env("ROOM_URL")) {
-        const u = new URL(env("ROOM_URL"));
-        adopt(await joinSession({ dir: env("ROOM_DIR") ?? dir, name: env("ROOM_NAME"), room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: `${u.protocol}//${u.host}`, log }));
+      const chosen = startup.server;
+      log(`room: ${startup.where.replace(/\?.*$/, "")} (${startup.whereRule === "env" ? "ROOM_SERVER" : startup.whereRule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
+      const roomUrl = process.env.ROOM_URL?.trim();
+      if (roomUrl) {
+        const u = new URL(roomUrl);
+        adopt(await joinSession({ dir: startup.dir, name: startup.name, room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: `${u.protocol}//${u.host}`, log }));
       } else if (chosen === LOCAL) {
-        adopt(await joinSession({ dir, room: env("ROOM_ROOM"), server: LOCAL, log }));
-      } else if (env("ROOM_ROOM")) {
-        adopt(await joinSession({ dir, room: env("ROOM_ROOM"), server: chosen, log }));
+        adopt(await joinSession({ dir, room: startup.room, server: LOCAL, log }));
+      } else if (startup.room) {
+        adopt(await joinSession({ dir, room: startup.room, server: chosen, log }));
       } else if (derived.roomName) {
         adopt(await joinSession({ dir, server: chosen, log }));
       } else if (prior) {
@@ -37769,6 +37846,7 @@ export {
   NoRoom,
   NotLoggedIn,
   closeRoom,
+  configureCredentials,
   createRoom,
   createTools,
   credentialsPath,
@@ -37785,6 +37863,7 @@ export {
   removeCredential,
   requestedShare,
   resolveAuth,
+  resolveConfig,
   serverAuthMode,
   serverShareMax,
   setCredential,
