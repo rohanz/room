@@ -3269,8 +3269,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path9) {
-      let input = path9;
+    function removeDotSegments(path10) {
+      let input = path10;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3679,8 +3679,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path9 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path9 && path9 !== "/" ? path9 : void 0;
+        const path10 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path10 && path10 !== "/" ? path10 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -11828,10 +11828,10 @@ function mergeDefs(...defs9) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path9) {
-  if (!path9)
+function getElementAtPath(obj, path10) {
+  if (!path10)
     return obj;
-  return path9.reduce((acc, key) => acc?.[key], obj);
+  return path10.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -12243,11 +12243,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path9, issues) {
+function prefixIssues(path10, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path9);
+    iss.path.unshift(path10);
     return iss;
   });
 }
@@ -12676,16 +12676,16 @@ function flattenError(error2, mapper = (issue2) => issue2.message) {
 }
 function formatError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error3, path9 = []) => {
+  const processError = (error3, path10 = []) => {
     for (const issue2 of error3.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else {
-        const fullpath = [...path9, ...issue2.path];
+        const fullpath = [...path10, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -24826,10 +24826,10 @@ var YEvent = class {
   }
 };
 var getPathTo = (parent, child) => {
-  const path9 = [];
+  const path10 = [];
   while (child._item !== null && child !== parent) {
     if (child._item.parentSub !== null) {
-      path9.unshift(child._item.parentSub);
+      path10.unshift(child._item.parentSub);
     } else {
       let i = 0;
       let c = (
@@ -24842,12 +24842,12 @@ var getPathTo = (parent, child) => {
         }
         c = c.right;
       }
-      path9.unshift(i);
+      path10.unshift(i);
     }
     child = /** @type {AbstractType<any>} */
     child._item.parent;
   }
-  return path9;
+  return path10;
 };
 var warnPrematureAccess = () => {
   warn("Invalid access: Add Yjs type to a document before reading data.");
@@ -29115,8 +29115,8 @@ function msgPaths(m) {
   if ("path" in m) return [m.path];
   return [];
 }
-function scopeCovers(scope, path9) {
-  return scope.paths.some((p) => path9 === p || path9.startsWith(p.replace(/\/?$/, "/")));
+function scopeCovers(scope, path10) {
+  return scope.paths.some((p) => path10 === p || path10.startsWith(p.replace(/\/?$/, "/")));
 }
 function ledger(messages, scopes, q = {}) {
   const areaScopes = q.area ? scopes.filter((s) => s.area === q.area) : [];
@@ -29555,8 +29555,8 @@ var PY_DEF = /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
 var PY_ASSIGN = /^([A-Z_][A-Z0-9_]*)\s*(?::[^=]+)?=/gm;
 var JS_DEF = /\b(?:function\*?|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)|\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g;
 var KEYWORDS = new Set("def class return if else elif for while in not and or import from as with try except finally raise pass break continue lambda yield await async None True False self cls function const let var new this export default import from return if else for while do switch case break continue typeof instanceof void null undefined true false async await class extends super interface type enum implements".split(" "));
-var regexExtractor = (path9, text) => {
-  const ext = path9.slice(path9.lastIndexOf(".") + 1);
+var regexExtractor = (path10, text) => {
+  const ext = path10.slice(path10.lastIndexOf(".") + 1);
   const defs9 = /* @__PURE__ */ new Set();
   if (ext === "py") {
     for (const m of text.matchAll(PY_DEF)) defs9.add(m[1]);
@@ -29583,28 +29583,28 @@ var SymbolGraph = class {
   get size() {
     return this.files.size;
   }
-  has(path9) {
-    return this.files.has(path9);
+  has(path10) {
+    return this.files.has(path10);
   }
   /** Index or re-index one file. Returns false when the extractor does not handle it. */
-  set(path9, text) {
-    this.remove(path9);
-    const syms = this.extract(path9, text);
+  set(path10, text) {
+    this.remove(path10);
+    const syms = this.extract(path10, text);
     if (!syms) return false;
-    this.files.set(path9, syms);
-    for (const d of syms.defs) add(this.definers, d, path9);
-    for (const r of syms.refs) add(this.users, r, path9);
+    this.files.set(path10, syms);
+    for (const d of syms.defs) add(this.definers, d, path10);
+    for (const r of syms.refs) add(this.users, r, path10);
     return true;
   }
-  remove(path9) {
-    const prev = this.files.get(path9);
+  remove(path10) {
+    const prev = this.files.get(path10);
     if (!prev) return;
-    for (const d of prev.defs) del(this.definers, d, path9);
-    for (const r of prev.refs) del(this.users, r, path9);
-    this.files.delete(path9);
+    for (const d of prev.defs) del(this.definers, d, path10);
+    for (const r of prev.refs) del(this.users, r, path10);
+    this.files.delete(path10);
   }
-  symbolsOf(path9) {
-    return this.files.get(path9);
+  symbolsOf(path10) {
+    return this.files.get(path10);
   }
   definersOf(symbol) {
     return Array.from(this.definers.get(symbol) ?? []).sort();
@@ -29615,24 +29615,24 @@ var SymbolGraph = class {
     return Array.from(this.users.get(symbol) ?? []).filter((p) => !defs9.has(p)).sort();
   }
   /** Symbols a file uses that some other file defines. */
-  dependenciesOf(path9) {
-    const syms = this.files.get(path9);
+  dependenciesOf(path10) {
+    const syms = this.files.get(path10);
     if (!syms) return [];
     const out = [];
     for (const r of syms.refs) {
-      const definedIn = this.definersOf(r).filter((p) => p !== path9);
-      if (definedIn.length) out.push({ symbol: r, definedIn, usedIn: [path9] });
+      const definedIn = this.definersOf(r).filter((p) => p !== path10);
+      if (definedIn.length) out.push({ symbol: r, definedIn, usedIn: [path10] });
     }
     return out.sort((a, b) => a.symbol.localeCompare(b.symbol));
   }
   /** Symbols a file defines and the other files that use them. */
-  dependentsOf(path9) {
-    const syms = this.files.get(path9);
+  dependentsOf(path10) {
+    const syms = this.files.get(path10);
     if (!syms) return [];
     const out = [];
     for (const d of syms.defs) {
       const usedIn = this.usersOf(d);
-      if (usedIn.length) out.push({ symbol: d, definedIn: [path9], usedIn });
+      if (usedIn.length) out.push({ symbol: d, definedIn: [path10], usedIn });
     }
     return out.sort((a, b) => b.usedIn.length - a.usedIn.length || a.symbol.localeCompare(b.symbol));
   }
@@ -29654,9 +29654,9 @@ function del(m, k, v) {
   s.delete(v);
   if (!s.size) m.delete(k);
 }
-function symbolRange(path9, text, symbol) {
+function symbolRange(path10, text, symbol) {
   const lines = text.split("\n");
-  const ext = path9.slice(path9.lastIndexOf(".") + 1);
+  const ext = path10.slice(path10.lastIndexOf(".") + 1);
   const esc2 = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (ext === "py") {
     const re2 = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${esc2}\\b`);
@@ -29790,8 +29790,8 @@ var Areas = class _Areas {
     return Array.from(new Set(this.rules.map((r) => r.area))).sort();
   }
   /** The area a path belongs to: the longest matching pattern (later wins on ties); top-level dir without CODEOWNERS. */
-  areaOf(path9) {
-    const p = path9.replace(/^\.?\//, "");
+  areaOf(path10) {
+    const p = path10.replace(/^\.?\//, "");
     if (this.source === "codeowners") {
       let best;
       for (let i = 0; i < this.rules.length; i++) {
@@ -29818,9 +29818,9 @@ var Areas = class _Areas {
     return this.ownersOf(area).some((o) => o.toLowerCase() === me);
   }
 };
-function topLevelArea(path9) {
-  const i = path9.indexOf("/");
-  return i < 0 ? "/" : `${path9.slice(0, i)}/`;
+function topLevelArea(path10) {
+  const i = path10.indexOf("/");
+  return i < 0 ? "/" : `${path10.slice(0, i)}/`;
 }
 function sharesArea(a, b) {
   if (!a?.length || !b?.length) return true;
@@ -30617,7 +30617,7 @@ var ReaddirpStream = class extends Readable {
     this._directoryFilter = normalizeFilter(opts.directoryFilter);
     const statMethod = opts.lstat ? lstat : stat;
     if (wantBigintFsStats) {
-      this._stat = (path9) => statMethod(path9, { bigint: true });
+      this._stat = (path10) => statMethod(path10, { bigint: true });
     } else {
       this._stat = statMethod;
     }
@@ -30642,8 +30642,8 @@ var ReaddirpStream = class extends Readable {
         const par = this.parent;
         const fil = par && par.files;
         if (fil && fil.length > 0) {
-          const { path: path9, depth } = par;
-          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path9));
+          const { path: path10, depth } = par;
+          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path10));
           const awaited = await Promise.all(slice);
           for (const entry of awaited) {
             if (!entry)
@@ -30683,20 +30683,20 @@ var ReaddirpStream = class extends Readable {
       this.reading = false;
     }
   }
-  async _exploreDir(path9, depth) {
+  async _exploreDir(path10, depth) {
     let files;
     try {
-      files = await readdir(path9, this._rdOptions);
+      files = await readdir(path10, this._rdOptions);
     } catch (error2) {
       this._onError(error2);
     }
-    return { files, depth, path: path9 };
+    return { files, depth, path: path10 };
   }
-  async _formatEntry(dirent, path9) {
+  async _formatEntry(dirent, path10) {
     let entry;
     const basename3 = this._isDirent ? dirent.name : dirent;
     try {
-      const fullPath = presolve(pjoin(path9, basename3));
+      const fullPath = presolve(pjoin(path10, basename3));
       entry = { path: prelative(this._root, fullPath), fullPath, basename: basename3 };
       entry[this._statsProp] = this._isDirent ? dirent : await this._stat(fullPath);
     } catch (err) {
@@ -31096,16 +31096,16 @@ var delFromSet = (main2, prop, item) => {
 };
 var isEmptySet = (val) => val instanceof Set ? val.size === 0 : !val;
 var FsWatchInstances = /* @__PURE__ */ new Map();
-function createFsWatchInstance(path9, options, listener, errHandler, emitRaw) {
+function createFsWatchInstance(path10, options, listener, errHandler, emitRaw) {
   const handleEvent = (rawEvent, evPath) => {
-    listener(path9);
-    emitRaw(rawEvent, evPath, { watchedPath: path9 });
-    if (evPath && path9 !== evPath) {
-      fsWatchBroadcast(sysPath.resolve(path9, evPath), KEY_LISTENERS, sysPath.join(path9, evPath));
+    listener(path10);
+    emitRaw(rawEvent, evPath, { watchedPath: path10 });
+    if (evPath && path10 !== evPath) {
+      fsWatchBroadcast(sysPath.resolve(path10, evPath), KEY_LISTENERS, sysPath.join(path10, evPath));
     }
   };
   try {
-    return fs_watch(path9, {
+    return fs_watch(path10, {
       persistent: options.persistent
     }, handleEvent);
   } catch (error2) {
@@ -31121,12 +31121,12 @@ var fsWatchBroadcast = (fullPath, listenerType, val1, val2, val3) => {
     listener(val1, val2, val3);
   });
 };
-var setFsWatchListener = (path9, fullPath, options, handlers9) => {
+var setFsWatchListener = (path10, fullPath, options, handlers9) => {
   const { listener, errHandler, rawEmitter } = handlers9;
   let cont = FsWatchInstances.get(fullPath);
   let watcher;
   if (!options.persistent) {
-    watcher = createFsWatchInstance(path9, options, listener, errHandler, rawEmitter);
+    watcher = createFsWatchInstance(path10, options, listener, errHandler, rawEmitter);
     if (!watcher)
       return;
     return watcher.close.bind(watcher);
@@ -31137,7 +31137,7 @@ var setFsWatchListener = (path9, fullPath, options, handlers9) => {
     addAndConvert(cont, KEY_RAW, rawEmitter);
   } else {
     watcher = createFsWatchInstance(
-      path9,
+      path10,
       options,
       fsWatchBroadcast.bind(null, fullPath, KEY_LISTENERS),
       errHandler,
@@ -31152,7 +31152,7 @@ var setFsWatchListener = (path9, fullPath, options, handlers9) => {
         cont.watcherUnusable = true;
       if (isWindows && error2.code === "EPERM") {
         try {
-          const fd = await open2(path9, "r");
+          const fd = await open2(path10, "r");
           await fd.close();
           broadcastErr(error2);
         } catch (err) {
@@ -31183,7 +31183,7 @@ var setFsWatchListener = (path9, fullPath, options, handlers9) => {
   };
 };
 var FsWatchFileInstances = /* @__PURE__ */ new Map();
-var setFsWatchFileListener = (path9, fullPath, options, handlers9) => {
+var setFsWatchFileListener = (path10, fullPath, options, handlers9) => {
   const { listener, rawEmitter } = handlers9;
   let cont = FsWatchFileInstances.get(fullPath);
   const copts = cont && cont.options;
@@ -31205,7 +31205,7 @@ var setFsWatchFileListener = (path9, fullPath, options, handlers9) => {
         });
         const currmtime = curr.mtimeMs;
         if (curr.size !== prev.size || currmtime > prev.mtimeMs || currmtime === 0) {
-          foreach(cont.listeners, (listener2) => listener2(path9, curr));
+          foreach(cont.listeners, (listener2) => listener2(path10, curr));
         }
       })
     };
@@ -31233,13 +31233,13 @@ var NodeFsHandler = class {
    * @param listener on fs change
    * @returns closer for the watcher instance
    */
-  _watchWithNodeFs(path9, listener) {
+  _watchWithNodeFs(path10, listener) {
     const opts = this.fsw.options;
-    const directory = sysPath.dirname(path9);
-    const basename3 = sysPath.basename(path9);
+    const directory = sysPath.dirname(path10);
+    const basename3 = sysPath.basename(path10);
     const parent = this.fsw._getWatchedDir(directory);
     parent.add(basename3);
-    const absolutePath = sysPath.resolve(path9);
+    const absolutePath = sysPath.resolve(path10);
     const options = {
       persistent: opts.persistent
     };
@@ -31249,12 +31249,12 @@ var NodeFsHandler = class {
     if (opts.usePolling) {
       const enableBin = opts.interval !== opts.binaryInterval;
       options.interval = enableBin && isBinaryPath(basename3) ? opts.binaryInterval : opts.interval;
-      closer = setFsWatchFileListener(path9, absolutePath, options, {
+      closer = setFsWatchFileListener(path10, absolutePath, options, {
         listener,
         rawEmitter: this.fsw._emitRaw
       });
     } else {
-      closer = setFsWatchListener(path9, absolutePath, options, {
+      closer = setFsWatchListener(path10, absolutePath, options, {
         listener,
         errHandler: this._boundHandleError,
         rawEmitter: this.fsw._emitRaw
@@ -31276,7 +31276,7 @@ var NodeFsHandler = class {
     let prevStats = stats;
     if (parent.has(basename3))
       return;
-    const listener = async (path9, newStats) => {
+    const listener = async (path10, newStats) => {
       if (!this.fsw._throttle(THROTTLE_MODE_WATCH, file, 5))
         return;
       if (!newStats || newStats.mtimeMs === 0) {
@@ -31290,11 +31290,11 @@ var NodeFsHandler = class {
             this.fsw._emit(EV.CHANGE, file, newStats2);
           }
           if ((isMacos || isLinux || isFreeBSD) && prevStats.ino !== newStats2.ino) {
-            this.fsw._closeFile(path9);
+            this.fsw._closeFile(path10);
             prevStats = newStats2;
             const closer2 = this._watchWithNodeFs(file, listener);
             if (closer2)
-              this.fsw._addPathCloser(path9, closer2);
+              this.fsw._addPathCloser(path10, closer2);
           } else {
             prevStats = newStats2;
           }
@@ -31326,7 +31326,7 @@ var NodeFsHandler = class {
    * @param item basename of this item
    * @returns true if no more processing is needed for this entry.
    */
-  async _handleSymlink(entry, directory, path9, item) {
+  async _handleSymlink(entry, directory, path10, item) {
     if (this.fsw.closed) {
       return;
     }
@@ -31336,7 +31336,7 @@ var NodeFsHandler = class {
       this.fsw._incrReadyCount();
       let linkPath;
       try {
-        linkPath = await fsrealpath(path9);
+        linkPath = await fsrealpath(path10);
       } catch (e) {
         this.fsw._emitReady();
         return true;
@@ -31346,12 +31346,12 @@ var NodeFsHandler = class {
       if (dir.has(item)) {
         if (this.fsw._symlinkPaths.get(full) !== linkPath) {
           this.fsw._symlinkPaths.set(full, linkPath);
-          this.fsw._emit(EV.CHANGE, path9, entry.stats);
+          this.fsw._emit(EV.CHANGE, path10, entry.stats);
         }
       } else {
         dir.add(item);
         this.fsw._symlinkPaths.set(full, linkPath);
-        this.fsw._emit(EV.ADD, path9, entry.stats);
+        this.fsw._emit(EV.ADD, path10, entry.stats);
       }
       this.fsw._emitReady();
       return true;
@@ -31380,9 +31380,9 @@ var NodeFsHandler = class {
         return;
       }
       const item = entry.path;
-      let path9 = sysPath.join(directory, item);
+      let path10 = sysPath.join(directory, item);
       current.add(item);
-      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path9, item)) {
+      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path10, item)) {
         return;
       }
       if (this.fsw.closed) {
@@ -31391,8 +31391,8 @@ var NodeFsHandler = class {
       }
       if (item === target || !target && !previous.has(item)) {
         this.fsw._incrReadyCount();
-        path9 = sysPath.join(dir, sysPath.relative(dir, path9));
-        this._addToNodeFs(path9, initialAdd, wh, depth + 1);
+        path10 = sysPath.join(dir, sysPath.relative(dir, path10));
+        this._addToNodeFs(path10, initialAdd, wh, depth + 1);
       }
     }).on(EV.ERROR, this._boundHandleError);
     return new Promise((resolve5, reject) => {
@@ -31461,13 +31461,13 @@ var NodeFsHandler = class {
    * @param depth Child path actually targeted for watch
    * @param target Child path actually targeted for watch
    */
-  async _addToNodeFs(path9, initialAdd, priorWh, depth, target) {
+  async _addToNodeFs(path10, initialAdd, priorWh, depth, target) {
     const ready = this.fsw._emitReady;
-    if (this.fsw._isIgnored(path9) || this.fsw.closed) {
+    if (this.fsw._isIgnored(path10) || this.fsw.closed) {
       ready();
       return false;
     }
-    const wh = this.fsw._getWatchHelpers(path9);
+    const wh = this.fsw._getWatchHelpers(path10);
     if (priorWh) {
       wh.filterPath = (entry) => priorWh.filterPath(entry);
       wh.filterDir = (entry) => priorWh.filterDir(entry);
@@ -31483,8 +31483,8 @@ var NodeFsHandler = class {
       const follow = this.fsw.options.followSymlinks;
       let closer;
       if (stats.isDirectory()) {
-        const absPath = sysPath.resolve(path9);
-        const targetPath = follow ? await fsrealpath(path9) : path9;
+        const absPath = sysPath.resolve(path10);
+        const targetPath = follow ? await fsrealpath(path10) : path10;
         if (this.fsw.closed)
           return;
         closer = await this._handleDir(wh.watchPath, stats, initialAdd, depth, target, wh, targetPath);
@@ -31494,29 +31494,29 @@ var NodeFsHandler = class {
           this.fsw._symlinkPaths.set(absPath, targetPath);
         }
       } else if (stats.isSymbolicLink()) {
-        const targetPath = follow ? await fsrealpath(path9) : path9;
+        const targetPath = follow ? await fsrealpath(path10) : path10;
         if (this.fsw.closed)
           return;
         const parent = sysPath.dirname(wh.watchPath);
         this.fsw._getWatchedDir(parent).add(wh.watchPath);
         this.fsw._emit(EV.ADD, wh.watchPath, stats);
-        closer = await this._handleDir(parent, stats, initialAdd, depth, path9, wh, targetPath);
+        closer = await this._handleDir(parent, stats, initialAdd, depth, path10, wh, targetPath);
         if (this.fsw.closed)
           return;
         if (targetPath !== void 0) {
-          this.fsw._symlinkPaths.set(sysPath.resolve(path9), targetPath);
+          this.fsw._symlinkPaths.set(sysPath.resolve(path10), targetPath);
         }
       } else {
         closer = this._handleFile(wh.watchPath, stats, initialAdd);
       }
       ready();
       if (closer)
-        this.fsw._addPathCloser(path9, closer);
+        this.fsw._addPathCloser(path10, closer);
       return false;
     } catch (error2) {
       if (this.fsw._handleError(error2)) {
         ready();
-        return path9;
+        return path10;
       }
     }
   }
@@ -31559,26 +31559,26 @@ function createPattern(matcher) {
   }
   return () => false;
 }
-function normalizePath(path9) {
-  if (typeof path9 !== "string")
+function normalizePath(path10) {
+  if (typeof path10 !== "string")
     throw new Error("string expected");
-  path9 = sysPath2.normalize(path9);
-  path9 = path9.replace(/\\/g, "/");
+  path10 = sysPath2.normalize(path10);
+  path10 = path10.replace(/\\/g, "/");
   let prepend = false;
-  if (path9.startsWith("//"))
+  if (path10.startsWith("//"))
     prepend = true;
   const DOUBLE_SLASH_RE2 = /\/\//;
-  while (path9.match(DOUBLE_SLASH_RE2))
-    path9 = path9.replace(DOUBLE_SLASH_RE2, "/");
+  while (path10.match(DOUBLE_SLASH_RE2))
+    path10 = path10.replace(DOUBLE_SLASH_RE2, "/");
   if (prepend)
-    path9 = "/" + path9;
-  return path9;
+    path10 = "/" + path10;
+  return path10;
 }
 function matchPatterns(patterns, testString, stats) {
-  const path9 = normalizePath(testString);
+  const path10 = normalizePath(testString);
   for (let index = 0; index < patterns.length; index++) {
     const pattern = patterns[index];
-    if (pattern(path9, stats)) {
+    if (pattern(path10, stats)) {
       return true;
     }
   }
@@ -31618,19 +31618,19 @@ var toUnix = (string3) => {
   }
   return str4;
 };
-var normalizePathToUnix = (path9) => toUnix(sysPath2.normalize(toUnix(path9)));
-var normalizeIgnored = (cwd2 = "") => (path9) => {
-  if (typeof path9 === "string") {
-    return normalizePathToUnix(sysPath2.isAbsolute(path9) ? path9 : sysPath2.join(cwd2, path9));
+var normalizePathToUnix = (path10) => toUnix(sysPath2.normalize(toUnix(path10)));
+var normalizeIgnored = (cwd2 = "") => (path10) => {
+  if (typeof path10 === "string") {
+    return normalizePathToUnix(sysPath2.isAbsolute(path10) ? path10 : sysPath2.join(cwd2, path10));
   } else {
-    return path9;
+    return path10;
   }
 };
-var getAbsolutePath = (path9, cwd2) => {
-  if (sysPath2.isAbsolute(path9)) {
-    return path9;
+var getAbsolutePath = (path10, cwd2) => {
+  if (sysPath2.isAbsolute(path10)) {
+    return path10;
   }
-  return sysPath2.join(cwd2, path9);
+  return sysPath2.join(cwd2, path10);
 };
 var EMPTY_SET = Object.freeze(/* @__PURE__ */ new Set());
 var DirEntry = class {
@@ -31685,10 +31685,10 @@ var DirEntry = class {
 var STAT_METHOD_F = "stat";
 var STAT_METHOD_L = "lstat";
 var WatchHelper = class {
-  constructor(path9, follow, fsw) {
+  constructor(path10, follow, fsw) {
     this.fsw = fsw;
-    const watchPath = path9;
-    this.path = path9 = path9.replace(REPLACER_RE, "");
+    const watchPath = path10;
+    this.path = path10 = path10.replace(REPLACER_RE, "");
     this.watchPath = watchPath;
     this.fullWatchPath = sysPath2.resolve(watchPath);
     this.dirParts = [];
@@ -31810,20 +31810,20 @@ var FSWatcher = class extends EventEmitter {
     this._closePromise = void 0;
     let paths = unifyPaths(paths_);
     if (cwd2) {
-      paths = paths.map((path9) => {
-        const absPath = getAbsolutePath(path9, cwd2);
+      paths = paths.map((path10) => {
+        const absPath = getAbsolutePath(path10, cwd2);
         return absPath;
       });
     }
-    paths.forEach((path9) => {
-      this._removeIgnoredPath(path9);
+    paths.forEach((path10) => {
+      this._removeIgnoredPath(path10);
     });
     this._userIgnored = void 0;
     if (!this._readyCount)
       this._readyCount = 0;
     this._readyCount += paths.length;
-    Promise.all(paths.map(async (path9) => {
-      const res = await this._nodeFsHandler._addToNodeFs(path9, !_internal, void 0, 0, _origAdd);
+    Promise.all(paths.map(async (path10) => {
+      const res = await this._nodeFsHandler._addToNodeFs(path10, !_internal, void 0, 0, _origAdd);
       if (res)
         this._emitReady();
       return res;
@@ -31845,17 +31845,17 @@ var FSWatcher = class extends EventEmitter {
       return this;
     const paths = unifyPaths(paths_);
     const { cwd: cwd2 } = this.options;
-    paths.forEach((path9) => {
-      if (!sysPath2.isAbsolute(path9) && !this._closers.has(path9)) {
+    paths.forEach((path10) => {
+      if (!sysPath2.isAbsolute(path10) && !this._closers.has(path10)) {
         if (cwd2)
-          path9 = sysPath2.join(cwd2, path9);
-        path9 = sysPath2.resolve(path9);
+          path10 = sysPath2.join(cwd2, path10);
+        path10 = sysPath2.resolve(path10);
       }
-      this._closePath(path9);
-      this._addIgnoredPath(path9);
-      if (this._watched.has(path9)) {
+      this._closePath(path10);
+      this._addIgnoredPath(path10);
+      if (this._watched.has(path10)) {
         this._addIgnoredPath({
-          path: path9,
+          path: path10,
           recursive: true
         });
       }
@@ -31919,38 +31919,38 @@ var FSWatcher = class extends EventEmitter {
    * @param stats arguments to be passed with event
    * @returns the error if defined, otherwise the value of the FSWatcher instance's `closed` flag
    */
-  async _emit(event, path9, stats) {
+  async _emit(event, path10, stats) {
     if (this.closed)
       return;
     const opts = this.options;
     if (isWindows)
-      path9 = sysPath2.normalize(path9);
+      path10 = sysPath2.normalize(path10);
     if (opts.cwd)
-      path9 = sysPath2.relative(opts.cwd, path9);
-    const args2 = [path9];
+      path10 = sysPath2.relative(opts.cwd, path10);
+    const args2 = [path10];
     if (stats != null)
       args2.push(stats);
     const awf = opts.awaitWriteFinish;
     let pw;
-    if (awf && (pw = this._pendingWrites.get(path9))) {
+    if (awf && (pw = this._pendingWrites.get(path10))) {
       pw.lastChange = /* @__PURE__ */ new Date();
       return this;
     }
     if (opts.atomic) {
       if (event === EVENTS.UNLINK) {
-        this._pendingUnlinks.set(path9, [event, ...args2]);
+        this._pendingUnlinks.set(path10, [event, ...args2]);
         setTimeout(() => {
-          this._pendingUnlinks.forEach((entry, path10) => {
+          this._pendingUnlinks.forEach((entry, path11) => {
             this.emit(...entry);
             this.emit(EVENTS.ALL, ...entry);
-            this._pendingUnlinks.delete(path10);
+            this._pendingUnlinks.delete(path11);
           });
         }, typeof opts.atomic === "number" ? opts.atomic : 100);
         return this;
       }
-      if (event === EVENTS.ADD && this._pendingUnlinks.has(path9)) {
+      if (event === EVENTS.ADD && this._pendingUnlinks.has(path10)) {
         event = EVENTS.CHANGE;
-        this._pendingUnlinks.delete(path9);
+        this._pendingUnlinks.delete(path10);
       }
     }
     if (awf && (event === EVENTS.ADD || event === EVENTS.CHANGE) && this._readyEmitted) {
@@ -31968,16 +31968,16 @@ var FSWatcher = class extends EventEmitter {
           this.emitWithAll(event, args2);
         }
       };
-      this._awaitWriteFinish(path9, awf.stabilityThreshold, event, awfEmit);
+      this._awaitWriteFinish(path10, awf.stabilityThreshold, event, awfEmit);
       return this;
     }
     if (event === EVENTS.CHANGE) {
-      const isThrottled = !this._throttle(EVENTS.CHANGE, path9, 50);
+      const isThrottled = !this._throttle(EVENTS.CHANGE, path10, 50);
       if (isThrottled)
         return this;
     }
     if (opts.alwaysStat && stats === void 0 && (event === EVENTS.ADD || event === EVENTS.ADD_DIR || event === EVENTS.CHANGE)) {
-      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path9) : path9;
+      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path10) : path10;
       let stats2;
       try {
         stats2 = await stat3(fullPath);
@@ -32008,23 +32008,23 @@ var FSWatcher = class extends EventEmitter {
    * @param timeout duration of time to suppress duplicate actions
    * @returns tracking object or false if action should be suppressed
    */
-  _throttle(actionType, path9, timeout) {
+  _throttle(actionType, path10, timeout) {
     if (!this._throttled.has(actionType)) {
       this._throttled.set(actionType, /* @__PURE__ */ new Map());
     }
     const action = this._throttled.get(actionType);
     if (!action)
       throw new Error("invalid throttle");
-    const actionPath = action.get(path9);
+    const actionPath = action.get(path10);
     if (actionPath) {
       actionPath.count++;
       return false;
     }
     let timeoutObject;
     const clear = () => {
-      const item = action.get(path9);
+      const item = action.get(path10);
       const count = item ? item.count : 0;
-      action.delete(path9);
+      action.delete(path10);
       clearTimeout(timeoutObject);
       if (item)
         clearTimeout(item.timeoutObject);
@@ -32032,7 +32032,7 @@ var FSWatcher = class extends EventEmitter {
     };
     timeoutObject = setTimeout(clear, timeout);
     const thr = { timeoutObject, clear, count: 0 };
-    action.set(path9, thr);
+    action.set(path10, thr);
     return thr;
   }
   _incrReadyCount() {
@@ -32046,44 +32046,44 @@ var FSWatcher = class extends EventEmitter {
    * @param event
    * @param awfEmit Callback to be called when ready for event to be emitted.
    */
-  _awaitWriteFinish(path9, threshold, event, awfEmit) {
+  _awaitWriteFinish(path10, threshold, event, awfEmit) {
     const awf = this.options.awaitWriteFinish;
     if (typeof awf !== "object")
       return;
     const pollInterval = awf.pollInterval;
     let timeoutHandler;
-    let fullPath = path9;
-    if (this.options.cwd && !sysPath2.isAbsolute(path9)) {
-      fullPath = sysPath2.join(this.options.cwd, path9);
+    let fullPath = path10;
+    if (this.options.cwd && !sysPath2.isAbsolute(path10)) {
+      fullPath = sysPath2.join(this.options.cwd, path10);
     }
     const now = /* @__PURE__ */ new Date();
     const writes = this._pendingWrites;
     function awaitWriteFinishFn(prevStat) {
       statcb(fullPath, (err, curStat) => {
-        if (err || !writes.has(path9)) {
+        if (err || !writes.has(path10)) {
           if (err && err.code !== "ENOENT")
             awfEmit(err);
           return;
         }
         const now2 = Number(/* @__PURE__ */ new Date());
         if (prevStat && curStat.size !== prevStat.size) {
-          writes.get(path9).lastChange = now2;
+          writes.get(path10).lastChange = now2;
         }
-        const pw = writes.get(path9);
+        const pw = writes.get(path10);
         const df = now2 - pw.lastChange;
         if (df >= threshold) {
-          writes.delete(path9);
+          writes.delete(path10);
           awfEmit(void 0, curStat);
         } else {
           timeoutHandler = setTimeout(awaitWriteFinishFn, pollInterval, curStat);
         }
       });
     }
-    if (!writes.has(path9)) {
-      writes.set(path9, {
+    if (!writes.has(path10)) {
+      writes.set(path10, {
         lastChange: now,
         cancelWait: () => {
-          writes.delete(path9);
+          writes.delete(path10);
           clearTimeout(timeoutHandler);
           return event;
         }
@@ -32094,8 +32094,8 @@ var FSWatcher = class extends EventEmitter {
   /**
    * Determines whether user has asked to ignore this path.
    */
-  _isIgnored(path9, stats) {
-    if (this.options.atomic && DOT_RE.test(path9))
+  _isIgnored(path10, stats) {
+    if (this.options.atomic && DOT_RE.test(path10))
       return true;
     if (!this._userIgnored) {
       const { cwd: cwd2 } = this.options;
@@ -32105,17 +32105,17 @@ var FSWatcher = class extends EventEmitter {
       const list = [...ignoredPaths.map(normalizeIgnored(cwd2)), ...ignored];
       this._userIgnored = anymatch(list, void 0);
     }
-    return this._userIgnored(path9, stats);
+    return this._userIgnored(path10, stats);
   }
-  _isntIgnored(path9, stat4) {
-    return !this._isIgnored(path9, stat4);
+  _isntIgnored(path10, stat4) {
+    return !this._isIgnored(path10, stat4);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
    * @param path file or directory pattern being watched
    */
-  _getWatchHelpers(path9) {
-    return new WatchHelper(path9, this.options.followSymlinks, this);
+  _getWatchHelpers(path10) {
+    return new WatchHelper(path10, this.options.followSymlinks, this);
   }
   // Directory helpers
   // -----------------
@@ -32147,63 +32147,63 @@ var FSWatcher = class extends EventEmitter {
    * @param item      base path of item/directory
    */
   _remove(directory, item, isDirectory) {
-    const path9 = sysPath2.join(directory, item);
-    const fullPath = sysPath2.resolve(path9);
-    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path9) || this._watched.has(fullPath);
-    if (!this._throttle("remove", path9, 100))
+    const path10 = sysPath2.join(directory, item);
+    const fullPath = sysPath2.resolve(path10);
+    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path10) || this._watched.has(fullPath);
+    if (!this._throttle("remove", path10, 100))
       return;
     if (!isDirectory && this._watched.size === 1) {
       this.add(directory, item, true);
     }
-    const wp = this._getWatchedDir(path9);
+    const wp = this._getWatchedDir(path10);
     const nestedDirectoryChildren = wp.getChildren();
-    nestedDirectoryChildren.forEach((nested) => this._remove(path9, nested));
+    nestedDirectoryChildren.forEach((nested) => this._remove(path10, nested));
     const parent = this._getWatchedDir(directory);
     const wasTracked = parent.has(item);
     parent.remove(item);
     if (this._symlinkPaths.has(fullPath)) {
       this._symlinkPaths.delete(fullPath);
     }
-    let relPath = path9;
+    let relPath = path10;
     if (this.options.cwd)
-      relPath = sysPath2.relative(this.options.cwd, path9);
+      relPath = sysPath2.relative(this.options.cwd, path10);
     if (this.options.awaitWriteFinish && this._pendingWrites.has(relPath)) {
       const event = this._pendingWrites.get(relPath).cancelWait();
       if (event === EVENTS.ADD)
         return;
     }
-    this._watched.delete(path9);
+    this._watched.delete(path10);
     this._watched.delete(fullPath);
     const eventName = isDirectory ? EVENTS.UNLINK_DIR : EVENTS.UNLINK;
-    if (wasTracked && !this._isIgnored(path9))
-      this._emit(eventName, path9);
-    this._closePath(path9);
+    if (wasTracked && !this._isIgnored(path10))
+      this._emit(eventName, path10);
+    this._closePath(path10);
   }
   /**
    * Closes all watchers for a path
    */
-  _closePath(path9) {
-    this._closeFile(path9);
-    const dir = sysPath2.dirname(path9);
-    this._getWatchedDir(dir).remove(sysPath2.basename(path9));
+  _closePath(path10) {
+    this._closeFile(path10);
+    const dir = sysPath2.dirname(path10);
+    this._getWatchedDir(dir).remove(sysPath2.basename(path10));
   }
   /**
    * Closes only file-specific watchers
    */
-  _closeFile(path9) {
-    const closers = this._closers.get(path9);
+  _closeFile(path10) {
+    const closers = this._closers.get(path10);
     if (!closers)
       return;
     closers.forEach((closer) => closer());
-    this._closers.delete(path9);
+    this._closers.delete(path10);
   }
-  _addPathCloser(path9, closer) {
+  _addPathCloser(path10, closer) {
     if (!closer)
       return;
-    let list = this._closers.get(path9);
+    let list = this._closers.get(path10);
     if (!list) {
       list = [];
-      this._closers.set(path9, list);
+      this._closers.set(path10, list);
     }
     list.push(closer);
   }
@@ -32930,7 +32930,7 @@ function errMsg(error2) {
   return error2 instanceof Error ? error2.message : String(error2);
 }
 
-// packages/roomd/src/local.ts
+// packages/relay/src/index.ts
 import crypto from "node:crypto";
 import fs2 from "node:fs";
 import http from "node:http";
@@ -33029,27 +33029,6 @@ function attach(docs, conn, req) {
   }
 }
 var LOCAL_FILE = "room-local.json";
-async function gitCommonDir(dir) {
-  const out = (await git(dir, ["rev-parse", "--git-common-dir"])).trim();
-  return path2.resolve(dir, out);
-}
-async function mainWorktree(dir) {
-  const common = await gitCommonDir(dir);
-  return path2.basename(common) === ".git" ? path2.dirname(common) : path2.resolve(dir);
-}
-async function localRoomName(dir, localBranch) {
-  const main2 = await mainWorktree(dir);
-  let branch = localBranch;
-  if (!branch) {
-    try {
-      branch = (await git(main2, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-    } catch {
-      branch = "main";
-    }
-    if (!branch || branch === "HEAD") branch = "detached";
-  }
-  return `local/${path2.basename(main2)}/${branch}`;
-}
 function relayFile(commonDir) {
   return path2.join(commonDir, LOCAL_FILE);
 }
@@ -33100,7 +33079,7 @@ function findWebDist() {
     path2.resolve(here, "..", "web"),
     // plugins/room/server/room-mcp.mjs -> plugins/room/web
     path2.resolve(here, "..", "..", "web", "dist"),
-    // packages/roomd/src -> packages/web/dist
+    // packages/relay/src -> packages/web/dist
     path2.resolve(here, "..", "..", "..", "web", "dist")
   ];
   for (const c of candidates) if (c && fs2.existsSync(path2.join(c, "index.html"))) return c;
@@ -33264,6 +33243,30 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   };
 }
 
+// packages/roomd/src/local.ts
+import path3 from "node:path";
+async function gitCommonDir(dir) {
+  const out = (await git(dir, ["rev-parse", "--git-common-dir"])).trim();
+  return path3.resolve(dir, out);
+}
+async function mainWorktree(dir) {
+  const common = await gitCommonDir(dir);
+  return path3.basename(common) === ".git" ? path3.dirname(common) : path3.resolve(dir);
+}
+async function localRoomName(dir, localBranch) {
+  const main2 = await mainWorktree(dir);
+  let branch = localBranch;
+  if (!branch) {
+    try {
+      branch = (await git(main2, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    } catch {
+      branch = "main";
+    }
+    if (!branch || branch === "HEAD") branch = "detached";
+  }
+  return `local/${path3.basename(main2)}/${branch}`;
+}
+
 // packages/room-mcp/src/pyextract.ts
 import { execFile as execFile2 } from "node:child_process";
 var SCRIPT = `
@@ -33309,13 +33312,13 @@ async function runPython(text) {
     p.stdin?.end(text);
   });
 }
-async function extractSymbols(path9, text) {
-  if (path9.endsWith(".py")) {
+async function extractSymbols(path10, text) {
+  if (path10.endsWith(".py")) {
     const r = await runPython(text);
     if (r) return r;
-    if (r === null) return regexExtractor(path9, text);
+    if (r === null) return regexExtractor(path10, text);
   }
-  return regexExtractor(path9, text);
+  return regexExtractor(path10, text);
 }
 
 // packages/room-mcp/src/graph-index.ts
@@ -33333,7 +33336,7 @@ var GraphIndex = class {
     this.dir = dir;
     this.log = log2;
     this.opts = opts;
-    this.graph = new SymbolGraph((path9) => this.cache.get(path9));
+    this.graph = new SymbolGraph((path10) => this.cache.get(path10));
   }
   room;
   me;
@@ -33428,46 +33431,46 @@ var GraphIndex = class {
     this.previousChanged = changed;
   }
   /** Current text for a path as the index sees it. */
-  async textFor(path9) {
-    if (this.room.deleted.get(this.me)?.has(path9)) return void 0;
-    const mine = this.room.text(path9, this.me);
+  async textFor(path10) {
+    if (this.room.deleted.get(this.me)?.has(path10)) return void 0;
+    const mine = this.room.text(path10, this.me);
     if (mine !== void 0) return mine;
     for (const person of this.room.overlays.keys()) {
       if (person === this.me) continue;
-      const t = this.room.text(path9, person);
+      const t = this.room.text(path10, person);
       if (t !== void 0) return t;
     }
     if (!this.base) return void 0;
-    return gitShow(this.dir, this.base, path9);
+    return gitShow(this.dir, this.base, path10);
   }
-  refresh(path9) {
-    this.revisions.set(path9, (this.revisions.get(path9) ?? 0) + 1);
-    const inflight = this.pending.get(path9);
+  refresh(path10) {
+    this.revisions.set(path10, (this.revisions.get(path10) ?? 0) + 1);
+    const inflight = this.pending.get(path10);
     if (inflight) return inflight;
     const p = (async () => {
       while (!this.stopped) {
-        const revision = this.revisions.get(path9), generation = this.generation;
-        const text = await this.textFor(path9);
-        const symbols = text === void 0 || text.length > MAX_BYTES ? void 0 : await extractSymbols(path9, text);
+        const revision = this.revisions.get(path10), generation = this.generation;
+        const text = await this.textFor(path10);
+        const symbols = text === void 0 || text.length > MAX_BYTES ? void 0 : await extractSymbols(path10, text);
         if (this.stopped) return;
-        if (generation !== this.generation || revision !== this.revisions.get(path9)) continue;
+        if (generation !== this.generation || revision !== this.revisions.get(path10)) continue;
         if (!symbols || text === void 0) {
-          this.cache.delete(path9);
-          this.graph.remove(path9);
+          this.cache.delete(path10);
+          this.graph.remove(path10);
         } else {
-          this.cache.set(path9, symbols);
-          this.graph.set(path9, text);
+          this.cache.set(path10, symbols);
+          this.graph.set(path10, text);
         }
         break;
       }
-    })().catch((e) => this.log(`graph: ${path9}: ${e instanceof Error ? e.message : e}`)).finally(() => {
-      this.pending.delete(path9);
+    })().catch((e) => this.log(`graph: ${path10}: ${e instanceof Error ? e.message : e}`)).finally(() => {
+      this.pending.delete(path10);
       if (!this.stopped && !this.pending.size) {
         clearTimeout(this.publishing);
         this.publishing = setTimeout(() => this.publish(this.phase), 100);
       }
     });
-    this.pending.set(path9, p);
+    this.pending.set(path10, p);
     return p;
   }
   /** Wait for overlay work already queued as well as base rebuilds. */
@@ -33523,7 +33526,7 @@ function hashOf(text) {
 // packages/room-mcp/src/credentials.ts
 import fs3 from "node:fs";
 import os from "node:os";
-import path3 from "node:path";
+import path4 from "node:path";
 function getPending(server) {
   const p = loadCredentials()[`pending:${serverKey(server)}`];
   return p && Date.now() - p.startedAt < p.expires_in * 1e3 ? p : void 0;
@@ -33537,8 +33540,8 @@ function setPending(server, p) {
 function credentialsPath() {
   const env = process.env.ROOM_CREDENTIALS?.trim();
   if (env) return env;
-  const base = process.env.XDG_CONFIG_HOME?.trim() || path3.join(os.homedir(), ".config");
-  return path3.join(base, "room", "credentials.json");
+  const base = process.env.XDG_CONFIG_HOME?.trim() || path4.join(os.homedir(), ".config");
+  return path4.join(base, "room", "credentials.json");
 }
 function serverKey(server) {
   try {
@@ -33557,7 +33560,7 @@ function loadCredentials() {
 }
 function save(all2) {
   const file = credentialsPath();
-  fs3.mkdirSync(path3.dirname(file), { recursive: true, mode: 448 });
+  fs3.mkdirSync(path4.dirname(file), { recursive: true, mode: 448 });
   fs3.writeFileSync(file, JSON.stringify(all2, null, 1) + "\n", { mode: 384 });
   try {
     fs3.chmodSync(file, 384);
@@ -33628,23 +33631,14 @@ async function serverAuthMode(server) {
 async function resolveAuth(server, roomName, token) {
   const github = roomName.startsWith("github.com/");
   const cfg = await serverAuthConfig(server);
-  if (!github) {
-    const c = cfg.providers.length ? getCredential(server) : void 0;
-    if (!c) {
-      if (token || !cfg.providers.length) return { token };
-      throw new NotLoggedIn(server);
-    }
-    return { token, session: c.session, login: c.login };
+  const c = cfg.providers.length ? getCredential(server) : void 0;
+  if (c) return { token, session: c.session, login: c.login };
+  if (github) {
+    if (cfg.mode !== "device") throw new RoomdError(`${server} has no GitHub login (GITHUB_CLIENT_ID), so it cannot admit ${roomName}: use a server with GitHub login, or a non-GitHub origin`, 2);
+    throw new NotLoggedIn(server);
   }
-  if (cfg.mode === "device") {
-    const c = getCredential(server);
-    if (!c) {
-      if (token) return { token };
-      throw new NotLoggedIn(server);
-    }
-    return { token, session: c.session, login: c.login };
-  }
-  return { token, gh: await githubToken() };
+  if (token || !cfg.providers.length) return { token };
+  throw new NotLoggedIn(server);
 }
 async function startLogin(server, provider) {
   const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15e3, retry: false });
@@ -33702,21 +33696,6 @@ function findRoomFile(start) {
 async function deriveRoomName(dir) {
   const [repo, branch] = await Promise.all([gitOrigin(dir), gitBranch(dir)]);
   return { repo, branch, roomName: repo ? `${repo}/${branch}` : void 0 };
-}
-async function githubToken() {
-  const env = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
-  if (env?.trim()) return env.trim();
-  const { execFile: execFile5 } = await import("node:child_process");
-  const run = (cmd, args2, input) => new Promise((resolve5) => {
-    const p = execFile5(cmd, args2, { timeout: 5e3 }, (err, out) => resolve5(err ? void 0 : out));
-    if (input !== void 0) p.stdin?.end(input);
-  });
-  const gh = (await run("gh", ["auth", "token"]))?.trim();
-  if (gh) return gh;
-  const cred = await run("git", ["credential", "fill"], "protocol=https\nhost=github.com\n\n");
-  const pw = cred?.match(/^password=(.+)$/m)?.[1]?.trim();
-  if (pw && /^(gh[pousr]_|github_pat_)/.test(pw)) return pw;
-  return void 0;
 }
 async function defaultName(dir) {
   try {
@@ -33838,7 +33817,7 @@ async function joinSession(opts) {
   const shareMax = await serverShareMax(server);
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, githubToken: creds.gh, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   const view = await viewToken(server, roomName, creds);
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
@@ -33962,7 +33941,7 @@ async function authFor(s) {
   return { ...creds, server };
 }
 async function viewToken(server, roomName, auth) {
-  if (!auth.gh && !auth.token && !auth.session) return void 0;
+  if (!auth.token && !auth.session) return void 0;
   try {
     const res = await serverFetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
     if (!res.ok) return void 0;
@@ -33994,17 +33973,17 @@ async function leaveSession(s) {
 import { execFile as execFile3 } from "node:child_process";
 import fs4 from "node:fs";
 import os2 from "node:os";
-import path4 from "node:path";
+import path5 from "node:path";
 function gitStatePath(root, name) {
-  const dotgit = path4.join(root, ".git");
+  const dotgit = path5.join(root, ".git");
   try {
     if (fs4.statSync(dotgit).isFile()) {
       const m = fs4.readFileSync(dotgit, "utf8").match(/gitdir:\s*(.+)/);
-      if (m) return path4.join(path4.resolve(root, m[1].trim()), name);
+      if (m) return path5.join(path5.resolve(root, m[1].trim()), name);
     }
   } catch {
   }
-  return path4.join(dotgit, name);
+  return path5.join(dotgit, name);
 }
 var SESSION_FRESH_MS = 10 * 60 * 1e3;
 var HooksBridge = class {
@@ -34166,7 +34145,7 @@ Call room_state, then react per the room-etiquette skill.`;
 };
 function sameDir(a, b) {
   const norm = (d) => {
-    const r = path4.resolve(d.replace(/^file:\/\//, ""));
+    const r = path5.resolve(d.replace(/^file:\/\//, ""));
     try {
       return fs4.realpathSync.native(r);
     } catch {
@@ -34185,8 +34164,8 @@ function defaultQueue(threadId, text) {
   });
 }
 function findThreadForDir(dir, since) {
-  const root = path4.join(os2.homedir(), ".codex", "sessions");
-  const want = [path4.resolve(dir), fs4.realpathSync.native(path4.resolve(dir))];
+  const root = path5.join(os2.homedir(), ".codex", "sessions");
+  const want = [path5.resolve(dir), fs4.realpathSync.native(path5.resolve(dir))];
   let best;
   const walk = (d, depth) => {
     let entries = [];
@@ -34196,7 +34175,7 @@ function findThreadForDir(dir, since) {
       return;
     }
     for (const e of entries) {
-      const p = path4.join(d, e.name);
+      const p = path5.join(d, e.name);
       if (e.isDirectory() && depth < 3) {
         walk(p, depth + 1);
         continue;
@@ -34221,7 +34200,7 @@ function findThreadForDir(dir, since) {
         continue;
       }
       const cwd2 = head.match(/"cwd":"([^"]+)"/)?.[1]?.replace(/^file:\/\//, "");
-      if (cwd2 && want.includes(path4.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
+      if (cwd2 && want.includes(path5.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
     }
   };
   walk(root, 0);
@@ -34282,13 +34261,13 @@ var httpOf2 = (server) => server.replace(/^wss:/, "https:").replace(/^ws:/, "htt
 var query = (o) => Object.entries(o).filter((e) => !!e[1]).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
 async function fetchPrs(s, opts = {}) {
   const a = await authFor(s);
-  const res = await fetch(`${httpOf2(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, gh: a.gh, token: a.token, head: opts.head ? "1" : void 0 })}`, { signal: AbortSignal.timeout(2e4) });
+  const res = await fetch(`${httpOf2(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, token: a.token, head: opts.head ? "1" : void 0 })}`, { signal: AbortSignal.timeout(2e4) });
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
   return await res.json();
 }
 async function postPrNote(s, number3, body) {
   const a = await authFor(s);
-  const res = await fetch(`${httpOf2(a.server)}/github/pr-note`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: s.roomName, session: a.session, gh: a.gh, token: a.token, number: number3, body }), signal: AbortSignal.timeout(3e4) });
+  const res = await fetch(`${httpOf2(a.server)}/github/pr-note`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: s.roomName, session: a.session, token: a.token, number: number3, body }), signal: AbortSignal.timeout(3e4) });
   if (!res.ok) throw new Error(`${a.server} would not post the PR note: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
   const b = await res.json().catch(() => ({}));
   return { url: b.url ?? "", updated: !!b.updated };
@@ -34543,7 +34522,7 @@ function createHandlerState(ctx) {
   let runtime;
   const doClose = ctx.close ?? (async (s) => {
     const a = await authFor(s);
-    return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token });
+    return closeRoom(a.server, s.roomName, { session: a.session, token: a.token });
   });
   const attach2 = (s, role, lead) => {
     const hooks = new HooksBridge(s, { forMe: (m) => runtime.forMe(s, m), isSeen: (id2) => seen.has(id2), log: log2, queue: ctx.queue, ...role === "workers" ? { writeState: false } : {} });
@@ -34606,13 +34585,13 @@ function createHandlerState(ctx) {
   };
   const base = (s) => s.room.meta.base ?? "HEAD";
   const baseFor = (s, person) => s.room.baseOf(person) ?? base(s);
-  const baseText = async (s, path9, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path9);
-  const liveText = async (s, path9, person) => {
-    if (s.room.deleted.get(person)?.has(path9)) return null;
-    const ov = s.room.text(path9, person);
+  const baseText = async (s, path10, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path10);
+  const liveText = async (s, path10, person) => {
+    if (s.room.deleted.get(person)?.has(path10)) return null;
+    const ov = s.room.text(path10, person);
     if (ov !== void 0) return ov;
     try {
-      return await baseText(s, path9, person);
+      return await baseText(s, path10, person);
     } catch (e) {
       throw new NeedFetch(person, baseFor(s, person), e instanceof Error ? e.message : String(e));
     }
@@ -34723,7 +34702,7 @@ function createHandlerState(ctx) {
 
 // packages/room-mcp/src/choice.ts
 import fs5 from "node:fs";
-import path5 from "node:path";
+import path6 from "node:path";
 var CHOICE_FILE = "room-choice.json";
 function normaliseWhere(where) {
   const w = where?.trim();
@@ -34737,7 +34716,7 @@ function serverFor(where) {
   return resolveServer(where);
 }
 async function choiceFile(dir) {
-  return path5.join(await gitCommonDir(dir), CHOICE_FILE);
+  return path6.join(await gitCommonDir(dir), CHOICE_FILE);
 }
 async function readChoice(dir) {
   try {
@@ -34762,7 +34741,7 @@ async function writeChoice(dir, where, by) {
 async function markWarned(dir, worktree) {
   const c = await readChoice(dir);
   if (!c) return true;
-  const key = path5.resolve(worktree);
+  const key = path6.resolve(worktree);
   const warned = c.warned ?? [];
   if (warned.includes(key)) return false;
   try {
@@ -34845,7 +34824,7 @@ function handlers(state) {
       const server = serverOf(a);
       if (server === LOCAL) return LOCAL_LOGIN;
       const cfg = await serverAuthConfig(server);
-      if (!cfg.providers.length) return `${server} has no login provider; it accepts your local gh credentials (or a shared token), nothing to do`;
+      if (!cfg.providers.length) return `${server} has no login provider: non-GitHub rooms are admitted by its shared token (or open), and github.com rooms cannot be joined there; nothing to log in to`;
       const provider = a.provider === "github" || a.provider === "oidc" ? a.provider : void 0;
       if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(", ")})`;
       const cred = getCredential(server);
@@ -35032,8 +35011,8 @@ function install(state) {
 // packages/room-mcp/src/workers.ts
 import { execFileSync, spawn } from "node:child_process";
 import fs6 from "node:fs";
-import path6 from "node:path";
-var WORKERS_DIR = path6.join(".room", "workers");
+import path7 from "node:path";
+var WORKERS_DIR = path7.join(".room", "workers");
 var DEFAULT_MAX_WORKERS = 8;
 function validTag(tag) {
   if (typeof tag !== "string") return void 0;
@@ -35058,10 +35037,10 @@ function workerCommand(host, model, prompt) {
   };
 }
 async function prepareWorktree(repoDir, tag) {
-  const dir = path6.join(repoDir, WORKERS_DIR, tag);
+  const dir = path7.join(repoDir, WORKERS_DIR, tag);
   const branch = `room/${tag}`;
-  if (fs6.existsSync(path6.join(dir, ".git"))) return { dir, branch, created: false };
-  fs6.mkdirSync(path6.dirname(dir), { recursive: true });
+  if (fs6.existsSync(path7.join(dir, ".git"))) return { dir, branch, created: false };
+  fs6.mkdirSync(path7.dirname(dir), { recursive: true });
   let hasBranch = false;
   try {
     await git(repoDir, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
@@ -35092,7 +35071,7 @@ function signalWorker(pid) {
   }
 }
 var defaultSpawner = (spec) => {
-  fs6.mkdirSync(path6.dirname(spec.logFile), { recursive: true });
+  fs6.mkdirSync(path7.dirname(spec.logFile), { recursive: true });
   const fd = fs6.openSync(spec.logFile, "a");
   const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ["ignore", fd, fd] });
   child.unref();
@@ -35486,16 +35465,16 @@ var Diff = class {
       }
     }
   }
-  addToPath(path9, added, removed, oldPosInc, options) {
-    const last2 = path9.lastComponent;
+  addToPath(path10, added, removed, oldPosInc, options) {
+    const last2 = path10.lastComponent;
     if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
       return {
-        oldPos: path9.oldPos + oldPosInc,
+        oldPos: path10.oldPos + oldPosInc,
         lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
       };
     } else {
       return {
-        oldPos: path9.oldPos + oldPosInc,
+        oldPos: path10.oldPos + oldPosInc,
         lastComponent: { count: 1, added, removed, previousComponent: last2 }
       };
     }
@@ -36041,7 +36020,7 @@ function changedRanges(base, live) {
 }
 var overlaps = (a, b) => a.from <= b.to && b.from <= a.to;
 var covers = (c, r) => c.from <= r.from && c.to >= r.to;
-async function mergePath(d, person, path9) {
+async function mergePath(d, person, path10) {
   const myBase = d.baseFor(d.me.name), theirBase = d.baseFor(person);
   let ancestor = myBase;
   if (theirBase !== myBase) {
@@ -36051,11 +36030,11 @@ async function mergePath(d, person, path9) {
       return { status: "unknown", lines: [] };
     }
   }
-  const b = await d.baseText(ancestor, path9) ?? "";
+  const b = await d.baseText(ancestor, path10) ?? "";
   let m, t;
   try {
-    m = await d.liveText(path9, d.me.name);
-    t = await d.liveText(path9, person);
+    m = await d.liveText(path10, d.me.name);
+    t = await d.liveText(path10, person);
   } catch {
     return { status: "unknown", lines: [] };
   }
@@ -36643,7 +36622,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
 import { execFile as execFile4 } from "node:child_process";
 import fs7 from "node:fs";
 import os3 from "node:os";
-import path7 from "node:path";
+import path8 from "node:path";
 var defs5 = [
   {
     name: "room_read",
@@ -36842,16 +36821,16 @@ function supersetSide(a, b) {
   return void 0;
 }
 function linkSharedDirs(cloneDir, scratchDir) {
-  const venv = path7.join(cloneDir, ".venv");
-  if (fs7.existsSync(venv) && !fs7.existsSync(path7.join(scratchDir, ".venv"))) fs7.symlinkSync(venv, path7.join(scratchDir, ".venv"));
+  const venv = path8.join(cloneDir, ".venv");
+  if (fs7.existsSync(venv) && !fs7.existsSync(path8.join(scratchDir, ".venv"))) fs7.symlinkSync(venv, path8.join(scratchDir, ".venv"));
   const candidates = ["node_modules"];
   for (const top of ["packages", "apps", "libs"]) {
-    const d = path7.join(cloneDir, top);
+    const d = path8.join(cloneDir, top);
     if (!fs7.existsSync(d)) continue;
-    for (const e of fs7.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path7.join(top, e.name, "node_modules"));
+    for (const e of fs7.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path8.join(top, e.name, "node_modules"));
   }
   for (const rel of candidates) {
-    const src = path7.join(cloneDir, rel), dst = path7.join(scratchDir, rel);
+    const src = path8.join(cloneDir, rel), dst = path8.join(scratchDir, rel);
     if (!fs7.existsSync(src) || fs7.existsSync(dst)) continue;
     mirrorLinks(cloneDir, scratchDir, src, dst);
   }
@@ -36859,12 +36838,12 @@ function linkSharedDirs(cloneDir, scratchDir) {
 function mirrorLinks(cloneDir, scratchDir, src, dst) {
   fs7.mkdirSync(dst, { recursive: true });
   for (const e of fs7.readdirSync(src, { withFileTypes: true })) {
-    const from2 = path7.join(src, e.name), to = path7.join(dst, e.name);
+    const from2 = path8.join(src, e.name), to = path8.join(dst, e.name);
     if (e.isSymbolicLink()) {
-      const target = path7.resolve(src, fs7.readlinkSync(from2));
-      const inside = path7.relative(cloneDir, target);
-      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path7.sep).includes("node_modules");
-      fs7.symlinkSync(isWorkspace ? path7.join(scratchDir, inside) : target, to);
+      const target = path8.resolve(src, fs7.readlinkSync(from2));
+      const inside = path8.relative(cloneDir, target);
+      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path8.sep).includes("node_modules");
+      fs7.symlinkSync(isWorkspace ? path8.join(scratchDir, inside) : target, to);
     } else if (e.isDirectory() && e.name.startsWith("@")) {
       mirrorLinks(cloneDir, scratchDir, from2, to);
     } else {
@@ -36873,20 +36852,20 @@ function mirrorLinks(cloneDir, scratchDir, src, dst) {
   }
 }
 async function runInMergedTree(s, ancestor, merged, cmd) {
-  const dir = fs7.mkdtempSync(path7.join(os3.tmpdir(), "room-merge-"));
+  const dir = fs7.mkdtempSync(path8.join(os3.tmpdir(), "room-merge-"));
   try {
     await new Promise((resolve5, reject) => {
       const p = execFile4("sh", ["-c", `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 6e4 }, (err) => err ? reject(err) : resolve5());
       p.unref?.();
     });
     for (const [rel, text] of merged) {
-      const abs2 = path7.resolve(dir, rel);
+      const abs2 = path8.resolve(dir, rel);
       if (!abs2.startsWith(dir)) continue;
       if (text === null) {
         fs7.rmSync(abs2, { force: true });
         continue;
       }
-      fs7.mkdirSync(path7.dirname(abs2), { recursive: true });
+      fs7.mkdirSync(path8.dirname(abs2), { recursive: true });
       fs7.writeFileSync(abs2, text);
     }
     linkSharedDirs(s.dir, dir);
@@ -37165,7 +37144,7 @@ var Bridge = class {
 
 // packages/room-mcp/src/tools/workers.ts
 import fs8 from "node:fs";
-import path8 from "node:path";
+import path9 from "node:path";
 var defs6 = [
   {
     name: "room_done",
@@ -37255,10 +37234,10 @@ function handlers6(state) {
       try {
         let dir, branch, created = false, outside = false;
         if (typeof a.dir === "string" && a.dir) {
-          dir = path8.resolve(a.dir);
+          dir = path9.resolve(a.dir);
           if (!fs8.existsSync(dir)) return `error: ${dir} does not exist`;
-          const inside = path8.relative(s.dir, dir);
-          outside = inside.startsWith("..") || path8.isAbsolute(inside);
+          const inside = path9.relative(s.dir, dir);
+          outside = inside.startsWith("..") || path9.isAbsolute(inside);
           if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`;
           try {
             branch = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
@@ -37289,9 +37268,9 @@ function handlers6(state) {
           ROOM_GEN: String(gen),
           ROOM_WORKER_ID: id2,
           ...s.token && !s.local ? { ROOM_TOKEN: s.token } : {},
-          ROOM_LOG_FILE: path8.join(s.dir, ".room", "workers", `${tag}.mcp.log`)
+          ROOM_LOG_FILE: path9.join(s.dir, ".room", "workers", `${tag}.mcp.log`)
         };
-        const logFile = path8.join(s.dir, ".room", "workers", `${tag}.log`);
+        const logFile = path9.join(s.dir, ".room", "workers", `${tag}.log`);
         let proc;
         try {
           proc = (ctx.spawner ?? defaultSpawner)({ cmd, args: args2, cwd: dir, env, logFile });
@@ -37395,7 +37374,7 @@ function install5(state) {
   };
   const gitignored = (dir) => {
     try {
-      return fs8.readFileSync(path8.join(dir, ".gitignore"), "utf8").split("\n").some((l) => l.trim() === ".room/" || l.trim() === ".room");
+      return fs8.readFileSync(path9.join(dir, ".gitignore"), "utf8").split("\n").some((l) => l.trim() === ".room/" || l.trim() === ".room");
     } catch {
       return false;
     }
@@ -37621,11 +37600,11 @@ function shouldWake(me, ev, myClaims = []) {
   if (ev.kind === "msg") {
     const m = ev.msg;
     if (!shouldWakeOnMsg(me, m, myClaims).wake) return null;
-    const path9 = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
+    const path10 = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
     return {
       content: `${formatMsg(m)}
 ${JSON.stringify(m)}`,
-      meta: cleanMeta({ type: m.type, from: m.from, from_kind: m.fromKind, path: path9, msg_id: m.id })
+      meta: cleanMeta({ type: m.type, from: m.from, from_kind: m.fromKind, path: path10, msg_id: m.id })
     };
   }
   if (ev.kind === "claim") {

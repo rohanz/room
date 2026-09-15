@@ -8,7 +8,8 @@ import { dirname, resolve } from 'node:path'
 import type { WebsocketProvider } from 'y-websocket'
 import type { Awareness } from 'y-protocols/awareness'
 import { startRoomd, RoomdError, clampShare, parseShare, type Roomd, type ShareLevel } from '@room/roomd'
-import { ensureLocalRelay, gitCommonDir, localRoomName, type LocalRelay } from '@room/roomd/local'
+import { ensureLocalRelay, type LocalRelay } from '@room/relay'
+import { gitCommonDir, localRoomName } from '@room/roomd/local'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import type { Identity, Kind, RoomDoc } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
@@ -89,8 +90,9 @@ export type AuthMode = 'device' | 'token'
 export type Provider = 'github' | 'oidc'
 export interface AuthConfig { mode: AuthMode; providers: Provider[] }
 const configCache = new Map<string, AuthConfig>()
-/** The server's login setup: how it authenticates GitHub rooms (device login, or forwarded gh tokens on
- *  older/local servers) and which login providers it offers (github, oidc). */
+/** The server's login setup: whether it has GitHub device login (`device`: github.com rooms possible) or
+ *  not (`token`: non-GitHub rooms only, by shared token or another provider), and which login providers
+ *  it offers (github, oidc). A GitHub token from this machine is never sent to any server. */
 export async function serverAuthConfig(server: string): Promise<AuthConfig> {
   const hit = configCache.get(server)
   if (hit) return hit
@@ -106,26 +108,25 @@ export async function serverAuthConfig(server: string): Promise<AuthConfig> {
   configCache.set(server, cfg)
   return cfg
 }
-/** How the server authenticates GitHub rooms: device login (it holds the tokens) or forwarded gh tokens. Older servers: token. */
+/** `device`: the server has GitHub device login, so github.com rooms can be joined after room_login.
+ *  `token`: it has none; only non-GitHub rooms (local/, git/) are reachable, by shared token or another login. */
 export async function serverAuthMode(server: string): Promise<AuthMode> { return (await serverAuthConfig(server)).mode }
 
-export interface Creds { gh?: string; token?: string; session?: string; login?: string }
-/** Credentials for a server: a shared token, a Room session from a login, or (token-mode servers, GitHub rooms only) the local gh token.
- *  Non-GitHub rooms (local/, git/) send the session when this machine holds one: servers with a login provider require it. */
+export interface Creds { token?: string; session?: string; login?: string }
+/** Credentials for a server: a Room session from a login and/or the shared token. A github.com room needs the
+ *  session (ROOM_TOKEN does not admit it; the server never accepts a forwarded GitHub token). Non-GitHub rooms
+ *  (local/, git/) send the session when this machine holds one: servers with a login provider require it. */
 export async function resolveAuth(server: string, roomName: string, token?: string): Promise<Creds> {
   const github = roomName.startsWith('github.com/')
   const cfg = await serverAuthConfig(server)
-  if (!github) {
-    const c = cfg.providers.length ? getCredential(server) : undefined
-    if (!c) { if (token || !cfg.providers.length) return { token }; throw new NotLoggedIn(server) }
-    return { token, session: c.session, login: c.login }
+  const c = cfg.providers.length ? getCredential(server) : undefined
+  if (c) return { token, session: c.session, login: c.login }
+  if (github) {
+    if (cfg.mode !== 'device') throw new RoomdError(`${server} has no GitHub login (GITHUB_CLIENT_ID), so it cannot admit ${roomName}: use a server with GitHub login, or a non-GitHub origin`, 2)
+    throw new NotLoggedIn(server)
   }
-  if (cfg.mode === 'device') {
-    const c = getCredential(server)
-    if (!c) { if (token) return { token }; throw new NotLoggedIn(server) }
-    return { token, session: c.session, login: c.login }
-  }
-  return { token, gh: await githubToken() }
+  if (token || !cfg.providers.length) return { token }
+  throw new NotLoggedIn(server)
 }
 
 /** What a started login needs from the user: GitHub shows a code to enter at verification_uri; OIDC gives a URL to open. */
@@ -182,24 +183,6 @@ export function findRoomFile(start: string): (RoomFile & { _from: string }) | un
 export async function deriveRoomName(dir: string): Promise<{ roomName?: string; branch: string; repo?: string }> {
   const [repo, branch] = await Promise.all([gitOrigin(dir), gitBranch(dir)])
   return { repo, branch, roomName: repo ? `${repo}/${branch}` : undefined }
-}
-
-/** The user's GitHub token: GH_TOKEN/GITHUB_TOKEN, else the gh CLI, else git's credential store for github.com. Proves repo access to the server. */
-export async function githubToken(): Promise<string | undefined> {
-  const env = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN
-  if (env?.trim()) return env.trim()
-  const { execFile } = await import('node:child_process')
-  const run = (cmd: string, args: string[], input?: string) => new Promise<string | undefined>(resolve => {
-    const p = execFile(cmd, args, { timeout: 5000 }, (err, out) => resolve(err ? undefined : out))
-    if (input !== undefined) p.stdin?.end(input)
-  })
-  const gh = (await run('gh', ['auth', 'token']))?.trim()
-  if (gh) return gh
-  // git credential fill prints password=<token> when a helper (osxkeychain, manager, store) has one.
-  const cred = await run('git', ['credential', 'fill'], 'protocol=https\nhost=github.com\n\n')
-  const pw = cred?.match(/^password=(.+)$/m)?.[1]?.trim()
-  if (pw && /^(gh[pousr]_|github_pat_)/.test(pw)) return pw
-  return undefined
 }
 
 export async function defaultName(dir: string): Promise<string | undefined> {
@@ -328,7 +311,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await serverShareMax(server)
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, githubToken: creds.gh, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
   const view = await viewToken(server, roomName, creds)
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
@@ -418,7 +401,12 @@ export async function preflight(server: string, roomName: string, auth: Creds): 
   try {
     const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 20000 })
     if (res.ok) return undefined
-    if (res.status === 401) { const reason = (await res.text()).trim() || 'unauthorized'; if (/room_login/.test(reason)) { removeStaleCredential(server, reason); return { reason, loginNeeded: true } } return { reason } }
+    if (res.status === 401) {
+      const reason = (await res.text()).trim() || 'unauthorized'
+      // The server points at room_login for a missing or stale session; a ROOM_TOKEN on a github.com room gets the same pointer.
+      if (/room_login/.test(reason)) { removeStaleCredential(server, reason); return { reason, loginNeeded: true } }
+      return { reason }
+    }
     if (res.status === 403) return { reason: (await res.text()).trim() || 'forbidden' }
     if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true }
     return undefined // older server or unexpected status: let the websocket try
@@ -457,7 +445,7 @@ export async function authFor(s: Session): Promise<Creds & { server: string }> {
 
 /** Ask the server for a room-scoped token (7 days) the browser can use (never the GitHub token itself). */
 export async function viewToken(server: string, roomName: string, auth: Creds): Promise<string | undefined> {
-  if (!auth.gh && !auth.token && !auth.session) return undefined
+  if (!auth.token && !auth.session) return undefined
   try {
     const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 20000 })
     if (!res.ok) return undefined

@@ -4,15 +4,18 @@
  *  - Rooms named github.com/<owner>/<repo>/<branch> admit callers whose GitHub account has push
  *    access to the repo (checked against the GitHub API, cached 10 min). Read access is not
  *    enough: a public repo must not be an open room.
- *  - GITHUB_CLIENT_ID: if set, clients log in with GitHub's device flow (POST /auth/start, /auth/poll)
- *    and the server keeps the GitHub token; clients hold only an opaque ?session=. Forwarded
- *    GitHub tokens (?gh=) are refused. Without it (local dev, tests) ?gh= is accepted as before.
+ *  - GITHUB_CLIENT_ID: clients log in with GitHub's device flow (POST /auth/start, /auth/poll) and the
+ *    server keeps the GitHub token; clients hold only an opaque ?session=. That session is the only
+ *    way into a github.com room: forwarded GitHub tokens (?gh=) are refused with 401 in every mode,
+ *    and without a client id github.com rooms cannot be entered at all. GITHUB_CLIENT_ID=fake is a
+ *    test issuer (refused with NODE_ENV=production): /auth/poll confirms with the body's `fakeLogin`.
  *    Logged-in connections may only announce presence under their login.
  *  - OIDC_ISSUER + OIDC_CLIENT_ID + OIDC_CLIENT_SECRET + PUBLIC_URL: OIDC login (authorization code +
  *    PKCE; GET /auth/callback is the redirect URI). OIDC_ALLOWED_DOMAINS limits who may log in.
  *    Any logged-in user is admitted to non-GitHub rooms (local/..., git/<host>/<owner>/<repo>);
  *    github.com rooms still need a GitHub login with push access.
- *  - ROOM_TOKEN: if set, ?token=<same> admits any room (fallback for non-GitHub repos, and override).
+ *  - ROOM_TOKEN: if set, ?token=<same> admits non-GitHub rooms (local/..., git/...) only; it never
+ *    admits a github.com room.
  *  - With no login provider and no ROOM_TOKEN configured, non-GitHub rooms are open.
  *  - YPERSISTENCE: if set to a directory, rooms are stored in LevelDB there and survive restarts;
  *    the repo registry, sessions and the audit log (audit.log, JSON lines) live there too unless
@@ -34,8 +37,9 @@ import { setupWSConnection, docs, getPersistence } from '@y/websocket-server/uti
 import { makeReadOnly, bindIdentity, capDocSize, DocSizeMeter } from './readonly.js'
 import { docNameOf, roomNameOf, githubRepoOf, repoOf } from './names.js'
 import * as Y from 'yjs'
-import { Auth } from './auth.js'
+import { Auth, FAKE_CLIENT_ID } from './auth.js'
 import type { Provider } from './auth.js'
+import { makeAdmitted, type Creds } from './admit.js'
 import { storeFromEnv, type AuditEntry, type OpenRepo } from './store.js'
 
 const PORT = Number(process.env.PORT ?? 1234)
@@ -54,8 +58,10 @@ const list = (v: string | undefined) => v?.split(',').map(s => s.trim()).filter(
 const oidcIssuer = process.env.OIDC_ISSUER?.trim()
 if (oidcIssuer && !(process.env.OIDC_CLIENT_ID && process.env.OIDC_CLIENT_SECRET && process.env.PUBLIC_URL)) { console.error('OIDC_ISSUER is set but OIDC_CLIENT_ID, OIDC_CLIENT_SECRET or PUBLIC_URL is missing'); process.exit(1) }
 const store = storeFromEnv()
+const clientId = process.env.GITHUB_CLIENT_ID?.trim() || undefined
+if (clientId === FAKE_CLIENT_ID && process.env.NODE_ENV === 'production') { console.error(`GITHUB_CLIENT_ID=${FAKE_CLIENT_ID} is the test issuer; it cannot run with NODE_ENV=production`); process.exit(1) }
 const auth = new Auth({
-  clientId: process.env.GITHUB_CLIENT_ID?.trim() || undefined,
+  clientId,
   oidc: oidcIssuer ? { issuer: oidcIssuer, clientId: process.env.OIDC_CLIENT_ID!.trim(), clientSecret: process.env.OIDC_CLIENT_SECRET!.trim(), allowedDomains: list(process.env.OIDC_ALLOWED_DOMAINS), publicUrl: process.env.PUBLIC_URL!.trim() } : undefined,
   store,
   log: l => console.log(l),
@@ -70,23 +76,6 @@ const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javasc
 import { GitHubProxy } from './github.js'
 const github = new GitHubProxy({ log: l => console.log(l) })
 
-/** GitHub token -> (owner/repo -> admitted until). */
-const ghCache = new Map<string, Map<string, number>>()
-/** Can this token push to the repo? Read access alone would make every public repo an open room. */
-async function githubCanPush(token: string, ownerRepo: string): Promise<boolean> {
-  const now = Date.now()
-  const hit = ghCache.get(token)?.get(ownerRepo)
-  if (hit && hit > now) return true
-  try {
-    const res = await fetch(`https://api.github.com/repos/${ownerRepo}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'room-server' } })
-    if (!res.ok) return false
-    const body = await res.json() as { permissions?: { push?: boolean } }
-    if (!body.permissions?.push) return false
-    let m = ghCache.get(token); if (!m) { m = new Map(); ghCache.set(token, m) }
-    m.set(ownerRepo, now + 10 * 60 * 1000)
-    return true
-  } catch { return false }
-}
 /** Room-scoped tokens for the browser view (minted for verified clients). Persisted next to the
  *  room data so a redeploy does not invalidate links people already opened. */
 const viewTokens = new Map<string, { room: string; exp: number }>()
@@ -107,35 +96,9 @@ function saveRooms() {
 }
 const NOT_OPEN = (room: string) => `no room for ${repoOf(room)} yet: open one with room_create (or POST /rooms)`
 
-interface Creds { gh?: string; token?: string; session?: string }
-/** `login` is the display name; `id` the namespaced identity (`oidc:<issuer-host>:<sub>`) when the provider has one. */
-type Verdict = { ok: true; login?: string; id?: string; provider?: Provider } | { ok: false; status: 401 | 403; why: string }
-/** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting.
- *  A verdict carries the verified login when the caller is logged in.
- *  github.com rooms: a GitHub login (or forwarded token) with push access. Other rooms: the shared
- *  token, or any login when the server has a login provider, or open when it has neither. */
-async function admitted(room: string, c: Creds): Promise<Verdict> {
-  const repo = githubRepoOf(room)
-  if (TOKEN && c.token === TOKEN) return { ok: true }
-  if (!repo) {
-    if (!auth.providers.length) return TOKEN ? { ok: false, status: 401, why: 'token required or wrong: set ROOM_SERVER=ws://host/?token=<shared token>' } : { ok: true }
-    if (!c.session) return { ok: false, status: 401, why: `not logged in: run room_login (room ${repoOf(roomNameOf(room))})` }
-    const st = auth.resolve(c.session)
-    if (!st) return { ok: false, status: 401, why: 'session expired or unknown: run room_login' }
-    return { ok: true, login: st.login, id: st.id, provider: st.provider }
-  }
-  if (auth.mode === 'device' || auth.providers.includes('oidc')) {
-    if (!c.session) return { ok: false, status: 401, why: c.gh ? 'this server uses GitHub login: run room_login (forwarded GitHub tokens are not accepted)' : `not logged in: run room_login (room ${repo})` }
-    const st = auth.resolve(c.session)
-    if (!st) return { ok: false, status: 401, why: 'session expired or unknown: run room_login' }
-    if (!st.ghToken) return { ok: false, status: 403, why: auth.mode === 'device' ? `${repo} is a GitHub repo: log in with GitHub (room_login provider=github) to prove push access` : `${repo} is a GitHub repo but this server has no GitHub login configured (GITHUB_CLIENT_ID)` }
-    if (await githubCanPush(st.ghToken, repo)) return { ok: true, login: st.login, provider: 'github' }
-    return { ok: false, status: 403, why: `${st.login} cannot push to ${repo}: ask for write access` }
-  }
-  if (!c.gh) return { ok: false, status: 401, why: `no GitHub token: run \`gh auth login\` (room ${repo})` }
-  if (await githubCanPush(c.gh, repo)) return { ok: true }
-  return { ok: false, status: 403, why: `your GitHub account cannot push to ${repo}: ask for write access, or check \`gh auth status\` is the right account` }
-}
+/** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting;
+ *  the verdict carries the verified login when the caller is logged in. See admit.ts. */
+const admitted = makeAdmitted({ auth, token: TOKEN })
 /** Remember which branch rooms of an open repo have been connected to, so closing can find their docs. */
 function noteBranch(roomName: string) {
   const r = rooms.get(repoOf(roomName))
@@ -192,7 +155,7 @@ const server = http.createServer((req, res) => {
   const withBody = (fn: (o: Record<string, unknown>) => Promise<void>) => { void readBody(req).then(async body => { try { await fn(JSON.parse(body || '{}') as Record<string, unknown>) } catch { text(400, 'bad request') } }); return }
 
   // ---- auth ----
-  if (url.pathname === '/auth/config' && req.method === 'GET') return json(200, { github: auth.mode, clientIdSet: auth.mode === 'device', providers: auth.providers, shareMax: SHARE_MAX })
+  if (url.pathname === '/auth/config' && req.method === 'GET') return json(200, { github: auth.mode, clientIdSet: auth.mode === 'device', providers: auth.providers, shareMax: SHARE_MAX, ...(auth.fake ? { fake: true } : {}) })
   const startLogin = (provider: Provider | undefined) => {
     if (!auth.providers.length) return text(404, 'this server has no login provider (set GITHUB_CLIENT_ID or OIDC_ISSUER)')
     void auth.start(provider).then(d => json(200, d)).catch(e => text(502, `could not start ${provider ?? auth.providers[0]} login: ${e instanceof Error ? e.message : e}`))
@@ -213,7 +176,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/auth/poll' && req.method === 'POST') return withBody(async o => {
     const device = str(o.device)
     if (!device) return text(400, 'device required')
-    const r = await auth.poll(device)
+    const r = await auth.poll(device, { fakeLogin: str(o.fakeLogin) })
     if ('session' in r && r.provider === 'github') audit({ event: 'login', login: r.login, provider: 'github' })
     json(200, r)
   })
@@ -284,9 +247,9 @@ const server = http.createServer((req, res) => {
 
   // ---- github (pull requests) ----
   // Same admission rule as /rooms; the GitHub call uses the token behind the session (device
-  // login) or, on token-mode servers, the forwarded ?gh= token. Sessions without a GitHub token
-  // (OIDC) get 403: the proxy cannot act on GitHub for them.
-  const githubTokenFor = (c: Creds): string | undefined => (c.session ? auth.resolve(c.session)?.ghToken : undefined) ?? c.gh
+  // login). Sessions without a GitHub token (OIDC) get 403: the proxy cannot act on GitHub for
+  // them. A fake-issuer session holds no real token, so the proxy refuses it the same way.
+  const githubTokenFor = (c: Creds): string | undefined => { const t = c.session ? auth.resolve(c.session)?.ghToken : undefined; return t && !t.startsWith('fake:') ? t : undefined }
   const githubFail = (what: string, e: unknown) => { const st = (e as { status?: number }).status; console.log(`${what}: ${e instanceof Error ? e.message : e}`); text(st === 401 || st === 403 || st === 404 ? st : 502, `${what}: ${e instanceof Error ? e.message : String(e)}`) }
   if (url.pathname === '/github/prs' && req.method === 'GET') {
     const room = str(url.searchParams.get('room') ?? undefined)
@@ -422,9 +385,9 @@ server.on('upgrade', (req, socket, head) => {
 function escapeHtml(s: string): string { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!) }
 void roomsLoaded.then(() => server.listen(PORT, HOST, () => console.log(
   `room server listening on ws://${HOST}:${PORT}/<room>` +
-  (auth.mode === 'device' ? ' (GitHub login via device flow; forwarded tokens refused)' : ' (GitHub tokens forwarded by clients; set GITHUB_CLIENT_ID for device login)') +
+  (auth.fake ? ' (FAKE GitHub login: test issuer, any fakeLogin is accepted)' : auth.mode === 'device' ? ' (GitHub login via device flow)' : ' (no GitHub login: github.com rooms refused; set GITHUB_CLIENT_ID)') +
   (auth.providers.includes('oidc') ? ` (OIDC login via ${oidcIssuer})` : '') +
-  (TOKEN ? ' (shared token also accepted)' : '') +
+  (TOKEN ? ' (shared token accepted for non-GitHub rooms)' : '') +
   (process.env.DATABASE_URL ? ' registry/sessions/audit in Postgres' : '') +
   (process.env.YPERSISTENCE ? ` persisting to ${process.env.YPERSISTENCE}` : ' (in-memory: rooms reset on restart)'),
 )))

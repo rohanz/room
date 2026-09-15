@@ -163,7 +163,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   /** The primary session's hooks bridge (state file); the inbox asks it to rewrite after marking messages seen. */
   let primaryHooks: HooksBridge | null = null
   let runtime!: HandlerState
-  const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token }) })
+  const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { session: a.session, token: a.token }) })
   /**
    * Everything a joined session needs running. The primary gets the hooks bridge (state file + wake),
    * the conflict watcher and the PR mirror. The workers room gets a wake-only hooks bridge (the state

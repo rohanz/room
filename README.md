@@ -316,10 +316,15 @@ npm run web
 
 To connect Codex to this server, launch it from the target clone with
 `ROOM_SERVER=ws://localhost:1234 ROOM_WEB=http://localhost:5173 codex`.
-GitHub-named rooms still require repository access, and a repo must be opened once
-(`room_create`, or `POST /rooms`) before its branch rooms accept connections. For shared-token hosting, set
-`ROOM_TOKEN` on the server and provide the matching token in the client’s `ROOM_SERVER`
-URL. Set `YPERSISTENCE` to a directory to retain room state across server restarts.
+GitHub-named rooms are entered only through GitHub device login (`GITHUB_CLIENT_ID` on the
+server, `room_login` on the client); a `gh` token is never forwarded and would be refused. For
+local development set `GITHUB_CLIENT_ID=fake`: the server mints a session for any `fakeLogin`
+posted to `/auth/poll` (refused under `NODE_ENV=production`; `scripts/demo.sh` uses it). A repo
+must be opened once (`room_create`, or `POST /rooms`) before its branch rooms accept
+connections. For non-GitHub repos (`local/...`, `git/...`) a shared secret works instead: set
+`ROOM_TOKEN` on the server and provide the matching token in the client’s `ROOM_SERVER` URL;
+it never admits a `github.com/...` room. Set `YPERSISTENCE` to a directory to retain room
+state across server restarts.
 
 The [Dockerfile](Dockerfile) packages the server with a prebuilt browser view (run
 `npm run build -w @room/web` first);

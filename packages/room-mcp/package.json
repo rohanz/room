@@ -19,6 +19,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@room/roomd": "*",
+    "@room/relay": "*",
     "@room/shared": "*",
     "diff": "^8.0.2",
     "node-diff3": "^3.2.1",
