@@ -1,5 +1,7 @@
 import {
   RoomDoc,
+  deriveConflictSpans,
+  type ConflictSpan,
   areaMembershipSummary,
   colorFor,
   deriveParticipants,
@@ -19,7 +21,7 @@ import { presences, type Conn } from './conn.ts'
 import { Editor } from './editor.ts'
 import { buildActivityGraph, type OverlayVersion } from './activity-graph.ts'
 import { classifyMergedLines, classifyThreeWay, unifiedDiffLines, type MergedLine } from './merged.ts'
-import { groupEpisodes, type Episode, type TimelineItem } from './timeline.ts'
+import { collapseConflictTimeline, groupEpisodes, type Episode, type TimelineItem } from './timeline.ts'
 
 export const h = <K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -217,7 +219,7 @@ export function lineHoverText(line: MergedLine, names: [string, string], claimsA
 function lineElement(line: MergedLine, names: [string, string], prefix = '', claimsAt?: ClaimsAt): HTMLElement {
   const owner = line.side === 'a' ? names[0] : line.side === 'b' ? names[1] : ''
   const row = h('div', { class: `code-line side-${line.side}${line.conflict ? ' conflict-line' : ''}`, title: lineHoverText(line, names, claimsAt) },
-    h('span', { class: 'conflict-gutter' }, line.conflict ? 'conflict' : ''),
+    h('span', { class: 'conflict-gutter' }, ''),
     h('span', { class: 'line-number' }, line.aLine?.toString() ?? ''),
     h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
     h('span', { class: 'diff-prefix' }, prefix),
@@ -226,8 +228,50 @@ function lineElement(line: MergedLine, names: [string, string], prefix = '', cla
   return row
 }
 
-function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: [string, string], claimsAt?: ClaimsAt): void {
-  host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, ...lines.map(line => lineElement(line, names, line.prefix, claimsAt))))
+export function resolutionLabel(span: ConflictSpan): string {
+  const r = span.resolvedBy
+  return r ? `resolved · ${r.who ? `${r.who} ` : ''}${r.how} · ${clockTime(r.at)}` : `conflict · ${span.people.join(' ↔ ')}`
+}
+
+export function conflictCard(span: ConflictSpan, expanded?: Set<string>): HTMLElement {
+  const details = h('details', { open: expanded?.has(span.id) ?? false },
+    h('summary', {}, `${span.events.length} events`),
+    ...span.events.map(m => h('div', { class: 'timeline-item' }, h('time', {}, clockTime(m.at)), ' · ', ...messageBody(m))))
+  details.ontoggle = () => { if (details.open) expanded?.add(span.id); else expanded?.delete(span.id) }
+  return h('article', { class: `conflict-card${span.resolvedBy ? ' resolved' : ''}` },
+    h('strong', {}, span.people.join(' ↔ ') || 'Claim conflict'),
+    h('div', {}, `Opened ${clockTime(span.at)} · ${span.path}${span.from !== undefined ? `:${span.from}-${span.to}` : ' · range unavailable'}`),
+    h('div', {}, resolutionLabel(span)), details)
+}
+
+export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: [string, string], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = []): void {
+  const rows = lines.map(line => lineElement(line, names, line.prefix, claimsAt))
+  const spans: { start: number; end: number; label: string; detail: string; resolved: boolean }[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].conflict) continue
+    const start = i
+    while (i + 1 < lines.length && lines[i + 1].conflict) i++
+    spans.push({ start, end: i, label: `conflict · ${names.join(' ↔ ')}`, detail: 'both sides changed these lines', resolved: false })
+  }
+  for (const s of conflicts) {
+    if (s.hidden || s.from === undefined || s.to === undefined) continue
+    const indices = lines.flatMap((line, i) => [line.aLine, line.bLine].some(n => n !== undefined && n >= s.from! && n <= s.to!) ? [i] : [])
+    if (!indices.length) continue
+    spans.push({ start: indices[0], end: indices.at(-1)!, label: resolutionLabel(s), detail: s.claims.map(c => `${c.by}: ${c.intent}${c.plans?.length ? ` (plans: ${formatPlans(c.plans)})` : ''}`).join('\n'), resolved: !!s.resolvedBy })
+  }
+  const grid = h('div', { class: 'conflict-code-grid' }, ...rows)
+  rows.forEach((row, i) => { row.style.gridRow = String(i + 1); row.style.gridColumn = String(spans.length + 1) })
+  spans.forEach((s, lane) => {
+    const tooltip = h('span', { class: 'conflict-tooltip', role: 'tooltip' }, s.detail)
+    const pill = h('button', { class: 'conflict-pill', ariaLabel: `${s.label}. ${s.detail}` }, s.label, tooltip)
+    const bracket = h('div', { class: `conflict-bracket${s.resolved ? ' resolved' : ''}` }, pill)
+    bracket.style.gridRow = `${s.start + 1} / ${s.end + 2}`
+    bracket.style.gridColumn = String(lane + 1)
+    for (let i = s.start; i <= s.end; i++) rows[i].classList.add(s.resolved ? 'resolved-conflict-line' : 'conflict-line')
+    grid.append(bracket)
+  })
+  grid.style.gridTemplateColumns = `${spans.map(() => 'max-content').join(' ')} minmax(max-content, 1fr)`
+  host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, grid))
 }
 
 export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
@@ -275,6 +319,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     personSelect.hidden = tab === 'Merged'
     compareLabel.hidden = tab !== 'Diff'
 
+    const conflicts = deriveConflictSpans(conn.room.messages(), conn.room.openClaims(), conn.room.meta.base).filter(s => s.path === selected.path)
     if (tab === 'File') {
       legend.replaceChildren()
       compareLabel.textContent = ''
@@ -282,7 +327,9 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       if (conn.room.deleted.get(person)?.has(selected.path)) return editor.empty(`deleted by ${person}`)
       const text = conn.room.text(selected.path, person)
       if (text === undefined) return editor.empty(`No overlay available for ${person}`)
-      editor.show(selected.path, text, conn.room.claimsFor(selected.path))
+      if (!conflicts.some(s => !s.hidden)) { editor.show(selected.path, text, conn.room.claimsFor(selected.path)); return }
+      editor.empty()
+      renderCodeLines(host, text.split('\n').map((text, i) => ({ text, side: 'common', conflict: false, aLine: i + 1 })), [person, person], undefined, conflicts)
       return
     }
     editor.empty()
@@ -292,7 +339,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const text = conn.room.text(selected.path, person) ?? ''
       renderCodeLines(host, text.split('\n').filter((_, index, all) => index < all.length - 1 || all[index] !== '').map((value, index) => ({
         text: value, side: 'common' as const, conflict: false, aLine: index + 1,
-      })), [person, person])
+      })), [person, person], undefined, conflicts)
       return
     }
 
@@ -303,7 +350,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const sha = conn.room.baseOf(pair[0])
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
       const claimsAt: ClaimsAt = (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to)
-      renderCodeLines(host, base !== undefined ? classifyThreeWay(base, a, b) : classifyMergedLines(a, b), pair, claimsAt)
+      renderCodeLines(host, base !== undefined ? classifyThreeWay(base, a, b) : classifyMergedLines(a, b), pair, claimsAt, conflicts)
       return
     }
 
@@ -311,7 +358,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person)!
     compareLabel.textContent = `vs ${other}`
     legend.replaceChildren(h('span', {}, dot(other), ` removed from ${other}`), h('span', {}, dot(person), ` added by ${person}`))
-    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to))
+    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to), conflicts)
   }
 
   render = () => {
@@ -338,11 +385,12 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     showViewer(rows)
   }
   personSelect.onchange = () => { selectedPerson = personSelect.value; render() }
+  conn.room.metaMap.observe(render)
   conn.room.overlays.observeDeep(render)
   conn.room.deleted.observeDeep(render)
   conn.room.claims.observe(render)
   conn.room.scopes.observe(render)
-  conn.room.bus.observe(render)
+  conn.room.doc.on('update', render)
   focus.subscribe(render)
   render()
   return element
@@ -409,11 +457,14 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
   let followNewest = true
   const seen = new Set<string>()
   let primed = false
+  const expandedConflicts = new Set<string>()
   scroll.onscroll = () => { followNewest = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48 }
 
   const render = () => {
     const shouldFollow = followNewest
-    const episodes = groupEpisodes(conn.room.messages())
+    const entries = collapseConflictTimeline(conn.room.messages(), conn.room.openClaims(), conn.room.meta.base)
+    const conflicts = entries.flatMap(e => e.conflict ? [e.conflict] : [])
+    const episodes = groupEpisodes(entries.filter(e => !e.conflict).map(e => e.message))
     // Everything present at first paint is "old"; only later arrivals animate in.
     if (!primed) { for (const e of episodes) { seen.add(`ep:${e.id}`); for (const it of e.items) seen.add(it.message.id) }; primed = true }
     const areas = Array.from(new Set(episodes.map(episode => episode.area))).sort()
@@ -429,11 +480,12 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
       ...people.map(person => chip(person, focus.person === person, () => { areaFilter = null; focus.set(focus.person === person ? null : person) })),
     )
     const visible = episodes.filter(episode => focus.person ? episode.person === focus.person : !areaFilter || episode.area === areaFilter)
-    list.replaceChildren(...visible.map(e => episodeCard(e, seen)))
-    if (!visible.length) list.append(h('div', { class: 'empty-note muted' }, 'No matching episodes'))
+    const cards = conflicts.filter(s => (!focus.person || s.people.includes(focus.person)) && (!areaFilter || s.people.some(p => conn.room.scopes.get(p)?.area === areaFilter)))
+    list.replaceChildren(...[...visible.map(e => ({ at: e.at, el: episodeCard(e, seen) })), ...cards.map(s => ({ at: s.at, el: conflictCard(s, expandedConflicts) }))].sort((a, b) => a.at - b.at).map(x => x.el))
+    if (!visible.length && !cards.length) list.append(h('div', { class: 'empty-note muted' }, 'No matching episodes'))
     if (shouldFollow) requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight })
   }
-  conn.room.bus.observe(render)
+  conn.room.doc.on('update', render)
   focus.subscribe(render)
   render()
   return element

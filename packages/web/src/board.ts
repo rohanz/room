@@ -1,7 +1,7 @@
 import { areaMembershipSummary, deriveParticipants, participantClaimLine, personLine, workerLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
 import type { Conn } from './conn.ts'
-import { h, messageBody, participantInput, relativeTime } from './panels.ts'
-import { foldUpgradeCopies } from './timeline.ts'
+import { h, conflictCard, messageBody, participantInput, relativeTime } from './panels.ts'
+import { collapseConflictTimeline } from './timeline.ts'
 
 /** Presentation only: the room remains the source of truth. */
 export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLElement {
@@ -17,6 +17,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     grid, offline,
     h('section', { class: 'board-timeline' }, h('div', { class: 'board-heading' }, h('h2', {}, 'Timeline'), h('span', { class: 'muted' }, 'Newest first')), filters, feed))
   let personFilter: string | null = null, areaFilter: string | null = null
+  const expandedConflicts = new Set<string>()
   const expandedWorkers = new Set<string>()
   const render = () => {
     const input = participantInput(conn)
@@ -62,14 +63,15 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     if (!online.length) grid.append(h('div', { class: 'board-empty muted' }, 'No one is online yet — join this room from your agent.'))
     offline.hidden = hide.checked || !away.length
     offline.replaceChildren(h('summary', {}, `${away.length} offline`), h('div', { class: 'board-grid' }, ...away.map(card)))
-    const events = foldUpgradeCopies(messages).reverse()
+    const events = collapseConflictTimeline(messages, conn.room.openClaims(), conn.room.meta.base).reverse()
     const areaOf = (m: typeof messages[number]) => 'area' in m && typeof m.area === 'string' ? m.area : conn.room.scopes.get(m.from)?.area ?? 'other'
     const chip = (text: string, active: boolean, action: () => void) => h('button', { class: `filter-chip${active ? ' active' : ''}`, ariaPressed: String(active), onclick: action }, text)
     filters.replaceChildren(chip('All', !personFilter && !areaFilter, () => { personFilter = areaFilter = null; render() }),
       ...[...new Set(events.map(e => e.message.from))].sort().map(name => chip(name, personFilter === name, () => { personFilter = personFilter === name ? null : name; render() })),
       ...[...new Set(events.map(e => areaOf(e.message)))].sort().map(area => chip(`Area: ${area}`, areaFilter === area, () => { areaFilter = areaFilter === area ? null : area; render() })))
-    const visible = events.filter(({ message: m }) => (!personFilter || m.from === personFilter) && (!areaFilter || areaOf(m) === areaFilter))
-    feed.replaceChildren(...visible.map(({ message: m }) => {
+    const visible = events.filter(({ message: m, conflict }) => (!personFilter || m.from === personFilter || conflict?.people.includes(personFilter)) && (!areaFilter || areaOf(m) === areaFilter))
+    feed.replaceChildren(...visible.map(({ message: m, conflict }) => {
+      if (conflict) return conflictCard(conflict, expandedConflicts)
       const kind = m.type === 'done' || (m.type === 'note' && m.text.startsWith('done')) ? 'done' : m.priority
       return h('article', { class: 'feed-event' }, h('time', { title: new Date(m.at).toLocaleString() }, relativeTime(m.at)), h('div', {}, h('div', { class: 'feed-meta' }, h('strong', { class: 'mono' }, m.from), h('span', { class: 'area-chip' }, areaOf(m))), h('div', {}, ...messageBody(m))), h('span', { class: `priority ${kind}` }, kind))
     }))

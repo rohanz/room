@@ -492,3 +492,18 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
   .cm-selectionBackground, .cm-editor.cm-focused .cm-selectionBackground { background: var(--floor) !important; }
   @keyframes room-flash { from { background: var(--floor); } to { background: transparent; } }
 }
+
+/* One grid item spans the entire conflict range; labels occur only at its top. */
+.conflict-code-grid { display: grid; align-content: start; }
+.conflict-code-grid .code-line { grid-template-columns: 0 32px 32px 14px minmax(max-content, 1fr); border-left: 0; }
+.conflict-code-grid .conflict-gutter { padding: 0; }
+.conflict-code-grid .conflict-line { background: color-mix(in srgb, var(--danger) 9%, var(--bg)); }
+.conflict-code-grid .resolved-conflict-line { background: color-mix(in srgb, var(--muted) 4%, var(--bg)); }
+.conflict-bracket { position: relative; border: solid var(--danger); border-width: 2px 0 2px 2px; margin: 0 6px; padding-left: 4px; min-width: 12px; color: var(--danger); }
+.conflict-bracket.resolved { border-color: var(--muted); color: var(--muted); opacity: .4; }
+.conflict-pill { position: relative; display: block; padding: 0 5px; border: 1px solid currentColor; border-radius: 9px; color: inherit; background: var(--bg); font: 10px/15px var(--sans); white-space: nowrap; }
+.conflict-tooltip { display: none; position: absolute; z-index: 20; top: 100%; left: 0; min-width: 220px; max-width: 380px; padding: 8px; white-space: pre-wrap; text-align: left; background: var(--surface); color: var(--ink); border: 1px solid var(--line); box-shadow: 0 3px 12px #0003; }
+.conflict-pill:hover .conflict-tooltip, .conflict-pill:focus .conflict-tooltip { display: block; }
+.conflict-card { padding: 12px; border-left: 3px solid var(--danger); background: var(--surface); font-size: 12px; }
+.conflict-card.resolved { border-color: var(--muted); }
+.conflict-card details { margin-top: 8px; }
