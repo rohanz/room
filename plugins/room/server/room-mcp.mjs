@@ -32595,10 +32595,12 @@ var Daemon = class {
   /** Explicit scope paths (option / setShare); when unset, the person's scope in the room doc decides. */
   explicitScopePaths;
   beforePublishWrite;
+  onScanned;
   tracked = /* @__PURE__ */ new Set();
   watcher = null;
   timers = /* @__PURE__ */ new Set();
   debounce = /* @__PURE__ */ new Map();
+  diskWork = /* @__PURE__ */ new Set();
   stopped = false;
   lastActive = Date.now();
   constructor(options) {
@@ -32621,6 +32623,7 @@ var Daemon = class {
     this.busTrimMs = options.busTrimMs ?? 6e4;
     this.share = options.share ?? "full";
     this.explicitScopePaths = options.scopePaths;
+    this.onScanned = options.onScanned;
     this.beforePublishWrite = options.beforePublishWrite;
     const { serverUrl, roomName } = splitRoomUrl(options.room);
     this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
@@ -33043,7 +33046,11 @@ var Daemon = class {
       if (event === "add") countFile(absolute, true);
       else if (event === "unlink") countFile(absolute, false);
       const relpath = path.relative(this.dir, absolute).split(path.sep).join("/");
-      if (this.isIgnoredPath(relpath) || event === "addDir" || event === "unlinkDir") return;
+      if (this.isIgnoredPath(relpath)) {
+        this.onScanned?.(relpath);
+        return;
+      }
+      if (event === "addDir" || event === "unlinkDir") return;
       if (path.basename(relpath) === ".gitignore") this.refreshTracked().catch(() => {
       });
       if (relpath === ROOMIGNORE) {
@@ -33079,12 +33086,20 @@ var Daemon = class {
       } else if (!nowIgnored && before.has(relpath)) this.scheduleDisk(relpath, false);
     }
   }
+  /** Does not synthesize events: callers must first observe the change they are waiting for. */
+  async settle() {
+    while (this.debounce.size || this.diskWork.size) {
+      await Promise.all([...this.diskWork, new Promise((resolve4) => setTimeout(resolve4, this.debounceMs))]);
+    }
+  }
   scheduleDisk(relpath, isNew) {
     const previous = this.debounce.get(relpath);
     if (previous) clearTimeout(previous);
     const timer = setTimeout(() => {
       this.debounce.delete(relpath);
-      this.onDiskChange(relpath, isNew).catch((error2) => this.log(`warn: ${relpath}: ${errMsg(error2)}`));
+      const work = this.onDiskChange(relpath, isNew).then(() => this.onScanned?.(relpath)).catch((error2) => this.log(`warn: ${relpath}: ${errMsg(error2)}`));
+      this.diskWork.add(work);
+      void work.finally(() => this.diskWork.delete(work));
     }, this.debounceMs);
     this.debounce.set(relpath, timer);
   }
