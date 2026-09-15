@@ -282,3 +282,34 @@ assigned by join order with a deterministic repair for concurrent joins.
 
 **Not done:** body-only changes are ignored by design; the detector is regex-based, so
 decorators and multi-line signatures beyond the header line are compared as one line.
+
+## 2026-09-16 — Run 3: three agents, cross-dependent signature changes, change of mind
+
+Setup: team room on `room-playground-2/shop`, plain-language tasks. Claude (multi-currency
+Money, order currency from the customer profile), Codex (tax and shipping take `(lines, address)`,
+zones table), Codex (tiers ticket). Then a change of mind to Claude: currency from the address
+country instead. All three coordinated through the room without scripted prompts.
+
+**Worked**
+- Observed contract changes fired within seconds of Codex changing `tax_for` and `shipping_for`:
+  a `contract` notice to the tiers agent (whose handlers.py uses both) and later to Claude when it
+  joined. Downstream in the network view filled for every participant; the file detail showed
+  "Observed in edits · signature · tax_for · was … now …" with the direct consumers.
+- Claude read the room, copied teammates' handler lines verbatim, and produced a hand-merged tree
+  passing 33 tests, then 38 after the change of mind. The change of mind reached the room and
+  Claude reverted its customers.py to baseline on its own.
+- Colours: blue, orange, purple for the three participants.
+
+**Found and fixed the same day**
+- Room-authored notices never appeared in the browser timeline (no scope episode for `room`);
+  they now file under the addressee.
+- Overlay entries for files that no longer exist on disk survived a daemon restart under the same
+  name; both Codex agents spent their first minutes asking whether yesterday's files were real and
+  one preview stayed blocked on them.
+- Auto-tag chose a name by presence only: when the tiers agent exited, Claude's next session took
+  `rohanz` and its daemon overwrote the tiers agent's overlay. The tag now sticks to the clone and
+  a name holding another clone's uncommitted work counts as taken.
+
+**Still open**
+- `codex exec` logs do not show tool results, so inbox delivery has to be verified from the bus or
+  the agent's behaviour, not the log.
