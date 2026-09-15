@@ -9,6 +9,7 @@ import { RoomDoc, shouldWakeOnMsg } from '@room/shared'
 import type { Identity, Msg } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
+import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
 
@@ -178,6 +179,17 @@ describe('room_spawn / room_done / room_dismiss', () => {
     const out = await waiting
     expect(out).toContain('worker done:')
     expect(out).toContain('done in cents')
+  })
+
+  it.each([{ workerId: 'old-spawn' }, { gen: '0' }])('uses resolved worker identity to protect a newer spawn: %j', async identity => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
+    const s = fakeSession(t.b, workerId)
+    const config = { ...await resolveConfig({ dir, env: {} }), ...identity }
+    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, config })
+    await tools.call('room_done', { summary: 'old task finished' })
+    expect(t.a.workers.get('money')?.status).toBe('running')
+    expect(t.a.messages().some(m => m.type === 'done' && m.summary.includes('earlier generation'))).toBe(true)
   })
 
   it("a worker's room_done reaches its lead as an addressed done message that wakes it, and marks the worker done", async () => {

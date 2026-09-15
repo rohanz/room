@@ -36,7 +36,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const asWorker = s.room.workerOf(s.me.name)
       // A worker finishes only the record of its own spawn (ROOM_WORKER_ID; older leads passed ROOM_GEN): a stale
       // process of a reused tag must not mark the lead's current worker done. Its report still reaches the lead.
-      const myId = process.env.ROOM_WORKER_ID?.trim(), gen = process.env.ROOM_GEN?.trim()
+      const myId = ctx.config?.workerId, gen = ctx.config?.gen
       const stale = !!asWorker && (myId ? asWorker.id !== undefined && asWorker.id !== myId : !!gen && asWorker.gen !== undefined && String(asWorker.gen) !== gen)
       if (asWorker) {
         if (!stale) s.room.updateWorker(asWorker.tag, { status: 'done', summary }, asWorker.id)

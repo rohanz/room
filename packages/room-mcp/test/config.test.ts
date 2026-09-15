@@ -29,6 +29,11 @@ describe('resolveConfig', () => {
     expect((await resolveConfig({ dir, env: { ROOM_URL: url }, args: { roomUrl: 'ws://argument/room' } })).roomUrl).toBe('ws://argument/room')
   })
 
+  it('resolves worker identity and generation from the environment', async () => {
+    const config = await resolveConfig({ dir: repo(), env: { ROOM_WORKER_ID: ' spawn-id ', ROOM_GEN: ' 2 ' } })
+    expect(config).toMatchObject({ workerId: 'spawn-id', gen: '2' })
+  })
+
   it('resolves identity, paths, secrets and numeric defaults without mutating env', async () => {
     const dir = repo()
     const env = { ROOM_NAME: 'env-name', ROOM_OWNER: 'env-owner', ROOM_TAG: 'env-tag', ROOM_KIND: 'bot', ROOM_TOKEN: 'env-token', ROOM_LOG_FILE: '/env/log', ROOM_CREDENTIALS: '/env/creds', ROOM_STALE_DAYS: '11' }

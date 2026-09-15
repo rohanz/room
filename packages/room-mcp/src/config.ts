@@ -26,6 +26,7 @@ export interface ResolvedConfig {
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
+  workerId?: string; gen?: string
 }
 
 const value = (v: unknown): string | undefined => typeof v === 'string' && v.trim() ? v.trim() : undefined
@@ -71,6 +72,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const share: ShareLevel = rawShare === 'intent' || rawShare === 'declared' ? rawShare : 'full'
   const credentialsPath = resolveCredentialsPath(args, e)
   return {
+    workerId: value(e.ROOM_WORKER_ID), gen: value(e.ROOM_GEN),
     roomUrl, dir: path.resolve(dir), server: resolveServer(where), where, whereRule,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
     tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share, credentialsPath,
