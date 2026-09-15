@@ -5,7 +5,8 @@ class Element extends EventTarget {
   values = new Map<string, string>()
   attrs = new Map<string, string>()
   style = { setProperty: (key: string, value: string) => this.values.set(key, value) }
-  classList = { add: vi.fn() }
+  classes = new Set<string>()
+  classList = { add: (name: string) => this.classes.add(name), remove: (name: string) => this.classes.delete(name) }
   tabIndex = -1
   parentElement: Element | null = null
   captured = new Set<number>()
@@ -36,6 +37,7 @@ it('captures pointer drag and clamps the CSS width at both limits', () => {
   const { handle, width } = setup()
   event(handle, 'pointerdown', { pointerId: 1, button: 0, clientX: 100 })
   expect(handle.setPointerCapture).toHaveBeenCalledWith(1)
+  expect(handle.classes.has('resize-dragging')).toBe(true)
   event(handle, 'pointermove', { pointerId: 2, clientX: 200 })
   expect(width()).toBe('224px')
   event(handle, 'pointermove', { pointerId: 1, clientX: 200 })
@@ -46,6 +48,7 @@ it('captures pointer drag and clamps the CSS width at both limits', () => {
   expect(width()).toBe('180px')
   event(handle, 'pointerup', { pointerId: 1 })
   expect(handle.releasePointerCapture).toHaveBeenCalledWith(1)
+  expect(handle.classes.has('resize-dragging')).toBe(false)
   event(handle, 'pointermove', { pointerId: 1, clientX: 200 })
   expect(width()).toBe('180px')
 })
@@ -109,4 +112,31 @@ it('clamps restored sizes to configured bounds', () => {
   stored.set('room.layout', '{"people":9999,"timeline":1}')
   expect(setup().width()).toBe('400px')
   expect(setup('timeline').width()).toBe('260px')
+})
+
+import { readFileSync } from 'node:fs'
+it('uses a centered short grip in the 6px hit area, with hover, focus and drag states', () => {
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  const handle = css.match(/^\.resize-handle \{([^}]+)\}/m)![1]
+  const grip = css.match(/^\.resize-handle::after \{([^}]+)\}/m)![1]
+  const active = css.match(/^\.resize-handle:hover::after, \.resize-handle:focus::after, \.resize-handle.resize-dragging::after \{([^}]+)\}/m)![1]
+  expect(handle).toContain('width: 6px')
+  for (const property of ['top: 50%', 'left: 50%', 'translate(-50%, -50%)', 'width: 3px', 'height: 28px', 'border-radius: 999px', 'background: var(--muted)', 'opacity: .6']) expect(grip).toContain(property)
+  expect(grip).not.toContain('bottom:')
+  expect(active).toContain('height: 40px')
+  expect(active).toContain('background: var(--accent)')
+  expect(active).toContain('opacity: 1')
+  expect(setup().handle.classes.has('resize-handle')).toBe(true)
+  expect(setup().handle.classes.has('resize-dragging')).toBe(false)
+})
+it.each(['pointercancel', 'lostpointercapture'])('clears active grip after %s, ignoring other pointers', type => {
+  const { handle, cleanup } = setup()
+  event(handle, 'pointerdown', { pointerId: 1, button: 0, clientX: 0 })
+  event(handle, type, { pointerId: 2 })
+  expect(handle.classes.has('resize-dragging')).toBe(true)
+  event(handle, type, { pointerId: 1 })
+  expect(handle.classes.has('resize-dragging')).toBe(false)
+  event(handle, 'pointerdown', { pointerId: 3, button: 0, clientX: 0 })
+  cleanup()
+  expect(handle.classes.has('resize-dragging')).toBe(false)
 })

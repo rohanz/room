@@ -55,6 +55,7 @@ export function attach(handle: HTMLElement, { left, right, min, max, key }: Resi
     event.preventDefault()
     drag = { id: event.pointerId, x: event.clientX, width: pane.getBoundingClientRect().width || width }
     handle.setPointerCapture(event.pointerId)
+    handle.classList.add('resize-dragging')
   }
   const move = (event: PointerEvent) => {
     if (desktop() && drag?.id === event.pointerId) update(drag.width + direction * (event.clientX - drag.x))
@@ -62,6 +63,7 @@ export function attach(handle: HTMLElement, { left, right, min, max, key }: Resi
   const end = (event: PointerEvent) => {
     if (drag?.id !== event.pointerId) return
     drag = undefined
+    handle.classList.remove('resize-dragging')
     if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId)
   }
   const reset = () => { if (desktop()) update(layoutDefaults[key]) }
@@ -79,6 +81,7 @@ export function attach(handle: HTMLElement, { left, right, min, max, key }: Resi
   handle.addEventListener('dblclick', reset)
   handle.addEventListener('keydown', keyboard)
   return () => {
+    handle.classList.remove('resize-dragging')
     if (drag && handle.hasPointerCapture(drag.id)) handle.releasePointerCapture(drag.id)
     handle.removeEventListener('pointerdown', down)
     handle.removeEventListener('pointermove', move)

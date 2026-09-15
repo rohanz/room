@@ -713,8 +713,8 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .people-handle { grid-area: people-handle; }
 .timeline-handle { grid-area: timeline-handle; }
 .resize-handle { width: 6px; position: relative; cursor: col-resize; touch-action: none; user-select: none; }
-.resize-handle::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--line); }
-.resize-handle:hover::after, .resize-handle:focus-visible::after { background: var(--accent-text); }
+.resize-handle::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 3px; height: 28px; border-radius: 999px; background: var(--muted); opacity: .6; }
+.resize-handle:hover::after, .resize-handle:focus::after, .resize-handle.resize-dragging::after { height: 40px; background: var(--accent); opacity: 1; }
 
 .merge-chip:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
 .merge-hint { padding: 0 12px 8px; font-size: 12px; }
