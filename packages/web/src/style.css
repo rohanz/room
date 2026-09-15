@@ -684,7 +684,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .cm-content span { color: var(--syntax-ink) !important; }
 .cm-selectionBackground, .cm-editor.cm-focused .cm-selectionBackground { background: var(--selection-bg) !important; }
 
-#overlay-root { position: fixed; z-index: 2147483647; width: max-content; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; pointer-events: none; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); box-shadow: 0 8px 30px #0003; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--sans); }
+#overlay-root { position: fixed; z-index: 2147483647; width: max-content; max-width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 16px); overflow: auto; pointer-events: none; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); box-shadow: 0 8px 30px #0003; white-space: normal; overflow-wrap: anywhere; font: 12px/1.4 var(--sans); }
 .header { position: sticky; top: 0; z-index: 1; }
 .reconnecting { position: relative; z-index: 2; }
 .code-line, .code-line *, .cm-line, .cm-line *, .network-canvas, .network-canvas * { transition: none !important; }

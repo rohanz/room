@@ -6,13 +6,14 @@ let previousDescription: string | null = null
 function positionTooltip() {
   if (!anchor || !root) return
   if (!anchor.isConnected) { hideTooltip(); return }
-  const box = anchor.getBoundingClientRect(), tip = root.getBoundingClientRect()
-  const margin = 8
-  let left = box.right + margin, top = box.bottom + margin
-  if (left + tip.width > window.innerWidth - margin) left = box.left - tip.width - margin
-  if (top + tip.height > window.innerHeight - margin) top = box.top - tip.height - margin
-  root.style.left = `${Math.max(margin, Math.min(left, window.innerWidth - tip.width - margin))}px`
-  root.style.top = `${Math.max(margin, Math.min(top, window.innerHeight - tip.height - margin))}px`
+  const box = anchor.getBoundingClientRect()
+  const width = root.offsetWidth, height = root.offsetHeight
+  const margin = 8, horizontalMargin = 16
+  const left = Math.max(horizontalMargin, Math.min(box.left, window.innerWidth - width - horizontalMargin))
+  let top = box.bottom + margin
+  if (top + height > window.innerHeight - margin) top = box.top - height - margin
+  root.style.left = `${left}px`
+  root.style.top = `${Math.max(margin, Math.min(top, window.innerHeight - height - margin))}px`
 }
 
 export function hideTooltip() {
