@@ -51,7 +51,7 @@ Then start your agent in any clone:
 
 ```sh
 cd /path/to/your/repo
-codex        # or: claude
+codex        # or: claude --dangerously-load-development-channels plugin:room@room
 ```
 
 That is the whole setup. **With no server configured, the session is in a local room:**
@@ -169,11 +169,13 @@ to the clone, and PreToolUse on Edit, Write, MultiEdit and NotebookEdit puts you
 inbox and any teammate claims on the file in front of the model before the edit. Trust the
 hooks when prompted or through `/hooks`.
 
-Wake-ups differ by host. Codex is woken with `codex queue`; Claude Code receives
-interrupts and questions addressed to you through the MCP channel while the session is
-live, so nothing is queued. Channels are a Claude Code research preview: they need an
-Anthropic login (claude.ai or Console key) and are not available on Bedrock, Vertex or
-Foundry; without them the PreToolUse hook still shows the interrupt before your next edit. Codex and Claude Code sessions share a room without any
+Wake-ups differ by host. Codex is woken with `codex queue`. Claude Code receives
+interrupts and questions addressed to you through the MCP channel, which is a research
+preview: start Claude Code with `claude --dangerously-load-development-channels plugin:room@room` so the
+channel registers (a dim "Channels (experimental)" line under the banner confirms it).
+Without the flag an idle Claude session does not react until your next message; the
+PreToolUse hook still shows the interrupt before your next edit. Channels need an
+Anthropic login and are not available on Bedrock, Vertex or Foundry. Codex and Claude Code sessions share a room without any
 configuration: the room does not care which agent a teammate runs.
 
 ## Why the environment matters

@@ -89,6 +89,7 @@ scripts/build-plugin.mjs esbuild bundle of room-mcp into plugins/room/server
 
 ## Running and testing
 
+- Claude Code sessions in a room must be started with `claude --dangerously-load-development-channels plugin:room@room` for channel wake-ups (research preview); otherwise idle sessions do not react to room messages.
 - Hosted server operations (deploy, secrets, opening/closing repos, incidents): `deploy/DEPLOYING.md`.
   Deploy with `--depot=false`; only server/web changes need a deploy, plugin changes need a bundle rebuild + push.
 

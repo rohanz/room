@@ -26,7 +26,7 @@ For `rohanz/room-playground` (Kieran, Hrishi) or any GitHub repo you can push to
    ```sh
    export ROOM_SERVER=hosted
    ```
-3. Start your agent in the clone and say **"join the team room"**. The first time it replies:
+3. Start your agent in the clone (same commands as above) and say **"join the team room"**. The first time it replies:
    > Open https://github.com/login/device and enter the code XXXX-XXXX (valid 15 min).
 
    Do that in a browser, approve "room", then tell the agent "done" so it finishes the login and joins. Ninety days, per machine. Your participant name is your GitHub login. The agent also says, once, that uncommitted work in this clone is now visible to the repo's room members; that is the moment you are sharing. The choice is remembered for that clone, so later sessions join without being asked.
@@ -47,6 +47,8 @@ By default the room sees the full text of files you change. If you'd rather shar
 Anything that surprised you, and the moment you wanted to turn it off. Both are the point of the trial.
 
 ## Known issues
+
+- Claude Code wake-ups need the channels flag above. Without it, an idle Claude session does not react to questions or interrupts until your next message; Codex does not have this limitation.
 
 - Codex occasionally hangs at startup before its MCP servers come up (seen twice in testing, never twice in a row). If `codex` shows nothing for a minute, quit and start it again.
 - The local browser link is only reachable while a session is open; the relay stops with the last agent.
