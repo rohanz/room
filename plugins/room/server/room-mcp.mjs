@@ -21232,17 +21232,17 @@ var who = (m) => displayName({ name: m.from, kind: m.fromKind });
 var to = (m) => m.to ? ` \u2192 ${m.to}'s agent` : "";
 var priority = (m) => `[${m.priority}] `;
 var builtins = {
-  claim: { audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
-  release: { audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
-  changed: { audience: "broadcast", wakes: "always", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
-  question: { audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
-  answer: { audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
-  conflict: { audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
-  note: { audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)}: ${m.text}` },
-  done: { audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
-  base: { audience: "everyone", wakes: "never", format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up` },
-  plan: { audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""} \u2014 ${m.text}` },
-  scope: { audience: "broadcast", wakes: "always", format: (m) => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` }
+  claim: { priority: "fyi", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
+  release: { priority: "fyi", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
+  changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "broadcast", wakes: "always", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
+  question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
+  answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
+  conflict: { priority: "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
+  note: { priority: "fyi", audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)}: ${m.text}` },
+  done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
+  base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up` },
+  plan: { priority: "interrupt", audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""} \u2014 ${m.text}` },
+  scope: { priority: "notify", audience: "broadcast", wakes: "always", format: (m) => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` }
 };
 var MessageKinds = builtins;
 function messageKind(m) {
@@ -29163,10 +29163,9 @@ function areaSummary(messages, scopes, windowMs = 10 * 60 * 1e3, now = Date.now(
 
 // packages/shared/src/doc.ts
 function defaultPriority(msg) {
-  if (msg.type === "conflict" || msg.type === "plan") return "interrupt";
-  if (msg.type === "changed") return msg.symbols?.length ? "notify" : "fyi";
-  if (msg.type === "question" || msg.type === "answer" || msg.type === "scope" || msg.type === "base") return "notify";
-  return "fyi";
+  const kind = MessageKinds[msg.type];
+  if (!kind) throw new Error(`unregistered message kind: ${msg.type}`);
+  return typeof kind.priority === "function" ? kind.priority(msg) : kind.priority;
 }
 var RoomDoc = class {
   doc;
@@ -29538,9 +29537,13 @@ function makeAnchor(text, from2, to2) {
 }
 
 // packages/shared/src/wake.ts
-function shouldWakeOnMsg(me, m, myClaims = []) {
+function shouldWakeOnMsg(me, m, myClaims = [], hasUncommitted = false) {
   if (m.from === me.name && isAgentic(m.fromKind)) return { wake: false, mustAnswer: false, reason: "own message" };
   const addressed = m.to === me.name;
+  const kind = messageKind(m);
+  if ((!m.to || addressed) && typeof kind.wakes === "function" && kind.wakes(m, { me, hasUncommitted, myClaims })) {
+    return { wake: true, mustAnswer: addressed, reason: "message wake rule" };
+  }
   if (m.priority === "fyi") return { wake: false, mustAnswer: false, reason: "fyi does not wake" };
   if (m.priority === "notify" && !addressed) return { wake: false, mustAnswer: false, reason: m.to ? `addressed to ${m.to}` : "broadcast notify is read on next action" };
   if (m.priority === "interrupt") {
@@ -29548,8 +29551,7 @@ function shouldWakeOnMsg(me, m, myClaims = []) {
     return { wake: true, mustAnswer: addressed, reason: addressed ? "interrupt addressed to me" : "broadcast interrupt" };
   }
   if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` };
-  const kind = messageKind(m);
-  if (kind.wakes === "never") return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` };
+  if (kind.wakes === "never" || typeof kind.wakes === "function") return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` };
   if (kind.wakes === "addressed" && !addressed) return { wake: false, mustAnswer: false, reason: "not addressed to me" };
   if (kind.audience === "claim-holders" && !addressed && !(m.from === me.name && m.fromKind === "human")) {
     const path11 = "path" in m && typeof m.path === "string" ? m.path : "";
@@ -33576,75 +33578,12 @@ function hashOf(text) {
 }
 
 // packages/room-mcp/src/credentials.ts
-import fs3 from "node:fs";
-import os from "node:os";
-import path4 from "node:path";
-var configuredPath;
-function configureCredentials(file) {
-  configuredPath = file;
-}
-function getPending(server) {
-  const p = loadCredentials()[`pending:${serverKey(server)}`];
-  return p && Date.now() - p.startedAt < p.expires_in * 1e3 ? p : void 0;
-}
-function setPending(server, p) {
-  const all2 = loadCredentials();
-  if (p) all2[`pending:${serverKey(server)}`] = p;
-  else delete all2[`pending:${serverKey(server)}`];
-  save(all2);
-}
-function credentialsPath() {
-  if (configuredPath) return configuredPath;
-  const fromEnv = process.env.ROOM_CREDENTIALS?.trim();
-  if (fromEnv) return fromEnv;
-  const base = process.env.XDG_CONFIG_HOME?.trim() || path4.join(os.homedir(), ".config");
-  return path4.join(base, "room", "credentials.json");
-}
-function serverKey(server) {
-  try {
-    const u = new URL(server);
-    return `${u.protocol}//${u.host}`;
-  } catch {
-    return server.replace(/\/+$/, "");
-  }
-}
-function loadCredentials() {
-  try {
-    return JSON.parse(fs3.readFileSync(credentialsPath(), "utf8"));
-  } catch {
-    return {};
-  }
-}
-function save(all2) {
-  const file = credentialsPath();
-  fs3.mkdirSync(path4.dirname(file), { recursive: true, mode: 448 });
-  fs3.writeFileSync(file, JSON.stringify(all2, null, 1) + "\n", { mode: 384 });
-  try {
-    fs3.chmodSync(file, 384);
-  } catch {
-  }
-}
-function getCredential(server) {
-  return loadCredentials()[serverKey(server)];
-}
-function setCredential(server, c) {
-  const all2 = loadCredentials();
-  all2[serverKey(server)] = c;
-  save(all2);
-}
-function removeCredential(server) {
-  const all2 = loadCredentials();
-  const k = serverKey(server);
-  if (!(k in all2)) return false;
-  delete all2[k];
-  save(all2);
-  return true;
-}
+import fs4 from "node:fs";
 
 // packages/room-mcp/src/config.ts
-import os2 from "node:os";
-import path5 from "node:path";
-import fs4 from "node:fs";
+import os from "node:os";
+import path4 from "node:path";
+import fs3 from "node:fs";
 var DEFAULT_SERVER = "wss://room-rohanz.fly.dev";
 var LOCAL = "local";
 var DEFAULT_MAX_WORKERS = 8;
@@ -33667,12 +33606,15 @@ function resolveServer(raw) {
 }
 async function rememberedWhere(dir) {
   try {
-    const file = path5.join(await gitCommonDir(dir), "room-choice.json");
-    const parsed = JSON.parse(fs4.readFileSync(file, "utf8"));
+    const file = path4.join(await gitCommonDir(dir), "room-choice.json");
+    const parsed = JSON.parse(fs3.readFileSync(file, "utf8"));
     return value(parsed.where);
   } catch {
     return void 0;
   }
+}
+function resolveCredentialsPath(args2 = {}, e = process.env) {
+  return value(args2.credentialsPath ?? args2.credentials) ?? value(e.ROOM_CREDENTIALS) ?? path4.join(value(e.XDG_CONFIG_HOME) ?? path4.join(os.homedir(), ".config"), "room", "credentials.json");
 }
 async function resolveConfig({ env, args: args2 = {}, dir }) {
   const e = env ?? process.env;
@@ -33681,13 +33623,17 @@ async function resolveConfig({ env, args: args2 = {}, dir }) {
   const remembered = !argWhere && !envWhere ? normaliseWhere(await rememberedWhere(dir)) : void 0;
   const where = argWhere ?? envWhere ?? remembered ?? LOCAL;
   const whereRule = argWhere ? "argument" : envWhere ? "env" : remembered ? "remembered" : "default";
+  const roomUrl = value(args2.roomUrl) ?? (!argWhere && !envWhere && !remembered ? value(e.ROOM_URL) : void 0);
   const rawKind = value(args2.kind) ?? value(e.ROOM_KIND) ?? "agent";
   const kind = rawKind === "bot" || rawKind === "ci" ? rawKind : "agent";
   const rawShare = value(args2.share) ?? value(e.ROOM_SHARE) ?? "full";
   const share = rawShare === "intent" || rawShare === "declared" ? rawShare : "full";
-  const credentialsPath2 = value(args2.credentialsPath ?? args2.credentials) ?? value(e.ROOM_CREDENTIALS) ?? path5.join(value(e.XDG_CONFIG_HOME) ?? path5.join(os2.homedir(), ".config"), "room", "credentials.json");
+  const credentialsPath2 = resolveCredentialsPath(args2, e);
   return {
-    dir: path5.resolve(dir),
+    workerId: value(e.ROOM_WORKER_ID),
+    gen: value(e.ROOM_GEN),
+    roomUrl,
+    dir: path4.resolve(dir),
     server: resolveServer(where),
     where,
     whereRule,
@@ -33704,6 +33650,66 @@ async function resolveConfig({ env, args: args2 = {}, dir }) {
     room: value(args2.room) ?? value(e.ROOM_ROOM),
     web: value(args2.web) ?? value(e.ROOM_WEB)
   };
+}
+
+// packages/room-mcp/src/credentials.ts
+import path5 from "node:path";
+var configuredPath;
+function configureCredentials(file) {
+  configuredPath = file;
+}
+function getPending(server) {
+  const p = loadCredentials()[`pending:${serverKey(server)}`];
+  return p && Date.now() - p.startedAt < p.expires_in * 1e3 ? p : void 0;
+}
+function setPending(server, p) {
+  const all2 = loadCredentials();
+  if (p) all2[`pending:${serverKey(server)}`] = p;
+  else delete all2[`pending:${serverKey(server)}`];
+  save(all2);
+}
+function credentialsPath() {
+  return configuredPath ?? resolveCredentialsPath();
+}
+function serverKey(server) {
+  try {
+    const u = new URL(server);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return server.replace(/\/+$/, "");
+  }
+}
+function loadCredentials() {
+  try {
+    return JSON.parse(fs4.readFileSync(credentialsPath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+function save(all2) {
+  const file = credentialsPath();
+  fs4.mkdirSync(path5.dirname(file), { recursive: true, mode: 448 });
+  fs4.writeFileSync(file, JSON.stringify(all2, null, 1) + "\n", { mode: 384 });
+  try {
+    fs4.chmodSync(file, 384);
+  } catch {
+  }
+}
+function getCredential(server) {
+  return loadCredentials()[serverKey(server)];
+}
+function setCredential(server, c) {
+  const all2 = loadCredentials();
+  all2[serverKey(server)] = c;
+  save(all2);
+}
+function removeCredential(server) {
+  const all2 = loadCredentials();
+  const k = serverKey(server);
+  if (!(k in all2)) return false;
+  delete all2[k];
+  save(all2);
+  return true;
 }
 
 // packages/room-mcp/src/session.ts
@@ -34088,7 +34094,7 @@ async function leaveSession(s) {
 // packages/room-mcp/src/hooks-bridge.ts
 import { execFile as execFile3 } from "node:child_process";
 import fs5 from "node:fs";
-import os3 from "node:os";
+import os2 from "node:os";
 import path6 from "node:path";
 function gitStatePath(root, name) {
   const dotgit = path6.join(root, ".git");
@@ -34176,9 +34182,8 @@ var HooksBridge = class {
   /** Interrupts, questions addressed to me, and a base move while I have uncommitted work wake the idle Codex thread, once per message. */
   async maybeWake(m) {
     if (!this.o.forMe(m)) return;
-    const baseMoved = m.type === "base" && m.from !== this.s.me.name && this.s.room.changedPaths(this.s.me.name).length > 0;
     const myClaims = this.s.room.openClaims().filter((c) => c.by === this.s.me.name);
-    const wake = shouldWakeOnMsg(this.s.me, m, myClaims).wake || baseMoved;
+    const wake = shouldWakeOnMsg(this.s.me, m, myClaims, this.s.room.changedPaths(this.s.me.name).length > 0).wake;
     if (!wake || this.woken.has(m.id) || this.pending.has(m.id)) return;
     const session = this.freshSession();
     if (!session) {
@@ -34281,7 +34286,7 @@ function defaultQueue(threadId, text) {
   });
 }
 function findThreadForDir(dir, since) {
-  const root = path6.join(os3.homedir(), ".codex", "sessions");
+  const root = path6.join(os2.homedir(), ".codex", "sessions");
   const want = [path6.resolve(dir), fs5.realpathSync.native(path6.resolve(dir))];
   let best;
   const walk = (d, depth) => {
@@ -34878,13 +34883,13 @@ var defs = [
     name: "room_login",
     annotations: RW,
     description: "Log in to the room server. GitHub (device flow): the first call returns a one-time code and URL. OIDC (self-hosted servers with a company identity provider): the first call returns a URL to open. Show them to the user VERBATIM. Call again to wait for the login to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your login (GitHub login or email).",
-    inputSchema: { type: "object", properties: { provider: { type: "string", enum: ["github", "oidc"], description: "login provider (default: the server's first; github.com rooms need github)" }, wait: int2("seconds to wait for confirmation on a follow-up call (default 90, max 600)"), server: str("override ws server URL") } }
+    inputSchema: { type: "object", properties: { provider: { type: "string", enum: ["github", "oidc"], description: "login provider (default: the server's first; github.com rooms need github)" }, wait: int2("seconds to wait for confirmation on a follow-up call (default 90, max 600)"), server: str("override ws server URL"), credentials: str("override credentials file path") } }
   },
   {
     name: "room_logout",
     annotations: RW,
     description: "Forget the GitHub login for the room server on this machine (and revoke the session on the server).",
-    inputSchema: { type: "object", properties: { server: str("override ws server URL") } }
+    inputSchema: { type: "object", properties: { server: str("override ws server URL"), credentials: str("override credentials file path") } }
   },
   {
     name: "room_create",
@@ -34913,8 +34918,14 @@ var defs = [
 ];
 function handlers(state) {
   const { ctx, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log: log2, evictStale, loadAreas, shareLine, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
+  async function configureLogin(a) {
+    const config2 = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
+    configureCredentials(config2.credentialsPath);
+    ctx.config = { ...config2, ...ctx.config, credentialsPath: config2.credentialsPath };
+  }
   const handlers9 = {
     async room_login(a) {
+      await configureLogin(a);
       const server = serverOf(a);
       if (server === LOCAL) return LOCAL_LOGIN;
       const cfg = await serverAuthConfig(server);
@@ -34942,6 +34953,7 @@ function handlers(state) {
       return `${p.provider === "oidc" ? "Single sign-on" : "GitHub"} login for ${server}. Tell the user exactly this: ${codeLine(p)}`;
     },
     async room_logout(a) {
+      await configureLogin(a);
       const server = serverOf(a);
       if (server === LOCAL) return LOCAL_LOGIN;
       setPending(server, void 0);
@@ -34956,13 +34968,14 @@ function handlers(state) {
       if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`;
       const dir = typeof a.dir === "string" && a.dir ? a.dir : ctx.cwd;
       const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
-      const resolved = await resolveConfig({ dir, env: process.env, args: { where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
+      const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
       const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule };
       if (a.create === true && choice.server === LOCAL && choice.rule !== "argument") {
         return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.';
       }
       const s = await doJoin({
         dir,
+        credentialsPath: resolved.credentialsPath,
         name: resolved.name,
         room: resolved.room,
         server: choice.server,
@@ -35363,8 +35376,8 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
   return handlers9;
 }
 function install2(state) {
-  const { log: log2, base, presences, others, shareOf, now, isMe } = state;
-  const STALE_MS = Number(process.env.ROOM_STALE_DAYS || 7) * 24 * 60 * 60 * 1e3;
+  const { ctx, log: log2, base, presences, others, shareOf, now, isMe } = state;
+  const STALE_MS = (ctx.config?.staleDays ?? 7) * 24 * 60 * 60 * 1e3;
   const areaIndex = /* @__PURE__ */ new WeakMap();
   const loadAreas = async (s) => {
     const hit = areaIndex.get(s);
@@ -36696,7 +36709,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
 // packages/room-mcp/src/tools/files.ts
 import { execFile as execFile4 } from "node:child_process";
 import fs8 from "node:fs";
-import os4 from "node:os";
+import os3 from "node:os";
 import path9 from "node:path";
 var defs5 = [
   {
@@ -36927,7 +36940,7 @@ function mirrorLinks(cloneDir, scratchDir, src, dst) {
   }
 }
 async function runInMergedTree(s, ancestor, merged, cmd) {
-  const dir = fs8.mkdtempSync(path9.join(os4.tmpdir(), "room-merge-"));
+  const dir = fs8.mkdtempSync(path9.join(os3.tmpdir(), "room-merge-"));
   try {
     await new Promise((resolve4, reject) => {
       const p = execFile4("sh", ["-c", `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 6e4 }, (err) => err ? reject(err) : resolve4());
@@ -37252,7 +37265,7 @@ function handlers6(state) {
       const kept = mine(s).filter((c) => c.mirrorOf && live.has(c.mirrorOf)).length;
       const released = cleanupMine(s, `done: ${summary}`, (c) => !!c.mirrorOf && live.has(c.mirrorOf));
       const asWorker = s.room.workerOf(s.me.name);
-      const myId = process.env.ROOM_WORKER_ID?.trim(), gen = process.env.ROOM_GEN?.trim();
+      const myId = ctx.config?.workerId, gen = ctx.config?.gen;
       const stale = !!asWorker && (myId ? asWorker.id !== void 0 && asWorker.id !== myId : !!gen && asWorker.gen !== void 0 && String(asWorker.gen) !== gen);
       if (asWorker) {
         if (!stale) s.room.updateWorker(asWorker.tag, { status: "done", summary }, asWorker.id);
@@ -37672,10 +37685,10 @@ function cleanMeta(m) {
   }
   return out;
 }
-function shouldWake(me, ev, myClaims = []) {
+function shouldWake(me, ev, myClaims = [], hasUncommitted = false) {
   if (ev.kind === "msg") {
     const m = ev.msg;
-    if (!shouldWakeOnMsg(me, m, myClaims).wake) return null;
+    if (!shouldWakeOnMsg(me, m, myClaims, hasUncommitted).wake) return null;
     const path11 = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
     return {
       content: `${formatMsg(m)}
@@ -37781,7 +37794,7 @@ async function main() {
     s.room.bus.observe((ev) => {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
         if (ev.transaction.local && m.from === s.me.name) continue;
-        push(shouldWake(s.me, { kind: "msg", msg: m }, myClaims()));
+        push(shouldWake(s.me, { kind: "msg", msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0));
       }
     });
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
@@ -37794,7 +37807,7 @@ async function main() {
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
       const chosen = startup.server;
       log(`room: ${startup.where.replace(/\?.*$/, "")} (${startup.whereRule === "env" ? "ROOM_SERVER" : startup.whereRule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
-      const roomUrl = process.env.ROOM_URL?.trim();
+      const roomUrl = startup.roomUrl;
       if (roomUrl) {
         const u = new URL(roomUrl);
         adopt(await joinSession({ dir: startup.dir, name: startup.name, room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: `${u.protocol}//${u.host}`, log }));
