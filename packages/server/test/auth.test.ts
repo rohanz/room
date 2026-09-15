@@ -19,9 +19,30 @@ function fakeGitHub(script: { tokenResponses: any[]; login?: string; userStatus?
 }
 
 describe('device-flow auth', () => {
-  it('token mode without a client id', () => {
+  it('token mode without a client id (no GitHub login at all), device mode with one', () => {
     expect(new Auth({}).mode).toBe('token')
+    expect(new Auth({}).fake).toBe(false)
     expect(new Auth({ clientId: 'x' }).mode).toBe('device')
+    expect(new Auth({ clientId: 'x' }).fake).toBe(false)
+  })
+
+  it('the fake issuer: a code without GitHub, confirmed by fakeLogin, never in production', async () => {
+    const calls: string[] = []
+    const a = new Auth({ clientId: 'fake', production: false, fetch: (async (url: string) => { calls.push(url); return new Response('{}', { status: 500 }) }) as unknown as typeof fetch })
+    expect(a.fake).toBe(true)
+    expect(a.mode).toBe('device')
+    expect(a.providers).toEqual(['github'])
+    const s = await a.startDevice()
+    expect(s.user_code).toBe('FAKE-0000')
+    expect(s.device).toMatch(/^[0-9a-f]{32}$/)
+    expect(await a.poll(s.device)).toEqual({ pending: true })
+    expect(await a.poll(s.device, { fakeLogin: 'not a login!' })).toMatchObject({ error: expect.stringContaining('not a GitHub login') })
+    const s2 = await a.startDevice()
+    const r = await a.poll(s2.device, { fakeLogin: 'octo' })
+    expect(r).toMatchObject({ login: 'octo', provider: 'github' })
+    expect(a.resolve((r as { session: string }).session)).toMatchObject({ login: 'octo', ghToken: 'fake:octo' })
+    expect(calls).toEqual([]) // GitHub was never called
+    expect(() => new Auth({ clientId: 'fake', production: true })).toThrow(/production/)
   })
 
   it('start returns a user code and an opaque device id, never the device_code', async () => {

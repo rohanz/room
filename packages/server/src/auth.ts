@@ -3,8 +3,10 @@
  * that clients hold and send as ?session=:
  *
  *  - GitHub device flow (GITHUB_CLIENT_ID): the server keeps the GitHub token itself and
- *    proves push access to github.com rooms with it. Without a client id the server is in
- *    "token" mode and accepts a forwarded GitHub token (?gh=) as before (local dev, tests).
+ *    proves push access to github.com rooms with it. This is the only way into a github.com
+ *    room; forwarded GitHub tokens are never accepted. GITHUB_CLIENT_ID=fake (never in
+ *    production) is a test issuer: /auth/device hands out a code and /auth/poll confirms it as
+ *    soon as the body carries `fakeLogin`, so tests and the demo walk the real code path.
  *  - OIDC authorization code + PKCE (OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, PUBLIC_URL):
  *    for self-hosted servers with an Okta/Google/Keycloak style IdP. The client prints the
  *    authorize URL; the IdP sends the browser back to GET /auth/callback on this server; the
@@ -31,7 +33,10 @@ export interface OidcOptions {
   publicUrl: string
 }
 export interface AuthOptions {
+  /** GitHub OAuth App client id; the literal `fake` selects the test issuer (refused when `production`). */
   clientId?: string
+  /** Default: NODE_ENV === 'production'. The fake issuer is never enabled in production. */
+  production?: boolean
   oidc?: OidcOptions
   /** Where sessions persist. Default: FileStore at sessionsFile, or in memory. */
   store?: Store
@@ -66,9 +71,14 @@ type Pending =
   | { provider: 'github'; code: string; exp: number; interval: number }
   | { provider: 'oidc'; verifier: string; nonce: string; exp: number; interval: number; result?: { session: string; login: string } | { error: string } }
 
+export const FAKE_CLIENT_ID = 'fake'
+
 export class Auth {
+  /** `device`: GitHub login is configured (github.com rooms possible). `token`: no GitHub login; only non-GitHub rooms, admitted by ROOM_TOKEN or another provider. */
   readonly mode: 'device' | 'token'
   readonly providers: Provider[]
+  /** The test issuer is active: logins are minted from `fakeLogin` without talking to GitHub. */
+  readonly fake: boolean
   /** Resolves once persisted sessions are loaded; index.ts awaits it before listening. */
   readonly ready: Promise<void>
   private readonly store: Store
@@ -81,6 +91,9 @@ export class Auth {
   private discovery?: { doc: Discovery; jwks?: { set: JSONWebKeySet; at: number } }
 
   constructor(private readonly o: AuthOptions = {}) {
+    const production = o.production ?? process.env.NODE_ENV === 'production'
+    this.fake = o.clientId === FAKE_CLIENT_ID
+    if (this.fake && production) throw new Error(`GITHUB_CLIENT_ID=${FAKE_CLIENT_ID} is the test issuer and cannot run with NODE_ENV=production`)
     this.mode = o.clientId ? 'device' : 'token'
     this.providers = [...(o.clientId ? ['github' as const] : []), ...(o.oidc ? ['oidc' as const] : [])]
     this.store = o.store ?? new FileStore({ sessionsFile: o.sessionsFile })
@@ -126,6 +139,12 @@ export class Auth {
   /** Step 1: ask GitHub for a user code. The device_code stays here, keyed by an opaque id. */
   async startDevice(): Promise<DeviceStart> {
     if (!this.o.clientId) throw new Error('device flow not configured (GITHUB_CLIENT_ID)')
+    if (this.fake) {
+      const device = crypto.randomBytes(16).toString('hex')
+      this.devices.set(device, { provider: 'github', code: 'fake', exp: this.now() + this.loginTtl, interval: 0 })
+      this.sweep()
+      return { provider: 'github', user_code: 'FAKE-0000', verification_uri: 'fake: pass fakeLogin to /auth/poll', expires_in: Math.round(this.loginTtl / 1000), interval: 0, device }
+    }
     const res = await this.fetch(GH_DEVICE, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'room-server' }, body: JSON.stringify({ client_id: this.o.clientId, scope: 'repo' }) })
     if (!res.ok) throw new Error(`GitHub device code: HTTP ${res.status}`)
     const b = await res.json() as { device_code: string; user_code: string; verification_uri: string; expires_in: number; interval: number }
@@ -135,7 +154,14 @@ export class Auth {
     return { provider: 'github', user_code: b.user_code, verification_uri: b.verification_uri, expires_in: b.expires_in, interval: b.interval, device }
   }
 
-  private async pollDevice(device: string, d: Extract<Pending, { provider: 'github' }>): Promise<PollResult> {
+  private async pollDevice(device: string, d: Extract<Pending, { provider: 'github' }>, fakeLogin?: string): Promise<PollResult> {
+    if (this.fake) {
+      const login = fakeLogin?.trim()
+      if (!login) return { pending: true }
+      if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(login)) { this.devices.delete(device); return { error: `fakeLogin ${JSON.stringify(login)} is not a GitHub login` } }
+      this.devices.delete(device)
+      return this.newSession({ provider: 'github', login, ghToken: `fake:${login}` })
+    }
     const res = await this.fetch(GH_TOKEN, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'room-server' }, body: JSON.stringify({ client_id: this.o.clientId, device_code: d.code, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' }) })
     const b = await res.json().catch(() => ({})) as { access_token?: string; error?: string; interval?: number }
     if (b.error === 'authorization_pending' || b.error === 'slow_down') { if (b.interval) d.interval = b.interval; return { pending: true } }
@@ -233,12 +259,12 @@ export class Auth {
     return { login, id }
   }
 
-  /** One poll for a pending login. GitHub: asks GitHub. OIDC: reports whether the callback has landed. */
-  async poll(device: string): Promise<PollResult> {
+  /** One poll for a pending login. GitHub: asks GitHub (fake issuer: confirms once `fakeLogin` is given). OIDC: reports whether the callback has landed. */
+  async poll(device: string, opts: { fakeLogin?: string } = {}): Promise<PollResult> {
     const d = this.devices.get(device)
     if (!d) return { error: 'unknown or expired login attempt: start again' }
     if (d.exp < this.now()) { this.devices.delete(device); return { error: 'expired_token' } }
-    if (d.provider === 'github') return this.pollDevice(device, d)
+    if (d.provider === 'github') return this.pollDevice(device, d, opts.fakeLogin)
     if (!d.result) return { pending: true }
     this.devices.delete(device)
     if ('error' in d.result) return d.result
