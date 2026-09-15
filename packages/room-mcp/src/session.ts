@@ -51,6 +51,8 @@ export interface Session {
   pinnedRoom?: boolean
   /** The level asked for at join, before clamping (so the reply can say it was lowered). */
   shareRequested: ShareLevel
+  /** The shared token this session joined with (argument, ROOM_TOKEN, or `?token=` on the server URL); workers get it as ROOM_TOKEN. Never printed. */
+  token?: string
 }
 
 export interface JoinOptions {
@@ -344,6 +346,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     browserUrl,
     shareMax,
     shareRequested,
+    ...(token ? { token } : {}),
     ...(opts.room ? { pinnedRoom: true } : {}),
   }
   watchClosed(session, opts.log)

@@ -34500,6 +34500,7 @@ async function joinSession(opts) {
     browserUrl,
     shareMax,
     shareRequested,
+    ...token ? { token } : {},
     ...opts.room ? { pinnedRoom: true } : {}
   };
   watchClosed(session, opts.log);
@@ -34675,10 +34676,30 @@ async function prepareWorktree(repoDir, tag) {
   await git(repoDir, hasBranch ? ["worktree", "add", "-q", dir, branch] : ["worktree", "add", "-q", "-b", branch, dir, "HEAD"]);
   return { dir, branch, created: true };
 }
+var LEAD_ONLY_ENV = ["ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_GEN", "ROOM_LOG_FILE", "ROOM_KIND"];
+function workerEnv(base, extra) {
+  const out = {};
+  for (const [k, v] of Object.entries(base)) if (v !== void 0 && !LEAD_ONLY_ENV.includes(k)) out[k] = v;
+  return { ...out, ...extra };
+}
+function signalWorker(pid) {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(-pid, "SIGTERM");
+    return true;
+  } catch {
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+    return true;
+  } catch {
+    return false;
+  }
+}
 var defaultSpawner = (spec) => {
   fs4.mkdirSync(path4.dirname(spec.logFile), { recursive: true });
   const fd = fs4.openSync(spec.logFile, "a");
-  const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: { ...process.env, ...spec.env }, detached: true, stdio: ["ignore", fd, fd] });
+  const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ["ignore", fd, fd] });
   child.unref();
   return {
     pid: child.pid ?? -1,
@@ -34700,19 +34721,7 @@ var defaultSpawner = (spec) => {
         cb(err);
       });
     },
-    // Only ever signal a real pid: kill(-0) would hit our own process group.
-    kill: () => {
-      const pid = child.pid;
-      if (!pid || pid <= 0) return;
-      try {
-        process.kill(-pid, "SIGTERM");
-      } catch {
-        try {
-          child.kill("SIGTERM");
-        } catch {
-        }
-      }
-    }
+    kill: () => signalWorker(child.pid ?? -1)
   };
 };
 function pidAlive2(pid) {
@@ -35895,6 +35904,17 @@ function createTools(ctx) {
   const mine = (s) => s.room.openClaims().filter((c) => c.by === s.me.name && c.byKind === s.me.kind);
   const myWorkers = (s) => Array.from(s.room.workers.values()).filter((w) => w.lead === s.me.name);
   const procs = /* @__PURE__ */ new Map();
+  const procKey = (s, tag) => `${s.roomName}/${tag}`;
+  const reserving = /* @__PURE__ */ new Set();
+  const workerAlive = (s, w) => procs.has(procKey(s, w.tag)) || pidIsOurWorker(w.pid, w, ctx.probe);
+  const sessionOf = (s, name) => {
+    const ws = workersSession;
+    if (!ws || ws === s || name === s.me.name) return s;
+    const activeIn = (x) => x.room.scopes.has(name) || x.room.overlays.has(name) || presences(x).some((p) => p.user.name === name);
+    if (activeIn(s)) return s;
+    if (activeIn(ws)) return ws;
+    return s.room.workerOf(name) ? s : ws.room.workerOf(name) ? ws : s;
+  };
   const ensureWorkersRoom = async (lead) => {
     if (lead.local) return lead;
     if (workersSession) return workersSession;
@@ -35927,31 +35947,25 @@ function createTools(ctx) {
   const runningWorkers = (s) => {
     const out = [];
     for (const sess of [s, workersSession]) if (sess) {
-      for (const w of myWorkers(sess)) if (w.status === "running" || procs.has(w.tag)) out.push({ s: sess, w });
+      for (const w of myWorkers(sess)) if (w.status === "running" || workerAlive(sess, w)) out.push({ s: sess, w });
     }
     return out;
   };
   const dismissWorker = (s, w, why) => {
-    const proc = procs.get(w.tag);
-    let how, signalled = true;
+    const key = procKey(s, w.tag);
+    const proc = procs.get(key);
+    let how, signalled;
     if (proc) {
-      proc.kill();
-      how = `pid ${w.pid} signalled`;
-    } else if (pidIsOurWorker(w.pid, w)) {
-      try {
-        process.kill(-w.pid, "SIGTERM");
-      } catch {
-        try {
-          process.kill(w.pid, "SIGTERM");
-        } catch {
-        }
-      }
-      how = `pid ${w.pid} signalled`;
+      signalled = proc.kill();
+      how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} could not be signalled: the process is already gone, so its status stands`;
+    } else if (pidIsOurWorker(w.pid, w, ctx.probe)) {
+      signalled = signalWorker(w.pid);
+      how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} could not be signalled (it exited just now, or is not ours to signal), so its status stands`;
     } else {
       signalled = false;
       how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone and its status stands`;
     }
-    procs.delete(w.tag);
+    if (signalled || !proc) procs.delete(key);
     if (signalled && w.status === "running") s.room.updateWorker(w.tag, { status: "dismissed" });
     s.room.post(s.me, { type: "note", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
     return how;
@@ -36308,80 +36322,96 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       if (!task) return "error: task is required";
       const host = a.host === "codex" ? "codex" : "claude";
       const model = typeof a.model === "string" && a.model.trim() ? a.model.trim() : void 0;
+      const key = procKey(s, tag);
+      if (reserving.has(key)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`;
       const existing = s.room.workers.get(tag);
       if (existing && existing.lead !== s.me.name && existing.status === "running") return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; pick another tag`;
-      if (existing && (existing.status === "running" || procs.has(tag))) return `error: worker ${tag} is ${existing.status === "running" ? "already running" : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_dismiss it first or pick another tag`;
+      if (existing && (existing.status === "running" || workerAlive(s, existing))) return `error: worker ${tag} is ${existing.status === "running" ? "already running" : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_dismiss it first or pick another tag`;
       const gen = (existing?.gen ?? 0) + 1;
-      const running = myWorkers(s).filter((w2) => w2.status === "running");
+      const running = myWorkers(s).filter((w) => w.status === "running");
       const max2 = ctx.maxWorkers ?? Number(process.env.ROOM_MAX_WORKERS ?? DEFAULT_MAX_WORKERS);
       if (running.length >= max2) return `error: ${running.length} workers already running (max ${max2}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`;
       const share = typeof a.share === "string" && a.share ? parseShare(a.share) : void 0;
       if (typeof a.share === "string" && a.share && !share) return "error: share must be intent, declared or full";
-      let dir, branch, created = false, outside = false;
-      if (typeof a.dir === "string" && a.dir) {
-        dir = path7.resolve(a.dir);
-        if (!fs7.existsSync(dir)) return `error: ${dir} does not exist`;
-        const inside = path7.relative(s.dir, dir);
-        outside = inside.startsWith("..") || path7.isAbsolute(inside);
-        if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`;
-        try {
-          branch = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-        } catch {
-          branch = "?";
-        }
-      } else {
-        try {
-          ({ dir, branch, created } = await (ctx.worktree ?? prepareWorktree)(s.dir, tag));
-        } catch (e) {
-          return `error: could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}`;
-        }
-      }
-      const owner = s.me.owner ?? s.me.name;
-      const name = `${owner}+${tag}`;
-      const prompt = workerPrompt(s.me.name, tag, task);
-      const { cmd, args: args2 } = workerCommand(host, model, prompt);
-      const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
-      const envServer = process.env.ROOM_SERVER?.trim();
-      const serverForWorker = s.local ? LOCAL : envServer && parseServer(resolveServer(envServer)).server === server ? envServer : server;
-      const env = { ROOM_TAG: tag, ROOM_DIR: dir, PWD: dir, ROOM_SERVER: serverForWorker, ROOM_ROOM: s.roomName, ROOM_LEAD: s.me.name, ROOM_OWNER: owner, ...process.env.ROOM_TOKEN?.trim() && !s.local ? { ROOM_TOKEN: process.env.ROOM_TOKEN.trim() } : {}, ...share ? { ROOM_SHARE: share } : {} };
-      const logFile = path7.join(s.dir, ".room", "workers", `${tag}.log`);
-      env.ROOM_LOG_FILE = path7.join(s.dir, ".room", "workers", `${tag}.mcp.log`);
-      let proc;
+      reserving.add(key);
       try {
-        proc = (ctx.spawner ?? defaultSpawner)({ cmd, args: args2, cwd: dir, env, logFile });
-      } catch (e) {
-        return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`;
-      }
-      procs.set(tag, proc);
-      const w = { tag, name, host, ...model ? { model } : {}, task, dir, branch, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name, gen };
-      s.room.setWorker(w);
-      proc.onError?.((err) => {
-        const cur = s.room.workers.get(tag);
-        if (cur?.gen !== gen || cur.lead !== s.me.name) return;
-        procs.delete(tag);
-        if (cur && cur.status === "running") s.room.updateWorker(tag, { status: "failed", exitCode: -1, summary: `could not start ${cmd}: ${err.message}` });
-        s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` });
-      });
-      proc.onExit((code) => {
-        const cur = s.room.workers.get(tag);
-        if (cur?.gen !== gen || cur.lead !== s.me.name) return;
-        procs.delete(tag);
-        if (!cur || cur.status !== "running") {
-          s.room.updateWorker(tag, { exitCode: code ?? -1 });
-          return;
+        let dir, branch, created = false, outside = false;
+        if (typeof a.dir === "string" && a.dir) {
+          dir = path7.resolve(a.dir);
+          if (!fs7.existsSync(dir)) return `error: ${dir} does not exist`;
+          const inside = path7.relative(s.dir, dir);
+          outside = inside.startsWith("..") || path7.isAbsolute(inside);
+          if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`;
+          try {
+            branch = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+          } catch {
+            branch = "?";
+          }
+        } else {
+          try {
+            ({ dir, branch, created } = await (ctx.worktree ?? prepareWorktree)(s.dir, tag));
+          } catch (e) {
+            return `error: could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}`;
+          }
         }
-        const summary = cur.summary ?? (code === 0 ? "process exited without room_done" : `process exited with code ${code}`);
-        s.room.updateWorker(tag, { status: code === 0 ? "done" : "failed", exitCode: code ?? -1, summary });
-        s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? "" : `; see ${logFile}`}` });
-        s.room.post({ name, kind: "agent", owner, label: tag }, { type: "done", tag, summary: `${summary} (exit ${code})`, changed: s.room.changedPaths(name), to: s.me.name, priority: "notify" });
-      });
-      s.room.post(s.me, { type: "note", text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ""}) as ${name}: ${task.slice(0, 100)}` });
-      const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ""}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? " (new worktree)" : ""}`];
-      out.push(`log: ${logFile}`);
-      out.push(`it joins ${s === lead ? "this room" : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`);
-      if (created && !gitignored(s.dir)) out.push("tip: add .room/ to .gitignore (the room already ignores it; git status will not).");
-      if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`);
-      return out.join("\n");
+        const owner = s.me.owner ?? s.me.name;
+        const name = `${owner}+${tag}`;
+        const prompt = workerPrompt(s.me.name, tag, task);
+        const { cmd, args: args2 } = workerCommand(host, model, prompt);
+        const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
+        const env = {
+          ROOM_SERVER: server,
+          ROOM_ROOM: s.roomName,
+          ROOM_DIR: dir,
+          PWD: dir,
+          ROOM_TAG: tag,
+          ROOM_LEAD: s.me.name,
+          ROOM_OWNER: owner,
+          ROOM_SHARE: share ?? s.daemon.share ?? "full",
+          ROOM_GEN: String(gen),
+          ...s.token && !s.local ? { ROOM_TOKEN: s.token } : {},
+          ROOM_LOG_FILE: path7.join(s.dir, ".room", "workers", `${tag}.mcp.log`)
+        };
+        const logFile = path7.join(s.dir, ".room", "workers", `${tag}.log`);
+        let proc;
+        try {
+          proc = (ctx.spawner ?? defaultSpawner)({ cmd, args: args2, cwd: dir, env, logFile });
+        } catch (e) {
+          return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`;
+        }
+        procs.set(key, proc);
+        const w = { tag, name, host, ...model ? { model } : {}, task, dir, branch, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name, gen };
+        s.room.setWorker(w);
+        proc.onError?.((err) => {
+          const cur = s.room.workers.get(tag);
+          if (cur?.gen !== gen || cur.lead !== s.me.name) return;
+          if (procs.get(key) === proc) procs.delete(key);
+          if (cur && cur.status === "running") s.room.updateWorker(tag, { status: "failed", exitCode: -1, summary: `could not start ${cmd}: ${err.message}` });
+          s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` });
+        });
+        proc.onExit((code) => {
+          const cur = s.room.workers.get(tag);
+          if (procs.get(key) === proc) procs.delete(key);
+          if (cur?.gen !== gen || cur.lead !== s.me.name) return;
+          if (!cur || cur.status !== "running") {
+            s.room.updateWorker(tag, { exitCode: code ?? -1 });
+            return;
+          }
+          const summary = cur.summary ?? (code === 0 ? "process exited without room_done" : `process exited with code ${code}`);
+          s.room.updateWorker(tag, { status: code === 0 ? "done" : "failed", exitCode: code ?? -1, summary });
+          s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? "" : `; see ${logFile}`}` });
+          s.room.post({ name, kind: "agent", owner, label: tag }, { type: "done", tag, summary: `${summary} (exit ${code})`, changed: s.room.changedPaths(name), to: s.me.name, priority: "notify" });
+        });
+        s.room.post(s.me, { type: "note", text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ""}) as ${name}: ${task.slice(0, 100)}` });
+        const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ""}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? " (new worktree)" : ""}`];
+        out.push(`log: ${logFile}`);
+        out.push(`it joins ${s === lead ? "this room" : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`);
+        if (created && !gitignored(s.dir)) out.push("tip: add .room/ to .gitignore (the room already ignores it; git status will not).");
+        if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`);
+        return out.join("\n");
+      } finally {
+        reserving.delete(key);
+      }
     },
     async room_dismiss(a) {
       const tag = validTag(a.tag);
@@ -36390,7 +36420,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const w = s.room.workers.get(tag);
       if (!w) return `error: no worker ${tag}`;
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`;
-      if (w.status !== "running" && !procs.has(tag)) return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`;
+      if (w.status !== "running" && !workerAlive(s, w)) return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`;
       const how = dismissWorker(s, w, w.status === "running" ? "dismissed by the lead" : `its process was stopped by the lead after it reported ${w.status}`);
       return `${w.status === "running" ? "dismissed" : `stopped the ${w.status} worker`} ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`;
     },
@@ -36463,7 +36493,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       evictStale(s);
       await loadAreas(s);
       const out = [`${a.create && !s.local ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
-      out.push(`room: ${describeWhere(choice.server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone)" : choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
+      out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone)" : choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
       if (!s.local && (choice.rule === "argument" || choice.rule === "remembered")) {
         const fresh = await markWarned(dir, s.dir).catch(() => true);
         if (fresh || choice.rule === "argument") out.push(`note for your human: uncommitted work in this clone${choice.rule === "remembered" ? " (joined on the choice remembered for this repo)" : ""} is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf("/"))}'s room.`);
@@ -36541,7 +36571,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       await loadAreas(s);
       const m = s.room.meta;
       const out = [];
-      out.push(`room: ${describeWhere(s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")))}${workersSession ? `; workers room: local (${workersSession.roomName}, this machine only)` : ""}`);
+      out.push(`room: ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server)}${workersSession ? `; workers room: local (${workersSession.roomName}, this machine only)` : ""}`);
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? "?").slice(0, 10)})`);
       const mineA = myAreas(s);
       const all2 = a.all === true || !mineA.length;
@@ -36610,10 +36640,10 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       return out.join("\n");
     },
     async room_read(a) {
-      const s = S();
       if (typeof a.path !== "string" || !a.path) return "error: path is required";
       const p = a.path;
-      const person = typeof a.person === "string" && a.person ? a.person : s.me.name;
+      const person = typeof a.person === "string" && a.person ? a.person : S().me.name;
+      const s = sessionOf(S(), person);
       const held = withheld(s, person, p);
       if (held) return held;
       const t = await liveText(s, p, person);
@@ -36628,8 +36658,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       return out.join("\n");
     },
     async room_diff(a) {
-      const s = S();
-      const person = typeof a.person === "string" && a.person ? a.person : s.me.name;
+      const person = typeof a.person === "string" && a.person ? a.person : S().me.name;
+      const s = sessionOf(S(), person);
       const one = async (p) => {
         const b = await baseText(s, p) ?? "";
         const l = await liveText(s, p, person);
@@ -36670,10 +36700,15 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const n = t ? lines(t) : 1;
       const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n);
       const out = [];
-      for (const c of s.room.claimsFor(p)) if (rangesOverlap(c.from, c.to, r.from, r.to)) out.push(`claim ${c.id}: ${describeClaim(c)}`);
-      for (const sc of s.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(`scope: ${sc.by} is on ${scopeLine(sc)}`);
-      const who = s.room.whoChanged(p).filter((x) => x !== s.me.name);
-      if (who.length) out.push(`uncommitted changes by: ${who.join(", ")}`);
+      const rooms = workersSession && workersSession !== s ? [s, workersSession] : [s];
+      const tagged = (x, line) => x === s ? line : `${line} (workers room)`;
+      const who = /* @__PURE__ */ new Set();
+      for (const x of rooms) {
+        for (const c of x.room.claimsFor(p)) if (rangesOverlap(c.from, c.to, r.from, r.to)) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`));
+        for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`));
+        for (const n2 of x.room.whoChanged(p)) if (n2 !== s.me.name) who.add(n2);
+      }
+      if (who.size) out.push(`uncommitted changes by: ${Array.from(who).sort().join(", ")}`);
       return out.length ? `${p}:${r.from}-${r.to}
 ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`;
     },
@@ -36923,9 +36958,9 @@ call room_state before continuing.`;
       return out.join("\n");
     },
     async room_preview_merge(a) {
-      const s = S();
       const person = typeof a.person === "string" && a.person ? a.person : "";
-      if (!person || person === s.me.name) return "error: person is required (someone other than you)";
+      if (!person || person === S().me.name) return "error: person is required (someone other than you)";
+      const s = sessionOf(S(), person);
       const held = withheld(s, person);
       if (held) return held;
       const declaredNote = shareOf(s, person) === "declared" ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : "";
