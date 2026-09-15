@@ -5,6 +5,8 @@
 - A bare "join the room" means the team room.
 - Observed contract changes: a changed definition line in someone's diff is treated like a declared plan on that symbol. Consumers whose changed or claimed files use it get a `contract` notice, and the network view's Downstream column fills from both announced plans and observed changes (announced wins per symbol).
 - Participant colours are assigned per room in join order and kept, instead of hashed from the name, so people in the same room never share a colour.
+- The daemon drops stale overlay entries at start for files that no longer exist on disk or at base, instead of showing yesterday's files as current.
+- Auto-assigned tags stick to the clone (`room-choice.json`), and a name that still holds another clone's uncommitted work counts as taken, so a returning session cannot overwrite a teammate's overlay.
 - Browser timeline shows room notices (contract changes, conflict notes) in the addressee's episode instead of dropping them.
 - Codex plugin no longer passes `GH_TOKEN`/`GITHUB_TOKEN` through to the MCP server; nothing reads them and forwarded tokens are refused by the server.
 

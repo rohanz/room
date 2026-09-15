@@ -17,7 +17,7 @@ Two ways in. Pick the one that matches you.
 
 Workers' branches are not merged for you: when a worker reports done, ask the lead to preview and merge `room/<tag>`. Worktrees land in `.room/workers/<tag>`. Add `.room/` to your `.gitignore`.
 
-Running Claude Code and Codex side by side under the same login? The second one to join is tagged automatically after its host (`rohanz+claude`, `rohanz+codex`), so they are distinct participants. Set `ROOM_TAG=<label>` if you want to name them yourself.
+Running Claude Code and Codex side by side under the same login? The second one to join is tagged automatically after its host (`rohanz+claude`, `rohanz+codex`), and that tag sticks to the clone across sessions so they remain distinct participants. Set `ROOM_TAG=<label>` if you want to name them yourself.
 
 ## Team: the hosted server
 

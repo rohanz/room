@@ -70,6 +70,8 @@ The agent tells you that uncommitted work in this clone is now visible to the re
 in that clone starts where you left it; `room_leave(forget=true)` clears it. An agent never
 joins the team room on its own initiative. `ROOM_SERVER` still overrides everything, for
 scripts and workers.
+When a second agent is tagged automatically (for example, `rohanz+claude`), that tag sticks
+to the clone across sessions so an offline overlay cannot be mistaken for another clone's work.
 
 Areas come from `CODEOWNERS` at the room's base commit, not from the working tree. When
 there is no matching `CODEOWNERS` area, an uncommitted file makes its top-level directory

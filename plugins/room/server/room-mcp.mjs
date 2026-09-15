@@ -32829,6 +32829,15 @@ var Daemon = class {
   scopePaths() {
     return this.explicitScopePaths ?? this.roomDoc.scope(this.name)?.paths ?? [];
   }
+  /** Disk paths plus persisted state that may be left over from an earlier daemon session. */
+  pathsToReconcile(extra = []) {
+    return /* @__PURE__ */ new Set([
+      ...this.tracked,
+      ...this.roomDoc.changedPaths(this.name),
+      ...this.roomDoc.deletedFor(this.name).keys(),
+      ...extra
+    ]);
+  }
   /** May this file's text (or its deletion) be published at the current level? */
   isShared(relpath) {
     if (this.share === "full") return true;
@@ -32838,8 +32847,7 @@ var Daemon = class {
   /** Re-evaluate every tracked file against the current level: withdraw what is no longer allowed, publish what now is. */
   async resharePaths() {
     if (this.stopped) return;
-    const paths = /* @__PURE__ */ new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name), ...this.skips.share]);
-    for (const relpath of paths) {
+    for (const relpath of this.pathsToReconcile(this.skips.share)) {
       if (this.stopped) return;
       if (this.isIgnoredPath(relpath)) continue;
       await this.publishDiskState(relpath);
@@ -32992,7 +33000,6 @@ var Daemon = class {
     const roomBase = this.roomDoc.meta.base;
     if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === "ahead") await this.maybeAdvance(roomBase, head);
     await this.seedLocalOverlay();
-    for (const relpath of this.roomDoc.changedPaths(this.name)) if (!this.tracked.has(relpath)) await this.publishDiskState(relpath);
     await this.refreshBaseStatus();
   }
   /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
@@ -33032,7 +33039,7 @@ var Daemon = class {
     } else this.setStatus(`${rel === "unknown" ? "behind base (fetch)" : "diverged from base"}: git pull`);
   }
   async seedLocalOverlay() {
-    for (const relpath of this.tracked) {
+    for (const relpath of this.pathsToReconcile()) {
       if (!this.isSafeRoomPath(relpath)) continue;
       await this.publishDiskState(relpath);
     }
@@ -33086,22 +33093,31 @@ var Daemon = class {
     const exists = fs.existsSync(this.abs(relpath));
     const beforeText = this.roomDoc.text(relpath, this.name);
     const beforeDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false;
-    if (!this.isShared(relpath)) {
-      if (!exists) {
-        this.withhold(relpath, this.tracked.has(relpath) && await gitShow(this.dir, this.base, relpath) !== void 0);
+    let droppedStale = false;
+    if (!exists) {
+      const base = await gitShow(this.dir, this.base, relpath);
+      if (base === void 0) {
+        this.roomDoc.doc.transact(() => {
+          this.roomDoc.clearOverlay(this.name, relpath, this);
+          this.roomDoc.unmarkDeleted(this.name, relpath, this);
+        }, this);
+        droppedStale = beforeText !== void 0 || beforeDeleted;
+      } else if (!this.isShared(relpath)) {
+        this.withhold(relpath, true);
         return;
+      } else {
+        this.skips.share.delete(relpath);
+        this.roomDoc.doc.transact(() => {
+          this.roomDoc.markDeleted(this.name, relpath, this);
+          this.roomDoc.clearOverlay(this.name, relpath, this);
+        }, this);
       }
+    } else if (!this.isShared(relpath)) {
       const disk = this.readText(relpath, true);
       this.withhold(relpath, disk !== void 0 && disk !== await gitShow(this.dir, this.base, relpath));
       return;
-    }
-    this.skips.share.delete(relpath);
-    if (!exists) {
-      this.roomDoc.doc.transact(() => {
-        this.roomDoc.markDeleted(this.name, relpath, this);
-        this.roomDoc.clearOverlay(this.name, relpath, this);
-      }, this);
     } else {
+      this.skips.share.delete(relpath);
       const disk = this.readText(relpath);
       if (disk === void 0) return;
       const base = await gitShow(this.dir, this.base, relpath);
@@ -33131,7 +33147,7 @@ var Daemon = class {
     const afterDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false;
     if (beforeText !== afterText || beforeDeleted !== afterDeleted) {
       this.bumpLastActive();
-      this.log(afterDeleted ? `marked ${relpath} deleted` : afterText === void 0 ? `cleared ${relpath} overlay` : `published ${relpath} overlay`);
+      this.log(droppedStale ? `dropped stale overlay ${relpath}` : afterDeleted ? `marked ${relpath} deleted` : afterText === void 0 ? `cleared ${relpath} overlay` : `published ${relpath} overlay`);
     }
   }
   // ---- watcher -----------------------------------------------------------
@@ -34033,6 +34049,72 @@ function removeCredential(server) {
   return true;
 }
 
+// packages/room-mcp/src/choice.ts
+import fs5 from "node:fs";
+import path6 from "node:path";
+var CHOICE_FILE = "room-choice.json";
+async function choiceFile(dir) {
+  return path6.join(await gitCommonDir(dir), CHOICE_FILE);
+}
+async function readChoice(dir) {
+  try {
+    const c = JSON.parse(fs5.readFileSync(await choiceFile(dir), "utf8"));
+    return c && typeof c.where === "string" ? c : void 0;
+  } catch {
+    return void 0;
+  }
+}
+async function writeChoice(dir, where, by) {
+  where = where.replace(/\?.*$/, "");
+  const prev = await readChoice(dir);
+  const c = { where, at: Date.now(), ...by ? { by } : {}, ...prev?.tag !== void 0 ? { tag: prev.tag } : {}, ...prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {} };
+  const file = await choiceFile(dir);
+  fs5.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
+  try {
+    fs5.chmodSync(file, 384);
+  } catch {
+  }
+  return c;
+}
+async function rememberTag(dir, tag) {
+  const prev = await readChoice(dir);
+  const c = prev ? { ...prev, tag } : { where: LOCAL, at: Date.now(), tag };
+  const file = await choiceFile(dir);
+  fs5.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
+  try {
+    fs5.chmodSync(file, 384);
+  } catch {
+  }
+  return c;
+}
+async function markWarned(dir, worktree) {
+  const c = await readChoice(dir);
+  if (!c) return true;
+  const key = path6.resolve(worktree);
+  const warned = c.warned ?? [];
+  if (warned.includes(key)) return false;
+  try {
+    const file = await choiceFile(dir);
+    fs5.writeFileSync(file, JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + "\n", { mode: 384 });
+    fs5.chmodSync(file, 384);
+  } catch {
+  }
+  return true;
+}
+async function clearChoice(dir) {
+  try {
+    fs5.rmSync(await choiceFile(dir));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function describeWhere(server) {
+  if (server === LOCAL) return "local (this machine)";
+  if (server === DEFAULT_SERVER) return `team (${DEFAULT_SERVER})`;
+  return `team (${server})`;
+}
+
 // packages/room-mcp/src/session.ts
 var DEFAULT_WEB = "http://localhost:5173";
 var NoRoom = class extends RoomdError {
@@ -34225,7 +34307,8 @@ function decodeRoom(encoded) {
 async function startAutoTaggedRoomd(options, explicitTag) {
   let name = options.name, label = options.label;
   let autoTagNote;
-  if (!explicitTag) {
+  const rememberedTag = explicitTag === void 0 ? (await readChoice(options.dir))?.tag : void 0;
+  if (explicitTag === void 0) {
     const doc = new Doc2();
     const url = new URL(options.room);
     const room = url.pathname.split("/").pop();
@@ -34251,15 +34334,25 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       });
       const now = Date.now();
       const names = new Set([...provider.awareness.getStates()].filter(([id2, state]) => id2 !== provider.awareness.clientID && now - (typeof state.lastActive === "number" ? state.lastActive : provider.awareness.meta.get(id2)?.lastUpdated ?? 0) <= 2e4).map(([, state]) => state.user?.name));
-      if (names.has(name)) {
-        const host = resolveSessionHost(options.dir);
-        label = host;
-        let suffix = 2;
-        while (names.has(`${options.name}+${label}`)) label = `${host}-${suffix++}`;
-        name = `${options.name}+${label}`;
-        autoTagNote = `joined as ${name} (${options.name} was already here from another session)`;
+      const roomDoc = new RoomDoc(doc);
+      const holdsWork = (candidate) => roomDoc.changedPaths(candidate).length > 0 || (roomDoc.deleted.get(candidate)?.size ?? 0) > 0;
+      const rememberedName = rememberedTag === void 0 ? void 0 : rememberedTag ? `${options.name}+${rememberedTag}` : options.name;
+      const rememberedPresent = rememberedName !== void 0 && names.has(rememberedName);
+      const barePresent = names.has(options.name);
+      const host = resolveSessionHost(options.dir);
+      for (let candidate = rememberedTag === void 0 ? 0 : -1; ; candidate++) {
+        const tag = candidate === -1 ? rememberedTag : candidate === 0 ? "" : candidate === 1 ? host : `${host}-${candidate}`;
+        const candidateName = tag ? `${options.name}+${tag}` : options.name;
+        if (names.has(candidateName) || tag !== rememberedTag && holdsWork(candidateName)) continue;
+        label = tag || void 0;
+        name = candidateName;
+        break;
+      }
+      if (rememberedPresent || name !== options.name && name !== rememberedName) {
+        autoTagNote = `joined as ${name} (${rememberedPresent ? `remembered name ${rememberedName} is in use by another session` : barePresent ? `${options.name} is in use by another session` : `${options.name} still holds uncommitted work from another clone`})`;
         (options.log ?? console.error)(autoTagNote);
       }
+      if ((label ?? "") !== rememberedTag) await rememberTag(options.dir, label ?? "");
     } finally {
       provider.destroy();
       provider.awareness.destroy();
@@ -34469,19 +34562,19 @@ async function leaveSession(s) {
 
 // packages/room-mcp/src/hooks-bridge.ts
 import { execFile as execFile3 } from "node:child_process";
-import fs5 from "node:fs";
+import fs6 from "node:fs";
 import os2 from "node:os";
-import path6 from "node:path";
+import path7 from "node:path";
 function gitStatePath(root, name) {
-  const dotgit = path6.join(root, ".git");
+  const dotgit = path7.join(root, ".git");
   try {
-    if (fs5.statSync(dotgit).isFile()) {
-      const m = fs5.readFileSync(dotgit, "utf8").match(/gitdir:\s*(.+)/);
-      if (m) return path6.join(path6.resolve(root, m[1].trim()), name);
+    if (fs6.statSync(dotgit).isFile()) {
+      const m = fs6.readFileSync(dotgit, "utf8").match(/gitdir:\s*(.+)/);
+      if (m) return path7.join(path7.resolve(root, m[1].trim()), name);
     }
   } catch {
   }
-  return path6.join(dotgit, name);
+  return path7.join(dotgit, name);
 }
 var SESSION_FRESH_MS = 10 * 60 * 1e3;
 var HooksBridge = class {
@@ -34524,7 +34617,7 @@ var HooksBridge = class {
     this.pending.clear();
     if (this.o.writeState !== false) {
       try {
-        fs5.rmSync(this.stateFile(), { force: true });
+        fs6.rmSync(this.stateFile(), { force: true });
       } catch {
       }
     }
@@ -34550,7 +34643,7 @@ var HooksBridge = class {
     const unread = this.s.room.messages().filter((m) => !this.o.isSeen(m.id) && this.o.forMe(m)).map((m) => ({ id: m.id, priority: m.priority, line: formatMsg(m) }));
     const claims = this.s.room.openClaims().filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
     try {
-      fs5.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + "\n");
+      fs6.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + "\n");
     } catch (e) {
       this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`);
     }
@@ -34574,7 +34667,7 @@ var HooksBridge = class {
   freshSession() {
     let file;
     try {
-      file = JSON.parse(fs5.readFileSync(this.sessionFile(), "utf8"));
+      file = JSON.parse(fs6.readFileSync(this.sessionFile(), "utf8"));
     } catch {
     }
     if (file?.session_id) {
@@ -34643,9 +34736,9 @@ Call room_state, then react per the room-etiquette skill.`;
 };
 function sameDir(a, b) {
   const norm = (d) => {
-    const r = path6.resolve(d.replace(/^file:\/\//, ""));
+    const r = path7.resolve(d.replace(/^file:\/\//, ""));
     try {
-      return fs5.realpathSync.native(r);
+      return fs6.realpathSync.native(r);
     } catch {
       return r;
     }
@@ -34662,18 +34755,18 @@ function defaultQueue(threadId, text) {
   });
 }
 function findThreadForDir(dir, since) {
-  const root = path6.join(os2.homedir(), ".codex", "sessions");
-  const want = [path6.resolve(dir), fs5.realpathSync.native(path6.resolve(dir))];
+  const root = path7.join(os2.homedir(), ".codex", "sessions");
+  const want = [path7.resolve(dir), fs6.realpathSync.native(path7.resolve(dir))];
   let best;
   const walk = (d, depth) => {
     let entries = [];
     try {
-      entries = fs5.readdirSync(d, { withFileTypes: true });
+      entries = fs6.readdirSync(d, { withFileTypes: true });
     } catch {
       return;
     }
     for (const e of entries) {
-      const p = path6.join(d, e.name);
+      const p = path7.join(d, e.name);
       if (e.isDirectory() && depth < 3) {
         walk(p, depth + 1);
         continue;
@@ -34682,23 +34775,23 @@ function findThreadForDir(dir, since) {
       if (!m) continue;
       let st;
       try {
-        st = fs5.statSync(p);
+        st = fs6.statSync(p);
       } catch {
         continue;
       }
       if (st.mtimeMs < since - 5 * 60 * 1e3 || best && st.mtimeMs <= best.mtime) continue;
       let head = "";
       try {
-        const fd = fs5.openSync(p, "r");
+        const fd = fs6.openSync(p, "r");
         const buf = Buffer.alloc(4096);
-        const n = fs5.readSync(fd, buf, 0, 4096, 0);
-        fs5.closeSync(fd);
+        const n = fs6.readSync(fd, buf, 0, 4096, 0);
+        fs6.closeSync(fd);
         head = buf.toString("utf8", 0, n);
       } catch {
         continue;
       }
       const cwd2 = head.match(/"cwd":"([^"]+)"/)?.[1]?.replace(/^file:\/\//, "");
-      if (cwd2 && want.includes(path6.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
+      if (cwd2 && want.includes(path7.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
     }
   };
   walk(root, 0);
@@ -34706,8 +34799,8 @@ function findThreadForDir(dir, since) {
 }
 
 // packages/room-mcp/src/prs.ts
-import fs6 from "node:fs";
-import path7 from "node:path";
+import fs7 from "node:fs";
+import path8 from "node:path";
 var PR_PREFIX = "pr#";
 var isPrName = (name) => name.startsWith(PR_PREFIX);
 var prName = (number3) => `${PR_PREFIX}${number3}`;
@@ -34779,11 +34872,11 @@ function branchOf(roomName) {
 function exportRoomLedger(s, opts = {}) {
   const now = opts.now ?? Date.now();
   const timestamp = new Date(now).toISOString().replace(/[:.]/g, "-");
-  const defaultPath = path7.join(s.dir, ".room", "ledger", `${s.roomName.replaceAll("/", "_")}-${timestamp}.md`);
-  const outputPath = opts.path ? path7.resolve(s.dir, opts.path) : defaultPath;
+  const defaultPath = path8.join(s.dir, ".room", "ledger", `${s.roomName.replaceAll("/", "_")}-${timestamp}.md`);
+  const outputPath = opts.path ? path8.resolve(s.dir, opts.path) : defaultPath;
   const markdown = renderPrNote(s.room, { roomName: s.roomName, now });
-  fs6.mkdirSync(path7.dirname(outputPath), { recursive: true });
-  fs6.writeFileSync(outputPath, markdown);
+  fs7.mkdirSync(path8.dirname(outputPath), { recursive: true });
+  fs7.writeFileSync(outputPath, markdown);
   return { path: outputPath, lines: markdown.trimEnd().split("\n").length };
 }
 function renderPrNote(room, opts) {
@@ -35235,61 +35328,6 @@ Rules:
 6. Tell your human whenever room information, an interrupt, or a conflict changes your plan.
 
 Load the room-etiquette skill for detailed coordination, inbox, conflict, waiting, merge, and safety rules.`;
-
-// packages/room-mcp/src/choice.ts
-import fs7 from "node:fs";
-import path8 from "node:path";
-var CHOICE_FILE = "room-choice.json";
-async function choiceFile(dir) {
-  return path8.join(await gitCommonDir(dir), CHOICE_FILE);
-}
-async function readChoice(dir) {
-  try {
-    const c = JSON.parse(fs7.readFileSync(await choiceFile(dir), "utf8"));
-    return c && typeof c.where === "string" ? c : void 0;
-  } catch {
-    return void 0;
-  }
-}
-async function writeChoice(dir, where, by) {
-  where = where.replace(/\?.*$/, "");
-  const prev = await readChoice(dir);
-  const c = { where, at: Date.now(), ...by ? { by } : {}, ...prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {} };
-  const file = await choiceFile(dir);
-  fs7.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
-  try {
-    fs7.chmodSync(file, 384);
-  } catch {
-  }
-  return c;
-}
-async function markWarned(dir, worktree) {
-  const c = await readChoice(dir);
-  if (!c) return true;
-  const key = path8.resolve(worktree);
-  const warned = c.warned ?? [];
-  if (warned.includes(key)) return false;
-  try {
-    const file = await choiceFile(dir);
-    fs7.writeFileSync(file, JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + "\n", { mode: 384 });
-    fs7.chmodSync(file, 384);
-  } catch {
-  }
-  return true;
-}
-async function clearChoice(dir) {
-  try {
-    fs7.rmSync(await choiceFile(dir));
-    return true;
-  } catch {
-    return false;
-  }
-}
-function describeWhere(server) {
-  if (server === LOCAL) return "local (this machine)";
-  if (server === DEFAULT_SERVER) return `team (${DEFAULT_SERVER})`;
-  return `team (${server})`;
-}
 
 // packages/room-mcp/src/tools/join.ts
 var defs = [

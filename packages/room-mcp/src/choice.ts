@@ -13,7 +13,7 @@ import { DEFAULT_SERVER, LOCAL, normaliseWhere, resolveConfig } from './config.j
 
 export const CHOICE_FILE = 'room-choice.json'
 
-export interface RoomChoice { where: string; at: number; by?: string; /** worktree paths already told that their work is visible to the team */ warned?: string[] }
+export interface RoomChoice { where: string; at: number; by?: string; /** Auto-selected identity label for this clone; empty means the bare login. */ tag?: string; /** worktree paths already told that their work is visible to the team */ warned?: string[] }
 
 export type ChoiceRule = 'argument' | 'env' | 'remembered' | 'default'
 
@@ -43,7 +43,17 @@ export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
 export async function writeChoice(dir: string, where: string, by?: string): Promise<RoomChoice> {
   where = where.replace(/\?.*$/, '') // never remember a token; it comes from ROOM_SERVER/ROOM_TOKEN at join time
   const prev = await readChoice(dir)
-  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {}) }
+  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(prev?.tag !== undefined ? { tag: prev.tag } : {}), ...(prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {}) }
+  const file = await choiceFile(dir)
+  fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
+  try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }
+  return c
+}
+
+/** Remember an automatically assigned identity without changing this clone's room choice. */
+export async function rememberTag(dir: string, tag: string): Promise<RoomChoice> {
+  const prev = await readChoice(dir)
+  const c: RoomChoice = prev ? { ...prev, tag } : { where: LOCAL, at: Date.now(), tag }
   const file = await choiceFile(dir)
   fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
   try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }

@@ -14,10 +14,11 @@ import { startRoomd, RoomdError, clampShare, parseShare, type Roomd, type ShareL
 import { ensureLocalRelay, type LocalRelay } from '@room/relay'
 import { gitCommonDir, localRoomName } from '@room/roomd/local'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
-import type { Identity, Kind, RoomDoc } from '@room/shared'
+import { RoomDoc, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
 import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveServer, resolveSessionHost } from './config.js'
+import { readChoice, rememberTag } from './choice.js'
 
 /** The hosted room server. Override with ROOM_SERVER (e.g. ws://localhost:1234 for local dev). */
 /** The hosted server, used when ROOM_SERVER=hosted (or an explicit URL). Without ROOM_SERVER a session is LOCAL: no server at all. */
@@ -274,7 +275,8 @@ export function decodeRoom(encoded: string): string { try { return decodeURIComp
 export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string }> {
   let name = options.name, label = options.label
   let autoTagNote: string | undefined
-  if (!explicitTag) {
+  const rememberedTag = explicitTag === undefined ? (await readChoice(options.dir))?.tag : undefined
+  if (explicitTag === undefined) {
     const doc = new Y.Doc()
     const url = new URL(options.room)
     const room = url.pathname.split('/').pop()!
@@ -298,15 +300,25 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
       const names = new Set([...provider.awareness.getStates()]
         .filter(([id, state]) => id !== provider.awareness.clientID && now - (typeof state.lastActive === 'number' ? state.lastActive : provider.awareness.meta.get(id)?.lastUpdated ?? 0) <= 20_000)
         .map(([, state]) => state.user?.name))
-      if (names.has(name)) {
-        const host = resolveSessionHost(options.dir)
-        label = host
-        let suffix = 2
-        while (names.has(`${options.name}+${label}`)) label = `${host}-${suffix++}`
-        name = `${options.name}+${label}`
-        autoTagNote = `joined as ${name} (${options.name} was already here from another session)`
+      const roomDoc = new RoomDoc(doc)
+      const holdsWork = (candidate: string) => roomDoc.changedPaths(candidate).length > 0 || (roomDoc.deleted.get(candidate)?.size ?? 0) > 0
+      const rememberedName = rememberedTag === undefined ? undefined : rememberedTag ? `${options.name}+${rememberedTag}` : options.name
+      const rememberedPresent = rememberedName !== undefined && names.has(rememberedName)
+      const barePresent = names.has(options.name)
+      const host = resolveSessionHost(options.dir)
+      for (let candidate = rememberedTag === undefined ? 0 : -1; ; candidate++) {
+        const tag = candidate === -1 ? rememberedTag! : candidate === 0 ? '' : candidate === 1 ? host : `${host}-${candidate}`
+        const candidateName = tag ? `${options.name}+${tag}` : options.name
+        if (names.has(candidateName) || (tag !== rememberedTag && holdsWork(candidateName))) continue
+        label = tag || undefined
+        name = candidateName
+        break
+      }
+      if (rememberedPresent || name !== options.name && name !== rememberedName) {
+        autoTagNote = `joined as ${name} (${rememberedPresent ? `remembered name ${rememberedName} is in use by another session` : barePresent ? `${options.name} is in use by another session` : `${options.name} still holds uncommitted work from another clone`})`
         ;(options.log ?? console.error)(autoTagNote)
       }
+      if ((label ?? '') !== rememberedTag) await rememberTag(options.dir, label ?? '')
     } finally {
       provider.destroy()
       provider.awareness.destroy()
