@@ -52,17 +52,27 @@ export class GitHubProxy {
     return { status: res.status, body }
   }
 
-  /** Open PRs of owner/repo whose base is `branch`, newest update first, with their files. Cached. */
-  async openPrs(token: string, ownerRepo: string, branch: string): Promise<PullRequest[]> {
-    const key = `${ownerRepo}#${branch}`
+  /** Open PRs of owner/repo, newest update first, with their files. By default those whose base is `branch`;
+   *  `{ head: true }` lists those whose HEAD is `branch` instead (any base). Cached per query. */
+  async openPrs(token: string, ownerRepo: string, branch: string, opts: { head?: boolean } = {}): Promise<PullRequest[]> {
+    const key = `${ownerRepo}#${opts.head ? 'head:' : ''}${branch}`
     const hit = this.cache.get(key)
     if (hit && hit.exp > this.now()) return hit.prs
-    const list = await this.api(token, `/repos/${ownerRepo}/pulls?state=open&base=${encodeURIComponent(branch)}&per_page=50&sort=updated&direction=desc`)
+    const owner = ownerRepo.split('/')[0]
+    const filter = opts.head ? `head=${encodeURIComponent(`${owner}:${branch}`)}` : `base=${encodeURIComponent(branch)}`
+    const list = await this.api(token, `/repos/${ownerRepo}/pulls?state=open&${filter}&per_page=50&sort=updated&direction=desc`)
     if (list.status !== 200 || !Array.isArray(list.body)) throw new GitHubError(list.status, `could not list pull requests of ${ownerRepo} (HTTP ${list.status})`)
     const prs: PullRequest[] = []
     for (const raw of list.body as RawPr[]) {
-      const files = await this.api(token, `/repos/${ownerRepo}/pulls/${raw.number}/files?per_page=100`)
-      const paths = files.status === 200 && Array.isArray(files.body) ? (files.body as { filename?: string }[]).map(f => f.filename).filter((f): f is string => !!f) : []
+      // GitHub pages the file list at 100; a large PR has more, and a mirrored scope must not silently drop them.
+      const paths: string[] = []
+      for (let page = 1; page <= 30; page++) {
+        const files = await this.api(token, `/repos/${ownerRepo}/pulls/${raw.number}/files?per_page=100&page=${page}`)
+        if (files.status !== 200 || !Array.isArray(files.body)) break
+        const batch = (files.body as { filename?: string }[]).map(f => f.filename).filter((f): f is string => !!f)
+        paths.push(...batch)
+        if ((files.body as unknown[]).length < 100) break
+      }
       prs.push({ number: raw.number, title: raw.title ?? '', author: raw.user?.login ?? '', head: raw.head?.ref ?? '', files: paths, updatedAt: raw.updated_at ?? '', url: raw.html_url ?? '' })
     }
     this.cache.set(key, { exp: this.now() + this.cacheMs, prs })

@@ -48,7 +48,7 @@ async function browserLogsIn(a: Auth, idp: { setNonce: (n: string) => void }, st
 
 describe('OIDC login', () => {
   it('exposes providers and builds a PKCE authorize URL with state = device', async () => {
-    const idp = await fakeIdp({ email: 'ann@example.com' })
+    const idp = await fakeIdp({ email: 'ann@example.com', email_verified: true })
     const a = make(idp)
     expect(a.providers).toEqual(['oidc'])
     expect(a.mode).toBe('token')
@@ -92,15 +92,27 @@ describe('OIDC login', () => {
     expect(await browserLogsIn(a, idp, s)).toEqual({ login: 'ann' })
   })
 
+  it('an unverified email is not an identity: refused by the allowlist, and never the login', async () => {
+    const unverified = await fakeIdp({ email: 'admin@example.com', email_verified: false, preferred_username: 'mallory' })
+    const a = make(unverified, { oidc: { issuer: ISSUER, clientId: CLIENT, clientSecret: 'shh', publicUrl: PUBLIC, allowedDomains: ['example.com'] } })
+    const s = await a.start() as { url: string; device: string }
+    expect(await browserLogsIn(a, unverified, s)).toMatchObject({ error: expect.stringContaining('unverified') })
+    // without an allowlist the account is admitted, but under its username, not the address it typed
+    const idp2 = await fakeIdp({ email: 'admin@example.com', email_verified: false, preferred_username: 'mallory' })
+    const c = make(idp2)
+    const s2 = await c.start() as { url: string; device: string }
+    expect(await browserLogsIn(c, idp2, s2)).toEqual({ login: 'mallory' })
+  })
+
   it('enforces the email domain allowlist', async () => {
-    const idp = await fakeIdp({ email: 'mallory@evil.com' })
+    const idp = await fakeIdp({ email: 'mallory@evil.com', email_verified: true })
     const a = make(idp, { oidc: { issuer: ISSUER, clientId: CLIENT, clientSecret: 'shh', publicUrl: PUBLIC, allowedDomains: ['example.com', 'Example.org'] } })
     const s = await a.start() as { url: string; device: string }
     expect(await browserLogsIn(a, idp, s)).toMatchObject({ error: expect.stringContaining('not in an allowed domain') })
     // the poller learns of the failure and the attempt is spent
     expect(await a.poll(s.device)).toMatchObject({ error: expect.stringContaining('not in an allowed domain') })
     expect(a.size).toBe(0)
-    const ok = await fakeIdp({ email: 'bob@EXAMPLE.ORG' })
+    const ok = await fakeIdp({ email: 'bob@EXAMPLE.ORG', email_verified: true })
     const b = make(ok, { oidc: { issuer: ISSUER, clientId: CLIENT, clientSecret: 'shh', publicUrl: PUBLIC, allowedDomains: ['example.com', 'example.org'] } })
     const s2 = await b.start() as { url: string; device: string }
     expect(await browserLogsIn(b, ok, s2)).toEqual({ login: 'bob@example.org' })
@@ -108,7 +120,7 @@ describe('OIDC login', () => {
     const none = await fakeIdp({ preferred_username: 'ghost' })
     const c = make(none, { oidc: { issuer: ISSUER, clientId: CLIENT, clientSecret: 'shh', publicUrl: PUBLIC, allowedDomains: ['example.com'] } })
     const s3 = await c.start() as { url: string; device: string }
-    expect(await browserLogsIn(c, none, s3)).toMatchObject({ error: expect.stringContaining('without an email') })
+    expect(await browserLogsIn(c, none, s3)).toMatchObject({ error: expect.stringContaining('without a verified email') })
   })
 
   it('rejects a bad signature, a wrong nonce, an unknown state, an IdP error and a failed exchange', async () => {
@@ -117,7 +129,7 @@ describe('OIDC login', () => {
     const s = await a.start() as { url: string; device: string }
     expect(await browserLogsIn(a, bad, s)).toMatchObject({ error: expect.stringContaining('ID token rejected') })
 
-    const idp = await fakeIdp({ email: 'ann@example.com' })
+    const idp = await fakeIdp({ email: 'ann@example.com', email_verified: true })
     const b = make(idp)
     const s2 = await b.start() as { url: string; device: string }
     idp.setNonce('not-the-nonce')
@@ -136,7 +148,7 @@ describe('OIDC login', () => {
 
   it('login attempts expire', async () => {
     let t = 1_000_000
-    const idp = await fakeIdp({ email: 'ann@example.com' })
+    const idp = await fakeIdp({ email: 'ann@example.com', email_verified: true })
     const a = make(idp, { now: () => t, loginTtlMs: 60_000 })
     const s = await a.start() as { url: string; device: string; expires_in: number }
     expect(s.expires_in).toBe(60)
@@ -145,7 +157,7 @@ describe('OIDC login', () => {
   })
 
   it('both providers configured: github first, start(provider) picks; unknown provider refused', async () => {
-    const idp = await fakeIdp({ email: 'ann@example.com' })
+    const idp = await fakeIdp({ email: 'ann@example.com', email_verified: true })
     const a = make(idp, { clientId: 'gh-cid' })
     expect(a.providers).toEqual(['github', 'oidc'])
     expect(a.mode).toBe('device')
@@ -156,7 +168,7 @@ describe('OIDC login', () => {
 
   it('OIDC sessions persist through the FileStore without a GitHub token', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-oidc-'))
-    const idp = await fakeIdp({ email: 'ann@example.com' })
+    const idp = await fakeIdp({ email: 'ann@example.com', email_verified: true })
     const a = make(idp, { store: new FileStore({ dir }) })
     const s = await a.start() as { url: string; device: string }
     await browserLogsIn(a, idp, s)

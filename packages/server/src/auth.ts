@@ -208,11 +208,13 @@ export class Auth {
       claims = payload as typeof claims
     } catch (e) { return fail(d, `ID token rejected: ${e instanceof Error ? e.message : e}`) }
     if (claims.nonce !== d.nonce) return fail(d, 'ID token nonce mismatch')
-    const email = claims.email?.trim().toLowerCase()
+    // Only a verified email is an identity: an IdP may pass through an unverified address anyone can type in.
+    const rawEmail = claims.email?.trim().toLowerCase()
+    const email = rawEmail && claims.email_verified === true ? rawEmail : undefined
     const domains = oidc.allowedDomains?.map(x => x.trim().toLowerCase()).filter(Boolean) ?? []
     if (domains.length) {
       const domain = email?.split('@')[1]
-      if (!domain || !domains.includes(domain)) return fail(d, `${email ?? 'an account without an email'} is not in an allowed domain (${domains.join(', ')})`)
+      if (!domain || !domains.includes(domain)) return fail(d, `${email ?? (rawEmail ? `${rawEmail} (unverified)` : 'an account without a verified email')} is not in an allowed domain (${domains.join(', ')})`)
     }
     const login = email || claims.preferred_username?.trim() || claims.sub
     if (!login) return fail(d, 'ID token has no email, preferred_username or sub')

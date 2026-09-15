@@ -32,6 +32,7 @@ import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, docs, getPersistence } from '@y/websocket-server/utils'
 import { makeReadOnly, bindIdentity, capDocSize } from './readonly.js'
+import { docNameOf, roomNameOf, githubRepoOf, repoOf } from './names.js'
 import * as Y from 'yjs'
 import { Auth } from './auth.js'
 import type { Provider } from './auth.js'
@@ -83,24 +84,6 @@ async function githubCanPush(token: string, ownerRepo: string): Promise<boolean>
     return true
   } catch { return false }
 }
-/** Clients encode the room name once or twice; decode until it stops changing. */
-function roomNameOf(roomPath: string): string {
-  let name = roomPath.replace(/^\/+/, '')
-  for (let i = 0; i < 3; i++) {
-    let next: string
-    try { next = decodeURIComponent(name) } catch { break }
-    if (next === name) break
-    name = next
-  }
-  return name
-}
-/** "github.com%2Fowner%2Frepo%2Fbranch" (or decoded) -> "owner/repo" */
-function githubRepoOf(roomPath: string): string | undefined {
-  const name = roomNameOf(roomPath)
-  const m = name.match(/^github\.com\/([^/]+)\/([^/]+)\//)
-  return m ? `${m[1]}/${m[2]}` : undefined
-}
-
 /** Room-scoped tokens for the browser view (minted for verified clients). Persisted next to the
  *  room data so a redeploy does not invalidate links people already opened. */
 const viewTokens = new Map<string, { room: string; exp: number }>()
@@ -113,10 +96,6 @@ function saveViewTokens() {
 }
 
 /** "github.com/owner/repo/feature/x" -> "github.com/owner/repo"; "git/host/owner/repo/main" -> "git/host/owner/repo"; "local/dir/main" -> "local/dir". */
-function repoOf(roomName: string): string {
-  const parts = roomName.split('/')
-  return parts.slice(0, roomName.startsWith('github.com/') ? 3 : roomName.startsWith('git/') ? 4 : 2).join('/')
-}
 /** Repos someone has opened: repo -> who/when + the branch rooms seen since. Persisted through the store. */
 const rooms = new Map<string, OpenRepo>()
 const roomsLoaded = auth.ready.then(() => store.loadRooms()).then(all => { for (const [k, v] of Object.entries(all)) rooms.set(k, v) }).catch(e => console.log(`could not load the room registry: ${e instanceof Error ? e.message : e}`))
@@ -318,7 +297,7 @@ const server = http.createServer((req, res) => {
       if (!rooms.has(repoOf(name))) return text(404, NOT_OPEN(name))
       const token = githubTokenFor(c)
       if (!token) return text(403, 'this session has no GitHub token; log in with GitHub to see pull requests')
-      try { json(200, await github.openPrs(token, repo, name.slice(`github.com/${repo}/`.length))) }
+      try { json(200, await github.openPrs(token, repo, name.slice(`github.com/${repo}/`.length), { head: url.searchParams.get('head') === '1' })) }
       catch (e) { githubFail('github/prs', e) }
     })()
     return
@@ -379,7 +358,9 @@ const droppedWrite = (room: string) => () => {
   dropLog.set(room, now)
   console.log(`dropped write from a view-key connection (room ${room})`)
 }
-wss.on('connection', (conn, req) => setupWSConnection(conn, req, { gc: true }))
+// The docs map (and persistence) is keyed by the DECODED room name, the same key admission, closing,
+// expiry and the size cap use; y-websocket's default would key by the raw, possibly double-encoded path.
+wss.on('connection', (conn, req) => setupWSConnection(conn, req, { gc: true, docName: docNameOf(req.url ?? '/') }))
 const refuse = (socket: import('node:stream').Duplex, code: number, why: string, room?: string) => {
   console.log(`refused ${code} ${why}${room ? ` (room ${room})` : ''}`)
   audit({ event: 'refused', room, reason: `${code} ${why}` })
