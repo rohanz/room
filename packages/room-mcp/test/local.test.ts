@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -8,10 +8,13 @@ import { createTools } from '../src/tools.js'
 
 let dir: string
 const sessions: Session[] = []
-const prevServer = process.env.ROOM_SERVER
+/** Every ROOM_* variable a shell might carry (a worker's ROOM_TAG/ROOM_OWNER, a runner's ROOM_URL): cleared per test, restored after. */
+const prevRoomEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('ROOM_')))
+const clearRoomEnv = () => { for (const k of Object.keys(process.env)) if (k.startsWith('ROOM_')) delete process.env[k] }
 
+beforeEach(clearRoomEnv)
 beforeAll(() => {
-  delete process.env.ROOM_SERVER
+  clearRoomEnv()
   dir = mkdtempSync(join(tmpdir(), 'room-localjoin-'))
   const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 'Ada')
@@ -20,7 +23,8 @@ beforeAll(() => {
 })
 afterAll(async () => {
   for (const s of sessions) { try { await leaveSession(s) } catch { /* ignore */ } }
-  if (prevServer !== undefined) process.env.ROOM_SERVER = prevServer
+  clearRoomEnv()
+  Object.assign(process.env, prevRoomEnv)
 })
 
 describe('local mode (no server)', () => {
