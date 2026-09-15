@@ -279,10 +279,11 @@ it('places transparent text tags after the annotation in a non-overlapping row b
   expect(computed.boxShadow).toBe('none')
   expect(['', '0px']).toContain(computed.borderTopWidth)
   expect(computed.position).toBe('static')
-  // Normal flex flow allocates separate boxes; neither item is positioned over the other.
+  // The band reserves space for the absolutely positioned tag stack.
   expect(rule('.line-band')).toContain('display: flex')
   expect(rule('.line-band')).toContain('gap: 12px')
-  expect(rule('.line-tags')).toContain('flex: 0 0 96px')
+  expect(rule('.line-band')).toContain('padding-right: 108px')
+  expect(rule('.line-tags')).toContain('position: absolute')
   expect(css).not.toContain('.conflict-tag.line-hovered')
 })
 it('only shows an inset keyboard focus ring on the detail', () => {
@@ -290,4 +291,34 @@ it('only shows an inset keyboard focus ring on the detail', () => {
   expect(rule('.inline-detail')).toContain('box-shadow: none')
   expect(rule('.inline-detail:focus-visible')).toContain('outline: none')
   expect(rule('.inline-detail:focus-visible')).toContain('box-shadow: inset 0 0 0 2px var(--accent)')
+})
+
+it('keeps a row with conflict and resolved tags as tall as a plain row', () => {
+  renderCodeLines(host, lines.map((line, i) => ({ ...line, conflict: i === 0, conflictPair: ['rohanz', 'codex'] as [string, string] })), ['rohanz', 'codex'])
+  const [tagged, plain] = rows()
+  const slot = tagged.querySelector<HTMLElement>('.line-tags')!
+  const resolved = document.createElement('button')
+  resolved.className = 'conflict-tag resolved'
+  resolved.textContent = 'resolved'
+  slot.append(resolved)
+  expect(slot.children).toHaveLength(2)
+  const style = document.createElement('style')
+  style.textContent = ['.line-tags', '.line-band', '.conflict-tag'].map(selector => selector + ' {' + rule(selector) + '}').join('\n')
+  document.head.append(style)
+  const stack = dom.window.getComputedStyle(slot)
+  expect(stack.position).toBe('absolute')
+  expect(stack.top).toBe('0px')
+  expect(stack.right).toBe('0px')
+  expect(stack.width).toBe('96px')
+  expect(stack.gap).toBe('2px')
+  // Model the grid's intrinsic row sizing, which jsdom does not implement:
+  // an absolute child contributes no height, while an in-flow stack contributes both tags.
+  for (const row of [tagged, plain]) vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => {
+    const tags = row.querySelector<HTMLElement>('.line-tags')!
+    const computed = dom.window.getComputedStyle(tags)
+    const contribution = computed.position === 'absolute' ? 0 : tags.children.length * 17 + Math.max(0, tags.children.length - 1) * 2
+    return { height: Math.max(17, contribution) } as DOMRect
+  })
+  expect(tagged.getBoundingClientRect().height).toBe(17)
+  expect(tagged.getBoundingClientRect().height).toBe(plain.getBoundingClientRect().height)
 })

@@ -12,12 +12,18 @@ try {
   const conn = connect(), focus = createFocusState()
   const files = centrePanel(conn, focus), network = networkPanel(conn, focus)
   const graphButton = h('button', {}, 'Network'), filesButton = h('button', {}, 'Files')
+  const inspectorTabs = h('nav', { class: 'workspace-tabs', ariaLabel: 'Inspector view' }, filesButton, graphButton)
+  const workspace = h('div', { class: 'workspace' }, network, files)
   const chooseGraph = (graph: boolean) => {
+    // Keep the Files divider alongside both the tabs and content for its full height.
+    const tabHost = graph ? workspace : files
+    const focusedTab = inspectorTabs.contains(document.activeElement) ? document.activeElement as HTMLElement : null
+    tabHost.prepend(inspectorTabs)
     files.hidden = graph; network.hidden = !graph
+    focusedTab?.focus()
     for (const [button, active] of [[graphButton, graph], [filesButton, !graph]] as const) { button.classList.toggle('active', active); button.ariaPressed = String(active) }
   }
   graphButton.onclick = () => chooseGraph(true); filesButton.onclick = () => chooseGraph(false); chooseGraph(false)
-  const workspace = h('div', { class: 'workspace' }, h('nav', { class: 'workspace-tabs', ariaLabel: 'Inspector view' }, filesButton, graphButton), network, files)
   const people = participantsPanel(conn, focus), timeline = timelinePanel(conn, focus)
   const mobile = h('nav', { class: 'mobile-tabs', ariaLabel: 'Code panels' })
   const peopleHandle = h('div', { class: 'people-handle' }), timelineHandle = h('div', { class: 'timeline-handle' })

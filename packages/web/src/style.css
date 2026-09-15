@@ -340,7 +340,11 @@ h2, p { margin: 0; }
 .state-pill, .episode-status, .priority, .area-chip, .claim-count, .link-chip, .kind-badge { font: 500 11px/1.6 var(--sans); }
 .micro-label { font-size: 10px; }
 .person-claim { border-color: var(--accent); font-size: 12px; }
-.center { grid-template-columns: var(--files-width, 200px) 6px minmax(360px, 1fr); }
+.center { grid-template-columns: var(--files-width, 200px) 6px minmax(360px, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+.center > .workspace-tabs { grid-column: 1 / -1; grid-row: 1; }
+.center > .center-files { grid-column: 1; grid-row: 2; }
+.center > .viewer { grid-column: -2; grid-row: 2; }
+.center > .files-handle { grid-column: 2; grid-row: 1 / -1; }
 .center-files { padding: 16px 8px; }
 .file-path, .selected-path, .person-select, .compare-label, .tab, .legend { font-size: 12px; }
 .file-item { padding: 8px; }
@@ -497,7 +501,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .side-marker .dot { width: 5px; height: 5px; margin: 0; }
 .merged-code .claim-overlap-line:not(.conflict-line):not(.changed-line) { background: var(--code-bg); }
 .conflict-bar.resolved { background: var(--muted); color: var(--muted); }
-.conflict-tag { position: static; padding: 0; border: 0; border-radius: 0; box-shadow: none; font: 11px/17px var(--sans); color: var(--conflict-red); background: transparent; white-space: nowrap; text-align: right; }
+.conflict-tag { position: static; max-width: 100%; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; padding: 0; border: 0; border-radius: 0; box-shadow: none; font: 11px/17px var(--sans); color: var(--conflict-red); background: transparent; white-space: nowrap; text-align: right; }
 .conflict-tag.claim-overlap { color: var(--claim-amber); }
 .conflict-tag.resolved { color: var(--muted); }
 .conflict-tag:focus-visible { outline-offset: 0; }
@@ -721,8 +725,8 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .merge-hint { padding: 0 12px 8px; font-size: 12px; }
 
 /* Annotation and tags share one sticky row band, in reading order. */
-.line-band { position: sticky; right: 0; grid-column: 1 / -1; grid-row: 1; justify-self: end; align-self: start; display: flex; align-items: flex-start; gap: 12px; z-index: 4; background: none; }
-.line-tags { box-sizing: border-box; width: 96px; flex: 0 0 96px; padding-right: 8px; display: flex; flex-direction: column; align-items: flex-end; }
+.line-band { position: sticky; right: 0; grid-column: 1 / -1; grid-row: 1; justify-self: end; align-self: start; display: flex; align-items: flex-start; gap: 12px; padding-right: 108px; min-height: 17px; pointer-events: none; z-index: 4; background: none; }
+.line-tags { position: absolute; top: 0; right: 0; box-sizing: border-box; width: 96px; padding-right: 8px; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .line-annotation { box-sizing: border-box; min-width: 0; max-width: 50cqi; padding: 0; font: 12px/17px var(--sans); color: var(--muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; pointer-events: none; background: none; }
 .conflict-code-grid .code-line.line-hovered { --hover-row-bg: color-mix(in srgb, var(--code-ink) 7%, var(--code-bg)); background: var(--hover-row-bg); }
 .inline-detail { outline: none; box-shadow: none; box-sizing: border-box; position: sticky; left: 89px; width: calc(100cqi - 185px); margin-left: 89px; margin-right: 96px; min-width: 0; padding: 8px 42px 8px 12px; border-block: 1px solid var(--line); font: 12px/1.5 var(--sans); color: var(--muted); background: var(--soft); white-space: pre-wrap; overflow-wrap: anywhere; }
