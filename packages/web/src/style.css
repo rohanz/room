@@ -729,10 +729,10 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .line-tags { position: absolute; top: 0; right: 0; box-sizing: border-box; width: 96px; padding-right: 8px; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .line-annotation { box-sizing: border-box; min-width: 0; max-width: 50cqi; padding: 0; font: 12px/17px var(--sans); color: var(--muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; pointer-events: none; background: none; }
 .conflict-code-grid .code-line.line-hovered { --hover-row-bg: color-mix(in srgb, var(--code-ink) 7%, var(--code-bg)); background: var(--hover-row-bg); }
-.inline-detail { outline: none; box-shadow: none; box-sizing: border-box; position: sticky; left: 89px; width: calc(100cqi - 185px); margin-left: 89px; margin-right: 96px; min-width: 0; padding: 8px 42px 8px 12px; border-block: 1px solid var(--line); font: 12px/1.5 var(--sans); color: var(--muted); background: var(--soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.inline-detail { outline: none; box-shadow: none; box-sizing: border-box; position: sticky; left: 0; width: 0; contain: inline-size; overflow: hidden; margin-left: 89px; margin-right: 96px; min-width: 0; padding: 8px 42px 8px 12px; border-block: 1px solid var(--line); font: 12px/1.5 var(--sans); color: var(--muted); background: var(--soft); white-space: normal; overflow-wrap: anywhere; }
 .inline-detail-close { position: absolute; top: 8px; right: 12px; box-sizing: border-box; width: 24px; height: 24px; min-height: 0; border: 0; background: transparent; border-radius: 6px; display: grid; place-items: center; color: var(--muted); font: 500 16px/1 var(--sans); padding: 0; }
 .inline-detail-close:hover, .inline-detail-close:focus-visible { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.merged-code .inline-detail { left: 69px; width: calc(100cqi - 165px); margin-left: 69px; }
+.merged-code .inline-detail { margin-left: 69px; }
 .conflict-code-grid .code-line code { min-width: 0; overflow: visible; }
 .conflict-code-grid .diff-prefix { background: none; border: none; }
 

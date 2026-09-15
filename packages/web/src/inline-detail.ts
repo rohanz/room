@@ -2,10 +2,11 @@ import { lineAnnotation, lineDetail, type LineDetailInput } from '@room/shared'
 
 /** One controller per rendered pane; no document listeners or floating overlays. */
 export function inlineDetails(onLayout: (open: number | null) => void) {
-  let opened: { index: number; row: HTMLElement; region: HTMLElement; clearHover: () => void } | undefined
+  let opened: { index: number; row: HTMLElement; region: HTMLElement; clearHover: () => void; resize?: ResizeObserver } | undefined
   const close = (restoreFocus = false) => {
     if (!opened) return
-    const { row, region, clearHover } = opened
+    const { row, region, clearHover, resize } = opened
+    resize?.disconnect()
     region.remove()
     row.classList.remove('line-expanded')
     if (!row.matches(':hover')) clearHover()
@@ -87,10 +88,26 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
       region.append(button, content)
       region.onkeydown = event => { if (event.key === 'Escape') { event.preventDefault(); close(true) } }
       row.insertAdjacentElement('afterend', region)
+      const scroller = row.closest<HTMLElement>('.code-scroll')
+      let detailResize: ResizeObserver | undefined
+      const sizeDetail = () => {
+        if (!region.isConnected) { detailResize?.disconnect(); return }
+        if (!scroller) return
+        const style = window.getComputedStyle(region)
+        // Subtract the sticky gutter and reserved tag column, including when
+        // a vertical scrollbar reduces the pane's usable width.
+        const reserved = (parseFloat(style.marginLeft) || 0) + (parseFloat(style.marginRight) || 0)
+        region.style.width = Math.max(0, scroller.clientWidth - reserved) + 'px'
+      }
+      sizeDetail()
+      if (scroller && typeof ResizeObserver !== 'undefined') {
+        detailResize = new ResizeObserver(sizeDetail)
+        detailResize.observe(scroller)
+      }
       row.setAttribute('aria-expanded', 'true')
       row.classList.add('line-expanded')
       row.focus()
-      opened = { index, row, region, clearHover: () => { hovered.clear(); update() } }
+      opened = { index, row, region, resize: detailResize, clearHover: () => { hovered.clear(); update() } }
       onLayout(index)
       region.style.gridRow = String(index + 2)
       region.style.gridColumn = '1'

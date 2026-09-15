@@ -222,8 +222,8 @@ it.each([true, false])('uses one pane scroller with pinned edges and detail (mer
   }
   rows()[0].click()
   expect(rule('.inline-detail')).toContain('position: sticky')
-  expect(rule(merged ? '.merged-code .inline-detail' : '.inline-detail'))
-    .toContain(merged ? 'width: calc(100cqi - 165px)' : 'width: calc(100cqi - 185px)')
+  expect(rule('.inline-detail')).toContain('left: 0')
+  expect(details()[0].style.width).toMatch(/^\d+px$/)
 })
 
 it('refreshes the hover fade when the pane scrolls', () => {
@@ -321,4 +321,46 @@ it('keeps a row with conflict and resolved tags as tall as a plain row', () => {
   })
   expect(tagged.getBoundingClientRect().height).toBe(17)
   expect(tagged.getBoundingClientRect().height).toBe(plain.getBoundingClientRect().height)
+})
+
+it.each([true, false])('keeps long-plan details within clientWidth on expansion and resize (merged=%s)', merged => {
+  const style = document.createElement('style')
+  style.textContent = '.mono { white-space: pre; } .inline-detail {' + rule('.inline-detail') + '} .merged-code .inline-detail {' + rule('.merged-code .inline-detail') + '}'
+  document.head.append(style)
+  let resized: () => void = () => {}
+  const disconnect = vi.fn(), observe = vi.fn()
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: () => void) { resized = callback }
+    observe = observe
+    disconnect = disconnect
+  })
+  const plan = 'x'.repeat(600)
+  renderCodeLines(host, lines, ['rohanz'], () => [{ ...claim, plans: [{ kind: 'add', symbol: 'discount', detail: plan }] }], [], merged)
+  const scroller = host.querySelector<HTMLElement>('.code-scroll')!
+  let clientWidth = 800
+  vi.spyOn(scroller, 'clientWidth', 'get').mockImplementation(() => clientWidth)
+  const before = scroller.scrollWidth
+  rows()[0].click()
+  const detail = details()[0]
+  expect(detail.textContent).toContain(plan)
+  expect(scroller.scrollWidth).toBe(before)
+  // jsdom has no layout; these assertions enforce the actual sizing contract
+  // rather than treating its zero scrollWidth as evidence of browser layout.
+  const computed = dom.window.getComputedStyle(detail)
+  expect(computed.whiteSpace).toBe('normal')
+  expect(computed.overflowWrap).toBe('anywhere')
+  expect(computed.position).toBe('sticky')
+  expect(computed.left).toBe('0px')
+  expect(computed.contain).toBe('inline-size')
+  const reserved = (merged ? 69 : 89) + 96
+  expect(detail.style.width).toBe((clientWidth - reserved) + 'px')
+  expect(observe).toHaveBeenCalledWith(scroller)
+  for (const width of [320, 1400, 800]) {
+    clientWidth = width
+    resized()
+    expect(detail.style.width).toBe((width - reserved) + 'px')
+  }
+  rows()[0].click()
+  expect(scroller.scrollWidth).toBe(before)
+  expect(disconnect).toHaveBeenCalledOnce()
 })
