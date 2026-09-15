@@ -22,11 +22,7 @@ Workers' branches are not merged for you: when a worker reports done, ask the le
 For `rohanz/room-playground` (Kieran, Hrishi) or any GitHub repo you can push to.
 
 1. Install the plugin as above.
-2. Point it at the server, once per shell (or in your shell profile):
-   ```sh
-   export ROOM_SERVER=hosted
-   ```
-3. Start your agent in the clone (same commands as above) and say **"join the team room"**. The first time it replies:
+2. Start your agent in the clone (same commands as above) and say **"join the team room"**. That is the whole switch, no variables. The choice is remembered for that clone, so later sessions there join the team room on their own; "work locally" switches back. The first time it replies:
    > Open https://github.com/login/device and enter the code XXXX-XXXX (valid 15 min).
 
    Do that in a browser, approve "room", then tell the agent "done" so it finishes the login and joins. Ninety days, per machine. Your participant name is your GitHub login. The agent also says, once, that uncommitted work in this clone is now visible to the repo's room members; that is the moment you are sharing. The choice is remembered for that clone, so later sessions join without being asked.
