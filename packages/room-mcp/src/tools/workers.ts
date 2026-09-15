@@ -158,6 +158,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`
       if (w.status !== 'running' && !workerAlive(s, w)) return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`
       const how = dismissWorker(s, w, w.status === 'running' ? 'dismissed by the lead' : `its process was stopped by the lead after it reported ${w.status}`)
+      if (w.status === 'running' && s.room.workers.get(tag)?.status === 'running') return `could not dismiss ${tag}: ${how}; status stays running; its work is on branch ${w.branch} in ${w.dir}`
       return `${w.status === 'running' ? 'dismissed' : `stopped the ${w.status} worker`} ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`
     }
   }
@@ -196,13 +197,13 @@ export function install(state: HandlerState): void {
       let how: string, signalled: boolean
       if (proc) {
         signalled = proc.kill()
-        how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} could not be signalled: the process is already gone, so its status stands`
+        how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled: the process is already gone`
       } else if (pidIsOurWorker(w.pid, w, ctx.probe)) {
         signalled = signalWorker(w.pid)
-        how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} could not be signalled (it exited just now, or is not ours to signal), so its status stands`
+        how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled (it exited just now, or is not ours to signal)`
       } else {
         signalled = false
-        how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone and its status stands`
+        how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`
       }
       if (signalled || !proc) rooms.dropHandle(s, w.id)
       if (signalled && w.status === 'running') s.room.updateWorker(w.tag, { status: 'dismissed' }, w.id)

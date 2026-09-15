@@ -50,6 +50,11 @@ describe('room_login / room_logout', () => {
     expect(second).toContain('logged in to')
     expect(second).toContain('as octo')
     expect(getCredential(url)).toMatchObject({ login: 'octo', session: 's'.repeat(64) })
+    let joined = false
+    const guarded = createTools({ getSession: () => null, setSession: () => {}, cwd: process.cwd(), join: async () => { joined = true; throw new Error('must not join') } })
+    expect(await guarded.call('room_join', { server: url, room: 'github.com/x/y/main', name: 'alias' }))
+      .toBe('error: name is your GitHub login on this server (octo); use ROOM_TAG for a second agent')
+    expect(joined).toBe(false)
     // the join path picks the session up and binds the name to the login
     const a = await resolveAuth(url, 'github.com/x/y/main')
     expect(a).toMatchObject({ session: 's'.repeat(64), login: 'octo' })

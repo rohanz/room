@@ -6,6 +6,8 @@ import { LOCAL } from '../session.js'
 import { pidAlive } from '../workers.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
+const offlineSince = new WeakMap<Session, number>()
+
 export const defs: ToolDef[] = [
   { name: 'room_scope', annotations: RW, description: 'Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. Do this before editing. Replaces your previous scope. The reply ends with the area ledger: what others changed there and their open plans.',
     inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('files or directories you expect to touch') }, required: ['area', 'summary', 'paths'] } },
@@ -42,19 +44,35 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const m = s.room.meta
       const out: string[] = []
       const wsRoom = rooms.workers()
+      const disconnected = !!s.closed || (s.provider as { wsconnected?: boolean }).wsconnected === false
+      if (disconnected) {
+        const since = offlineSince.get(s) ?? now()
+        offlineSince.set(s, since)
+        const server = s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
+        out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state`)
+      } else offlineSince.delete(s)
       out.push(`room: ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ''}`)
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? '?').slice(0, 10)})`)
       // Folder-scoped view: only people, claims and changes in my areas, unless all=true (or I am in none yet).
       const mineA = myAreas(s)
       const all = a.all === true || !mineA.length
       const ps = presences(s)
-      const inView = (person: string) => all || person === s.me.name || inMyAreas(s, person)
-      const pathInView = (p: string) => all || mineA.includes(areasOf(s).areaOf(p))
+      const myClaims = s.room.openClaims().filter(c => c.by === s.me.name)
+      const myPaths = [...(s.room.scope(s.me.name)?.paths ?? []), ...s.room.changedPaths(s.me.name), ...myClaims.map(c => c.path)]
+      const overlapsMyPath = (p: string) => myPaths.some(q => scopeCovers({ paths: [q] }, p) || scopeCovers({ paths: [p] }, q))
+      const pathInView = (p: string) => all || overlapsMyPath(p) || mineA.includes(areasOf(s).areaOf(p))
+      const inView = (person: string) => {
+        if (all || person === s.me.name) return true
+        const sc = s.room.scope(person)
+        if (sc?.paths.some(overlapsMyPath)) return true
+        const theirs = s.room.openClaims().filter(c => c.by === person)
+        return theirs.some(c => myClaims.some(m => c.path === m.path && rangesOverlap(c.from, c.to, m.from, m.to)))
+      }
       const everyone = Array.from(new Set<string>([s.me.name, ...others(s)].filter(n => ps.some(p => p.user.name === n) || s.room.scopes.has(n)))).sort()
       const names = everyone.filter(inView)
       const hidden = everyone.filter(n => !inView(n))
       out.push(all ? `areas: ${mineA.length ? mineA.join(', ') : 'none yet'} (showing all)` : `your areas: ${mineA.join(', ')} (room_state all=true for everything)`)
-      out.push(`participants${all ? '' : ' in your areas'} (${names.length}):`)
+      out.push(`participants${all ? '' : ' overlapping your work'} (${names.length}):`)
       for (const n of names) {
         const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1000))}s ago` : 'offline'
@@ -63,16 +81,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const areaSummary = areaMembershipSummary(theirs)
         out.push(`  - ${who}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)}${areaSummary ? ` · ${areaSummary}` : ''} · ${ago}`)
       }
-      if (hidden.length) {
-        const otherAreas = new Set<string>()
-        for (const n of hidden) for (const x of areasFor(s, n)) if (!mineA.includes(x)) otherAreas.add(x)
-        out.push(`  ${otherAreasLine(hidden.length, Array.from(otherAreas))}`)
-      }
+      if (hidden.length) out.push(`  ${hidden.length} others: ${hidden.join(', ')} (all:true for detail)`)
       out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       const areaScopes = all ? s.room.allScopes() : s.room.allScopes().filter(sc => inView(sc.by))
       const summary = s.room.areaSummary().filter(l => areaScopes.some(sc => l.startsWith(`${sc.area} (`)))
       if (summary.length) { out.push('activity by scope area:'); for (const l of summary) out.push(`  - ${l}`) }
-      const cs = s.room.openClaims().filter(c => pathInView(c.path) || isMe(s, { name: c.by, kind: c.byKind }))
+      const cs = s.room.openClaims().filter(c => pathInView(c.path))
       const hiddenClaims = s.room.openClaims().length - cs.length
       out.push(`open claims${all ? '' : ' in your areas'} (${cs.length}${hiddenClaims ? `, ${hiddenClaims} elsewhere` : ''}):`)
       for (const c of cs) out.push(claimLine(s, c))

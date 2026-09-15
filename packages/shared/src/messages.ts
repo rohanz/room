@@ -21,6 +21,8 @@ export interface MessageKind<M extends MsgBase = Msg> {
   wakes: MessageWake<M>
   priority: Priority | ((m: { symbols?: readonly string[]; [key: string]: unknown }) => Priority)
   endsWait?: (message: M, waiting: MessageWaiting) => boolean
+  /** Whether unaddressed messages of this kind belong in agent inboxes. */
+  inbox?: boolean
 }
 
 const who = (m: MsgBase) => displayName({ name: m.from, kind: m.fromKind })
@@ -29,16 +31,16 @@ const priority = (m: MsgBase) => `[${m.priority}] `
 
 const builtins = {
   claim: { priority: 'fyi', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} — ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ''}` },
-  release: { priority: 'fyi', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` — ${m.summary}` : ''}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ''}` },
-  changed: { priority: m => m.symbols?.length ? 'notify' : 'fyi', audience: 'broadcast', wakes: 'always', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
+  release: { priority: 'fyi', audience: 'everyone', inbox: false, wakes: 'always', format: m => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` — ${m.summary}` : ''}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ''}` },
+  changed: { priority: m => m.symbols?.length ? 'notify' : 'fyi', audience: 'everyone', inbox: false, wakes: 'always', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
   question: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
   answer: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId, format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
   conflict: { priority: 'interrupt', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
-  note: { priority: 'fyi', audience: 'broadcast', wakes: 'never', format: m => `${priority(m)}${who(m)}: ${m.text}` },
+  note: { priority: 'fyi', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)}: ${m.text}` },
   done: { priority: 'fyi', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },
   base: { priority: 'notify', audience: 'everyone', wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: m => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — git pull to catch up` },
   plan: { priority: 'interrupt', audience: 'broadcast', wakes: 'never', format: m => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''} — ${m.text}` },
-  scope: { priority: 'notify', audience: 'broadcast', wakes: 'always', format: m => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})` },
+  scope: { priority: 'notify', audience: 'everyone', inbox: false, wakes: 'always', format: m => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})` },
 } satisfies Record<BuiltinMsgType, MessageKind<any>>
 
 /** The single policy registry for bus message presentation and delivery. */
@@ -71,10 +73,11 @@ export function messageForMe(me: { name: string }, m: Msg, context: MessageRoute
   if (m.to === me.name) return true
   if (m.to) return false
   const kind = messageKind(m)
+  if (m.priority === 'interrupt') return true
+  if (kind.inbox === false) return false
   if (kind.audience === 'everyone') return true
   if (kind.audience === 'addressed') return false
   if (kind.audience === 'claim-holders' && !holdsClaim(me.name, m, context.claims ?? [])) return false
-  if (m.priority === 'interrupt') return true
   if (m.priority === 'notify') return context.inMyAreas?.(m) ?? false
   return false
 }

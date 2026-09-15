@@ -10213,7 +10213,7 @@ var require_websocket = __commonJS({
     var http2 = __require("http");
     var net = __require("net");
     var tls = __require("tls");
-    var { randomBytes, createHash } = __require("crypto");
+    var { randomBytes, createHash: createHash2 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -10881,7 +10881,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash("sha1").update(key + GUID).digest("base64");
+        const digest = createHash2("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -11250,7 +11250,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter2 = __require("events");
     var http2 = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash } = __require("crypto");
+    var { createHash: createHash2 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -11557,7 +11557,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash("sha1").update(key + GUID).digest("base64");
+        const digest = createHash2("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -21233,16 +21233,16 @@ var to = (m) => m.to ? ` \u2192 ${m.to}'s agent` : "";
 var priority = (m) => `[${m.priority}] `;
 var builtins = {
   claim: { priority: "fyi", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
-  release: { priority: "fyi", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
-  changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "broadcast", wakes: "always", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
+  release: { priority: "fyi", audience: "everyone", inbox: false, wakes: "always", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
+  changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: "always", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
   question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
   answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
   conflict: { priority: "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
-  note: { priority: "fyi", audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)}: ${m.text}` },
+  note: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)}: ${m.text}` },
   done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
   base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up` },
   plan: { priority: "interrupt", audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""} \u2014 ${m.text}` },
-  scope: { priority: "notify", audience: "broadcast", wakes: "always", format: (m) => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` }
+  scope: { priority: "notify", audience: "everyone", inbox: false, wakes: "always", format: (m) => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` }
 };
 var MessageKinds = builtins;
 function messageKind(m) {
@@ -21260,10 +21260,11 @@ function messageForMe(me, m, context = {}) {
   if (m.to === me.name) return true;
   if (m.to) return false;
   const kind = messageKind(m);
+  if (m.priority === "interrupt") return true;
+  if (kind.inbox === false) return false;
   if (kind.audience === "everyone") return true;
   if (kind.audience === "addressed") return false;
   if (kind.audience === "claim-holders" && !holdsClaim(me.name, m, context.claims ?? [])) return false;
-  if (m.priority === "interrupt") return true;
   if (m.priority === "notify") return context.inMyAreas?.(m) ?? false;
   return false;
 }
@@ -29127,6 +29128,9 @@ glo[importIdentifier] = true;
 
 // packages/shared/src/ledger.ts
 var LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict", "base", "plan"]);
+function emptyLedgerArchive() {
+  return { messages: 0, counts: {}, lastSeen: {}, lastAt: 0, unfulfilled: [] };
+}
 function msgPaths(m) {
   if ("paths" in m) return m.paths;
   if ("path" in m) return [m.path];
@@ -29134,6 +29138,25 @@ function msgPaths(m) {
 }
 function scopeCovers(scope, path11) {
   return scope.paths.some((p) => path11 === p || path11.startsWith(p.replace(/\/?$/, "/")));
+}
+function messageAreas(m, scopes) {
+  const out = /* @__PURE__ */ new Set();
+  if (m.type === "scope") out.add(m.area);
+  for (const path11 of msgPaths(m)) for (const scope of scopes) if (scopeCovers(scope, path11)) out.add(scope.area);
+  return Array.from(out).sort();
+}
+function foldLedger(previous, messages) {
+  const out = previous ? { messages: previous.messages, counts: { ...previous.counts }, lastSeen: { ...previous.lastSeen }, lastAt: previous.lastAt, unfulfilled: [...previous.unfulfilled] } : emptyLedgerArchive();
+  for (const m of messages) {
+    out.messages++;
+    out.counts[m.type] = (out.counts[m.type] ?? 0) + 1;
+    out.lastSeen[m.from] = Math.max(out.lastSeen[m.from] ?? 0, m.at);
+    out.lastAt = Math.max(out.lastAt, m.at);
+    if (m.type === "release" && m.unfulfilled?.length && !out.unfulfilled.some((x) => x.message.id === m.id)) {
+      out.unfulfilled.push({ message: m, plans: m.unfulfilled });
+    }
+  }
+  return out;
 }
 function ledger(messages, scopes, q = {}) {
   const areaScopes = q.area ? scopes.filter((s) => s.area === q.area) : [];
@@ -29211,6 +29234,10 @@ var RoomDoc = class {
   }
   get bus() {
     return this.doc.getArray("bus");
+  }
+  /** Compact histories keyed by area; `_room` contains every archived message. */
+  get ledgerArchives() {
+    return this.doc.getMap("ledger");
   }
   /** Workers dispatched into this room by leads (room_spawn), keyed by tag. */
   get workers() {
@@ -29349,6 +29376,9 @@ var RoomDoc = class {
   ledger(q = {}) {
     return ledger(this.messages(), this.allScopes(), q);
   }
+  archivedLedger(q = {}) {
+    return this.ledgerArchives.get(q.area ?? "_room") ?? emptyLedgerArchive();
+  }
   areaSummary(windowMs) {
     return areaSummary(this.messages(), this.allScopes(), windowMs);
   }
@@ -29470,6 +29500,40 @@ var RoomDoc = class {
   lastMessages(n) {
     const messages = this.messages();
     return messages.slice(Math.max(0, messages.length - n));
+  }
+  /** Fold an old contiguous prefix into compact histories, preserving actionable entries in full. */
+  trimBus(keep = 2e3, origin) {
+    const messages = this.messages();
+    const cutoff = Math.max(0, messages.length - Math.max(0, keep));
+    if (!cutoff) return 0;
+    const answered = new Set(messages.filter((m) => m.type === "answer").map((m) => m.inReplyTo));
+    const removable = [];
+    const indexes = [];
+    for (let i = 0; i < cutoff; i++) {
+      const m = messages[i];
+      if (m.type === "question" && !answered.has(m.id)) continue;
+      removable.push(m);
+      indexes.push(i);
+    }
+    if (!removable.length) return 0;
+    const scopes = this.allScopes();
+    this.doc.transact(() => {
+      this.ledgerArchives.set("_room", foldLedger(this.ledgerArchives.get("_room"), removable));
+      const byArea = /* @__PURE__ */ new Map();
+      for (const m of removable) for (const area of messageAreas(m, scopes)) {
+        const list = byArea.get(area) ?? [];
+        list.push(m);
+        byArea.set(area, list);
+      }
+      for (const [area, list] of byArea) this.ledgerArchives.set(area, foldLedger(this.ledgerArchives.get(area), list));
+      for (let end = indexes.length - 1; end >= 0; ) {
+        let start = end;
+        while (start > 0 && indexes[start - 1] === indexes[start] - 1) start--;
+        this.bus.delete(indexes[start], indexes[end] - indexes[start] + 1);
+        end = start - 1;
+      }
+    }, origin);
+    return removable.length;
   }
   post(from2, body, origin) {
     const msg = {
@@ -29863,10 +29927,6 @@ function claimLine(claim2, options = {}) {
 }
 function areaMembershipSummary(areas) {
   return areas.length ? `areas ${Array.from(new Set(areas)).sort().join(", ")}` : "";
-}
-function otherAreasLine(hiddenCount, areas) {
-  const unique = Array.from(new Set(areas)).sort();
-  return `${hiddenCount} other${hiddenCount === 1 ? "" : "s"} in ${unique.length} other area${unique.length === 1 ? "" : "s"}${unique.length ? ` (${unique.join(", ")})` : ""}`;
 }
 function workerLine({ worker: w, processGone = false, changedCount, last: last2, now = Date.now() }) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
@@ -32446,7 +32506,10 @@ var RoomdError = class extends Error {
   }
   code;
 };
-var IGNORED_DIRS = /* @__PURE__ */ new Set([".git", "node_modules", ".venv", ".room"]);
+var DEFAULT_IGNORED_DIRS = /* @__PURE__ */ new Set(["node_modules", ".venv", "dist", "build", ".git", ".room", "target", ".next", "coverage"]);
+function defaultIgnoredPath(relpath) {
+  return relpath.split("/").some((segment) => DEFAULT_IGNORED_DIRS.has(segment));
+}
 var ROOM_FILE = ".room.json";
 var ROOMIGNORE = ".roomignore";
 function tokenParams(token) {
@@ -32489,6 +32552,8 @@ var Daemon = class {
   sizeCap;
   totalBudget;
   connectTimeoutMs;
+  busKeep;
+  busTrimMs;
   roomIgnore = parseRoomIgnore("");
   skips = { size: /* @__PURE__ */ new Set(), budget: /* @__PURE__ */ new Set(), ignore: /* @__PURE__ */ new Set(), share: /* @__PURE__ */ new Set() };
   roomUrl;
@@ -32517,6 +32582,9 @@ var Daemon = class {
     this.sizeCap = options.sizeCap ?? 512 * 1024;
     this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15e3;
+    const envKeep = Number.parseInt(process.env.ROOM_BUS_KEEP ?? "", 10);
+    this.busKeep = Math.max(0, options.busKeep ?? (Number.isFinite(envKeep) ? envKeep : 2e3));
+    this.busTrimMs = options.busTrimMs ?? 6e4;
     this.share = options.share ?? "full";
     this.explicitScopePaths = options.scopePaths;
     this.beforePublishWrite = options.beforePublishWrite;
@@ -32567,6 +32635,8 @@ var Daemon = class {
     this.writeRoomFile();
     this.excludeRoomFile();
     await this.startWatcher();
+    this.trimBusIfLeader();
+    if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader());
     this.every(this.trackedRefreshMs, () => this.refreshTracked());
     this.every(this.basePollMs, () => this.pollHead());
     this.roomDoc.metaMap.observe(() => {
@@ -32831,7 +32901,7 @@ var Daemon = class {
   }
   isIgnoredPath(relpath) {
     if (!relpath || relpath === ROOM_FILE) return true;
-    if (relpath.split("/").some((segment) => IGNORED_DIRS.has(segment))) return true;
+    if (defaultIgnoredPath(relpath)) return true;
     if (this.roomIgnore.ignores(relpath)) {
       if (!this.skips.ignore.has(relpath)) {
         this.skips.ignore.add(relpath);
@@ -32901,19 +32971,43 @@ var Daemon = class {
     }
   }
   // ---- watcher -----------------------------------------------------------
+  trimBusIfLeader() {
+    const states = typeof this.provider.awareness.getStates === "function" ? Array.from(this.provider.awareness.getStates().values()) : [{ user: { name: this.name } }];
+    const present = states.map((state) => state?.user?.name).filter((name) => !!name && !name.startsWith("pr#"));
+    const workers = new Set(Array.from(this.roomDoc.workers.values()).map((w) => w.name));
+    const leads = present.filter((name) => !workers.has(name)).sort();
+    const leader = leads[0] ?? present.sort()[0] ?? this.name;
+    if (leader !== this.name) return;
+    const removed = this.roomDoc.trimBus(this.busKeep, this);
+    if (removed) this.log(`folded ${removed} old bus messages into the compact ledger (keeping ${this.busKeep})`);
+  }
   async startWatcher() {
+    const watchedFiles = /* @__PURE__ */ new Set();
+    let warnedLarge = false;
+    const countFile = (absolute, add2) => {
+      const relpath = path.relative(this.dir, absolute).split(path.sep).join("/");
+      if (!relpath || defaultIgnoredPath(relpath)) return;
+      if (add2) watchedFiles.add(relpath);
+      else watchedFiles.delete(relpath);
+      if (!warnedLarge && watchedFiles.size > 2e4) {
+        warnedLarge = true;
+        this.log(`warn: watching ${watchedFiles.size} files; add generated or bulky paths to ${ROOMIGNORE}`);
+      }
+    };
     const watcher = esm_default.watch(this.dir, {
       ignoreInitial: true,
       persistent: true,
       ignored: (absolute) => {
         const relpath = path.relative(this.dir, absolute).split(path.sep).join("/");
         if (relpath === "") return false;
-        return relpath.split("/").some((segment) => IGNORED_DIRS.has(segment));
+        return defaultIgnoredPath(relpath);
       }
     });
     this.watcher = watcher;
     watcher.on("all", (event, absolute) => {
       if (this.stopped) return;
+      if (event === "add") countFile(absolute, true);
+      else if (event === "unlink") countFile(absolute, false);
       const relpath = path.relative(this.dir, absolute).split(path.sep).join("/");
       if (this.isIgnoredPath(relpath) || event === "addDir" || event === "unlinkDir") return;
       if (path.basename(relpath) === ".gitignore") this.refreshTracked().catch(() => {
@@ -32926,6 +33020,14 @@ var Daemon = class {
     });
     watcher.on("error", (error2) => this.log(`watcher error: ${errMsg(error2)}`));
     await new Promise((resolve4) => watcher.on("ready", () => resolve4()));
+    for (const [dir, names] of Object.entries(watcher.getWatched())) for (const name of names) {
+      const absolute = path.join(dir, name);
+      try {
+        if (fs.statSync(absolute).isFile()) countFile(absolute, true);
+      } catch {
+      }
+    }
+    this.log(`watching ${watchedFiles.size} files`);
   }
   /** .roomignore changed: newly ignored files leave the room, newly allowed ones are published. */
   reloadRoomIgnore() {
@@ -34400,6 +34502,7 @@ function branchOf(roomName) {
 }
 function renderPrNote(room, opts) {
   const now = opts.now ?? Date.now();
+  const archived = room.archivedLedger();
   const msgs = room.messages().filter((m) => !m.copyOf && !isPrName(m.from));
   const releases = /* @__PURE__ */ new Map();
   const answers = /* @__PURE__ */ new Map();
@@ -34415,6 +34518,12 @@ function renderPrNote(room, opts) {
   const who2 = (m) => `**${displayName({ name: m.from, kind: m.fromKind })}**`;
   const t = (at) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
   const lines = [];
+  if (archived.messages) {
+    const counts = Object.entries(archived.counts).sort(([a], [b]) => a.localeCompare(b)).map(([kind, n]) => `${n} ${kind}`).join(", ");
+    const seen = Object.entries(archived.lastSeen).sort(([a], [b]) => a.localeCompare(b)).map(([person, at]) => `${person} (${t(at)})`).join(", ");
+    lines.push(`- Earlier compact history: ${archived.messages} messages (${counts}); last seen: ${seen || "unknown"}`);
+    for (const item of archived.unfulfilled) lines.push(`- ${t(item.message.at)} **${displayName({ name: item.message.from, kind: item.message.fromKind })}** left plans unfulfilled on \`${item.message.path}\`: ${formatPlans(item.plans)}${item.message.summary ? ` (${item.message.summary})` : ""}`);
+  }
   for (const m of msgs) {
     switch (m.type) {
       case "scope":
@@ -34970,6 +35079,12 @@ function handlers(state) {
       const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
       const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule };
+      if (typeof a.name === "string" && a.name.trim() && choice.server !== LOCAL) {
+        const server = parseServer(choice.server).server;
+        const cfg = await serverAuthConfig(server);
+        const login = cfg.mode === "device" ? getCredential(server)?.login : void 0;
+        if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`;
+      }
       if (a.create === true && choice.server === LOCAL && choice.rule !== "argument") {
         return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.';
       }
@@ -35149,6 +35264,7 @@ async function prepareWorktree(repoDir, tag) {
   const branch = `room/${tag}`;
   if (fs7.existsSync(path8.join(dir, ".git"))) return { dir, branch, created: false };
   fs7.mkdirSync(path8.dirname(dir), { recursive: true });
+  await git(repoDir, ["worktree", "prune"]);
   let hasBranch = false;
   try {
     await git(repoDir, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
@@ -35236,6 +35352,7 @@ function pidIsOurWorker(pid, w, probe = probeProcess) {
 }
 
 // packages/room-mcp/src/tools/scope.ts
+var offlineSince = /* @__PURE__ */ new WeakMap();
 var defs2 = [
   {
     name: "room_scope",
@@ -35283,18 +35400,34 @@ function handlers2(state) {
       const m = s.room.meta;
       const out = [];
       const wsRoom = rooms.workers();
+      const disconnected = !!s.closed || s.provider.wsconnected === false;
+      if (disconnected) {
+        const since = offlineSince.get(s) ?? now();
+        offlineSince.set(s, since);
+        const server = s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server;
+        out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state`);
+      } else offlineSince.delete(s);
       out.push(`room: ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ""}`);
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? "?").slice(0, 10)})`);
       const mineA = myAreas(s);
       const all2 = a.all === true || !mineA.length;
       const ps = presences(s);
-      const inView = (person) => all2 || person === s.me.name || inMyAreas(s, person);
-      const pathInView = (p) => all2 || mineA.includes(areasOf(s).areaOf(p));
+      const myClaims = s.room.openClaims().filter((c) => c.by === s.me.name);
+      const myPaths = [...s.room.scope(s.me.name)?.paths ?? [], ...s.room.changedPaths(s.me.name), ...myClaims.map((c) => c.path)];
+      const overlapsMyPath = (p) => myPaths.some((q) => scopeCovers({ paths: [q] }, p) || scopeCovers({ paths: [p] }, q));
+      const pathInView = (p) => all2 || overlapsMyPath(p) || mineA.includes(areasOf(s).areaOf(p));
+      const inView = (person) => {
+        if (all2 || person === s.me.name) return true;
+        const sc = s.room.scope(person);
+        if (sc?.paths.some(overlapsMyPath)) return true;
+        const theirs = s.room.openClaims().filter((c) => c.by === person);
+        return theirs.some((c) => myClaims.some((m2) => c.path === m2.path && rangesOverlap(c.from, c.to, m2.from, m2.to)));
+      };
       const everyone = Array.from(new Set([s.me.name, ...others(s)].filter((n) => ps.some((p) => p.user.name === n) || s.room.scopes.has(n)))).sort();
       const names = everyone.filter(inView);
       const hidden = everyone.filter((n) => !inView(n));
       out.push(all2 ? `areas: ${mineA.length ? mineA.join(", ") : "none yet"} (showing all)` : `your areas: ${mineA.join(", ")} (room_state all=true for everything)`);
-      out.push(`participants${all2 ? "" : " in your areas"} (${names.length}):`);
+      out.push(`participants${all2 ? "" : " overlapping your work"} (${names.length}):`);
       for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
@@ -35303,11 +35436,7 @@ function handlers2(state) {
         const areaSummary2 = areaMembershipSummary(theirs);
         out.push(`  - ${who2}${n === s.me.name ? " (you)" : ""}: ${personLine2(s, n)}${areaSummary2 ? ` \xB7 ${areaSummary2}` : ""} \xB7 ${ago}`);
       }
-      if (hidden.length) {
-        const otherAreas = /* @__PURE__ */ new Set();
-        for (const n of hidden) for (const x of areasFor(s, n)) if (!mineA.includes(x)) otherAreas.add(x);
-        out.push(`  ${otherAreasLine(hidden.length, Array.from(otherAreas))}`);
-      }
+      if (hidden.length) out.push(`  ${hidden.length} others: ${hidden.join(", ")} (all:true for detail)`);
       out.push(`browser view: ${await refreshBrowserUrl(s)}`);
       const areaScopes = all2 ? s.room.allScopes() : s.room.allScopes().filter((sc) => inView(sc.by));
       const summary = s.room.areaSummary().filter((l) => areaScopes.some((sc) => l.startsWith(`${sc.area} (`)));
@@ -35315,7 +35444,7 @@ function handlers2(state) {
         out.push("activity by scope area:");
         for (const l of summary) out.push(`  - ${l}`);
       }
-      const cs = s.room.openClaims().filter((c) => pathInView(c.path) || isMe(s, { name: c.by, kind: c.byKind }));
+      const cs = s.room.openClaims().filter((c) => pathInView(c.path));
       const hiddenClaims = s.room.openClaims().length - cs.length;
       out.push(`open claims${all2 ? "" : " in your areas"} (${cs.length}${hiddenClaims ? `, ${hiddenClaims} elsewhere` : ""}):`);
       for (const c of cs) out.push(claimLine2(s, c));
@@ -36102,6 +36231,7 @@ function diff3Merge(a, o, b, options) {
 }
 
 // packages/room-mcp/src/conflicts.ts
+import { createHash } from "node:crypto";
 var ROOM = { name: "room", kind: "agent" };
 function changedRanges(base, live) {
   const out = [];
@@ -36160,6 +36290,11 @@ var ConflictWatcher = class {
   /** "person|path" pairs currently known to conflict. */
   conflicting = /* @__PURE__ */ new Set();
   inflight = /* @__PURE__ */ new Set();
+  mergeQueue = /* @__PURE__ */ new Map();
+  mergeStarts = [];
+  mergeTimer = null;
+  draining = null;
+  mergeHashes = /* @__PURE__ */ new Map();
   start() {
     const onOverlays = (events) => {
       const touched = /* @__PURE__ */ new Set();
@@ -36185,6 +36320,9 @@ var ConflictWatcher = class {
     this.stopFns = [];
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    if (this.mergeTimer) clearTimeout(this.mergeTimer);
+    this.mergeTimer = null;
+    this.mergeQueue.clear();
   }
   /** Debounced per (person, path): a burst of keystrokes becomes one check. */
   schedule(person, p) {
@@ -36207,6 +36345,7 @@ var ConflictWatcher = class {
       const [person, p] = key.split("|");
       await this.check(person, p);
     }
+    await this.drainMerges();
   }
   async check(person, p) {
     const key = `${person}|${p}`;
@@ -36219,7 +36358,8 @@ var ConflictWatcher = class {
       if (person === this.d.me.name) await this.checkOverlap(p);
       const me = this.d.me.name;
       const people = person === me ? this.d.room.whoChanged(p).filter((x) => x !== me) : [person];
-      if (this.d.room.changedPaths(me).includes(p)) for (const other of people) await this.checkMerge(other, p);
+      if (this.d.room.changedPaths(me).includes(p)) for (const other of people) this.mergeQueue.set(`${other}|${p}`, { person: other, path: p });
+      await this.drainMerges();
     } catch (e) {
       this.d.log?.(`conflict check ${key}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -36267,8 +36407,13 @@ var ConflictWatcher = class {
   async checkMerge(person, p) {
     if (!this.d.room.changedPaths(person).includes(p)) return;
     const key = `${person}|${p}`;
+    const mine = await this.d.liveText(p, this.d.me.name).catch(() => void 0);
+    const theirs = await this.d.liveText(p, person).catch(() => void 0);
+    const hash = createHash("sha256").update(`${this.d.baseFor(this.d.me.name)}\0${this.d.baseFor(person)}\0${mine ?? ""}\0${theirs ?? ""}`).digest("hex");
+    if (this.mergeHashes.get(key) === hash) return;
     const res = await mergePath(this.d, person, p);
     if (res.status === "unknown") return;
+    this.mergeHashes.set(key, hash);
     const was = this.conflicting.has(key);
     if (res.status === "conflict" && !was) {
       this.conflicting.add(key);
@@ -36283,6 +36428,38 @@ var ConflictWatcher = class {
       this.conflicting.delete(key);
       this.d.room.post(ROOM, { type: "note", to: this.d.me.name, priority: "fyi", text: `your ${p} and ${person}'s merge cleanly again` });
     }
+  }
+  /** Drain coalesced pairs while respecting one global rolling-window budget. */
+  async drainMerges() {
+    if (this.draining) return this.draining;
+    this.draining = (async () => {
+      const now = this.d.now ?? Date.now;
+      const windowMs = this.d.mergeWindowMs ?? 1e4;
+      const budget = this.d.mergeBudget ?? 4;
+      while (this.mergeQueue.size) {
+        const at = now();
+        this.mergeStarts = this.mergeStarts.filter((t) => at - t < windowMs);
+        if (this.mergeStarts.length >= budget) {
+          if (!this.mergeTimer) {
+            const delay = Math.max(1, this.mergeStarts[0] + windowMs - at);
+            this.mergeTimer = setTimeout(() => {
+              this.mergeTimer = null;
+              void this.drainMerges();
+            }, delay);
+            this.mergeTimer.unref?.();
+          }
+          break;
+        }
+        const first = this.mergeQueue.entries().next().value;
+        if (!first) break;
+        this.mergeQueue.delete(first[0]);
+        this.mergeStarts.push(at);
+        await this.checkMerge(first[1].person, first[1].path);
+      }
+    })().finally(() => {
+      this.draining = null;
+    });
+    return this.draining;
   }
 };
 
@@ -36474,7 +36651,8 @@ var defs4 = [
   }
 ];
 function handlers4(state) {
-  const { S, rooms, myWorkers, upgrade, setPresence, forMe } = state;
+  const { S, rooms, myWorkers, upgrade, setPresence, forMe, seen } = state;
+  const offline = (s) => !!s.closed || s.provider.wsconnected === false;
   const handlers9 = {
     async room_send(a) {
       const lead = S();
@@ -36518,7 +36696,7 @@ function handlers4(state) {
           return `error: type must be changed|question|answer|note (got ${String(a.type)})`;
       }
       s.daemon.touch();
-      return [`sent [${msg.id}] ${formatMsg(msg)}${s !== lead ? " (in the workers room)" : ""}`, ...notes].join("\n");
+      return [`sent [${msg.id}] ${formatMsg(msg)}${s !== lead ? " (in the workers room)" : ""}`, ...notes, ...offline(s) ? ["offline: queued/not delivered"] : []].join("\n");
     },
     async room_wait(a) {
       const s = S();
@@ -36532,6 +36710,24 @@ function handlers4(state) {
         const an = answered(questionId);
         if (an) return `answered: ${formatMsg(an)}`;
       }
+      const waitResult = (x, m, workersRoom = false) => {
+        if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
+          if (m.type === "answer") return `answered: ${formatMsg(m)}`;
+          if (m.type === "done") return `worker done: ${formatMsg(m)}`;
+          return `${workersRoom ? "question from a worker" : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`;
+        }
+        if (m.priority === "interrupt" && forMe(x, m)) return `interrupt${workersRoom ? " (workers room)" : ""}: ${formatMsg(m)}`;
+      };
+      for (const x of [s, ...rooms.all().filter((x2) => x2 !== s)]) {
+        const workersRoom = x !== s;
+        for (const m of x.room.messages()) {
+          if (seen.has(m.id)) continue;
+          const ended = waitResult(x, m, workersRoom);
+          if (ended) return `${ended}
+call room_state before continuing.`;
+        }
+      }
+      if (offline(s)) return "offline: queued/not delivered; room_wait cannot observe new messages until reconnected";
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
       const result = await new Promise((resolve4) => {
         const ws = rooms.all().find((x) => x !== s) ?? null;
@@ -36542,16 +36738,10 @@ function handlers4(state) {
           ws?.room.bus.unobserve(onWorkersBus);
           resolve4(r);
         };
-        const waitResult = (m, workersRoom = false) => {
-          if (!messageEndsWait(m, { claimId, questionId, me: workersRoom ? ws?.me.name : s.me.name, workersRoom })) return;
-          if (m.type === "answer") return `answered: ${formatMsg(m)}`;
-          if (m.type === "done") return `worker done: ${formatMsg(m)}`;
-          return `${workersRoom ? "question from a worker" : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`;
-        };
         const onWorkersBus = (ev) => {
           if (!ws) return;
           for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-            const ended = waitResult(m, true);
+            const ended = waitResult(ws, m, true);
             if (ended) return finish(ended);
             if (m.priority === "interrupt" && forMe(ws, m)) return finish(`interrupt (workers room): ${formatMsg(m)}`);
           }
@@ -36562,7 +36752,7 @@ function handlers4(state) {
         };
         const onBus = (ev) => {
           for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-            const ended = waitResult(m);
+            const ended = waitResult(s, m);
             if (ended) return finish(ended);
             if (m.priority === "interrupt" && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`);
           }
@@ -36650,13 +36840,15 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
   };
   const owners = (s, f) => {
     const out = /* @__PURE__ */ new Set();
-    for (const sc of s.room.allScopes()) if (scopeCovers(sc, f)) out.add(sc.by);
+    for (const sc of s.room.allScopes()) if (!isPrName(sc.by) && scopeCovers(sc, f)) out.add(sc.by);
     for (const c of s.room.claimsFor(f)) out.add(c.by);
     for (const p of s.room.whoChanged(f)) out.add(p);
     return Array.from(out).sort();
   };
   const describeUsers = (s, files) => files.map((f) => {
     const o = owners(s, f).filter((x) => x !== s.me.name);
+    const prs = s.room.allScopes().filter((sc) => isPrName(sc.by) && scopeCovers(sc, f)).map((sc) => `PR #${sc.by.slice(3)}`);
+    if (prs.length) return `${f} (${o.length ? `${o.join(", ")}, ` : "base, "}also touched by ${prs.join(", ")})`;
     return o.length ? `${f} (${o.join(", ")})` : f;
   }).join(", ");
   const waitingOn = async (s) => {
@@ -36977,6 +37169,7 @@ ${tail}`;
 var RELAY_TYPES = /* @__PURE__ */ new Set(["claim", "release", "changed", "conflict", "plan", "base", "scope"]);
 var INTERRUPT_TYPES = /* @__PURE__ */ new Set(["plan", "conflict", "base"]);
 var RELAY_DEDUPE_MS = 6e4;
+var SCOPE_REPOST_MS = 5 * 6e4;
 var RELAYED_MAX = 2e3;
 var Bridge = class {
   constructor(team, local, o = {}) {
@@ -36995,6 +37188,7 @@ var Bridge = class {
   unobserve = [];
   timer = null;
   lastScopeKey = "";
+  lastScopePost = { at: 0, content: "" };
   stopped = false;
   /** The lead's own team scope (declared by the lead itself), kept underneath the workers' union. */
   own;
@@ -37143,7 +37337,7 @@ var Bridge = class {
     const workerPaths = this.workerPaths();
     const own2 = this.own;
     const paths = Array.from(/* @__PURE__ */ new Set([...own2?.paths ?? [], ...workerPaths])).sort();
-    const key = JSON.stringify([ws.map((w) => w.tag), paths, own2?.area, own2?.summary]);
+    const key = JSON.stringify([ws.map((w) => [w.tag, this.local.room.scope(w.name)?.area, this.local.room.scope(w.name)?.summary]), paths, own2?.area, own2?.summary]);
     if (key === this.lastScopeKey) return;
     this.lastScopeKey = key;
     const me = this.team.me;
@@ -37164,7 +37358,12 @@ var Bridge = class {
     this.unionPublished = true;
     this.syncShare();
     this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...prev?.areas ? { areas: prev.areas } : {} }, this);
-    this.team.room.post(me, { type: "scope", area, summary, paths });
+    const now = Date.now();
+    const content = JSON.stringify([area, summary]);
+    if (content !== this.lastScopePost.content || now - this.lastScopePost.at >= SCOPE_REPOST_MS) {
+      this.team.room.post(me, { type: "scope", area, summary, paths });
+      this.lastScopePost = { at: now, content };
+    }
     this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) (${own2 ? `${own2.paths.length} own, ` : ""}${workerPaths.length} from ${ws.length} worker(s)); files shared stay under the lead's own ${own2?.paths.length ?? 0}`);
   }
   mirrorClaim(localId) {
@@ -37409,6 +37608,7 @@ function handlers6(state) {
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`;
       if (w.status !== "running" && !workerAlive(s, w)) return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`;
       const how = dismissWorker(s, w, w.status === "running" ? "dismissed by the lead" : `its process was stopped by the lead after it reported ${w.status}`);
+      if (w.status === "running" && s.room.workers.get(tag)?.status === "running") return `could not dismiss ${tag}: ${how}; status stays running; its work is on branch ${w.branch} in ${w.dir}`;
       return `${w.status === "running" ? "dismissed" : `stopped the ${w.status} worker`} ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`;
     }
   };
@@ -37448,13 +37648,13 @@ function install5(state) {
     let how, signalled;
     if (proc) {
       signalled = proc.kill();
-      how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} could not be signalled: the process is already gone, so its status stands`;
+      how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled: the process is already gone`;
     } else if (pidIsOurWorker(w.pid, w, ctx.probe)) {
       signalled = signalWorker(w.pid);
-      how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} could not be signalled (it exited just now, or is not ours to signal), so its status stands`;
+      how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled (it exited just now, or is not ours to signal)`;
     } else {
       signalled = false;
-      how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone and its status stands`;
+      how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`;
     }
     if (signalled || !proc) rooms.dropHandle(s, w.id);
     if (signalled && w.status === "running") s.room.updateWorker(w.tag, { status: "dismissed" }, w.id);
@@ -37648,14 +37848,17 @@ function createTools(ctx) {
         await state.pendingJoin;
         state.pendingJoin = null;
       }
-      const closed = ctx.getSession()?.closed;
-      if (closed && name !== "room_leave") {
-        const rn = ctx.getSession().roomName;
+      const current = ctx.getSession();
+      const closed = current?.closed;
+      const offlineTool = name === "room_state" || name === "room_send" || name === "room_wait";
+      if (closed && name !== "room_leave" && !offlineTool) {
+        const rn = current.roomName;
         return `error: the room for ${rn.slice(0, rn.lastIndexOf("/"))} was closed (${closed.reason}); room_leave, then room_create to reopen`;
       }
       const moved = await state.followBranch();
       const s = ctx.getSession();
-      if (s && !s.provider.synced && name !== "room_leave") return "error: room not synced yet, retry";
+      const disconnected = !!s?.closed || s?.provider?.wsconnected === false;
+      if (s && !s.provider.synced && name !== "room_leave" && !(offlineTool && disconnected)) return "error: room not synced yet, retry";
       if (s) state.rooms.track(s);
       try {
         const body = await h(args2 ?? {});
@@ -37664,7 +37867,8 @@ function createTools(ctx) {
         const prefix = moved ? `${moved}
 
 ` : "";
-        return prefix + (s2 && name !== "room_join" && name !== "room_create" ? state.inbox(s2) + body : body);
+        const unread = s2 && name !== "room_join" && name !== "room_create" ? state.inbox(s2) : "";
+        return prefix + (unread ? unread + body : body);
       } catch (e) {
         if (e instanceof NotJoined) return "error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.";
         if (e instanceof NotLoggedIn) return `error: ${e.message}`;
@@ -37726,22 +37930,14 @@ ${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
 var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
 
 Rules:
-1. You are joined automatically: a local room on this machine unless ROOM_SERVER is set or the clone remembers a choice (room_state's first line says which). Where to be is your human's call: "join the team room" (or web/shared room) means room_leave, then room_join(where=team), and tell them uncommitted work in this clone is now visible to the repo's room members; "work locally" means room_leave(forget=true), then room_join(where=local). Never join the team room on your own initiative. On the team server, room_create(where=team) opens a repo nobody has opened (once per repo, any teammate). If a join fails with "not logged in", call room_login and show your human the code and URL verbatim; never ask them for a token. Then room_scope(area, summary, paths) before editing: one word for the area (auth, orders, ...), one line, the paths you expect to touch. Read the area ledger it returns.
-2. Every tool reply starts with your inbox. interrupt: stop and re-plan before continuing. notify: check whether it touches what you are doing. fyi: nothing.
-3. Before renaming or changing a signature: room_impact(symbol) shows who defines and uses it and who owns those files. room_state lists what you are waiting on: others' planned changes to symbols your files use.
-4. Before editing a region: room_read it (note claims and the file ledger), then room_claim(path, symbol, intent, plans) (or from/to for a range). Declare plans whenever you will rename, change a signature, delete, or add a public symbol; whoever uses those symbols is told immediately. Keep claims small and short-lived.
-5. Never edit inside another party's claim. room_wait(claimId) or ask with room_send type=question to=<person>, then room_wait(questionId).
-6. room_release(claimId, summary, done) when finished, then room_send type=changed with paths, a one-line summary and symbols for anything others may depend on.
-7. Answer questions addressed to you on your next move: room_send type=answer inReplyTo=<id>. room_send is for OTHER people's agents; to ask your own human, say it in your reply and stop.
-8. If a wait times out, tell your human and proceed only where you do not depend on the answer.
-9. Conflict notices arrive on their own: an interrupt when your edit lands inside someone's claim, a notify when your file and theirs stop merging cleanly. Act on them like any interrupt or notify.
-10. room_close is destructive (every branch room of the repo and everyone's shared work): only when your human explicitly asks, never on your own.
-9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
-10. Never re-create another person's change in your clone, and never edit lines that belong to their claim or announced change. When they declare or announce a rename, signature or new symbol, write your code against the declared name/signature and carry on. Your clone will lag until git merges; that is expected. To verify code that depends on their unmerged work, room_preview_merge(person, run="<test command>") runs the tests on the merged tree without touching any clone. If you insert next to a line they changed, copy their version of that line exactly; the preview then reports the overlap as resolvable, and room_preview_merge(person, resolve=true) gives you the resolved file to write into your own clone.
-11. A base entry means someone committed and the room moved forward. If your status says behind, run git pull --ff-only before editing further; the ledger lists which paths changed.
-12. Before telling your human you are done: room_preview_merge(person, run=<tests>) against each person who changed the same files, using their CURRENT state. Do not wait for them to finish their task and do not ask them to tell you when they are ready; if their later work conflicts, they will see it in their own preview. Then room_done(summary) so the room shows your task as finished; stay in the room.
-13. Report to your human in one line: what landed, the test count, and whether the merge preview with each teammate was clean (name any conflicting files). Then ask whether to commit and push. Never commit or push unless they say yes; after a push, teammates are told the base moved. room_leave when your session ends.
-Be brief on the bus: one line, concrete paths, line numbers and symbol names.`;
+1. You are joined automatically. Only change local/team-room choice when your human asks; use room_join/room_leave and follow any login instructions.
+2. Call room_scope(area, summary, paths) before editing and read the ledger it returns.
+3. Call room_read, then room_claim before editing. Never edit another person's claim; declare public-symbol plans.
+4. Answer addressed questions promptly. When unsure, ask the relevant agent with room_send and wait for the answer.
+5. Before finishing, release claims, announce dependent changes, preview-merge teammates' current work, then call room_done.
+6. Tell your human whenever room information, an interrupt, or a conflict changes your plan.
+
+Load the room-etiquette skill for detailed coordination, inbox, conflict, waiting, merge, and safety rules.`;
 
 // packages/room-mcp/src/index.ts
 var LOG_FILE;

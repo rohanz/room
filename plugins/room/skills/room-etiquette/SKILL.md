@@ -15,6 +15,8 @@ disk; edit files with your normal tools.
    what others changed there and their open plans.
 2. Every tool reply starts with your inbox. `interrupt`: stop and re-plan before
    continuing. `notify`: check whether it touches what you are doing. `fyi`: nothing.
+   Routine scope, release, change, and done-note events stay in the room feed and browser;
+   they do not enter the inbox unless explicitly addressed to you.
 3. Before renaming or changing a signature: `room_impact(symbol)` shows who defines and
    uses it and who owns those files. `room_state` lists what you are waiting on: others'
    planned changes to symbols your files use.
@@ -31,6 +33,8 @@ disk; edit files with your normal tools.
    in your reply and stop.
 8. If a wait times out, tell your human and proceed only where you do not depend on the
    answer.
+   If the room is offline, sends are only queued locally and waits cannot observe replies;
+   tell your human and do not assume delivery.
 9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.
    Conflict notices arrive automatically when your edit overlaps someone's claim or your
    file now conflicts with theirs; treat them like interrupts.

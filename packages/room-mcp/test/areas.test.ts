@@ -104,10 +104,10 @@ describe('areas from CODEOWNERS', () => {
     t.sync()
     const mine = await t.rohan.tools.call('room_state', {})
     expect(mine).toContain('your areas: web/')
-    expect(mine).toContain('participants in your areas (1):')
+    expect(mine).toContain('participants overlapping your work (1):')
     expect(mine).toContain('Rohan · agent (you)')
     expect(mine).not.toContain('Kieran · agent')
-    expect(mine).toContain('1 other in 1 other area (api/)')
+    expect(mine).toContain('1 others: Kieran (all:true for detail)')
     expect(mine).toContain('open claims in your areas (0, 1 elsewhere):')
     expect(mine).not.toContain('tune a')
     expect(mine).toContain('uncommitted changes in your areas (1 file elsewhere):')
@@ -122,8 +122,8 @@ describe('areas from CODEOWNERS', () => {
     await t.kieran.tools.call('room_scope', { area: 'web', summary: 'moved to ui', paths: ['web/b.py'] })
     t.sync()
     const now = await t.rohan.tools.call('room_state', {})
-    expect(now).toContain('participants in your areas (2):')
-    expect(now).not.toContain('other area')
+    expect(now).toContain('participants overlapping your work (2):')
+    expect(now).not.toContain('others:')
   })
 
   it('inbox: broadcast notify from another area is dropped; from my area, addressed, and interrupts arrive', async () => {
@@ -134,7 +134,10 @@ describe('areas from CODEOWNERS', () => {
     await t.kieran.tools.call('room_scope', { area: 'api', summary: 'handlers', paths: ['api/'] })
     t.sync()
     expect(t.inboxOf(await t.rohan.tools.call('room_state', {}))).toBe('')
-    // A changed-with-symbols (notify) in web/: for Rohan.
+    // An unaddressed routine change is feed-only, even when it touches my area.
+    t.b.post({ name: 'Kieran', kind: 'agent' }, { type: 'changed', paths: ['web/b.py'], summary: 'routine edit', symbols: ['b'] } as never)
+    expect(t.inboxOf(await t.rohan.tools.call('room_state', {}))).toBe('')
+    // The routine broadcast stays feed-only, but symbol users get an addressed copy.
     await t.kieran.tools.call('room_send', { type: 'changed', text: 'renamed b', paths: ['web/b.py'], symbols: ['b'] })
     expect(t.inboxOf(await t.rohan.tools.call('room_state', {}))).toContain('renamed b')
     // A changed-with-symbols in api/: not for Rohan.
@@ -162,7 +165,7 @@ describe('areas without CODEOWNERS', () => {
     t.sync()
     const st = await t.rohan.tools.call('room_state', {})
     expect(st).toContain('your areas: /, api/')
-    expect(st).toContain('1 other in 1 other area (web/)')
+    expect(st).toContain('1 others: Kieran (all:true for detail)')
   })
 
   it('with no scope and no changes you see everything', async () => {

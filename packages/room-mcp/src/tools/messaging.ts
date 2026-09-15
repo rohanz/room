@@ -1,5 +1,6 @@
 import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg } from '@room/shared'
 import type { Session } from '../session.js'
+import { isPrName } from '../prs.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 const WAIT_DEFAULT = 30_000
@@ -21,7 +22,8 @@ export const defs: ToolDef[] = [
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, rooms, myWorkers, upgrade, setPresence, forMe } = state
+  const { S, rooms, myWorkers, upgrade, setPresence, forMe, seen } = state
+  const offline = (s: Session) => !!s.closed || (s.provider as { wsconnected?: boolean }).wsconnected === false
   const handlers: Record<string, Handler> = {
     async room_send(a) {
       const lead = S()
@@ -65,7 +67,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         default: return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       }
       s.daemon.touch()
-      return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes].join('\n')
+      return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes, ...(offline(s) ? ['offline: queued/not delivered'] : [])].join('\n')
     },
     async room_wait(a) {
       const s = S()
@@ -76,20 +78,31 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const qRoom = (questionId && rooms.holdingQuestion(questionId, s)) || s
       const answered = (id: string) => qRoom.room.messages().find(m => messageEndsWait(m, { questionId: id, me: qRoom.me.name, answersOnly: true }))
       if (questionId) { const an = answered(questionId); if (an) return `answered: ${formatMsg(an)}` }
-      setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
-      const result = await new Promise<string>(resolve => {
-        const ws = rooms.all().find(x => x !== s) ?? null
-        const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); ws?.room.bus.unobserve(onWorkersBus); resolve(r) }
-        const waitResult = (m: Msg, workersRoom = false): string | undefined => {
-          if (!messageEndsWait(m, { claimId, questionId, me: workersRoom ? ws?.me.name : s.me.name, workersRoom })) return
+      const waitResult = (x: Session, m: Msg, workersRoom = false): string | undefined => {
+        if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
           if (m.type === 'answer') return `answered: ${formatMsg(m)}`
           if (m.type === 'done') return `worker done: ${formatMsg(m)}`
           return `${workersRoom ? 'question from a worker' : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`
         }
+        if (m.priority === 'interrupt' && forMe(x, m)) return `interrupt${workersRoom ? ' (workers room)' : ''}: ${formatMsg(m)}`
+      }
+      for (const x of [s, ...rooms.all().filter(x => x !== s)]) {
+        const workersRoom = x !== s
+        for (const m of x.room.messages()) {
+          if (seen.has(m.id)) continue
+          const ended = waitResult(x, m, workersRoom)
+          if (ended) return `${ended}\ncall room_state before continuing.`
+        }
+      }
+      if (offline(s)) return 'offline: queued/not delivered; room_wait cannot observe new messages until reconnected'
+      setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
+      const result = await new Promise<string>(resolve => {
+        const ws = rooms.all().find(x => x !== s) ?? null
+        const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); ws?.room.bus.unobserve(onWorkersBus); resolve(r) }
         const onWorkersBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           if (!ws) return
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            const ended = waitResult(m, true)
+            const ended = waitResult(ws, m, true)
             if (ended) return finish(ended)
             if (m.priority === 'interrupt' && forMe(ws, m)) return finish(`interrupt (workers room): ${formatMsg(m)}`)
           }
@@ -98,7 +111,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            const ended = waitResult(m)
+            const ended = waitResult(s, m)
             if (ended) return finish(ended)
             if (m.priority === 'interrupt' && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`)
           }
@@ -170,12 +183,17 @@ export function install(state: HandlerState): void {
     }
   const owners = (s: Session, f: string): string[] => {
       const out = new Set<string>()
-      for (const sc of s.room.allScopes()) if (scopeCovers(sc, f)) out.add(sc.by)
+      for (const sc of s.room.allScopes()) if (!isPrName(sc.by) && scopeCovers(sc, f)) out.add(sc.by)
       for (const c of s.room.claimsFor(f)) out.add(c.by)
       for (const p of s.room.whoChanged(f)) out.add(p)
       return Array.from(out).sort()
     }
-  const describeUsers = (s: Session, files: string[]): string => files.map(f => { const o = owners(s, f).filter(x => x !== s.me.name); return o.length ? `${f} (${o.join(', ')})` : f }).join(', ')
+  const describeUsers = (s: Session, files: string[]): string => files.map(f => {
+      const o = owners(s, f).filter(x => x !== s.me.name)
+      const prs = s.room.allScopes().filter(sc => isPrName(sc.by) && scopeCovers(sc, f)).map(sc => `PR #${sc.by.slice(3)}`)
+      if (prs.length) return `${f} (${o.length ? `${o.join(', ')}, ` : 'base, '}also touched by ${prs.join(', ')})`
+      return o.length ? `${f} (${o.join(', ')})` : f
+    }).join(', ')
   const waitingOn = async (s: Session): Promise<string[]> => {
       if (!s.graph) return []
       await s.graph.ready

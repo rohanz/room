@@ -71,6 +71,18 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     expect(t.team.b.messages().some(m => m.from === worker.name)).toBe(false)
   })
 
+  it('updates the scope map immediately without reposting unchanged area/summary chatter', () => {
+    const t = setup()
+    t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
+    const scopeMessages = () => t.team.b.messages().filter(m => m.type === 'scope')
+    expect(scopeMessages()).toHaveLength(1)
+    t.local.b.setOverlay(worker.name, 'tests/test_money.py', 'x\n')
+    expect(t.team.b.scope('rohanz')!.paths).toContain('tests/test_money.py')
+    expect(scopeMessages()).toHaveLength(1)
+    t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'billing', summary: 'cents complete', paths: ['api/models.py'] })
+    expect(scopeMessages()).toHaveLength(2)
+  })
+
   it("workers' claims are mirrored into the team room under the lead's name and removed with the original", () => {
     const t = setup()
     t.local.b.setOverlay(worker.name, 'app.py', 'x = 2\n')

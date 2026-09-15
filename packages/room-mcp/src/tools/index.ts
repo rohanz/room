@@ -50,18 +50,22 @@ export function createTools(ctx: ToolCtx): Tools {
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
       if (state.pendingJoin) { await state.pendingJoin; state.pendingJoin = null }
-      const closed = ctx.getSession()?.closed
-      if (closed && name !== 'room_leave') { const rn = ctx.getSession()!.roomName; return `error: the room for ${rn.slice(0, rn.lastIndexOf('/'))} was closed (${closed.reason}); room_leave, then room_create to reopen` }
+      const current = ctx.getSession()
+      const closed = current?.closed
+      const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait'
+      if (closed && name !== 'room_leave' && !offlineTool) { const rn = current!.roomName; return `error: the room for ${rn.slice(0, rn.lastIndexOf('/'))} was closed (${closed.reason}); room_leave, then room_create to reopen` }
       const moved = await state.followBranch()
       const s = ctx.getSession()
-      if (s && !s.provider.synced && name !== 'room_leave') return 'error: room not synced yet, retry'
+      const disconnected = !!s?.closed || (s?.provider as { wsconnected?: boolean } | undefined)?.wsconnected === false
+      if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && disconnected)) return 'error: room not synced yet, retry'
       if (s) state.rooms.track(s)
       try {
         const body = await h(args ?? {})
         const s2 = ctx.getSession()
         if (s2 && name !== 'room_join' && name !== 'room_create') s2.daemon.touch()
         const prefix = moved ? `${moved}\n\n` : ''
-        return prefix + (s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) + body : body)
+        const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) : ''
+        return prefix + (unread ? unread + body : body)
       } catch (e) {
         if (e instanceof NotJoined) return 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
         if (e instanceof NotLoggedIn) return `error: ${e.message}`
