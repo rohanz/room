@@ -481,6 +481,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 /* Conflict annotations live at the right edge; ownership remains on each line. */
 :root { --change-tint: 14%; --conflict-tint: 22%; --conflict-red: #B42318; --claim-amber: #B54708; }
 .conflict-code-grid { display: grid; align-content: start; }
+.conflict-code-grid > .line-text { grid-column: 1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(max-content, 1fr); min-width: 0; overflow-x: auto; }
 :root[data-theme="dark"] { --change-tint: 20%; --conflict-tint: 28%; --conflict-red: #F97066; --claim-amber: #F79009; }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] { --change-tint: 20%; --conflict-tint: 28%; --conflict-red: #F97066; --claim-amber: #F79009; }
@@ -488,7 +489,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .conflict-code-grid .code-line { grid-template-columns: 32px 32px 14px minmax(max-content, 1fr); border-left: 2px solid transparent; box-shadow: none; color: var(--code-ink); }
 .conflict-code-grid .changed-line { border-left-color: color-mix(in srgb, var(--line-change-owner) 60%, transparent); background: color-mix(in srgb, var(--line-change-owner) var(--change-tint), var(--code-bg)); }
 .conflict-code-grid :is(.conflict-line, .resolved-conflict-line)[data-owner] { background: color-mix(in srgb, var(--line-owner) var(--conflict-tint), var(--code-bg)); }
-.conflict-edge { grid-column: 2; display: grid; grid-template-rows: subgrid; column-gap: 2px; position: sticky; right: 0; margin-left: 64px; }
+.conflict-edge { grid-column: 2; display: grid; grid-template-rows: subgrid; column-gap: 2px; justify-content: end; overflow: hidden; }
 .conflict-bar { position: relative; width: 2px; min-width: 2px; min-height: 0; background: var(--conflict-red); color: var(--conflict-red); }
 .conflict-bar.claim-overlap { background: var(--claim-amber); color: var(--claim-amber); }
 .conflict-code-grid.merged-code .code-line { grid-template-columns: 32px 12px 14px minmax(max-content, 1fr); }

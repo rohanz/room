@@ -313,7 +313,11 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   const regions = spans.filter((s, index) => !spans.some((other, j) => j > index &&
     other.start === s.start && other.end === s.end && other.resolved === s.resolved &&
     other.people.length === s.people.length && other.people.every(p => s.people.includes(p))))
-  const grid = h('div', { class: 'conflict-code-grid' + (merged ? ' merged-code' : '') }, ...rows)
+  // A separate horizontal viewport keeps long lines out of the tag column,
+  // including after scrolling. Both columns share the same row tracks.
+  const text = h('div', { class: 'line-text' }, ...rows)
+  text.style.gridRow = '1 / ' + (lines.length + 1)
+  const grid = h('div', { class: 'conflict-code-grid' + (merged ? ' merged-code' : '') }, text)
   rows.forEach((row, i) => { row.style.gridRow = String(i + 1); row.style.gridColumn = '1' })
   const gutter = h('div', { class: 'conflict-edge' })
   gutter.style.gridRow = '1 / ' + (lines.length + 1)
@@ -323,7 +327,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   for (const start of new Set(regions.map(s => s.start))) {
     const group = regions.filter(s => s.start === start)
     const resolved = group.filter(s => s.resolved)
-    const collapse = group.length > 2 && resolved.length > 0
+    const collapse = resolved.length > 1
     let count = 0
     for (const s of group) {
       if (collapse && s.resolved && s !== resolved[0]) continue
@@ -359,7 +363,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     gutter.append(bar)
   })
   gutter.style.gridTemplateColumns = 'repeat(' + Math.max(1, laneEnds.length) + ', 2px)'
-  grid.style.gridTemplateColumns = 'minmax(max-content, 1fr)' + (regions.length ? ' max-content' : '')
+  grid.style.gridTemplateColumns = 'minmax(0, 1fr)' + (regions.length ? ' 96px' : '')
   if (spans.length) grid.append(gutter)
   host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, grid))
 }

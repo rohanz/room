@@ -91,7 +91,7 @@ it('packs overlapping spans into right-edge lanes, reuses lanes, and includes in
     { ...span, id: 'resolved', from: 9, to: 11, resolvedBy: { how: 'released', who: 'money', at: 20 } },
   ])
   expect(host.find('conflict-edge')).toHaveLength(1)
-  expect(host.find('conflict-code-grid')[0].style.gridTemplateColumns).toBe('minmax(max-content, 1fr) max-content')
+  expect(host.find('conflict-code-grid')[0].style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
   expect(host.find('code-line').every(row => row.style.gridColumn === '1')).toBe(true)
   expect(host.find('conflict-edge')[0].style.gridTemplateColumns).toBe('repeat(2, 2px)')
   const bars = host.find('conflict-bar')
@@ -251,7 +251,7 @@ it.each([false, true])('stacks open tags above resolved tags at distinct offsets
   expect(host.find('conflict-bar').map(b => b.style.gridColumn)).toEqual(['1', '2'])
 })
 
-it('collapses more than two same-line regions into one N resolved pill while retaining edge bars', () => {
+it('collapses multiple resolved same-line regions into one pill while retaining edge bars', () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
   const host = new Element()
   const span = deriveConflictSpans([conflict], claims)[0]
@@ -274,6 +274,66 @@ it('collapses more than two same-line regions into one N resolved pill while ret
   expect(new Set(tops).size).toBe(tags.length)
   const sorted = [...tops].sort((a, b) => a - b)
   expect(sorted.slice(1).every((top, i) => top - sorted[i] >= 20)).toBe(true)
+})
+
+it.each([
+  { open: 1, resolved: 3, labels: ['conflict', '3 resolved'] },
+  { open: 2, resolved: 1, labels: ['conflict', 'both claimed', 'resolved'] },
+  { open: 0, resolved: 2, labels: ['2 resolved'] },
+])('renders the exact same-line stack for $open open and $resolved resolved regions', ({ open, resolved, labels }) => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const host = new Element()
+  const span = deriveConflictSpans([conflict], claims)[0]
+  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 8 }, (_, i) => ({
+    text: 'code', side: 'a', changedBy: null, conflict: open > 0 && i === 1, aLine: i + 1,
+  })), ['money', 'tiers'], undefined, [
+    ...(open === 2 ? [{ ...span, people: ['money', 'third'], claims: claims.map(c => c.by === 'tiers' ? { ...c, by: 'third' } : c) }] : []),
+    ...Array.from({ length: resolved }, (_, i) => ({
+      ...span, to: i + 3, resolvedBy: { how: 'released' as const, who: 'money', at: i + 20 },
+    })),
+  ])
+  const tags = host.find('conflict-tag')
+  expect(tags.map(t => t.textContent)).toEqual(labels)
+  expect(tags).toHaveLength(labels.length)
+  const pill = tags.at(-1)!
+  expect(pill.className).toContain('resolved')
+  for (let i = 0; i < resolved; i++) {
+    expect(pill.ariaLabel).toContain(`a.ts:2-${i + 3}`)
+  }
+  expect(pill.ariaLabel).toContain('money ↔ tiers')
+  expect(pill.ariaLabel.match(/money released/g)).toHaveLength(resolved)
+})
+
+it('reserves a separate tag column outside the horizontally scrolling line-text box', () => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const host = new Element()
+  renderCodeLines(host as unknown as HTMLElement, [{
+    text: 'long line '.repeat(200), side: 'a', changedBy: null, conflict: true, aLine: 1,
+  }], ['money', 'tiers'])
+  const grid = host.find('conflict-code-grid')[0]
+  const text = host.find('line-text')[0]
+  const gutter = host.find('conflict-edge')[0]
+  expect(grid.children).toEqual([text, gutter])
+  expect(text.find('code-line')).toHaveLength(1)
+  expect(text.find('conflict-tag')).toHaveLength(0)
+  expect(grid.style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
+  expect(text.style.gridRow).toBe(gutter.style.gridRow)
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  expect(css).toContain('.conflict-code-grid > .line-text { grid-column: 1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(max-content, 1fr); min-width: 0; overflow-x: auto; }')
+  expect(css).toContain('.conflict-edge { grid-column: 2; display: grid; grid-template-rows: subgrid; column-gap: 2px; justify-content: end; overflow: hidden; }')
+  // Model the grid's rects at narrow and wide viewport sizes. The scrollable
+  // content can be wider, but its visible box ends before every tag's box.
+  for (const width of [240, 800]) {
+    const textRect = { left: 0, right: width - 96 }
+    for (const bar of gutter.find('conflict-bar')) for (const tag of bar.find('conflict-tag')) {
+      const lane = Number(bar.style.gridColumn) - 1
+      const barRight = width - (gutter.find('conflict-bar').length - 1 - lane) * 4
+      const tagRight = barRight - parseFloat(tag.style.right)
+      const tagRect = { left: tagRight - 80, right: tagRight }
+      expect(tagRect.left).toBeGreaterThanOrEqual(textRect.right)
+      expect(tagRect.right).toBeLessThanOrEqual(width)
+    }
+  }
 })
 
 it('uses the specified theme tints and 60% owner borders with at least 4.5:1 code contrast', () => {
