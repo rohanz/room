@@ -66,6 +66,9 @@ export async function prepareWorktree(repoDir: string, tag: string): Promise<{ d
   const branch = `room/${tag}`
   if (fs.existsSync(path.join(dir, '.git'))) return { dir, branch, created: false }
   fs.mkdirSync(path.dirname(dir), { recursive: true })
+  // A worker directory may have been deleted without removing its worktree registration.
+  // Prune before add so Git does not reject the same path as already registered.
+  await git(repoDir, ['worktree', 'prune'])
   let hasBranch = false
   try { await git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); hasBranch = true } catch { /* new branch */ }
   await git(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, 'HEAD'])

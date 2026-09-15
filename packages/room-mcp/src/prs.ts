@@ -113,6 +113,7 @@ export function branchOf(roomName: string): string {
  */
 export function renderPrNote(room: RoomDoc, opts: { roomName: string; now?: number }): string {
   const now = opts.now ?? Date.now()
+  const archived = room.archivedLedger()
   const msgs = room.messages().filter(m => !m.copyOf && !isPrName(m.from))
   const releases = new Map<string, ReleaseMsg>()
   const answers = new Map<string, AnswerMsg[]>()
@@ -124,6 +125,12 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; now?: numb
   const who = (m: Msg) => `**${displayName({ name: m.from, kind: m.fromKind })}**`
   const t = (at: number) => new Date(at).toISOString().slice(0, 16).replace('T', ' ')
   const lines: string[] = []
+  if (archived.messages) {
+    const counts = Object.entries(archived.counts).sort(([a], [b]) => a.localeCompare(b)).map(([kind, n]) => `${n} ${kind}`).join(', ')
+    const seen = Object.entries(archived.lastSeen).sort(([a], [b]) => a.localeCompare(b)).map(([person, at]) => `${person} (${t(at)})`).join(', ')
+    lines.push(`- Earlier compact history: ${archived.messages} messages (${counts}); last seen: ${seen || 'unknown'}`)
+    for (const item of archived.unfulfilled) lines.push(`- ${t(item.message.at)} **${displayName({ name: item.message.from, kind: item.message.fromKind })}** left plans unfulfilled on \`${item.message.path}\`: ${formatPlans(item.plans)}${item.message.summary ? ` (${item.message.summary})` : ''}`)
+  }
   for (const m of msgs) {
     switch (m.type) {
       case 'scope':

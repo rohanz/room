@@ -74,6 +74,9 @@ export interface RoomdOptions {
   scopePaths?: string[]
   /** In-memory transport override for tests that cannot open loopback sockets. */
   providerFactory?: (serverUrl: string, roomName: string, doc: Y.Doc) => WebsocketProvider
+  /** Rolling bus size and maintenance interval. Defaults: ROOM_BUS_KEEP/2000 and 60s. */
+  busKeep?: number
+  busTrimMs?: number
 }
 
 export interface Skipped { size: string[]; budget: string[]; ignore: string[]; share: string[] }
@@ -104,7 +107,10 @@ export class RoomdError extends Error {
   }
 }
 
-const IGNORED_DIRS = new Set(['.git', 'node_modules', '.venv', '.room'])
+export const DEFAULT_IGNORED_DIRS = new Set(['node_modules', '.venv', 'dist', 'build', '.git', '.room', 'target', '.next', 'coverage'])
+export function defaultIgnoredPath(relpath: string): boolean {
+  return relpath.split('/').some(segment => DEFAULT_IGNORED_DIRS.has(segment))
+}
 const ROOM_FILE = '.room.json'
 const ROOMIGNORE = '.roomignore'
 
@@ -151,6 +157,8 @@ class Daemon implements Roomd {
   private readonly sizeCap: number
   private readonly totalBudget: number
   private readonly connectTimeoutMs: number
+  private readonly busKeep: number
+  private readonly busTrimMs: number
   private roomIgnore: RoomIgnore = parseRoomIgnore('')
   private readonly skips = { size: new Set<string>(), budget: new Set<string>(), ignore: new Set<string>(), share: new Set<string>() }
   private readonly roomUrl: string
@@ -180,6 +188,9 @@ class Daemon implements Roomd {
     this.sizeCap = options.sizeCap ?? 512 * 1024
     this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000
+    const envKeep = Number.parseInt(process.env.ROOM_BUS_KEEP ?? '', 10)
+    this.busKeep = Math.max(0, options.busKeep ?? (Number.isFinite(envKeep) ? envKeep : 2000))
+    this.busTrimMs = options.busTrimMs ?? 60_000
     this.share = options.share ?? 'full'
     this.explicitScopePaths = options.scopePaths
     this.beforePublishWrite = options.beforePublishWrite
@@ -238,6 +249,8 @@ class Daemon implements Roomd {
     this.writeRoomFile()
     this.excludeRoomFile()
     await this.startWatcher()
+    this.trimBusIfLeader()
+    if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader())
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
     this.every(this.basePollMs, () => this.pollHead())
     this.roomDoc.metaMap.observe(() => { void this.refreshBaseStatus() })
@@ -509,7 +522,7 @@ class Daemon implements Roomd {
 
   private isIgnoredPath(relpath: string): boolean {
     if (!relpath || relpath === ROOM_FILE) return true
-    if (relpath.split('/').some(segment => IGNORED_DIRS.has(segment))) return true
+    if (defaultIgnoredPath(relpath)) return true
     if (this.roomIgnore.ignores(relpath)) {
       if (!this.skips.ignore.has(relpath)) { this.skips.ignore.add(relpath); this.log(`skip ${relpath}: ${ROOMIGNORE}`) }
       return true
@@ -576,19 +589,47 @@ class Daemon implements Roomd {
 
   // ---- watcher -----------------------------------------------------------
 
+  private trimBusIfLeader(): void {
+    const states = typeof this.provider.awareness.getStates === 'function'
+      ? Array.from(this.provider.awareness.getStates().values())
+      : [{ user: { name: this.name } }]
+    const present = states
+      .map(state => (state as Partial<Presence>)?.user?.name)
+      .filter((name): name is string => !!name && !name.startsWith('pr#'))
+    const workers = new Set(Array.from(this.roomDoc.workers.values()).map(w => w.name))
+    const leads = present.filter(name => !workers.has(name)).sort()
+    const leader = leads[0] ?? present.sort()[0] ?? this.name
+    if (leader !== this.name) return
+    const removed = this.roomDoc.trimBus(this.busKeep, this)
+    if (removed) this.log(`folded ${removed} old bus messages into the compact ledger (keeping ${this.busKeep})`)
+  }
+
   private async startWatcher(): Promise<void> {
+    const watchedFiles = new Set<string>()
+    let warnedLarge = false
+    const countFile = (absolute: string, add: boolean) => {
+      const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
+      if (!relpath || defaultIgnoredPath(relpath)) return
+      if (add) watchedFiles.add(relpath); else watchedFiles.delete(relpath)
+      if (!warnedLarge && watchedFiles.size > 20_000) {
+        warnedLarge = true
+        this.log(`warn: watching ${watchedFiles.size} files; add generated or bulky paths to ${ROOMIGNORE}`)
+      }
+    }
     const watcher = chokidar.watch(this.dir, {
       ignoreInitial: true,
       persistent: true,
       ignored: (absolute: string) => {
         const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
         if (relpath === '') return false
-        return relpath.split('/').some(segment => IGNORED_DIRS.has(segment))
+        return defaultIgnoredPath(relpath)
       },
     })
     this.watcher = watcher
     watcher.on('all', (event, absolute) => {
       if (this.stopped) return
+      if (event === 'add') countFile(absolute, true)
+      else if (event === 'unlink') countFile(absolute, false)
       const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
       if (this.isIgnoredPath(relpath) || event === 'addDir' || event === 'unlinkDir') return
       if (path.basename(relpath) === '.gitignore') this.refreshTracked().catch(() => {})
@@ -597,6 +638,11 @@ class Daemon implements Roomd {
     })
     watcher.on('error', error => this.log(`watcher error: ${errMsg(error)}`))
     await new Promise<void>(resolve => watcher.on('ready', () => resolve()))
+    for (const [dir, names] of Object.entries(watcher.getWatched())) for (const name of names) {
+      const absolute = path.join(dir, name)
+      try { if (fs.statSync(absolute).isFile()) countFile(absolute, true) } catch { /* raced with unlink */ }
+    }
+    this.log(`watching ${watchedFiles.size} files`)
   }
 
   /** .roomignore changed: newly ignored files leave the room, newly allowed ones are published. */

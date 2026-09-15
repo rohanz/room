@@ -8,6 +8,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import { RoomDoc } from '@room/shared'
 import type { Identity, ClaimMsg, QuestionMsg, AnswerMsg, ScopeMsg, NoteMsg, ReleaseMsg } from '@room/shared'
 import { createTools } from '../src/tools.js'
+import { GraphIndex } from '../src/graph-index.js'
 import type { Session } from '../src/session.js'
 import { branchOf, isPrName, openPrs, prArea, prIdentity, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
 
@@ -39,7 +40,7 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'room-prs-'))
   const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't') // branch main: the room is github.com/o/r/main
-  writeFileSync(join(dir, 'app.py'), 'x = 1\n')
+  writeFileSync(join(dir, 'app.py'), 'def base_symbol():\n    return 1\n')
   git('add', '.'); git('commit', '-qm', 'init')
   base = git('rev-parse', 'HEAD').trim()
 })
@@ -101,6 +102,19 @@ describe('PR mirror in the doc', () => {
     await tb.call('room_claim', { path: 'src/auth.py', from: 1, to: 1, intent: 'x', plans: [{ kind: 'rename', symbol: 'login' }] })
     expect(b.messages().some(m => m.to === 'pr#7')).toBe(false)
     await ta.shutdown(); await tb.shutdown()
+  })
+
+  it('attributes a base definition to base when a PR merely touches its file', async () => {
+    const { a } = pair()
+    a.setMeta({ repo: 'o/r', branch: 'main', base })
+    syncPrs(a, [{ ...PR7, files: ['app.py'] }])
+    const alice = session(a, { name: 'alice', kind: 'agent', owner: 'alice' })
+    const graph = new GraphIndex(a, alice.me.name, dir); graph.start(); alice.graph = graph
+    const tools = createTools({ getSession: () => alice, setSession: () => {}, cwd: dir })
+    const out = await tools.call('room_impact', { symbol: 'base_symbol' })
+    expect(out).toContain('defined in app.py (base, also touched by PR #7)')
+    expect(out).not.toContain('(pr#7)')
+    await tools.shutdown()
   })
 })
 

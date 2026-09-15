@@ -10,6 +10,7 @@ import { displayName } from '@room/shared'
  */
 import { structuredPatch } from 'diff'
 import { diff3Merge } from 'node-diff3'
+import { createHash } from 'node:crypto'
 import type { Claim, ConflictMsg, Identity, NoteMsg, RoomDoc } from '@room/shared'
 
 export const ROOM: Identity = { name: 'room', kind: 'agent' }
@@ -27,6 +28,10 @@ export interface ConflictDeps {
   mergeBase: (a: string, b: string) => Promise<string>
   log?: (line: string) => void
   debounceMs?: number
+  /** Global merge-preview budget. Defaults to four starts per ten seconds. */
+  mergeBudget?: number
+  mergeWindowMs?: number
+  now?: () => number
 }
 
 export interface Range { from: number; to: number }
@@ -76,6 +81,11 @@ export class ConflictWatcher {
   /** "person|path" pairs currently known to conflict. */
   private conflicting = new Set<string>()
   private inflight = new Set<string>()
+  private mergeQueue = new Map<string, { person: string; path: string }>()
+  private mergeStarts: number[] = []
+  private mergeTimer: NodeJS.Timeout | null = null
+  private draining: Promise<void> | null = null
+  private mergeHashes = new Map<string, string>()
   constructor(private d: ConflictDeps) {}
 
   start(): void {
@@ -104,6 +114,9 @@ export class ConflictWatcher {
     this.stopFns = []
     for (const t of this.timers.values()) clearTimeout(t)
     this.timers.clear()
+    if (this.mergeTimer) clearTimeout(this.mergeTimer)
+    this.mergeTimer = null
+    this.mergeQueue.clear()
   }
 
   /** Debounced per (person, path): a burst of keystrokes becomes one check. */
@@ -122,6 +135,7 @@ export class ConflictWatcher {
     for (const t of this.timers.values()) clearTimeout(t)
     this.timers.clear()
     for (const key of keys) { const [person, p] = key.split('|'); await this.check(person, p) }
+    await this.drainMerges()
   }
 
   private async check(person: string, p: string): Promise<void> {
@@ -133,7 +147,8 @@ export class ConflictWatcher {
       // A change by either side to a file both have changed re-runs the preview for every other person on it.
       const me = this.d.me.name
       const people = person === me ? this.d.room.whoChanged(p).filter(x => x !== me) : [person]
-      if (this.d.room.changedPaths(me).includes(p)) for (const other of people) await this.checkMerge(other, p)
+      if (this.d.room.changedPaths(me).includes(p)) for (const other of people) this.mergeQueue.set(`${other}|${p}`, { person: other, path: p })
+      await this.drainMerges()
     } catch (e) {
       this.d.log?.(`conflict check ${key}: ${e instanceof Error ? e.message : String(e)}`)
     } finally { this.inflight.delete(key) }
@@ -167,8 +182,13 @@ export class ConflictWatcher {
   private async checkMerge(person: string, p: string): Promise<void> {
     if (!this.d.room.changedPaths(person).includes(p)) return
     const key = `${person}|${p}`
+    const mine = await this.d.liveText(p, this.d.me.name).catch(() => undefined)
+    const theirs = await this.d.liveText(p, person).catch(() => undefined)
+    const hash = createHash('sha256').update(`${this.d.baseFor(this.d.me.name)}\0${this.d.baseFor(person)}\0${mine ?? ''}\0${theirs ?? ''}`).digest('hex')
+    if (this.mergeHashes.get(key) === hash) return
     const res = await mergePath(this.d, person, p)
     if (res.status === 'unknown') return
+    this.mergeHashes.set(key, hash)
     const was = this.conflicting.has(key)
     if (res.status === 'conflict' && !was) {
       this.conflicting.add(key)
@@ -179,5 +199,33 @@ export class ConflictWatcher {
       this.conflicting.delete(key)
       this.d.room.post<NoteMsg>(ROOM, { type: 'note', to: this.d.me.name, priority: 'fyi', text: `your ${p} and ${person}'s merge cleanly again` })
     }
+  }
+
+  /** Drain coalesced pairs while respecting one global rolling-window budget. */
+  private async drainMerges(): Promise<void> {
+    if (this.draining) return this.draining
+    this.draining = (async () => {
+      const now = this.d.now ?? Date.now
+      const windowMs = this.d.mergeWindowMs ?? 10_000
+      const budget = this.d.mergeBudget ?? 4
+      while (this.mergeQueue.size) {
+        const at = now()
+        this.mergeStarts = this.mergeStarts.filter(t => at - t < windowMs)
+        if (this.mergeStarts.length >= budget) {
+          if (!this.mergeTimer) {
+            const delay = Math.max(1, this.mergeStarts[0] + windowMs - at)
+            this.mergeTimer = setTimeout(() => { this.mergeTimer = null; void this.drainMerges() }, delay)
+            this.mergeTimer.unref?.()
+          }
+          break
+        }
+        const first = this.mergeQueue.entries().next().value as [string, { person: string; path: string }] | undefined
+        if (!first) break
+        this.mergeQueue.delete(first[0])
+        this.mergeStarts.push(at)
+        await this.checkMerge(first[1].person, first[1].path)
+      }
+    })().finally(() => { this.draining = null })
+    return this.draining
   }
 }

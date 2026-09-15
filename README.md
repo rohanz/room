@@ -63,6 +63,10 @@ in that clone starts where you left it; `room_leave(forget=true)` clears it. An 
 joins the team room on its own initiative. `ROOM_SERVER` still overrides everything, for
 scripts and workers.
 
+Areas come from `CODEOWNERS` at the room's base commit, not from the working tree. When
+there is no matching `CODEOWNERS` area, an uncommitted file makes its top-level directory
+an area only for the person who changed that file.
+
 ### Watching a local room
 
 A local session prints a `browser view:` link like a hosted one, served by the relay itself:

@@ -15,7 +15,7 @@ import type {
 } from './types.js'
 import { newId } from './identity.js'
 import type { GraphSnapshot } from './graph.js'
-import { ledger as ledgerView, areaSummary as areaSummaryView, type LedgerQuery } from './ledger.js'
+import { ledger as ledgerView, areaSummary as areaSummaryView, emptyLedgerArchive, foldLedger, messageAreas, type LedgerArchive, type LedgerQuery } from './ledger.js'
 
 type ScopeInput = Omit<Scope, 'by' | 'at'> & { at?: number }
 type NewScope = Omit<Scope, 'at'> & { at?: number }
@@ -60,6 +60,8 @@ export class RoomDoc {
   get scopes(): Y.Map<Scope> { return this.doc.getMap<Scope>('scopes') }
   get claims(): Y.Map<Claim> { return this.doc.getMap<Claim>('claims') }
   get bus(): Y.Array<Msg> { return this.doc.getArray<Msg>('bus') }
+  /** Compact histories keyed by area; `_room` contains every archived message. */
+  get ledgerArchives(): Y.Map<LedgerArchive> { return this.doc.getMap<LedgerArchive>('ledger') }
   /** Workers dispatched into this room by leads (room_spawn), keyed by tag. */
   get workers(): Y.Map<Worker> { return this.doc.getMap<Worker>('workers') }
   setWorker(w: Worker): void { this.workers.set(w.tag, w) }
@@ -168,6 +170,9 @@ export class RoomDoc {
   scope(person: string): Scope | undefined { return this.scopes.get(person) }
   allScopes(): Scope[] { return Array.from(this.scopes.values()).sort((a, b) => a.at - b.at) }
   ledger(q: LedgerQuery = {}): Msg[] { return ledgerView(this.messages(), this.allScopes(), q) }
+  archivedLedger(q: Pick<LedgerQuery, 'area'> = {}): LedgerArchive {
+    return this.ledgerArchives.get(q.area ?? '_room') ?? emptyLedgerArchive()
+  }
   areaSummary(windowMs?: number): string[] { return areaSummaryView(this.messages(), this.allScopes(), windowMs) }
 
   setScope(scope: NewScope, origin?: unknown): Scope
@@ -293,6 +298,40 @@ export class RoomDoc {
   lastMessages(n: number): Msg[] {
     const messages = this.messages()
     return messages.slice(Math.max(0, messages.length - n))
+  }
+
+  /** Fold an old contiguous prefix into compact histories, preserving actionable entries in full. */
+  trimBus(keep = 2000, origin?: unknown): number {
+    const messages = this.messages()
+    const cutoff = Math.max(0, messages.length - Math.max(0, keep))
+    if (!cutoff) return 0
+    const answered = new Set(messages.filter(m => m.type === 'answer').map(m => m.inReplyTo))
+    const removable: Msg[] = []
+    const indexes: number[] = []
+    for (let i = 0; i < cutoff; i++) {
+      const m = messages[i]
+      if (m.type === 'question' && !answered.has(m.id)) continue
+      removable.push(m); indexes.push(i)
+    }
+    if (!removable.length) return 0
+    const scopes = this.allScopes()
+    this.doc.transact(() => {
+      this.ledgerArchives.set('_room', foldLedger(this.ledgerArchives.get('_room'), removable))
+      const byArea = new Map<string, Msg[]>()
+      for (const m of removable) for (const area of messageAreas(m, scopes)) {
+        const list = byArea.get(area) ?? []
+        list.push(m); byArea.set(area, list)
+      }
+      for (const [area, list] of byArea) this.ledgerArchives.set(area, foldLedger(this.ledgerArchives.get(area), list))
+      // Delete backwards so retained open questions do not shift later indexes.
+      for (let end = indexes.length - 1; end >= 0;) {
+        let start = end
+        while (start > 0 && indexes[start - 1] === indexes[start] - 1) start--
+        this.bus.delete(indexes[start], indexes[end] - indexes[start] + 1)
+        end = start - 1
+      }
+    }, origin)
+    return removable.length
   }
 
   post<T extends Msg>(from: Identity, body: PostBody<T>, origin?: unknown): T {
