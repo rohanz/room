@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseRoomIgnore } from '../src/roomignore.js'
+import { DEFAULT_IGNORED_DIRS, defaultIgnoredPath } from '../src/index.js'
 
 describe('.roomignore', () => {
   const ig = parseRoomIgnore(`
@@ -31,5 +32,13 @@ data?.csv
   })
   it('an empty file ignores nothing', () => {
     expect(parseRoomIgnore('').ignores('anything.ts')).toBe(false)
+  })
+
+  it('ignores dependency, VCS, build, framework, and coverage directories by default', () => {
+    expect(Array.from(DEFAULT_IGNORED_DIRS).sort()).toEqual([
+      '.git', '.next', '.room', '.venv', 'build', 'coverage', 'dist', 'node_modules', 'target',
+    ])
+    for (const dir of DEFAULT_IGNORED_DIRS) expect(defaultIgnoredPath(`pkg/${dir}/file.js`)).toBe(true)
+    expect(defaultIgnoredPath('src/building/file.ts')).toBe(false)
   })
 })

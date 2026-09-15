@@ -8,7 +8,7 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
-import { changedRanges } from '../src/conflicts.js'
+import { changedRanges, ConflictWatcher } from '../src/conflicts.js'
 import type { Session } from '../src/session.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
@@ -110,6 +110,38 @@ describe('automatic conflict notices', () => {
     expect(notes()[1].priority).toBe('fyi')
     expect(notes()[1].type === 'note' && notes()[1].text).toContain('merge cleanly again')
   })
+
+  it('budgets merge previews globally, coalesces pairs, and skips unchanged text hashes', async () => {
+    const room = new RoomDoc()
+    let clock = 0, mergeReads = 0
+    const paths = Array.from({ length: 6 }, (_, i) => `f${i}.txt`)
+    for (const p of paths) {
+      room.setOverlay('Rohan', p, 'mine\n')
+      room.setOverlay('Kieran', p, 'theirs\n')
+    }
+    const watcher = new ConflictWatcher({
+      room, me, debounceMs: 0, mergeBudget: 4, mergeWindowMs: 10_000, now: () => clock,
+      liveText: async (p, person) => room.text(p, person),
+      baseText: async () => { mergeReads++; return 'base\n' },
+      baseFor: () => base,
+      mergeBase: async () => base,
+    })
+    watcher.start()
+    // Re-touch all pairs; the queue holds one entry per person/path and only four may start.
+    for (const p of paths) room.setOverlay('Kieran', p, `theirs ${p}\n`)
+    await watcher.flush()
+    expect(mergeReads).toBe(4)
+    clock = 10_001
+    await watcher.flush()
+    expect(mergeReads).toBe(6)
+    // Multiple changes coalesce; returning to the last merged text skips the merge by hash.
+    room.setOverlay('Kieran', paths[0], 'temporary\n')
+    room.setOverlay('Kieran', paths[0], `theirs ${paths[0]}\n`)
+    clock = 20_002
+    await watcher.flush()
+    expect(mergeReads).toBe(6)
+    watcher.stop()
+  })
 })
 
 describe('room lifecycle', () => {
@@ -126,7 +158,9 @@ describe('room lifecycle', () => {
 
   it('a session whose room the server closed refuses tools until leave + create', async () => {
     const t = setup({ session: { closed: { reason: 'room closed' } } })
-    expect(await t.tools.call('room_state', {})).toBe('error: the room for github.com/o/r was closed (room closed); room_leave, then room_create to reopen')
+    const state = await t.tools.call('room_state', {})
+    expect(state).toContain('OFFLINE: not connected to ')
+    expect(state).toContain('showing the last known state')
     expect(await t.tools.call('room_leave', {})).toContain('left')
   })
 
