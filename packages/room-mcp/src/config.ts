@@ -12,6 +12,7 @@ import type { ShareLevel } from '@room/roomd'
 
 export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
 export const LOCAL = 'local'
+export const DEFAULT_CLAUDE_CHANNEL = 'plugin:room@room'
 export const DEFAULT_MAX_WORKERS = 8
 export const DEFAULT_STALE_DAYS = 7
 
@@ -19,14 +20,14 @@ export type ConfigRule = 'argument' | 'env' | 'remembered' | 'default'
 export interface ConfigArgs {
   server?: string; where?: string; name?: string; owner?: string; tag?: string; kind?: string
   share?: string; credentialsPath?: string; credentials?: string; token?: string; logFile?: string
-  maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
+  claudeChannel?: string; maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
 }
 export interface ResolvedConfig {
   dir: string; server: string; where: string; whereRule: ConfigRule
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
-  workerId?: string; gen?: string
+  claudeChannel: string; workerId?: string; gen?: string
 }
 
 const value = (v: unknown): string | undefined => typeof v === 'string' && v.trim() ? v.trim() : undefined
@@ -72,6 +73,8 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const share: ShareLevel = rawShare === 'intent' || rawShare === 'declared' ? rawShare : 'full'
   const credentialsPath = resolveCredentialsPath(args, e)
   return {
+    // Empty explicitly disables development channels; do not discard it with value().
+    claudeChannel: (args.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
     workerId: value(e.ROOM_WORKER_ID), gen: value(e.ROOM_GEN),
     roomUrl, dir: path.resolve(dir), server: resolveServer(where), where, whereRule,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
@@ -81,4 +84,18 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     staleDays: positive(args.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),
     room: value(args.room) ?? value(e.ROOM_ROOM), web: value(args.web) ?? value(e.ROOM_WEB),
   }
+}
+
+/** SessionStart records the host in the worktree's own git directory. */
+export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process.env): string {
+  const host = (v: unknown) => v === 'claude' || v === 'codex' ? v : undefined
+  if (host(env.ROOM_HOST)) return env.ROOM_HOST!
+  try {
+    let gitDir = path.join(dir, '.git')
+    if (fs.statSync(gitDir).isFile()) {
+      const target = fs.readFileSync(gitDir, 'utf8').match(/gitdir:\s*(.+)/)?.[1].trim()
+      if (target) gitDir = path.resolve(dir, target)
+    }
+    return host(JSON.parse(fs.readFileSync(path.join(gitDir, 'room-session.json'), 'utf8')).host) ?? 'agent'
+  } catch { return 'agent' }
 }

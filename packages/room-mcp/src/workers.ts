@@ -10,6 +10,8 @@ import path from 'node:path'
 import type { Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 
+import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
+
 export type WorkerHost = 'claude' | 'codex'
 
 export interface SpawnSpec {
@@ -52,11 +54,11 @@ export function workerPrompt(lead: string, tag: string, task: string): string {
   ].join('\n')
 }
 
-export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string): { cmd: string; args: string[] } {
+export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string, claudeChannel = DEFAULT_CLAUDE_CHANNEL): { cmd: string; args: string[] } {
   if (host === 'codex') return { cmd: 'codex', args: ['exec', '-s', 'workspace-write', ...(model ? ['-m', model] : []), prompt] }
   return {
     cmd: 'claude',
-    args: ['-p', prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : [])],
+    args: [...(claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : [])],
   }
 }
 

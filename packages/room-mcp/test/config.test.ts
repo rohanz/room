@@ -29,6 +29,14 @@ describe('resolveConfig', () => {
     expect((await resolveConfig({ dir, env: { ROOM_URL: url }, args: { roomUrl: 'ws://argument/room' } })).roomUrl).toBe('ws://argument/room')
   })
 
+  it('resolves Claude channels, preserving empty overrides', async () => {
+    const dir = repo()
+    expect((await resolveConfig({ dir, env: {} })).claudeChannel).toBe('plugin:room@room')
+    expect((await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: ' plugin:custom@market ' } })).claudeChannel).toBe('plugin:custom@market')
+    expect((await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: '' } })).claudeChannel).toBe('')
+    expect((await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: 'custom' }, args: { claudeChannel: '' } })).claudeChannel).toBe('')
+  })
+
   it('resolves worker identity and generation from the environment', async () => {
     const config = await resolveConfig({ dir: repo(), env: { ROOM_WORKER_ID: ' spawn-id ', ROOM_GEN: ' 2 ' } })
     expect(config).toMatchObject({ workerId: 'spawn-id', gen: '2' })
