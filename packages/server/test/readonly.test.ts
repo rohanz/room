@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { EventEmitter } from 'node:events'
 import * as encoding from 'lib0/encoding'
+import * as decoding from 'lib0/decoding'
 import * as Y from 'yjs'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
-import { isWriteMessage, makeReadOnly, ownsName, capDocSize } from '../src/readonly.js'
+import { isWriteMessage, makeReadOnly, ownsName, capDocSize, filterAwareness, bindIdentity } from '../src/readonly.js'
 
 const doc = new Y.Doc()
 doc.getText('t').insert(0, 'hello')
@@ -52,6 +53,85 @@ describe('read-only view connections', () => {
 })
 
 describe('identity-bound connections', () => {
+  type Entry = { clientID: number; clock: number; state: unknown }
+  const pack = (entries: Entry[]) => {
+    const inner = encoding.createEncoder(), outer = encoding.createEncoder()
+    encoding.writeVarUint(inner, entries.length)
+    for (const entry of entries) {
+      encoding.writeVarUint(inner, entry.clientID)
+      encoding.writeVarUint(inner, entry.clock)
+      encoding.writeVarString(inner, JSON.stringify(entry.state))
+    }
+    encoding.writeVarUint(outer, 1)
+    encoding.writeVarUint8Array(outer, encoding.toUint8Array(inner))
+    return encoding.toUint8Array(outer)
+  }
+  const unpack = (buf: Uint8Array): Entry[] => {
+    const outer = decoding.createDecoder(buf)
+    expect(decoding.readVarUint(outer)).toBe(1)
+    const inner = decoding.createDecoder(decoding.readVarUint8Array(outer))
+    const count = decoding.readVarUint(inner)
+    return Array.from({ length: count }, () => ({
+      clientID: decoding.readVarUint(inner), clock: decoding.readVarUint(inner),
+      state: JSON.parse(decoding.readVarString(inner)),
+    }))
+  }
+  const own = { clientID: 123, clock: 42, state: { user: { name: 'octo+codex', owner: 'octo' }, status: 'working' } }
+  const foreign = { clientID: 456, clock: 17, state: { user: { name: 'kieran' } } }
+
+  it('forwards only owned entries in a reconnect broadcast without logging a drop', () => {
+    const conn = new EventEmitter(), seen: Uint8Array[] = [], dropped: string[] = []
+    conn.on('message', (buf, binary) => { expect(binary).toBe(true); seen.push(buf) })
+    bindIdentity(conn, 'octo', (_login, name) => dropped.push(name))
+    conn.emit('message', Buffer.from(pack([own, foreign])), true)
+    expect(seen).toHaveLength(1)
+    expect(unpack(seen[0])).toEqual([own])
+    expect(dropped).toEqual([])
+    expect(filterAwareness(pack([own, foreign]), 'octo').stripped).toEqual(['kieran'])
+  })
+
+  it('drops foreign-only updates and reports the stripped name and login', () => {
+    const conn = new EventEmitter(), seen: Uint8Array[] = [], dropped: string[][] = []
+    conn.on('message', buf => seen.push(buf))
+    bindIdentity(conn, 'octo', (login, name) => dropped.push([login, name]))
+    expect(conn.emit('message', pack([foreign]))).toBe(false)
+    expect(seen).toEqual([])
+    expect(dropped).toEqual([['octo', 'kieran']])
+  })
+
+  it('keeps null leaving entries for foreign clients', () => {
+    const conn = new EventEmitter(), seen: Uint8Array[] = [], dropped: string[] = []
+    const leaving = { ...foreign, state: null }
+    conn.on('message', buf => seen.push(buf))
+    bindIdentity(conn, 'octo', (_login, name) => dropped.push(name))
+    conn.emit('message', pack([foreign, leaving]))
+    expect(seen).toHaveLength(1)
+    expect(unpack(seen[0])).toEqual([leaving])
+    expect(dropped).toEqual([])
+  })
+
+  it('still drops sync writes when combined with the read-only wrapper', () => {
+    const conn = new EventEmitter(), seen: Uint8Array[] = []
+    let writes = 0
+    conn.on('message', buf => seen.push(buf))
+    makeReadOnly(conn, () => writes++)
+    bindIdentity(conn, 'octo', () => {})
+    for (const buf of [step1, step2, update, pack([own, foreign])]) conn.emit('message', buf)
+    expect(writes).toBe(2)
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toEqual(step1)
+    expect(unpack(seen[1])).toEqual([own])
+  })
+
+  it('rejects malformed updates and strips unnamed or mismatched-owner states', () => {
+    expect(filterAwareness(new Uint8Array([1]), 'octo').buf).toBeNull()
+    for (const state of [{}, { user: { name: 42 } }, { user: { name: 'octo', owner: 'kieran' } }]) {
+      const result = filterAwareness(pack([{ ...foreign, state }, own]), 'octo')
+      expect(unpack(result.buf!)).toEqual([own])
+      expect(result.stripped).toHaveLength(1)
+    }
+  })
+
   const aw = (name: string | null, owner?: string) => {
     const enc = encoding.createEncoder()
     encoding.writeVarUint(enc, 1)

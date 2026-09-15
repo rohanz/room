@@ -362,11 +362,11 @@ server.on('upgrade', (req, socket, head) => {
       })
       audit({ event: 'join', room: roomName, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
       if (opts.readOnly) makeReadOnly(ws, droppedWrite(roomName))
-      if (opts.login) bindIdentity(ws, opts.login, login => {
+      if (opts.login) bindIdentity(ws, opts.login, (login, name) => {
         const now = Date.now()
         if ((identityLog.get(login) ?? 0) > now - 60_000) return
         identityLog.set(login, now)
-        console.log(`dropped presence under a name other than ${login} (room ${roomName})`)
+        console.log(`dropped presence under ${JSON.stringify(name)} from ${login} (room ${roomName})`)
       })
       wss.emit('connection', ws, req)
     })

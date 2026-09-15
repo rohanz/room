@@ -5,6 +5,7 @@
  * that would change the document is dropped before the shared-doc handler sees it.
  */
 import * as decoding from 'lib0/decoding'
+import * as encoding from 'lib0/encoding'
 
 const MESSAGE_SYNC = 0
 const SYNC_STEP2 = 1
@@ -41,40 +42,65 @@ export function makeReadOnly(conn: EmitterLike, onDrop: () => void): void {
 
 const MESSAGE_AWARENESS = 1
 
-/** Awareness updates whose `user.name` is not the verified login (message type 1: count, then
- *  per client: clientID, clock, JSON state). `null` states (leaving) are fine. */
-/** Legacy rule (clients without `owner`): a login may appear as `login` or `login+<label>`. Newer clients are admitted by `user.owner === login`. */
+/** A login may appear as itself or as login+<label>. */
 export function ownsName(name: string, login: string): boolean {
   return name === login || (name.startsWith(login + '+') && name.length > login.length + 1)
 }
 
-export function isForeignIdentity(buf: Uint8Array, login: string): boolean {
+/** Keep owned presence and null (leaving) entries, preserving their IDs, clocks and JSON. */
+export function filterAwareness(buf: Uint8Array, login: string): { buf: Uint8Array | null; stripped: string[] } {
+  const stripped: string[] = []
   try {
     const d = decoding.createDecoder(buf)
-    if (decoding.readVarUint(d) !== MESSAGE_AWARENESS) return false
+    if (decoding.readVarUint(d) !== MESSAGE_AWARENESS) return { buf, stripped }
     const inner = decoding.createDecoder(decoding.readVarUint8Array(d))
     const n = decoding.readVarUint(inner)
+    const entries = encoding.createEncoder()
+    let kept = 0
     for (let i = 0; i < n; i++) {
-      decoding.readVarUint(inner); decoding.readVarUint(inner)
+      const clientID = decoding.readVarUint(inner), clock = decoding.readVarUint(inner)
       const raw = decoding.readVarString(inner)
-      if (raw === 'null') continue
-      const state = JSON.parse(raw) as { user?: { name?: string; owner?: string } }
+      const state = JSON.parse(raw) as { user?: { name?: unknown; owner?: unknown } } | null
       const name = state?.user?.name, owner = state?.user?.owner
-      // The name must be one this login owns (login or login+label); a matching `owner` field alone proves nothing.
-      if (name !== undefined && !ownsName(name, login)) return true
-      if (owner !== undefined && owner !== login) return true
+      if (state !== null && (typeof name !== 'string' || !ownsName(name, login) || (owner !== undefined && owner !== login))) {
+        stripped.push(typeof name === 'string' ? name : '(unnamed)')
+        continue
+      }
+      encoding.writeVarUint(entries, clientID)
+      encoding.writeVarUint(entries, clock)
+      encoding.writeVarString(entries, raw)
+      kept++
     }
-    return false
+    if (!kept) return { buf: null, stripped }
+    const update = encoding.createEncoder()
+    encoding.writeVarUint(update, kept)
+    encoding.writeUint8Array(update, encoding.toUint8Array(entries))
+    const message = encoding.createEncoder()
+    encoding.writeVarUint(message, MESSAGE_AWARENESS)
+    encoding.writeVarUint8Array(message, encoding.toUint8Array(update))
+    return { buf: encoding.toUint8Array(message), stripped }
   } catch {
-    return true
+    return { buf: null, stripped } // malformed: never let it through
   }
 }
 
-/** Wrap a ws connection so presence announced under any name but `login` is dropped. */
-export function bindIdentity(conn: EmitterLike, login: string, onDrop: (name: string) => void): void {
+export function isForeignIdentity(buf: Uint8Array, login: string): boolean {
+  const result = filterAwareness(buf, login)
+  return result.buf === null || result.stripped.length > 0
+}
+
+/** Filter inbound presence; the caller rate-limits dropped foreign presence by login. */
+export function bindIdentity(conn: EmitterLike, login: string, onDrop: (login: string, name: string) => void): void {
   const emit = conn.emit.bind(conn)
   conn.emit = ((event: string | symbol, ...args: unknown[]) => {
-    if (event === 'message' && isForeignIdentity(toBytes(args[0]), login)) { onDrop(login); return false }
+    if (event === 'message') {
+      const result = filterAwareness(toBytes(args[0]), login)
+      if (result.buf === null) {
+        if (result.stripped.length) onDrop(login, result.stripped[0])
+        return false
+      }
+      args[0] = result.buf
+    }
     return emit(event, ...args)
   }) as EmitterLike['emit']
 }
