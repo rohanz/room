@@ -16,6 +16,7 @@ const RELAY_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'confli
 /** Team messages that stop a worker: everything else arrives at notify, read on its next action. */
 const INTERRUPT_TYPES = new Set<Msg['type']>(['plan', 'conflict', 'base'])
 const RELAY_DEDUPE_MS = 60_000
+const SCOPE_REPOST_MS = 5 * 60_000
 const RELAYED_MAX = 2000
 
 export interface BridgeOptions {
@@ -33,6 +34,7 @@ export class Bridge {
   private unobserve: (() => void)[] = []
   private timer: ReturnType<typeof setTimeout> | null = null
   private lastScopeKey = ''
+  private lastScopePost = { at: 0, content: '' }
   private stopped = false
   /** The lead's own team scope (declared by the lead itself), kept underneath the workers' union. */
   private own: Scope | undefined
@@ -168,7 +170,7 @@ export class Bridge {
     const workerPaths = this.workerPaths()
     const own = this.own
     const paths = Array.from(new Set([...(own?.paths ?? []), ...workerPaths])).sort()
-    const key = JSON.stringify([ws.map(w => w.tag), paths, own?.area, own?.summary])
+    const key = JSON.stringify([ws.map(w => [w.tag, this.local.room.scope(w.name)?.area, this.local.room.scope(w.name)?.summary]), paths, own?.area, own?.summary])
     if (key === this.lastScopeKey) return
     this.lastScopeKey = key
     const me = this.team.me
@@ -188,7 +190,12 @@ export class Bridge {
     this.unionPublished = true
     this.syncShare()
     this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...(prev?.areas ? { areas: prev.areas } : {}) }, this)
-    this.team.room.post<ScopeMsg>(me, { type: 'scope', area, summary, paths })
+    const now = Date.now()
+    const content = JSON.stringify([area, summary])
+    if (content !== this.lastScopePost.content || now - this.lastScopePost.at >= SCOPE_REPOST_MS) {
+      this.team.room.post<ScopeMsg>(me, { type: 'scope', area, summary, paths })
+      this.lastScopePost = { at: now, content }
+    }
     this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) (${own ? `${own.paths.length} own, ` : ''}${workerPaths.length} from ${ws.length} worker(s)); files shared stay under the lead's own ${own?.paths.length ?? 0}`)
   }
 

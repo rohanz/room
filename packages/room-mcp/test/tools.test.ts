@@ -26,14 +26,14 @@ function pair() {
   return { a: new RoomDoc(a), b: new RoomDoc(b) }
 }
 
-function fakeSession(room: RoomDoc, synced = true): Session {
+function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Session {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle' })
   const graph = new GraphIndex(room, 'Rohan', dir); graph.start()
   return {
     graph,
     room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
-    provider: { synced, awareness } as unknown as Session['provider'],
+    provider: { synced, awareness, ...(wsconnected === undefined ? {} : { wsconnected }) } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
   }
 }
@@ -77,6 +77,16 @@ describe('session gating', () => {
     expect(await t.tools.call('room_state', {})).toBe('error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.')
     const u = setup({ synced: false })
     expect(await u.tools.call('room_state', {})).toBe('error: room not synced yet, retry')
+  })
+
+  it('shows last-known state and reports queued sends and unavailable waits while offline', async () => {
+    const { a } = pair()
+    a.setMeta({ repo: 'demo', branch: 'main', base })
+    const session = fakeSession(a, true, false)
+    const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
+    expect(await tools.call('room_state', {})).toMatch(/^OFFLINE: not connected to ws:\/\/x since .*; showing the last known state\nroom:/)
+    expect(await tools.call('room_send', { type: 'note', text: 'queued' })).toContain('offline: queued/not delivered')
+    expect(await tools.call('room_wait', { timeoutMs: 100 })).toContain('offline: queued/not delivered')
   })
 
   it('join uses cwd, reports who is here, and leave releases claims', async () => {
@@ -158,7 +168,7 @@ describe('one login, two agents', () => {
     expect(a.changedPaths('rohanz+codex')).toEqual(['session.py'])
     const state = await t1.call('room_state', {})
     expect(state).toContain("you: rohanz's agent in r")
-    expect(state).toContain('rohanz+codex · agent of rohanz · codex')
+    expect(state).toContain('1 others: rohanz+codex (all:true for detail)')
     // a question to the codex agent reaches it, not the first agent
     await t1.call('room_send', { type: 'question', text: 'which lines?', to: 'rohanz+codex' })
     // the inbox is the prefix before the body ("you: ..."); the body's recent-bus section lists every message
@@ -369,6 +379,17 @@ describe('inbox', () => {
 })
 
 describe('wait', () => {
+  it('returns immediately for a wait-ending unread message already in the inbox', async () => {
+    const t = setup()
+    const k = { name: 'Kieran', kind: 'agent' as const }
+    t.other.post(k, { type: 'question', text: 'already here?', to: 'Rohan' } as never)
+    const started = Date.now()
+    const out = await t.tools.call('room_wait', { timeoutMs: 2000 })
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(out).toContain('question for you')
+    expect(out).toContain('already here?')
+  })
+
   it('resolves on release, on answer, on interrupt, and on timeout', async () => {
     const t = setup()
     const k = { name: 'Kieran', kind: 'agent' as const }
