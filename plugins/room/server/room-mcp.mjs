@@ -34275,23 +34275,14 @@ async function serverAuthMode(server) {
 async function resolveAuth(server, roomName, token) {
   const github = roomName.startsWith("github.com/");
   const cfg = await serverAuthConfig(server);
-  if (!github) {
-    const c = cfg.providers.length ? getCredential(server) : void 0;
-    if (!c) {
-      if (token || !cfg.providers.length) return { token };
-      throw new NotLoggedIn(server);
-    }
-    return { token, session: c.session, login: c.login };
+  const c = cfg.providers.length ? getCredential(server) : void 0;
+  if (c) return { token, session: c.session, login: c.login };
+  if (github) {
+    if (cfg.mode !== "device") throw new RoomdError(`${server} has no GitHub login (GITHUB_CLIENT_ID), so it cannot admit ${roomName}: use a server with GitHub login, or a non-GitHub origin`, 2);
+    throw new NotLoggedIn(server);
   }
-  if (cfg.mode === "device") {
-    const c = getCredential(server);
-    if (!c) {
-      if (token) return { token };
-      throw new NotLoggedIn(server);
-    }
-    return { token, session: c.session, login: c.login };
-  }
-  return { token, gh: await githubToken() };
+  if (token || !cfg.providers.length) return { token };
+  throw new NotLoggedIn(server);
 }
 async function startLogin(server, provider) {
   const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15e3, retry: false });
@@ -34349,21 +34340,6 @@ function findRoomFile(start) {
 async function deriveRoomName(dir) {
   const [repo, branch] = await Promise.all([gitOrigin(dir), gitBranch(dir)]);
   return { repo, branch, roomName: repo ? `${repo}/${branch}` : void 0 };
-}
-async function githubToken() {
-  const env = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
-  if (env?.trim()) return env.trim();
-  const { execFile: execFile5 } = await import("node:child_process");
-  const run = (cmd, args2, input) => new Promise((resolve5) => {
-    const p = execFile5(cmd, args2, { timeout: 5e3 }, (err, out) => resolve5(err ? void 0 : out));
-    if (input !== void 0) p.stdin?.end(input);
-  });
-  const gh = (await run("gh", ["auth", "token"]))?.trim();
-  if (gh) return gh;
-  const cred = await run("git", ["credential", "fill"], "protocol=https\nhost=github.com\n\n");
-  const pw = cred?.match(/^password=(.+)$/m)?.[1]?.trim();
-  if (pw && /^(gh[pousr]_|github_pat_)/.test(pw)) return pw;
-  return void 0;
 }
 async function defaultName(dir) {
   try {
@@ -34485,7 +34461,7 @@ async function joinSession(opts) {
   const shareMax = await serverShareMax(server);
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
-  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, githubToken: creds.gh, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+  const daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   const view = await viewToken(server, roomName, creds);
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
@@ -34609,7 +34585,7 @@ async function authFor(s) {
   return { ...creds, server };
 }
 async function viewToken(server, roomName, auth) {
-  if (!auth.gh && !auth.token && !auth.session) return void 0;
+  if (!auth.token && !auth.session) return void 0;
   try {
     const res = await serverFetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
     if (!res.ok) return void 0;
@@ -35580,13 +35556,13 @@ var httpOf2 = (server) => server.replace(/^wss:/, "https:").replace(/^ws:/, "htt
 var query = (o) => Object.entries(o).filter((e) => !!e[1]).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
 async function fetchPrs(s, opts = {}) {
   const a = await authFor(s);
-  const res = await fetch(`${httpOf2(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, gh: a.gh, token: a.token, head: opts.head ? "1" : void 0 })}`, { signal: AbortSignal.timeout(2e4) });
+  const res = await fetch(`${httpOf2(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, token: a.token, head: opts.head ? "1" : void 0 })}`, { signal: AbortSignal.timeout(2e4) });
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
   return await res.json();
 }
 async function postPrNote(s, number3, body) {
   const a = await authFor(s);
-  const res = await fetch(`${httpOf2(a.server)}/github/pr-note`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: s.roomName, session: a.session, gh: a.gh, token: a.token, number: number3, body }), signal: AbortSignal.timeout(3e4) });
+  const res = await fetch(`${httpOf2(a.server)}/github/pr-note`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: s.roomName, session: a.session, token: a.token, number: number3, body }), signal: AbortSignal.timeout(3e4) });
   if (!res.ok) throw new Error(`${a.server} would not post the PR note: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
   const b = await res.json().catch(() => ({}));
   return { url: b.url ?? "", updated: !!b.updated };
@@ -35840,7 +35816,7 @@ function createTools(ctx) {
   let workersHooks = null;
   const doClose = ctx.close ?? (async (s) => {
     const a = await authFor(s);
-    return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token });
+    return closeRoom(a.server, s.roomName, { session: a.session, token: a.token });
   });
   const attachHooks = (s) => {
     if (bridge && bridge.s === s) return;
@@ -36487,7 +36463,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const server = serverOf(a);
       if (server === LOCAL) return LOCAL_LOGIN;
       const cfg = await serverAuthConfig(server);
-      if (!cfg.providers.length) return `${server} has no login provider; it accepts your local gh credentials (or a shared token), nothing to do`;
+      if (!cfg.providers.length) return `${server} has no login provider: non-GitHub rooms are admitted by its shared token (or open), and github.com rooms cannot be joined there; nothing to log in to`;
       const provider = a.provider === "github" || a.provider === "oidc" ? a.provider : void 0;
       if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(", ")})`;
       const cred = getCredential(server);
