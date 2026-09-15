@@ -251,3 +251,15 @@ leading room batches, reviewing and integrating; three batches were built by Cod
 coordinated through Room itself, with clean octopus merges. 318 tests at the end of the day.
 **Cut / deferred:** implicit claims from scope, declare-and-idle waits, per-folder documents,
 relaying workers' questions up to teammates, GitHub App, editor extension, Slack bridge.
+
+## 2026-09-15 — Future work: Room outside coding (parked)
+A Codex brainstorm on non-coding uses. Thesis: Room's value beyond code is coordinating
+changes to shared assumptions that span separate files (budget vs narrative vs schedule).
+Best fits are text-in-git with several authors: grant proposals, RFP responses, research
+papers, localisation, simulation parameter sets. Traps: native spreadsheets, CAD and
+audiovisual (binary; adapters would dominate), whole-class assignments (visibility undermines
+assessment). Privacy caveat: declared sharing selects files not passages, and intents/claims
+themselves disclose subject matter. One-day experiment when wanted: a repo with proposal.md,
+budget.csv, milestones.yaml; a lead dispatches methods/budget/delivery workers claiming
+sections; change the participant count so the budget strains; check wake-ups, preview, ledger
+export; compare with an uncoordinated pass. Parked until the coding trial is done.
