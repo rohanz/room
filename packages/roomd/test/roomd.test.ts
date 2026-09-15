@@ -231,6 +231,40 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.roomDoc.changedPaths('Dirty')).toEqual(['delete.py', 'keep.py', 'new.py'])
   })
 
+  it('drops stale overlay and deleted paths when the same person restarts on a clean clone', async () => {
+    const dir = await makeRepo({ 'keep.py': 'base\n' })
+    const roomUrl = room()
+    const peer = await start({ room: roomUrl, dir, name: 'Peer' })
+    peer.roomDoc.setOverlay('Alice', 'ghost.py', 'stale\n')
+    peer.roomDoc.markDeleted('Alice', 'phantom.py')
+    const logs: string[] = []
+
+    const alice = await start({ room: roomUrl, dir, name: 'Alice', log: line => logs.push(line) })
+    await waitFor(() => alice.roomDoc.changedPaths('Alice').length === 0
+      && alice.roomDoc.deletedFor('Alice').size === 0)
+
+    expect(alice.roomDoc.overlayText('Alice', 'ghost.py')).toBeUndefined()
+    expect(alice.roomDoc.deletedFor('Alice').has('phantom.py')).toBe(false)
+    expect(logs.filter(line => line.startsWith('dropped stale overlay '))).toEqual([
+      'dropped stale overlay ghost.py',
+      'dropped stale overlay phantom.py',
+    ])
+  })
+
+  it('keeps a persisted overlay for a base file deleted on disk reported as deleted', async () => {
+    const dir = await makeRepo({ 'deleted.py': 'base\n' })
+    const roomUrl = room()
+    const peer = await start({ room: roomUrl, dir, name: 'Peer' })
+    peer.roomDoc.setOverlay('Alice', 'deleted.py', 'old edit\n')
+    await fsp.unlink(path.join(dir, 'deleted.py'))
+
+    const alice = await start({ room: roomUrl, dir, name: 'Alice' })
+    await waitFor(() => alice.roomDoc.deletedFor('Alice').has('deleted.py'))
+
+    expect(alice.roomDoc.overlayText('Alice', 'deleted.py')).toBeUndefined()
+    expect(alice.roomDoc.deletedFor('Alice').has('deleted.py')).toBe(true)
+  })
+
   it('pushes disk changes, clears files restored to base, and marks deletions', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n', 'gone.py': 'present\n' })
     const daemon = await start({ room: room(), dir, name: 'Alice' })
@@ -247,7 +281,7 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.roomDoc.text('gone.py', 'Alice')).toBeUndefined()
   })
 
-  it('includes untracked non-ignored files and records their deletion', async () => {
+  it('includes untracked non-ignored files and clears them when deleted', async () => {
     const dir = await makeRepo({ '.gitignore': 'ignored.txt\n' })
     let ignoredScanned = false
     const daemon = await start({ room: room(), dir, name: 'Alice', onScanned: p => { if (p === 'ignored.txt') ignoredScanned = true } })
@@ -259,8 +293,9 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.roomDoc.text('ignored.txt', 'Alice')).toBeUndefined()
 
     await fsp.unlink(path.join(dir, 'new.py'))
-    await waitFor(() => daemon.roomDoc.deletedFor('Alice').has('new.py'))
+    await waitFor(() => !daemon.roomDoc.changedPaths('Alice').includes('new.py'))
     expect(daemon.roomDoc.text('new.py', 'Alice')).toBeUndefined()
+    expect(daemon.roomDoc.deletedFor('Alice').has('new.py')).toBe(false)
   })
 
   it('never changes clone bytes when another person overlay arrives', async () => {

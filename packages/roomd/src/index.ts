@@ -298,6 +298,16 @@ class Daemon implements Roomd {
     return this.explicitScopePaths ?? this.roomDoc.scope(this.name)?.paths ?? []
   }
 
+  /** Disk paths plus persisted state that may be left over from an earlier daemon session. */
+  private pathsToReconcile(extra: Iterable<string> = []): Set<string> {
+    return new Set([
+      ...this.tracked,
+      ...this.roomDoc.changedPaths(this.name),
+      ...this.roomDoc.deletedFor(this.name).keys(),
+      ...extra,
+    ])
+  }
+
   /** May this file's text (or its deletion) be published at the current level? */
   private isShared(relpath: string): boolean {
     if (this.share === 'full') return true
@@ -308,8 +318,7 @@ class Daemon implements Roomd {
   /** Re-evaluate every tracked file against the current level: withdraw what is no longer allowed, publish what now is. */
   private async resharePaths(): Promise<void> {
     if (this.stopped) return
-    const paths = new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name), ...this.skips.share])
-    for (const relpath of paths) {
+    for (const relpath of this.pathsToReconcile(this.skips.share)) {
       if (this.stopped) return
       if (this.isIgnoredPath(relpath)) continue
       await this.publishDiskState(relpath)
@@ -467,7 +476,6 @@ class Daemon implements Roomd {
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.maybeAdvance(roomBase, head)
     await this.seedLocalOverlay()
-    for (const relpath of this.roomDoc.changedPaths(this.name)) if (!this.tracked.has(relpath)) await this.publishDiskState(relpath)
     await this.refreshBaseStatus()
   }
 
@@ -502,7 +510,7 @@ class Daemon implements Roomd {
   }
 
   private async seedLocalOverlay(): Promise<void> {
-    for (const relpath of this.tracked) {
+    for (const relpath of this.pathsToReconcile()) {
       if (!this.isSafeRoomPath(relpath)) continue
       await this.publishDiskState(relpath)
     }
@@ -559,22 +567,34 @@ class Daemon implements Roomd {
     const exists = fs.existsSync(this.abs(relpath))
     const beforeText = this.roomDoc.text(relpath, this.name)
     const beforeDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false
+    let droppedStale = false
 
-    if (!this.isShared(relpath)) {
+    if (!exists) {
+      const base = await gitShow(this.dir, this.base, relpath)
+      if (base === undefined) {
+        this.roomDoc.doc.transact(() => {
+          this.roomDoc.clearOverlay(this.name, relpath, this)
+          this.roomDoc.unmarkDeleted(this.name, relpath, this)
+        }, this)
+        droppedStale = beforeText !== undefined || beforeDeleted
+      } else if (!this.isShared(relpath)) {
+        this.withhold(relpath, true)
+        return
+      } else {
+        this.skips.share.delete(relpath)
+        this.roomDoc.doc.transact(() => {
+          this.roomDoc.markDeleted(this.name, relpath, this)
+          this.roomDoc.clearOverlay(this.name, relpath, this)
+        }, this)
+      }
+    } else if (!this.isShared(relpath)) {
       // Withheld by the sharing level: publish nothing, but remember whether it differs from base.
-      if (!exists) { this.withhold(relpath, this.tracked.has(relpath) && (await gitShow(this.dir, this.base, relpath)) !== undefined); return }
       const disk = this.readText(relpath, true)
       this.withhold(relpath, disk !== undefined && disk !== await gitShow(this.dir, this.base, relpath))
       return
-    }
-    this.skips.share.delete(relpath)
-
-    if (!exists) {
-      this.roomDoc.doc.transact(() => {
-        this.roomDoc.markDeleted(this.name, relpath, this)
-        this.roomDoc.clearOverlay(this.name, relpath, this)
-      }, this)
     } else {
+      this.skips.share.delete(relpath)
+
       const disk = this.readText(relpath)
       if (disk === undefined) return
       const base = await gitShow(this.dir, this.base, relpath)
@@ -600,7 +620,7 @@ class Daemon implements Roomd {
     const afterDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false
     if (beforeText !== afterText || beforeDeleted !== afterDeleted) {
       this.bumpLastActive()
-      this.log(afterDeleted ? `marked ${relpath} deleted` : afterText === undefined ? `cleared ${relpath} overlay` : `published ${relpath} overlay`)
+      this.log(droppedStale ? `dropped stale overlay ${relpath}` : afterDeleted ? `marked ${relpath} deleted` : afterText === undefined ? `cleared ${relpath} overlay` : `published ${relpath} overlay`)
     }
   }
 
