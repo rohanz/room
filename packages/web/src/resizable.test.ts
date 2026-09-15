@@ -115,17 +115,16 @@ it('clamps restored sizes to configured bounds', () => {
 })
 
 import { readFileSync } from 'node:fs'
-it('uses a centered short grip in the 6px hit area, with hover, focus and drag states', () => {
+it('keeps a centered 4px by 40px grip in the 6px hit area, changing only colour and opacity on hover, focus and drag', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
   const handle = css.match(/^\.resize-handle \{([^}]+)\}/m)![1]
   const grip = css.match(/^\.resize-handle::after \{([^}]+)\}/m)![1]
   const active = css.match(/^\.resize-handle:hover::after, \.resize-handle:focus::after, \.resize-handle.resize-dragging::after \{([^}]+)\}/m)![1]
   expect(handle).toContain('width: 6px')
-  for (const property of ['top: 50%', 'left: 50%', 'translate(-50%, -50%)', 'width: 3px', 'height: 28px', 'border-radius: 999px', 'background: var(--muted)', 'opacity: .6']) expect(grip).toContain(property)
+  for (const property of ['top: 50%', 'left: 50%', 'translate(-50%, -50%)', 'width: 4px', 'height: 40px', 'border-radius: 999px', 'background: var(--muted)', 'opacity: .6']) expect(grip).toContain(property)
   expect(grip).not.toContain('bottom:')
-  expect(active).toContain('height: 40px')
-  expect(active).toContain('background: var(--accent)')
-  expect(active).toContain('opacity: 1')
+  expect(active.split(';').map(property => property.trim()).filter(Boolean)).toEqual(['background: var(--accent)', 'opacity: 1'])
+  for (const rule of [handle, grip, active]) expect(rule).not.toContain('transition')
   expect(setup().handle.classes.has('resize-handle')).toBe(true)
   expect(setup().handle.classes.has('resize-dragging')).toBe(false)
 })
