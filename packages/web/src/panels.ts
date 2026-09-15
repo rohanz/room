@@ -22,7 +22,7 @@ export { deriveParticipants, type Participant, type ParticipantClaim, type Parti
 import { presences, type Conn } from './conn.ts'
 import { Editor } from './editor.ts'
 import { buildActivityGraph, type OverlayVersion } from './activity-graph.ts'
-import { classifyMergedLines, classifyThreeWay, unifiedDiffLines, type MergedLine } from './merged.ts'
+import { classifyNWay, unifiedDiffLines, type MergedLine } from './merged.ts'
 import { collapseConflictTimeline, groupEpisodes, type Episode, type TimelineItem } from './timeline.ts'
 
 export const h = <K extends keyof HTMLElementTagNameMap>(
@@ -204,41 +204,43 @@ function recentPeople(room: RoomDoc, path: string, people: readonly string[]): s
 /** Claims covering a given line of a person's version of the selected file. */
 export type ClaimsAt = (person: string, line: number) => readonly Claim[]
 
+function authors(line: MergedLine, names: readonly string[]): string[] {
+  return Array.isArray(line.changedBy) ? line.changedBy : line.changedBy === 'both' ? [...names] : line.changedBy ? [names[line.changedBy === 'a' ? 0 : 1]] : line.side === 'common' ? [] : [names[line.side === 'a' ? 0 : 1]]
+}
+function sourceLines(line: MergedLine, names: readonly string[]): [string, number | undefined][] {
+  return line.lineNumbers ? Object.entries(line.lineNumbers) : [[names[0], line.aLine], [names[1], line.bLine]]
+}
+
 /** Hover text for a merged/diff line: who wrote it, and any claim covering it. */
-export function lineHoverText(line: MergedLine, names: [string, string], claimsAt?: ClaimsAt): string {
+export function lineHoverText(line: MergedLine, names: readonly string[], claimsAt?: ClaimsAt): string {
   const parts: string[] = []
-  if (line.conflict) parts.push(`CONFLICT: ${names[0]} and ${names[1]} changed this differently; this is ${line.side === 'a' ? names[0] : names[1]}'s version`)
+  if (line.conflict) parts.push(`CONFLICT: ${(line.conflictPair ?? names).join(' and ')} changed this differently; this is ${line.conflictOwner ?? (line.side === 'a' ? names[0] : names[1])}'s version`)
+  else if (Array.isArray(line.changedBy) && line.changedBy.length) parts.push(`changed by ${line.changedBy.join(' and ')}`)
   else if (line.changedBy === 'both') parts.push(`changed by ${names[0]} and ${names[1]}`)
   else if (line.side === 'a') parts.push(`added by ${names[0]}`)
   else if (line.side === 'b') parts.push(`added by ${names[1]}`)
   else parts.push('unchanged from base')
-  const claims = [
-    ...(line.aLine !== undefined ? claimsAt?.(names[0], line.aLine) ?? [] : []),
-    ...(line.bLine !== undefined ? claimsAt?.(names[1], line.bLine) ?? [] : []),
-  ]
+  const claims = sourceLines(line, names).flatMap(([person, n]) => n === undefined ? [] : claimsAt?.(person, n) ?? [])
   const seen = new Set<string>()
   for (const c of claims) if (!seen.has(c.id)) { seen.add(c.id); parts.push(`claimed by ${c.by}: ${c.intent}${c.plans?.length ? ` (plans: ${formatPlans(c.plans)})` : ''}`) }
   return parts.join('\n')
 }
 
-function lineElement(line: MergedLine, names: [string, string], prefix = '', claimsAt?: ClaimsAt, mergedNumber?: number): HTMLElement {
-  const owner = line.side === 'a' ? names[0] : line.side === 'b' ? names[1] : ''
-  const changedOwner = line.changedBy === 'a' ? names[0] : line.changedBy === 'b' ? names[1] : ''
-  const markerOwner = line.conflict ? owner : changedOwner || owner
-  const marker = markerOwner ? dot(markerOwner) : line.changedBy === 'both' ? h('span', { class: 'dot' }) : null
-  if (marker) {
-    marker.setAttribute('title', `changed by ${line.changedBy === 'both' && !line.conflict ? `${names[0]} and ${names[1]}` : markerOwner}`)
-    if (!markerOwner) marker.style.background = 'var(--muted)'
-  }
-  const row = h('div', { class: `code-line side-${line.side}${line.changedBy ? ' changed-line' : ''}${line.conflict ? ' conflict-line' : ''}`, title: lineHoverText(line, names, claimsAt) },
+function lineElement(line: MergedLine, names: readonly string[], prefix = '', claimsAt?: ClaimsAt, mergedNumber?: number): HTMLElement {
+  const changed = authors(line, names)
+  const owner = line.conflictOwner ?? changed[0] ?? ''
+  const changedOwner = changed[0] ?? ''
+  const marker = owner ? dot(owner) : null
+  if (marker) marker.setAttribute('title', 'changed by ' + changed.join(' and '))
+  const row = h('div', { class: `code-line side-${line.side}${changed.length ? ' changed-line' : ''}${line.conflict ? ' conflict-line' : ''}`, title: lineHoverText(line, names, claimsAt) },
     h('span', { class: 'line-number' }, mergedNumber?.toString() ?? line.aLine?.toString() ?? ''),
     mergedNumber !== undefined
       ? h('span', { class: 'side-marker' }, marker)
       : h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
     h('span', { class: 'diff-prefix' }, prefix),
     h('code', {}, line.text || ' '))
-  if (line.changedBy) {
-    row.dataset.changedBy = line.changedBy
+  if (changed.length) {
+    row.dataset.changedBy = Array.isArray(line.changedBy) ? changed.join(', ') : line.changedBy ?? changed.join(', ')
     row.style.setProperty('--line-change-owner', changedOwner ? colorFor(changedOwner) : 'var(--muted)')
   }
   if (owner) { row.style.setProperty('--line-owner', colorFor(owner)); row.dataset.owner = owner }
@@ -261,28 +263,29 @@ export function conflictCard(span: ConflictSpan, expanded?: Set<string>): HTMLEl
     h('div', {}, resolutionLabel(span)), details)
 }
 
-export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: [string, string], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true): void {
+export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true): void {
   const rows = lines.map((line, i) => lineElement(line, names, line.prefix, claimsAt, merged ? i + 1 : undefined))
   const spans: { start: number; end: number; people: readonly string[]; detail: string; resolved: boolean; claimOnly?: boolean; textConflict?: boolean }[] = []
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].conflict) continue
     const start = i
-    while (i + 1 < lines.length && lines[i + 1].conflict) i++
+    const pair = lines[i].conflictPair ?? names
+    while (i + 1 < lines.length && lines[i + 1].conflict && (lines[i + 1].conflictPair ?? names).join('\0') === pair.join('\0')) i++
     const intents = new Map<string, string>()
     for (let row = start; row <= i; row++) {
-      for (const [person, line] of [[names[0], lines[row].aLine], [names[1], lines[row].bLine]] as const) {
+      for (const [person, line] of sourceLines(lines[row], names)) {
         if (line !== undefined) for (const claim of claimsAt?.(person, line) ?? []) intents.set(claim.id, person + ': ' + claim.intent + (claim.plans?.length ? ` (plans: ${formatPlans(claim.plans)})` : ''))
       }
     }
-    spans.push({ start, end: i, people: names, detail: names.join(' ↔ ') + `\nMerged lines ${start + 1}-${i + 1}\nUnresolved: both sides changed these lines\n` + ([...intents.values()].join('\n') || 'Claim intents unavailable'), resolved: false, textConflict: true })
+    spans.push({ start, end: i, people: pair, detail: pair.join(' ↔ ') + `\nMerged lines ${start + 1}-${i + 1}\nUnresolved: both sides changed these lines\n` + ([...intents.values()].join('\n') || 'Claim intents unavailable'), resolved: false, textConflict: true })
   }
   for (const s of conflicts) {
     if (s.hidden || s.from === undefined || s.to === undefined) continue
-    const indices = lines.flatMap((line, i) => [line.aLine, line.bLine].some(n => n !== undefined && n >= s.from! && n <= s.to!) ? [i] : [])
+    const indices = lines.flatMap((line, i) => sourceLines(line, names).filter(([person]) => s.people.includes(person)).some(([, n]) => n !== undefined && n >= s.from! && n <= s.to!) ? [i] : [])
     if (!indices.length) continue
     const start = indices[0], end = indices.at(-1)!
     const regionClaims = new Map(s.claims.map(c => [c.id, c]))
-    for (const i of indices) for (const [person, n] of [[names[0], lines[i].aLine], [names[1], lines[i].bLine]] as const) {
+    for (const i of indices) for (const [person, n] of sourceLines(lines[i], names)) {
       if (n !== undefined) for (const c of claimsAt?.(person, n) ?? []) regionClaims.set(c.id, c)
     }
     const claimOnly = merged && s.claims.some(a => s.claims.some(b => a.by !== b.by && a.path === b.path && a.from <= b.to && b.from <= a.to))
@@ -367,6 +370,9 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   const personSelect = h('select', { class: 'person-select', title: 'Person whose overlay to display' })
   const compareLabel = h('span', { class: 'compare-label muted' })
   const legend = h('div', { class: 'legend' })
+  const chips = h('div', { class: 'merge-chips', role: 'group', ariaLabel: 'Participants in merge' })
+  const excluded = new Map<string, Set<string>>()
+  const included = (path: string, people: readonly string[]) => people.filter(p => !excluded.get(path)?.has(p))
   const host = h('div', { class: 'editor-wrap' })
   const editor = new Editor(host)
   const tabs = ['Merged', 'Diff', 'File'] as const
@@ -384,10 +390,12 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     h('section', { class: 'center-files' }, h('div', { class: 'panel-title' }, 'Changed files'), fileList),
     h('section', { class: 'viewer' },
       h('div', { class: 'viewer-top' }, tabStrip, h('div', { class: 'toolbar' }, pathLabel, h('span', { class: 'sp' }), compareLabel, personSelect)),
-      legend,
+      chips, legend,
       host))
 
   const showViewer = (rows: FileRow[]) => {
+    chips.replaceChildren()
+    chips.hidden = tab !== 'Merged'
     const selected = rows.find(candidate => candidate.path === selectedPath)
     if (!selected) {
       editor.empty(rows.length ? 'Select a changed file' : 'Waiting for changed files…')
@@ -420,29 +428,28 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       return
     }
     editor.empty()
-    if (people.length < 2) {
-      const person = people[0]
-      legend.replaceChildren(h('span', {}, dot(person), ` lines by ${person}`))
-      const text = conn.room.text(selected.path, person) ?? ''
-      renderCodeLines(host, text.split('\n').filter((_, index, all) => index < all.length - 1 || all[index] !== '').map((value, index) => ({
-        text: value, side: 'common' as const, changedBy: null, conflict: false, aLine: index + 1,
-      })), [person, person], undefined, conflicts, tab === 'Merged')
-      return
-    }
-
     if (tab === 'Merged') {
-      const pair = people.slice(0, 2) as [string, string]
-      legend.replaceChildren(h('span', {}, dot(pair[0]), ` lines by ${pair[0]}`), h('span', {}, dot(pair[1]), ` lines by ${pair[1]}`))
-      const a = conn.room.text(selected.path, pair[0]) ?? '', b = conn.room.text(selected.path, pair[1]) ?? ''
-      const sha = conn.room.baseOf(pair[0])
+      const active = included(selected.path, people)
+      chips.replaceChildren(...people.map(person => {
+        const button = h('button', { class: 'merge-chip', ariaPressed: String(active.includes(person)) }, dot(person), person)
+        button.onclick = () => {
+          const off = excluded.get(selected.path) ?? new Set<string>()
+          if (off.has(person)) off.delete(person); else off.add(person)
+          excluded.set(selected.path, off); render()
+        }
+        return button
+      }))
+      legend.replaceChildren(...active.map(person => h('span', {}, dot(person), ` lines by ${person}`)))
+      const sha = conn.room.baseOf(people[0])
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
+      if (base === undefined) legend.append(h('span', { class: 'muted' }, 'Base unavailable; showing changes against an empty file'))
       const claimsAt: ClaimsAt = (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to)
-      renderCodeLines(host, base !== undefined ? classifyThreeWay(base, a, b) : classifyMergedLines(a, b), pair, claimsAt, conflicts)
+      renderCodeLines(host, classifyNWay(base ?? '', active.map(name => ({ name, text: conn.room.text(selected.path, name) ?? '' }))), active, claimsAt, conflicts.filter(s => s.people.every(p => active.includes(p))))
       return
     }
 
     const person = selectedPerson!
-    const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person)!
+    const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person) ?? person
     compareLabel.textContent = `vs ${other}`
     legend.replaceChildren(h('span', {}, dot(other), ` removed from ${other}`), h('span', {}, dot(person), ` added by ${person}`))
     renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to), conflicts, false)
@@ -464,7 +471,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
         const item = h('button', { class: `file-item${row.path === selectedPath ? ' active' : ''}`, title: row.path },
           h('span', { class: 'file-path mono' }, row.path),
           row.claimCount ? h('span', { class: 'claim-count', title: `${row.claimCount} active claim${row.claimCount === 1 ? '' : 's'}` }, String(row.claimCount)) : null,
-          h('span', { class: 'file-dots' }, ...row.people.map(person => dot(person, `${person} changed this file`))))
+          h('span', { class: 'file-dots' }, ...included(row.path, recentPeople(conn.room, row.path, row.people)).map(person => dot(person, `${person} changed this file`))))
         item.onclick = () => { selectedPath = row.path; selectedPerson = focus.person; render() }
         return item
       }))))

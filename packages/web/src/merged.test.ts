@@ -62,3 +62,48 @@ it('tracks each author against base, including identical edits and expanded conf
   ])
   expect(lineHoverText(out[7], ['rohanz+a', 'rohanz+tiers'])).toBe('changed by rohanz+a and rohanz+tiers')
 })
+
+import { classifyNWay } from './merged.ts'
+describe('N-way merge', () => {
+  const base = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\n'
+  const people = [
+    { name: 'Ada', text: base.replace('one', 'Ada edit') },
+    { name: 'Ben', text: base.replace('four', 'Ben edit') },
+    { name: 'Cy', text: base.replace('seven', 'Cy edit') },
+  ]
+  it('carries all three disjoint authors with no conflicts', () => {
+    const out = classifyNWay(base, people)
+    expect(out.filter(l => l.changedBy.length).map(l => l.changedBy)).toEqual([['Ada'], ['Ben'], ['Cy']])
+    expect(out.some(l => l.conflict)).toBe(false)
+    expect(lineHoverText(out.at(-1)!, people.map(p => p.name))).toBe('changed by Cy')
+  })
+  it('retains one conflict region and its actual pair when a third edits elsewhere', () => {
+    const out = classifyNWay(base, [people[0], { name: 'Ben', text: base.replace('one', 'Ben edit') }, people[2]])
+    expect(out.filter(l => l.conflict).map(l => [l.text, l.conflictPair])).toEqual([
+      ['Ada edit', ['Ada', 'Ben']], ['Ben edit', ['Ada', 'Ben']],
+    ])
+    expect(out.at(-1)).toMatchObject({ changedBy: ['Cy'], conflict: false })
+  })
+  it('recomputes without a toggled participant, including one and zero participants', () => {
+    const out = classifyNWay(base, people.filter(p => p.name !== 'Ben'))
+    expect(out.some(l => l.text === 'Ben edit')).toBe(false)
+    expect(out.find(l => l.text === 'four')?.changedBy).toEqual([])
+    expect(classifyNWay(base, [people[2]]).filter(l => l.changedBy.length).map(l => l.text)).toEqual(['Cy edit'])
+    expect(classifyNWay(base, []).map(l => l.text).join('\n') + '\n').toBe(base)
+  })
+  it('keeps joint authorship and deleted lines out of the result', () => {
+    const out = classifyNWay(base, [people[0], { name: 'Ben', text: people[0].text }, { name: 'Cy', text: base.replace('seven\n', '') }])
+    expect(out[0].changedBy).toEqual(['Ada', 'Ben'])
+    expect(out.some(l => l.text === 'seven')).toBe(false)
+  })
+  it('names the deletion author in a delete/modify conflict', () => {
+    const out = classifyNWay(base, [{ name: 'Ada', text: base.replace('one\n', '') }, { name: 'Ben', text: people[0].text }])
+    expect(out.filter(l => l.conflict)[0].conflictPair).toEqual(['Ada', 'Ben'])
+  })
+})
+
+it('attributes the final line even without a trailing newline', () => {
+  expect(classifyNWay('one\ntwo', [{ name: 'Ada', text: 'one\nchanged' }])).toMatchObject([
+    { text: 'one', changedBy: [] }, { text: 'changed', changedBy: ['Ada'], lineNumbers: { Ada: 2 } },
+  ])
+})

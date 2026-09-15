@@ -6,7 +6,10 @@ export type MergedSide = 'common' | 'a' | 'b'
 export interface MergedLine {
   text: string
   side: MergedSide
-  changedBy: 'a' | 'b' | 'both' | null
+  changedBy: 'a' | 'b' | 'both' | null | string[]
+  lineNumbers?: Record<string, number>
+  conflictPair?: [string, string]
+  conflictOwner?: string
   conflict: boolean
   aLine?: number
   bLine?: number
@@ -63,36 +66,61 @@ export function unifiedDiffLines(before: string, after: string): UnifiedLine[] {
   }))
 }
 
-/**
- * Three-way view when the base is known: lines only in A or only in B are tinted, lines
- * both sides changed differently are real conflicts (as git would see them), everything
- * else is plain. Identical changes carry joint authorship.
- */
-export function classifyThreeWay(base: string, a: string, b: string): MergedLine[] {
-  const A = lines(a), B = lines(b), O = lines(base)
-  // Merged text with conflict regions expanded (a-side lines then b-side lines).
-  const merged: { text: string; conflict: false | 'a' | 'b' }[] = []
-  for (const region of diff3Merge(A, O, B)) {
-    if (region.ok) { for (const text of region.ok) merged.push({ text, conflict: false }); continue }
-    const c = region.conflict
-    if (!c) continue
-    for (const text of c.a) merged.push({ text, conflict: 'a' })
-    for (const text of c.b) merged.push({ text, conflict: 'b' })
+export interface MergeParticipant { name: string; text: string }
+export interface NamedMergedLine extends MergedLine { changedBy: string[]; lineNumbers: Record<string, number> }
+
+/** Fold against the same base; expanded conflict alternatives retain their provenance. */
+export function classifyNWay(base: string, participants: readonly MergeParticipant[]): NamedMergedLine[] {
+  base = asText(lines(base))
+  participants = participants.map(p => ({ ...p, text: asText(lines(p.text)) }))
+  const O = lines(base)
+  let running: NamedMergedLine[] = O.map(text => ({ text, side: 'common', changedBy: [], conflict: false, lineNumbers: {} }))
+  const prior: MergeParticipant[] = []
+  for (const participant of participants) {
+    const before = running
+    const beforeText = asText(before.map(l => l.text))
+    const next: NamedMergedLine[] = []
+    for (const region of diff3Merge(before.map(l => l.text), O, lines(participant.text))) {
+      if (region.ok) {
+        next.push(...region.ok.map(text => ({ text, side: 'common' as const, changedBy: [], conflict: false, lineNumbers: {} })))
+      } else if (region.conflict) {
+        const c = region.conflict
+        const previous = before.slice(c.aIndex, c.aIndex + c.a.length)
+        // Include deletion authors, which have no surviving line in the running result.
+        const opponent = previous.flatMap(l => l.changedBy)[0] ?? prior.find(p =>
+          diff3Merge(lines(p.text), O, lines(participant.text)).some(r => r.conflict && r.conflict.oIndex <= c.oIndex + c.o.length && r.conflict.oIndex + r.conflict.o.length >= c.oIndex))?.name
+        const pair: [string, string] = [opponent ?? prior[0]?.name ?? participant.name, participant.name]
+        next.push(...previous.map(l => ({ ...l, conflict: true, conflictPair: l.conflictPair ?? pair, conflictOwner: l.conflictOwner ?? l.changedBy[0] ?? pair[0] })))
+        next.push(...c.b.map(text => ({ text, side: 'common' as const, changedBy: [], lineNumbers: {}, conflict: true, conflictPair: pair, conflictOwner: participant.name })))
+      }
+    }
+    const text = asText(next.map(l => l.text))
+    const previousMap = lineMap(beforeText, text)
+    const versions = [...prior, participant].map(p => ({ ...p, map: lineMap(p.text, text), added: markAdded(base, p.text) }))
+    running = next.map((line, i) => {
+      const old = previousMap[i] === undefined ? undefined : before[previousMap[i]! - 1]
+      const lineNumbers: Record<string, number> = {}
+      const changedBy: string[] = []
+      for (const p of versions) {
+        const n = p.map[i]
+        if (n !== undefined) { lineNumbers[p.name] = n; if (p.added[n - 1]) changedBy.push(p.name) }
+      }
+      return { ...line, ...(old?.conflict && !line.conflict ? { conflict: true, conflictPair: old.conflictPair, conflictOwner: old.conflictOwner } : {}), changedBy, lineNumbers }
+    })
+    prior.push(participant)
   }
-  const mergedText = merged.map(m => m.text).join('\n') + (merged.length ? '\n' : '')
-  // Which merged lines are new relative to base, and which side has them.
-  const newVsBase = markAdded(base, mergedText)
-  const inA = lineMap(a, mergedText), inB = lineMap(b, mergedText)
-  const addedA = markAdded(base, a), addedB = markAdded(base, b)
-  return merged.map((m, i) => {
-    const aLine = inA[i], bLine = inB[i]
-    let side: MergedSide = 'common'
-    if (m.conflict) side = m.conflict
-    else if (newVsBase[i]) side = aLine !== undefined && bLine === undefined ? 'a' : bLine !== undefined && aLine === undefined ? 'b' : 'common'
-    const changedA = aLine !== undefined && addedA[aLine - 1]
-    const changedB = bLine !== undefined && addedB[bLine - 1]
-    const changedBy = changedA && changedB ? 'both' : changedA ? 'a' : changedB ? 'b' : null
-    return { text: m.text, side, changedBy, conflict: !!m.conflict, ...(aLine !== undefined ? { aLine } : {}), ...(bLine !== undefined ? { bLine } : {}) }
+  return running
+}
+
+function asText(value: string[]): string { return value.join('\n') + (value.length ? '\n' : '') }
+
+/** Compatibility adapter: the two-party API is the N=2 model. */
+export function classifyThreeWay(base: string, a: string, b: string): MergedLine[] {
+  return classifyNWay(base, [{ name: 'a', text: a }, { name: 'b', text: b }]).map(line => {
+    const { a: aLine, b: bLine } = line.lineNumbers
+    const changedBy = line.changedBy.length === 2 ? 'both' : line.changedBy[0] as 'a' | 'b' | undefined
+    const side = line.conflict ? line.conflictOwner as 'a' | 'b' : changedBy && changedBy !== 'both' ? changedBy : 'common'
+    return { text: line.text, side, changedBy: changedBy ?? null, conflict: line.conflict, ...(aLine !== undefined ? { aLine } : {}), ...(bLine !== undefined ? { bLine } : {}) }
   })
 }
 

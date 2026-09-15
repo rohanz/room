@@ -210,7 +210,7 @@ it('tints all base-relative edits and keeps stronger conflict annotations', () =
   const lines = classifyThreeWay(base, a, b)
   renderCodeLines(host as unknown as HTMLElement, lines, ['rohanz+a', 'rohanz+tiers'])
   const rows = host.find('code-line')
-  for (const [index, author, color] of [[1, 'rohanz+a', colorFor('rohanz+a')], [4, 'rohanz+tiers', colorFor('rohanz+tiers')], [7, 'rohanz+a and rohanz+tiers', 'var(--muted)']] as const) {
+  for (const [index, author, color] of [[1, 'rohanz+a', colorFor('rohanz+a')], [4, 'rohanz+tiers', colorFor('rohanz+tiers')], [7, 'rohanz+a and rohanz+tiers', colorFor('rohanz+a')]] as const) {
     expect(rows[index].className).toContain('changed-line')
     expect(rows[index].className).not.toContain('conflict-line')
     expect(rows[index].properties.get('--line-change-owner')).toBe(color)
