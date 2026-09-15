@@ -19,13 +19,13 @@ export type ConfigRule = 'argument' | 'env' | 'remembered' | 'default'
 export interface ConfigArgs {
   server?: string; where?: string; name?: string; owner?: string; tag?: string; kind?: string
   share?: string; credentialsPath?: string; credentials?: string; token?: string; logFile?: string
-  maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string
+  maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
 }
 export interface ResolvedConfig {
   dir: string; server: string; where: string; whereRule: ConfigRule
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
-  room?: string; web?: string
+  room?: string; web?: string; roomUrl?: string
 }
 
 const value = (v: unknown): string | undefined => typeof v === 'string' && v.trim() ? v.trim() : undefined
@@ -62,13 +62,16 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const remembered = !argWhere && !envWhere ? normaliseWhere(await rememberedWhere(dir)) : undefined
   const where = argWhere ?? envWhere ?? remembered ?? LOCAL
   const whereRule: ConfigRule = argWhere ? 'argument' : envWhere ? 'env' : remembered ? 'remembered' : 'default'
+  // A full runner URL is a fallback destination, not an override of a selected server.
+  // Explicit roomUrl wins; an argument/server environment/remembered choice suppresses legacy ROOM_URL.
+  const roomUrl = value(args.roomUrl) ?? (!argWhere && !envWhere && !remembered ? value(e.ROOM_URL) : undefined)
   const rawKind = value(args.kind) ?? value(e.ROOM_KIND) ?? 'agent'
   const kind = rawKind === 'bot' || rawKind === 'ci' ? rawKind : 'agent'
   const rawShare = value(args.share) ?? value(e.ROOM_SHARE) ?? 'full'
   const share: ShareLevel = rawShare === 'intent' || rawShare === 'declared' ? rawShare : 'full'
   const credentialsPath = resolveCredentialsPath(args, e)
   return {
-    dir: path.resolve(dir), server: resolveServer(where), where, whereRule,
+    roomUrl, dir: path.resolve(dir), server: resolveServer(where), where, whereRule,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
     tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share, credentialsPath,
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),

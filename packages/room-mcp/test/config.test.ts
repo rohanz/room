@@ -19,6 +19,16 @@ describe('resolveConfig', () => {
     expect(c).toMatchObject({ server: LOCAL, whereRule: 'argument', share: 'intent', maxWorkers: 2 })
   })
 
+  it('resolves runner URLs without overriding explicit or remembered destinations', async () => {
+    const dir = repo(), url = 'ws://runner/room'
+    expect((await resolveConfig({ dir, env: { ROOM_URL: url } })).roomUrl).toBe(url)
+    expect((await resolveConfig({ dir, env: { ROOM_URL: url, ROOM_SERVER: 'local' } })).roomUrl).toBeUndefined()
+    expect((await resolveConfig({ dir, env: { ROOM_URL: url }, args: { where: 'local' } })).roomUrl).toBeUndefined()
+    await writeChoice(dir, 'team')
+    expect((await resolveConfig({ dir, env: { ROOM_URL: url } })).roomUrl).toBeUndefined()
+    expect((await resolveConfig({ dir, env: { ROOM_URL: url }, args: { roomUrl: 'ws://argument/room' } })).roomUrl).toBe('ws://argument/room')
+  })
+
   it('resolves identity, paths, secrets and numeric defaults without mutating env', async () => {
     const dir = repo()
     const env = { ROOM_NAME: 'env-name', ROOM_OWNER: 'env-owner', ROOM_TAG: 'env-tag', ROOM_KIND: 'bot', ROOM_TOKEN: 'env-token', ROOM_LOG_FILE: '/env/log', ROOM_CREDENTIALS: '/env/creds', ROOM_STALE_DAYS: '11' }
