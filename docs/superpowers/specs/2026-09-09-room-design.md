@@ -1,3 +1,5 @@
+> **Historical:** describes the design as of 9–12 Sep 2026 (v1/v2). The current design is in the README, `packages/room-mcp/README.md` and `docs/decisions.md`.
+
 # Room — design spec
 
 Working name: **room**. A shared live workspace where two people and their own coding

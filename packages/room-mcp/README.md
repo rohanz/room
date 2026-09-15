@@ -4,9 +4,14 @@ MCP server (stdio) that puts a coding agent into a live room: room state, claims
 messages, and event push. Agents edit files on disk with their normal tools; `roomd`
 syncs them. Agents get no write tool.
 
-Env: `ROOM_URL` (`ws://host:1234/<room>`), `ROOM_NAME` (owner's name; agent identity is
-`{name, kind:'agent'}`), `ROOM_DIR` (clone path), `ROOM_SHARE` (sharing level, see below). Falls back to `<cwd>/.room.json`
-`{ "room", "name", "dir" }` written by `roomd`.
+Configuration comes from one resolver (`src/config.ts`) with a fixed precedence: tool
+argument, then environment, then the choice remembered in the clone (`where` only), then the
+default. The settings: `ROOM_SERVER` (`local` by default, `hosted`, or a `ws(s)://` URL),
+`ROOM_NAME` / `ROOM_OWNER` / `ROOM_TAG` / `ROOM_KIND` (identity), `ROOM_SHARE` (sharing level),
+`ROOM_CREDENTIALS`, `ROOM_TOKEN`, `ROOM_LOG_FILE`, `ROOM_MAX_WORKERS`, `ROOM_STALE_DAYS`,
+`ROOM_ROOM` (explicit room name, how workers get the lead's room), `ROOM_WEB`, and, for a
+dispatched worker, `ROOM_WORKER_ID` / `ROOM_GEN`. Nothing is required: with nothing set a
+session is in a local room.
 
 Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root).
 
@@ -14,30 +19,33 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 
 | tool | what |
 |---|---|
-| `room_login` | GitHub device login to the room server (two calls: show the code, then wait for approval). |
-| `room_logout` | Forget the stored session for this server. |
+| `room_login` | Log in to the room server. |
+| `room_logout` | Forget the GitHub login for the room server on this machine (and revoke the session on the server). |
 | `room_create` | Open a room for this repo on the server, then join the room for the current branch. |
-| `room_join` | Join a room for this clone: `where=local` (default), `where=team`, or a server URL; a `team` choice is remembered for the clone. |
-| `room_close` | DESTRUCTIVE: close the room for this whole repo, for everyone; all branch rooms and shared uncommitted work are removed from the server. Only on the user's explicit request. |
-| `room_leave` | Leave the room (and the local workers room, if any); `forget=true` clears the remembered choice. |
+| `room_join` | Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo's room members); remembered for this clone so later sessions go there on their own. |
+| `room_leave` | Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). |
+| `room_close` | DESTRUCTIVE: close the room for this whole repo, for everyone. |
+| `room_export` | Export the current room story, including compacted bus history, to a local markdown ledger without changing the room. |
 | `room_scope` | Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. |
-| `room_state` | Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Filtered to your areas; `all=true` shows everything. |
+| `room_state` | Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. |
+| `room_who` | Who holds claims in a region of a file, whose scope covers it, and who has changed the file. |
 | `room_read` | A file as a person sees it right now: base commit + their uncommitted edits (default: you). |
 | `room_diff` | Unified diff from the base commit to a person's live version, for one path or all their changed paths. |
-| `room_who` | Who holds claims in a region of a file, whose scope covers it, and who has changed the file. |
+| `room_impact` | Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. |
+| `room_preview_merge` | Would your uncommitted changes and other people's combine cleanly? A lead can preview all its workers at once. |
 | `room_claim` | Claim what you are about to edit, saying what you will do: either a symbol (function/class name; the room resolves its line range) or a line range. |
 | `room_release` | Release a claim with a summary of what you did. |
 | `room_send` | Post to the bus. changed: paths + summary (+ symbols renamed/changed, which notifies whoever uses them). question: to a person's agent. answer: inReplyTo a question id. note: broadcast fyi. |
 | `room_wait` | Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). |
-| `room_done` | Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. `pr_note: true` also posts the branch ledger on the PR whose head is this branch. |
-| `room_pr_note` | Post or update the one room comment on a GitHub PR with the branch's story (scopes, claims and plan outcomes, questions and answers, passing merge previews). Default PR: the open one whose head is this branch. |
-| `room_impact` | Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. |
-| `room_preview_merge` | Would your uncommitted changes and another person's combine cleanly? Three-way merge against the common base; nothing in any clone is written. |
-| `room_spawn` | Dispatch a worker agent (claude or codex, optional model) into this room, or with `where=local` into a local workers room while you stay in the team room; it reports back with room_done. |
-| `room_dismiss` | Stop a worker you spawned; its worktree and branch are kept. |
-| `room_share` | Change how much of your clone the room sees, live: `intent`, `declared` or `full`. Without `level`, reports the current level and what is withheld. |
+| `room_done` | Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. |
+| `room_spawn` | Dispatch a worker agent into this room to do a task in parallel with you. |
+| `room_dismiss` | Stop a worker you spawned (SIGTERM to its process). |
+| `room_pr_note` | Post (or update) ONE comment on a GitHub pull request with the branch's room story: who declared what, claims with plans and whether they were fulfilled, questions and answers, merge previews that passed, in bus order. |
+| `room_share` | Change how much of your clone the room sees, live. |
 
-Every reply (except join) starts with your unread inbox. Full descriptions are in `src/tools.ts`; the agent-facing rules are in `src/prompt.ts` and the plugin's `room-etiquette` skill.
+Twenty-three tools. A reply starts with your inbox only when it holds unread messages. Full descriptions and argument schemas are in `src/tools/*.ts` (one module per concern, assembled by `src/tools/index.ts`); the agent-facing rules are in `src/prompt.ts` and the plugin's `room-etiquette` skill.
+
+`room_preview_merge` takes `people` (or `person`): a lead can preview all its workers at once, merged in order, and `run` executes a command in the fully combined tree. `room_export` writes the room's story (scopes, claims and plan outcomes, questions and answers, previews, plus the compacted bus archive) to `.room/ledger/<room>-<timestamp>.md`; `room_close` writes the same file before it deletes anything.
 
 ## Pull requests
 
@@ -45,43 +53,22 @@ Open pull requests targeting the room's branch count as declared intent. On join
 
 The other direction is `room_pr_note` (or `room_done pr_note:true`): the branch's room story is rendered as markdown, in bus order, and posted through `POST /github/pr-note`, which finds the caller's earlier comment by its `<!-- room-ledger -->` marker and edits it, so a PR carries exactly one such comment per person. Sessions without a GitHub token (a shared-token or OIDC login) get a 403 and a plain "log in with GitHub" reply; nothing is retried.
 
-## Claude Code (channel wake-ups)
+## Hosts
 
-`.mcp.json` in the clone:
+Both hosts load this server through the plugin in `plugins/room` (one directory, two
+manifests). Install with `claude plugin marketplace add rohanz/room && claude plugin install
+room@room` or `codex plugin marketplace add rohanz/room && codex plugin add room@room`; the
+bundled server is `plugins/room/server/room-mcp.mjs` (rebuild with `npm run build:plugin`).
+The plugin's hooks record the session so it can be woken and put unread inbox lines and
+teammate claims in front of the model before every edit.
 
-```json
-{
-  "mcpServers": {
-    "room": {
-      "command": "npx",
-      "args": ["tsx", "/abs/path/to/room/packages/room-mcp/src/index.ts"],
-      "env": { "ROOM_URL": "ws://localhost:1234/demo", "ROOM_NAME": "Rohan", "ROOM_DIR": "." }
-    }
-  }
-}
-```
-
-Launch with the channel enabled so room events arrive as `<channel source="room" ...>`:
-
-```sh
-claude --dangerously-load-development-channels server:room
-```
-
-Without the flag tools still work; `room_state` reports unread messages, so poll it.
-
-## Codex CLI (`~/.codex/config.toml` or project `.codex/config.toml`)
-
-```toml
-[mcp_servers.room]
-command = "npx"
-args = ["tsx", "/abs/path/to/room/packages/room-mcp/src/index.ts"]
-env = { ROOM_URL = "ws://localhost:1234/demo", ROOM_NAME = "Rohan", ROOM_DIR = "/abs/path/to/clone" }
-```
-
-Codex has no channel equivalent; `packages/agent` (`roomagent`) wakes the Codex thread
-using the same shared message/claim wake policy (`shouldWakeOnMsg` and `shouldWakeOnClaim`
-from `@room/shared`) as the MCP channel's `shouldWake` wrapper
-and the same preamble (`AGENT_INSTRUCTIONS(name)` from `@room/room-mcp`).
+Wake-ups differ by host. A Claude Code session receives interrupts and questions addressed
+to it through the MCP channel (`notifications/claude/channel`, a research-preview feature
+that needs an Anthropic login); a Codex thread is woken with `codex queue`, retried with
+backoff, using the thread id the SessionStart hook recorded. If neither path is available
+the pre-edit hook still shows the message before the next edit. Running the server by hand
+(`npm run mcp`) works for scripts and tests; `ROOM_ROOM` and `ROOM_DIR` name the room and
+clone.
 
 ## Identity
 
@@ -166,9 +153,11 @@ down and drop the mirrored claims.
 
 `room_spawn(tag, task, host?, model?, share?, dir?)` makes a git worktree at
 `<repo>/.room/workers/<tag>` on branch `room/<tag>` from HEAD (or uses `dir`), and starts
-`claude -p` or `codex exec` there, detached, with `ROOM_ROOM`, `ROOM_TAG`, `ROOM_LEAD`,
-`ROOM_DIR` and the lead's `ROOM_SERVER` in its environment; output goes to
-`.room/workers/<tag>.log`. The worker's prompt is a fixed preamble (follow the etiquette,
+`claude -p` or `codex exec` there, detached, with an explicit environment: `ROOM_SERVER`,
+`ROOM_ROOM`, `ROOM_DIR`, `ROOM_TAG`, `ROOM_LEAD`, `ROOM_OWNER`, `ROOM_SHARE`, `ROOM_WORKER_ID`
+(and `ROOM_TOKEN` when the lead joined a shared-token server); nothing else is inherited.
+Output goes to `.room/workers/<tag>.log`, the worker's MCP log to `.room/workers/<tag>.mcp.log`.
+A stale worktree registration for the tag is pruned first. The worker's prompt is a fixed preamble (follow the etiquette,
 ask the lead with `room_send`, `room_preview_merge`, then `room_done`) followed by the
 task. The doc's `workers` map records tag, name, host, model, task, dir, branch, pid,
 status (running, done, failed, dismissed) and summary; the lead's MCP process updates the
@@ -195,6 +184,27 @@ Besides tool replies, the MCP process watches the room and posts on your behalf:
 - a `notify` when a file you changed no longer merges cleanly with a teammate's version (an `fyi` when it does again);
 - an `fyi` on join when it evicts uncommitted work of someone absent for more than `ROOM_STALE_DAYS` (default 7).
 
+Merge previews behind the conflict notices run at most four per ten seconds per client, coalescing
+further changes, and a pair whose texts have not changed is not re-merged.
+
+While the connection to the server is down, `room_state` starts with an `OFFLINE` line and shows the
+last known state; `room_send` and `room_wait` say the message is not delivered rather than pretending.
+`room_wait` returns at once when a message that would end it is already unread in the inbox.
+
+## Inbox rules
+
+Message kinds are defined once, in `packages/shared/src/messages.ts`: each has a format, an audience,
+a wake rule and a default priority. Routine events (`scope`, `release`, `changed`, `note`) never enter
+an inbox unless addressed; `claim` and `conflict` reach the holders of overlapping claims; `question`,
+`answer` and `done` reach the person they are addressed to; `plan` broadcasts at interrupt; `base`
+wakes anyone with uncommitted work. Interrupts always reach the inbox. `notify` messages from other
+areas are dropped by the areas filter. Registering a new kind is one entry in that table.
+
+The bus keeps the last `ROOM_BUS_KEEP` messages (default 2000); older ones are folded into a compact
+per-area ledger archive (counts, last seen per person, unfulfilled plans and open questions kept in
+full) by the lowest-named present participant, at most once a minute. Ledgers, `room_pr_note` and
+`room_export` read the archive too.
+
 Wake-ups: interrupts and questions addressed to you reach an idle Codex thread through `codex queue` (retried with backoff; the thread id comes from the SessionStart hook) and a Claude Code session through the MCP channel notification.
 
 ## Workers: what a lead may and may not do
@@ -202,8 +212,9 @@ Wake-ups: interrupts and questions addressed to you reach an idle Codex thread t
 - `room_leave` is refused while workers you spawned are running; `force=true` dismisses
   them first (they are told why). Ending the lead's session dismisses them the same way.
 - `room_dismiss` signals a process this session spawned. A worker known only by pid (the
-  lead restarted) is signalled only if that pid is alive and started after the worker
-  record; otherwise it is marked dismissed and left alone, and the reply says so.
+  lead restarted) is signalled only if that pid is alive, started when the record says, and
+  runs claude or codex for that tag; otherwise it is left alone, its status stays as it was,
+  and the reply says "could not dismiss".
 - `room_spawn dir=` outside the repo needs `allowOutside=true`; no worktree or branch
   bookkeeping is done for it.
 - Joining the team room on the choice remembered for a clone prints the same one-line

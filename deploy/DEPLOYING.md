@@ -42,9 +42,10 @@ codex plugin remove room@room && codex plugin add room@room
 
 Secrets (`flyctl secrets list -a room-rohanz`):
 
-- `GITHUB_CLIENT_ID` — the GitHub OAuth App (Device Flow enabled). Required; without it the
-  server falls back to accepting forwarded `gh` tokens, which is not what production runs.
-- `ROOM_TOKEN` — unset on purpose. It is only for non-GitHub rooms on self-hosted servers.
+- `GITHUB_CLIENT_ID` — the GitHub OAuth App (Device Flow enabled). Required: it is the only way
+  into `github.com/…` rooms. Forwarded `gh` tokens are refused everywhere; without a client id
+  nobody can join a GitHub room. `fake` is the test issuer and is refused under `NODE_ENV=production`.
+- `ROOM_TOKEN` — unset on purpose. It only ever admits non-GitHub rooms (`local/…`, `git/…`).
 
 Environment in `deploy/fly.toml`: `PORT=8080`, `YPERSISTENCE=/data` (volume `room_data`, 1 GB).
 Optional tuning, all with defaults in `.env.example`: `ROOM_IDLE_DAYS`, `ROOM_DOC_MAX_MB`,

@@ -13,7 +13,7 @@ disk; edit files with your normal tools.
 1. `room_scope(area, summary, paths)` before editing: one word for the area (`auth`,
    `orders`, ...), one line, the paths you expect to touch. Read the area ledger it returns:
    what others changed there and their open plans.
-2. Every tool reply starts with your inbox. `interrupt`: stop and re-plan before
+2. A tool reply starts with your inbox when you have unread messages. `interrupt`: stop and re-plan before
    continuing. `notify`: check whether it touches what you are doing. `fyi`: nothing.
    Routine scope, release, change, and done-note events stay in the room feed and browser;
    they do not enter the inbox unless explicitly addressed to you.
@@ -51,7 +51,8 @@ disk; edit files with your normal tools.
     says behind, run `git pull --ff-only` before editing further; the ledger lists which
     paths changed.
 12. Before telling your human you are done: `room_preview_merge(person, run=<tests>)`
-    against each person who changed the same files, using their CURRENT state. Do not wait
+    against each person who changed the same files, using their CURRENT state (a lead
+    previews all its workers at once with `people=[...]`, merged in order). Do not wait
     for them to finish their task and do not ask them to tell you when they are ready; if
     their later work conflicts, they will see it in their own preview. Then
     `room_done(summary)` so the room shows your task as finished; stay in the room for
@@ -60,7 +61,8 @@ disk; edit files with your normal tools.
     preview with each teammate was clean (name any conflicting files). Then ask whether to
     commit and push. Never commit or push unless they say yes; after a push, teammates are
     told the base moved. `room_leave` when the session ends. `room_close` is destructive
-    (it removes every branch room of the repo for everyone); only on the user's explicit ask.
+    (it removes every branch room of the repo for everyone); only on the user's explicit ask;
+    it exports the room's story to `.room/ledger/` first, and `room_export` does that on demand.
 
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.
 

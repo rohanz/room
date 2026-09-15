@@ -65,14 +65,22 @@ docs/decisions.md        idea, scope, findings from live runs, what-was-built-wh
 docs/prior-art.md        AgentRoom, Zed Delta, etc. and the gap we fill
 docs/submission.md       deliverables checklist + demo script
 docs/superpowers/        design specs (v2: 2026-09-12-room-v2-design.md) + plans
-packages/shared/         one Y.Doc schema: overlays per person, scopes, claims (with plans),
-                         bus (with priorities), ledger view, wake rules; typed accessors
-packages/server/         y-websocket server: GitHub push-access auth, open/close/list repos, read-only view keys, LevelDB
-packages/roomd/          push-only daemon: clone -> my overlay; base tracking; .roomignore + size budget; never writes disk
-packages/room-mcp/       room_* tools, session/join/close, inbox, wake bridge, conflict watcher, Claude channel
+packages/shared/         one Y.Doc schema: overlays, scopes, claims (with plans), rolling bus + ledger archive,
+                         workers; messages.ts (every message kind: format/audience/wake/priority), views.ts
+                         (participant/claim/area/worker lines shared by web and tools), areas.ts, identity
+packages/server/         y-websocket server: GitHub device login + OIDC (auth.ts), admission (admit.ts),
+                         open/close/list repos, GitHub PR proxy, read-only view keys, doc/message caps,
+                         audit, LevelDB docs + File/Pg store (store.ts)
+packages/relay/          loopback relay for local rooms: discovery file + key, /health, serves the web view
+packages/roomd/          push-only daemon: clone -> my overlay; base tracking; share levels; .roomignore,
+                         default ignores + size budget; never writes disk
+packages/room-mcp/       src/tools/* (one module per concern: join, scope, claims, messaging, files,
+                         workers, share, prs; index.ts assembles DEFS), registry.ts (a process holds several
+                         rooms), config.ts (arg > env > remembered > default), session.ts, workers.ts,
+                         bridge.ts (lead in two rooms), conflicts.ts, hooks-bridge.ts, prs.ts, graph-index.ts
 packages/agent/          roomagent: on-duty Codex thread fed by chat + interrupts/addressed notifies
-packages/web/            read-only room view: participants, overlays with claim gutters, feed
-plugins/room/            Codex AND Claude Code plugin (both manifests): skills, hooks, bundled MCP server
+packages/web/            read-only room view: participants, overlays with claim gutters, feed, network
+plugins/room/            Codex AND Claude Code plugin (both manifests): skills, hooks, bundled MCP server + web/
 examples/demo-repo/      tiny Python service used in the demo (uv)
 scripts/demo.sh          server + shared origin + two clones on one machine
 scripts/say.mts          post a message into a person's agent chat and watch the room
@@ -84,15 +92,28 @@ scripts/build-plugin.mjs esbuild bundle of room-mcp into plugins/room/server
 - Hosted server operations (deploy, secrets, opening/closing repos, incidents): `deploy/DEPLOYING.md`.
   Deploy with `--depot=false`; only server/web changes need a deploy, plugin changes need a bundle rebuild + push.
 
-- `npm test` runs every package's vitest suite (in-memory transport; no sockets needed).
-- `npm run typecheck`; `npm run build:plugin` after touching `packages/room-mcp` or roomd.
+- `env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test` runs every package's vitest suite
+  (some suites listen on loopback; inherited ROOM_* variables change identity-sensitive tests).
+- `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web
+  (the bundle and `plugins/room/web` are committed). Installed plugins copy the bundle: reinstall
+  `room@room` on both hosts after a rebuild.
+- Implementation work goes to Codex (model 5.6 Sol at medium, or 6 Astra at low): either the
+  codex:codex-rescue subagent or room workers with `host: 'codex'`. Claude plans, writes briefs,
+  leads room batches, reviews, integrates and deploys. Codex's sandbox cannot write a git dir
+  outside its cwd and cannot listen on sockets: give it a standalone clone (`git clone … /tmp/room-x`,
+  `npm install`), expect the socket suites to fail there, and run the full suite yourself before
+  merging. Room batches: one lead (`claude -p` with the room plugin, no ROOM_SERVER) spawns
+  Codex workers into worktrees, commits their worktrees itself, previews and octopus-merges.
+- Reviews alternate Fable and Codex; six rounds on 2026-09-15 found ~60 issues, none repeated.
 - `scripts/demo.sh` brings up a server and two clones and prints the join commands. Join
   from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex`, then `$room-join`) or
   with `npx tsx packages/agent/src/cli.ts --dir <clone>`.
-- Rooms are named `<host/owner/repo>/<branch>` from the clone's origin (filesystem remotes
-  become `local/<dir>`); URL-encoded in the ws path. A repo must be opened once (`room_create`
-  / `POST /rooms`) before its branch rooms accept connections. Without `YPERSISTENCE` the
-  server is in-memory: restart it to reset.
+- With no `ROOM_SERVER` a session is in a local room (`local/<repo>/<branch>`, relay on loopback,
+  `.git/room-local.json`). Team rooms are named `<host/owner/repo>/<branch>` from the clone's origin
+  (non-GitHub hosts become `git/<host>/…`); URL-encoded in the ws path. A repo must be opened once
+  (`room_create` / `POST /rooms`) before its branch rooms accept connections. Without
+  `YPERSISTENCE` the server is in-memory: restart it to reset. A dev server needs
+  `GITHUB_CLIENT_ID=fake` to log anyone in (test issuer; refused with NODE_ENV=production).
 - Ports: server 1234 by default; demo scripts in this repo have used 1244 to avoid a stray
   server from an earlier session.
 - Quick tool-level smoke without Codex: call `createTools` / `joinSession` from

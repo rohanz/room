@@ -74,6 +74,17 @@ Areas come from `CODEOWNERS` at the room's base commit, not from the working tre
 there is no matching `CODEOWNERS` area, an uncommitted file makes its top-level directory
 an area only for the person who changed that file.
 
+**Sharing levels.** By default the room sees the full text of files you change (`full`).
+`ROOM_SHARE=declared` shares text only under the paths you declared in your scope, `intent`
+shares plans and claims with no file text; `room_share` changes it live and a server can set
+a ceiling. Teams should start at `declared`. Reading someone who shares less degrades to a
+one-line answer rather than an error.
+
+**What reaches an agent.** Routine events (scopes, releases, change notes) stay in the feed;
+an agent's inbox only gets what is addressed to it, conflicts on its claims, and interrupts,
+and `room_state` shows the people and claims near its own work in full with one line for
+everyone else. The bus keeps a rolling window and folds older history into a ledger archive.
+
 ### Watching a local room
 
 A local session prints a `browser view:` link like a hosted one, served by the relay itself:
@@ -148,7 +159,8 @@ claude plugin install room@room
 ```
 
 For a local checkout, `claude plugin marketplace add /path/to/room` instead. Update with
-`claude plugin marketplace update room` and reinstall. `claude plugin validate plugins/room`
+`claude plugin marketplace update room` and reinstall (the bundle is copied at install time,
+so a new version on main reaches a session only after a reinstall). `claude plugin validate plugins/room`
 checks the manifest.
 
 Claude Code loads the `room_*` tools from the bundled MCP server, the `room-join` and
@@ -236,26 +248,31 @@ Developer A’s clone                                  Developer B’s clone
    a temporary workspace. The shared base advances only when the new commit is on the
    remote. Teammates see that their clone is behind and can pull.
 
-The server uses `y-websocket` with GitHub/shared-token access control, view-key issuance,
-optional LevelDB persistence, and static browser hosting. Coordination logic runs in
-clients. Yjs supplies shared state and presence; Git remains the integration mechanism.
+The server uses `y-websocket` with GitHub device-login (or OIDC) admission, read-only view
+keys, size caps, optional LevelDB or Postgres persistence, and static browser hosting; the same
+relay code, in `packages/relay`, runs on loopback for local rooms. Coordination logic runs in
+clients: a session registry (`packages/room-mcp/src/registry.ts`) lets one process hold
+several rooms, and message routing, views and configuration each live in one place
+(`packages/shared/src/messages.ts`, `views.ts`, `packages/room-mcp/src/config.ts`). Yjs
+supplies shared state and presence; Git remains the integration mechanism.
 
 ### Agent tools
 
 | Tool | Purpose |
 |---|---|
-| `room_create` / `room_join` / `room_leave` | Open the repo once, join the branch room, leave. |
-| `room_close` | Close the repo for everyone: all branch rooms and server-side overlays are deleted. Only on the user's explicit ask. |
-| `room_scope` | Declare an area and paths; read that area’s history. |
-| `room_state` | Inspect participants, work, claims, plans, and current coordination state. |
-| `room_read` / `room_diff` | Inspect a participant’s current file version or changes. |
-| `room_claim` / `room_release` | Declare line ownership and plans; release work with a summary. |
-| `room_send` | Announce changes, ask questions, answer, or leave notes. |
-| `room_wait` | Wait for release, an answer, or an interrupt, with a timeout. |
-| `room_done` | Release remaining claims, clear scope, and mark the task finished while staying available for questions; `pr_note: true` also posts the branch ledger on its PR. |
-| `room_pr_note` | Post or update the one room comment on a GitHub PR with the branch’s story: scopes, claims and plan outcomes, questions and answers, passing merge previews. |
-| `room_impact` | Find symbol providers, consumers, dependencies, and owners. |
-| `room_preview_merge` | Preview the combined changes; optionally run checks. The room also runs it for you whenever two people change the same file and notifies you if the result conflicts. |
+| `room_login` / `room_logout` | GitHub device login to a team server (the agent shows you a code); forget it. |
+| `room_create` / `room_join` / `room_leave` / `room_close` | Open the repo once on a server; join a room (`where=local`, `team`, or a URL, remembered per clone); leave; close the repo for everyone (destructive, on explicit ask; the story is exported first). |
+| `room_export` | Write the room's story, with the compacted bus archive, to `.room/ledger/`. |
+| `room_scope` | Declare an area and paths; read that area's history. |
+| `room_state` | Who is here and on what, claims, plans, workers, recent bus, filtered to your areas (`all=true` for everything). Starts with `OFFLINE` when the server is unreachable. |
+| `room_read` / `room_diff` / `room_who` | A participant's live file or diff; who holds claims in a region. |
+| `room_claim` / `room_release` | Declare line ownership and plans; release with a summary. |
+| `room_send` / `room_wait` | Announce changes, ask, answer, note; wait for a release, an answer, an interrupt, or a worker's done message. |
+| `room_impact` | Symbol providers, consumers, dependencies, and owners. |
+| `room_preview_merge` | Three-way merge with one or several people's live trees, in order; optionally run the tests in the combined tree. The room also tells you when a file you changed stops merging cleanly with a teammate's. |
+| `room_done` / `room_pr_note` | Finish a task (release, clear scope, tell the lead if you are a worker; `pr_note: true` posts the branch ledger on its PR); post or update the one room comment on a PR. |
+| `room_spawn` / `room_dismiss` | Dispatch a Claude Code or Codex worker into a worktree, in this room or a local workers room; stop one. |
+| `room_share` | Change your sharing level live: `intent`, `declared`, `full`. |
 
 **Pull requests are intent too.** Open PRs targeting the room’s branch are mirrored into the room as `pr#<n>` bot participants owned by their author, with a scope built from the files they touch, so a claim or a symbol change that lands on a file an open PR is rewriting is flagged the same way a teammate’s declared work is. The server fetches them with the GitHub token it holds from device login (`GET /github/prs`, cached a minute); one elected client keeps the mirror fresh every two minutes. In the other direction `room_pr_note` writes the branch’s coordination story onto its PR as a single comment that is edited in place, so reviewers see who declared what, which plans were fulfilled or cancelled, what was asked and answered, and which merge previews passed.
 
@@ -376,13 +393,14 @@ npm run build:plugin  # regenerate after MCP or daemon changes
 | Directory | Responsibility |
 |---|---|
 | `packages/shared` | Room schema, ledgers, symbol graph, and message-routing rules. |
-| `packages/server` | WebSocket sync, access control, persistence, and browser hosting. |
+| `packages/server` | WebSocket sync, login and admission, persistence, audit, and browser hosting. |
+| `packages/relay` | The loopback relay behind local rooms: discovery file, key, health, browser view. |
 | `packages/roomd` | File watching, overlay publication, and Git-base tracking. |
-| `packages/room-mcp` | Agent tools, indexing, sessions, and hook bridge. |
+| `packages/room-mcp` | Agent tools (`src/tools/*`), session registry, config, workers, bridge, indexing, hook bridge. |
 | `packages/agent` | Optional on-duty Codex runner. |
 | `packages/web` | Network, file/merge views, participants, and timeline. |
-| `plugins/room` | Installable Codex plugin, hooks, skills, and bundled MCP server. |
+| `plugins/room` | Installable Codex and Claude Code plugin: hooks, skills, bundled MCP server and browser view. |
 | `examples/demo-repo` | Small Python demo service. |
 
-[Design](docs/superpowers/specs/2026-09-12-room-v2-design.md) ·
+[Original v2 design (historical)](docs/superpowers/specs/2026-09-12-room-v2-design.md) · [Changelog](CHANGELOG.md) ·
 [Decisions and build history](docs/decisions.md) · [Prior art](docs/prior-art.md)

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1 — 2026-09-15
+
+- Less noise by default: routine scope, release, change and note events stay in the feed; the inbox prefix appears only when something is unread; `room_state` shows the people and claims near your work in full and one line for the rest; the agent instructions are six rules, with detail in the etiquette skill.
+- Rolling bus (`ROOM_BUS_KEEP`, default 2000) with a compact ledger archive; `room_pr_note` and ledgers read it.
+- `OFFLINE` banner in `room_state` while the server is unreachable; sends and waits say so; `room_wait` returns at once on an already-unread message that would end it.
+- `room_preview_merge` takes `people`: a lead previews all its workers in order; `run` uses the combined tree.
+- `room_export` writes the room's story to `.room/ledger/`; `room_close` does the same before deleting anything.
+- `room_spawn` prunes stale worktree registrations; `room_join` refuses a `name` argument on login servers instead of joining invisibly; PR mirrors never claim a symbol's definition; dismiss wording matches state.
+- Daemon: unified default ignores, watched-file count with a warning above 20,000; conflict watcher limited to four merges per ten seconds with hash dedupe.
+- Internals: session registry, `tools.ts` split by concern, one auth model (forwarded GitHub tokens refused; `ROOM_TOKEN` non-GitHub only; `GITHUB_CLIENT_ID=fake` test issuer), `@room/relay` package, message kinds registry, shared views, one config resolver.
+- README status paragraph; onboarding fixes from a fresh-install walkthrough; deploy runbook.
+
 ## 0.6.0 — 2026-09-15
 
 The day after the hackathon. Everything below was built, reviewed (four passes, alternating Fable and Codex) and live-tested.

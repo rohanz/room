@@ -225,3 +225,29 @@ device-code start.
 **Why:** A code review of the branch found two ways to signal the wrong process, a start
 race that split a clone into two rooms, and a bridge that turned a busy team room into a
 stream of worker interrupts.
+
+## 2026-09-15 (afternoon) — Consolidation, trimming, and four test campaigns
+**Decision:** After the morning's feature batches, the afternoon went to structure and evidence.
+Structure: a session registry so one MCP process holds several rooms (workers carry stable ids);
+`tools.ts` split into `src/tools/*` by concern; one auth model on the server (device login or
+OIDC; forwarded GitHub tokens refused everywhere; `ROOM_TOKEN` for non-GitHub rooms only; a fake
+issuer for dev); the local relay moved to `packages/relay`; every message kind defined once
+(`messages.ts`); participant, claim, area and worker lines shared by browser and tools
+(`views.ts`); one config resolver (arg > env > remembered > default). Trimming: routine events
+stay in the feed, inbox prefix only when unread, compact `room_state`, instructions cut to six
+rules, a rolling bus with a ledger archive, a merge budget for the conflict watcher, an
+`OFFLINE` banner, waits that end on already-unread messages. Additions: multi-person merge
+preview, `room_export` and a ledger written before `room_close`, worktree pruning, name-argument
+guard on login servers, unified daemon ignores with a watch-count warning.
+**Evidence:** Feature test on the hosted server (sharing levels, areas, PR mirroring): 18/18.
+Soak: 10 participants editing 5×/s for 15 minutes; server flat at ~65 MB, cold join under 2 s;
+the cost was client CPU and an unbounded bus, both since bounded. Chaos: relay takeover under
+5 s, workers survive a dead lead, sessions reconnect after a 9-minute outage with both sides'
+edits intact, a stopped process resyncs; five reporting bugs, fixed. Fresh install from GitHub
+on both hosts following docs/onboarding.md: passes; three doc fixes. Six review rounds
+(Fable and Codex alternating) found about sixty issues in all, none twice.
+**Process:** Implementation moved to Codex (5.6 Sol medium / 6 Astra low), Claude planning,
+leading room batches, reviewing and integrating; three batches were built by Codex workers
+coordinated through Room itself, with clean octopus merges. 318 tests at the end of the day.
+**Cut / deferred:** implicit claims from scope, declare-and-idle waits, per-folder documents,
+relaying workers' questions up to teammates, GitHub App, editor extension, Slack bridge.
