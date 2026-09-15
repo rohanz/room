@@ -1,5 +1,6 @@
 import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg } from '@room/shared'
 import type { Session } from '../session.js'
+import { isPrName } from '../prs.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 const WAIT_DEFAULT = 30_000
@@ -170,12 +171,17 @@ export function install(state: HandlerState): void {
     }
   const owners = (s: Session, f: string): string[] => {
       const out = new Set<string>()
-      for (const sc of s.room.allScopes()) if (scopeCovers(sc, f)) out.add(sc.by)
+      for (const sc of s.room.allScopes()) if (!isPrName(sc.by) && scopeCovers(sc, f)) out.add(sc.by)
       for (const c of s.room.claimsFor(f)) out.add(c.by)
       for (const p of s.room.whoChanged(f)) out.add(p)
       return Array.from(out).sort()
     }
-  const describeUsers = (s: Session, files: string[]): string => files.map(f => { const o = owners(s, f).filter(x => x !== s.me.name); return o.length ? `${f} (${o.join(', ')})` : f }).join(', ')
+  const describeUsers = (s: Session, files: string[]): string => files.map(f => {
+      const o = owners(s, f).filter(x => x !== s.me.name)
+      const prs = s.room.allScopes().filter(sc => isPrName(sc.by) && scopeCovers(sc, f)).map(sc => `PR #${sc.by.slice(3)}`)
+      if (prs.length) return `${f} (${o.length ? `${o.join(', ')}, ` : 'base, '}also touched by ${prs.join(', ')})`
+      return o.length ? `${f} (${o.join(', ')})` : f
+    }).join(', ')
   const waitingOn = async (s: Session): Promise<string[]> => {
       if (!s.graph) return []
       await s.graph.ready

@@ -69,6 +69,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
       const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule }
+      if (typeof a.name === 'string' && a.name.trim() && choice.server !== LOCAL) {
+        const server = parseServer(choice.server).server
+        const cfg = await serverAuthConfig(server)
+        const login = cfg.mode === 'device' ? getCredential(server)?.login : undefined
+        if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`
+      }
       if (a.create === true && choice.server === LOCAL && choice.rule !== 'argument') {
         // room_create with nothing chosen: opening a repo needs a server, and that is the team room.
         return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.'

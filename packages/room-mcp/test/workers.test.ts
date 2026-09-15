@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -61,6 +61,14 @@ describe('worker plumbing', () => {
     expect(w1.created).toBe(true); expect(w1.branch).toBe('room/money'); expect(existsSync(join(w1.dir, 'app.py'))).toBe(true)
     const w2 = await prepareWorktree(dir, 'money')
     expect(w2.created).toBe(false); expect(w2.dir).toBe(w1.dir)
+  })
+
+  it('prunes a stale registration when a worker directory was deleted', async () => {
+    const first = await prepareWorktree(dir, 'deleted')
+    rmSync(first.dir, { recursive: true, force: true })
+    const recreated = await prepareWorktree(dir, 'deleted')
+    expect(recreated).toMatchObject({ dir: first.dir, branch: 'room/deleted', created: true })
+    expect(existsSync(join(recreated.dir, 'app.py'))).toBe(true)
   })
 })
 
@@ -284,7 +292,7 @@ describe('worker safety', () => {
     let ls: Session | null = fakeSession(b, lead)
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir })
     const out = await tools.call('room_dismiss', { tag: 'ghost' })
-    expect(out).toContain('not signalled')
+    expect(out).toMatch(/^could not dismiss ghost: pid 1 not signalled.*; status stays running;/)
     expect(a.workers.get('ghost')?.status).toBe('running') // nothing was signalled, so nothing changed
   })
 
@@ -572,7 +580,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     })
     await tools.call('room_spawn', { tag: 'money', task: 't' })
     const refused = await tools.call('room_dismiss', { tag: 'money' })
-    expect(refused).toContain('could not be signalled')
+    expect(refused).toMatch(/^could not dismiss money: pid 8 not signalled: .*; status stays running;/)
     expect(a.workers.get('money')?.status).toBe('running')
     expect(a.messages().some(m => m.type === 'note' && /could not dismiss worker money/.test((m as { text: string }).text))).toBe(true)
     deliverable = true
