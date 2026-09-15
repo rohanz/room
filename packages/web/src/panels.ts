@@ -1,4 +1,4 @@
-import { bindTooltip } from './tooltip.ts'
+import { inlineDetails } from './inline-detail.ts'
 import { deriveConflictSpans } from './conflicts.ts'
 import {
   RoomDoc,
@@ -35,7 +35,7 @@ export const h = <K extends keyof HTMLElementTagNameMap>(
   const { class: className, title, ...rest } = props
   if (className) element.className = className
   Object.assign(element, rest)
-  if (title) bindTooltip(element, title, className?.split(' ').includes('code-line') ? 'code-right' : 'element')
+  if (title) element.title = title
   for (const child of children) if (child != null) element.append(child)
   return element
 }
@@ -231,9 +231,9 @@ function lineElement(line: MergedLine, names: readonly string[], prefix = '', cl
   const changed = authors(line, names)
   const owner = line.conflictOwner ?? changed[0] ?? ''
   const changedOwner = changed[0] ?? ''
-  const marker = owner ? dot(owner) : null
-  if (marker) marker.setAttribute('title', 'changed by ' + changed.join(' and '))
-  const row = h('div', { class: `code-line side-${line.side}${changed.length ? ' changed-line' : ''}${line.conflict ? ' conflict-line' : ''}`, title: lineHoverText(line, names, claimsAt) },
+  const marker = owner ? h('span', { class: 'dot' }) : null
+  if (marker) marker.style.background = colorFor(owner)
+  const row = h('div', { class: `code-line side-${line.side}${changed.length ? ' changed-line' : ''}${line.conflict ? ' conflict-line' : ''}` },
     h('span', { class: 'line-number' }, mergedNumber?.toString() ?? line.aLine?.toString() ?? ''),
     mergedNumber !== undefined
       ? h('span', { class: 'side-marker' }, marker)
@@ -322,6 +322,22 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   rows.forEach((row, i) => { row.style.gridRow = String(i + 1); row.style.gridColumn = '1' })
   const gutter = h('div', { class: 'conflict-edge' })
   gutter.style.gridRow = '1 / ' + (lines.length + 1)
+  const annotations = rows.map(() => h('div', { class: 'line-annotation' }))
+  const bars: { bar: HTMLElement; start: number; end: number }[] = []
+  const layout = (open: number | null) => {
+    const track = (i: number) => i + 1 + (open !== null && i > open ? 1 : 0)
+    text.style.gridRow = gutter.style.gridRow = '1 / ' + (lines.length + 1 + (open === null ? 0 : 1))
+    rows.forEach((row, i) => { row.style.gridRow = annotations[i].style.gridRow = String(track(i)) })
+    for (const { bar, start, end } of bars) bar.style.gridRow = track(start) + ' / ' + (track(end) + 1)
+  }
+  const bindDetail = inlineDetails(layout)
+  const bindRows = rows.map((row, i) => bindDetail(row, annotations[i], i,
+    merged ? i + 1 : lines[i].bLine ?? lines[i].aLine ?? i + 1, {
+      owners: authors(lines[i], names),
+      claims: sourceLines(lines[i], names).flatMap(([person, n]) => n === undefined ? [] : claimsAt?.(person, n) ?? []),
+      conflicts: regions.filter(s => s.start <= i && s.end >= i),
+    }))
+  annotations.forEach(a => { a.style.gridColumn = '2' })
   const laneEnds: number[] = []
   const tagOffsets = new Map<typeof regions[number], { top: number; text: string; detail: string }>()
   regions.sort((a, b) => a.start - b.start || Number(a.resolved) - Number(b.resolved) || a.end - b.end)
@@ -349,7 +365,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     const tag = tagOffsets.get(s)
     if (tag) {
       const label = h('button', { class: 'conflict-tag' + (s.resolved ? ' resolved' : ''), ariaLabel: tag.detail }, tag.text)
-      bindTooltip(label, tag.detail, 'code-right')
+      bindRows[s.start](label)
       // Align tags to one right edge independently of their bar's lane.
       label.style.right = lane * 4 + 4 + 'px'
       label.style.top = tag.top + 'px'
@@ -361,11 +377,13 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
       rows[i].classList.add(s.resolved ? 'resolved-conflict-line' : s.claimOnly ? 'claim-overlap-line' : 'conflict-line')
       if (s.claimOnly) rows[i].classList.add('claim-overlap-line')
     }
+    bars.push({ bar, start: s.start, end: s.end })
     gutter.append(bar)
   })
   gutter.style.gridTemplateColumns = 'repeat(' + Math.max(1, laneEnds.length) + ', 2px)'
-  grid.style.gridTemplateColumns = 'minmax(0, 1fr)' + (regions.length ? ' 96px' : '')
-  if (spans.length) grid.append(gutter)
+  grid.style.gridTemplateColumns = 'minmax(0, 1fr) minmax(96px, 30%)'
+  grid.append(gutter, ...annotations)
+  layout(null)
   host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, grid))
 }
 
@@ -436,9 +454,11 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       if (conn.room.deleted.get(person)?.has(selected.path)) return editor.empty(`deleted by ${person}`)
       const text = conn.room.text(selected.path, person)
       if (text === undefined) return editor.empty(`No overlay available for ${person}`)
-      if (!conflicts.some(s => !s.hidden)) { editor.show(selected.path, text, conn.room.claimsFor(selected.path)); return }
       editor.empty()
-      renderCodeLines(host, text.split('\n').map((text, i) => ({ text, side: 'common', changedBy: null, conflict: false, aLine: i + 1 })), [person, person], undefined, conflicts, false)
+      const sha = conn.room.baseOf(person)
+      const base = sha ? conn.room.baseText(sha, selected.path) : undefined
+      const lines = classifyNWay(base ?? '', [{ name: person, text }]).map(line => ({ ...line, aLine: line.lineNumbers[person] }))
+      renderCodeLines(host, lines, [person], (owner, n) => conn.room.claimsFor(selected.path).filter(c => c.by === owner && n >= c.from && n <= c.to), conflicts, false)
       return
     }
     editor.empty()
@@ -622,11 +642,11 @@ export function activityGraphPanel(conn: Conn, focus: FocusState): HTMLElement {
   const toggle = h('button', { class: 'graph-toggle', ariaLabel: 'Collapse activity graph' }, 'Activity graph', h('span', { class: 'chevron' }, '⌄'))
   const element = h('section', { class: 'activity-graph' }, toggle, content)
   let collapsed = false
-  bindTooltip(toggle, () => `${collapsed ? 'Expand' : 'Collapse'} activity graph`)
   toggle.onclick = () => {
     collapsed = !collapsed
     element.classList.toggle('collapsed', collapsed)
     toggle.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} activity graph`)
+    toggle.title = `${collapsed ? 'Expand' : 'Collapse'} activity graph`
     toggle.querySelector('.chevron')!.textContent = collapsed ? '⌃' : '⌄'
   }
   const render = () => {

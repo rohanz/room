@@ -1,4 +1,3 @@
-import { bindTooltip, showTooltip } from './tooltip.ts'
 import { StateField, StateEffect, RangeSetBuilder, type Extension } from '@codemirror/state'
 import { Decoration, EditorView, GutterMarker, gutter, type DecorationSet } from '@codemirror/view'
 import { RangeSet } from '@codemirror/state'
@@ -21,7 +20,7 @@ class ClaimMarker extends GutterMarker {
     el.style.background = this.colors.length === 1
       ? this.colors[0]
       : `linear-gradient(to bottom, ${this.colors.map((color, index) => `${color} ${index / this.colors.length * 100}% ${(index + 1) / this.colors.length * 100}%`).join(', ')})`
-    bindTooltip(el, this.title, 'code-right')
+    el.setAttribute('aria-label', this.title)
     return el
   }
 }
@@ -44,7 +43,7 @@ function build(claims: Claim[], view: { doc: { lines: number; line(n: number): {
     const title = cs.map(describeClaim).join('\n')
     const pos = view.doc.line(n).from
     const stops = colors.map((color, index) => `${color}1c ${index / colors.length * 100}% ${(index + 1) / colors.length * 100}%`).join(', ')
-    db.add(pos, pos, Decoration.line({ attributes: { style: `background: linear-gradient(to right, ${stops})`, 'data-tooltip': title, tabindex: '0', 'data-claim': first.id } }))
+    db.add(pos, pos, Decoration.line({ attributes: { style: `background: linear-gradient(to right, ${stops})`, tabindex: '0', 'data-claim': first.id } }))
     mb.add(pos, pos, new ClaimMarker(colors, title))
   }
   return { deco: db.finish(), marks: mb.finish() }
@@ -65,16 +64,6 @@ const claimField = StateField.define<{ claims: Claim[] } & Built>({
 export function claimsExtension(): Extension {
   return [
     claimField,
-    EditorView.domEventHandlers({
-      pointerover(event) {
-        const el = (event.target as Element).closest('[data-tooltip]')
-        if (el) showTooltip(el, el.getAttribute('data-tooltip') ?? '', 'code-right')
-      },
-      focusin(event) {
-        const el = (event.target as Element).closest('[data-tooltip]')
-        if (el) showTooltip(el, el.getAttribute('data-tooltip') ?? '', 'code-right')
-      },
-    }),
     gutter({ class: 'cm-claim-gutter', markers: v => v.state.field(claimField).marks }),
   ]
 }

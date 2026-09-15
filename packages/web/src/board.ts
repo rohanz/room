@@ -1,7 +1,16 @@
 import { formatCount, areaMembershipSummary, deriveParticipants, participantClaimLine, personLine, workerLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
 import type { Conn } from './conn.ts'
-import { h, conflictCard, messageBody, participantInput, relativeTime } from './panels.ts'
+import { h as element, conflictCard, messageBody, participantInput, relativeTime } from './panels.ts'
 import { collapseConflictTimeline } from './timeline.ts'
+
+import { bindTooltip } from './tooltip.ts'
+
+// Floating descriptions belong to Board cards; code uses inline details.
+const h: typeof element = (tag, props = {}, ...children) => {
+  const node = element(tag, { ...props, title: undefined }, ...children)
+  if (props.title) bindTooltip(node, props.title)
+  return node
+}
 
 /** Presentation only: the room remains the source of truth. */
 export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLElement {

@@ -4,6 +4,7 @@ import { networkPanel } from './network.ts'
 import type { Conn } from './conn.ts'
 
 class Element {
+  title = ''
   className = ''; children: (Element | string)[] = []; style = {}; value = ''; clientWidth = 800
   attributes = new Map<string, string>()
   append(...children: (Element | string)[]) { this.children.push(...children) }
@@ -27,7 +28,7 @@ it('renders compact zoom controls at 150%, help, three legend labels and details
   const { room, panel } = setup()
   expect(panel.find('network-zoom')[0].textContent).toBe('−Fit+')
   expect(panel.find('network-percentage')[0].textContent).toBe('150%')
-  expect((panel.find('network-help')[0].children[0] as Element).attributes.get('data-tooltip')).toContain('Impact is inferred')
+  expect((panel.find('network-help')[0].children[0] as Element).title).toContain('Impact is inferred')
   expect(panel.find('network-legend')[0].children).toHaveLength(3)
   expect(panel.find('network-details')[0].textContent).toContain('Select a file')
   expect(panel.find('network-footnote')).toHaveLength(0)

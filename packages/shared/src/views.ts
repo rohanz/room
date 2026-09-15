@@ -263,3 +263,29 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
   }
   return spans
 }
+
+/** Shared facts for the compact annotation and expanded code-line details. */
+export interface LineDetailInput {
+  owners?: readonly string[]
+  claims?: readonly Claim[]
+  conflicts?: readonly { people: readonly string[]; detail: string; resolved: boolean }[]
+}
+
+export function lineDetail(input: LineDetailInput) {
+  const owners = [...new Set(input.owners ?? [])]
+  const claims = [...new Map((input.claims ?? []).map(c => [c.id, c])).values()]
+  const conflicts = [...(input.conflicts ?? [])]
+  const ownership = owners.length ? 'changed by ' + owners.join(' and ') : 'unchanged from base'
+  return {
+    owners, claims, conflicts, ownership,
+    text: [ownership, ...claims.map(c => 'claimed by ' + c.by + ': ' + participantClaimLine(c)), ...conflicts.map(c => c.detail)].join('\n'),
+  }
+}
+
+export function lineAnnotation(input: LineDetailInput): string {
+  const detail = lineDetail(input)
+  const conflict = detail.conflicts.find(c => !c.resolved) ?? detail.conflicts[0]
+  if (conflict) return conflict.people.join(' ↔ ') + (conflict.resolved ? ' · resolved' : ' · conflict')
+  if (detail.claims.length) return detail.claims.map(c => c.by + ' · claimed: ' + c.intent).join(' · ')
+  return detail.ownership
+}

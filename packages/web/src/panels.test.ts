@@ -119,7 +119,7 @@ describe('room header', () => {
       expect(element.textContent).not.toContain('github.com')
       expect(element.textContent).not.toContain('gitlab.com')
       expect(element.find('room-name')?.textContent).toBe(label)
-      expect(element.find('room-name')?.attributes.get('data-tooltip')).toBe(displayRoomName)
+      expect(element.find('room-name')?.title).toBe(displayRoomName)
       expect(element.children.filter((c): c is HeaderElement => typeof c !== 'string' && c.className === 'room-chip mono').map(c => c.textContent)).toEqual(chips)
       expect(element.textContent).toContain('base abcdef1')
       expect(element.textContent).toContain('0 participants')
@@ -227,4 +227,35 @@ describe('merged pane participant choices', () => {
       check(['Ada', 'Ben', 'Cy'])
     } finally { s.room.doc.destroy() }
   })
+})
+
+// All three tabs must use the same inline interaction, even without conflicts.
+import { JSDOM } from 'jsdom'
+it('shows annotations and details in Merged, Diff and File without floating code tooltips', () => {
+  const dom = new JSDOM('<body></body>')
+  vi.stubGlobal('document', dom.window.document)
+  vi.stubGlobal('window', dom.window)
+  const room = new RoomDoc()
+  room.setBaseOf('Ada', 'base')
+  room.setBaseText('base', 'a.ts', 'base\nkeep\n')
+  room.setOverlay('Ada', 'a.ts', 'edit\nkeep\n')
+  const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
+  try {
+    const panel = centrePanel(conn, createFocusState())
+    document.body.append(panel)
+    for (const tab of ['Merged', 'Diff', 'File']) {
+      Array.from(panel.querySelectorAll<HTMLButtonElement>('.tab')).find(b => b.textContent === tab)!.click()
+      const row = panel.querySelector<HTMLElement>('.code-line')!
+      row.dispatchEvent(new dom.window.Event('pointerenter'))
+      expect(panel.querySelector('.line-annotation')?.textContent).toBe(tab === 'Diff' ? 'unchanged from base' : 'changed by Ada')
+      row.click()
+      expect(panel.querySelectorAll('.inline-detail')).toHaveLength(1)
+      expect(row.nextElementSibling?.className).toBe('inline-detail')
+      expect(panel.querySelector('.cm-editor')).toBeNull()
+      expect(document.querySelector('#overlay-root')).toBeNull()
+    }
+    const last = panel.querySelectorAll<HTMLElement>('.code-line')[1]
+    last.click()
+    expect(last.nextElementSibling?.textContent).toContain('unchanged from base')
+  } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
 })

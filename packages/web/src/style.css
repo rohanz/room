@@ -718,3 +718,10 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 
 .merge-chip:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
 .merge-hint { padding: 0 12px 8px; font-size: 12px; }
+
+/* Row annotations share the reserved tag column and never cover code. */
+.line-annotation { min-width: 0; padding: 0 8px; font: 12px/17px var(--sans); color: var(--muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; pointer-events: none; position: relative; }
+.line-annotation:not(:empty) { background: var(--code-gutter); }
+.conflict-code-grid .code-line.line-hovered { background: color-mix(in srgb, var(--code-ink) 7%, var(--code-bg)); }
+.inline-detail { box-sizing: border-box; width: min(520px, 55vw); padding: 8px 12px; font: 12px/1.5 var(--sans); color: var(--muted); background: var(--code-gutter); white-space: pre-wrap; overflow-wrap: anywhere; }
+.inline-detail-close { float: right; color: var(--muted); font-size: 16px; padding: 0 4px; }

@@ -89,13 +89,11 @@ it('closes on window blur and detached triggers', () => {
   showTooltip(trigger, 'Details'); trigger.remove(); window.dispatchEvent(new dom.window.Event('resize'))
   expect(overlay().hidden).toBe(true)
 })
-it('converts native title props to focusable shared tooltips', () => {
+it('keeps generic labels native so only Board and Network opt into overlays', () => {
   const label = h('span', { title: 'Full path' }, 'short')
   document.body.append(label)
-  expect(label.hasAttribute('title')).toBe(false)
-  expect(label.tabIndex).toBe(0)
-  label.focus()
-  expect(overlay().textContent).toBe('Full path')
+  expect(label.title).toBe('Full path')
+  expect(label.tabIndex).toBe(-1)
 })
 it('keeps a 40px border-box mark and all theme geometry identical', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')

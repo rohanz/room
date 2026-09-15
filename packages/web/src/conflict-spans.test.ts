@@ -76,7 +76,7 @@ it('renders one right-edge tag and tints each conflict line by its participant',
   expect(host.find('conflict-span-gutter')).toHaveLength(0)
   expect(host.find('conflict-tag')[0].ariaLabel).toContain('money ↔ tiers')
   expect(host.find('conflict-tag')[0].ariaLabel).toContain('Unresolved')
-  expect(host.find('conflict-tag')[0].events.get('focus')).toBeTypeOf('function')
+  expect(host.find('conflict-tag')[0].onfocus).toBeTypeOf('function')
   expect(host.find('conflict-tag')[0].events.get('pointerenter')).toBeTypeOf('function')
   expect(host.find('conflict-line')).toHaveLength(6)
 })
@@ -91,7 +91,7 @@ it('packs overlapping spans into right-edge lanes, reuses lanes, and includes in
     { ...span, id: 'resolved', from: 9, to: 11, resolvedBy: { how: 'released', who: 'money', at: 20 } },
   ])
   expect(host.find('conflict-edge')).toHaveLength(1)
-  expect(host.find('conflict-code-grid')[0].style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
+  expect(host.find('conflict-code-grid')[0].style.gridTemplateColumns).toBe('minmax(0, 1fr) minmax(96px, 30%)')
   expect(host.find('code-line').every(row => row.style.gridColumn === '1')).toBe(true)
   expect(host.find('conflict-edge')[0].style.gridTemplateColumns).toBe('repeat(2, 2px)')
   const bars = host.find('conflict-bar')
@@ -214,7 +214,7 @@ it('tints all base-relative edits and keeps stronger conflict annotations', () =
     expect(rows[index].className).toContain('changed-line')
     expect(rows[index].className).not.toContain('conflict-line')
     expect(rows[index].properties.get('--line-change-owner')).toBe(color)
-    expect(rows[index].find('dot')[0].attributes.get('title')).toBe(`changed by ${author}`)
+    expect(rows[index].attributes.get('aria-label')).toContain('Show details')
     expect(rows[index].find('dot')[0].style.background).toBe(color)
   }
   lines.forEach((line, i) => {
@@ -313,10 +313,10 @@ it('reserves a separate tag column outside the horizontally scrolling line-text 
   const grid = host.find('conflict-code-grid')[0]
   const text = host.find('line-text')[0]
   const gutter = host.find('conflict-edge')[0]
-  expect(grid.children).toEqual([text, gutter])
+  expect(grid.children).toEqual([text, gutter, ...host.find('line-annotation')])
   expect(text.find('code-line')).toHaveLength(1)
   expect(text.find('conflict-tag')).toHaveLength(0)
-  expect(grid.style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
+  expect(grid.style.gridTemplateColumns).toBe('minmax(0, 1fr) minmax(96px, 30%)')
   expect(text.style.gridRow).toBe(gutter.style.gridRow)
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
   expect(css).toContain('.conflict-code-grid > .line-text { grid-column: 1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(max-content, 1fr); min-width: 0; overflow-x: auto; }')
