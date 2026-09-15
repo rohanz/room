@@ -81,6 +81,9 @@ scripts/build-plugin.mjs esbuild bundle of room-mcp into plugins/room/server
 
 ## Running and testing
 
+- Hosted server operations (deploy, secrets, opening/closing repos, incidents): `deploy/DEPLOYING.md`.
+  Deploy with `--depot=false`; only server/web changes need a deploy, plugin changes need a bundle rebuild + push.
+
 - `npm test` runs every package's vitest suite (in-memory transport; no sockets needed).
 - `npm run typecheck`; `npm run build:plugin` after touching `packages/room-mcp` or roomd.
 - `scripts/demo.sh` brings up a server and two clones and prints the join commands. Join

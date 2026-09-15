@@ -1,9 +1,8 @@
-# Fly.io config for the room server. Deploy from the repo root:
-#   fly launch --config deploy/fly.toml --dockerfile Dockerfile --no-deploy
-#   fly volumes create room_data --size 1
-#   fly secrets set ROOM_TOKEN=$(openssl rand -hex 16)
-#   fly deploy --config deploy/fly.toml --dockerfile Dockerfile
-# Then: ROOM_SERVER="wss://<app>.fly.dev/?token=<token>" codex
+# Fly.io config for the room server. Runbook: deploy/DEPLOYING.md. Short version, from the repo root:
+#   npm run build -w @room/web
+#   fly deploy --config deploy/fly.toml --dockerfile Dockerfile --depot=false
+# First time only: fly launch ... --no-deploy; fly volumes create room_data --size 1;
+#   fly secrets set GITHUB_CLIENT_ID=<OAuth App with Device Flow>; fly scale memory 512
 app = "room-rohanz"
 primary_region = "sin"
 
