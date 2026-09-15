@@ -10,13 +10,13 @@ export function claudeWakeNote(session: Session): string {
   return 'Wake-ups on Claude Code need the session started with claude-room (or the channels flag).'
 }
 
-/** Agent instructions: MCP `instructions` for Claude Code, the first-turn preamble for the Codex runner, and the source of the plugin's room-etiquette skill. */
+/** Agent instructions: MCP `instructions` for Claude Code and the first-turn preamble for the Codex runner. The plugin's room-etiquette skill is the long form, loaded on demand. */
 export const AGENT_INSTRUCTIONS = (name?: string) => `You are ${name ? `${name}'s` : 'one person\'s'} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
 
 Rules:
 1. You are joined automatically. Only change local/team-room choice when your human asks; use room_join/room_leave and follow any login instructions.
 2. Call room_scope(area, summary, paths) before editing and read the ledger it returns.
-3. Call room_read, then room_claim before editing. Never edit another person's claim; declare public-symbol plans.
+3. Call room_read, then room_claim before editing. Never edit another person's claim; declare public-symbol plans (they reach consumers before the edit; changed definition lines are also detected from diffs, later).
 4. Answer addressed questions promptly. When unsure, ask the relevant agent with room_send and wait for the answer.
 5. Before finishing, release claims, announce dependent changes, preview-merge teammates' current work, then call room_done.
 6. Tell your human whenever room information, an interrupt, or a conflict changes your plan.

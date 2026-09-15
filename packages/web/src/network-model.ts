@@ -1,18 +1,48 @@
-import type { Claim, GraphSnapshot } from '@room/shared'
+import { bareSymbol, type Claim, type GraphSnapshot, type Plan } from '@room/shared'
 
 export type NetworkRole = 'changed' | 'upstream' | 'downstream' | 'context'
 export interface NetworkNode { path: string; role: NetworkRole; deleted: boolean }
-export type ImpactClaim = Claim & { released?: boolean }
+export type ContractSource = 'declared' | 'observed'
+export type ImpactPlan = Plan & { source: ContractSource }
+export type ImpactClaim = Omit<Claim, 'plans'> & { plans?: ImpactPlan[]; released?: boolean }
+type ImpactClaimInput = Claim | ImpactClaim
+
+const withDeclaredSource = (claim: ImpactClaimInput): ImpactClaim => ({
+  ...claim,
+  plans: claim.plans?.map(plan => ({ ...plan, source: 'source' in plan ? plan.source : 'declared' })),
+})
+
+/** Turn one participant's diff-derived snapshot changes into claim-shaped impact inputs. */
+export function observedImpactClaims(snapshot: GraphSnapshot, owner: string): ImpactClaim[] {
+  return (snapshot.observed ?? []).map((change, index) => ({
+    id: `observed:${owner}:${snapshot.base}:${index}:${change.path}:${change.symbol}`,
+    by: owner, byKind: 'agent', path: change.path, from: 1, to: 1,
+    intent: change.detail, at: snapshot.at,
+    plans: [{ kind: change.kind, symbol: change.symbol, detail: change.detail, source: 'observed' }],
+  }))
+}
+
+/** One signal per path+symbol. Announcements are earlier and win over observed edits. */
+function dedupeImpactClaims(claims: readonly ImpactClaimInput[]): ImpactClaim[] {
+  const singlePlans = claims.flatMap(input => {
+    const claim = withDeclaredSource(input)
+    return (claim.plans ?? []).map(plan => ({ ...claim, plans: [plan] }))
+  }).sort((a, b) => (a.plans![0].source === 'declared' ? 0 : 1) - (b.plans![0].source === 'declared' ? 0 : 1))
+  const seen = new Set<string>()
+  return singlePlans.filter(claim => {
+    const key = `${claim.path}\0${bareSymbol(claim.plans![0].symbol)}`
+    if (seen.has(key)) return false
+    seen.add(key); return true
+  })
+}
 
 /** Retain plan-bearing claims after release for the lifetime of this browser view. */
 export function rememberPlanClaims(history: Map<string, ImpactClaim>, claims: readonly Claim[]): ImpactClaim[] {
   const open = new Set(claims.map(c => c.id))
-  for (const claim of claims) if (claim.plans?.length) history.set(claim.id, { ...claim, released: false })
+  for (const claim of claims) if (claim.plans?.length) history.set(claim.id, { ...withDeclaredSource(claim), released: false })
   for (const [id, claim] of history) if (!open.has(id)) history.set(id, { ...claim, released: true })
-  return [...claims, ...[...history.values()].filter(c => c.released)]
+  return [...claims.map(withDeclaredSource), ...[...history.values()].filter(c => c.released)]
 }
-
-const bareSymbol = (symbol: string) => symbol.trim().split(/[.:]+/).filter(Boolean).at(-1)?.toLowerCase() ?? ''
 
 /** Edges point from a provider to its consumer. Traversal handles cycles. */
 export function deriveNetwork(snapshot: GraphSnapshot, changed: readonly string[], deleted: readonly string[] = [], focused = true) {
@@ -39,12 +69,12 @@ export function deriveNetwork(snapshot: GraphSnapshot, changed: readonly string[
   return { nodes: visible, edges: snapshot.edges, upstream, downstream, total: nodes.length }
 }
 
-/** Contract declarations remain separate from actual overlay edits. A graph match is
- * potential impact, never proof of a breaking change or completed implementation. */
-export function deriveContractImpact(snapshot: GraphSnapshot, claims: readonly ImpactClaim[]) {
-  type Declaration = { claimId: string; path: string; owner: string; kind: string; symbol: string; detail: string; released: boolean }
-  const declarations: Declaration[] = claims.flatMap(c => (c.plans ?? []).map(p => ({
-    claimId: c.id, path: c.path, owner: c.by, kind: p.kind, symbol: p.symbol, detail: p.detail ?? c.intent, released: !!c.released,
+/** Announced and observed contract signals remain distinct. A graph match is potential
+ * impact, never proof of a breaking change or completed implementation. */
+export function deriveContractImpact(snapshot: GraphSnapshot, claims: readonly ImpactClaimInput[]) {
+  type Declaration = { claimId: string; path: string; owner: string; kind: string; symbol: string; detail: string; released: boolean; source: ContractSource }
+  const declarations: Declaration[] = dedupeImpactClaims(claims).flatMap(c => (c.plans ?? []).map(p => ({
+    claimId: c.id, path: c.path, owner: c.by, kind: p.kind, symbol: p.symbol, detail: p.detail ?? c.intent, released: !!c.released, source: p.source,
   })))
   const contracts = new Map<string, Declaration[]>()
   const direct = new Map<string, Declaration[]>(), indirect = new Map<string, Declaration[]>()
@@ -76,11 +106,12 @@ export function deriveContractImpact(snapshot: GraphSnapshot, claims: readonly I
   return { declarations, contracts, direct, indirect, affectedEdges }
 }
 
-/** A participant's work is the anchor. Foreign plans only contribute paths that
- * reach that work; outgoing impact is inferred only from this participant's plans. */
-export function deriveWorkImpact(snapshot: GraphSnapshot, claims: readonly ImpactClaim[], person: string, changed: readonly string[]) {
-  const mine = claims.filter(c => c.by === person)
-  const work = new Set([...changed, ...mine.map(c => c.path)])
+/** A participant's work is the anchor. Foreign signals only contribute paths that
+ * reach that work; outgoing impact comes from this participant's contract signals. */
+export function deriveWorkImpact(snapshot: GraphSnapshot, claims: readonly ImpactClaimInput[], person: string, changed: readonly string[], foreignObserved: readonly ImpactClaim[] = []) {
+  const allImpactClaims = dedupeImpactClaims([...claims, ...observedImpactClaims(snapshot, person), ...foreignObserved])
+  const mine = allImpactClaims.filter(c => c.by === person)
+  const work = new Set([...changed, ...claims.filter(c => c.by === person).map(c => c.path)])
   const ancestors = new Set(work), queue = [...work]
   const incoming = new Map<string, GraphSnapshot['edges']>()
   for (const edge of snapshot.edges) incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge])
@@ -97,7 +128,7 @@ export function deriveWorkImpact(snapshot: GraphSnapshot, claims: readonly Impac
     edges.add(JSON.stringify([edge.source, edge.target]))
   }
   let upstreamPlans = 0
-  for (const claim of claims.filter(c => c.by !== person)) for (const plan of claim.plans ?? []) {
+  for (const claim of allImpactClaims.filter(c => c.by !== person)) for (const plan of claim.plans ?? []) {
     const candidate = deriveContractImpact(snapshot, [{ ...claim, plans: [plan] }])
     if (!work.has(claim.path) && ![...work].some(p => candidate.direct.has(p) || candidate.indirect.has(p))) continue
     upstreamPlans++
@@ -115,5 +146,5 @@ export function deriveWorkImpact(snapshot: GraphSnapshot, claims: readonly Impac
       }
     }
   }
-  return { work, upstream, downstream, edges, impact, upstreamPlans, ownPlans: mine.reduce((n, c) => n + (c.plans?.length ?? 0), 0) }
+  return { work, upstream, downstream, edges, impact, upstreamPlans, ownPlans: impact.declarations.filter(d => d.owner === person).length }
 }

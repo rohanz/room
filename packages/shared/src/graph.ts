@@ -8,6 +8,8 @@
  */
 
 export interface FileSymbols { defs: string[]; refs: string[] }
+export type ObservedContractKind = 'signature' | 'delete' | 'add'
+export interface ObservedContractChange { path: string; symbol: string; kind: ObservedContractKind; detail: string }
 /** Read-only browser projection, published by each participant's local indexer. */
 export interface GraphSnapshot {
   version: 1
@@ -17,6 +19,9 @@ export interface GraphSnapshot {
   paths: string[]
   /** Direction: definition/provider -> consumer. Names are inferred, not resolved imports. */
   edges: { source: string; target: string; symbols: string[] }[]
+  /** Contract-level changes inferred from this participant's overlay. */
+  observed?: ObservedContractChange[]
+  observedTruncated?: boolean
   truncated: boolean
 }
 export type Extractor = (path: string, text: string) => FileSymbols | undefined
@@ -45,6 +50,86 @@ export const regexExtractor: Extractor = (path, text) => {
     refs.add(w)
   }
   return { defs: Array.from(defs), refs: Array.from(refs) }
+}
+
+export const bareSymbol = (symbol: string): string => symbol.trim().split(/[.:]+/).filter(Boolean).at(-1)?.toLowerCase() ?? ''
+
+interface DefinitionLine { display: string; canonical: string }
+
+const normalized = (line: string) => line.trim().replace(/\s+/g, ' ')
+const comparable = (line: string) => line.replace(/\s+/g, '')
+const lineContaining = (text: string, index: number) => {
+  const from = text.lastIndexOf('\n', index - 1) + 1
+  const to = text.indexOf('\n', index)
+  return text.slice(from, to < 0 ? text.length : to)
+}
+
+function pythonHeader(line: string): string {
+  let depth = 0, quote = '', escaped = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (quote) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === quote) quote = ''
+      continue
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if ('([{'.includes(ch)) depth++
+    else if (')]}'.includes(ch)) depth = Math.max(0, depth - 1)
+    else if (ch === ':' && depth === 0) return line.slice(0, i + 1)
+  }
+  return line
+}
+
+function definitionLines(path: string, text: string): Map<string, DefinitionLine> | undefined {
+  const ext = path.slice(path.lastIndexOf('.') + 1)
+  const out = new Map<string, DefinitionLine>()
+  const add = (name: string, raw: string, signature = raw) => {
+    const display = normalized(raw)
+    if (!out.has(name)) out.set(name, { display, canonical: comparable(normalized(signature)) })
+  }
+  if (ext === 'py') {
+    for (const match of text.matchAll(PY_DEF)) {
+      const nameIndex = match.index! + match[0].lastIndexOf(match[1])
+      add(match[1], pythonHeader(lineContaining(text, nameIndex)))
+    }
+    for (const match of text.matchAll(PY_ASSIGN)) {
+      const line = lineContaining(text, match.index!)
+      add(match[1], line.slice(0, line.indexOf('=') + 1))
+    }
+  } else if (['js', 'jsx', 'ts', 'tsx', 'mjs', 'mts', 'cjs'].includes(ext)) {
+    for (const match of text.matchAll(JS_DEF)) {
+      const name = match[1] ?? match[2]
+      const line = lineContaining(text, match.index!)
+      let signature = line
+      const declaration = match[0]
+      if (/\b(?:const|let|var)\b/.test(declaration)) {
+        const arrow = line.indexOf('=>')
+        const equals = line.indexOf('=')
+        signature = arrow >= 0 ? line.slice(0, arrow + 2) : line.slice(0, equals + 1)
+      } else if (/\b(?:function\*?|class|interface|enum)\b/.test(declaration)) {
+        const brace = line.indexOf('{')
+        if (brace >= 0) signature = line.slice(0, brace)
+      }
+      add(name, line, signature)
+    }
+  } else return undefined
+  return out
+}
+
+/** Definition-line changes inferred from an overlay; ordinary body edits are intentionally ignored. */
+export function observedContractChanges(baseText: string, overlayText: string, path: string): Omit<ObservedContractChange, 'path'>[] {
+  const before = definitionLines(path, baseText), after = definitionLines(path, overlayText)
+  if (!before || !after) return []
+  const changes: Omit<ObservedContractChange, 'path'>[] = []
+  for (const [symbol, oldLine] of before) {
+    const newLine = after.get(symbol)
+    if (!newLine) changes.push({ symbol, kind: 'delete', detail: `was \`${oldLine.display}\`` })
+    else if (oldLine.canonical !== newLine.canonical) changes.push({ symbol, kind: 'signature', detail: `was \`${oldLine.display}\` now \`${newLine.display}\`` })
+  }
+  for (const [symbol, newLine] of after) if (!before.has(symbol)) changes.push({ symbol, kind: 'add', detail: `now \`${newLine.display}\`` })
+  return changes.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.kind.localeCompare(b.kind))
 }
 
 export interface Impact {

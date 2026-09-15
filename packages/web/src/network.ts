@@ -2,7 +2,7 @@ import { bindTooltip, showTooltip, hideTooltip } from './tooltip.ts'
 import type { GraphSnapshot } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
 import { h, type FocusState } from './panels.ts'
-import { deriveNetwork, deriveContractImpact, deriveWorkImpact, rememberPlanClaims, type ImpactClaim, type NetworkNode } from './network-model.ts'
+import { deriveNetwork, deriveContractImpact, deriveWorkImpact, observedImpactClaims, rememberPlanClaims, type ImpactClaim, type NetworkNode } from './network-model.ts'
 
 const NS = 'http://www.w3.org/2000/svg'
 function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, text?: string) {
@@ -12,7 +12,7 @@ function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string,
   return el
 }
 const roles = ['upstream', 'work', 'downstream', 'context'] as const
-const labels = { upstream: 'UPSTREAM · WHAT I RELY ON', work: 'MY EDITS & PLANS', downstream: 'DOWNSTREAM · MY PLAN IMPACT', context: 'OTHER FILES' }
+const labels = { upstream: 'UPSTREAM · WHAT I RELY ON', work: 'MY EDITS & PLANS', downstream: 'DOWNSTREAM · MY CONTRACT IMPACT', context: 'OTHER FILES' }
 let sessionZoom = 150
 
 export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
@@ -35,14 +35,14 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   const tooltip = h('div', { class: 'network-tooltip' })
   const help = h('span', { class: 'network-help' }, h('button', {
     ariaLabel: 'About contract risks',
-    title: 'No declared contract plans of yours; ordinary edits do not imply downstream breakage. Impact is inferred from declared plans and symbol references; the merged-tree test run is the proof.',
+    title: 'Announced plans are the early signal. Observed contract changes are read from the diff when a definition line changes. Impact is inferred from symbol references; consumer tests are the proof.',
   }, '?'))
-  const emptyDetails = () => details.replaceChildren(h('div', { class: 'network-details-empty muted' }, 'Select a file to inspect its dependencies, current owners, and declared plans.'))
+  const emptyDetails = () => details.replaceChildren(h('div', { class: 'network-details-empty muted' }, 'Select a file to inspect its dependencies, current owners, and contract changes.'))
   const root = h('section', { class: 'network-panel' },
     h('div', { class: 'network-heading' }, h('div', {}, h('h2', {}, 'My work & contract risks', help), h('p', { class: 'muted' }, 'Upstream risks → my edits and plans → consumers of my planned changes')), h('label', {}, 'Viewing as ', person)),
     h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' Relevant to my work'), h('div', { class: 'view-switcher network-zoom', role: 'group', ariaLabel: 'Network zoom' }, minus, fit, plus), percentage, expand),
     stats,
-    h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Edits'), h('span', { class: 'legend-contract' }, 'Declared plans'), h('span', { class: 'legend-impact' }, 'Consumers')),
+    h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Edits'), h('span', { class: 'legend-contract' }, 'Contract changes (announced / observed)'), h('span', { class: 'legend-impact' }, 'Consumers')),
     status, canvas, details)
   let selectedPerson = new URLSearchParams(location.search).get('participant') ?? new URLSearchParams(location.search).get('name') ?? ''
   let selectedPath = ''
@@ -85,16 +85,16 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     clear.onclick = () => { selectedPath = ''; render() }
     details.replaceChildren(h('div', { class: 'network-detail-head' }, h('strong', { class: 'mono' }, node.path), clear),
       h('p', { class: 'muted' }, `${node.deleted ? 'Deleted locally. ' : ''}${changers.length ? `Changed by ${changers.join(', ')}.` : 'No current overlay changes.'}`),
-      h('p', {}, risk(node.path) === 'work' ? 'Your current work: edited locally or held in one of your open claims.' : risk(node.path) === 'upstream' ? 'Your work depends on this file. Contract exposures below are scoped to paths reaching your work.' : risk(node.path) === 'downstream' ? 'Potential consumer impact from your declared contract changes.' : 'Outside your current work and its contract-impact paths.'),
+      h('p', {}, risk(node.path) === 'work' ? 'Your current work: edited locally or held in one of your open claims.' : risk(node.path) === 'upstream' ? 'Your work depends on this file. Contract exposures below are scoped to paths reaching your work.' : risk(node.path) === 'downstream' ? 'Potential consumer impact from your announced or observed contract changes.' : 'Outside your current work and its contract-impact paths.'),
       h('div', { class: 'network-contract-details' },
-        ...(impact.contracts.get(node.path) ?? []).map(p => h('p', { class: p.released ? 'muted' : '' }, `${p.released ? 'Released' : 'Declared'} ${p.kind} · ${p.symbol} · ${p.owner}: ${p.detail}`)),
+        ...(impact.contracts.get(node.path) ?? []).map(p => h('p', { class: p.released ? 'muted' : '' }, `${p.source === 'declared' ? `Announced${p.released ? ' (released)' : ''}` : 'Observed in edits'} · ${p.kind} · ${p.symbol} · ${p.owner}: ${p.detail}`)),
         ...(impact.direct.get(node.path) ?? []).map(p => h('p', {}, `Direct consumer of ${p.owner}'s ${p.symbol} in ${p.path} · ${p.kind}: ${p.detail}`)),
         ...(impact.indirect.get(node.path) ?? []).map(p => h('p', {}, `Further downstream of ${p.owner}'s ${p.symbol} in ${p.path} · potential transitive impact`)),
         ownedPlans.length ? h('div', {}, h('h3', {}, 'Potentially affected consumers in this view'),
           ...directConsumers.map(([path]) => h('div', { class: 'network-dependency mono' }, `Direct · ${path}`)),
           h('p', { class: 'muted' }, `${indirectConsumers.length} additional downstream exposures; behavior has not been tested.`)) : null,
         impact.contracts.has(node.path) && !directConsumers.length ? h('p', { class: 'muted' }, 'No matching consumer in this snapshot. This does not establish compatibility; the symbol may already have changed or be unresolved.') : null,
-        h('p', { class: 'muted' }, `Plan status: ${ownedPlans.length && ownedPlans.every(p => p.released) ? 'released; retained from this page session.' : 'declared.'} Modified code does not establish that the plan is implemented. Run consumer tests to confirm compatibility.`)),
+        h('p', { class: 'muted' }, 'Announced plans arrive before the edit; observed changes appear once a definition line changes. Run consumer tests to confirm compatibility.')),
       h('div', { class: 'network-detail-columns' }, linkList('All indexed dependencies (context)', upstream, true), linkList('All indexed consumers (context)', downstream, false)),
       ...claims.map(c => h('p', {}, `${c.by}: ${c.intent}${c.plans?.length ? ` · ${c.plans.map(p => `${p.kind} ${p.symbol}: ${p.detail ?? ''}`).join('; ')}` : ''}`)))
     drawing?.querySelectorAll('[data-path]').forEach(el => el.classList.toggle('selected', el.getAttribute('data-path') === selectedPath))
@@ -104,7 +104,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
 
   const render = () => {
     hideTooltip()
-    const names = [...new Set([...conn.room.graphs.keys(), ...conn.room.overlays.keys(), ...conn.room.deleted.keys(), ...conn.room.scopes.keys(), ...presences(conn.provider).map(p => p.user.name)])].sort()
+    const names = [...new Set([...conn.room.graphs.keys(), ...conn.room.overlays.keys(), ...conn.room.deleted.keys(), ...conn.room.scopes.keys(), ...presences(conn.provider, conn.room).map(p => p.user.name)])].sort()
     if (!names.includes(selectedPerson)) selectedPerson = names[0] ?? ''
     person.replaceChildren(...names.map(name => h('option', { value: name, selected: name === selectedPerson }, name)))
     const claims = rememberPlanClaims(planHistory, conn.room.openClaims())
@@ -116,11 +116,12 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     }
     const changed = conn.room.changedPaths(selectedPerson)
     const model = deriveNetwork(snapshot, changed, [...(conn.room.deleted.get(selectedPerson)?.keys() ?? [])], false)
-    workView = deriveWorkImpact(snapshot, claims, selectedPerson, changed)
+    const foreignObserved = [...conn.room.graphs.entries()].flatMap(([owner, graph]) => owner === selectedPerson ? [] : observedImpactClaims(graph, owner))
+    workView = deriveWorkImpact(snapshot, claims, selectedPerson, changed, foreignObserved)
     impact = workView.impact
     for (const path of new Set([...workView.work, ...impact.contracts.keys()])) if (!model.nodes.some(n => n.path === path)) model.nodes.push({ path, role: 'context', deleted: false })
-    stats.replaceChildren(...[[workView.upstreamPlans, 'upstream contract risks'], [workView.work.size, 'my work files'], [workView.ownPlans, 'my declared plans'], [workView.downstream.size, 'potential consumers']].map(([count, label]) => h('div', {}, h('strong', {}, String(count)), h('span', {}, String(label)))))
-    const online = presences(conn.provider).some(p => p.user.name === selectedPerson)
+    stats.replaceChildren(...[[workView.upstreamPlans, 'upstream contract risks'], [workView.work.size, 'my work files'], [workView.ownPlans, 'my contract changes'], [workView.downstream.size, 'potential consumers']].map(([count, label]) => h('div', {}, h('strong', {}, String(count)), h('span', {}, String(label)))))
+    const online = presences(conn.provider, conn.room).some(p => p.user.name === selectedPerson)
     const notices = [snapshot.status === 'ready' ? '' : snapshot.status === 'error' ? 'Index failed — showing last available data.' : 'Indexing — dependencies may be incomplete.',
       !online ? 'Participant offline — retained snapshot.' : '', snapshot.base !== conn.room.meta.base ? 'Snapshot is on an older room base.' : '', snapshot.truncated ? 'Indexer limits reached; graph is partial.' : '',
       !workView.work.size ? 'No edits or open claims for this participant. Turn off Relevant to my work to explore the repository.' : '',

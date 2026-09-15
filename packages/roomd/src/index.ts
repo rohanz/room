@@ -228,6 +228,8 @@ class Daemon implements Roomd {
     this.tracked = tracked
 
     await this.waitForSync()
+    this.roomDoc.assignColor(this.name, this)
+    this.setStatus(this.currentStatus())
     this.roomDoc.setBaseOf(this.name, this.base, this)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== this.base) {
@@ -369,7 +371,7 @@ class Daemon implements Roomd {
     const current = (this.provider.awareness.getLocalState() ?? {}) as Partial<SharePresence>
     const state: SharePresence = {
       ...current,
-      user: { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}), color: colorFor(this.name) },
+      user: { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}), color: colorFor(this.name, this.roomDoc) },
       status,
       share: this.share,
       lastActive: this.lastActive,

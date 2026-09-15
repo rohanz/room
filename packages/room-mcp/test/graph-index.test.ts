@@ -7,6 +7,13 @@ import { RoomDoc } from '@room/shared'
 import { GraphIndex } from '../src/graph-index.js'
 
 let dir: string, base: string
+async function eventually(check: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error('condition not met before timeout')
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'room-graph-'))
   const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
@@ -27,10 +34,10 @@ describe('GraphIndex', () => {
     expect(gi.graph.size).toBe(2)
     expect(gi.graph.usersOf('validate_token')).toEqual(['session.py'])
     room.setOverlay('Kieran', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return verify_token(t)\n')
-    await new Promise(r => setTimeout(r, 300))
+    await gi.whenIdle()
     expect(gi.graph.usersOf('validate_token')).toEqual(['session.py']) // import still references it (ast ImportFrom)
     room.setOverlay('Kieran', 'session.py', 'def login(t):\n    return verify_token(t)\n')
-    await new Promise(r => setTimeout(r, 300))
+    await gi.whenIdle()
     expect(gi.graph.usersOf('validate_token')).toEqual([])
     expect(gi.graph.usersOf('verify_token')).toEqual(['session.py'])
     gi.stop()
@@ -46,7 +53,7 @@ describe('GraphIndex', () => {
     room.clearOverlay('Rohan', 'session.py')
     await gi.whenIdle()
     expect(gi.graph.usersOf('validate_token')).toEqual(['session.py'])
-    await new Promise(r => setTimeout(r, 150))
+    await eventually(() => room.graphs.get('Rohan')?.edges.length === 1)
     expect(room.graphs.get('Rohan')?.edges).toEqual([
       { source: 'utils.py', target: 'session.py', symbols: ['validate_token'] },
     ])
@@ -82,6 +89,34 @@ describe('GraphIndex', () => {
     expect(room.graphs.get('Rohan')?.paths).not.toContain('utils.py')
     gi.stop(); room.doc.destroy()
   })
+
+  it('publishes observed contract changes from only its own overlay', async () => {
+    const room = new RoomDoc(); room.setMeta({ base })
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
+    gi.start(); await gi.whenIdle()
+    room.setOverlay('Kieran', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
+    await gi.whenIdle()
+    expect(room.graphs.get('Rohan')?.observed).toEqual([])
+    room.setOverlay('Rohan', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
+    await gi.whenIdle()
+    await eventually(() => room.graphs.get('Rohan')?.observed?.length === 1)
+    expect(room.graphs.get('Rohan')?.observed).toEqual([{
+      path: 'utils.py', symbol: 'validate_token', kind: 'signature',
+      detail: 'was `def validate_token(t):` now `def validate_token(token, strict=False):`',
+    }])
+    expect(room.graphs.get('Rohan')?.observedTruncated).toBe(false)
+    gi.stop(); room.doc.destroy()
+  })
+
+  it('caps observed contract changes in a snapshot', async () => {
+    const room = new RoomDoc(); room.setMeta({ base })
+    room.setOverlay('Rohan', 'generated.py', Array.from({ length: 205 }, (_, i) => `def added_${i}():\n    pass\n`).join('\n'))
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
+    gi.start(); await gi.whenIdle()
+    await eventually(() => room.graphs.get('Rohan')?.observed?.length === 200)
+    expect(room.graphs.get('Rohan')?.observedTruncated).toBe(true)
+    gi.stop(); room.doc.destroy()
+  })
 })
 
 describe('GraphIndex snapshot discipline', () => {
@@ -90,12 +125,12 @@ describe('GraphIndex snapshot discipline', () => {
     room.setMeta({ base })
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 400 })
     gi.start(); await gi.ready
-    await new Promise(r => setTimeout(r, 300))
+    await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
     expect(room.graphs.get('Rohan')!.edges.length).toBe(1)
     let writes = 0
     room.graphs.observe(() => { writes++ })
     room.setOverlay('Rohan', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return validate_token(t)  # same edge\n')
-    await new Promise(r => setTimeout(r, 300))
+    await gi.whenIdle()
     expect(writes).toBe(0) // identical snapshot: nothing written
     const firstAt = room.graphs.get('Rohan')!.at
     room.setOverlay('Rohan', 'session.py', 'def login(t):\n    return t\n')

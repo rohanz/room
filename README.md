@@ -219,14 +219,22 @@ Choose a participant to explore three directions:
 
 | View | What it shows |
 |---|---|
-| **Upstream** | Dependencies of their work, including relevant teammates’ contract plans. |
+| **Upstream** | Dependencies of their work, including teammates’ contract changes that reach it. |
 | **My edits & plans** | Their modified files and open claims, including plans declared before editing. |
-| **Downstream** | Potential consumers of their own declared contract changes. Ordinary edits alone do not imply breakage. |
+| **Downstream** | Potential consumers of their contract changes: importers of a symbol whose signature they announced or changed. |
 
-**Blue** means actual file edits; **purple** means a declared contract plan. A diagonal
-blue/purple fill means both. **Red** marks potential contract impact; affected nodes with
-edits or plans retain their fill and gain a red outline. Labels remain white on changed
-nodes. Declaring a plan does not prove it has been implemented.
+A contract change has two sources. An **announced** plan is declared on a claim before the
+edit, and reaches consumers immediately. An **observed** change is read from the diff: when
+a definition line (a `def`, `class`, `function` or exported `const`) differs from the base
+commit, the room treats it like a plan on that symbol and tells anyone whose changed or
+claimed files use it. Body-only edits produce nothing. Where both exist for a symbol, the
+announcement wins. **Blue** means actual file edits; **purple** means a contract change. A
+diagonal blue/purple fill means both. **Red** marks potential contract impact; affected
+nodes with edits or plans retain their fill and gain a red outline. Neither source proves
+the change is finished; the merged-tree test run is the proof.
+
+Participant colours are assigned in join order from an eight-colour palette and kept for
+the life of the room, so people who are in a room together never share a colour.
 
 Hover or keyboard focus gives a preview; click or Enter opens dependencies, owners,
 plans, and consumer details. Search, participant selection, compact nodes, zoom, Fit,

@@ -40,9 +40,9 @@ export const h = <K extends keyof HTMLElementTagNameMap>(
   return element
 }
 
-const dot = (name: string, title = name) => {
+const dot = (name: string, title = name, room?: RoomDoc) => {
   const element = h('span', { class: 'dot', title })
-  element.style.background = colorFor(name)
+  element.style.background = colorFor(name, room)
   return element
 }
 
@@ -136,7 +136,7 @@ export function participantInput(conn: Conn): ParticipantInput {
   const changes = new Map<string, string[]>()
   for (const name of names) changes.set(name, conn.room.changedPaths(name))
   return {
-    presences: presences(conn.provider),
+    presences: presences(conn.provider, conn.room),
     scopes: Array.from(conn.room.scopes.entries()),
     overlayPeople: Array.from(conn.room.overlays.keys()),
     changesByPerson: changes,
@@ -163,7 +163,7 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
         class: `participant${participant.online ? '' : ' offline'}${focus.person === participant.name ? ' focused' : ''}`,
         title: focus.person === participant.name ? `Clear ${participant.name} focus` : `Focus on ${participant.name}`,
       },
-      h('div', { class: 'participant-head' }, dot(participant.name), h('strong', {}, participant.name), h('span', { class: 'sp' }),
+      h('div', { class: 'participant-head' }, dot(participant.name, participant.name, conn.room), h('strong', {}, participant.name), h('span', { class: 'sp' }),
         h('span', { class: `state-pill ${state.split(' ')[0]}`, title: state }, short)),
       participant.identity ? h('div', { class: 'micro muted' }, participant.identity) : null,
       participant.scope
@@ -227,12 +227,12 @@ export function lineHoverText(line: MergedLine, names: readonly string[], claims
   return parts.join('\n')
 }
 
-function lineElement(line: MergedLine, names: readonly string[], prefix = '', claimsAt?: ClaimsAt, mergedNumber?: number): HTMLElement {
+function lineElement(line: MergedLine, names: readonly string[], prefix = '', claimsAt?: ClaimsAt, mergedNumber?: number, room?: RoomDoc): HTMLElement {
   const changed = authors(line, names)
   const owner = line.conflictOwner ?? changed[0] ?? ''
   const changedOwner = changed[0] ?? ''
   const marker = owner ? h('span', { class: 'dot' }) : null
-  if (marker) marker.style.background = colorFor(owner)
+  if (marker) marker.style.background = colorFor(owner, room)
   const row = h('div', { class: `code-line side-${line.side}${changed.length ? ' changed-line' : ''}${line.conflict ? ' conflict-line' : ''}` },
     h('span', { class: 'line-gutter' },
       h('span', { class: 'line-number' }, mergedNumber?.toString() ?? line.aLine?.toString() ?? ''),
@@ -243,9 +243,9 @@ function lineElement(line: MergedLine, names: readonly string[], prefix = '', cl
     h('code', {}, line.text || ' '))
   if (changed.length) {
     row.dataset.changedBy = Array.isArray(line.changedBy) ? changed.join(', ') : line.changedBy ?? changed.join(', ')
-    row.style.setProperty('--line-change-owner', changedOwner ? colorFor(changedOwner) : 'var(--muted)')
+    row.style.setProperty('--line-change-owner', changedOwner ? colorFor(changedOwner, room) : 'var(--muted)')
   }
-  if (owner) { row.style.setProperty('--line-owner', colorFor(owner)); row.dataset.owner = owner }
+  if (owner) { row.style.setProperty('--line-owner', colorFor(owner, room)); row.dataset.owner = owner }
   return row
 }
 
@@ -265,8 +265,8 @@ export function conflictCard(span: ConflictSpan, expanded?: Set<string>): HTMLEl
     h('div', {}, resolutionLabel(span)), details)
 }
 
-export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true): void {
-  const rows = lines.map((line, i) => lineElement(line, names, line.prefix, claimsAt, merged ? i + 1 : undefined))
+export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true, room?: RoomDoc): void {
+  const rows = lines.map((line, i) => lineElement(line, names, line.prefix, claimsAt, merged ? i + 1 : undefined, room))
   const spans: { start: number; end: number; people: readonly string[]; detail: string; resolution?: string; resolved: boolean; claimOnly?: boolean; textConflict?: boolean }[] = []
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].conflict) continue
@@ -407,13 +407,13 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   const excluded = new Map<string, Set<string>>()
   const included = (path: string, people: readonly string[]) => {
     if (!excluded.has(path)) {
-      const defaults = new Set(presentPeople(people, presences(conn.provider)))
+      const defaults = new Set(presentPeople(people, presences(conn.provider, conn.room)))
       excluded.set(path, new Set(defaults.size ? people.filter(person => !defaults.has(person)) : []))
     }
     return people.filter(p => !excluded.get(path)!.has(p))
   }
   const host = h('div', { class: 'editor-wrap' })
-  const editor = new Editor(host)
+  const editor = new Editor(host, conn.room)
   const tabs = ['Merged', 'Diff', 'File'] as const
   type Tab = typeof tabs[number]
   let tab: Tab = 'Merged'
@@ -467,14 +467,14 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const sha = conn.room.baseOf(person)
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
       const lines = classifyNWay(base ?? '', [{ name: person, text }]).map(line => ({ ...line, aLine: line.lineNumbers[person] }))
-      renderCodeLines(host, lines, [person], (owner, n) => conn.room.claimsFor(selected.path).filter(c => c.by === owner && n >= c.from && n <= c.to), conflicts, false)
+      renderCodeLines(host, lines, [person], (owner, n) => conn.room.claimsFor(selected.path).filter(c => c.by === owner && n >= c.from && n <= c.to), conflicts, false, conn.room)
       return
     }
     editor.empty()
     if (tab === 'Merged') {
       const active = included(selected.path, people)
       chips.replaceChildren(...people.map(person => {
-        const button = h('button', { class: 'merge-chip', ariaPressed: String(active.includes(person)) }, dot(person), person)
+        const button = h('button', { class: 'merge-chip', ariaPressed: String(active.includes(person)) }, dot(person, person, conn.room), person)
         button.onclick = () => {
           const off = excluded.get(selected.path) ?? new Set<string>()
           if (off.has(person)) off.delete(person); else off.add(person)
@@ -482,26 +482,26 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
         }
         return button
       }))
-      const online = new Set(presentPeople(people, presences(conn.provider)))
+      const online = new Set(presentPeople(people, presences(conn.provider, conn.room)))
       const hiddenOffline = people.filter(person => !online.has(person) && !active.includes(person)).length
       chipHint.textContent = hiddenOffline
         ? `${hiddenOffline} offline participants hidden — toggle their chips to include them`
         : !online.size && active.length === people.length ? `Showing ${active.length} participants' changes` : ''
       chipHint.hidden = !chipHint.textContent
-      legend.replaceChildren(...active.map(person => h('span', {}, dot(person), ` lines by ${person}`)))
+      legend.replaceChildren(...active.map(person => h('span', {}, dot(person, person, conn.room), ` lines by ${person}`)))
       const sha = conn.room.baseOf(people[0])
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
       if (base === undefined) legend.append(h('span', { class: 'muted' }, 'Base unavailable; showing changes against an empty file'))
       const claimsAt: ClaimsAt = (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to)
-      renderCodeLines(host, classifyNWay(base ?? '', active.map(name => ({ name, text: conn.room.text(selected.path, name) ?? '' }))), active, claimsAt, conflicts.filter(s => s.people.every(p => active.includes(p))))
+      renderCodeLines(host, classifyNWay(base ?? '', active.map(name => ({ name, text: conn.room.text(selected.path, name) ?? '' }))), active, claimsAt, conflicts.filter(s => s.people.every(p => active.includes(p))), true, conn.room)
       return
     }
 
     const person = selectedPerson!
     const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person) ?? person
     compareLabel.textContent = `vs ${other}`
-    legend.replaceChildren(h('span', {}, dot(other), ` removed from ${other}`), h('span', {}, dot(person), ` added by ${person}`))
-    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to), conflicts, false)
+    legend.replaceChildren(h('span', {}, dot(other, other, conn.room), ` removed from ${other}`), h('span', {}, dot(person, person, conn.room), ` added by ${person}`))
+    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to), conflicts, false, conn.room)
   }
 
   render = () => {
@@ -521,8 +521,8 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
           h('span', { class: 'file-path mono' }, row.path),
           row.claimCount ? h('span', { class: 'claim-count', title: `${row.claimCount} active claim${row.claimCount === 1 ? '' : 's'}` }, String(row.claimCount)) : null,
           h('span', { class: 'file-dots' }, ...row.people.map(person => {
-            const online = presentPeople([person], presences(conn.provider)).length > 0
-            const marker = dot(person, online ? `${person} changed this file` : 'offline')
+            const online = presentPeople([person], presences(conn.provider, conn.room)).length > 0
+            const marker = dot(person, online ? `${person} changed this file` : 'offline', conn.room)
             if (!online) { marker.style.opacity = '0.5'; marker.title = 'offline' }
             return marker
           })))
@@ -560,6 +560,7 @@ export function messageBody(message: Msg): (Node | string | null)[] {
     case 'release': return [h('strong', {}, 'released '), h('span', { class: 'mono' }, message.path), message.summary ? ` · ${message.summary}` : '', message.unfulfilled?.length ? h('span', { class: 'unfulfilled' }, ` not done: ${formatPlans(message.unfulfilled)}`) : null]
     case 'changed': return [h('strong', {}, 'changed '), h('span', { class: 'mono' }, message.paths.join(', ')), ` · ${message.summary}`, message.symbols?.length ? h('span', { class: 'symbol-list' }, message.symbols.join(', ')) : null]
     case 'conflict': return [h('strong', {}, 'conflict '), h('span', { class: 'mono' }, message.path), ` · ${message.text}`]
+    case 'contract': return [h('strong', {}, 'contract change '), h('span', { class: 'mono' }, message.path), ` · ${message.text}`]
     case 'note': return [message.text]
     case 'question': return [h('strong', {}, 'asked '), message.text]
     case 'answer': return [h('strong', {}, 'answered '), message.text]
@@ -583,10 +584,10 @@ function timelineItem(item: TimelineItem): HTMLElement {
 }
 
 /** Ids rendered before; anything not in here gets the enter animation on this render. */
-function episodeCard(episode: Episode, seen?: Set<string>): HTMLElement {
+function episodeCard(episode: Episode, seen?: Set<string>, room?: RoomDoc): HTMLElement {
   const fresh = (id: string) => { if (!seen) return false; if (seen.has(id)) return false; seen.add(id); return true }
   const card = h('article', { class: `episode${fresh(`ep:${episode.id}`) ? ' enter' : ''}` },
-    h('div', { class: 'episode-head' }, dot(episode.person), h('strong', {}, episode.person), h('span', { class: 'area-chip' }, episode.area),
+    h('div', { class: 'episode-head' }, dot(episode.person, episode.person, room), h('strong', {}, episode.person), h('span', { class: 'area-chip' }, episode.area),
       h('span', { class: `episode-status ${episode.status === 'done' ? 'done' : ''}` }, episode.status)),
     h('div', { class: 'episode-summary' }, episode.summary, ...copyChips(episode.alsoSentTo)),
     h('div', { class: 'episode-items' }, ...episode.items.map(item => {
@@ -630,7 +631,7 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
     )
     const visible = episodes.filter(episode => focus.person ? episode.person === focus.person : !areaFilter || episode.area === areaFilter)
     const cards = conflicts.filter(s => (!focus.person || s.people.includes(focus.person)) && (!areaFilter || s.people.some(p => conn.room.scopes.get(p)?.area === areaFilter)))
-    list.replaceChildren(...[...visible.map(e => ({ at: e.at, el: episodeCard(e, seen) })), ...cards.map(s => ({ at: s.at, el: conflictCard(s, expandedConflicts) }))].sort((a, b) => a.at - b.at).map(x => x.el))
+    list.replaceChildren(...[...visible.map(e => ({ at: e.at, el: episodeCard(e, seen, conn.room) })), ...cards.map(s => ({ at: s.at, el: conflictCard(s, expandedConflicts) }))].sort((a, b) => a.at - b.at).map(x => x.el))
     if (!visible.length && !cards.length) list.append(h('div', { class: 'empty-note muted' }, 'No matching episodes'))
     if (shouldFollow) requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight })
   }
@@ -694,7 +695,7 @@ export function activityGraphPanel(conn: Conn, focus: FocusState): HTMLElement {
       const group = document.createElementNS(svg.namespaceURI, 'g')
       const circle = document.createElementNS(svg.namespaceURI, 'circle')
       circle.setAttribute('cx', String(position.x)); circle.setAttribute('cy', String(position.y)); circle.setAttribute('r', '5')
-      circle.setAttribute('fill', node.owner ? colorFor(node.owner) : '#98a0ad')
+      circle.setAttribute('fill', node.owner ? colorFor(node.owner, conn.room) : '#98a0ad')
       const text = document.createElementNS(svg.namespaceURI, 'text')
       text.setAttribute('x', String(position.x + 12)); text.setAttribute('y', String(position.y + 4)); text.textContent = node.label
       group.append(circle, text); svg.append(group)

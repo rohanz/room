@@ -1,9 +1,13 @@
 import type { Identity, Kind } from './types.js'
 
-const PALETTE = ['#0f8b8d', '#c9761a', '#6d4fc2', '#c0392b', '#2e86de', '#27ae60', '#b5179e', '#8d6e63']
+/** High-contrast order keeps adjacent join slots visually distinct on light and dark surfaces. */
+export const PALETTE = ['#0f8b8d', '#c9761a', '#6d4fc2', '#c0392b', '#2e86de', '#27ae60', '#b5179e', '#8d6e63'] as const
+export interface ColorAssignments { colors: { get(name: string): number | undefined } }
 
-/** Deterministic colour per person, so every client agrees without coordination. */
-export function colorFor(name: string): string {
+/** Use the room's join-order slot when available, with the stable hash for older/offline callers. */
+export function colorFor(name: string, room?: ColorAssignments | number): string {
+  const assigned = typeof room === 'object' ? room.colors.get(name) : undefined
+  if (assigned !== undefined && Number.isInteger(assigned)) return PALETTE[((assigned % PALETTE.length) + PALETTE.length) % PALETTE.length]
   // FNV-1a; a weak hash collides on short names ("Rohan"/"Kieran" did).
   let h = 0x811c9dc5
   for (const ch of name) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0 }

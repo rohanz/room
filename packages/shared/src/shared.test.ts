@@ -21,6 +21,21 @@ describe('identity', () => {
     expect(displayName({ name: 'Kieran', kind: 'agent' })).toBe("Kieran's agent")
     expect(displayName({ name: 'Kieran', kind: 'human' })).toBe('Kieran')
   })
+
+  it('assigns distinct join-order colours, retains them, and repairs concurrent collisions', () => {
+    const room = new RoomDoc()
+    expect(['Ann', 'Bob', 'Cy'].map(name => room.assignColor(name))).toEqual([0, 1, 2])
+    expect(room.assignColor('Bob')).toBe(1)
+
+    const aDoc = new Y.Doc(), bDoc = new Y.Doc()
+    const a = new RoomDoc(aDoc), b = new RoomDoc(bDoc)
+    a.colors.set('Ann', 0); b.colors.set('Bob', 0)
+    const updateA = Y.encodeStateAsUpdate(aDoc), updateB = Y.encodeStateAsUpdate(bDoc)
+    Y.applyUpdate(aDoc, updateB); Y.applyUpdate(bDoc, updateA)
+    expect([...a.colors.entries()].sort()).toEqual([['Ann', 0], ['Bob', 1]])
+    expect([...b.colors.entries()].sort()).toEqual([['Ann', 0], ['Bob', 1]])
+    expect(colorFor('Ann', a)).not.toBe(colorFor('Bob', a))
+  })
 })
 
 describe('claims', () => {

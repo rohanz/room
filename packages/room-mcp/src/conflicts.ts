@@ -1,4 +1,4 @@
-import { displayName } from '@room/shared'
+import { bareSymbol, displayName } from '@room/shared'
 /**
  * Conflicts the agents did not declare. Two watchers on the room doc:
  *  - overlap: my own edits landing inside someone else's open claim (I hold no claim there)
@@ -10,7 +10,7 @@ import { displayName } from '@room/shared'
  */
 import { structuredPatch } from 'diff'
 import { createHash } from 'node:crypto'
-import type { Claim, ConflictMsg, Identity, NoteMsg, RoomDoc } from '@room/shared'
+import type { Claim, ConflictMsg, ContractMsg, GraphSnapshot, Identity, NoteMsg, RoomDoc } from '@room/shared'
 import { gitMergeFile } from './merge.js'
 
 export const ROOM: Identity = { name: 'room', kind: 'agent' }
@@ -83,6 +83,8 @@ export class ConflictWatcher {
   private mergeTimer: NodeJS.Timeout | null = null
   private draining: Promise<void> | null = null
   private mergeHashes = new Map<string, string>()
+  private observedReported = new Set<string>()
+  private observedChecks = new Set<Promise<void>>()
   constructor(private d: ConflictDeps) {}
 
   start(): void {
@@ -101,9 +103,19 @@ export class ConflictWatcher {
         const [person, p] = key.split('|')
         this.schedule(person, p)
       }
+      this.checkAllObserved()
     }
     this.d.room.overlays.observeDeep(onOverlays as never)
     this.stopFns.push(() => this.d.room.overlays.unobserveDeep(onOverlays as never))
+    const onGraphs = (event: { keysChanged: Set<string> }) => {
+      for (const person of event.keysChanged) if (person !== this.d.me.name) this.queueObserved(person)
+    }
+    this.d.room.graphs.observe(onGraphs)
+    this.stopFns.push(() => this.d.room.graphs.unobserve(onGraphs))
+    const onClaims = () => this.checkAllObserved()
+    this.d.room.claims.observe(onClaims)
+    this.stopFns.push(() => this.d.room.claims.unobserve(onClaims))
+    this.checkAllObserved()
   }
 
   stop(): void {
@@ -133,6 +145,43 @@ export class ConflictWatcher {
     this.timers.clear()
     for (const key of keys) { const [person, p] = key.split('|'); await this.check(person, p) }
     await this.drainMerges()
+    while (this.observedChecks.size) await Promise.all(this.observedChecks)
+  }
+
+  private checkAllObserved(): void {
+    for (const person of this.d.room.graphs.keys()) if (person !== this.d.me.name) this.queueObserved(person)
+  }
+
+  private queueObserved(person: string): void {
+    let work: Promise<void>
+    work = Promise.resolve().then(() => this.checkObserved(person)).catch(error => {
+      this.d.log?.(`contract check ${person}: ${error instanceof Error ? error.message : String(error)}`)
+    }).finally(() => this.observedChecks.delete(work))
+    this.observedChecks.add(work)
+  }
+
+  private async checkObserved(person: string): Promise<void> {
+    const snapshot: GraphSnapshot | undefined = this.d.room.graphs.get(person)
+    if (!snapshot) return
+    const mine = new Set([
+      ...this.d.room.changedPaths(this.d.me.name),
+      ...this.d.room.openClaims().filter(claim => claim.by === this.d.me.name).map(claim => claim.path),
+    ])
+    if (!mine.size) return
+    for (const change of snapshot.observed ?? []) {
+      if (change.kind === 'add') continue
+      const uses = snapshot.edges.filter(edge => edge.source === change.path && mine.has(edge.target) &&
+        edge.symbols.some(symbol => bareSymbol(symbol) === bareSymbol(change.symbol))).map(edge => edge.target).sort()
+      if (!uses.length) continue
+      const key = `${person}\0${change.path}\0${change.symbol}\0${change.detail}`
+      if (this.observedReported.has(key)) continue
+      this.observedReported.add(key)
+      const action = change.kind === 'signature' ? `changed the signature of ${change.symbol}()` : `deleted ${change.symbol}()`
+      const consumers = uses.length === 1 ? `${uses[0]} uses it` : `${uses.join(', ')} use it`
+      const text = `${person} ${action} in ${change.path} (${change.detail}); ${consumers}`
+      this.d.room.post<ContractMsg>(ROOM, { type: 'contract', to: this.d.me.name, priority: 'notify', path: change.path, symbol: change.symbol, text })
+      this.d.log?.(`contract: ${text}`)
+    }
   }
 
   private async check(person: string, p: string): Promise<void> {

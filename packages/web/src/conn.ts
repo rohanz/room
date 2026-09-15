@@ -57,12 +57,18 @@ export function connect(search = location.search): Conn {
   if (!q.has('view') && !q.has('key') && host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]') void explainAccess(roomLocation, { view, token }, provider)
   // A successful sync supersedes any earlier HTTP preflight error.
   provider.on('sync', (synced: boolean) => {
-    if (synced) document.getElementById('access-error')?.remove()
+    if (synced) {
+      document.getElementById('access-error')?.remove()
+      if (viewerName) {
+        room.assignColor(viewerName, provider)
+        provider.awareness.setLocalState({ user: { name: viewerName, kind: 'human', color: colorFor(viewerName, room) }, status: 'viewing', lastActive: Date.now() })
+      }
+    }
   })
   const viewerName = new URLSearchParams(search).get('name')?.trim()
   if (viewerName) {
     provider.awareness.setLocalState({
-      user: { name: viewerName, kind: 'human', color: colorFor(viewerName) },
+      user: { name: viewerName, kind: 'human', color: colorFor(viewerName, room) },
       status: 'viewing',
       lastActive: Date.now(),
     })
@@ -86,7 +92,7 @@ export function connect(search = location.search): Conn {
 }
 
 /** Read awareness states defensively: other clients may publish arbitrary data. */
-export function presences(provider: WebsocketProvider): Presence[] {
+export function presences(provider: WebsocketProvider, room?: RoomDoc): Presence[] {
   const out: Presence[] = []
   provider.awareness.getStates().forEach((state: unknown) => {
     if (!state || typeof state !== 'object') return
@@ -99,7 +105,7 @@ export function presences(provider: WebsocketProvider): Presence[] {
         kind: user.kind === 'agent' || user.kind === 'bot' || user.kind === 'ci' ? user.kind : 'human',
         ...(typeof user.owner === 'string' ? { owner: user.owner } : {}),
         ...(typeof user.label === 'string' ? { label: user.label } : {}),
-        color: typeof user.color === 'string' ? user.color : colorFor(user.name),
+        color: typeof user.color === 'string' ? user.color : colorFor(user.name, room),
       },
       status: typeof value.status === 'string' ? value.status : undefined,
       lastActive: typeof value.lastActive === 'number' ? value.lastActive : undefined,

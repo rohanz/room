@@ -4210,8 +4210,8 @@ var require_fast_uri = __commonJS({
       } catch {
         return void 0;
       }
-      const { normalized, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = normalizeStringWithStatus(value2, opts);
-      return malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? void 0 : normalized;
+      const { normalized: normalized2, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = normalizeStringWithStatus(value2, opts);
+      return malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? void 0 : normalized2;
     }
     var fastUri = {
       SCHEMES,
@@ -14091,8 +14091,8 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   const _normalized = cached(() => normalizeDef(def));
   const memo2 = globalConfig.memoizer;
   const generateFastpass = (shape) => {
-    const normalized = _normalized.value;
-    const syms = normalized.symbolKeys;
+    const normalized2 = _normalized.value;
+    const syms = normalized2.symbolKeys;
     const doc = new Doc(["payload", "ctx"], { shape, inst, memo: memo2, syms });
     const parseStr = (k) => `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
     const prefixStr = (id2, k) => `
@@ -14104,11 +14104,11 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     doc.write(`const input = payload.value;`);
     const ids = /* @__PURE__ */ Object.create(null);
     let counter = 0;
-    for (const key of normalized.allKeys) {
+    for (const key of normalized2.allKeys) {
       ids[key] = `key_${counter++}`;
     }
     doc.write(memo2 ? `const newResult = memo.alloc(inst, payload, {}, ctx);` : `const newResult = {};`);
-    for (const key of normalized.allKeys) {
+    for (const key of normalized2.allKeys) {
       if (key === "__proto__")
         continue;
       const id2 = ids[key];
@@ -21188,7 +21188,9 @@ var StdioServerTransport = class {
 
 // packages/shared/src/identity.ts
 var PALETTE = ["#0f8b8d", "#c9761a", "#6d4fc2", "#c0392b", "#2e86de", "#27ae60", "#b5179e", "#8d6e63"];
-function colorFor(name) {
+function colorFor(name, room) {
+  const assigned = typeof room === "object" ? room.colors.get(name) : void 0;
+  if (assigned !== void 0 && Number.isInteger(assigned)) return PALETTE[(assigned % PALETTE.length + PALETTE.length) % PALETTE.length];
   let h = 2166136261;
   for (const ch of name) {
     h ^= ch.charCodeAt(0);
@@ -21238,6 +21240,7 @@ var builtins = {
   question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
   answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
   conflict: { priority: "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
+  contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
   note: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)}: ${m.text}` },
   done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
   base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up` },
@@ -29185,6 +29188,7 @@ function areaSummary(messages, scopes, windowMs = 10 * 60 * 1e3, now = Date.now(
 }
 
 // packages/shared/src/doc.ts
+var validColorIndex = (value2) => Number.isInteger(value2) && value2 >= 0 && value2 < PALETTE.length;
 function defaultPriority(msg) {
   const kind = MessageKinds[msg.type];
   if (!kind) throw new Error(`unregistered message kind: ${msg.type}`);
@@ -29195,8 +29199,49 @@ var RoomDoc = class {
   get graphs() {
     return this.doc.getMap("graphs");
   }
+  /** Persistent participant -> palette slot assignments. */
+  get colors() {
+    return this.doc.getMap("colors");
+  }
   constructor(doc = new Doc2()) {
     this.doc = doc;
+    this.colors.observe(() => {
+      this.reconcileColors();
+    });
+  }
+  /** Claim the lowest unused slot, retaining existing slots across reconnects. */
+  assignColor(name, origin) {
+    if (!this.colors.has(name)) {
+      const used = new Set(Array.from(this.colors.values()).filter(validColorIndex));
+      const free = Array.from({ length: PALETTE.length }, (_, i) => i).find((i) => !used.has(i));
+      this.doc.transact(() => {
+        this.colors.set(name, free ?? this.colors.size % PALETTE.length);
+      }, origin);
+    }
+    this.reconcileColors(origin);
+    return this.colors.get(name);
+  }
+  /** Lexically first keeps a concurrently claimed slot; later names move to the next free one. */
+  reconcileColors(origin) {
+    const entries = [...this.colors.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const used = /* @__PURE__ */ new Set();
+    const repairs = [];
+    for (const [name, raw] of entries) {
+      const index = validColorIndex(raw) ? raw : 0;
+      if (!used.has(index)) {
+        used.add(index);
+        if (index !== raw) repairs.push([name, index]);
+        continue;
+      }
+      const free = Array.from({ length: PALETTE.length }, (_, i) => i).find((i) => !used.has(i));
+      if (free !== void 0) {
+        used.add(free);
+        repairs.push([name, free]);
+      }
+    }
+    if (repairs.length) this.doc.transact(() => {
+      for (const [name, index] of repairs) this.colors.set(name, index);
+    }, origin);
   }
   get overlays() {
     return this.doc.getMap("overlays");
@@ -29654,6 +29699,81 @@ var regexExtractor = (path13, text) => {
   }
   return { defs: Array.from(defs9), refs: Array.from(refs) };
 };
+var bareSymbol = (symbol) => symbol.trim().split(/[.:]+/).filter(Boolean).at(-1)?.toLowerCase() ?? "";
+var normalized = (line) => line.trim().replace(/\s+/g, " ");
+var comparable = (line) => line.replace(/\s+/g, "");
+var lineContaining = (text, index) => {
+  const from2 = text.lastIndexOf("\n", index - 1) + 1;
+  const to2 = text.indexOf("\n", index);
+  return text.slice(from2, to2 < 0 ? text.length : to2);
+};
+function pythonHeader(line) {
+  let depth = 0, quote = "", escaped = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch)) depth = Math.max(0, depth - 1);
+    else if (ch === ":" && depth === 0) return line.slice(0, i + 1);
+  }
+  return line;
+}
+function definitionLines(path13, text) {
+  const ext = path13.slice(path13.lastIndexOf(".") + 1);
+  const out = /* @__PURE__ */ new Map();
+  const add2 = (name, raw, signature = raw) => {
+    const display = normalized(raw);
+    if (!out.has(name)) out.set(name, { display, canonical: comparable(normalized(signature)) });
+  };
+  if (ext === "py") {
+    for (const match of text.matchAll(PY_DEF)) {
+      const nameIndex = match.index + match[0].lastIndexOf(match[1]);
+      add2(match[1], pythonHeader(lineContaining(text, nameIndex)));
+    }
+    for (const match of text.matchAll(PY_ASSIGN)) {
+      const line = lineContaining(text, match.index);
+      add2(match[1], line.slice(0, line.indexOf("=") + 1));
+    }
+  } else if (["js", "jsx", "ts", "tsx", "mjs", "mts", "cjs"].includes(ext)) {
+    for (const match of text.matchAll(JS_DEF)) {
+      const name = match[1] ?? match[2];
+      const line = lineContaining(text, match.index);
+      let signature = line;
+      const declaration = match[0];
+      if (/\b(?:const|let|var)\b/.test(declaration)) {
+        const arrow = line.indexOf("=>");
+        const equals2 = line.indexOf("=");
+        signature = arrow >= 0 ? line.slice(0, arrow + 2) : line.slice(0, equals2 + 1);
+      } else if (/\b(?:function\*?|class|interface|enum)\b/.test(declaration)) {
+        const brace = line.indexOf("{");
+        if (brace >= 0) signature = line.slice(0, brace);
+      }
+      add2(name, line, signature);
+    }
+  } else return void 0;
+  return out;
+}
+function observedContractChanges(baseText, overlayText, path13) {
+  const before = definitionLines(path13, baseText), after = definitionLines(path13, overlayText);
+  if (!before || !after) return [];
+  const changes = [];
+  for (const [symbol, oldLine] of before) {
+    const newLine = after.get(symbol);
+    if (!newLine) changes.push({ symbol, kind: "delete", detail: `was \`${oldLine.display}\`` });
+    else if (oldLine.canonical !== newLine.canonical) changes.push({ symbol, kind: "signature", detail: `was \`${oldLine.display}\` now \`${newLine.display}\`` });
+  }
+  for (const [symbol, newLine] of after) if (!before.has(symbol)) changes.push({ symbol, kind: "add", detail: `now \`${newLine.display}\`` });
+  return changes.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.kind.localeCompare(b.kind));
+}
 var SymbolGraph = class {
   constructor(extract = regexExtractor) {
     this.extract = extract;
@@ -32646,6 +32766,8 @@ var Daemon = class {
     this.base = base;
     this.tracked = tracked;
     await this.waitForSync();
+    this.roomDoc.assignColor(this.name, this);
+    this.setStatus(this.currentStatus());
     this.roomDoc.setBaseOf(this.name, this.base, this);
     const roomBase = this.roomDoc.meta.base;
     if (roomBase && roomBase !== this.base) {
@@ -32781,7 +32903,7 @@ var Daemon = class {
     const current = this.provider.awareness.getLocalState() ?? {};
     const state = {
       ...current,
-      user: { name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {}, color: colorFor(this.name) },
+      user: { name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {}, color: colorFor(this.name, this.roomDoc) },
       status,
       share: this.share,
       lastActive: this.lastActive
@@ -33536,6 +33658,7 @@ var SOURCE_EXT = /\.(py|js|jsx|ts|tsx|mjs|mts|cjs)$/;
 var MAX_FILES = 3e3;
 var MAX_BYTES = 256 * 1024;
 var MAX_EDGES = 4e3;
+var MAX_OBSERVED = 200;
 var MAX_SNAPSHOT_BYTES = 200 * 1024;
 var MIN_PUBLISH_MS = 2e4;
 var GraphIndex = class {
@@ -33558,6 +33681,7 @@ var GraphIndex = class {
   pending = /* @__PURE__ */ new Map();
   revisions = /* @__PURE__ */ new Map();
   previousChanged = /* @__PURE__ */ new Set();
+  observedByPath = /* @__PURE__ */ new Map();
   generation = 0;
   truncated = false;
   publishing;
@@ -33598,6 +33722,7 @@ var GraphIndex = class {
     const generation = ++this.generation;
     this.phase = "indexing";
     this.base = this.room.meta.base ?? "";
+    this.observedByPath.clear();
     if (!this.base) return;
     this.publish("indexing");
     let paths = [];
@@ -33662,6 +33787,9 @@ var GraphIndex = class {
         const revision = this.revisions.get(path13), generation = this.generation;
         const text = await this.textFor(path13);
         const symbols = text === void 0 || text.length > MAX_BYTES ? void 0 : await extractSymbols(path13, text);
+        const mine = this.room.text(path13, this.me);
+        const mineDeleted = this.room.deleted.get(this.me)?.has(path13) ?? false;
+        const baseText = mine !== void 0 || mineDeleted ? await gitShow(this.dir, this.base, path13) : void 0;
         if (this.stopped) return;
         if (generation !== this.generation || revision !== this.revisions.get(path13)) continue;
         if (!symbols || text === void 0) {
@@ -33671,6 +33799,11 @@ var GraphIndex = class {
           this.cache.set(path13, symbols);
           this.graph.set(path13, text);
         }
+        if (mine !== void 0 || mineDeleted) {
+          const changes = observedContractChanges(baseText ?? "", mineDeleted ? "" : mine ?? "", path13).map((change) => ({ path: path13, ...change }));
+          if (changes.length) this.observedByPath.set(path13, changes);
+          else this.observedByPath.delete(path13);
+        } else this.observedByPath.delete(path13);
         break;
       }
     })().catch((e) => this.log(`graph: ${path13}: ${e instanceof Error ? e.message : e}`)).finally(() => {
@@ -33705,11 +33838,19 @@ var GraphIndex = class {
       edges.get(key2).symbols.push(dep.symbol);
     }
     let edgeList = [...edges.values()];
-    let body = JSON.stringify({ paths, edges: edgeList });
+    const allObserved = [...this.observedByPath.values()].flat().sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol));
+    let observedTruncated = allObserved.length > MAX_OBSERVED;
+    const observed = allObserved.slice(0, MAX_OBSERVED);
+    let body = JSON.stringify({ paths, edges: edgeList, observed });
     if (body.length > MAX_SNAPSHOT_BYTES) {
       edgeList = [];
       truncated = true;
-      body = JSON.stringify({ paths });
+      body = JSON.stringify({ paths, observed });
+    }
+    while (body.length > MAX_SNAPSHOT_BYTES && observed.length) {
+      observed.pop();
+      observedTruncated = true;
+      body = JSON.stringify({ paths, observed });
     }
     const key = `${this.base}|${status}|${body.length}|${hashOf(body)}`;
     const now = Date.now();
@@ -33721,7 +33862,7 @@ var GraphIndex = class {
       return;
     }
     this.lastPublished = { at: now, key, status };
-    this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, truncated });
+    this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, observed, observedTruncated, truncated });
   }
 };
 function hashOf(text) {
@@ -35088,7 +35229,7 @@ var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's
 Rules:
 1. You are joined automatically. Only change local/team-room choice when your human asks; use room_join/room_leave and follow any login instructions.
 2. Call room_scope(area, summary, paths) before editing and read the ledger it returns.
-3. Call room_read, then room_claim before editing. Never edit another person's claim; declare public-symbol plans.
+3. Call room_read, then room_claim before editing. Never edit another person's claim; declare public-symbol plans (they reach consumers before the edit; changed definition lines are also detected from diffs, later).
 4. Answer addressed questions promptly. When unsure, ask the relevant agent with room_send and wait for the answer.
 5. Before finishing, release claims, announce dependent changes, preview-merge teammates' current work, then call room_done.
 6. Tell your human whenever room information, an interrupt, or a conflict changes your plan.
@@ -36576,6 +36717,8 @@ var ConflictWatcher = class {
   mergeTimer = null;
   draining = null;
   mergeHashes = /* @__PURE__ */ new Map();
+  observedReported = /* @__PURE__ */ new Set();
+  observedChecks = /* @__PURE__ */ new Set();
   start() {
     const onOverlays = (events) => {
       const touched = /* @__PURE__ */ new Set();
@@ -36592,9 +36735,19 @@ var ConflictWatcher = class {
         const [person, p] = key.split("|");
         this.schedule(person, p);
       }
+      this.checkAllObserved();
     };
     this.d.room.overlays.observeDeep(onOverlays);
     this.stopFns.push(() => this.d.room.overlays.unobserveDeep(onOverlays));
+    const onGraphs = (event) => {
+      for (const person of event.keysChanged) if (person !== this.d.me.name) this.queueObserved(person);
+    };
+    this.d.room.graphs.observe(onGraphs);
+    this.stopFns.push(() => this.d.room.graphs.unobserve(onGraphs));
+    const onClaims = () => this.checkAllObserved();
+    this.d.room.claims.observe(onClaims);
+    this.stopFns.push(() => this.d.room.claims.unobserve(onClaims));
+    this.checkAllObserved();
   }
   stop() {
     for (const f of this.stopFns) f();
@@ -36627,6 +36780,39 @@ var ConflictWatcher = class {
       await this.check(person, p);
     }
     await this.drainMerges();
+    while (this.observedChecks.size) await Promise.all(this.observedChecks);
+  }
+  checkAllObserved() {
+    for (const person of this.d.room.graphs.keys()) if (person !== this.d.me.name) this.queueObserved(person);
+  }
+  queueObserved(person) {
+    let work;
+    work = Promise.resolve().then(() => this.checkObserved(person)).catch((error2) => {
+      this.d.log?.(`contract check ${person}: ${error2 instanceof Error ? error2.message : String(error2)}`);
+    }).finally(() => this.observedChecks.delete(work));
+    this.observedChecks.add(work);
+  }
+  async checkObserved(person) {
+    const snapshot = this.d.room.graphs.get(person);
+    if (!snapshot) return;
+    const mine = /* @__PURE__ */ new Set([
+      ...this.d.room.changedPaths(this.d.me.name),
+      ...this.d.room.openClaims().filter((claim2) => claim2.by === this.d.me.name).map((claim2) => claim2.path)
+    ]);
+    if (!mine.size) return;
+    for (const change of snapshot.observed ?? []) {
+      if (change.kind === "add") continue;
+      const uses = snapshot.edges.filter((edge) => edge.source === change.path && mine.has(edge.target) && edge.symbols.some((symbol) => bareSymbol(symbol) === bareSymbol(change.symbol))).map((edge) => edge.target).sort();
+      if (!uses.length) continue;
+      const key = `${person}\0${change.path}\0${change.symbol}\0${change.detail}`;
+      if (this.observedReported.has(key)) continue;
+      this.observedReported.add(key);
+      const action = change.kind === "signature" ? `changed the signature of ${change.symbol}()` : `deleted ${change.symbol}()`;
+      const consumers = uses.length === 1 ? `${uses[0]} uses it` : `${uses.join(", ")} use it`;
+      const text = `${person} ${action} in ${change.path} (${change.detail}); ${consumers}`;
+      this.d.room.post(ROOM, { type: "contract", to: this.d.me.name, priority: "notify", path: change.path, symbol: change.symbol, text });
+      this.d.log?.(`contract: ${text}`);
+    }
   }
   async check(person, p) {
     const key = `${person}|${p}`;

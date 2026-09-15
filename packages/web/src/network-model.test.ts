@@ -79,7 +79,7 @@ describe('contract impact', () => {
   })
 })
 
-import { deriveWorkImpact } from './network-model.ts'
+import { deriveWorkImpact, observedImpactClaims } from './network-model.ts'
 describe('work-centered contract impact', () => {
   const own: Claim = { ...contract, id: 'mine', by: 'Kieran', path: 'checkout', plans: [{ kind: 'signature', symbol: 'checkout_summary' }] }
   it('anchors edits and plans, exposes upstream risks and only my outgoing contract impact', () => {
@@ -112,5 +112,22 @@ describe('work-centered contract impact', () => {
     expect(rohan.work).toEqual(new Set(['pricing']))
     expect(rohan.downstream).toEqual(new Set(['checkout', 'receipt']))
     expect(deriveWorkImpact(graph, [contract], 'Nobody', []).work.size).toBe(0)
+  })
+
+  it('uses observed contracts for downstream impact and lets an announcement win dedupe', () => {
+    const observed: GraphSnapshot = { ...graph, observed: [{ path: 'pricing', symbol: 'quote_total', kind: 'signature', detail: 'was old now new' }] }
+    const fromDiff = deriveWorkImpact(observed, [], 'Rohan', ['pricing'])
+    expect([...fromDiff.downstream]).toEqual(['checkout', 'receipt'])
+    expect(fromDiff.impact.declarations).toMatchObject([{ source: 'observed', detail: 'was old now new' }])
+
+    const announced = deriveWorkImpact(observed, [contract], 'Rohan', ['pricing'])
+    expect(announced.impact.declarations).toHaveLength(1)
+    expect(announced.impact.declarations[0]).toMatchObject({ source: 'declared', detail: 'Return Quote' })
+  })
+  it('counts a foreign observed contract change as an upstream risk', () => {
+    const foreign = { ...graph, observed: [{ path: 'pricing', symbol: 'quote_total', kind: 'signature' as const, detail: 'was old now new' }] }
+    const view = deriveWorkImpact(graph, [], 'Kieran', ['checkout'], observedImpactClaims(foreign, 'Rohan'))
+    expect(view.upstreamPlans).toBe(1)
+    expect(view.impact.declarations).toMatchObject([{ owner: 'Rohan', source: 'observed' }])
   })
 })

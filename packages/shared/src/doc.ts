@@ -13,13 +13,14 @@ import type {
   Scope,
   Worker,
 } from './types.js'
-import { newId } from './identity.js'
+import { newId, PALETTE } from './identity.js'
 import type { GraphSnapshot } from './graph.js'
 import { ledger as ledgerView, areaSummary as areaSummaryView, emptyLedgerArchive, foldLedger, messageAreas, type LedgerArchive, type LedgerQuery } from './ledger.js'
 
 type ScopeInput = Omit<Scope, 'by' | 'at'> & { at?: number }
 type NewScope = Omit<Scope, 'at'> & { at?: number }
 type PostBody<T extends Msg> = Omit<T, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> & { priority?: Priority }
+const validColorIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) < PALETTE.length
 
 /** Default bus priority from spec §6. */
 export function defaultPriority(msg: { type: MsgType; symbols?: readonly string[]; [key: string]: unknown }): Priority {
@@ -32,9 +33,37 @@ export function defaultPriority(msg: { type: MsgType; symbols?: readonly string[
 export class RoomDoc {
   readonly doc: Y.Doc
   get graphs(): Y.Map<GraphSnapshot> { return this.doc.getMap<GraphSnapshot>('graphs') }
+  /** Persistent participant -> palette slot assignments. */
+  get colors(): Y.Map<number> { return this.doc.getMap<number>('colors') }
 
   constructor(doc: Y.Doc = new Y.Doc()) {
     this.doc = doc
+    this.colors.observe(() => { this.reconcileColors() })
+  }
+
+  /** Claim the lowest unused slot, retaining existing slots across reconnects. */
+  assignColor(name: string, origin?: unknown): number {
+    if (!this.colors.has(name)) {
+      const used = new Set(Array.from(this.colors.values()).filter(validColorIndex))
+      const free = Array.from({ length: PALETTE.length }, (_, i) => i).find(i => !used.has(i))
+      this.doc.transact(() => { this.colors.set(name, free ?? (this.colors.size % PALETTE.length)) }, origin)
+    }
+    this.reconcileColors(origin)
+    return this.colors.get(name)!
+  }
+
+  /** Lexically first keeps a concurrently claimed slot; later names move to the next free one. */
+  reconcileColors(origin?: unknown): void {
+    const entries = [...this.colors.entries()].sort(([a], [b]) => a.localeCompare(b))
+    const used = new Set<number>()
+    const repairs: [string, number][] = []
+    for (const [name, raw] of entries) {
+      const index = validColorIndex(raw) ? raw : 0
+      if (!used.has(index)) { used.add(index); if (index !== raw) repairs.push([name, index]); continue }
+      const free = Array.from({ length: PALETTE.length }, (_, i) => i).find(i => !used.has(i))
+      if (free !== undefined) { used.add(free); repairs.push([name, free]) }
+    }
+    if (repairs.length) this.doc.transact(() => { for (const [name, index] of repairs) this.colors.set(name, index) }, origin)
   }
 
   get overlays(): Y.Map<Y.Map<Y.Text>> { return this.doc.getMap<Y.Map<Y.Text>>('overlays') }
@@ -398,5 +427,5 @@ function makeAnchor(text: Y.Text, from: number, to: number): ClaimAnchor {
 }
 
 export function isMsgType(value: string): value is MsgType {
-  return ['claim', 'release', 'changed', 'question', 'answer', 'conflict', 'note', 'scope', 'base', 'plan'].includes(value)
+  return ['claim', 'release', 'changed', 'question', 'answer', 'conflict', 'contract', 'note', 'scope', 'base', 'plan', 'done'].includes(value)
 }

@@ -3,7 +3,7 @@ import { EditorView } from '@codemirror/view'
 import { basicSetup } from 'codemirror'
 import { python } from '@codemirror/lang-python'
 import { javascript } from '@codemirror/lang-javascript'
-import type { Claim } from '@room/shared'
+import type { Claim, RoomDoc } from '@room/shared'
 import { claimsExtension, setClaims } from './claims-ext.ts'
 
 function langFor(path: string): Extension {
@@ -20,7 +20,7 @@ export class Editor {
   private view: EditorView | null = null
   private path: string | null = null
 
-  constructor(private host: HTMLElement) {}
+  constructor(private host: HTMLElement, private room?: RoomDoc) {}
 
   show(path: string, text: string, claims: Claim[]): void {
     if (!this.view || this.path !== path) {
@@ -34,7 +34,7 @@ export class Editor {
           extensions: [
             basicSetup,
             langFor(path),
-            claimsExtension(),
+            claimsExtension(this.room),
             EditorState.readOnly.of(true),
             EditorView.editable.of(false),
           ],

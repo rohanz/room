@@ -1,7 +1,7 @@
 import { StateField, StateEffect, RangeSetBuilder, type Extension } from '@codemirror/state'
 import { Decoration, EditorView, GutterMarker, gutter, type DecorationSet } from '@codemirror/view'
 import { RangeSet } from '@codemirror/state'
-import { colorFor, describeClaim, type Claim } from '@room/shared'
+import { colorFor, describeClaim, type Claim, type RoomDoc } from '@room/shared'
 
 export const setClaims = StateEffect.define<Claim[]>()
 
@@ -27,7 +27,7 @@ class ClaimMarker extends GutterMarker {
 
 interface Built { deco: DecorationSet; marks: RangeSet<GutterMarker> }
 
-function build(claims: Claim[], view: { doc: { lines: number; line(n: number): { from: number } } }): Built {
+function build(claims: Claim[], view: { doc: { lines: number; line(n: number): { from: number } } }, room?: RoomDoc): Built {
   const lines = view.doc.lines
   const perLine = new Map<number, Claim[]>()
   for (const c of claims) {
@@ -39,7 +39,7 @@ function build(claims: Claim[], view: { doc: { lines: number; line(n: number): {
   for (const n of Array.from(perLine.keys()).sort((a, b) => a - b)) {
     const cs = perLine.get(n)!
     const first = cs[0]
-    const colors = Array.from(new Set(cs.map(claim => colorFor(claim.by))))
+    const colors = Array.from(new Set(cs.map(claim => colorFor(claim.by, room))))
     const title = cs.map(describeClaim).join('\n')
     const pos = view.doc.line(n).from
     const stops = colors.map((color, index) => `${color}1c ${index / colors.length * 100}% ${(index + 1) / colors.length * 100}%`).join(', ')
@@ -49,19 +49,18 @@ function build(claims: Claim[], view: { doc: { lines: number; line(n: number): {
   return { deco: db.finish(), marks: mb.finish() }
 }
 
-const claimField = StateField.define<{ claims: Claim[] } & Built>({
-  create: state => ({ claims: [], ...build([], state) }),
-  update(v, tr) {
-    let claims = v.claims
-    let dirty = false
-    for (const e of tr.effects) if (e.is(setClaims)) { claims = e.value; dirty = true }
-    if (!dirty && !tr.docChanged) return v
-    return { claims, ...build(claims, tr.state) }
-  },
-  provide: f => EditorView.decorations.from(f, v => v.deco),
-})
-
-export function claimsExtension(): Extension {
+export function claimsExtension(room?: RoomDoc): Extension {
+  const claimField = StateField.define<{ claims: Claim[] } & Built>({
+    create: state => ({ claims: [], ...build([], state, room) }),
+    update(v, tr) {
+      let claims = v.claims
+      let dirty = false
+      for (const e of tr.effects) if (e.is(setClaims)) { claims = e.value; dirty = true }
+      if (!dirty && !tr.docChanged) return v
+      return { claims, ...build(claims, tr.state, room) }
+    },
+    provide: f => EditorView.decorations.from(f, v => v.deco),
+  })
   return [
     claimField,
     gutter({ class: 'cm-claim-gutter', markers: v => v.state.field(claimField).marks }),

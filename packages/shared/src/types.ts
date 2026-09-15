@@ -68,7 +68,7 @@ export interface Scope {
 }
 
 export type Priority = 'fyi' | 'notify' | 'interrupt'
-export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'note' | 'scope' | 'base' | 'plan' | 'done'
+export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'contract' | 'note' | 'scope' | 'base' | 'plan' | 'done'
 export type MsgType = keyof MessageMap & string
 
 export interface MsgBase {
@@ -89,6 +89,8 @@ export interface ChangedMsg extends MsgBase { type: 'changed'; paths: string[]; 
 export interface QuestionMsg extends MsgBase { type: 'question'; text: string }
 export interface AnswerMsg extends MsgBase { type: 'answer'; inReplyTo: string; text: string }
 export interface ConflictMsg extends MsgBase { type: 'conflict'; claimId: string; otherClaimId: string; path: string; text: string }
+/** An observed foreign contract edit that a file in the recipient's work references. */
+export interface ContractMsg extends MsgBase { type: 'contract'; path: string; symbol: string; text: string }
 export interface NoteMsg extends MsgBase { type: 'note'; text: string }
 export interface ScopeMsg extends MsgBase { type: 'scope'; area: string; summary: string; paths: string[] }
 /** The room's base commit moved forward (someone committed/pulled a descendant). */
@@ -105,6 +107,7 @@ export interface MessageMap {
   question: QuestionMsg
   answer: AnswerMsg
   conflict: ConflictMsg
+  contract: ContractMsg
   note: NoteMsg
   scope: ScopeMsg
   base: BaseMsg

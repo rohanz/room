@@ -2,7 +2,7 @@
  * Keeps a SymbolGraph current for one room: base commit + everyone's overlays.
  * For each path the indexed text is: my overlay, else another person's overlay, else base.
  */
-import { SymbolGraph, type FileSymbols, type RoomDoc } from '@room/shared'
+import { observedContractChanges, SymbolGraph, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { extractSymbols } from './pyextract.js'
 
@@ -11,6 +11,7 @@ const MAX_FILES = 3000
 const MAX_BYTES = 256 * 1024
 /** Snapshot limits: every publish is appended to the room's persisted update log, so keep each one small and rare. */
 const MAX_EDGES = 4000
+const MAX_OBSERVED = 200
 const MAX_SNAPSHOT_BYTES = 200 * 1024
 const MIN_PUBLISH_MS = 20_000
 
@@ -20,6 +21,7 @@ export class GraphIndex {
   private pending = new Map<string, Promise<void>>()
   private revisions = new Map<string, number>()
   private previousChanged = new Set<string>()
+  private observedByPath = new Map<string, ObservedContractChange[]>()
   private generation = 0
   private truncated = false
   private publishing?: ReturnType<typeof setTimeout>
@@ -55,6 +57,7 @@ export class GraphIndex {
     const generation = ++this.generation
     this.phase = 'indexing'
     this.base = this.room.meta.base ?? ''
+    this.observedByPath.clear()
     if (!this.base) return
     this.publish('indexing')
     let paths: string[] = []
@@ -103,10 +106,18 @@ export class GraphIndex {
         const revision = this.revisions.get(path), generation = this.generation
         const text = await this.textFor(path)
         const symbols = text === undefined || text.length > MAX_BYTES ? undefined : await extractSymbols(path, text)
+        const mine = this.room.text(path, this.me)
+        const mineDeleted = this.room.deleted.get(this.me)?.has(path) ?? false
+        const baseText = mine !== undefined || mineDeleted ? await gitShow(this.dir, this.base, path) : undefined
         if (this.stopped) return
         if (generation !== this.generation || revision !== this.revisions.get(path)) continue
         if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
         else { this.cache.set(path, symbols); this.graph.set(path, text) }
+        if (mine !== undefined || mineDeleted) {
+          const changes = observedContractChanges(baseText ?? '', mineDeleted ? '' : mine ?? '', path).map(change => ({ path, ...change }))
+          if (changes.length) this.observedByPath.set(path, changes)
+          else this.observedByPath.delete(path)
+        } else this.observedByPath.delete(path)
         break
       }
     })().catch(e => this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`)).finally(() => {
@@ -140,8 +151,14 @@ export class GraphIndex {
       edges.get(key)!.symbols.push(dep.symbol)
     }
     let edgeList = [...edges.values()]
-    let body = JSON.stringify({ paths, edges: edgeList })
-    if (body.length > MAX_SNAPSHOT_BYTES) { edgeList = []; truncated = true; body = JSON.stringify({ paths }) }
+    const allObserved = [...this.observedByPath.values()].flat().sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
+    let observedTruncated = allObserved.length > MAX_OBSERVED
+    const observed = allObserved.slice(0, MAX_OBSERVED)
+    let body = JSON.stringify({ paths, edges: edgeList, observed })
+    if (body.length > MAX_SNAPSHOT_BYTES) { edgeList = []; truncated = true; body = JSON.stringify({ paths, observed }) }
+    while (body.length > MAX_SNAPSHOT_BYTES && observed.length) {
+      observed.pop(); observedTruncated = true; body = JSON.stringify({ paths, observed })
+    }
     // Same content as last time: nothing to write. Same status within the window: wait, then write once.
     const key = `${this.base}|${status}|${body.length}|${hashOf(body)}`
     const now = Date.now()
@@ -153,7 +170,7 @@ export class GraphIndex {
       return
     }
     this.lastPublished = { at: now, key, status }
-    this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, truncated })
+    this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, observed, observedTruncated, truncated })
   }
 }
 

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, shouldWakeOnMsg } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { changedRanges, ConflictWatcher } from '../src/conflicts.js'
@@ -71,6 +71,35 @@ describe('changedRanges', () => {
 })
 
 describe('automatic conflict notices', () => {
+  it('notifies once when a foreign observed contract change reaches my referenced work', async () => {
+    const room = new RoomDoc()
+    room.setOverlay('Rohan', 'api/handlers.py', 'from api.pricing import total\n')
+    const watcher = new ConflictWatcher({
+      room, me, debounceMs: 0,
+      liveText: async (p, person) => room.text(p, person),
+      baseText: async () => '', baseFor: () => base, mergeBase: async () => base,
+    })
+    watcher.start()
+    const snapshot = {
+      version: 1 as const, base, at: 1, status: 'ready' as const, truncated: false,
+      paths: ['api/pricing.py', 'api/handlers.py'],
+      edges: [{ source: 'api/pricing.py', target: 'api/handlers.py', symbols: ['total'] }],
+      observed: [{ path: 'api/pricing.py', symbol: 'total', kind: 'signature' as const, detail: 'was `def total(x):` now `def total(x, tax):`' }],
+    }
+    room.graphs.set('rohanz+codex', snapshot)
+    await watcher.flush()
+    room.graphs.set('rohanz+codex', { ...snapshot, at: 2 })
+    await watcher.flush()
+    room.graphs.set('rohanz+codex', { ...snapshot, at: 3, observed: [...snapshot.observed, { path: 'api/pricing.py', symbol: 'discount', kind: 'add' as const, detail: 'now `def discount():`' }] })
+    await watcher.flush()
+    const notices = room.messages().filter(message => message.type === 'contract')
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatchObject({ to: 'Rohan', priority: 'notify', path: 'api/pricing.py', symbol: 'total' })
+    expect(shouldWakeOnMsg(me, notices[0]).wake).toBe(true)
+    expect(notices[0].type === 'contract' && notices[0].text).toBe('rohanz+codex changed the signature of total() in api/pricing.py (was `def total(x):` now `def total(x, tax):`); api/handlers.py uses it')
+    watcher.stop()
+  })
+
   it('my edit inside a teammate\'s claim raises one interrupt to me and a notify to them, once', async () => {
     const t = setup()
     t.other.addClaim({ path: 'app.py', from: 4, to: 5, by: 'Kieran', byKind: 'agent', intent: 'rewrite b' })

@@ -2,7 +2,10 @@
 
 ## 0.6.9 — 2026-09-16
 
-- A bare 'join the room' means the team room.
+- A bare "join the room" means the team room.
+- Observed contract changes: a changed definition line in someone's diff is treated like a declared plan on that symbol. Consumers whose changed or claimed files use it get a `contract` notice, and the network view's Downstream column fills from both announced plans and observed changes (announced wins per symbol).
+- Participant colours are assigned per room in join order and kept, instead of hashed from the name, so people in the same room never share a colour.
+- Codex plugin no longer passes `GH_TOKEN`/`GITHUB_TOKEN` through to the MCP server; nothing reads them and forwarded tokens are refused by the server.
 
 ## 0.6.8 — 2026-09-15
 

@@ -263,3 +263,22 @@ themselves disclose subject matter. One-day experiment when wanted: a repo with 
 budget.csv, milestones.yaml; a lead dispatches methods/budget/delivery workers claiming
 sections; change the participant count so the budget strains; check wake-ups, preview, ledger
 export; compare with an uncoordinated pass. Parked until the coding trial is done.
+
+## 2026-09-16 — Contract changes observed from the diff; colours by join order
+
+**Why:** The network view's Downstream column only ever filled from declared `plans`, and in
+every live run the agents claimed files with an intent line and never declared plans, so the
+column was always empty. A plan is the right signal (it arrives before the edit) but the wrong
+trigger (agents rarely know at claim time that they will change a signature).
+
+**What:** The graph index compares definition lines between the base commit and the person's
+overlay; a changed, deleted or added `def`/`class`/`function`/exported `const` becomes an
+observed contract change in that person's graph snapshot. The network model treats it as a
+second-tier plan (announced wins per symbol); the conflict watcher posts a `contract` notice
+to anyone whose changed or claimed files use the symbol, once per change. Declared plans stay
+as the earlier signal and the etiquette still asks for them. Colours: hashing names into eight
+colours could give two people in one room the same colour; the doc now holds a `colors` map
+assigned by join order with a deterministic repair for concurrent joins.
+
+**Not done:** body-only changes are ignored by design; the detector is regex-based, so
+decorators and multi-line signatures beyond the header line are compared as one line.
