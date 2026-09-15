@@ -578,7 +578,7 @@ function timelineItem(item: TimelineItem): HTMLElement {
   return h('div', { class: `timeline-item ${message.type} priority-${message.priority}` },
     h('div', { class: 'item-main' },
       h('time', { title: absoluteTime(message.at) }, clockTime(message.at)),
-      h('div', { class: 'item-copy' }, ...messageBody(message), other ? h('span', { class: 'link-chip' }, `↗ ${other}`) : null, ...copyChips(item.alsoSentTo)),
+      h('div', { class: 'item-copy' }, item.addressed ? h('span', { class: 'link-chip' }, `${message.from} → ${message.to}`) : null, ...messageBody(message), other ? h('span', { class: 'link-chip' }, `↗ ${other}`) : null, ...copyChips(item.alsoSentTo)),
       priorityBadge(message)),
     item.replies.length ? h('div', { class: 'thread-replies' }, ...item.replies.map(timelineItem)) : null)
 }

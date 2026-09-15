@@ -4,6 +4,8 @@ import type { Msg, ScopeMsg } from '@room/shared'
 
 export interface TimelineItem {
   message: Msg
+  /** Filed under the addressee because the author has no active episode. */
+  addressed?: boolean
   replies: TimelineItem[]
   alsoSentTo: string[]
 }
@@ -93,9 +95,11 @@ export function groupEpisodes(messages: readonly Msg[]): Episode[] {
       }
     }
 
-    const episode = active.get(message.from)
+    const authorEpisode = active.get(message.from)
+    const episode = authorEpisode ?? (message.to ? active.get(message.to) : undefined)
     if (!episode) continue
     const item: TimelineItem = { message, replies: [], alsoSentTo: foldedMessage.alsoSentTo }
+    if (!authorEpisode) item.addressed = true
     episode.items.push(item)
     if (message.type === 'question') questions.set(message.id, { episode, item })
   }

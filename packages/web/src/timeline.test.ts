@@ -24,3 +24,17 @@ describe('timeline episodes', () => {
     expect(episodes[1].items).toEqual([])
   })
 })
+
+it('files room notices under an active addressee and drops notices without an episode', () => {
+  const scope: Msg = { id: 'scope', type: 'scope', priority: 'fyi', from: 'rohanz', fromKind: 'agent', at: 1, area: 'api', summary: 'update caller', paths: ['src'] }
+  const notice: Msg = { id: 'contract', type: 'contract', priority: 'notify', from: 'room', fromKind: 'agent', to: 'rohanz', at: 2, path: 'src/parser.ts', symbol: 'parse', text: 'parse signature changed' }
+  const episodes = groupEpisodes([
+    scope, notice,
+    { ...notice, id: 'missing', to: 'absent', at: 3 },
+    { ...notice, id: 'broadcast', to: undefined, at: 4 },
+    { id: 'note', type: 'note', priority: 'notify', from: 'room', fromKind: 'agent', to: 'rohanz', at: 5, text: 'conflict notice' },
+  ])
+  expect(episodes).toHaveLength(1)
+  expect(episodes[0].person).toBe('rohanz')
+  expect(episodes[0].items.map(item => [item.message.id, item.addressed])).toEqual([['contract', true], ['note', true]])
+})
