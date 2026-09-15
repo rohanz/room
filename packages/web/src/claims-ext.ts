@@ -21,7 +21,7 @@ class ClaimMarker extends GutterMarker {
     el.style.background = this.colors.length === 1
       ? this.colors[0]
       : `linear-gradient(to bottom, ${this.colors.map((color, index) => `${color} ${index / this.colors.length * 100}% ${(index + 1) / this.colors.length * 100}%`).join(', ')})`
-    bindTooltip(el, this.title)
+    bindTooltip(el, this.title, 'code-right')
     return el
   }
 }
@@ -68,11 +68,11 @@ export function claimsExtension(): Extension {
     EditorView.domEventHandlers({
       pointerover(event) {
         const el = (event.target as Element).closest('[data-tooltip]')
-        if (el) showTooltip(el, el.getAttribute('data-tooltip') ?? '')
+        if (el) showTooltip(el, el.getAttribute('data-tooltip') ?? '', 'code-right')
       },
       focusin(event) {
         const el = (event.target as Element).closest('[data-tooltip]')
-        if (el) showTooltip(el, el.getAttribute('data-tooltip') ?? '')
+        if (el) showTooltip(el, el.getAttribute('data-tooltip') ?? '', 'code-right')
       },
     }),
     gutter({ class: 'cm-claim-gutter', markers: v => v.state.field(claimField).marks }),

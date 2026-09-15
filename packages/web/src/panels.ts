@@ -35,7 +35,7 @@ export const h = <K extends keyof HTMLElementTagNameMap>(
   const { class: className, title, ...rest } = props
   if (className) element.className = className
   Object.assign(element, rest)
-  if (title) bindTooltip(element, title)
+  if (title) bindTooltip(element, title, className?.split(' ').includes('code-line') ? 'code-right' : 'element')
   for (const child of children) if (child != null) element.append(child)
   return element
 }
@@ -349,7 +349,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     const tag = tagOffsets.get(s)
     if (tag) {
       const label = h('button', { class: 'conflict-tag' + (s.resolved ? ' resolved' : ''), ariaLabel: tag.detail }, tag.text)
-      bindTooltip(label, tag.detail)
+      bindTooltip(label, tag.detail, 'code-right')
       // Align tags to one right edge independently of their bar's lane.
       label.style.right = lane * 4 + 4 + 'px'
       label.style.top = tag.top + 'px'

@@ -187,7 +187,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
       }
       const subtitle = node.deleted ? 'DELETED' : node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'repository root'
       if (!compact) group.append(svg('text', { x: '16', y: '46', class: 'network-directory' }, subtitle.length > 33 ? `…${subtitle.slice(-32)}` : subtitle))
-      const preview = (event: Event) => {
+      const preview = () => {
         const plans = impact.contracts.get(node.path) ?? [], affected = exposure(node.path)
         tooltip.replaceChildren(h('strong', { class: 'mono' }, node.path),
           h('div', {}, risk(node.path) === 'work' ? 'My edited or planned work' : risk(node.path) === 'upstream' ? 'Upstream dependency of my work' : risk(node.path) === 'downstream' ? 'Consumer of my planned contract change' : 'Other file'),
@@ -196,7 +196,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
           ...plans.slice(0, 2).map(p => h('div', {}, `${p.owner} · ${p.kind} ${p.symbol}: ${p.detail}`)),
           ...affected.slice(0, 2).map(p => h('div', {}, `Depends on ${p.symbol} · ${p.owner}`)),
           h('div', { class: 'muted' }, `${node.role === 'changed' ? 'You have edits here. ' : ''}Click for full plans and dependency details.`))
-        showTooltip(group, tooltip, event.type === 'pointerenter' ? event as MouseEvent : undefined)
+        showTooltip(group, tooltip)
       }
       group.onpointerenter = preview; group.onpointerleave = hideTooltip
       group.onfocus = preview; group.onblur = hideTooltip
