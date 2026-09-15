@@ -54,7 +54,9 @@ export interface ToolCtx {
   /** Pull-request integration; injectable for tests. fetch: open PRs targeting the room's branch
    *  (default GET /github/prs on the server); post: the PR comment (default POST /github/pr-note);
    *  intervalMs: mirror refresh period (default 2 min; 0 disables the timer). */
-  prs?: { fetch?: (s: Session) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
+  /** Called for a secondary session (the workers room) so the host can push its wake-ups too (index.ts attaches the Claude channel). */
+  attachChannel?: (s: Session) => void
+  prs?: { fetch?: (s: Session, opts?: { head?: boolean }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
   /** Workers (room_spawn): injectable process starter and worktree maker for tests; max running per lead (default ROOM_MAX_WORKERS or 8). */
   spawner?: Spawner
   worktree?: (repoDir: string, tag: string) => Promise<{ dir: string; branch: string; created: boolean }>
@@ -166,6 +168,8 @@ export function createTools(ctx: ToolCtx): Tools {
   /** A local room on this machine holding this lead's workers while the lead itself is in a team room. */
   let workersSession: Session | null = null
   let roomBridge: Bridge | null = null
+  /** Wake-ups from the workers room (questions to the lead, done messages): no state file, that is the team room's. */
+  let workersHooks: HooksBridge | null = null
   const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token }) })
   const attachHooks = (s: Session) => {
     if (bridge && (bridge as unknown as { s: Session }).s === s) return
@@ -220,8 +224,12 @@ export function createTools(ctx: ToolCtx): Tools {
     for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head} → ${branchOf(s.roomName)}): ${pr.files.length ? pr.files.slice(0, 8).join(', ') + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : '') : 'no files'} · ${pr.url}`)
     return out
   }
-  /** The PR this branch is the head of, if it is mirrored. */
-  const myPr = (s: Session): PrInfo | undefined => openPrs(s.room).find(p => p.head === branchOf(s.roomName))
+  /** The open PR whose head is this branch (any base), asked of GitHub; falls back to the mirror (PRs targeting this branch). */
+  const myPr = async (s: Session): Promise<PrInfo | undefined> => {
+    const head = branchOf(s.roomName)
+    try { const byHead = (await fetchPrList(s, { head: true })).find(p => p.head === head); if (byHead) return byHead } catch (e) { log(`pull requests by head: ${e instanceof Error ? e.message : String(e)}`) }
+    return openPrs(s.room).find(p => p.head === head)
+  }
   /** Render the ledger and post it as the one room comment on the PR. */
   const postLedger = async (s: Session, pr: PrInfo): Promise<string> => {
     const body = renderPrNote(s.room, { roomName: s.roomName, now: now() })
@@ -272,6 +280,9 @@ export function createTools(ctx: ToolCtx): Tools {
     workersSession = ws
     roomBridge = new Bridge(lead, ws, { log, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : undefined })
     roomBridge.start()
+    workersHooks = new HooksBridge(ws, { forMe: m => forMe(ws, m), isSeen: id => seen.has(id), log, queue: ctx.queue, writeState: false })
+    workersHooks.start()
+    ctx.attachChannel?.(ws)
     log(`workers room: ${ws.roomName} (${ws.local?.url ?? 'local'}), bridged to ${lead.roomName}`)
     return ws
   }
@@ -280,6 +291,7 @@ export function createTools(ctx: ToolCtx): Tools {
     if (!ws) return
     workersSession = null
     roomBridge?.stop(); roomBridge = null
+    workersHooks?.stop(); workersHooks = null
     try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
     await doLeave(ws)
   }
@@ -288,7 +300,7 @@ export function createTools(ctx: ToolCtx): Tools {
   /** Workers this lead has running, in its own room and in the workers room. */
   const runningWorkers = (s: Session): { s: Session; w: Worker }[] => {
     const out: { s: Session; w: Worker }[] = []
-    for (const sess of [s, workersSession]) if (sess) for (const w of myWorkers(sess)) if (w.status === 'running') out.push({ s: sess, w })
+    for (const sess of [s, workersSession]) if (sess) for (const w of myWorkers(sess)) if (w.status === 'running' || procs.has(w.tag)) out.push({ s: sess, w })
     return out
   }
   /**
@@ -300,10 +312,10 @@ export function createTools(ctx: ToolCtx): Tools {
     const proc = procs.get(w.tag)
     let how: string
     if (proc) { proc.kill(); how = `pid ${w.pid} signalled` }
-    else if (pidIsOurWorker(w.pid, w.startedAt)) { try { process.kill(-w.pid, 'SIGTERM') } catch { try { process.kill(w.pid, 'SIGTERM') } catch { /* gone */ } } how = `pid ${w.pid} signalled` }
+    else if (pidIsOurWorker(w.pid, w)) { try { process.kill(-w.pid, 'SIGTERM') } catch { try { process.kill(w.pid, 'SIGTERM') } catch { /* gone */ } } how = `pid ${w.pid} signalled` }
     else how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone`
     procs.delete(w.tag)
-    s.room.updateWorker(w.tag, { status: 'dismissed' })
+    if (w.status === 'running') s.room.updateWorker(w.tag, { status: 'dismissed' })
     s.room.post<NoteMsg>(s.me, { type: 'note', text: `dismissed worker ${w.tag} (${w.name}): ${why}` })
     return how
   }
@@ -644,7 +656,8 @@ export function createTools(ctx: ToolCtx): Tools {
       const host: WorkerHost = a.host === 'codex' ? 'codex' : 'claude'
       const model = typeof a.model === 'string' && a.model.trim() ? a.model.trim() : undefined
       const existing = s.room.workers.get(tag)
-      if (existing && existing.status === 'running') return `error: worker ${tag} is already running (pid ${existing.pid}); room_dismiss it first or pick another tag`
+      if (existing && (existing.status === 'running' || procs.has(tag))) return `error: worker ${tag} is ${existing.status === 'running' ? 'already running' : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_dismiss it first or pick another tag`
+      const gen = (existing?.gen ?? 0) + 1
       const running = myWorkers(s).filter(w => w.status === 'running')
       const max = ctx.maxWorkers ?? Number(process.env.ROOM_MAX_WORKERS ?? DEFAULT_MAX_WORKERS)
       if (running.length >= max) return `error: ${running.length} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`
@@ -667,24 +680,30 @@ export function createTools(ctx: ToolCtx): Tools {
       const prompt = workerPrompt(s.me.name, tag, task)
       const { cmd, args } = workerCommand(host, model, prompt)
       const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
-      const env: Record<string, string> = { ROOM_TAG: tag, ROOM_DIR: dir, PWD: dir, ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_LEAD: s.me.name, ...(share ? { ROOM_SHARE: share } : {}) }
+      // A shared-token server is configured as ROOM_SERVER=ws://host/?token=…: hand the worker the same string, not the stripped URL.
+      const envServer = process.env.ROOM_SERVER?.trim()
+      const serverForWorker = s.local ? LOCAL : envServer && parseServer(resolveServer(envServer)).server === server ? envServer : server
+      const env: Record<string, string> = { ROOM_TAG: tag, ROOM_DIR: dir, PWD: dir, ROOM_SERVER: serverForWorker, ROOM_ROOM: s.roomName, ROOM_LEAD: s.me.name, ROOM_OWNER: owner, ...(process.env.ROOM_TOKEN?.trim() && !s.local ? { ROOM_TOKEN: process.env.ROOM_TOKEN.trim() } : {}), ...(share ? { ROOM_SHARE: share } : {}) }
       const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
       env.ROOM_LOG_FILE = path.join(s.dir, '.room', 'workers', `${tag}.mcp.log`)
       let proc: SpawnedProcess
       try { proc = (ctx.spawner ?? defaultSpawner)({ cmd, args, cwd: dir, env, logFile }) }
       catch (e) { return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}` }
       procs.set(tag, proc)
-      const w: Worker = { tag, name, host, ...(model ? { model } : {}), task, dir, branch, pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name }
+      const w: Worker = { tag, name, host, ...(model ? { model } : {}), task, dir, branch, pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
       s.room.setWorker(w)
       proc.onError?.(err => {
-        procs.delete(tag)
         const cur = s.room.workers.get(tag)
+        if (cur?.gen !== gen) return // an older process of a reused tag
+        procs.delete(tag)
         if (cur && cur.status === 'running') s.room.updateWorker(tag, { status: 'failed', exitCode: -1, summary: `could not start ${cmd}: ${err.message}` })
         s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` })
       })
       proc.onExit(code => {
         const cur = s.room.workers.get(tag)
-        if (!cur || cur.status !== 'running') { if (cur) s.room.updateWorker(tag, { exitCode: code ?? -1 }); return }
+        if (cur?.gen !== gen) return // an older process of a reused tag: the newer record is not ours to touch
+        procs.delete(tag)
+        if (!cur || cur.status !== 'running') { s.room.updateWorker(tag, { exitCode: code ?? -1 }); return }
         const summary = cur.summary ?? (code === 0 ? 'process exited without room_done' : `process exited with code ${code}`)
         s.room.updateWorker(tag, { status: code === 0 ? 'done' : 'failed', exitCode: code ?? -1, summary })
         s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? '' : `; see ${logFile}`}` })
@@ -706,9 +725,9 @@ export function createTools(ctx: ToolCtx): Tools {
       const w = s.room.workers.get(tag)
       if (!w) return `error: no worker ${tag}`
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`
-      if (w.status !== 'running') return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`
-      const how = dismissWorker(s, w, 'dismissed by the lead')
-      return `dismissed ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`
+      if (w.status !== 'running' && !procs.has(tag)) return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`
+      const how = dismissWorker(s, w, w.status === 'running' ? 'dismissed by the lead' : `its process was stopped by the lead after it reported ${w.status}`)
+      return `${w.status === 'running' ? 'dismissed' : `stopped the ${w.status} worker`} ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`
     },
     async room_login(a) {
       const server = serverOf(a)
@@ -1048,10 +1067,14 @@ export function createTools(ctx: ToolCtx): Tools {
       return out.join('\n')
     },
     async room_send(a) {
-      const s = S()
+      const lead = S()
+      const to = typeof a.to === 'string' && a.to ? a.to : undefined
+      // A reply to a worker's question, or a message to a worker, belongs in the workers room.
+      const wsr = workersSession && workersSession !== lead ? workersSession : null
+      const inWorkersRoom = !!wsr && ((typeof a.inReplyTo === 'string' && wsr.room.messages().some(m => m.id === a.inReplyTo)) || (!!to && myWorkers(wsr).some(w => w.name === to)))
+      const s = inWorkersRoom ? wsr! : lead
       const text = typeof a.text === 'string' ? a.text : ''
       if (!text) return 'error: text is required'
-      const to = typeof a.to === 'string' && a.to ? a.to : undefined
       if (to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
@@ -1085,7 +1108,7 @@ export function createTools(ctx: ToolCtx): Tools {
         default: return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       }
       s.daemon.touch()
-      return [`sent [${msg.id}] ${formatMsg(msg)}`, ...notes].join('\n')
+      return [`sent [${msg.id}] ${formatMsg(msg)}${inWorkersRoom ? ' (in the workers room)' : ''}`, ...notes].join('\n')
     },
     async room_wait(a) {
       const s = S()
@@ -1093,7 +1116,8 @@ export function createTools(ctx: ToolCtx): Tools {
       const questionId = typeof a.questionId === 'string' && a.questionId ? a.questionId : undefined
       const timeoutMs = Math.min(WAIT_MAX, Math.max(0, Number(a.timeoutMs ?? WAIT_DEFAULT) || WAIT_DEFAULT))
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`
-      const answered = (id: string) => s.room.messages().find(m => m.type === 'answer' && m.inReplyTo === id)
+      const qRoom = questionId && workersSession && workersSession !== s && workersSession.room.messages().some(m => m.id === questionId) ? workersSession : s
+      const answered = (id: string) => qRoom.room.messages().find(m => m.type === 'answer' && m.inReplyTo === id)
       if (questionId) { const an = answered(questionId); if (an) return `answered: ${formatMsg(an)}` }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
       const result = await new Promise<string>(resolve => {
@@ -1102,6 +1126,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const onWorkersBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           if (!ws) return
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
+            if (questionId && m.type === 'answer' && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`)
             if (m.type === 'done' && m.to === ws.me.name) return finish(`worker done: ${formatMsg(m)}`)
             if (m.priority === 'interrupt' && forMe(ws, m)) return finish(`interrupt (workers room): ${formatMsg(m)}`)
             if (m.type === 'question' && m.to === ws.me.name) return finish(`question from a worker: ${formatMsg(m)}`)
@@ -1140,7 +1165,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s), scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Stay until asked, then finish.` : 'You are still in the room and will be woken for questions.'}`]
       if (a.pr_note === true) {
         await refreshPrs(s)
-        const pr = myPr(s)
+        const pr = await myPr(s)
         if (!pr) out.push(`pr_note: no open PR has ${branchOf(s.roomName)} as its head; nothing posted (room_pr_note number=<n> to pick one)`)
         else { try { out.push(await postLedger(s, pr)) } catch (e) { out.push(`pr_note failed: ${e instanceof Error ? e.message : String(e)}`) } }
       }
@@ -1156,7 +1181,7 @@ export function createTools(ctx: ToolCtx): Tools {
         if (!Number.isInteger(n) || n <= 0) return 'error: number must be a positive PR number'
         pr = openPrs(s.room).find(p => p.number === n) ?? { number: n, title: `#${n}`, author: '', head: '', files: [], updatedAt: '', url: '' }
       } else {
-        pr = myPr(s)
+        pr = await myPr(s)
         if (!pr) { const open = openPrs(s.room); return `no open PR has ${branchOf(s.roomName)} as its head${open.length ? `; open PRs targeting this branch: ${open.map(p => `#${p.number} (${p.head})`).join(', ')}. Pass number=<n>` : ''}` }
       }
       return postLedger(s, pr)

@@ -39,6 +39,8 @@ export interface HooksBridgeOptions {
   retryDelaysMs?: number[]
   /** How often to look again for a session file while wakes are pending; default 5s. */
   pendingPollMs?: number
+  /** Keep <clone>/.git/room-state.json current (default true). A second bridge on the same clone (the workers room) only wakes. */
+  writeState?: boolean
   /** Give up on a pending wake after this long; default 10 min. */
   pendingMaxMs?: number
 }
@@ -85,6 +87,7 @@ export class HooksBridge {
 
   /** Debounced: many small doc updates become one file write. */
   scheduleWrite(): void {
+    if (this.o.writeState === false) return
     if (this.timer) return
     this.timer = setTimeout(() => { this.timer = null; this.write() }, 150)
     this.timer.unref?.()
@@ -102,7 +105,7 @@ export class HooksBridge {
   async maybeWake(m: Msg): Promise<void> {
     if (!this.o.forMe(m)) return
     const baseMoved = m.type === 'base' && m.from !== this.s.me.name && this.s.room.changedPaths(this.s.me.name).length > 0
-    const wake = m.priority === 'interrupt' || (m.type === 'question' && m.to === this.s.me.name) || baseMoved
+    const wake = m.priority === 'interrupt' || (m.type === 'question' && m.to === this.s.me.name) || (m.type === 'done' && m.to === this.s.me.name) || baseMoved
     if (!wake || this.woken.has(m.id) || this.pending.has(m.id)) return
     const session = this.freshSession()
     if (!session) {

@@ -9,7 +9,7 @@
  * Workers' questions to the lead and their done messages stay local; the lead reads both rooms.
  */
 import { formatMsg, msgPaths, scopeCovers } from '@room/shared'
-import type { Claim, Msg, NoteMsg, ReleaseMsg, ScopeMsg, Worker } from '@room/shared'
+import type { Claim, Msg, NoteMsg, ReleaseMsg, Scope, ScopeMsg, Worker } from '@room/shared'
 import type { Session } from './session.js'
 
 const RELAY_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'conflict', 'plan', 'base', 'scope'])
@@ -34,6 +34,8 @@ export class Bridge {
   private timer: ReturnType<typeof setTimeout> | null = null
   private lastScopeKey = ''
   private stopped = false
+  /** The lead's own team scope (declared by the lead itself), kept underneath the workers' union. */
+  private own: Scope | undefined
 
   constructor(public team: Session, public local: Session, private o: BridgeOptions = {}) {}
 
@@ -69,17 +71,29 @@ export class Bridge {
       if (ev.transaction.local) return
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) this.relayDown(m)
     }
-    l.scopes.observe(onLocalScopes); l.workers.observe(onWorkers); l.claims.observe(onLocalClaims); l.overlays.observe(onLocalOverlays)
-    t.bus.observe(onTeamBus)
+    // The lead re-declaring its own scope (room_scope) while bridged: that becomes the new base under the union.
+    const onTeamScopes = (ev: { keysChanged: Set<string> }, tr: { origin: unknown }) => {
+      // Our own writes carry this bridge as the transaction origin; observers run after our call returned, so a flag would not do.
+      if (tr.origin === this || !ev.keysChanged.has(this.team.me.name)) return
+      this.own = this.team.room.scope(this.team.me.name)
+      this.lastScopeKey = ''
+      this.scheduleScope()
+    }
+    this.own = t.scope(this.team.me.name)
+    l.scopes.observe(onLocalScopes); l.workers.observe(onWorkers); l.claims.observe(onLocalClaims)
+    // Deep: a worker editing an already-shared file, deleting one, or its overlay clock ticking all change what it touches.
+    l.overlays.observeDeep(onLocalOverlays); l.deleted.observeDeep(onLocalOverlays); l.overlayAt.observe(onLocalOverlays)
+    t.bus.observe(onTeamBus); t.scopes.observe(onTeamScopes)
     this.unobserve.push(
       () => l.scopes.unobserve(onLocalScopes), () => l.workers.unobserve(onWorkers), () => l.claims.unobserve(onLocalClaims),
-      () => l.overlays.unobserve(onLocalOverlays), () => t.bus.unobserve(onTeamBus),
+      () => l.overlays.unobserveDeep(onLocalOverlays), () => l.deleted.unobserveDeep(onLocalOverlays), () => l.overlayAt.unobserve(onLocalOverlays),
+      () => t.bus.unobserve(onTeamBus), () => t.scopes.unobserve(onTeamScopes),
     )
     for (const c of l.openClaims()) this.mirrorClaim(c.id)
     this.scheduleScope()
   }
 
-  /** Remove mirrored claims and stop observing. The team scope is left as it stands (the lead clears it on leave). */
+  /** Remove mirrored claims and stop observing. The lead's own scope is restored (the union was ours). */
   stop(): void {
     this.stopped = true
     if (this.timer) clearTimeout(this.timer)
@@ -87,6 +101,9 @@ export class Bridge {
     this.unobserve = []
     for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId)
     this.mirrored.clear()
+    const me = this.team.me.name
+    if (this.own) this.team.room.setScope(this.own, this)
+    else if (this.lastScopeKey && this.team.room.scope(me)) this.team.room.clearScope(me, this)
   }
 
   private scheduleScope(): void {
@@ -98,23 +115,33 @@ export class Bridge {
     this.timer.unref?.()
   }
 
-  /** The lead's team scope = union of its workers' declared and changed paths. */
+  /** The lead's team scope = its own declared scope plus the union of its workers' declared and changed paths. */
   syncScope(): void {
     if (this.stopped) return
     const ws = this.workers()
-    const paths = this.workerPaths()
-    const key = JSON.stringify([ws.map(w => w.tag), paths])
+    const workerPaths = this.workerPaths()
+    const own = this.own
+    const paths = Array.from(new Set([...(own?.paths ?? []), ...workerPaths])).sort()
+    const key = JSON.stringify([ws.map(w => w.tag), paths, own?.area, own?.summary])
     if (key === this.lastScopeKey) return
     this.lastScopeKey = key
     const me = this.team.me
-    if (!paths.length) { if (this.team.room.scope(me.name)) this.team.room.clearScope(me.name); return }
-    const areas = ws.map(w => this.local.room.scope(w.name)?.area).filter((a): a is string => !!a)
-    const area = areas[0] ?? 'workers'
-    const summary = `lead of ${ws.length} worker${ws.length === 1 ? '' : 's'}: ${ws.map(w => `${w.tag} (${w.task.slice(0, 40)})`).join('; ')}`
-    const prev = this.team.room.scope(me.name)
-    this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...(prev?.areas ? { areas: prev.areas } : {}) })
-    this.team.room.post<ScopeMsg>(me, { type: 'scope', area, summary, paths })
-    this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) from ${ws.length} worker(s)`)
+    {
+      if (!workerPaths.length) {
+        // No worker activity: the team sees exactly what the lead declared for itself.
+        if (own) this.team.room.setScope(own, this)
+        else if (this.team.room.scope(me.name)) this.team.room.clearScope(me.name, this)
+        return
+      }
+      const areas = ws.map(w => this.local.room.scope(w.name)?.area).filter((a): a is string => !!a)
+      const area = own?.area ?? areas[0] ?? 'workers'
+      const lead = `lead of ${ws.length} worker${ws.length === 1 ? '' : 's'}: ${ws.map(w => `${w.tag} (${w.task.slice(0, 40)})`).join('; ')}`
+      const summary = own ? `own: ${own.summary} · ${lead}` : lead
+      const prev = this.team.room.scope(me.name)
+      this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...(prev?.areas ? { areas: prev.areas } : {}) }, this)
+      this.team.room.post<ScopeMsg>(me, { type: 'scope', area, summary, paths })
+      this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) (${own ? `${own.paths.length} own, ` : ''}${workerPaths.length} from ${ws.length} worker(s))`)
+    }
   }
 
   private mirrorClaim(localId: string): void {

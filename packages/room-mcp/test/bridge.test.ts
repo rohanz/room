@@ -139,3 +139,45 @@ describe('Bridge hardening', () => {
     expect(notes()[1].priority).toBe('notify')
   })
 })
+
+describe('Bridge review fixes', () => {
+  it("keeps the lead's own scope underneath the workers' union and restores it when workers go quiet or the bridge stops (fix 11)", () => {
+    const team = pair(), local = pair()
+    team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
+    const teamLead = fakeSession(team.a, lead, 'github.com/rohanz/x/main', false)
+    const localLead = fakeSession(local.a, lead, 'local/x/main', true)
+    team.a.setScope({ by: lead.name, byKind: 'agent', area: 'api', summary: 'auth endpoint', paths: ['api/auth.py'] })
+    local.a.setWorker({ tag: 'money', name: worker.name, host: 'claude', task: 'cents', dir, branch: 'room/money', pid: 1, startedAt: 1, status: 'running', lead: lead.name })
+    const bridge = new Bridge(teamLead, localLead, { debounceMs: 0 })
+    bridge.start()
+    expect(team.b.scope('rohanz')!.paths).toEqual(['api/auth.py'])
+    local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
+    const sc = team.b.scope('rohanz')!
+    expect(sc.paths).toEqual(['api/auth.py', 'api/models.py'])
+    expect(sc.area).toBe('api')
+    expect(sc.summary).toBe('own: auth endpoint · lead of 1 worker: money (cents)')
+    // the lead re-declares its own scope while bridged: the union follows
+    team.a.setScope({ by: lead.name, byKind: 'agent', area: 'api', summary: 'auth + sessions', paths: ['api/auth.py', 'api/session.py'] })
+    expect(team.b.scope('rohanz')!.paths).toEqual(['api/auth.py', 'api/models.py', 'api/session.py'])
+    // worker gone: exactly the lead's own scope again
+    local.a.clearScope(worker.name)
+    expect(team.b.scope('rohanz')).toMatchObject({ summary: 'auth + sessions', paths: ['api/auth.py', 'api/session.py'] })
+    local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
+    bridge.stop()
+    expect(team.b.scope('rohanz')).toMatchObject({ summary: 'auth + sessions', paths: ['api/auth.py', 'api/session.py'] })
+  })
+
+  it("a worker editing an already-shared file or deleting one refreshes the mirrored scope (fix 12)", () => {
+    const t = setup()
+    t.local.b.setOverlay(worker.name, 'app.py', 'x = 2\n')
+    expect(t.team.b.scope('rohanz')!.paths).toEqual(['app.py'])
+    // nested change to the same overlay text: still covered, no crash, scope unchanged
+    t.local.b.setOverlay(worker.name, 'app.py', 'x = 3\n')
+    expect(t.team.b.scope('rohanz')!.paths).toEqual(['app.py'])
+    // a deletion is a change the team must see
+    t.local.b.markDeleted(worker.name, 'old.py')
+    expect(t.team.b.scope('rohanz')!.paths).toEqual(['app.py', 'old.py'])
+    t.local.b.unmarkDeleted(worker.name, 'old.py')
+    expect(t.team.b.scope('rohanz')!.paths).toEqual(['app.py'])
+  })
+})

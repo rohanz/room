@@ -353,7 +353,8 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
 /** Local mode: no server, no login. The clone's shared git dir hosts a relay; every worktree of the clone shares the room. */
 async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const roomName = opts.room ?? await localRoomName(dir, opts.localBranch)
-  const owner = opts.name ?? await defaultName(dir)
+  // A dispatched worker is named after its lead's verified owner (ROOM_OWNER), not this clone's git config.
+  const owner = opts.name ?? (process.env.ROOM_OWNER?.trim() || await defaultName(dir))
   if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
   const label = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, '') || undefined
   const kindEnv = (opts.kind ?? process.env.ROOM_KIND)?.trim()

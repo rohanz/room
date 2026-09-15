@@ -114,6 +114,8 @@ export interface Worker {
   exitCode?: number
   /** Participant name of the lead that spawned it. */
   lead: string
+  /** Spawn generation for this tag: exit callbacks of an older process must not touch a newer record. */
+  gen?: number
 }
 
 export interface Meta {

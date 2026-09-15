@@ -26,7 +26,8 @@
         "ROOM_SHARE",
         "ROOM_KIND",
         "ROOM_MAX_WORKERS",
-        "ROOM_LOG_FILE"
+        "ROOM_LOG_FILE",
+        "ROOM_OWNER"
       ],
       "startup_timeout_sec": 30
     }

@@ -81,10 +81,10 @@ export function prLeader(present: string[]): string | undefined {
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
 const query = (o: Record<string, string | undefined>) => Object.entries(o).filter((e): e is [string, string] => !!e[1]).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')
 
-/** GET /github/prs on the session's server: open PRs targeting this room's branch. */
-export async function fetchPrs(s: Session): Promise<PrInfo[]> {
+/** GET /github/prs on the session's server: open PRs targeting this room's branch, or (`head`) the PRs whose head is this branch. */
+export async function fetchPrs(s: Session, opts: { head?: boolean } = {}): Promise<PrInfo[]> {
   const a = await authFor(s)
-  const res = await fetch(`${httpOf(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, gh: a.gh, token: a.token })}`, { signal: AbortSignal.timeout(20000) })
+  const res = await fetch(`${httpOf(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, gh: a.gh, token: a.token, head: opts.head ? '1' : undefined })}`, { signal: AbortSignal.timeout(20000) })
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
   return await res.json() as PrInfo[]
 }

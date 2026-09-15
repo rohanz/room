@@ -90,23 +90,30 @@ export function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
 }
 
-/** When a process started (ms since epoch), from `ps -o lstart=`; undefined when unknown. */
-export function processStartTime(pid: number): number | undefined {
+export interface ProcessInfo { start?: number; command?: string }
+/** What `ps` knows about a pid: start time (ms since epoch) and command line; undefined when unknown. */
+export function probeProcess(pid: number): ProcessInfo | undefined {
   if (!pid || pid <= 0) return undefined
   try {
-    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim()
-    if (!out) return undefined
-    const t = Date.parse(out)
-    return Number.isFinite(t) ? t : undefined
+    const start = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim()
+    const command = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim()
+    const t = Date.parse(start)
+    return { ...(Number.isFinite(t) ? { start: t } : {}), ...(command ? { command } : {}) }
   } catch { return undefined }
 }
 
-/** May this session signal `pid` as worker `startedAt`? Only when it is alive and started no earlier than the worker record (allowing clock slop). */
-export function pidIsOurWorker(pid: number, startedAt: number): boolean {
+/**
+ * May this session signal `pid` as this worker? Only when it is alive, started within 5 s of the recorded
+ * spawn, and its command line is a claude/codex invocation mentioning the worker's tag or worktree.
+ * A recycled pid after a lead restart fails at least one of these.
+ */
+export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string; dir: string }, probe: (pid: number) => ProcessInfo | undefined = probeProcess): boolean {
   if (!pidAlive(pid)) return false
-  const began = processStartTime(pid)
-  if (began === undefined) return false
-  return began >= startedAt - 5000
+  const info = probe(pid)
+  if (!info?.start || !info.command) return false
+  if (Math.abs(info.start - w.startedAt) > 5000) return false
+  if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info.command)) return false
+  return info.command.includes(w.tag) || info.command.includes(w.dir)
 }
 
 /** One line per worker of this lead, for room_state. */

@@ -193,3 +193,19 @@ describe('ledger to PR', () => {
     expect(await failing.call('room_pr_note', {})).toBe('error: HTTP 403 no GitHub token')
   })
 })
+
+describe('PR selection by head (fix 13)', () => {
+  it('room_pr_note and room_done pick the open PR whose head is this branch even when it targets another branch', async () => {
+    const { a } = pair(); a.setMeta({ repo: 'x', branch: 'feat/login', base })
+    const posted: number[] = []
+    const asks: { head?: boolean }[] = []
+    const featPr = { number: 21, title: 'Login', author: 'rohanz', head: 'feat/login', files: ['src/auth.py'], updatedAt: '', url: 'https://github.com/o/r/pull/21' }
+    const s = session(a, { name: 'rohanz', kind: 'agent', owner: 'rohanz' })
+    s.roomName = 'github.com/o/r/feat/login'
+    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: { intervalMs: 0, fetch: async (_s, opts) => { asks.push(opts ?? {}); return opts?.head ? [featPr] : [] }, post: async (_s, number) => { posted.push(number); return { url: 'u', updated: false } } } })
+    const out = await tools.call('room_pr_note', {})
+    expect(out).toContain('PR #21')
+    expect(posted).toEqual([21])
+    expect(asks.some(x => x.head === true)).toBe(true)
+  })
+})
