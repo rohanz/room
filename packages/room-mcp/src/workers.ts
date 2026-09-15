@@ -79,7 +79,7 @@ export async function prepareWorktree(repoDir: string, tag: string): Promise<{ d
  * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG, ROOM_LEAD,
  * ROOM_OWNER, ROOM_SHARE, ROOM_GEN, ROOM_LOG_FILE and, when the lead joined with one, ROOM_TOKEN).
  */
-export const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_LOG_FILE', 'ROOM_KIND'] as const
+export const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_WORKER_ID', 'ROOM_LOG_FILE', 'ROOM_KIND'] as const
 /** The environment a worker process starts with: the lead's, minus LEAD_ONLY_ENV, plus the spec's variables. */
 export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
