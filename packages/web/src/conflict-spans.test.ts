@@ -1,5 +1,7 @@
+/// <reference types="node" />
+import { readFileSync } from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
-import { deriveConflictSpans, type Claim, type Msg } from '@room/shared'
+import { colorFor, deriveConflictSpans, type Claim, type Msg } from '@room/shared'
 import { collapseConflictTimeline } from './timeline.ts'
 import { renderCodeLines } from './panels.ts'
 
@@ -43,19 +45,67 @@ it('folds pairwise merge notes and both addressed overlap notifications', () => 
 })
 
 class Element {
-  className = ''; children: (Element | string)[] = []; style = { setProperty() {}, gridRow: '', gridColumn: '', gridTemplateColumns: '' }; dataset = {}
+  className = ''; children: (Element | string)[] = []; properties = new Map<string, string>(); style = { setProperty: (name: string, value: string) => this.properties.set(name, value), gridRow: '', gridColumn: '', gridTemplateColumns: '' }; dataset = {}
+  ariaLabel = ''; onfocus?: () => void; onmouseenter?: () => void
+  get textContent(): string { return this.children.map(c => typeof c === 'string' ? c : c.textContent).join('') }
   classList = { add: (name: string) => { this.className += ` ${name}` } }
   append(...children: (Element | string)[]) { this.children.push(...children) }
   replaceChildren(...children: (Element | string)[]) { this.children = children }
   find(cls: string): Element[] { return [...(this.className.split(' ').includes(cls) ? [this] : []), ...this.children.flatMap(c => typeof c === 'string' ? [] : c.find(cls))] }
 }
 afterEach(() => vi.unstubAllGlobals())
-it('renders a six-line text conflict as one pill and one bracket', () => {
+it('renders a six-line text conflict as one labeled two-tone bar', () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
   const host = new Element()
   renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 6 }, (_, i) => ({ text: 'changed', side: i < 3 ? 'a' : 'b', conflict: true })), ['money', 'tiers'])
-  expect(host.find('conflict-pill')).toHaveLength(1)
-  expect(host.find('conflict-bracket')).toHaveLength(1)
-  expect(host.find('conflict-bracket')[0].style.gridRow).toBe('1 / 7')
+  expect(host.find('conflict-span-label').map(label => label.textContent)).toEqual(['conflict'])
+  expect(host.find('conflict-bracket')).toHaveLength(0)
+  expect(host.find('conflict-bar')).toHaveLength(1)
+  const bar = host.find('conflict-bar')[0]
+  expect(bar.style.gridRow).toBe('1 / 7')
+  expect(bar.properties.get('--conflict-a')).toBe(colorFor('money'))
+  expect(bar.properties.get('--conflict-b')).toBe(colorFor('tiers'))
+  expect(bar.ariaLabel).toContain('money ↔ tiers')
+  expect(bar.ariaLabel).toContain('Unresolved')
+  expect(bar.onfocus).toBeTypeOf('function')
+  expect(bar.onmouseenter).toBeTypeOf('function')
   expect(host.find('conflict-line')).toHaveLength(6)
+})
+
+it('packs overlapping spans into one 32px gutter, reuses lanes, and includes intent and resolution details', () => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const host = new Element()
+  const span = deriveConflictSpans([conflict], claims)[0]
+  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 12 }, (_, i) => ({ text: 'code', side: 'common', conflict: false, aLine: i + 1 })), ['money', 'tiers'], undefined, [
+    span,
+    { ...span, id: 'overlap', people: ['money', 'third'], from: 3, to: 6 },
+    { ...span, id: 'resolved', from: 9, to: 11, resolvedBy: { how: 'released', who: 'money', at: 20 } },
+  ])
+  expect(host.find('conflict-span-gutter')).toHaveLength(1)
+  expect(host.find('conflict-code-grid')[0].style.gridTemplateColumns).toBe('32px minmax(max-content, 1fr)')
+  expect(host.find('code-line').every(row => row.style.gridColumn === '2')).toBe(true)
+  expect(host.find('conflict-span-gutter')[0].style.gridTemplateColumns).toBe('repeat(2, 3px)')
+  const bars = host.find('conflict-bar')
+  expect(bars.map(bar => bar.style.gridColumn)).toEqual(['1', '2', '1'])
+  expect(bars.map(bar => bar.style.gridRow)).toEqual(['2 / 8', '3 / 7', '9 / 12'])
+  expect(bars[1].properties.get('--conflict-b')).toBe(colorFor('third'))
+  expect(host.find('conflict-span-label').map(label => label.textContent)).toEqual(['conflict', 'conflict', 'resolved'])
+  expect(bars[0].ariaLabel).toContain('money: update money')
+  expect(bars[0].ariaLabel).toContain('tiers: update tiers')
+  expect(bars[2].className).toContain('resolved')
+  expect(bars[2].ariaLabel).toContain('resolved · money released')
+  expect(host.find('resolved-conflict-line')).toHaveLength(3)
+})
+it('constrains the gutter and uses slim split-color bars with hover and focus tooltips', () => {
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  const gutter = css.match(/\.conflict-span-gutter \{([^}]+)\}/)![1]
+  expect(gutter).toContain('width: 32px')
+  expect(gutter).toContain('max-width: 32px')
+  expect(gutter).toContain('overflow-x: auto')
+  const bar = css.match(/\.conflict-bar \{([^}]+)\}/)![1]
+  expect(bar).toContain('width: 3px')
+  expect(bar).toContain('border: 0')
+  expect(bar).toContain('linear-gradient(to right, var(--conflict-a) 0 50%, var(--conflict-b) 50% 100%)')
+  expect(css).toContain('.conflict-bar.resolved { background: var(--muted); }')
+  expect(css).toContain('.conflict-bar:hover .conflict-tooltip, .conflict-bar:focus .conflict-tooltip { display: block; }')
 })

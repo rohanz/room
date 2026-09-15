@@ -246,31 +246,56 @@ export function conflictCard(span: ConflictSpan, expanded?: Set<string>): HTMLEl
 
 export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: [string, string], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = []): void {
   const rows = lines.map(line => lineElement(line, names, line.prefix, claimsAt))
-  const spans: { start: number; end: number; label: string; detail: string; resolved: boolean }[] = []
+  const spans: { start: number; end: number; people: readonly string[]; detail: string; resolved: boolean }[] = []
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].conflict) continue
     const start = i
     while (i + 1 < lines.length && lines[i + 1].conflict) i++
-    spans.push({ start, end: i, label: `conflict · ${names.join(' ↔ ')}`, detail: 'both sides changed these lines', resolved: false })
+    const intents = new Map<string, string>()
+    for (let row = start; row <= i; row++) {
+      for (const [person, line] of [[names[0], lines[row].aLine], [names[1], lines[row].bLine]] as const) {
+        if (line !== undefined) for (const claim of claimsAt?.(person, line) ?? []) intents.set(claim.id, person + ': ' + claim.intent)
+      }
+    }
+    spans.push({ start, end: i, people: names, detail: names.join(' ↔ ') + '\nUnresolved: both sides changed these lines\n' + ([...intents.values()].join('\n') || 'Claim intents unavailable'), resolved: false })
   }
   for (const s of conflicts) {
     if (s.hidden || s.from === undefined || s.to === undefined) continue
     const indices = lines.flatMap((line, i) => [line.aLine, line.bLine].some(n => n !== undefined && n >= s.from! && n <= s.to!) ? [i] : [])
     if (!indices.length) continue
-    spans.push({ start: indices[0], end: indices.at(-1)!, label: resolutionLabel(s), detail: s.claims.map(c => `${c.by}: ${c.intent}${c.plans?.length ? ` (plans: ${formatPlans(c.plans)})` : ''}`).join('\n'), resolved: !!s.resolvedBy })
+    spans.push({ start: indices[0], end: indices.at(-1)!, people: s.people, detail: s.people.join(' ↔ ') + '\n' + (s.resolvedBy ? resolutionLabel(s) : 'Unresolved conflict') + '\n' + s.claims.map(c => `${c.by}: ${c.intent}${c.plans?.length ? ` (plans: ${formatPlans(c.plans)})` : ''}`).join('\n'), resolved: !!s.resolvedBy })
   }
   const grid = h('div', { class: 'conflict-code-grid' }, ...rows)
-  rows.forEach((row, i) => { row.style.gridRow = String(i + 1); row.style.gridColumn = String(spans.length + 1) })
-  spans.forEach((s, lane) => {
+  rows.forEach((row, i) => { row.style.gridRow = String(i + 1); row.style.gridColumn = '2' })
+  const gutter = h('div', { class: 'conflict-span-gutter' })
+  gutter.style.gridRow = '1 / ' + (lines.length + 1)
+  const laneEnds: number[] = []
+  spans.sort((a, b) => a.start - b.start || a.end - b.end).forEach(s => {
+    let lane = laneEnds.findIndex(end => end < s.start)
+    if (lane === -1) lane = laneEnds.length
+    laneEnds[lane] = s.end
     const tooltip = h('span', { class: 'conflict-tooltip', role: 'tooltip' }, s.detail)
-    const pill = h('button', { class: 'conflict-pill', ariaLabel: `${s.label}. ${s.detail}` }, s.label, tooltip)
-    const bracket = h('div', { class: `conflict-bracket${s.resolved ? ' resolved' : ''}` }, pill)
-    bracket.style.gridRow = `${s.start + 1} / ${s.end + 2}`
-    bracket.style.gridColumn = String(lane + 1)
+    const label = h('span', { class: 'conflict-span-label' }, s.resolved ? 'resolved' : 'conflict')
+    const bar = h('button', { class: 'conflict-bar' + (s.resolved ? ' resolved' : ''), ariaLabel: s.detail }, label, tooltip)
+    bar.style.setProperty('--conflict-a', colorFor(s.people[0] ?? names[0]))
+    bar.style.setProperty('--conflict-b', colorFor(s.people[1] ?? names[1]))
+    // Stagger labels within the top of overlapping spans, without widening the gutter.
+    label.style.left = -lane * 3 + 'px'
+    label.style.top = lane * 10 + 'px'
+    const positionTooltip = () => {
+      const rect = bar.getBoundingClientRect()
+      tooltip.style.left = Math.max(8, Math.min(rect.right + 8, window.innerWidth - 300)) + 'px'
+      tooltip.style.top = Math.max(8, Math.min(rect.top, window.innerHeight - 160)) + 'px'
+    }
+    bar.onmouseenter = positionTooltip; bar.onfocus = positionTooltip
+    bar.style.gridRow = s.start + 1 + ' / ' + (s.end + 2)
+    bar.style.gridColumn = String(lane + 1)
     for (let i = s.start; i <= s.end; i++) rows[i].classList.add(s.resolved ? 'resolved-conflict-line' : 'conflict-line')
-    grid.append(bracket)
+    gutter.append(bar)
   })
-  grid.style.gridTemplateColumns = `${spans.map(() => 'max-content').join(' ')} minmax(max-content, 1fr)`
+  gutter.style.gridTemplateColumns = 'repeat(' + Math.max(1, laneEnds.length) + ', 3px)'
+  grid.style.gridTemplateColumns = (spans.length ? '32px' : '0') + ' minmax(max-content, 1fr)'
+  if (spans.length) grid.append(gutter)
   host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, grid))
 }
 
