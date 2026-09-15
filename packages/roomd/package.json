@@ -8,6 +8,7 @@
   "bin": { "roomd": "./src/cli.ts" },
   "scripts": { "start": "tsx src/cli.ts" },
   "dependencies": {
+    "@room/relay": "*",
     "@room/shared": "*",
     "chokidar": "^4.0.3",
     "lib0": "^0.2.117",
