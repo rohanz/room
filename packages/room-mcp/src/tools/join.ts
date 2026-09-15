@@ -160,7 +160,8 @@ export function install(state: HandlerState): void {
         return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`
       }
     }
-  const STALE_MS = (ctx.config?.staleDays ?? 7) * 24 * 60 * 60 * 1000
+  const envStaleDays = Number(process.env.ROOM_STALE_DAYS)
+  const STALE_MS = (ctx.config?.staleDays ?? (Number.isFinite(envStaleDays) && envStaleDays > 0 ? envStaleDays : 7)) * 24 * 60 * 60 * 1000
   const evictStale = (s: Session): string[] => {
       const here = new Set(presences(s).map(p => p.user.name))
       const gone: string[] = []
@@ -186,7 +187,7 @@ export function install(state: HandlerState): void {
       s.room.clearScope(s.me.name)
       return released.length
     }
-  const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server); return r === LOCAL ? LOCAL : parseServer(r).server }
+  const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`
   const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
       ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.`

@@ -27,7 +27,9 @@ export function setPending(server: string, p: PendingLogin | undefined): void {
 
 export function credentialsPath(): string {
   if (configuredPath) return configuredPath
-  const base = path.join(os.homedir(), '.config')
+  const fromEnv = process.env.ROOM_CREDENTIALS?.trim()
+  if (fromEnv) return fromEnv
+  const base = process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), '.config')
   return path.join(base, 'room', 'credentials.json')
 }
 
