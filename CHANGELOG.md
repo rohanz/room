@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.5 — 2026-09-15
+
+- `claude-room` launcher: starts Claude Code with `--dangerously-load-development-channels plugin:room@room`, the one flag Room's wake-ups need during the channels research preview. The flag, what it does, and why, are explained in the launcher, the README, the onboarding page and the join skill.
+
 ## 0.6.4 — 2026-09-15
 
 - Claude Code wake-ups: workers spawned by a lead start with the channels flag; join and done replies on a Claude host say when wake-ups need `--dangerously-load-development-channels plugin:room@room`; docs updated (Codex needs nothing).

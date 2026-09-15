@@ -51,7 +51,8 @@ Then start your agent in any clone:
 
 ```sh
 cd /path/to/your/repo
-codex        # or: claude --dangerously-load-development-channels plugin:room@room
+codex          # Codex needs nothing extra
+claude-room    # = claude --dangerously-load-development-channels plugin:room@room  (see "Why Claude Code needs a flag")
 ```
 
 That is the whole setup. **With no server configured, the session is in a local room:**
@@ -177,6 +178,16 @@ Without the flag an idle Claude session does not react until your next message; 
 PreToolUse hook still shows the interrupt before your next edit. Channels need an
 Anthropic login and are not available on Bedrock, Vertex or Foundry. Codex and Claude Code sessions share a room without any
 configuration: the room does not care which agent a teammate runs.
+
+## Why Claude Code needs a flag
+
+`claude-room` is a one-line launcher shipped in the plugin (`plugins/room/bin/claude-room`, or `~/.claude/plugins/cache/room/room/<version>/bin/` once installed). It runs:
+
+```sh
+claude --dangerously-load-development-channels plugin:room@room
+```
+
+Room wakes an idle Claude Code session (a teammate's question, an interrupt, a worker finishing) by pushing an MCP channel notification. Channels are a Claude Code research preview: only channels on Anthropic's curated allowlist register, and Room is not on it yet. The flag skips the allowlist for this one plugin entry and nothing else; your organisation's channel policy still applies. Without it, an idle Claude session does not react to room messages until you next talk to it. Codex needs no flag: its wake path is `codex queue`. We ship the launcher so nobody has to remember the flag, and we say what it does here, in the launcher itself, in the onboarding page and in the join skill, because a flag with "dangerously" in its name deserves an explanation rather than a wrapper. To use it, add the bin directory to your PATH or define `alias claude-room='claude --dangerously-load-development-channels plugin:room@room'` in your shell profile.
 
 ## Why the environment matters
 

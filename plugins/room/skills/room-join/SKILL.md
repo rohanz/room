@@ -41,4 +41,4 @@ Tell the user in one line who else is in the room and what they are on.
 
 `room_leave` when the user says they are done.
 
-On Claude Code, wake-ups (a teammate's question or interrupt while you are idle) only arrive if the session was started with `claude --dangerously-load-development-channels plugin:room@room`. When you call room_done or otherwise go idle in a team room, tell the user in one line that you will only see new room messages on their next message unless Claude Code was started with that flag.
+On Claude Code, wake-ups (a teammate's question or interrupt while you are idle) only arrive if the session was started with `claude --dangerously-load-development-channels plugin:room@room` (the plugin's `claude-room` launcher does exactly that). Why: channels are a Claude Code research preview with a curated allowlist that Room is not on; the flag admits this one plugin entry and nothing else. When you call room_done or otherwise go idle in a team room, tell the user in one line that you will only see new room messages on their next message unless Claude Code was started with that flag.

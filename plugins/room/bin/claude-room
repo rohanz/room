@@ -1,0 +1,15 @@
+#!/bin/sh
+# claude-room: start Claude Code with Room's wake-up channel registered.
+#
+# This adds exactly one flag:  --dangerously-load-development-channels plugin:room@room
+#
+# Why: Room wakes an idle Claude Code session (a teammate's question, an interrupt, a
+# worker finishing) by pushing an MCP "channel" notification. Channels are a Claude Code
+# research preview: only channels on Anthropic's curated allowlist register, and Room is
+# not on it (yet). The flag skips the allowlist for this one plugin entry and nothing else;
+# your organisation's channel policy still applies. Without it, an idle Claude session
+# does not react to room messages until you next talk to it. Codex needs no flag: its
+# wake path is `codex queue`.
+#
+# Override the entry with ROOM_CLAUDE_CHANNEL; everything else is passed through to claude.
+exec claude --dangerously-load-development-channels "${ROOM_CLAUDE_CHANNEL:-plugin:room@room}" "$@"

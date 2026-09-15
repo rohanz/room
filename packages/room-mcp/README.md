@@ -222,3 +222,7 @@ Wake-ups: interrupts and questions addressed to you reach an idle Codex thread t
 - The bridge relays team plans, conflicts and base moves to workers as interrupts; scopes,
   claims and change notices arrive at notify, at most once a minute per worker, path and
   type. When a worker's claim ends, the team gets a release naming any unfulfilled plans.
+
+## Claude Code and the channels flag
+
+Wake-ups reach Claude Code through the MCP channel capability, which is a research preview with an Anthropic-curated allowlist. Room is not on it, so a Claude Code session must be started with `claude --dangerously-load-development-channels plugin:room@room` for wake-ups to arrive; the plugin ships `bin/claude-room` which does exactly that and nothing else. The flag bypasses the allowlist for that one entry; organisation policy still applies. Codex wakes through `codex queue` and needs no flag.
