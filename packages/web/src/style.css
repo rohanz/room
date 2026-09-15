@@ -300,14 +300,15 @@ h2 { margin: 0 0 10px; font-size: 17px; }
 
 /* New timeline arrivals ease in; existing ones stay still on re-render. */
 @keyframes room-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-@keyframes room-flash { from { background: color-mix(in srgb, var(--accent) 18%, white); } to { background: transparent; } }
+@keyframes room-flash { from { background: var(--flash-background); } to { background: transparent; } }
 .episode.enter { animation: room-enter .45s ease-out both; }
 .timeline-item.enter { animation: room-enter .35s ease-out both, room-flash 1.8s ease-out both; }
 @media (prefers-reduced-motion: reduce) { .episode.enter, .timeline-item.enter { animation: none; } }
 
 /* Room design system: shared by the board and inspector. */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
+  --flash-background: color-mix(in srgb, var(--accent) 18%, white);
   --bg: #fff; --surface: #fff; --ink: #334155; --heading: #14204a;
   --muted: #596579; --line: #e5e7eb; --line-soft: #edf0f4;
   --accent: #1e6bff; --accent-text: #1555cd; --floor: #dce9fb;
@@ -445,8 +446,8 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
   .viewer { flex: 1; }
   .network-controls input[type=search] { width: 100%; }
 }
-@media (prefers-color-scheme: dark) {
-  :root { --bg: #0f1629; --surface: #141e33; --ink: #d7e0ee; --heading: #edf3ff; --muted: #a5b3c8; --line: #33415b; --line-soft: #1b2942; --floor: #1d355b; --accent-text: #8fb8ff; --danger: #ffada5; --ok: #88dca5; --warn: #f5cf89; --purple: #8fb8ff; }
+:root[data-theme="dark"] {
+  & { color-scheme: dark; --bg: #0f1629; --surface: #141e33; --ink: #d7e0ee; --heading: #edf3ff; --muted: #a5b3c8; --line: #33415b; --line-soft: #1b2942; --floor: #1d355b; --accent-text: #8fb8ff; --danger: #ffada5; --ok: #88dca5; --warn: #f5cf89; --purple: #8fb8ff; }
   .reconnecting { background: #352914; border-color: #70572d; }
   .priority.interrupt, .timeline-item.conflict { background: #3e242b; color: var(--danger); }
   .priority.done, .episode-status.done, .state-pill.done, .state-pill.ahead { background: #19392e; color: var(--ok); }
@@ -461,6 +462,24 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
   .cm-activeLine, .cm-activeLineGutter { background: var(--line-soft) !important; }
   .cm-cursor { border-left-color: var(--ink); }
 }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    & { color-scheme: dark; --bg: #0f1629; --surface: #141e33; --ink: #d7e0ee; --heading: #edf3ff; --muted: #a5b3c8; --line: #33415b; --line-soft: #1b2942; --floor: #1d355b; --accent-text: #8fb8ff; --danger: #ffada5; --ok: #88dca5; --warn: #f5cf89; --purple: #8fb8ff; }
+    .reconnecting { background: #352914; border-color: #70572d; }
+    .priority.interrupt, .timeline-item.conflict { background: #3e242b; color: var(--danger); }
+    .priority.done, .episode-status.done, .state-pill.done, .state-pill.ahead { background: #19392e; color: var(--ok); }
+    .state-pill.editing, .state-pill.working, .link-chip, .symbol-list { background: var(--floor); color: var(--accent-text); border-color: var(--line); }
+    .state-pill.waiting, .state-pill.behind, .episode-status { background: #352914; color: var(--warn); }
+    .thread-replies .timeline-item { background: var(--line-soft); }
+    .network-node.changed rect { fill: var(--floor); }
+    .network-node.upstream rect { fill: #352914; }
+    .network-node:focus rect, .network-node:hover rect, .network-node.selected rect { stroke: var(--accent-text); }
+    .network-canvas { background-image: radial-gradient(var(--line) .75px, transparent .75px); }
+    .cm-editor { color: var(--ink); background: var(--surface); }
+    .cm-activeLine, .cm-activeLineGutter { background: var(--line-soft) !important; }
+    .cm-cursor { border-left-color: var(--ink); }
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
@@ -474,7 +493,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .network-node:focus-visible rect { stroke: var(--accent); stroke-width: 3; }
 
 /* Dark overrides for legacy light-only surfaces and graph annotations. */
-@media (prefers-color-scheme: dark) {
+:root[data-theme="dark"] {
   .product-mark { width: 36px; height: 36px; padding: 3px; background: #fff; border-radius: 9px; }
   .product-mark img { width: 30px; height: 30px; }
   .network-controls button:hover, .network-tooltip, .activity-graph { background: var(--surface); }
@@ -490,7 +509,27 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
   /* basicSetup supplies light syntax colors; inherit the accessible dark ink. */
   .cm-content span { color: inherit !important; }
   .cm-selectionBackground, .cm-editor.cm-focused .cm-selectionBackground { background: var(--floor) !important; }
-  @keyframes room-flash { from { background: var(--floor); } to { background: transparent; } }
+  & { --flash-background: var(--floor); }
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    .product-mark { width: 36px; height: 36px; padding: 3px; background: #fff; border-radius: 9px; }
+    .product-mark img { width: 30px; height: 30px; }
+    .network-controls button:hover, .network-tooltip, .activity-graph { background: var(--surface); }
+    .network-tooltip strong { color: var(--heading); }
+    .legend-contract { color: var(--accent-text); }
+    .legend-impact { color: var(--danger); }
+    .network-stats > div:last-child strong { color: var(--accent-text); }
+    .network-node.direct > rect, .network-node.indirect > rect { fill: #3e242b; }
+    .network-node.my-work.neutral:not(.file-edited) > rect { fill: var(--floor); }
+    .network-node:is(.contract, .file-edited) .edit-badge rect { fill: #141e33; }
+    .graph-content text { fill: var(--ink); }
+    .code-line[data-owner]:hover::after { color: var(--ink); background: var(--surface); opacity: 1; }
+    /* basicSetup supplies light syntax colors; inherit the accessible dark ink. */
+    .cm-content span { color: inherit !important; }
+    .cm-selectionBackground, .cm-editor.cm-focused .cm-selectionBackground { background: var(--floor) !important; }
+    & { --flash-background: var(--floor); }
+  }
 }
 
 /* One grid item spans the entire conflict range; labels occur only at its top. */
@@ -507,3 +546,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .conflict-card { padding: 12px; border-left: 3px solid var(--danger); background: var(--surface); font-size: 12px; }
 .conflict-card.resolved { border-color: var(--muted); }
 .conflict-card details { margin-top: 8px; }
+
+.theme-switcher { flex: none; }
+.theme-switcher button { display: inline-flex; align-items: center; gap: 5px; padding-inline: 8px; font-size: 12px; }
+.theme-switcher button span { font-size: 15px; line-height: 1; }

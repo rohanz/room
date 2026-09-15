@@ -1,3 +1,4 @@
+import { applyTheme, readTheme, nextTheme, type Theme } from './theme.ts'
 import { connect } from './conn.ts'
 import { centrePanel, createFocusState, h, header, participantsPanel, timelinePanel } from './panels.ts'
 import { networkPanel } from './network.ts'
@@ -25,7 +26,25 @@ try {
   board.id = 'board-view'
   const top = header(conn), switcher = h('nav', { class: 'view-switcher', ariaLabel: 'Room view' })
   const boardButton = h('button', { title: 'Board (B)' }, 'Board'), codeButton = h('button', { title: 'Code (C)' }, 'Code')
-  switcher.append(boardButton, codeButton); top.append(switcher)
+  const themeSwitcher = h('div', { class: 'view-switcher theme-switcher', role: 'group', ariaLabel: 'Color theme' })
+  let theme = readTheme()
+  const themeButtons = (['system', 'light', 'dark'] as const).map((value, i) => {
+    const label = value[0].toUpperCase() + value.slice(1)
+    const icon = h('span', {}, ['◐', '☀', '☾'][i])
+    icon.setAttribute('aria-hidden', 'true')
+    const button = h('button', { title: label + ' theme (T to cycle)', ariaLabel: label + ' theme', onclick: () => chooseTheme(value) }, icon, label)
+    themeSwitcher.append(button)
+    return button
+  })
+  function chooseTheme(value: Theme) {
+    theme = value; applyTheme(value)
+    themeButtons.forEach((button, i) => {
+      const active = ['system', 'light', 'dark'][i] === theme
+      button.classList.toggle('active', active); button.ariaPressed = String(active)
+    })
+  }
+  chooseTheme(theme)
+  switcher.append(boardButton, codeButton); top.append(themeSwitcher, switcher)
   const reconnect = h('div', { class: 'reconnecting', role: 'status' }, 'reconnecting…')
   conn.onStatus(connected => { reconnect.hidden = connected })
   function choose(view: View, update = true) {
@@ -36,6 +55,7 @@ try {
   boardButton.onclick = () => choose('board'); codeButton.onclick = () => choose('code')
   document.addEventListener('keydown', event => {
     if (event.ctrlKey || event.metaKey || event.altKey || (event.target as HTMLElement).closest('input, textarea, select, [contenteditable=true]')) return
+    if (event.key.toLowerCase() === 't') { event.preventDefault(); if (!event.repeat) chooseTheme(nextTheme(theme)) }
     if (event.key.toLowerCase() === 'b' || event.key.toLowerCase() === 'c') { event.preventDefault(); choose(event.key.toLowerCase() === 'b' ? 'board' : 'code') }
   })
   window.addEventListener('popstate', () => choose(initialView(location.search), false))
