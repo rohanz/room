@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.9 — 2026-09-16
+
+- A bare 'join the room' means the team room.
+
 ## 0.6.8 — 2026-09-15
 
 - Code pane: hovering a line shows a one-line annotation in the right column; clicking opens an inline detail row (owners, claims and plans, conflict pair and resolution). The floating card remains only on the Board and the Network tab.

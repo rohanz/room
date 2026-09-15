@@ -1,6 +1,6 @@
 ---
 name: room-join
-description: Choose and join a room for this clone. Use when the user says "join the team room", "join the web room", "join the shared room", "work locally", "leave the team room", "create a room", "$room-join", or asks to work alongside a teammate's agent.
+description: Choose and join a room for this clone. Use when the user says "join the room", "join the team room", "join the web room", "join the shared room", "work locally", "leave the team room", "create a room", "$room-join", or asks to work alongside a teammate's agent.
 ---
 
 You were joined automatically when this session started: a LOCAL room on this machine
@@ -8,10 +8,11 @@ unless ROOM_SERVER is set or this clone remembers a choice. `room_state` says wh
 first line.
 
 Where to be is the user's call, by instruction:
-- "join the team room" / "join the web room" / "join the shared room": `room_leave` if you are
+- "join the room" / "join the team room" / "join the web room" / "join the shared room": `room_leave` if you are
   in a local room, then `room_join(where="team")`. Tell the user in one line that uncommitted
   work in this clone is now visible to the repo's room members. The choice is remembered for
   this clone; later sessions go there on their own.
+  A bare "join the room" (including "join the room for this repo") means the team room, because the session is already in a local room by default; do not ask which room.
 - "work locally" / "leave the team room" / "local room": `room_leave(forget=true)`, then
   `room_join(where="local")`.
 - a server URL: `room_join(where="wss://…")`.

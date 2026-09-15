@@ -35293,7 +35293,7 @@ function handlers(state) {
         const fresh = await markWarned(dir, s.dir).catch(() => true);
         if (fresh || choice.rule === "argument") out.push(`note for your human: uncommitted work in this clone${choice.rule === "remembered" ? " (joined on the choice remembered for this repo)" : ""} is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf("/"))}'s room.`);
       }
-      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the team room" (room_join where=team) to work with teammates instead.'}`);
+      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`);
       out.push(shareLine(s));
       const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
       const mineA = myAreas(s);

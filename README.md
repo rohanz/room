@@ -63,9 +63,9 @@ main worktree's branch.
 
 Ask **"Show room state"** to see who is in the room. Then ask for your feature as usual.
 
-Where you work is a matter of instruction. **"Join the team room"** (or the web room, the
-shared room) moves the session to the team server for this repo, and the agent tells you
-in one line that uncommitted work in this clone is now visible to the repo's room members.
+**"Join the room"** moves the session to the team server for this repo.
+"Join the team room", "join the web room", and "join the shared room" also work.
+The agent tells you that uncommitted work in this clone is now visible to the repo's room members.
 **"Work locally"** brings it back. The choice is remembered per clone, so the next session
 in that clone starts where you left it; `room_leave(forget=true)` clears it. An agent never
 joins the team room on its own initiative. `ROOM_SERVER` still overrides everything, for
