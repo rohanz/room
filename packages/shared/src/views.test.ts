@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Claim, Presence, Scope, Worker } from './types.js'
-import { areaMembershipSummary, claimLine, deriveParticipants, otherAreasLine, participantClaimLine, personLine, presentPeople, workerLine } from './views.js'
+import { lineDetail, areaMembershipSummary, claimLine, deriveParticipants, otherAreasLine, participantClaimLine, personLine, presentPeople, workerLine } from './views.js'
 
 describe('shared room views', () => {
   const scope: Scope = { by: 'Kieran', byKind: 'agent', area: 'api', summary: 'handlers', paths: ['api/'], at: 1 }
@@ -48,4 +48,13 @@ describe('shared room views', () => {
       '      2 changed files · branch room/views',
     ])
   })
+})
+
+it('returns only populated line detail sections without missing-data placeholders', () => {
+  expect(lineDetail({}).sections).toEqual([{ label: 'Line', rows: ['unchanged from base'] }])
+  const detail = lineDetail({ conflicts: [{ people: ['a', 'b'], resolved: false }] })
+  expect(detail.sections.map(s => s.label)).toEqual(['Line', 'Conflict'])
+  expect(detail.sections.every(s => s.rows.length > 0 && s.rows.every(Boolean))).toBe(true)
+  expect(JSON.stringify(detail.sections)).not.toContain('unavailable')
+  expect(lineDetail({ conflicts: [{ people: ['a', 'b'], resolved: true }] }).sections.map(s => s.label)).toEqual(['Line', 'Conflict'])
 })

@@ -481,7 +481,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 /* Conflict annotations live at the right edge; ownership remains on each line. */
 :root { --change-tint: 14%; --conflict-tint: 22%; --conflict-red: #B42318; --claim-amber: #B54708; }
 .conflict-code-grid { display: grid; align-content: start; }
-.conflict-code-grid > .line-text { grid-column: 1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(max-content, 1fr); min-width: 0; overflow-x: auto; }
+.conflict-code-grid > .line-text { grid-column: 1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(0, 1fr); min-width: 0; overflow-x: auto; }
 :root[data-theme="dark"] { --change-tint: 20%; --conflict-tint: 28%; --conflict-red: #F97066; --claim-amber: #F79009; }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] { --change-tint: 20%; --conflict-tint: 28%; --conflict-red: #F97066; --claim-amber: #F79009; }
@@ -719,9 +719,11 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .merge-chip:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
 .merge-hint { padding: 0 12px 8px; font-size: 12px; }
 
-/* Row annotations share the reserved tag column and never cover code. */
-.line-annotation { min-width: 0; padding: 0 8px; font: 12px/17px var(--sans); color: var(--muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; pointer-events: none; position: relative; }
-.line-annotation:not(:empty) { background: var(--code-gutter); }
-.conflict-code-grid .code-line.line-hovered { background: color-mix(in srgb, var(--code-ink) 7%, var(--code-bg)); }
-.inline-detail { box-sizing: border-box; width: min(520px, 55vw); padding: 8px 12px; font: 12px/1.5 var(--sans); color: var(--muted); background: var(--code-gutter); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Hover annotations overlay code; the gutter stays reserved for tags. */
+.line-annotation { box-sizing: border-box; position: absolute; right: 0; top: 0; max-width: 50%; padding: 0 8px 0 24px; font: 12px/17px var(--sans); color: var(--muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; pointer-events: none; background: linear-gradient(to right, transparent, var(--hover-row-bg) 24px); }
+.conflict-code-grid .code-line.line-hovered { --hover-row-bg: color-mix(in srgb, var(--code-ink) 7%, var(--code-bg)); background: var(--hover-row-bg); }
+.inline-detail { box-sizing: border-box; width: min(520px, 55vw); padding: 8px 12px; border-block: 1px solid var(--line); font: 12px/1.5 var(--sans); color: var(--muted); background: var(--soft); white-space: pre-wrap; overflow-wrap: anywhere; }
 .inline-detail-close { float: right; color: var(--muted); font-size: 16px; padding: 0 4px; }
+
+.inline-detail-label { font: 10px/1.5 var(--mono); text-transform: uppercase; color: var(--muted); }
+.inline-detail section + section { margin-top: 6px; }

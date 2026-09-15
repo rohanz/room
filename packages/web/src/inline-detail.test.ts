@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { lineAnnotation, lineDetail, type Claim, type ConflictSpan } from '@room/shared'
@@ -24,16 +25,25 @@ it('derives short and long descriptions from the same claims and ownership', () 
   const input = { owners: ['rohanz', 'rohanz'], claims: [claim, claim] }
   expect(lineAnnotation(input)).toBe('rohanz · claimed: apply tier discount')
   expect(lineDetail(input)).toMatchObject({ owners: ['rohanz'], claims: [claim], ownership: 'changed by rohanz' })
-  expect(lineDetail(input).text).toContain('add discount')
-  expect(lineAnnotation({})).toBe(lineDetail({}).text)
+  expect(lineDetail(input).sections.flatMap(s => s.rows).join(' ')).toContain('add discount')
+  expect(lineAnnotation({})).toBe(lineDetail({}).ownership)
 })
-it('hovers a row with an ellipsized annotation in the reserved right column', () => {
+it('shows an absolute annotation inside only the hovered row', () => {
   render()
+  expect(host.querySelector('.line-annotation')).toBeNull()
+  expect(host.querySelector<HTMLElement>('.conflict-code-grid')!.style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
   rows()[0].dispatchEvent(new dom.window.Event('pointerenter'))
   expect(host.querySelector('.line-annotation')?.textContent).toBe('rohanz · claimed: apply tier discount')
   expect(rows()[0].classList.contains('line-hovered')).toBe(true)
+  expect(host.querySelector('.line-annotation')!.parentElement).toBe(rows()[0])
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  const rule = css.match(/\.line-annotation \{([^}]+)\}/)![1]
+  expect(rule).toContain('position: absolute')
+  expect(rule).toContain('max-width: 50%')
+  expect(rule).toContain('24px')
+  expect(css).toContain('.code-line { position: relative; }')
   rows()[0].dispatchEvent(new dom.window.Event('pointerleave'))
-  expect(host.querySelector('.line-annotation')?.textContent).toBe('')
+  expect(host.querySelector('.line-annotation')).toBeNull()
 })
 it('opens exactly one reachable detail immediately beneath the clicked row with all plans', () => {
   render(); rows()[0].click()
@@ -74,7 +84,9 @@ it('opens conflict-tag details with both participants, range, resolution and pla
   expect(host.querySelector('.line-annotation')?.textContent).toBe('rohanz ↔ codex · resolved')
   tag.click()
   expect(details()[0].textContent).toContain('rohanz ↔ codex')
-  expect(details()[0].textContent).toContain('a.ts:1-2')
+  expect(details()[0].textContent).toContain('Merged lines 1-2')
+  expect([...details()[0].querySelectorAll('.inline-detail-label')].map(el => el.textContent)).toEqual(['Line', 'Conflict', 'Claims', 'Resolution'])
+  expect(details()[0].textContent).not.toContain('unavailable')
   expect(details()[0].textContent).toContain('codex released')
   expect(details()[0].textContent).toContain('add discount')
   expect(host.querySelector<HTMLElement>('.conflict-bar')!.style.gridRow).toBe('1 / 4')
@@ -96,4 +108,21 @@ it('clears an open detail when the pane rerenders', () => {
   rows()[1].click()
   expect(details()).toHaveLength(1)
   expect(rows()[1].nextElementSibling).toBe(details()[0])
+})
+
+it('keeps a focused annotation through pointer leave and removes it on blur', () => {
+  render(); const row = rows()[0]
+  row.focus()
+  row.dispatchEvent(new dom.window.Event('pointerenter'))
+  row.dispatchEvent(new dom.window.Event('pointerleave'))
+  expect(row.querySelector('.line-annotation')).not.toBeNull()
+  row.blur()
+  expect(row.querySelector('.line-annotation')).toBeNull()
+})
+it('omits claims and resolution for an unclaimed unresolved text conflict', () => {
+  renderCodeLines(host, [{ ...lines[0], conflict: true, conflictPair: ['rohanz', 'codex'] }], ['rohanz', 'codex'])
+  rows()[0].click()
+  expect([...details()[0].querySelectorAll('.inline-detail-label')].map(el => el.textContent)).toEqual(['Line', 'Conflict'])
+  expect(details()[0].textContent).not.toContain('unavailable')
+  expect(details()[0].textContent!.match(/rohanz ↔ codex/g)).toHaveLength(1)
 })

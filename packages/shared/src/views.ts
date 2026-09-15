@@ -268,7 +268,7 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
 export interface LineDetailInput {
   owners?: readonly string[]
   claims?: readonly Claim[]
-  conflicts?: readonly { people: readonly string[]; detail: string; resolved: boolean }[]
+  conflicts?: readonly { people: readonly string[]; detail?: string; resolved: boolean; range?: string; status?: string; resolution?: string }[]
 }
 
 export function lineDetail(input: LineDetailInput) {
@@ -276,10 +276,14 @@ export function lineDetail(input: LineDetailInput) {
   const claims = [...new Map((input.claims ?? []).map(c => [c.id, c])).values()]
   const conflicts = [...(input.conflicts ?? [])]
   const ownership = owners.length ? 'changed by ' + owners.join(' and ') : 'unchanged from base'
-  return {
-    owners, claims, conflicts, ownership,
-    text: [ownership, ...claims.map(c => 'claimed by ' + c.by + ': ' + participantClaimLine(c)), ...conflicts.map(c => c.detail)].join('\n'),
-  }
+  const sections = [
+    { label: 'Line', rows: [ownership] },
+    { label: 'Conflict', rows: [...new Set(conflicts.flatMap(c => [c.people.join(' ↔ '), c.range, c.status ?? (c.resolved ? 'Resolved' : 'Unresolved conflict')]).filter((row): row is string => !!row))] },
+    { label: 'Claims', rows: claims.map(c => [c.by, c.intent, c.plans?.map(p => p.kind + ' ' + p.symbol + (p.detail ? ' to ' + p.detail : '')).join(' · ')].filter(Boolean).join(' · ')) },
+    { label: 'Resolution', rows: [...new Set(conflicts.flatMap(c => c.resolved && c.resolution ? [c.resolution] : []))] },
+  ].filter(section => section.rows.length)
+  return { owners, claims, conflicts, ownership, sections }
+
 }
 
 export function lineAnnotation(input: LineDetailInput): string {

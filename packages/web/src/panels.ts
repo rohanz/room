@@ -266,7 +266,7 @@ export function conflictCard(span: ConflictSpan, expanded?: Set<string>): HTMLEl
 
 export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true): void {
   const rows = lines.map((line, i) => lineElement(line, names, line.prefix, claimsAt, merged ? i + 1 : undefined))
-  const spans: { start: number; end: number; people: readonly string[]; detail: string; resolved: boolean; claimOnly?: boolean; textConflict?: boolean }[] = []
+  const spans: { start: number; end: number; people: readonly string[]; detail: string; resolution?: string; resolved: boolean; claimOnly?: boolean; textConflict?: boolean }[] = []
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].conflict) continue
     const start = i
@@ -308,7 +308,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
         if (uncovered && run < 0) run = i
         if (!uncovered && run >= 0) { spans.push({ start: run, end: i - 1, people, detail, resolved: false, claimOnly }); run = -1 }
       }
-    } else spans.push({ start, end, people, detail, resolved: !!s.resolvedBy, claimOnly })
+    } else spans.push({ start, end, people, detail, resolution: s.resolvedBy ? resolutionLabel(s) : undefined, resolved: !!s.resolvedBy, claimOnly })
   }
   // Prefer the recorded region's richer tooltip over its duplicate merge preview.
   const regions = spans.filter((s, index) => !spans.some((other, j) => j > index &&
@@ -327,7 +327,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   const layout = (open: number | null) => {
     const track = (i: number) => i + 1 + (open !== null && i > open ? 1 : 0)
     text.style.gridRow = gutter.style.gridRow = '1 / ' + (lines.length + 1 + (open === null ? 0 : 1))
-    rows.forEach((row, i) => { row.style.gridRow = annotations[i].style.gridRow = String(track(i)) })
+    rows.forEach((row, i) => { row.style.gridRow = String(track(i)) })
     for (const { bar, start, end } of bars) bar.style.gridRow = track(start) + ' / ' + (track(end) + 1)
   }
   const bindDetail = inlineDetails(layout)
@@ -335,9 +335,12 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     merged ? i + 1 : lines[i].bLine ?? lines[i].aLine ?? i + 1, {
       owners: authors(lines[i], names),
       claims: sourceLines(lines[i], names).flatMap(([person, n]) => n === undefined ? [] : claimsAt?.(person, n) ?? []),
-      conflicts: regions.filter(s => s.start <= i && s.end >= i),
+      conflicts: regions.filter(s => s.start <= i && s.end >= i).map(s => ({
+        people: s.people, resolved: s.resolved, resolution: s.resolution,
+        range: `Merged lines ${s.start + 1}-${s.end + 1}`,
+        status: s.resolved ? 'Resolved' : s.textConflict ? 'Unresolved: both sides changed these lines' : s.claimOnly ? 'Unresolved: both claimed' : 'Unresolved conflict',
+      })),
     }))
-  annotations.forEach(a => { a.style.gridColumn = '2' })
   const laneEnds: number[] = []
   const tagOffsets = new Map<typeof regions[number], { top: number; text: string; detail: string }>()
   regions.sort((a, b) => a.start - b.start || Number(a.resolved) - Number(b.resolved) || a.end - b.end)
@@ -381,8 +384,8 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     gutter.append(bar)
   })
   gutter.style.gridTemplateColumns = 'repeat(' + Math.max(1, laneEnds.length) + ', 2px)'
-  grid.style.gridTemplateColumns = 'minmax(0, 1fr) minmax(96px, 30%)'
-  grid.append(gutter, ...annotations)
+  grid.style.gridTemplateColumns = 'minmax(0, 1fr) 96px'
+  grid.append(gutter)
   layout(null)
   host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, grid))
 }

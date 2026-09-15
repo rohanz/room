@@ -91,7 +91,7 @@ it('packs overlapping spans into right-edge lanes, reuses lanes, and includes in
     { ...span, id: 'resolved', from: 9, to: 11, resolvedBy: { how: 'released', who: 'money', at: 20 } },
   ])
   expect(host.find('conflict-edge')).toHaveLength(1)
-  expect(host.find('conflict-code-grid')[0].style.gridTemplateColumns).toBe('minmax(0, 1fr) minmax(96px, 30%)')
+  expect(host.find('conflict-code-grid')[0].style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
   expect(host.find('code-line').every(row => row.style.gridColumn === '1')).toBe(true)
   expect(host.find('conflict-edge')[0].style.gridTemplateColumns).toBe('repeat(2, 2px)')
   const bars = host.find('conflict-bar')
@@ -316,10 +316,10 @@ it('reserves a separate tag column outside the horizontally scrolling line-text 
   expect(grid.children).toEqual([text, gutter, ...host.find('line-annotation')])
   expect(text.find('code-line')).toHaveLength(1)
   expect(text.find('conflict-tag')).toHaveLength(0)
-  expect(grid.style.gridTemplateColumns).toBe('minmax(0, 1fr) minmax(96px, 30%)')
+  expect(grid.style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
   expect(text.style.gridRow).toBe(gutter.style.gridRow)
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
-  expect(css).toContain('.conflict-code-grid > .line-text { grid-column: 1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(max-content, 1fr); min-width: 0; overflow-x: auto; }')
+  expect(css).toContain('.conflict-code-grid > .line-text { grid-column: 1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(0, 1fr); min-width: 0; overflow-x: auto; }')
   expect(css).toContain('.conflict-edge { grid-column: 2; display: grid; grid-template-rows: subgrid; column-gap: 2px; justify-content: end; overflow: hidden; }')
   // Model the grid's rects at narrow and wide viewport sizes. The scrollable
   // content can be wider, but its visible box ends before every tag's box.

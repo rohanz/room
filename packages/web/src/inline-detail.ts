@@ -16,8 +16,14 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
     row.tabIndex = 0
     row.setAttribute('aria-expanded', 'false')
     row.setAttribute('aria-label', 'Line ' + number + '. Show details')
-    const hover = () => { annotation.textContent = lineAnnotation(input); row.classList.add('line-hovered') }
-    const leave = () => { annotation.textContent = ''; row.classList.remove('line-hovered') }
+    const hovered = new Set<HTMLElement>()
+    const focused = new Set<HTMLElement>()
+    const update = () => {
+      const active = hovered.size > 0 || focused.size > 0
+      row.classList.toggle('line-hovered', active)
+      if (active) { annotation.textContent = lineAnnotation(input); row.append(annotation) }
+      else annotation.remove()
+    }
     const toggle = () => {
       if (opened?.index === index) { close(); return }
       close()
@@ -32,7 +38,19 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
       button.setAttribute('aria-label', 'Close line details')
       button.onclick = () => close(true)
       const content = document.createElement('div')
-      content.textContent = lineDetail(input).text
+      for (const section of lineDetail(input).sections) {
+        const block = document.createElement('section')
+        const label = document.createElement('div')
+        label.className = 'inline-detail-label'
+        label.textContent = section.label
+        block.append(label)
+        for (const text of section.rows) {
+          const item = document.createElement('div')
+          item.textContent = text
+          block.append(item)
+        }
+        content.append(block)
+      }
       region.append(button, content)
       region.onkeydown = event => { if (event.key === 'Escape') { event.preventDefault(); close(true) } }
       row.insertAdjacentElement('afterend', region)
@@ -44,10 +62,10 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
       region.style.gridColumn = '1'
     }
     const bind = (target: HTMLElement) => {
-      target.addEventListener('pointerenter', hover)
-      target.addEventListener('pointerleave', leave)
-      target.onfocus = hover
-      target.onblur = leave
+      target.addEventListener('pointerenter', () => { hovered.add(target); update() })
+      target.addEventListener('pointerleave', () => { hovered.delete(target); update() })
+      target.onfocus = () => { focused.add(target); update() }
+      target.onblur = () => { focused.delete(target); update() }
       target.onclick = toggle
       target.onkeydown = event => {
         if (event.key === 'Escape') { event.preventDefault(); close(true) }
