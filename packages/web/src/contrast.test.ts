@@ -24,3 +24,23 @@ it('keeps every dark semantic text token readable on every dark surface', () => 
     ['#245b9e', '#e1edff'], ['#7a1f1f', '#fff4f4'],
   ]) expect(contrast(foreground, background), `${foreground}/${background}`).toBeGreaterThanOrEqual(4.5)
 })
+
+it('uses the requested neutral code palette with readable text, gutters, selections and accents', () => {
+  const light = css.slice(0, css.indexOf(':root[data-theme="dark"]'))
+  const lightTokens = Object.fromEntries([...light.matchAll(/--([\w-]+):\s*(#[\da-f]{6})/g)].map(m => [m[1], m[2]]))
+  expect(tokens.bg).toBe('#0e1013')
+  for (const [palette, expected] of [
+    [lightTokens, ['#ffffff', '#f6f7f8', '#1f2328']],
+    [tokens, ['#0b0d10', '#111418', '#d4d7dd']],
+  ] as const) {
+    expect([palette['code-bg'], palette['code-gutter'], palette['code-ink']]).toEqual(expected)
+    for (const background of ['code-bg', 'code-gutter', 'code-selection']) {
+      expect(contrast(palette['code-ink'], palette[background]), `code-ink/${background}`).toBeGreaterThanOrEqual(4.5)
+    }
+    for (const foreground of ['muted', 'accent-text']) {
+      for (const background of ['code-bg', 'code-gutter']) {
+        expect(contrast(palette[foreground], palette[background]), `${foreground}/${background}`).toBeGreaterThanOrEqual(4.5)
+      }
+    }
+  }
+})
