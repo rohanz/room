@@ -64,7 +64,7 @@ async function main() {
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
         // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
         if (ev.transaction.local && m.from === s.me.name) continue
-        push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims()))
+        push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0))
       }
     })
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)

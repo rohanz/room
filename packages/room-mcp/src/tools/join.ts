@@ -67,7 +67,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : ctx.cwd
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
-      const resolved = await resolveConfig({ dir, env: process.env, args: { where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
+      const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
       const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule }
       if (a.create === true && choice.server === LOCAL && choice.rule !== 'argument') {
         // room_create with nothing chosen: opening a repo needs a server, and that is the team room.
@@ -75,6 +75,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const s = await doJoin({
         dir,
+        credentialsPath: resolved.credentialsPath,
         name: resolved.name,
         room: resolved.room,
         server: choice.server,

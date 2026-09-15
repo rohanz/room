@@ -8,6 +8,11 @@ const msg = (o: Partial<Msg> & { type: Msg['type'] }): Msg =>
 const mine: Claim = { id: 'c_me', path: 'app.py', from: 10, to: 20, by: 'Rohan', byKind: 'agent', intent: 'refactor', at: 1 }
 
 describe('shouldWake', () => {
+  it('uses the base registry rule for channel wakes', () => {
+    const ev = { kind: 'msg', msg: msg({ type: 'base', base: 'abc', prev: 'def', commits: 1, paths: [], summary: 'update' }) } as const
+    expect(shouldWake(me, ev, [], false)).toBeNull()
+    expect(shouldWake(me, ev, [], true)?.meta.type).toBe('base')
+  })
   it('ignores my own messages', () => {
     expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'question', from: 'Rohan', fromKind: 'agent', to: 'Kieran' }) })).toBeNull()
   })

@@ -26,7 +26,7 @@ describe('MessageKinds', () => {
 
   it('wakes for base moves only with uncommitted work', () => {
     const room = new RoomDoc()
-    const m = room.post<BaseMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'abc', commits: 1, summary: 'update', paths: [] })
+    const m = room.post<BaseMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'abc', prev: 'def', commits: 1, summary: 'update', paths: [] })
     const me = { name: 'Rohan', kind: 'agent' } as const
     expect(shouldWakeOnMsg(me, m, [], false).wake).toBe(false)
     expect(shouldWakeOnMsg(me, m, [], true).wake).toBe(true)

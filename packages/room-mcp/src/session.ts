@@ -50,6 +50,7 @@ export interface Session {
 }
 
 export interface JoinOptions {
+  credentialsPath?: string
   dir: string
   name?: string
   room?: string

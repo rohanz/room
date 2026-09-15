@@ -28,10 +28,10 @@ function cleanMeta(m: Record<string, string | undefined>): Record<string, string
  * `myClaims` = my currently open claims (used for overlap / cursor-entry rules).
  * Returns null when the agent should not be interrupted.
  */
-export function shouldWake(me: Identity, ev: RoomEvent, myClaims: Claim[] = []): WakeEvent | null {
+export function shouldWake(me: Identity, ev: RoomEvent, myClaims: Claim[] = [], hasUncommitted = false): WakeEvent | null {
   if (ev.kind === 'msg') {
     const m = ev.msg
-    if (!shouldWakeOnMsg(me, m, myClaims).wake) return null
+    if (!shouldWakeOnMsg(me, m, myClaims, hasUncommitted).wake) return null
     const path = 'path' in m ? m.path : 'paths' in m ? m.paths[0] : undefined
     return {
       content: `${formatMsg(m)}\n${JSON.stringify(m)}`,
