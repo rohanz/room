@@ -125,7 +125,7 @@ function changesByPerson(room: RoomDoc): Map<string, string[]> {
   return new Map(Array.from(names, name => [name, room.changedPaths(name)]))
 }
 
-function participantInput(conn: Conn): ParticipantInput {
+export function participantInput(conn: Conn): ParticipantInput {
   const names = new Set([...conn.room.overlays.keys(), ...conn.room.deleted.keys(), ...conn.room.scopes.keys()])
   const changes = new Map<string, string[]>()
   for (const name of names) changes.set(name, conn.room.changedPaths(name))
@@ -318,7 +318,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   render = () => {
     for (const button of tabStrip.querySelectorAll('.tab')) button.classList.toggle('active', button.textContent === tab)
     const claims = conn.room.openClaims()
-    const rows = deriveFileRows(changesByPerson(conn.room), conn.room.allScopes(), claims)
+    const rows = deriveFileRows(changesByPerson(conn.room), conn.room.allScopes(), claims).filter(row => !focus.person || row.people.includes(focus.person))
     if (!selectedPath || !rows.some(row => row.path === selectedPath)) selectedPath = rows[0]?.path ?? null
     if (focus.person && !rows.find(row => row.path === selectedPath)?.people.includes(focus.person)) {
       selectedPath = rows.find(row => row.people.includes(focus.person!))?.path ?? selectedPath
@@ -350,15 +350,15 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
 }
 
 function priorityBadge(message: Msg): HTMLElement | null {
-  if (message.priority === 'fyi') return null
-  return h('span', { class: `priority ${message.priority}` }, message.priority)
+  const kind = message.type === 'done' || (message.type === 'note' && message.text.startsWith('done')) ? 'done' : message.priority
+  return h('span', { class: `priority ${kind}` }, kind)
 }
 
 function copyChips(names: readonly string[]): HTMLElement[] {
   return names.map(name => h('span', { class: 'link-chip' }, `→ also sent to ${name}`))
 }
 
-function messageBody(message: Msg): (Node | string | null)[] {
+export function messageBody(message: Msg): (Node | string | null)[] {
   switch (message.type) {
     case 'claim': return [h('strong', {}, 'claimed '), h('span', { class: 'mono' }, `${message.path}:${message.from_line}-${message.to_line}`), ` · ${message.intent}${message.plans?.length ? ` ${displayPlans(message.plans)}` : ''}`]
     case 'release': return [h('strong', {}, 'released '), h('span', { class: 'mono' }, message.path), message.summary ? ` · ${message.summary}` : '', message.unfulfilled?.length ? h('span', { class: 'unfulfilled' }, ` not done: ${formatPlans(message.unfulfilled)}`) : null]
@@ -369,7 +369,7 @@ function messageBody(message: Msg): (Node | string | null)[] {
     case 'answer': return [h('strong', {}, 'answered '), message.text]
     case 'base': return [`${message.from} pushed ${message.commits} commit${message.commits === 1 ? '' : 's'}: ${message.summary} (base → ${message.base.slice(0, 7)})`]
     case 'plan': return [h('strong', {}, `${message.status} plan `), formatPlans([message.plan]), message.replacedBy ? ` → now ${formatPlans([message.replacedBy])}` : '', ` · ${message.text}`]
-    case 'scope': return []
+    case 'scope': return [message.summary]
     case 'done': return [h('strong', {}, `worker ${message.tag} finished `), message.summary, message.changed.length ? h('span', { class: 'mono' }, ` · ${message.changed.join(', ')}`) : null]
   }
 }
@@ -513,7 +513,7 @@ export function header(conn: Conn): HTMLElement {
   const base = h('span', { class: 'header-detail mono' }, 'base —')
   const count = h('span', { class: 'header-detail' }, '0 participants')
   const connection = h('span', { class: 'connection' }, 'disconnected')
-  const element = h('header', { class: 'header' }, h('span', { class: 'product-mark' }, 'ROOM'), roomName, base, count, h('span', { class: 'sp' }), connection)
+  const element = h('header', { class: 'header' }, h('span', { class: 'product-mark' }, h('img', { src: '/logo.png', alt: 'Room', width: 28, height: 28 })), roomName, base, count, h('span', { class: 'sp' }), connection)
   const render = () => {
     base.textContent = `base ${(conn.room.meta.base ?? '').slice(0, 7) || '—'}`
     const total = deriveParticipants(participantInput(conn)).length
