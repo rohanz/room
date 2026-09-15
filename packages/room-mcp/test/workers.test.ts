@@ -512,6 +512,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(local.a.workers.get('money')?.task).toBe('local side')
     // the local worker edits in the workers room; the team-room lead reads and diffs its version
     local.b.setOverlay('rohanz+money', 'app.py', 'x = 100\n')
+    local.b.setOverlay('rohanz+tiers', 'tiers.py', 'tier = "gold"\n')
     const read = await leadTools.call('room_read', { path: 'app.py', person: 'rohanz+money' })
     expect(read).toContain('x = 100')
     expect(read).toContain('as rohanz+money sees it')
@@ -519,6 +520,10 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(await leadTools.call('room_who', { path: 'app.py' })).toContain('uncommitted changes by: rohanz+money')
     const pm = await leadTools.call('room_preview_merge', { person: 'rohanz+money' })
     expect(pm).toContain('rohanz+money only')
+    const all = await leadTools.call('room_preview_merge', { people: ['rohanz+money', 'rohanz+tiers'], run: 'cat app.py tiers.py' })
+    expect(all).toContain('x = 100')
+    expect(all).toContain('tier = "gold"')
+    expect(all).toContain('exit 0')
     // dismissing the team-room worker signals only the team-room process; the local one is untouched
     await leadTools.call('room_dismiss', { tag: 'money' })
     expect(killed).toEqual(['github.com/rohanz/x/main'])

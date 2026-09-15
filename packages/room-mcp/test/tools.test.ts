@@ -413,6 +413,30 @@ describe('wait', () => {
 })
 
 describe('preview merge', () => {
+  it('merges multiple people in order into one combined scratch tree', async () => {
+    const t = setup()
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    t.other.setOverlay('Ada', 'session.py', 'from app import validate\n# Ada was here\n')
+    const out = await t.tools.call('room_preview_merge', { people: ['Kieran', 'Ada'], run: 'cat app.py session.py' })
+    expect(out).toContain('step 1: merge Kieran')
+    expect(out).toContain('step 2: merge Ada')
+    expect(out).toContain('return x + 1')
+    expect(out).toContain('return 22')
+    expect(out).toContain('# Ada was here')
+    expect(out).toContain('final combined tree:')
+    expect(out).toContain('exit 0')
+  })
+
+  it('names the two people whose overlapping changes conflict', async () => {
+    const t = setup()
+    t.room.setOverlay('Rohan', 'app.py', COMMITTED)
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
+    t.other.setOverlay('Ada', 'app.py', COMMITTED.replace('return 2', 'return 4'))
+    const out = await t.tools.call('room_preview_merge', { people: ['Kieran', 'Ada'] })
+    expect(out).toContain('step 2: merge Ada')
+    expect(out).toContain('conflict between Kieran and Ada')
+  })
+
   it('reports clean merges and conflicts against base', async () => {
     const t = setup()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
