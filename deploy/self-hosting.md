@@ -35,12 +35,12 @@ server is open (fine on a laptop, not on the internet).
 | `PUBLIC_URL` | External https URL of this server. Required for OIDC: the redirect URI is `<PUBLIC_URL>/auth/callback`. | — |
 | `YPERSISTENCE` | Directory for room documents (LevelDB) plus `rooms.json`, `sessions.json`, `view-tokens.json` and `audit.log`. Unset: everything is in memory and lost on restart. | — (image: `/data`) |
 | `DATABASE_URL` | Postgres connection string. Moves the repo registry, sessions and audit log into three tables (`room_repos`, `room_sessions`, `room_audit`, created on start). Documents stay in LevelDB. | — |
-| `GITHUB_CLIENT_ID` | OAuth App client id: enables GitHub device-flow login. Needed for `github.com/...` rooms, which admit only accounts with push access. | — |
+| `GITHUB_CLIENT_ID` | OAuth App client id: enables GitHub device-flow login, the only way into `github.com/...` rooms (accounts with push access). Without it those rooms are refused. The value `fake` is a test issuer for local development (refused with `NODE_ENV=production`): any `fakeLogin` posted to `/auth/poll` becomes a session. | — |
 | `OIDC_ISSUER` | OIDC issuer URL; discovery is read from `<issuer>/.well-known/openid-configuration`. Enables OIDC login. | — |
 | `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | The OIDC client registered at the issuer. Required with `OIDC_ISSUER`. | — |
 | `OIDC_ALLOWED_DOMAINS` | Comma list of email domains allowed to log in (`example.com,example.org`). Empty: anyone the issuer authenticates. | any |
 | `ROOM_ADMINS` | Comma list of logins allowed to read `GET /audit`. | nobody |
-| `ROOM_TOKEN` | Shared secret: `?token=<value>` admits any room. Fallback when you have no login provider; also an override. | — |
+| `ROOM_TOKEN` | Shared secret: `?token=<value>` admits non-GitHub rooms (`local/...`, `git/...`). It never admits a `github.com/...` room. | — |
 | `ROOM_SHARE_MAX` | Ceiling on what clients may share into a room: `intent`, `declared` or `full`. | `full` |
 | `ROOM_IDLE_DAYS` | Repos nobody connected to for this many days are closed and their shared work deleted. `0` disables. | `30` |
 | `ROOM_STATIC` | Directory with the built browser view. | `./public` |
@@ -49,7 +49,7 @@ Which rooms a login can enter:
 
 | Room name | Who is admitted |
 | --- | --- |
-| `github.com/<owner>/<repo>/<branch>` | A GitHub login with push access to the repo (or `ROOM_TOKEN`). OIDC logins are refused: the server cannot check GitHub permissions for them. |
+| `github.com/<owner>/<repo>/<branch>` | A GitHub device-flow login with push access to the repo. Nothing else: `ROOM_TOKEN` is refused, a GitHub token forwarded by a client is refused (401 pointing at `room_login`), and OIDC logins are refused because the server cannot check GitHub permissions for them. |
 | `git/<host>/<owner>/<repo>/<branch>` (self-hosted GitLab, Gitea, Bitbucket, ...) | Any login (GitHub or OIDC) when a provider is configured, else `ROOM_TOKEN`, else open. |
 | `local/<dir>/<branch>` (filesystem remotes) | Same as `git/`. |
 

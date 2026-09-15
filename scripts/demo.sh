@@ -22,16 +22,21 @@ git -C "$A" config user.email rohan@room;  git -C "$A" config user.name Rohan
 git -C "$B" config user.email kieran@room; git -C "$B" config user.name Kieran
 for d in "$A" "$B"; do ( cd "$d" && uv sync --group dev -q ); done
 
-echo "[demo] starting room server on :$PORT"
-PORT="$PORT" npx tsx "$ROOT/packages/server/src/index.ts" > "$WORK/server.log" 2>&1 &
+echo "[demo] starting room server on :$PORT (fake GitHub issuer: GITHUB_CLIENT_ID=fake)"
+# The fake issuer walks the real login path (POST /auth/device, /auth/poll) without GitHub: a login is
+# whatever `fakeLogin` the poll carries. Never set it on a real server; NODE_ENV=production refuses it.
+GITHUB_CLIENT_ID=fake PORT="$PORT" npx tsx "$ROOT/packages/server/src/index.ts" > "$WORK/server.log" 2>&1 &
 SRV=$!
 trap 'echo; echo "[demo] stopping"; kill $SRV 2>/dev/null; wait 2>/dev/null' EXIT
 for _ in $(seq 1 50); do
   if (echo > "/dev/tcp/127.0.0.1/$PORT") >/dev/null 2>&1; then break; fi
   sleep 0.1
 done
-# Rooms are opened per repo before anyone can join; do it here so both clones auto-join.
-curl -sf -X POST "http://localhost:$PORT/rooms" -H 'content-type: application/json' -d '{"room":"local/origin/main","by":"demo"}' >/dev/null \
+# Log in as "demo" through the fake issuer, then open the repo: rooms are opened per repo before anyone can join.
+DEVICE="$(curl -sf -X POST "http://localhost:$PORT/auth/device" | sed -n 's/.*"device":"\([0-9a-f]*\)".*/\1/p')"
+SESSION="$(curl -sf -X POST "http://localhost:$PORT/auth/poll" -H 'content-type: application/json' -d "{\"device\":\"$DEVICE\",\"fakeLogin\":\"demo\"}" | sed -n 's/.*"session":"\([0-9a-f]*\)".*/\1/p')"
+[ -n "$SESSION" ] || { echo "[demo] fake login failed on :$PORT (see $WORK/server.log)" >&2; exit 1; }
+curl -sf -X POST "http://localhost:$PORT/rooms" -H 'content-type: application/json' -d "{\"room\":\"local/origin/main\",\"session\":\"$SESSION\"}" >/dev/null \
   || { echo "[demo] could not open the room on :$PORT" >&2; exit 1; }
 
 cat <<MSG
@@ -39,6 +44,8 @@ cat <<MSG
 Room server: ws://localhost:$PORT   (room opened for local/origin; branch rooms derive from the clone, e.g. local/origin/main)
   Rohan's clone:  $A
   Kieran's clone: $B
+  The server uses the fake GitHub issuer: each agent runs room_login once and is admitted at the code it shows
+  (any login name is accepted; nothing talks to GitHub).
 
 Join with plain Codex (plugin installed via: codex plugin marketplace add $ROOT && codex plugin add room@room):
   cd $A && ROOM_SERVER=ws://localhost:$PORT codex     # then: \$room-join

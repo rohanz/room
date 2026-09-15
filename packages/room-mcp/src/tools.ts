@@ -172,7 +172,7 @@ export function createTools(ctx: ToolCtx): Tools {
   let roomBridge: Bridge | null = null
   /** Wake-ups from the workers room (questions to the lead, done messages): no state file, that is the team room's. */
   let workersHooks: HooksBridge | null = null
-  const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token }) })
+  const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { session: a.session, token: a.token }) })
   const attachHooks = (s: Session) => {
     if (bridge && (bridge as unknown as { s: Session }).s === s) return
     bridge?.stop()
@@ -776,7 +776,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const server = serverOf(a)
       if (server === LOCAL) return LOCAL_LOGIN
       const cfg = await serverAuthConfig(server)
-      if (!cfg.providers.length) return `${server} has no login provider; it accepts your local gh credentials (or a shared token), nothing to do`
+      if (!cfg.providers.length) return `${server} has no login provider: non-GitHub rooms are admitted by its shared token (or open), and github.com rooms cannot be joined there; nothing to log in to`
       const provider = a.provider === 'github' || a.provider === 'oidc' ? a.provider : undefined
       if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(', ')})`
       const cred = getCredential(server)

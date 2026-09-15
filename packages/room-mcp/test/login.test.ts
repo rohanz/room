@@ -60,9 +60,21 @@ describe('room_login / room_logout', () => {
     expect(loggedOut).toEqual(['s'.repeat(64)])
     expect(getCredential(url)).toBeUndefined()
   })
-  it('device mode without a login: joining a GitHub room throws NotLoggedIn; non-GitHub rooms are unaffected', async () => {
+  it('device mode without a login: joining a GitHub room throws NotLoggedIn even with a shared token; non-GitHub rooms are unaffected', async () => {
     await expect(resolveAuth(url, 'github.com/x/y/main')).rejects.toBeInstanceOf(NotLoggedIn)
+    await expect(resolveAuth(url, 'github.com/x/y/main', 'tok')).rejects.toBeInstanceOf(NotLoggedIn)
     expect(await resolveAuth(url, 'local/dir/main', 'tok')).toEqual({ token: 'tok' })
+  })
+  it('a server without GitHub login cannot admit a GitHub room; the local gh token is never offered', async () => {
+    mode.github = 'token'
+    try {
+      const { serverAuthMode } = await import('../src/session.js')
+      // the config is cached per server string: a trailing slash is a fresh entry read under the new mode
+      expect(await serverAuthMode(url + '/')).toBe('token')
+      await expect(resolveAuth(url + '/', 'github.com/x/y/main', 'tok')).rejects.toThrow(/no GitHub login/)
+      expect(await resolveAuth(url + '/', 'local/dir/main', 'tok')).toEqual({ token: 'tok' })
+      expect(await resolveAuth(url + '/', 'git/gitlab.example/o/r/main')).toEqual({ token: undefined })
+    } finally { mode.github = 'device' }
   })
   it('logout with nothing stored says so', async () => {
     expect(await tools().call('room_logout', {})).toContain('no login stored')
