@@ -1,3 +1,4 @@
+import { claudeWakeNote } from '../prompt.js'
 import { formatPlans, type Claim, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { DEFAULT_SERVER, resolveServer, type Session } from '../session.js'
@@ -67,7 +68,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_create(a) { return handlers.room_join({ ...a, create: true }) },
     async room_join(a) {
       const cur = ctx.getSession()
-      if (cur) return `already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`
+      if (cur) return [`already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`, claudeWakeNote(cur)].filter(Boolean).join('\n')
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : ctx.cwd
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
@@ -119,6 +120,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       out.push('next: room_scope(area, summary, paths) before you edit.')
+      const wakeNote = claudeWakeNote(s)
+      if (wakeNote) out.push(wakeNote)
       return out.join('\n')
     },
     async room_leave(a) {

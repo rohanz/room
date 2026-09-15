@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -50,10 +50,19 @@ describe('worker plumbing', () => {
   it('validates tags and builds host commands', () => {
     expect(validTag('money')).toBe('money'); expect(validTag('a b')).toBeUndefined(); expect(validTag('')).toBeUndefined()
     const c = workerCommand('claude', 'claude-sonnet-5', 'do it')
-    expect(c.cmd).toBe('claude'); expect(c.args).toContain('--model'); expect(c.args[1]).toBe('do it')
+    expect(c.cmd).toBe('claude'); expect(c.args).toContain('--model'); expect(c.args.slice(0, 4)).toEqual(['--dangerously-load-development-channels', 'plugin:room@room', '-p', 'do it'])
     const x = workerCommand('codex', undefined, 'do it')
     expect(x.cmd).toBe('codex'); expect(x.args.slice(0, 3)).toEqual(['exec', '-s', 'workspace-write'])
     expect(workerPrompt('rohanz', 'money', 'switch to cents')).toContain('to "rohanz"')
+  })
+
+  it('uses the resolved channel override and supports disabling it', async () => {
+    for (const channel of ['plugin:custom@market', '']) {
+      const config = await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: channel } })
+      const c = workerCommand('claude', undefined, 'task', config.claudeChannel)
+      expect(c.args.slice(0, channel ? 4 : 2)).toEqual(channel ? ['--dangerously-load-development-channels', channel, '-p', 'task'] : ['-p', 'task'])
+      expect(workerCommand('codex', undefined, 'task', config.claudeChannel).args).not.toContain('--dangerously-load-development-channels')
+    }
   })
 
   it('creates a worktree on branch room/<tag> and reuses it', async () => {
@@ -89,6 +98,19 @@ describe('room_spawn / room_done / room_dismiss', () => {
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
     return { a, b, leadTools, workerTools, specs, exits, killed }
   }
+
+  it.each(['plugin:custom@market', ''])('passes ROOM_CLAUDE_CHANNEL through room_spawn (%s)', async channel => {
+    vi.stubEnv('ROOM_CLAUDE_CHANNEL', channel)
+    try {
+      const t = setup()
+      expect(await t.leadTools.call('room_spawn', { tag: 'channel', task: 'check channels' })).toContain('spawned channel')
+      const args = t.specs[0].args
+      expect(args[0]).toBe(channel ? '--dangerously-load-development-channels' : '-p')
+      if (channel) expect(args[1]).toBe(channel)
+      else expect(args).not.toContain('--dangerously-load-development-channels')
+      await t.leadTools.shutdown()
+    } finally { vi.unstubAllEnvs() }
+  })
 
   it('spawns a worker with the room passed through the environment, records it, and shows it in room_state', async () => {
     const t = setup()

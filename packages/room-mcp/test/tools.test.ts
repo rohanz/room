@@ -139,6 +139,23 @@ describe('session gating', () => {
     expect(t.session).not.toBeNull()
   })
 
+  it.each(['claude', 'codex', undefined])('adds wake-up guidance only for a Claude session (%s)', async host => {
+    const file = join(dir, '.git', 'room-session.json')
+    writeFileSync(file, JSON.stringify({ session_id: 'test-session', at: Date.now(), cwd: dir, host }))
+    try {
+      const t = setup({ joined: false })
+      for (const tool of ['room_join', 'room_create']) {
+        const reply = await t.tools.call(tool, { where: 'local' })
+        expect(reply.endsWith('Wake-ups need Claude Code started with --dangerously-load-development-channels plugin:room@room.')).toBe(host === 'claude')
+        const again = await t.tools.call(tool, {})
+        expect(again.includes('Wake-ups need Claude Code')).toBe(host === 'claude')
+        const done = await t.tools.call('room_done', { summary: 'tested' })
+        expect(done.endsWith('Note for the user: I will only see new room messages on your next message unless Claude Code was started with --dangerously-load-development-channels plugin:room@room.')).toBe(host === 'claude')
+        await t.tools.call('room_leave', {})
+      }
+    } finally { rmSync(file, { force: true }) }
+  })
+
   it('lists the twenty-three tools', () => {
     expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss'])
   })
