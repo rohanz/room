@@ -11,9 +11,13 @@ export interface WakeDecision {
 }
 
 /** Shared bus wake policy for both reactive runners and MCP channel notifications. */
-export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = []): WakeDecision {
+export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = [], hasUncommitted = false): WakeDecision {
   if (m.from === me.name && isAgentic(m.fromKind)) return { wake: false, mustAnswer: false, reason: 'own message' }
   const addressed = m.to === me.name
+  const kind = messageKind(m)
+  if ((!m.to || addressed) && typeof kind.wakes === 'function' && kind.wakes(m, { me, hasUncommitted, myClaims })) {
+    return { wake: true, mustAnswer: addressed, reason: 'message wake rule' }
+  }
   // v2 priorities: fyi never wakes; notify wakes only when addressed; interrupt always (unless addressed elsewhere).
   if (m.priority === 'fyi') return { wake: false, mustAnswer: false, reason: 'fyi does not wake' }
   if (m.priority === 'notify' && !addressed) return { wake: false, mustAnswer: false, reason: m.to ? `addressed to ${m.to}` : 'broadcast notify is read on next action' }
@@ -22,8 +26,7 @@ export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = []): W
     return { wake: true, mustAnswer: addressed, reason: addressed ? 'interrupt addressed to me' : 'broadcast interrupt' }
   }
   if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` }
-  const kind = messageKind(m)
-  if (kind.wakes === 'never') return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` }
+  if ((kind.wakes === 'never' || typeof kind.wakes === 'function')) return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` }
   if (kind.wakes === 'addressed' && !addressed) return { wake: false, mustAnswer: false, reason: 'not addressed to me' }
   if (kind.audience === 'claim-holders' && !addressed && !(m.from === me.name && m.fromKind === 'human')) {
     const path = 'path' in m && typeof m.path === 'string' ? m.path : ''

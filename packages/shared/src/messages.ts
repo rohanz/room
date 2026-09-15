@@ -1,8 +1,9 @@
 import { isAgentic, displayName } from './identity.js'
-import type { BuiltinMsgType, Claim, MessageMap, Msg, MsgBase, MsgType, Plan } from './types.js'
+import type { BuiltinMsgType, Claim, MessageMap, Msg, MsgBase, MsgType, Plan, Identity, Priority } from './types.js'
 
 export type MessageAudience = 'addressed' | 'broadcast' | 'claim-holders' | 'everyone'
-export type MessageWake = 'never' | 'addressed' | 'always'
+export interface MessageWakeContext { me: Identity; hasUncommitted: boolean; myClaims: readonly Claim[] }
+export type MessageWake = 'never' | 'addressed' | 'always' | ((m: any, ctx: MessageWakeContext) => boolean)
 
 export interface MessageWaiting {
   claimId?: string
@@ -18,6 +19,7 @@ export interface MessageKind<M extends MsgBase = Msg> {
   format: (message: M) => string
   audience: MessageAudience
   wakes: MessageWake
+  priority: Priority | ((m: { symbols?: readonly string[]; [key: string]: unknown }) => Priority)
   endsWait?: (message: M, waiting: MessageWaiting) => boolean
 }
 
@@ -26,17 +28,17 @@ const to = (m: MsgBase) => m.to ? ` → ${m.to}'s agent` : ''
 const priority = (m: MsgBase) => `[${m.priority}] `
 
 const builtins = {
-  claim: { audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} — ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ''}` },
-  release: { audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` — ${m.summary}` : ''}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ''}` },
-  changed: { audience: 'broadcast', wakes: 'always', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
-  question: { audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
-  answer: { audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId, format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
-  conflict: { audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
-  note: { audience: 'broadcast', wakes: 'never', format: m => `${priority(m)}${who(m)}: ${m.text}` },
-  done: { audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },
-  base: { audience: 'everyone', wakes: 'never', format: m => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — git pull to catch up` },
-  plan: { audience: 'broadcast', wakes: 'never', format: m => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''} — ${m.text}` },
-  scope: { audience: 'broadcast', wakes: 'always', format: m => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})` },
+  claim: { priority: "fyi", audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} — ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ''}` },
+  release: { priority: "fyi", audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` — ${m.summary}` : ''}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ''}` },
+  changed: { priority: m => m.symbols?.length ? 'notify' : 'fyi', audience: 'broadcast', wakes: 'always', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
+  question: { priority: "notify", audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
+  answer: { priority: "notify", audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId, format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
+  conflict: { priority: "interrupt", audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
+  note: { priority: "fyi", audience: 'broadcast', wakes: 'never', format: m => `${priority(m)}${who(m)}: ${m.text}` },
+  done: { priority: "fyi", audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },
+  base: { priority: "notify", audience: 'everyone', wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: m => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — git pull to catch up` },
+  plan: { priority: "interrupt", audience: 'broadcast', wakes: 'never', format: m => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''} — ${m.text}` },
+  scope: { priority: "notify", audience: 'broadcast', wakes: 'always', format: m => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})` },
 } satisfies Record<BuiltinMsgType, MessageKind<any>>
 
 /** The single policy registry for bus message presentation and delivery. */

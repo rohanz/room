@@ -108,9 +108,8 @@ export class HooksBridge {
   /** Interrupts, questions addressed to me, and a base move while I have uncommitted work wake the idle Codex thread, once per message. */
   async maybeWake(m: Msg): Promise<void> {
     if (!this.o.forMe(m)) return
-    const baseMoved = m.type === 'base' && m.from !== this.s.me.name && this.s.room.changedPaths(this.s.me.name).length > 0
     const myClaims = this.s.room.openClaims().filter(c => c.by === this.s.me.name)
-    const wake = shouldWakeOnMsg(this.s.me, m, myClaims).wake || baseMoved
+    const wake = shouldWakeOnMsg(this.s.me, m, myClaims, this.s.room.changedPaths(this.s.me.name).length > 0).wake
     if (!wake || this.woken.has(m.id) || this.pending.has(m.id)) return
     const session = this.freshSession()
     if (!session) {

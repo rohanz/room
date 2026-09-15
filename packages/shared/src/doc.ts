@@ -1,4 +1,5 @@
 import diff from 'fast-diff'
+import { MessageKinds } from './messages.js'
 import * as Y from 'yjs'
 import type {
   ChatItem,
@@ -22,10 +23,9 @@ type PostBody<T extends Msg> = Omit<T, 'id' | 'at' | 'from' | 'fromKind' | 'prio
 
 /** Default bus priority from spec §6. */
 export function defaultPriority(msg: { type: MsgType; symbols?: readonly string[]; [key: string]: unknown }): Priority {
-  if (msg.type === 'conflict' || msg.type === 'plan') return 'interrupt'
-  if (msg.type === 'changed') return msg.symbols?.length ? 'notify' : 'fyi'
-  if (msg.type === 'question' || msg.type === 'answer' || msg.type === 'scope' || msg.type === 'base') return 'notify'
-  return 'fyi'
+  const kind = MessageKinds[msg.type]
+  if (!kind) throw new Error(`unregistered message kind: ${msg.type}`)
+  return typeof kind.priority === 'function' ? kind.priority(msg) : kind.priority
 }
 
 /** Typed accessors over the single room Y.Doc. */

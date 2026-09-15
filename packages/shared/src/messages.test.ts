@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   MessageKinds,
+  RoomDoc,
   formatMsg,
   messageForMe,
   registerMessageKind,
@@ -22,10 +23,29 @@ interface PingMsg extends MsgBase {
 describe('MessageKinds', () => {
   afterEach(() => { delete MessageKinds.ping })
 
+  it('wakes for base moves only with uncommitted work', () => {
+    const room = new RoomDoc()
+    const m = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'abc', commits: 1, summary: 'update', paths: [] })
+    const me = { name: 'Rohan', kind: 'agent' } as const
+    expect(shouldWakeOnMsg(me, m, [], false).wake).toBe(false)
+    expect(shouldWakeOnMsg(me, m, [], true).wake).toBe(true)
+    room.doc.destroy()
+  })
+
+  it('uses a registered priority when posting a waking kind', () => {
+    registerMessageKind('ping', { audience: 'broadcast', wakes: 'always', priority: 'interrupt', format: m => m.text })
+    const room = new RoomDoc()
+    const m = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'ping', text: 'look' })
+    expect(m.priority).toBe('interrupt')
+    expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m).wake).toBe(true)
+    room.doc.destroy()
+  })
+
   it('routes, wakes and formats a newly registered kind without tool changes', () => {
     registerMessageKind('ping', {
       audience: 'addressed',
       wakes: 'addressed',
+      priority: 'notify',
       format: m => `[${m.priority}] ping from ${m.from}: ${m.text}`,
     })
     const ping: PingMsg = {
