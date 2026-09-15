@@ -51,6 +51,8 @@ export interface Session {
   /** The shared token this session joined with (argument, ROOM_TOKEN, or `?token=` on the server URL); workers get it as ROOM_TOKEN. Never printed. */
   token?: string
   autoTagNote?: string
+  /** Latest preview started by this MCP session; never reconstructed from shared room history. */
+  lastPreview?: { clean: boolean; testsPassed?: boolean }
 }
 
 export interface JoinOptions {
@@ -292,8 +294,9 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
         }, options.connectTimeoutMs ?? 15000)
         provider.on('sync', onSync)
       })
+      const now = Date.now()
       const names = new Set([...provider.awareness.getStates()]
-        .filter(([id]) => id !== provider.awareness.clientID)
+        .filter(([id, state]) => id !== provider.awareness.clientID && now - (typeof state.lastActive === 'number' ? state.lastActive : provider.awareness.meta.get(id)?.lastUpdated ?? 0) <= 20_000)
         .map(([, state]) => state.user?.name))
       if (names.has(name)) {
         const host = resolveSessionHost(options.dir)

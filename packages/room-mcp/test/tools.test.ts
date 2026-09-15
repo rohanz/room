@@ -53,6 +53,14 @@ function setup(opts: { synced?: boolean; joined?: boolean; config?: ResolvedConf
   return { room: a, other: b, tools, joined, created, get session() { return session } }
 }
 
+function addPresence(target: Awareness, name: string): Awareness {
+  const doc = new Y.Doc()
+  const peer = new Awareness(doc)
+  peer.setLocalState({ user: { name, kind: 'agent', color: '#000' }, status: 'idle' })
+  applyAwarenessUpdate(target, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+  return peer
+}
+
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'room-mcp-'))
   const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
@@ -141,6 +149,19 @@ describe('session gating', () => {
     expect(t.room.scope('Rohan')).toBeUndefined()
     expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'note', text: 'done (api): validation added, 4 tests pass' })
     expect(t.session).not.toBeNull()
+  })
+
+  it('explains local test failures when the last clean combined preview passed', async () => {
+    const t = setup()
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'true' })).toContain('exit 0')
+    const out = await t.tools.call('room_done', { summary: 'implementation done; local tests are failing on teammate files' })
+    expect(out).toContain("Local failures caused by a teammate's unmerged files are expected until merge; the combined preview passed.")
+
+    const failed = setup()
+    failed.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    expect(await failed.tools.call('room_preview_merge', { person: 'Kieran', run: 'false' })).toContain('exit 1')
+    expect(await failed.tools.call('room_done', { summary: 'local tests failing' })).not.toContain('combined preview passed')
   })
 
   it('offers the repo rather than part of a slash-containing branch', async () => {
@@ -456,6 +477,30 @@ describe('wait', () => {
 })
 
 describe('preview merge', () => {
+  it('defaults to present participants, reports offline overlays, and supports both opt-ins', async () => {
+    const t = setup()
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    t.other.setOverlay('Ada', 'session.py', 'from app import validate\n# offline Ada\n')
+    const nobody = await t.tools.call('room_preview_merge', {})
+    expect(nobody).toContain('no present participants to merge')
+    expect(nobody).toContain('skipped 2 offline participants with overlays: Ada, Kieran')
+    const kieran = addPresence(t.session!.awareness, 'Kieran')
+    try {
+      const current = await t.tools.call('room_preview_merge', {})
+      expect(current).toContain("with Kieran's")
+      expect(current).not.toContain("Ada's in order")
+      expect(current).toContain('skipped 1 offline participant with overlays: Ada')
+      expect(current).toContain('people: ["Ada"] or includeOffline: true')
+      expect(current).toContain('merge algorithm: git')
+      expect(await t.tools.call('room_preview_merge', { person: 'Ada', run: 'cat session.py' })).toContain('# offline Ada')
+      const all = await t.tools.call('room_preview_merge', { includeOffline: true, run: 'cat session.py' })
+      expect(all).toContain('step 1: merge Ada')
+      expect(all).toContain('# offline Ada')
+    } finally {
+      kieran.destroy()
+    }
+  })
+
   it('merges multiple people in order into one combined scratch tree', async () => {
     const t = setup()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))

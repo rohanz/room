@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { Awareness } from 'y-protocols/awareness'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
@@ -30,6 +30,12 @@ function fakeSession(room: RoomDoc, extra: Partial<Session> = {}): Session {
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
     ...extra,
   }
+}
+function addPresence(target: Awareness, name: string): Awareness {
+  const doc = new Y.Doc(), peer = new Awareness(doc)
+  peer.setLocalState({ user: { name, kind: 'agent', color: '#000' }, status: 'idle' })
+  applyAwarenessUpdate(target, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+  return peer
 }
 function setup(opts: { now?: () => number; joined?: boolean; session?: Partial<Session> } = {}) {
   const { a, b } = pair()
@@ -92,6 +98,7 @@ describe('automatic conflict notices', () => {
 
   it('both changing the same lines posts a notify when the preview conflicts and an fyi when it clears', async () => {
     const t = setup()
+    const peer = addPresence(t.session!.awareness, 'Kieran')
     t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
     await t.tools.flushConflicts()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 33'))
@@ -109,6 +116,33 @@ describe('automatic conflict notices', () => {
     expect(notes()).toHaveLength(2)
     expect(notes()[1].priority).toBe('fyi')
     expect(notes()[1].type === 'note' && notes()[1].text).toContain('merge cleanly again')
+    peer.destroy()
+  })
+
+  it('does not preview an offline participant until they are present', async () => {
+    const room = new RoomDoc()
+    room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
+    room.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 33'))
+    let present = false
+    let mergeReads = 0
+    const watcher = new ConflictWatcher({
+      room, me, debounceMs: 0, isPresent: () => present,
+      liveText: async (p, person) => room.text(p, person),
+      baseText: async () => { mergeReads++; return COMMITTED },
+      baseFor: () => base,
+      mergeBase: async () => base,
+    })
+    watcher.start()
+    room.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 34'))
+    await watcher.flush()
+    expect(mergeReads).toBe(0)
+    expect(room.messages()).toEqual([])
+    present = true
+    room.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 35'))
+    await watcher.flush()
+    expect(mergeReads).toBe(1)
+    expect(room.messages().some(m => m.type === 'note' && m.text.includes('now conflict'))).toBe(true)
+    watcher.stop()
   })
 
   it('budgets merge previews globally, coalesces pairs, and skips unchanged text hashes', async () => {

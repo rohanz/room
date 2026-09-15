@@ -20,6 +20,12 @@ export function formatCount(count: number, singular: string, plural = singular +
   return count + ' ' + (count === 1 ? singular : plural)
 }
 
+/** Keep candidate names that have a current awareness entry, preserving candidate order. */
+export function presentPeople(people: readonly string[], current: readonly Pick<Presence, 'user'>[]): string[] {
+  const present = new Set(current.map(p => p.user.name))
+  return people.filter(person => present.has(person))
+}
+
 export interface ParticipantClaim extends Claim { stale: boolean }
 export interface Participant {
   name: string

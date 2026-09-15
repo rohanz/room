@@ -47,6 +47,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
       s.daemon.touch()
       const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Stay until asked, then finish.` : 'You are still in the room and will be woken for questions.'}`]
+      const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary)
+      if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed !== false) {
+        out.push("Local failures caused by a teammate's unmerged files are expected until merge; the combined preview passed.")
+      }
       if (a.pr_note === true) {
         await refreshPrs(s)
         const pr = await myPr(s)

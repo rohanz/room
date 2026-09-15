@@ -3,10 +3,10 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { diff3Merge } from 'node-diff3'
 import { describeClaim, withLineNumbers, type NoteMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
+import { gitMergeFile } from '../merge.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -17,11 +17,11 @@ export const defs: ToolDef[] = [
   { name: 'room_impact', annotations: RO, description: 'Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
   { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and other people\'s combine cleanly? A lead can preview all its workers at once. Merges each listed person\'s live tree in order, three-way against the common base; nothing in any clone is written. Reports per-step clean paths and conflicting hunks with the people involved, then the final combined tree. `person` is a one-person alias for `people`. With `run`, materialises the fully combined tree in a scratch directory and runs that command there (e.g. the tests).',
-    inputSchema: { type: 'object', properties: { people: strs('people to merge in order'), person: str('one-person alias for people'), run: str('optional shell command to run in the fully combined tree, e.g. "uv run pytest -q"'), resolve: { type: 'boolean', description: 'when a conflicting region on one side contains the other side\'s lines in order, take the larger side and return the resolved file text so you can write it to your own clone' } } } }
+    inputSchema: { type: 'object', properties: { people: strs('people to merge in order; omitted means all present participants'), person: str('one-person alias for people'), includeOffline: { type: 'boolean', description: 'with no person/people, also merge offline participants that still have overlays' }, run: str('optional shell command to run in the fully combined tree, e.g. "uv run pytest -q"'), resolve: { type: 'boolean', description: 'when a conflicting region on one side contains the other side\'s lines in order, take the larger side and return the resolved file text so you can write it to your own clone' } } } }
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, rooms, withheld, liveText, lines, baseFor, ledgerLines, baseText, shareOf, describeUsers } = state
+  const { S, rooms, others, presences, withheld, liveText, lines, baseFor, ledgerLines, baseText, shareOf, describeUsers } = state
   const handlers: Record<string, Handler> = {
     async room_read(a) {
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
@@ -86,9 +86,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.people !== undefined && !Array.isArray(a.people)) return 'error: people must be an array of names'
       if (Array.isArray(a.people) && a.people.some(p => typeof p !== 'string' || !p.trim())) return 'error: people must contain non-empty names'
       if (Array.isArray(a.people) && alias) return 'error: pass people or person, not both'
-      const people = Array.from(new Set(Array.isArray(a.people) ? (a.people as string[]).map(p => p.trim()) : alias ? [alias] : []))
-      if (!people.length || people.includes(caller.me.name)) return 'error: people is required (one or more people other than you); person is a one-person alias'
-      const participants = people.map(person => ({ person, session: rooms.holding(person, caller) }))
+      if (a.includeOffline !== undefined && typeof a.includeOffline !== 'boolean') return 'error: includeOffline must be a boolean'
+      const explicit = Array.isArray(a.people) || !!alias
+      const allSessions = rooms.all()
+      const presentSession = (person: string) => allSessions.find(s => presences(s).some(p => p.user.name === person))
+      const present = Array.from(new Set(allSessions.flatMap(s => presences(s).map(p => p.user.name)))).filter(p => p !== caller.me.name)
+      const available = Array.from(new Set(allSessions.flatMap(s => others(s)))).filter(p => p !== caller.me.name)
+      const people = Array.from(new Set(explicit
+        ? Array.isArray(a.people) ? (a.people as string[]).map(p => p.trim()) : [alias]
+        : (a.includeOffline === true ? available : present).sort()))
+      if (people.includes(caller.me.name)) return 'error: people must contain one or more people other than you'
+      const offlineWithOverlays = available.filter(person => !present.includes(person) && rooms.holding(person, caller).room.changedPaths(person).length > 0)
+      const skipped = !explicit && a.includeOffline !== true ? offlineWithOverlays : []
+      const skippedNote = skipped.length
+        ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with overlays: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
+        : ''
+      if (!people.length) return ['no present participants to merge', skippedNote].filter(Boolean).join('\n')
+      const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
       for (const { person, session } of participants) {
         const held = withheld(session, person)
         if (held) return held
@@ -108,7 +122,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       const paths = Array.from(pathSet).sort()
-      if (!paths.length) return `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`
+      if (!paths.length) return [`none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
       const baseTexts = new Map<string, string>()
       const merged = new Map<string, string | null>()
       const owners = new Map<string, string[]>()
@@ -120,7 +134,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         merged.set(p, text)
         if ((text ?? '') !== b) owners.set(p, [caller.me.name])
       }
-      const out = [`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}):`]
+      const out = [`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: git):`]
+      if (skippedNote) out.push(skippedNote)
       let hardCount = 0
       let conflictCount = 0
       const resolvedText = new Map<string, string>()
@@ -139,11 +154,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             owners.set(p, [...(owners.get(p) ?? []), person])
             continue
           }
-          const res = diff3Merge(mineT.split('\n'), b.split('\n'), theirs.split('\n'))
-          const hunks = res.filter(r => 'conflict' in r)
+          const res = await gitMergeFile(b, mineT, theirs, { ours: 'combined', base: 'base', theirs: person })
+          const hunks = res.conflicts
           if (!hunks.length) {
             clean.push(p)
-            merged.set(p, res.flatMap(r => r.ok ?? []).join('\n'))
+            merged.set(p, res.text)
             owners.set(p, [...(owners.get(p) ?? []), person])
             continue
           }
@@ -155,10 +170,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const ownerSession = owner === caller.me.name ? caller : rooms.holding(owner, caller)
             const ownerRaw = await liveText(ownerSession, p, owner)
             const ownerText = ownerRaw === null ? '' : ownerRaw ?? b
-            if (diff3Merge(ownerText.split('\n'), b.split('\n'), theirs.split('\n')).some(r => 'conflict' in r)) pairNames.push(owner)
+            if ((await gitMergeFile(b, ownerText, theirs, { ours: owner, base: 'base', theirs: person })).status === 'conflict') pairNames.push(owner)
           }
           const conflictsWith = pairNames.length ? pairNames : [prior[prior.length - 1]]
-          for (const r of res) {
+          for (const r of res.chunks) {
             if (r.ok) { line += r.ok.length; resolvedLines.push(...r.ok); continue }
             const c = r.conflict
             if (!c) continue
@@ -203,6 +218,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
         else { const r = await runInMergedTree(caller, ancestor, merged, run); out.push(r); ranOk = /: exit 0\n/.test(r) }
       }
+      caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk } : {}) }
       // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
       if (!hardCount && ranOk) caller.room.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
       return out.join('\n')

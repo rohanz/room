@@ -18,10 +18,10 @@ const cleanup: (() => void)[] = []
 afterEach(() => { cleanup.splice(0).reverse().forEach(fn => fn()); vi.unstubAllEnvs() })
 
 /** Same update-exchange hub as the other suites, with real awareness and delayed first sync. */
-function hub(names: string[], ownName = 'name') {
+function hub(names: string[], ownName = 'name', stale = new Set<string>()) {
   const peers = names.map(name => {
     const doc = new Y.Doc(), awareness = new Awareness(doc)
-    awareness.setLocalState({ user: { name } })
+    awareness.setLocalState({ user: { name }, ...(stale.has(name) ? { lastActive: Date.now() - 20_001 } : {}) })
     cleanup.push(() => { awareness.destroy(); doc.destroy() })
     return { doc, awareness }
   })
@@ -48,10 +48,10 @@ function repo() {
   vi.stubEnv('ROOM_HOST', '')
   return dir
 }
-async function start(names: string[], tag?: string) {
+async function start(names: string[], tag?: string, stale: string[] = []) {
   const dir = repo(), log = vi.fn()
   const config = await resolveConfig({ dir, env: tag ? { ROOM_TAG: tag } : {} })
-  const result = await startAutoTaggedRoomd({ dir, room: 'ws://test/room', name: tag ? `name+${tag}` : 'name', label: config.tag, owner: 'name', kind: 'agent', providerFactory: hub(names), log }, config.tag)
+  const result = await startAutoTaggedRoomd({ dir, room: 'ws://test/room', name: tag ? `name+${tag}` : 'name', label: config.tag, owner: 'name', kind: 'agent', providerFactory: hub(names, 'name', new Set(stale)), log }, config.tag)
   return { ...result, log }
 }
 describe('automatic session tags', () => {
@@ -72,6 +72,9 @@ describe('automatic session tags', () => {
   })
   it('keeps a lone join plain and ignores its own awareness state', async () => {
     expect((await start([])).me.name).toBe('name')
+  })
+  it('ignores a crashed session whose last activity is older than 20 seconds', async () => {
+    expect((await start(['name'], undefined, ['name'])).me.name).toBe('name')
   })
   it('resolves environment hints and falls back for unknown or missing hosts', () => {
     const dir = repo()

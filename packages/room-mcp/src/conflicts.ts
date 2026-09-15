@@ -9,9 +9,9 @@ import { displayName } from '@room/shared'
  * Both post as the room itself, so the inbox rules treat them as addressed messages.
  */
 import { structuredPatch } from 'diff'
-import { diff3Merge } from 'node-diff3'
 import { createHash } from 'node:crypto'
 import type { Claim, ConflictMsg, Identity, NoteMsg, RoomDoc } from '@room/shared'
+import { gitMergeFile } from './merge.js'
 
 export const ROOM: Identity = { name: 'room', kind: 'agent' }
 
@@ -32,6 +32,8 @@ export interface ConflictDeps {
   mergeBudget?: number
   mergeWindowMs?: number
   now?: () => number
+  /** Whether this participant currently has a live awareness entry. */
+  isPresent?: (person: string) => boolean
 }
 
 export interface Range { from: number; to: number }
@@ -63,13 +65,8 @@ export async function mergePath(d: ConflictDeps, person: string, path: string): 
   try { m = await d.liveText(path, d.me.name); t = await d.liveText(path, person) } catch { return { status: 'unknown', lines: [] } }
   const mineT = m === null ? '' : m ?? b, theirs = t === null ? '' : t ?? b
   if (mineT === b || theirs === b) return { status: 'one-side', lines: [] }
-  const res = diff3Merge(mineT.split('\n'), b.split('\n'), theirs.split('\n'))
-  const lines: number[] = []
-  let line = 1
-  for (const r of res) {
-    if (r.ok) { line += r.ok.length; continue }
-    if (r.conflict) { lines.push(line); line += r.conflict.o.length }
-  }
+  const res = await gitMergeFile(b, mineT, theirs, { ours: d.me.name, base: 'base', theirs: person })
+  const lines = res.conflicts.map(c => c.from)
   return { status: lines.length ? 'conflict' : 'clean', lines }
 }
 
@@ -146,7 +143,7 @@ export class ConflictWatcher {
       if (person === this.d.me.name) await this.checkOverlap(p)
       // A change by either side to a file both have changed re-runs the preview for every other person on it.
       const me = this.d.me.name
-      const people = person === me ? this.d.room.whoChanged(p).filter(x => x !== me) : [person]
+      const people = (person === me ? this.d.room.whoChanged(p).filter(x => x !== me) : [person]).filter(x => this.d.isPresent?.(x) ?? true)
       if (this.d.room.changedPaths(me).includes(p)) for (const other of people) this.mergeQueue.set(`${other}|${p}`, { person: other, path: p })
       await this.drainMerges()
     } catch (e) {
@@ -180,6 +177,7 @@ export class ConflictWatcher {
   }
 
   private async checkMerge(person: string, p: string): Promise<void> {
+    if (this.d.isPresent && !this.d.isPresent(person)) return
     if (!this.d.room.changedPaths(person).includes(p)) return
     const key = `${person}|${p}`
     const mine = await this.d.liveText(p, this.d.me.name).catch(() => undefined)
