@@ -313,3 +313,11 @@ country instead. All three coordinated through the room without scripted prompts
 **Still open**
 - `codex exec` logs do not show tool results, so inbox delivery has to be verified from the bus or
   the agent's behaviour, not the log.
+
+## 2026-09-16 — Parked: published server image
+
+Self-hosting works from source (Dockerfile, deploy/docker-compose.yml, deploy/self-hosting.md)
+but there is no prebuilt image. When someone asks: multi-stage Dockerfile that builds the web
+view inside the image, a GitHub Actions workflow publishing `ghcr.io/rohanz/room:<version>` on
+`v*` tags with `latest` following, compose pointing at the image with a build override for
+source users, runbook and Fly command updated. Not Docker Hub, not per-commit builds.
