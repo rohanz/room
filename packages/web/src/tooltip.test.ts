@@ -113,12 +113,13 @@ it('keeps a 40px border-box mark and all theme geometry identical', () => {
     expect(match[1]).not.toMatch(/[{}]/)
   }
 })
-it('limits transitions to six containers, excludes code and canvas, and has only three stacking layers', () => {
+it('limits transitions to six containers, excludes code and canvas, and confines extra stacking layers to sticky code edges', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
   expect(css).not.toMatch(/transition\s*:\s*all\b/)
   expect(css).toContain('transition: background-color 160ms ease, color 160ms ease')
   expect(css).toContain('.code-line, .code-line *, .cm-line, .cm-line *, .network-canvas, .network-canvas * { transition: none !important; }')
-  expect(css.match(/z-index:/g)).toHaveLength(3)
+  const layers = [...css.matchAll(/([^{}]+)\{[^{}]*z-index:[^{}]*\}/g)].map(match => match[1].trim())
+  expect(layers.filter(selector => !selector.includes('.line-annotation') && !selector.includes('.line-gutter') && !selector.includes('.conflict-edge') && !selector.includes('.code-line::after'))).toHaveLength(3)
   expect(css).toContain('prefers-reduced-motion: reduce')
 })
 

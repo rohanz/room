@@ -234,11 +234,12 @@ function lineElement(line: MergedLine, names: readonly string[], prefix = '', cl
   const marker = owner ? h('span', { class: 'dot' }) : null
   if (marker) marker.style.background = colorFor(owner)
   const row = h('div', { class: `code-line side-${line.side}${changed.length ? ' changed-line' : ''}${line.conflict ? ' conflict-line' : ''}` },
-    h('span', { class: 'line-number' }, mergedNumber?.toString() ?? line.aLine?.toString() ?? ''),
-    mergedNumber !== undefined
-      ? h('span', { class: 'side-marker' }, marker)
-      : h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
-    h('span', { class: 'diff-prefix' }, prefix),
+    h('span', { class: 'line-gutter' },
+      h('span', { class: 'line-number' }, mergedNumber?.toString() ?? line.aLine?.toString() ?? ''),
+      mergedNumber !== undefined
+        ? h('span', { class: 'side-marker' }, marker)
+        : h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
+      h('span', { class: 'diff-prefix' }, prefix)),
     h('code', {}, line.text || ' '))
   if (changed.length) {
     row.dataset.changedBy = Array.isArray(line.changedBy) ? changed.join(', ') : line.changedBy ?? changed.join(', ')
@@ -314,8 +315,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   const regions = spans.filter((s, index) => !spans.some((other, j) => j > index &&
     other.start === s.start && other.end === s.end && other.resolved === s.resolved &&
     other.people.length === s.people.length && other.people.every(p => s.people.includes(p))))
-  // Full-width rows paint through the tag column; code cells own horizontal
-  // scrolling so their text stays inside the code area.
+  // All rows share the widest line; the pane owns scrolling and both edges stick.
   const text = h('div', { class: 'line-text' }, ...rows)
   text.style.gridRow = '1 / ' + (lines.length + 1)
   const grid = h('div', { class: 'conflict-code-grid' + (merged ? ' merged-code' : '') }, text)
@@ -387,7 +387,15 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   grid.style.gridTemplateColumns = 'minmax(0, 1fr) 96px'
   grid.append(gutter)
   layout(null)
-  host.replaceChildren(h('div', { class: 'code-scroll scroll mono' }, grid))
+  const pane = h('div', { class: 'code-scroll scroll mono' }, grid)
+  // The detail controller masks hovered text; refresh it when the pane moves.
+  pane.onscroll = event => {
+    for (const row of rows) {
+      const code = row.querySelector('code')!
+      code.onscroll?.call(code, event)
+    }
+  }
+  host.replaceChildren(pane)
 }
 
 export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {

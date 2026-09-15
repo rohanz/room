@@ -304,7 +304,7 @@ it.each([
   expect(pill.ariaLabel.match(/money released/g)).toHaveLength(resolved)
 })
 
-it('reserves a tag column while full-width rows contain scrolling code cells', () => {
+it('reserves a sticky tag column while full-width rows share the pane scroller', () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
   const host = new Element()
   renderCodeLines(host as unknown as HTMLElement, [{
@@ -319,8 +319,8 @@ it('reserves a tag column while full-width rows contain scrolling code cells', (
   expect(grid.style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
   expect(text.style.gridRow).toBe(gutter.style.gridRow)
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
-  expect(css).toContain('.conflict-code-grid > .line-text { grid-column: 1 / -1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(0, 1fr); min-width: 0; }')
-  expect(css).toContain('.conflict-edge { grid-column: 2; display: grid; grid-template-rows: subgrid; column-gap: 2px; justify-content: end; overflow: hidden; }')
+  expect(css).toContain('.conflict-code-grid > .line-text { grid-column: 1 / -1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(0, 1fr); min-width: 0; overflow: visible; }')
+  expect(css).toContain('.conflict-edge { position: sticky; right: 0; z-index: 3; grid-column: 2; display: grid; grid-template-rows: subgrid; column-gap: 2px; justify-content: end; overflow: hidden; }')
   // Model the grid's rects at narrow and wide viewport sizes. The scrollable
   // content can be wider, but its visible box ends before every tag's box.
   for (const width of [240, 800]) {

@@ -28,7 +28,7 @@ it('derives short and long descriptions from the same claims and ownership', () 
   expect(lineDetail(input).sections.flatMap(s => s.rows).join(' ')).toContain('add discount')
   expect(lineAnnotation({})).toBe(lineDetail({}).ownership)
 })
-it('shows an absolute annotation inside only the hovered row', () => {
+it('shows a sticky annotation inside only the hovered row', () => {
   render()
   expect(host.querySelector('.line-annotation')).toBeNull()
   expect(host.querySelector<HTMLElement>('.conflict-code-grid')!.style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
@@ -38,8 +38,8 @@ it('shows an absolute annotation inside only the hovered row', () => {
   expect(host.querySelector('.line-annotation')!.parentElement).toBe(rows()[0])
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
   const rule = css.match(/\.line-annotation \{([^}]+)\}/)![1]
-  expect(rule).toContain('position: absolute')
-  expect(rule).toContain('max-width: 50%')
+  expect(rule).toContain('position: sticky')
+  expect(rule).toContain('max-width: 50cqi')
   expect(rule).toContain('background: none')
   expect(css).toContain('.code-line { position: relative; }')
   rows()[0].dispatchEvent(new dom.window.Event('pointerleave'))
@@ -185,4 +185,46 @@ it('leaves short code unfaded when its text ends before the annotation', () => {
   vi.spyOn(dom.window.HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 500 } as DOMRect)
   rows()[0].dispatchEvent(new dom.window.Event('pointerenter'))
   expect(rows()[0].querySelector('code')!.style.maskImage).toBe('')
+})
+
+it.each([true, false])('uses one pane scroller with pinned edges and detail (merged=%s)', merged => {
+  renderCodeLines(host, lines.map(line => ({ ...line, text: 'long_code '.repeat(100) })), ['rohanz'], undefined, [], merged)
+  expect(host.querySelectorAll('.code-scroll')).toHaveLength(1)
+  expect(rule('.code-scroll')).toContain('overflow-x: auto')
+  expect(rule('.code-scroll')).toContain('container-type: inline-size')
+  for (const selector of ['.conflict-code-grid', '.conflict-code-grid > .line-text', '.conflict-code-grid .code-line', '.conflict-code-grid .code-line code']) {
+    expect(rule(selector)).toContain('overflow: visible')
+    const declarations = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, selectors]) => selectors.split(',').some(s => s.trim() === selector))
+    for (const [, , declarationsText] of declarations) {
+      expect(declarationsText).not.toMatch(/overflow(?:-x)?:\s*(auto|scroll)/)
+    }
+  }
+  expect(rule('.conflict-code-grid')).toContain('width: max-content')
+  expect(rule('.conflict-code-grid')).toContain('min-width: 100%')
+  expect(rule('.conflict-code-grid .code-line')).toContain('white-space: pre')
+  expect(rule('.line-gutter')).toContain('position: sticky')
+  expect(rule('.line-gutter')).toContain('left: 0')
+  expect(rule('.conflict-edge')).toContain('position: sticky')
+  expect(rule('.conflict-edge')).toContain('right: 0')
+  expect(rule('.conflict-code-grid .code-line::after')).toContain('background: inherit')
+  expect(rule('.conflict-code-grid .code-line::after')).toContain('right: 0')
+  for (const row of rows()) {
+    expect(row.querySelector('.line-gutter .line-number')).not.toBeNull()
+    expect(row.querySelector('.line-gutter .diff-prefix')).not.toBeNull()
+    if (merged) expect(row.querySelector('.line-gutter .side-marker')).not.toBeNull()
+  }
+  rows()[0].click()
+  expect(rule('.inline-detail')).toContain('position: sticky')
+  expect(rule(merged ? '.merged-code .inline-detail' : '.inline-detail'))
+    .toContain(merged ? 'width: calc(100cqi - 165px)' : 'width: calc(100cqi - 185px)')
+})
+
+it('refreshes the hover fade when the pane scrolls', () => {
+  render()
+  const code = rows()[0].querySelector('code')!
+  const mask = vi.fn()
+  code.onscroll = mask
+  host.querySelector('.code-scroll')!.dispatchEvent(new dom.window.Event('scroll'))
+  expect(mask).toHaveBeenCalledOnce()
 })
