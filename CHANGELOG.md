@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3 — 2026-09-15
+
+- Browser view: light theme by default with a Light/Dark/System control and a short fade; neutral code pane; conflicts rendered as author-tinted lines with one tag on the right, claim overlaps (amber "both claimed") distinguished from text conflicts (red); single line-number column with side dots in divergent regions; Network tab restyled (segmented zoom defaulting to Fit, stat chips, tooltip); presence in the people rail follows live presence; header shows the logo at 40px and `owner / repo` with a branch chip; reconnect notice waits two seconds; pluralised counts.
+- Server: a reconnecting client's presence is no longer dropped by the identity guard.
+
 ## 0.6.2 — 2026-09-15
 
 - Browser view redesigned: Room brand and logo, a Board view for projectors and shared links (participant cards with areas, sharing level, claims and plans, nested workers, hide-offline, full-width timeline with filters) and the restyled Code inspector; dark mode with checked contrast; no more spurious view-token call on load.
