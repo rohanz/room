@@ -25,7 +25,7 @@ export interface Tools {
 }
 
 const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...prDefs, ...shareDefs]
-const DEF_ORDER = ['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss']
+const DEF_ORDER = ['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss']
 export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name === name)!)
 
 export function createTools(ctx: ToolCtx): Tools {

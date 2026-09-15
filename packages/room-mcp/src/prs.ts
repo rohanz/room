@@ -8,6 +8,8 @@
  */
 import type { RoomDoc, Msg, Identity, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
 import { displayName, formatPlans } from '@room/shared'
+import fs from 'node:fs'
+import path from 'node:path'
 import { authFor, type Session } from './session.js'
 
 export interface PrInfo {
@@ -104,6 +106,18 @@ export async function postPrNote(s: Session, number: number, body: string): Prom
 export function branchOf(roomName: string): string {
   const parts = roomName.split('/')
   return parts.slice(roomName.startsWith('github.com/') ? 3 : roomName.startsWith('git/') ? 4 : 2).join('/') || roomName
+}
+
+/** Write the room's current and compacted bus history as a local markdown ledger. */
+export function exportRoomLedger(s: Session, opts: { path?: string; now?: number } = {}): { path: string; lines: number } {
+  const now = opts.now ?? Date.now()
+  const timestamp = new Date(now).toISOString().replace(/[:.]/g, '-')
+  const defaultPath = path.join(s.dir, '.room', 'ledger', `${s.roomName.replaceAll('/', '_')}-${timestamp}.md`)
+  const outputPath = opts.path ? path.resolve(s.dir, opts.path) : defaultPath
+  const markdown = renderPrNote(s.room, { roomName: s.roomName, now })
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+  fs.writeFileSync(outputPath, markdown)
+  return { path: outputPath, lines: markdown.trimEnd().split('\n').length }
 }
 
 /**

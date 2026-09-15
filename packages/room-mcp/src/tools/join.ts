@@ -7,6 +7,7 @@ import { configureCredentials, getCredential, getPending, setPending } from '../
 import { LOCAL, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
+import { exportRoomLedger } from '../prs.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_login', annotations: RW, description: 'Log in to the room server. GitHub (device flow): the first call returns a one-time code and URL. OIDC (self-hosted servers with a company identity provider): the first call returns a URL to open. Show them to the user VERBATIM. Call again to wait for the login to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your login (GitHub login or email).',
@@ -20,11 +21,13 @@ export const defs: ToolDef[] = [
   { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.',
     inputSchema: { type: 'object', properties: { forget: { type: 'boolean', description: 'also forget the remembered choice (local/team) for this clone' }, force: { type: 'boolean', description: 'dismiss running workers first instead of refusing' } } } },
   { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user\'s explicit request; room_create reopens later.',
-    inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'must be true' } }, required: ['confirm'] } }
+    inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'must be true' } }, required: ['confirm'] } },
+  { name: 'room_export', annotations: RO, description: 'Export the current room story, including compacted bus history, to a local markdown ledger without changing the room.',
+    inputSchema: { type: 'object', properties: { path: str('optional output path, relative to the clone unless absolute; default .room/ledger/<room>-<timestamp>.md') } } }
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { ctx, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
+  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
   async function configureLogin(a: Record<string, unknown>) {
     const config = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
     configureCredentials(config.credentialsPath)
@@ -133,8 +136,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_close(a) {
       const s = S()
-      if (s.local) return 'this is a local room (no server): there is nothing to close. room_leave ends your session; the relay stops with the last session.'
+      if (s.local) {
+        if (a.confirm !== true) return 'this is a local room (no server): there is nothing to close. room_leave ends your session; the relay stops with the last session.'
+        const ledger = exportRoomLedger(s, { now: now() })
+        return `this is a local room (no server): there is nothing to close. Exported its ledger to ${ledger.path} (${ledger.lines} lines); room_leave ends your session.`
+      }
       if (a.confirm !== true) return 'error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user\'s explicit request'
+      const ledger = exportRoomLedger(s, { now: now() })
       const repo = s.roomName.slice(0, s.roomName.lastIndexOf('/'))
       await closeWorkersRoom()
       cleanupMine(s, 'closing the room')
@@ -142,7 +150,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       rooms.remove(s)
       const closed = await doClose(s)
       await doLeave(s)
-      return `closed ${repo} for everyone: removed ${closed.length ? closed.join(', ') : 'its rooms'}; room_create reopens it`
+      return `closed ${repo} for everyone: removed ${closed.length ? closed.join(', ') : 'its rooms'}; exported the ledger to ${ledger.path} (${ledger.lines} lines); room_create reopens it`
+    },
+    async room_export(a) {
+      const s = S()
+      const ledger = exportRoomLedger(s, { path: typeof a.path === 'string' && a.path ? a.path : undefined, now: now() })
+      return `exported room ledger to ${ledger.path} (${ledger.lines} lines)`
     }
   }
   return handlers
