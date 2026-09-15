@@ -13,7 +13,7 @@ import { DEFAULT_SERVER, LOCAL, resolveServer } from './session.js'
 
 export const CHOICE_FILE = 'room-choice.json'
 
-export interface RoomChoice { where: string; at: number; by?: string }
+export interface RoomChoice { where: string; at: number; by?: string; /** worktree paths already told that their work is visible to the team */ warned?: string[] }
 
 export type ChoiceRule = 'argument' | 'env' | 'remembered' | 'default'
 
@@ -52,9 +52,21 @@ export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
 }
 
 export async function writeChoice(dir: string, where: string, by?: string): Promise<RoomChoice> {
-  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}) }
+  const prev = await readChoice(dir)
+  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {}) }
   fs.writeFileSync(await choiceFile(dir), JSON.stringify(c) + '\n')
   return c
+}
+
+/** Has this worktree been told its uncommitted work is visible to the team? Marks it told and says whether it was new. */
+export async function markWarned(dir: string, worktree: string): Promise<boolean> {
+  const c = await readChoice(dir)
+  if (!c) return true
+  const key = path.resolve(worktree)
+  const warned = c.warned ?? []
+  if (warned.includes(key)) return false
+  try { fs.writeFileSync(await choiceFile(dir), JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + '\n') } catch { /* best effort */ }
+  return true
 }
 
 export async function clearChoice(dir: string): Promise<boolean> {

@@ -10,7 +10,7 @@ import type { Identity, Msg } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorktree, workerCommand, workerPrompt, validTag, type SpawnSpec } from '../src/workers.js'
+import { prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, type SpawnSpec } from '../src/workers.js'
 
 let dir: string
 let base: string
@@ -207,6 +207,7 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(t.a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && /worker a .*exited with code 1/.test(m.text))).toBe(true)
     const d = await t.leadTools.call('room_dismiss', { tag: 'b' })
     expect(d).toContain('dismissed b')
+    expect(t.killed).toHaveLength(1)
     expect(t.a.workers.get('b')?.status).toBe('dismissed')
     expect(await t.leadTools.call('room_dismiss', { tag: 'b' })).toContain('already dismissed')
   })
@@ -224,5 +225,95 @@ describe('pinned rooms', () => {
     let s2: Session | null = derived
     const t2 = createTools({ getSession: () => s2, setSession: x => { s2 = x }, cwd: dir, join: async o => ({ ...fakeSession(a, lead, false), roomName: o.room ?? '?' }), leave: async () => {} })
     expect(await t2.call('room_state', { all: true })).toContain('switched to branch main')
+  })
+})
+
+function setupLead() {
+  const { a, b } = pair()
+  a.setMeta({ repo: 'x', branch: 'main', base })
+  let ls: Session | null = fakeSession(a, lead)
+  const specs: SpawnSpec[] = []
+  const exits: ((code: number | null) => void)[] = []
+  const killed: number[] = []
+  const leadTools = createTools({
+    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2,
+    spawner: spec => { specs.push(spec); return { pid: 4242 + specs.length, onExit: cb => { exits.push(cb) }, kill: () => { killed.push(1) } } },
+    worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+  })
+  return { a, b, leadTools, specs, exits, killed }
+}
+
+describe('worker safety', () => {
+  it('a pid this session did not spawn is only signalled when it is alive and started after the worker record', () => {
+    // pid 1 (launchd/init) is alive but started long before now
+    expect(pidIsOurWorker(1, Date.now())).toBe(false)
+    expect(pidIsOurWorker(-1, 0)).toBe(false)
+    expect(pidIsOurWorker(0, 0)).toBe(false)
+    // our own process started before "now", but after a record from an hour ago
+    expect(pidIsOurWorker(process.pid, Date.now() - 3600_000)).toBe(true)
+  })
+
+  it('dismissing a worker whose process is unknown and old leaves the pid alone but marks it dismissed', async () => {
+    const { a, b } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base })
+    // a worker record left by a lead that has since restarted: pid 1 is alive but not ours
+    a.setWorker({ tag: 'ghost', name: 'rohanz+ghost', host: 'claude', task: 'x', dir, branch: 'room/ghost', pid: 1, startedAt: Date.now(), status: 'running', lead: 'rohanz' })
+    let ls: Session | null = fakeSession(b, lead)
+    const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir })
+    const out = await tools.call('room_dismiss', { tag: 'ghost' })
+    expect(out).toContain('not signalled')
+    expect(a.workers.get('ghost')?.status).toBe('dismissed')
+  })
+
+  it('room_leave refuses while workers run, force dismisses them; shutdown dismisses too', async () => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
+    const refused = await t.leadTools.call('room_leave', {})
+    expect(refused).toContain('error: 1 worker(s) still running: a')
+    expect(t.a.workers.get('a')?.status).toBe('running')
+    const left = await t.leadTools.call('room_leave', { force: true })
+    expect(left).toContain('left local/x/main')
+    expect(t.killed).toHaveLength(1)
+    expect(t.a.workers.get('a')?.status).toBe('dismissed')
+    expect(t.a.messages().some(m => m.type === 'note' && /dismissed worker a .*the lead left/.test((m as { text: string }).text))).toBe(true)
+    // shutdown path
+    const t2 = setupLead()
+    await t2.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
+    await t2.leadTools.shutdown()
+    expect(t2.killed).toHaveLength(1)
+    expect(t2.a.workers.get('b')?.status).toBe('dismissed')
+  })
+
+  it('a worker that cannot start is marked failed', async () => {
+    const { a } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base })
+    let ls: Session | null = fakeSession(a, lead)
+    let onErr: ((e: Error) => void) | undefined
+    const tools = createTools({
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
+      spawner: () => ({ pid: -1, onExit: () => {}, onError: cb => { onErr = cb }, kill: () => { throw new Error('must not signal') } }),
+      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+    })
+    await tools.call('room_spawn', { tag: 'nope', task: 'x', host: 'codex' })
+    onErr!(new Error('spawn codex ENOENT'))
+    expect(a.workers.get('nope')).toMatchObject({ status: 'failed', exitCode: -1 })
+    expect(a.messages().some(m => m.type === 'note' && /could not start: spawn codex ENOENT/.test((m as { text: string }).text))).toBe(true)
+    // dismissing it never signals anything
+    expect(await tools.call('room_dismiss', { tag: 'nope' })).toContain('already failed')
+  })
+
+  it('room_spawn refuses a dir outside the repo unless allowOutside, and then skips worktree bookkeeping', async () => {
+    const t = setupLead()
+    const outside = mkdtempSync(join(tmpdir(), 'room-outside-'))
+    execFileSync('git', ['-C', outside, 'init', '-q', '-b', 'elsewhere'], { stdio: 'pipe' })
+    writeFileSync(join(outside, 'f.txt'), 'x\n')
+    execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { stdio: 'pipe' })
+    const refused = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside })
+    expect(refused).toContain('outside this repo')
+    expect(t.specs).toHaveLength(0)
+    const ok = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside, allowOutside: true })
+    expect(ok).toContain('outside this repo, so no worktree was made')
+    expect(t.a.workers.get('far')).toMatchObject({ dir: outside, branch: 'elsewhere' })
   })
 })

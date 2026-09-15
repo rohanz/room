@@ -66,9 +66,11 @@ scripts and workers.
 ### Watching a local room
 
 A local session prints a `browser view:` link like a hosted one, served by the relay itself:
-`http://127.0.0.1:<port>/?room=…`. Open it to see the participants, their claims and the
-feed. It is reachable from this machine only and needs no key; sharing it with someone
-else does nothing.
+`http://127.0.0.1:<port>/?room=…&key=…`. Open it to see the participants, their claims and
+the feed. The link is machine-local (the relay only accepts loopback connections) and it
+carries the room's key from `.git/room-local.json`, which is what lets the page connect.
+Anyone who can run something on this machine and holds the link can read the room; the
+key stops other users of a shared machine from guessing their way in.
 
 ### Dispatching workers
 

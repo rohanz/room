@@ -211,3 +211,17 @@ script says. Workers-local keeps a team's server free of every helper agent and 
 helper's working trees on the machine that owns them, which is the smallest useful form of
 nested rooms.
 **Cut:** relaying workers' questions up to teammates; a lead in more than two rooms.
+
+## 2026-09-15 — Review fixes on rooms-by-instruction
+**Decision:** The local relay binds a port derived from the clone's git dir, so racing
+sessions collide on purpose and one relay wins; joiners recognise a relay by `/health`
+rather than by an open port; every websocket carries a key from the 0600 relay file, and
+the local browser link carries it too. Workers can only be signalled when this session
+spawned them or their pid is provably theirs; a lead cannot leave with workers running
+unless it dismisses them; a spawn failure is recorded as failed. The bridge posts a release
+when a mirrored claim ends and relays only plans, conflicts and base moves as interrupts.
+Remembered team joins warn once per worktree. Server waits cap at 45 s and never retry a
+device-code start.
+**Why:** A code review of the branch found two ways to signal the wrong process, a start
+race that split a clone into two rooms, and a bridge that turned a busy team room into a
+stream of worker interrupts.

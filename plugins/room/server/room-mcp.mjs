@@ -10211,7 +10211,7 @@ var require_websocket = __commonJS({
     var EventEmitter2 = __require("events");
     var https = __require("https");
     var http2 = __require("http");
-    var net2 = __require("net");
+    var net = __require("net");
     var tls = __require("tls");
     var { randomBytes, createHash } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
@@ -10955,12 +10955,12 @@ var require_websocket = __commonJS({
     }
     function netConnect(options) {
       options.path = options.socketPath;
-      return net2.connect(options);
+      return net.connect(options);
     }
     function tlsConnect(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
-        options.servername = net2.isIP(options.host) ? "" : options.host;
+        options.servername = net.isIP(options.host) ? "" : options.host;
       }
       return tls.connect(options);
     }
@@ -33107,7 +33107,7 @@ var Daemon = class {
     const { serverUrl, roomName } = splitRoomUrl(options.room);
     this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
       WebSocketPolyfill: import_websocket.default,
-      params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.session ? { session: options.session } : options.githubToken ? { gh: options.githubToken } : {} }
+      params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.localKey ? { key: options.localKey } : {}, ...options.session ? { session: options.session } : options.githubToken ? { gh: options.githubToken } : {} }
     });
     this.setStatus("syncing");
   }
@@ -33568,9 +33568,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname as dirname3, resolve as resolve3 } from "node:path";
 
 // packages/roomd/src/local.ts
+import crypto from "node:crypto";
 import fs2 from "node:fs";
 import http from "node:http";
-import net from "node:net";
 import path2 from "node:path";
 var MSG_SYNC = 0;
 var MSG_AWARENESS = 1;
@@ -33693,21 +33693,40 @@ function relayFile(commonDir) {
 function readRelayInfo(commonDir) {
   try {
     const v = JSON.parse(fs2.readFileSync(relayFile(commonDir), "utf8"));
-    return typeof v.port === "number" && typeof v.pid === "number" ? { port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0) } : void 0;
+    return typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key } : void 0;
   } catch {
     return void 0;
   }
 }
-function portAnswers(port, timeoutMs2 = 500) {
+function deterministicPort(commonDir) {
+  let real = commonDir;
+  try {
+    real = fs2.realpathSync.native(commonDir);
+  } catch {
+  }
+  const h = crypto.createHash("sha1").update(real).digest();
+  return 4e4 + h.readUInt32BE(0) % 2e4;
+}
+function relayAnswers(port, timeoutMs2 = 800) {
   return new Promise((resolve5) => {
-    const sock = net.connect({ host: "127.0.0.1", port });
-    const done = (ok) => {
-      sock.destroy();
-      resolve5(ok);
-    };
-    sock.once("connect", () => done(true));
-    sock.once("error", () => done(false));
-    sock.setTimeout(timeoutMs2, () => done(false));
+    const req = http.get({ host: "127.0.0.1", port, path: "/health", timeout: timeoutMs2 }, (res) => {
+      let body = "";
+      res.on("data", (c) => {
+        body += c;
+      });
+      res.on("end", () => {
+        try {
+          resolve5(res.statusCode === 200 && JSON.parse(body).local === true);
+        } catch {
+          resolve5(false);
+        }
+      });
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve5(false);
+    });
+    req.on("error", () => resolve5(false));
   });
 }
 var MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
@@ -33730,7 +33749,7 @@ function isLoopback(addr) {
 }
 function startRelay(port, opts = {}) {
   return new Promise((resolve5, reject) => {
-    const staticDir = opts.staticDir ?? findWebDist();
+    const staticDir = opts.staticDir ? path2.resolve(opts.staticDir) : findWebDist();
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://x");
       if (url.pathname === "/health") {
@@ -33741,7 +33760,7 @@ function startRelay(port, opts = {}) {
       if (staticDir) {
         const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
         const file = path2.resolve(staticDir, rel);
-        if (file.startsWith(staticDir) && fs2.existsSync(file) && fs2.statSync(file).isFile()) {
+        if (file.startsWith(staticDir + path2.sep) && fs2.existsSync(file) && fs2.statSync(file).isFile()) {
           res.writeHead(200, { "content-type": MIME[path2.extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
           fs2.createReadStream(file).pipe(res);
           return;
@@ -33754,10 +33773,18 @@ function startRelay(port, opts = {}) {
     const docs = relayDocs();
     wss.on("connection", (conn, req) => attach(docs, conn, req));
     server.on("upgrade", (req, socket, head) => {
-      if (!isLoopback(req.socket.remoteAddress)) {
-        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      const refuse = (code, why) => {
+        socket.write(`HTTP/1.1 ${code} ${why}\r
+Connection: close\r
+\r
+`);
         socket.destroy();
-        return;
+      };
+      if (!isLoopback(req.socket.remoteAddress)) return refuse(403, "Forbidden");
+      if (opts.key) {
+        const given = new URL(req.url ?? "/", "http://x").searchParams.get("key") ?? "";
+        const a = Buffer.from(given), b = Buffer.from(opts.key);
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return refuse(403, "Forbidden: local room key missing or wrong");
       }
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
     });
@@ -33789,34 +33816,62 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   });
   let owned = null;
   let port = 0;
+  let key = "";
   const write2 = () => {
     try {
-      fs2.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now() }) + "\n");
+      fs2.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key }) + "\n", { mode: 384 });
     } catch (e) {
       log2(`local relay: could not write ${relayFile(commonDir)}: ${e instanceof Error ? e.message : e}`);
     }
   };
-  const existing = readRelayInfo(commonDir);
-  if (existing && await portAnswers(existing.port)) {
-    port = existing.port;
-    log2(`local room ${room}: relay on 127.0.0.1:${port} (pid ${existing.pid}${pidAlive(existing.pid) ? "" : ", pid gone but port answers"})`);
-  } else {
-    const want = existing?.port ?? 0;
+  const recorded = async () => {
+    const info = readRelayInfo(commonDir);
+    return info && await relayAnswers(info.port) ? info : void 0;
+  };
+  const adopt = (info, how) => {
+    port = info.port;
+    key = info.key;
+    log2(`local room ${room}: ${how} relay on 127.0.0.1:${port} (pid ${info.pid}${pidAlive(info.pid) ? "" : ", pid gone but relay answers"})`);
+  };
+  const existing = await recorded();
+  if (existing) adopt(existing, "joined");
+  else {
+    key = readRelayInfo(commonDir)?.key ?? crypto.randomBytes(16).toString("hex");
+    const want = deterministicPort(commonDir);
     try {
-      owned = await startRelay(want);
-    } catch {
-      owned = await startRelay(0);
+      owned = await startRelay(want, { key, staticDir: opts.staticDir });
+    } catch (e) {
+      if (e.code !== "EADDRINUSE") throw e;
+      let winner;
+      for (let i = 0; i < 20 && !winner; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        winner = await recorded();
+      }
+      if (winner) adopt(winner, "lost the start race; joined");
+      else {
+        owned = await startRelay(0, { key, staticDir: opts.staticDir });
+        log2(`local room ${room}: port ${want} is taken by something else; using a free port`);
+      }
     }
-    port = owned.port;
-    write2();
-    log2(`local room ${room}: started relay on 127.0.0.1:${port}`);
+    if (owned) {
+      port = owned.port;
+      write2();
+      log2(`local room ${room}: started relay on 127.0.0.1:${port}`);
+      await new Promise((r) => setTimeout(r, 150));
+      const other = readRelayInfo(commonDir);
+      if (other && other.port !== port && other.pid !== process.pid && await relayAnswers(other.port)) {
+        await owned.close();
+        owned = null;
+        adopt(other, "two relays started together; closed ours and joined the");
+      } else if (other?.port !== port) write2();
+    }
   }
   let stopped = false;
   const tick = async () => {
     if (stopped || owned) return;
-    if (await portAnswers(port)) return;
+    if (await relayAnswers(port)) return;
     try {
-      owned = await startRelay(port);
+      owned = await startRelay(port, { key, staticDir: opts.staticDir });
       write2();
       log2(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`);
     } catch {
@@ -33830,6 +33885,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
     url: `ws://127.0.0.1:${port}`,
     httpUrl: `http://127.0.0.1:${port}`,
     port,
+    key,
     get owned() {
       return owned !== null;
     },
@@ -34227,7 +34283,7 @@ async function resolveAuth(server, roomName, token) {
   return { token, gh: await githubToken() };
 }
 async function startLogin(server, provider) {
-  const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15e3 });
+  const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15e3, retry: false });
   if (res.status === 404 && !provider) {
     const old = await fetch(`${httpOf(server)}/auth/device`, { method: "POST", signal: AbortSignal.timeout(15e3) });
     if (!old.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await old.text()).trim() || `HTTP ${old.status}`}`, 2);
@@ -34345,21 +34401,26 @@ function defaultWeb(server) {
     return DEFAULT_WEB;
   }
 }
-async function serverFetch(url, init = {}, log2) {
-  const { timeoutMs: timeoutMs2 = 25e3, ...rest } = init;
-  const deadline = Date.now() + 1e5;
+var serverLog;
+function setServerLog(log2) {
+  serverLog = log2;
+}
+var SERVER_RETRY_MS = 45e3;
+async function serverFetch(url, init = {}, log2 = serverLog) {
+  const { timeoutMs: timeoutMs2 = 25e3, retry = true, ...rest } = init;
+  const deadline = Date.now() + SERVER_RETRY_MS;
   let attempt = 0;
   for (; ; ) {
     attempt++;
     try {
       const res = await fetch(url, { ...rest, signal: AbortSignal.timeout(timeoutMs2) });
-      if (![502, 503, 504].includes(res.status) || Date.now() > deadline) return res;
-      log2?.(`server answered ${res.status}; it is probably starting up (attempt ${attempt}), retrying`);
+      if (!retry || ![502, 503, 504].includes(res.status) || Date.now() > deadline) return res;
+      log2?.(`server answered ${res.status}; it is probably starting up (attempt ${attempt}), retrying for up to ${Math.round(SERVER_RETRY_MS / 1e3)}s`);
     } catch (e) {
       const name = e instanceof Error ? e.name : "";
       const code = e?.cause?.code ?? e?.code ?? "";
       const coldStart = name === "TimeoutError" || name === "AbortError" || code === "ECONNRESET" || code === "UND_ERR_SOCKET" || code === "UND_ERR_HEADERS_TIMEOUT";
-      if (!coldStart || Date.now() > deadline) throw e;
+      if (!retry || !coldStart || Date.now() > deadline) throw e;
       log2?.(`waiting for the server to wake (attempt ${attempt}: ${e instanceof Error ? e.message : String(e)})`);
     }
     await new Promise((r) => setTimeout(r, 3e3));
@@ -34377,6 +34438,7 @@ function decodeRoom(encoded) {
 }
 async function joinSession(opts) {
   const dir = resolve3(opts.dir);
+  if (opts.log) setServerLog(opts.log);
   const chosen = resolveServer(opts.server ?? process.env.ROOM_SERVER);
   if (chosen === LOCAL) return joinLocal(dir, opts);
   const parsed = parseServer(chosen);
@@ -34450,13 +34512,13 @@ async function joinLocal(dir, opts) {
   const share = requestedShare(opts.share);
   let daemon;
   try {
-    daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
+    daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log });
   } catch (e) {
     await local.stop();
     throw e;
   }
   const web = (opts.web ?? process.env.ROOM_WEB ?? local.httpUrl).replace(/\/+$/, "");
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}`;
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}&key=${encodeURIComponent(local.key)}`;
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log);
   graph.start();
   return {
@@ -34564,7 +34626,7 @@ async function leaveSession(s) {
 }
 
 // packages/room-mcp/src/workers.ts
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs4 from "node:fs";
 import path4 from "node:path";
 var WORKERS_DIR = path4.join(".room", "workers");
@@ -34621,9 +34683,21 @@ var defaultSpawner = (spec) => {
         cb(code);
       });
     },
+    onError: (cb) => {
+      child.once("error", (err) => {
+        try {
+          fs4.closeSync(fd);
+        } catch {
+        }
+        cb(err);
+      });
+    },
+    // Only ever signal a real pid: kill(-0) would hit our own process group.
     kill: () => {
+      const pid = child.pid;
+      if (!pid || pid <= 0) return;
       try {
-        process.kill(-(child.pid ?? 0), "SIGTERM");
+        process.kill(-pid, "SIGTERM");
       } catch {
         try {
           child.kill("SIGTERM");
@@ -34634,13 +34708,30 @@ var defaultSpawner = (spec) => {
   };
 };
 function pidAlive2(pid) {
-  if (pid <= 0) return false;
+  if (!pid || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (e) {
     return e.code === "EPERM";
   }
+}
+function processStartTime(pid) {
+  if (!pid || pid <= 0) return void 0;
+  try {
+    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
+    if (!out) return void 0;
+    const t = Date.parse(out);
+    return Number.isFinite(t) ? t : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function pidIsOurWorker(pid, startedAt) {
+  if (!pidAlive2(pid)) return false;
+  const began = processStartTime(pid);
+  if (began === void 0) return false;
+  return began >= startedAt - 5e3;
 }
 function workerLines(workers, lastLineFrom, changedCount, now = Date.now()) {
   if (!workers.length) return [];
@@ -34682,9 +34773,22 @@ async function readChoice(dir) {
   }
 }
 async function writeChoice(dir, where, by) {
-  const c = { where, at: Date.now(), ...by ? { by } : {} };
+  const prev = await readChoice(dir);
+  const c = { where, at: Date.now(), ...by ? { by } : {}, ...prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {} };
   fs5.writeFileSync(await choiceFile(dir), JSON.stringify(c) + "\n");
   return c;
+}
+async function markWarned(dir, worktree) {
+  const c = await readChoice(dir);
+  if (!c) return true;
+  const key = path5.resolve(worktree);
+  const warned = c.warned ?? [];
+  if (warned.includes(key)) return false;
+  try {
+    fs5.writeFileSync(await choiceFile(dir), JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + "\n");
+  } catch {
+  }
+  return true;
 }
 async function clearChoice(dir) {
   try {
@@ -35132,6 +35236,9 @@ var ConflictWatcher = class {
 
 // packages/room-mcp/src/bridge.ts
 var RELAY_TYPES = /* @__PURE__ */ new Set(["claim", "release", "changed", "conflict", "plan", "base", "scope"]);
+var INTERRUPT_TYPES = /* @__PURE__ */ new Set(["plan", "conflict", "base"]);
+var RELAY_DEDUPE_MS = 6e4;
+var RELAYED_MAX = 2e3;
 var Bridge = class {
   constructor(team, local, o = {}) {
     this.team = team;
@@ -35143,7 +35250,9 @@ var Bridge = class {
   o;
   /** local claim id -> mirrored team claim id */
   mirrored = /* @__PURE__ */ new Map();
-  relayed = /* @__PURE__ */ new Set();
+  relayed = [];
+  /** worker|path|type -> last relay time, so a chatty team room does not become a stream of notices. */
+  recent = /* @__PURE__ */ new Map();
   unobserve = [];
   timer = null;
   lastScopeKey = "";
@@ -35253,29 +35362,54 @@ var Bridge = class {
     this.mirrored.set(localId, t.id);
     this.o.log?.(`bridge: mirrored ${c.by}'s claim ${c.path}:${c.from}-${c.to} into the team room as ${t.id}`);
   }
+  /** The local claim is gone: drop the mirror and tell the team what became of the plans it showed them. */
   unmirrorClaim(localId) {
     const teamId = this.mirrored.get(localId);
     if (!teamId) return;
     this.mirrored.delete(localId);
+    const mirrored = this.team.room.claims.get(teamId);
     this.team.room.removeClaim(teamId);
+    if (!mirrored) return;
+    const local = [...this.local.room.messages()].reverse().find((m) => m.type === "release" && m.claimId === localId);
+    const tag = mirrored.intent.match(/^\[([^\]]+)\]/)?.[1];
+    this.team.room.post(this.team.me, {
+      type: "release",
+      claimId: teamId,
+      path: mirrored.path,
+      summary: `${tag ? `[${tag}] ` : ""}${local?.summary ?? "released"}`,
+      ...local?.unfulfilled?.length ? { unfulfilled: local.unfulfilled } : {}
+    });
   }
-  /** A team message about a worker's paths becomes an interrupt to that worker, locally. */
+  /** A team message about a worker's paths is re-posted to that worker locally: plans, conflicts and base
+   *  moves as interrupts, the rest at notify. One per worker, path and type per minute. */
   relayDown(m) {
-    if (this.relayed.has(m.id) || !RELAY_TYPES.has(m.type)) return;
+    if (this.relayed.includes(m.id) || !RELAY_TYPES.has(m.type)) return;
     if (m.from === this.team.me.name) return;
     const paths = msgPaths(m);
     if (!paths.length) return;
+    const now = Date.now();
     const hit = this.workers().filter((w) => {
       const sc = this.local.room.scope(w.name);
       const changed = this.local.room.changedPaths(w.name);
       return paths.some((p) => sc && scopeCovers(sc, p) || changed.includes(p));
     });
     if (!hit.length) return;
-    this.relayed.add(m.id);
+    this.relayed.push(m.id);
+    if (this.relayed.length > RELAYED_MAX) this.relayed.splice(0, this.relayed.length - RELAYED_MAX);
+    const priority = INTERRUPT_TYPES.has(m.type) ? "interrupt" : "notify";
+    const delivered = [];
     for (const w of hit) {
-      this.local.room.post(this.team.me, { type: "note", to: w.name, priority: "interrupt", text: `[team room] ${formatMsg(m)}` });
+      const key = `${w.name}|${paths.slice().sort().join(",")}|${m.type}`;
+      const last2 = this.recent.get(key) ?? 0;
+      if (priority !== "interrupt" && now - last2 < RELAY_DEDUPE_MS) continue;
+      this.recent.set(key, now);
+      this.local.room.post(this.team.me, { type: "note", to: w.name, priority, text: `[team room] ${formatMsg(m)}` });
+      delivered.push(w.tag);
     }
-    this.o.log?.(`bridge: relayed team ${m.type} ${m.id} to ${hit.map((w) => w.tag).join(", ")}`);
+    if (this.recent.size > RELAYED_MAX) {
+      for (const [k, t] of this.recent) if (now - t > RELAY_DEDUPE_MS) this.recent.delete(k);
+    }
+    if (delivered.length) this.o.log?.(`bridge: relayed team ${m.type} ${m.id} to ${delivered.join(", ")} at ${priority}`);
   }
 };
 
@@ -35456,8 +35590,8 @@ var DEFS = [
   {
     name: "room_leave",
     annotations: RW,
-    description: "Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). forget=true also clears the remembered room choice for this clone, so the next session starts local again.",
-    inputSchema: { type: "object", properties: { forget: { type: "boolean", description: "also forget the remembered choice (local/team) for this clone" } } }
+    description: "Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.",
+    inputSchema: { type: "object", properties: { forget: { type: "boolean", description: "also forget the remembered choice (local/team) for this clone" }, force: { type: "boolean", description: "dismiss running workers first instead of refusing" } } }
   },
   {
     name: "room_close",
@@ -35561,7 +35695,7 @@ var DEFS = [
     name: "room_spawn",
     annotations: RW,
     description: "Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Max running workers per lead: ROOM_MAX_WORKERS (8).",
-    inputSchema: { type: "object", properties: { tag: str("short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>"), task: str("what the worker should do, self-contained"), host: { type: "string", enum: ["claude", "codex"], description: "which agent runs it (default claude)" }, model: str("model override for that host (optional)"), share: SHARE, dir: str("use this existing directory instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims)." } }, required: ["tag", "task"] }
+    inputSchema: { type: "object", properties: { tag: str("short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>"), task: str("what the worker should do, self-contained"), host: { type: "string", enum: ["claude", "codex"], description: "which agent runs it (default claude)" }, model: str("model override for that host (optional)"), share: SHARE, allowOutside: { type: "boolean", description: "permit dir outside this repo (no worktree bookkeeping)" }, dir: str("use this existing directory instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims)." } }, required: ["tag", "task"] }
   },
   {
     name: "room_dismiss",
@@ -35728,6 +35862,35 @@ function createTools(ctx) {
     await doLeave(ws);
   };
   const sessionOfWorker = (s, tag) => s.room.workers.get(tag) ? s : workersSession?.room.workers.get(tag) ? workersSession : s;
+  const runningWorkers = (s) => {
+    const out = [];
+    for (const sess of [s, workersSession]) if (sess) {
+      for (const w of myWorkers(sess)) if (w.status === "running") out.push({ s: sess, w });
+    }
+    return out;
+  };
+  const dismissWorker = (s, w, why) => {
+    const proc = procs.get(w.tag);
+    let how;
+    if (proc) {
+      proc.kill();
+      how = `pid ${w.pid} signalled`;
+    } else if (pidIsOurWorker(w.pid, w.startedAt)) {
+      try {
+        process.kill(-w.pid, "SIGTERM");
+      } catch {
+        try {
+          process.kill(w.pid, "SIGTERM");
+        } catch {
+        }
+      }
+      how = `pid ${w.pid} signalled`;
+    } else how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone`;
+    procs.delete(w.tag);
+    s.room.updateWorker(w.tag, { status: "dismissed" });
+    s.room.post(s.me, { type: "note", text: `dismissed worker ${w.tag} (${w.name}): ${why}` });
+    return how;
+  };
   const gitignored = (dir) => {
     try {
       return fs7.readFileSync(path7.join(dir, ".gitignore"), "utf8").split("\n").some((l) => l.trim() === ".room/" || l.trim() === ".room");
@@ -36087,10 +36250,13 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       if (running.length >= max2) return `error: ${running.length} workers already running (max ${max2}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`;
       const share = typeof a.share === "string" && a.share ? parseShare(a.share) : void 0;
       if (typeof a.share === "string" && a.share && !share) return "error: share must be intent, declared or full";
-      let dir, branch, created = false;
+      let dir, branch, created = false, outside = false;
       if (typeof a.dir === "string" && a.dir) {
         dir = path7.resolve(a.dir);
         if (!fs7.existsSync(dir)) return `error: ${dir} does not exist`;
+        const inside = path7.relative(s.dir, dir);
+        outside = inside.startsWith("..") || path7.isAbsolute(inside);
+        if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`;
         try {
           branch = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
         } catch {
@@ -36120,6 +36286,12 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       procs.set(tag, proc);
       const w = { tag, name, host, ...model ? { model } : {}, task, dir, branch, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name };
       s.room.setWorker(w);
+      proc.onError?.((err) => {
+        procs.delete(tag);
+        const cur = s.room.workers.get(tag);
+        if (cur && cur.status === "running") s.room.updateWorker(tag, { status: "failed", exitCode: -1, summary: `could not start ${cmd}: ${err.message}` });
+        s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` });
+      });
       proc.onExit((code) => {
         const cur = s.room.workers.get(tag);
         if (!cur || cur.status !== "running") {
@@ -36136,6 +36308,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       out.push(`log: ${logFile}`);
       out.push(`it joins ${s === lead ? "this room" : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`);
       if (created && !gitignored(s.dir)) out.push("tip: add .room/ to .gitignore (the room already ignores it; git status will not).");
+      if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`);
       return out.join("\n");
     },
     async room_dismiss(a) {
@@ -36146,21 +36319,8 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       if (!w) return `error: no worker ${tag}`;
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`;
       if (w.status !== "running") return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`;
-      const proc = procs.get(tag);
-      if (proc) proc.kill();
-      else if (w.pid > 0) {
-        try {
-          process.kill(-w.pid, "SIGTERM");
-        } catch {
-          try {
-            process.kill(w.pid, "SIGTERM");
-          } catch {
-          }
-        }
-      }
-      s.room.updateWorker(tag, { status: "dismissed" });
-      s.room.post(s.me, { type: "note", text: `dismissed worker ${tag} (${w.name})` });
-      return `dismissed ${tag} (pid ${w.pid}); its work is on branch ${w.branch} in ${w.dir}`;
+      const how = dismissWorker(s, w, "dismissed by the lead");
+      return `dismissed ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`;
     },
     async room_login(a) {
       const server = serverOf(a);
@@ -36232,7 +36392,10 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       await loadAreas(s);
       const out = [`${a.create && !s.local ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
       out.push(`room: ${describeWhere(choice.server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone)" : choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
-      if (!s.local && choice.rule === "argument") out.push(`note for your human: uncommitted work in this clone is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf("/"))}'s room.`);
+      if (!s.local && (choice.rule === "argument" || choice.rule === "remembered")) {
+        const fresh = await markWarned(dir, s.dir).catch(() => true);
+        if (fresh || choice.rule === "argument") out.push(`note for your human: uncommitted work in this clone${choice.rule === "remembered" ? " (joined on the choice remembered for this repo)" : ""} is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf("/"))}'s room.`);
+      }
       if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the team room" (room_join where=team) to work with teammates instead.'}`);
       out.push(shareLine(s));
       const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
@@ -36254,6 +36417,9 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
     },
     async room_leave(a) {
       const s = S();
+      const running = runningWorkers(s);
+      if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map((r) => r.w.tag).join(", ")}. Wait for them (room_wait), room_dismiss them, or room_leave force=true to dismiss them all and leave.`;
+      for (const r of running) dismissWorker(r.s, r.w, "the lead left the room");
       await closeWorkersRoom();
       const released = cleanupMine(s, "left the room");
       ctx.setSession(null);
@@ -36788,6 +36954,12 @@ ${text}--- end ${p} ---`);
     async shutdown() {
       const s = ctx.getSession();
       if (!s) return;
+      for (const r of runningWorkers(s)) {
+        try {
+          dismissWorker(r.s, r.w, "the lead's session ended");
+        } catch {
+        }
+      }
       await closeWorkersRoom().catch(() => {
       });
       try {

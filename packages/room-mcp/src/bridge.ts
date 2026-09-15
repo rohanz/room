@@ -9,10 +9,14 @@
  * Workers' questions to the lead and their done messages stay local; the lead reads both rooms.
  */
 import { formatMsg, msgPaths, scopeCovers } from '@room/shared'
-import type { Claim, Msg, NoteMsg, ScopeMsg, Worker } from '@room/shared'
+import type { Claim, Msg, NoteMsg, ReleaseMsg, ScopeMsg, Worker } from '@room/shared'
 import type { Session } from './session.js'
 
 const RELAY_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'conflict', 'plan', 'base', 'scope'])
+/** Team messages that stop a worker: everything else arrives at notify, read on its next action. */
+const INTERRUPT_TYPES = new Set<Msg['type']>(['plan', 'conflict', 'base'])
+const RELAY_DEDUPE_MS = 60_000
+const RELAYED_MAX = 2000
 
 export interface BridgeOptions {
   log?: (line: string) => void
@@ -23,7 +27,9 @@ export interface BridgeOptions {
 export class Bridge {
   /** local claim id -> mirrored team claim id */
   private mirrored = new Map<string, string>()
-  private relayed = new Set<string>()
+  private relayed: string[] = []
+  /** worker|path|type -> last relay time, so a chatty team room does not become a stream of notices. */
+  private recent = new Map<string, number>()
   private unobserve: (() => void)[] = []
   private timer: ReturnType<typeof setTimeout> | null = null
   private lastScopeKey = ''
@@ -124,29 +130,50 @@ export class Bridge {
     this.o.log?.(`bridge: mirrored ${c.by}'s claim ${c.path}:${c.from}-${c.to} into the team room as ${t.id}`)
   }
 
+  /** The local claim is gone: drop the mirror and tell the team what became of the plans it showed them. */
   private unmirrorClaim(localId: string): void {
     const teamId = this.mirrored.get(localId)
     if (!teamId) return
     this.mirrored.delete(localId)
+    const mirrored = this.team.room.claims.get(teamId)
     this.team.room.removeClaim(teamId)
+    if (!mirrored) return
+    const local = [...this.local.room.messages()].reverse().find((m): m is ReleaseMsg => m.type === 'release' && m.claimId === localId)
+    const tag = mirrored.intent.match(/^\[([^\]]+)\]/)?.[1]
+    this.team.room.post<ReleaseMsg>(this.team.me, {
+      type: 'release', claimId: teamId, path: mirrored.path,
+      summary: `${tag ? `[${tag}] ` : ''}${local?.summary ?? 'released'}`,
+      ...(local?.unfulfilled?.length ? { unfulfilled: local.unfulfilled } : {}),
+    })
   }
 
-  /** A team message about a worker's paths becomes an interrupt to that worker, locally. */
+  /** A team message about a worker's paths is re-posted to that worker locally: plans, conflicts and base
+   *  moves as interrupts, the rest at notify. One per worker, path and type per minute. */
   private relayDown(m: Msg): void {
-    if (this.relayed.has(m.id) || !RELAY_TYPES.has(m.type)) return
+    if (this.relayed.includes(m.id) || !RELAY_TYPES.has(m.type)) return
     if (m.from === this.team.me.name) return
     const paths = msgPaths(m)
     if (!paths.length) return
+    const now = Date.now()
     const hit = this.workers().filter(w => {
       const sc = this.local.room.scope(w.name)
       const changed = this.local.room.changedPaths(w.name)
       return paths.some(p => (sc && scopeCovers(sc, p)) || changed.includes(p))
     })
     if (!hit.length) return
-    this.relayed.add(m.id)
+    this.relayed.push(m.id)
+    if (this.relayed.length > RELAYED_MAX) this.relayed.splice(0, this.relayed.length - RELAYED_MAX)
+    const priority = INTERRUPT_TYPES.has(m.type) ? 'interrupt' : 'notify'
+    const delivered: string[] = []
     for (const w of hit) {
-      this.local.room.post<NoteMsg>(this.team.me, { type: 'note', to: w.name, priority: 'interrupt', text: `[team room] ${formatMsg(m)}` })
+      const key = `${w.name}|${paths.slice().sort().join(',')}|${m.type}`
+      const last = this.recent.get(key) ?? 0
+      if (priority !== 'interrupt' && now - last < RELAY_DEDUPE_MS) continue
+      this.recent.set(key, now)
+      this.local.room.post<NoteMsg>(this.team.me, { type: 'note', to: w.name, priority, text: `[team room] ${formatMsg(m)}` })
+      delivered.push(w.tag)
     }
-    this.o.log?.(`bridge: relayed team ${m.type} ${m.id} to ${hit.map(w => w.tag).join(', ')}`)
+    if (this.recent.size > RELAYED_MAX) for (const [k, t] of this.recent) if (now - t > RELAY_DEDUPE_MS) this.recent.delete(k)
+    if (delivered.length) this.o.log?.(`bridge: relayed team ${m.type} ${m.id} to ${delivered.join(', ')} at ${priority}`)
   }
 }

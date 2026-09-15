@@ -12,9 +12,9 @@ import type {
 import { git, gitShow } from '@room/roomd/git'
 import { clampShare, parseShare, type ShareLevel, type SharePresence } from '@room/roomd'
 import { DEFAULT_SERVER, LOCAL, authFor, closeRoom, joinSession, leaveSession, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, resolveServer, serverAuthMode, startLogin, type JoinOptions, type Session } from './session.js'
-import { DEFAULT_MAX_WORKERS, defaultSpawner, prepareWorktree, validTag, workerCommand, workerLines, workerPrompt, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
+import { DEFAULT_MAX_WORKERS, defaultSpawner, pidIsOurWorker, prepareWorktree, validTag, workerCommand, workerLines, workerPrompt, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
 import { getCredential, getPending, setPending } from './credentials.js'
-import { chooseServer, clearChoice, describeWhere, writeChoice } from './choice.js'
+import { chooseServer, clearChoice, describeWhere, markWarned, writeChoice } from './choice.js'
 import { NotLoggedIn, serverAuthConfig } from './session.js'
 import { HooksBridge } from './hooks-bridge.js'
 import { ConflictWatcher } from './conflicts.js'
@@ -99,8 +99,8 @@ export const DEFS: ToolDef[] = [
     inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
   { name: 'room_join', annotations: RW, description: 'Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo\'s room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: room_create does that.',
     inputSchema: { type: 'object', properties: { where: str('local | team | ws(s)://server'), room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('alias of where for a server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
-  { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). forget=true also clears the remembered room choice for this clone, so the next session starts local again.',
-    inputSchema: { type: 'object', properties: { forget: { type: 'boolean', description: 'also forget the remembered choice (local/team) for this clone' } } } },
+  { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.',
+    inputSchema: { type: 'object', properties: { forget: { type: 'boolean', description: 'also forget the remembered choice (local/team) for this clone' }, force: { type: 'boolean', description: 'dismiss running workers first instead of refusing' } } } },
   { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user\'s explicit request; room_create reopens later.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'must be true' } }, required: ['confirm'] } },
   { name: 'room_scope', annotations: RW, description: 'Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. Do this before editing. Replaces your previous scope. The reply ends with the area ledger: what others changed there and their open plans.',
@@ -140,7 +140,7 @@ export const DEFS: ToolDef[] = [
   { name: 'room_share', annotations: RW, description: 'Change how much of your clone the room sees, live. Lowering the level withdraws file text the new level no longer allows (intent: all of it; declared: everything outside your scope paths); raising it republishes what your disk holds. Never above the server\'s ceiling. Without `level`, reports the current level and what is withheld.',
     inputSchema: { type: 'object', properties: { level: SHARE } } },
   { name: 'room_spawn', annotations: RW, description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Max running workers per lead: ROOM_MAX_WORKERS (8).',
-    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), share: SHARE, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims).' } }, required: ['tag', 'task'] } },
+    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims).' } }, required: ['tag', 'task'] } },
   { name: 'room_dismiss', annotations: RW, description: 'Stop a worker you spawned (SIGTERM to its process). Its worktree and branch are kept so you can inspect or merge what it did.',
     inputSchema: { type: 'object', properties: { tag: str('the worker tag') }, required: ['tag'] } },
 ]
@@ -285,6 +285,28 @@ export function createTools(ctx: ToolCtx): Tools {
   }
   /** The session (mine, or the workers room) that holds a worker with this tag. */
   const sessionOfWorker = (s: Session, tag: string): Session => (s.room.workers.get(tag) ? s : workersSession?.room.workers.get(tag) ? workersSession : s)
+  /** Workers this lead has running, in its own room and in the workers room. */
+  const runningWorkers = (s: Session): { s: Session; w: Worker }[] => {
+    const out: { s: Session; w: Worker }[] = []
+    for (const sess of [s, workersSession]) if (sess) for (const w of myWorkers(sess)) if (w.status === 'running') out.push({ s: sess, w })
+    return out
+  }
+  /**
+   * Stop a running worker. A process this MCP instance spawned is signalled directly. One we only
+   * know by pid (the lead restarted) is signalled only if it is alive and started after the worker
+   * record: a recycled pid would belong to something else.
+   */
+  const dismissWorker = (s: Session, w: Worker, why: string): string => {
+    const proc = procs.get(w.tag)
+    let how: string
+    if (proc) { proc.kill(); how = `pid ${w.pid} signalled` }
+    else if (pidIsOurWorker(w.pid, w.startedAt)) { try { process.kill(-w.pid, 'SIGTERM') } catch { try { process.kill(w.pid, 'SIGTERM') } catch { /* gone */ } } how = `pid ${w.pid} signalled` }
+    else how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone`
+    procs.delete(w.tag)
+    s.room.updateWorker(w.tag, { status: 'dismissed' })
+    s.room.post<NoteMsg>(s.me, { type: 'note', text: `dismissed worker ${w.tag} (${w.name}): ${why}` })
+    return how
+  }
   const gitignored = (dir: string): boolean => { try { return fs.readFileSync(path.join(dir, '.gitignore'), 'utf8').split('\n').some(l => l.trim() === '.room/' || l.trim() === '.room') } catch { return false } }
   const others = (s: Session): string[] => {
     const names = new Set<string>()
@@ -628,10 +650,13 @@ export function createTools(ctx: ToolCtx): Tools {
       if (running.length >= max) return `error: ${running.length} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`
       const share = typeof a.share === 'string' && a.share ? parseShare(a.share) : undefined
       if (typeof a.share === 'string' && a.share && !share) return 'error: share must be intent, declared or full'
-      let dir: string, branch: string, created = false
+      let dir: string, branch: string, created = false, outside = false
       if (typeof a.dir === 'string' && a.dir) {
         dir = path.resolve(a.dir)
         if (!fs.existsSync(dir)) return `error: ${dir} does not exist`
+        const inside = path.relative(s.dir, dir)
+        outside = inside.startsWith('..') || path.isAbsolute(inside)
+        if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
         try { branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { branch = '?' }
       } else {
         try { ({ dir, branch, created } = await (ctx.worktree ?? prepareWorktree)(s.dir, tag)) }
@@ -651,6 +676,12 @@ export function createTools(ctx: ToolCtx): Tools {
       procs.set(tag, proc)
       const w: Worker = { tag, name, host, ...(model ? { model } : {}), task, dir, branch, pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name }
       s.room.setWorker(w)
+      proc.onError?.(err => {
+        procs.delete(tag)
+        const cur = s.room.workers.get(tag)
+        if (cur && cur.status === 'running') s.room.updateWorker(tag, { status: 'failed', exitCode: -1, summary: `could not start ${cmd}: ${err.message}` })
+        s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` })
+      })
       proc.onExit(code => {
         const cur = s.room.workers.get(tag)
         if (!cur || cur.status !== 'running') { if (cur) s.room.updateWorker(tag, { exitCode: code ?? -1 }); return }
@@ -665,6 +696,7 @@ export function createTools(ctx: ToolCtx): Tools {
       out.push(`log: ${logFile}`)
       out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`)
       if (created && !gitignored(s.dir)) out.push('tip: add .room/ to .gitignore (the room already ignores it; git status will not).')
+      if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
       return out.join('\n')
     },
     async room_dismiss(a) {
@@ -675,12 +707,8 @@ export function createTools(ctx: ToolCtx): Tools {
       if (!w) return `error: no worker ${tag}`
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`
       if (w.status !== 'running') return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`
-      const proc = procs.get(tag)
-      if (proc) proc.kill()
-      else if (w.pid > 0) { try { process.kill(-w.pid, 'SIGTERM') } catch { try { process.kill(w.pid, 'SIGTERM') } catch { /* gone */ } } }
-      s.room.updateWorker(tag, { status: 'dismissed' })
-      s.room.post<NoteMsg>(s.me, { type: 'note', text: `dismissed worker ${tag} (${w.name})` })
-      return `dismissed ${tag} (pid ${w.pid}); its work is on branch ${w.branch} in ${w.dir}`
+      const how = dismissWorker(s, w, 'dismissed by the lead')
+      return `dismissed ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`
     },
     async room_login(a) {
       const server = serverOf(a)
@@ -740,7 +768,10 @@ export function createTools(ctx: ToolCtx): Tools {
       await loadAreas(s)
       const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
       out.push(`room: ${describeWhere(choice.server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone)' : choice.rule === 'env' ? 'ROOM_SERVER' : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
-      if (!s.local && choice.rule === 'argument') out.push(`note for your human: uncommitted work in this clone is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf('/'))}'s room.`)
+      if (!s.local && (choice.rule === 'argument' || choice.rule === 'remembered')) {
+        const fresh = await markWarned(dir, s.dir).catch(() => true)
+        if (fresh || choice.rule === 'argument') out.push(`note for your human: uncommitted work in this clone${choice.rule === 'remembered' ? ' (joined on the choice remembered for this repo)' : ''} is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf('/'))}'s room.`)
+      }
       if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the team room" (room_join where=team) to work with teammates instead.'}`)
       out.push(shareLine(s))
       const here = others(s).filter(n => presences(s).some(p => p.user.name === n))
@@ -759,6 +790,9 @@ export function createTools(ctx: ToolCtx): Tools {
     },
     async room_leave(a) {
       const s = S()
+      const running = runningWorkers(s)
+      if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map(r => r.w.tag).join(', ')}. Wait for them (room_wait), room_dismiss them, or room_leave force=true to dismiss them all and leave.`
+      for (const r of running) dismissWorker(r.s, r.w, 'the lead left the room')
       await closeWorkersRoom()
       const released = cleanupMine(s, 'left the room')
       ctx.setSession(null)
@@ -1232,6 +1266,7 @@ export function createTools(ctx: ToolCtx): Tools {
     async shutdown() {
       const s = ctx.getSession()
       if (!s) return
+      for (const r of runningWorkers(s)) { try { dismissWorker(r.s, r.w, "the lead's session ended") } catch { /* best effort */ } }
       await closeWorkersRoom().catch(() => {})
       try { cleanupMine(s, 'session ended') } catch { /* best effort */ }
       ctx.setSession(null)

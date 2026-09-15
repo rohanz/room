@@ -115,11 +115,15 @@ A room is still one document per branch, but what you see is scoped to the folde
 ## Local rooms (no server)
 
 Without `ROOM_SERVER`, a session joins a **local room**. The first session in a clone
-starts a relay on `127.0.0.1` (a minimal y-websocket server: in-memory, no auth, no
-persistence) and records `{port, pid}` in `<git common dir>/room-local.json`; later
-sessions in the same clone or any worktree of it probe that port and connect. When the
-relay's owner exits, a remaining session takes the port over within about two seconds and
-the others reconnect; every client holds the full document, so nothing is lost. The room
+starts a relay on `127.0.0.1` (a minimal y-websocket server: in-memory, no persistence)
+on a port derived from the clone's git dir, and records `{port, pid, key}` in
+`<git common dir>/room-local.json` (mode 0600). Because the port is fixed per clone, two
+sessions that start at the same instant cannot end up in two rooms: one binds it, the
+other gets EADDRINUSE and joins. Later sessions in the same clone or any worktree of it
+check that a relay (not some other service) answers `/health` on that port and connect,
+presenting the key. When the relay's owner exits, a remaining session takes the port over
+within about two seconds and the others reconnect; every client holds the full document,
+so nothing is lost. The room
 is named `local/<repo basename>/<branch of the main worktree>`, so worktrees on other
 branches still share it. Identity is `git config user.name` (plus `ROOM_TAG`), there is no
 login, and `room_create` / `room_close` / `room_login` explain that they need a server.
@@ -128,8 +132,9 @@ login, and `room_create` / `room_close` / `room_login` explain that they need a 
 
 The relay also serves the built browser view (shipped with the plugin under `web/`, or
 `packages/web/dist` for source runs) at `http://127.0.0.1:<port>/` plus `/health`, and
-accepts websocket connections from loopback only, with no key. A local session's
-`browser view:` link points there; it works on this machine only.
+accepts websocket connections from loopback only, each carrying the relay key. A local
+session's `browser view:` link points there and includes the key; it works on this machine
+only, and only for someone holding the link.
 
 ## Choosing the room
 
@@ -187,3 +192,18 @@ Besides tool replies, the MCP process watches the room and posts on your behalf:
 - an `fyi` on join when it evicts uncommitted work of someone absent for more than `ROOM_STALE_DAYS` (default 7).
 
 Wake-ups: interrupts and questions addressed to you reach an idle Codex thread through `codex queue` (retried with backoff; the thread id comes from the SessionStart hook) and a Claude Code session through the MCP channel notification.
+
+## Workers: what a lead may and may not do
+
+- `room_leave` is refused while workers you spawned are running; `force=true` dismisses
+  them first (they are told why). Ending the lead's session dismisses them the same way.
+- `room_dismiss` signals a process this session spawned. A worker known only by pid (the
+  lead restarted) is signalled only if that pid is alive and started after the worker
+  record; otherwise it is marked dismissed and left alone, and the reply says so.
+- `room_spawn dir=` outside the repo needs `allowOutside=true`; no worktree or branch
+  bookkeeping is done for it.
+- Joining the team room on the choice remembered for a clone prints the same one-line
+  visibility notice as an explicit join, once per worktree.
+- The bridge relays team plans, conflicts and base moves to workers as interrupts; scopes,
+  claims and change notices arrive at notify, at most once a minute per worker, path and
+  type. When a worker's claim ends, the team gets a release naming any unfulfilled plans.

@@ -48,8 +48,8 @@ export function connect(search = location.search): Conn {
   const doc = new Y.Doc()
   const room = new RoomDoc(doc)
   const q = new URLSearchParams(location.search)
-  const token = q.get('token') ?? '', view = q.get('view') ?? ''
-  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: view ? { view } : token ? { token } : {} })
+  const token = q.get('token') ?? '', view = q.get('view') ?? '', key = q.get('key') ?? ''
+  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: key ? { key } : view ? { view } : token ? { token } : {} })
   // A refused websocket never surfaces a status code; ask the server over HTTP why, and say so.
   // A local relay (loopback) needs no key and has no /view-token endpoint.
   const host = new URL(roomLocation.serverUrl).hostname

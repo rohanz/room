@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import WebSocket from 'ws'
 import { WebsocketProvider } from 'y-websocket'
-import { ensureLocalRelay, gitCommonDir, localRoomName, portAnswers, readRelayInfo, startRelay } from '../src/local.js'
+import { deterministicPort, ensureLocalRelay, gitCommonDir, localRoomName, portAnswers, readRelayInfo, relayAnswers, startRelay } from '../src/local.js'
 import http from 'node:http'
 
 const sh = (dir: string, args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString().trim()
@@ -45,8 +45,9 @@ describe('local rooms', () => {
     expect(b.port).toBe(a.port)
     // Two providers through the relay converge.
     const d1 = new Y.Doc(), d2 = new Y.Doc()
-    const p1 = new WebsocketProvider(a.url, 'local%2Fx%2Fmain', d1, { WebSocketPolyfill: WebSocket as never })
-    const p2 = new WebsocketProvider(b.url, 'local%2Fx%2Fmain', d2, { WebSocketPolyfill: WebSocket as never })
+    expect(b.key).toBe(a.key)
+    const p1 = new WebsocketProvider(a.url, 'local%2Fx%2Fmain', d1, { WebSocketPolyfill: WebSocket as never, params: { key: a.key } })
+    const p2 = new WebsocketProvider(b.url, 'local%2Fx%2Fmain', d2, { WebSocketPolyfill: WebSocket as never, params: { key: b.key } })
     await until(() => p1.synced && p2.synced)
     d1.getText('t').insert(0, 'hello')
     await until(() => d2.getText('t').toString() === 'hello')
@@ -86,6 +87,66 @@ describe('local relay browser view', () => {
       const provider = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent('local/x/main'), doc, { WebSocketPolyfill: WebSocket as never })
       await until(() => provider.synced)
       provider.destroy()
+      // a sibling directory that merely shares the prefix is not served
+      const sibling = `${dist}-private`
+      await fsp.mkdir(sibling); await fsp.writeFile(path.join(sibling, 'secret.txt'), 'shh')
+      const leak = await get(`http://127.0.0.1:${relay.port}/../${path.basename(sibling)}/secret.txt`)
+      expect(leak.body).not.toContain('shh')
     } finally { await relay.close() }
+  })
+})
+
+describe('local relay hardening', () => {
+  it('two sessions starting at the same moment end up in one relay on the deterministic port', async () => {
+    const dir = await makeRepo()
+    const common = await gitCommonDir(dir)
+    const want = deterministicPort(common)
+    expect(want).toBeGreaterThanOrEqual(40000); expect(want).toBeLessThan(60000)
+    expect(deterministicPort(common)).toBe(want)
+    const [a, b] = await Promise.all([ensureLocalRelay(common, 'local/x/main', { watchMs: 100 }), ensureLocalRelay(common, 'local/x/main', { watchMs: 100 })])
+    expect(a.port).toBe(b.port)
+    expect([a.owned, b.owned].filter(Boolean)).toHaveLength(1)
+    expect(a.key).toBe(b.key)
+    expect(readRelayInfo(common)?.port).toBe(a.port)
+    await a.stop(); await b.stop()
+  })
+
+  it('a stale file whose port is held by something that is not a relay is ignored', async () => {
+    const dir = await makeRepo()
+    const common = await gitCommonDir(dir)
+    // an unrelated HTTP server squats on the recorded port
+    const squatter = http.createServer((_q, res) => { res.writeHead(200); res.end('not a relay') })
+    await new Promise<void>(r => squatter.listen(0, '127.0.0.1', r))
+    const squat = (squatter.address() as { port: number }).port
+    await fsp.writeFile(path.join(common, 'room-local.json'), JSON.stringify({ port: squat, pid: process.pid, room: 'local/x/main', startedAt: Date.now(), key: 'k' }))
+    expect(await portAnswers(squat)).toBe(true)
+    expect(await relayAnswers(squat)).toBe(false)
+    const a = await ensureLocalRelay(common, 'local/x/main', { watchMs: 100 })
+    expect(a.owned).toBe(true)
+    expect(a.port).not.toBe(squat)
+    expect(await relayAnswers(a.port)).toBe(true)
+    await a.stop(); squatter.close()
+  })
+
+  it('websockets need the key from room-local.json; /health stays open', async () => {
+    const dir = await makeRepo()
+    const common = await gitCommonDir(dir)
+    const a = await ensureLocalRelay(common, 'local/x/main', { watchMs: 100 })
+    const mode = (await fsp.stat(path.join(common, 'room-local.json'))).mode & 0o777
+    expect(mode).toBe(0o600)
+    expect(readRelayInfo(common)?.key).toBe(a.key)
+    expect(await relayAnswers(a.port)).toBe(true)
+    const refused = await new Promise<number>(resolve => {
+      const ws = new WebSocket(`${a.url}/local%2Fx%2Fmain`)
+      ws.on('unexpected-response', (_q, res) => { resolve(res.statusCode ?? 0); ws.terminate() })
+      ws.on('open', () => { resolve(101); ws.close() })
+      ws.on('error', () => {})
+    })
+    expect(refused).toBe(403)
+    const doc = new Y.Doc()
+    const ok = new WebsocketProvider(a.url, 'local%2Fx%2Fmain', doc, { WebSocketPolyfill: WebSocket as never, params: { key: a.key } })
+    await until(() => ok.synced)
+    ok.destroy()
+    await a.stop()
   })
 })

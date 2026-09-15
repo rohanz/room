@@ -130,7 +130,7 @@ export async function resolveAuth(server: string, roomName: string, token?: stri
 export interface LoginProgress { provider: Provider; device: string; expires_in: number; interval: number; user_code?: string; verification_uri?: string; url?: string }
 /** Start a login against the server (default provider: the server's first). Show the user the code/URL; then pollLogin until done. */
 export async function startLogin(server: string, provider?: Provider): Promise<LoginProgress> {
-  const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15000 })
+  const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15000, retry: false })
   if (res.status === 404 && !provider) { // older server: only the GitHub device flow
     const old = await fetch(`${httpOf(server)}/auth/device`, { method: 'POST', signal: AbortSignal.timeout(15000) })
     if (!old.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await old.text()).trim() || `HTTP ${old.status}`}`, 2)
@@ -254,21 +254,27 @@ export function defaultWeb(server: string): string {
  * takes up to a minute to answer its first request (timeouts, 502/503/504 from the proxy). Retry
  * those for up to ~100 s, then give up with the last error.
  */
-export async function serverFetch(url: string, init: RequestInit & { timeoutMs?: number } = {}, log?: (line: string) => void): Promise<Response> {
-  const { timeoutMs = 25_000, ...rest } = init
-  const deadline = Date.now() + 100_000
+/** Progress lines for server waits; joinSession sets it from its `log` so every call site reports cold starts. */
+let serverLog: ((line: string) => void) | undefined
+export function setServerLog(log?: (line: string) => void): void { serverLog = log }
+/** Total time a tool call may spend waiting for a cold server before giving up. */
+export const SERVER_RETRY_MS = 45_000
+
+export async function serverFetch(url: string, init: RequestInit & { timeoutMs?: number; retry?: boolean } = {}, log: ((line: string) => void) | undefined = serverLog): Promise<Response> {
+  const { timeoutMs = 25_000, retry = true, ...rest } = init
+  const deadline = Date.now() + SERVER_RETRY_MS
   let attempt = 0
   for (;;) {
     attempt++
     try {
       const res = await fetch(url, { ...rest, signal: AbortSignal.timeout(timeoutMs) })
-      if (![502, 503, 504].includes(res.status) || Date.now() > deadline) return res
-      log?.(`server answered ${res.status}; it is probably starting up (attempt ${attempt}), retrying`)
+      if (!retry || ![502, 503, 504].includes(res.status) || Date.now() > deadline) return res
+      log?.(`server answered ${res.status}; it is probably starting up (attempt ${attempt}), retrying for up to ${Math.round(SERVER_RETRY_MS / 1000)}s`)
     } catch (e) {
       const name = e instanceof Error ? e.name : ''
       const code = (e as { cause?: { code?: string } })?.cause?.code ?? (e as { code?: string })?.code ?? ''
       const coldStart = name === 'TimeoutError' || name === 'AbortError' || code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' || code === 'UND_ERR_HEADERS_TIMEOUT'
-      if (!coldStart || Date.now() > deadline) throw e
+      if (!retry || !coldStart || Date.now() > deadline) throw e
       log?.(`waiting for the server to wake (attempt ${attempt}: ${e instanceof Error ? e.message : String(e)})`)
     }
     await new Promise(r => setTimeout(r, 3000))
@@ -280,6 +286,7 @@ export function decodeRoom(encoded: string): string { try { return decodeURIComp
 
 export async function joinSession(opts: JoinOptions): Promise<Session> {
   const dir = resolve(opts.dir)
+  if (opts.log) setServerLog(opts.log)
   const chosen = resolveServer(opts.server ?? process.env.ROOM_SERVER)
   if (chosen === LOCAL) return joinLocal(dir, opts)
   const parsed = parseServer(chosen)
@@ -359,11 +366,12 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const share = requestedShare(opts.share)
   let daemon: Roomd
   try {
-    daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
+    daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
   } catch (e) { await local.stop(); throw e }
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
   const web = (opts.web ?? process.env.ROOM_WEB ?? local.httpUrl).replace(/\/+$/, '')
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}`
+  // The link carries the relay key: it is machine-local, and anyone holding it can read the room.
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}&key=${encodeURIComponent(local.key)}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
   graph.start()
   return {

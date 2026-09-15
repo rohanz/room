@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { chooseServer, choiceFile, clearChoice, normaliseWhere, readChoice, writeChoice, describeWhere } from '../src/choice.js'
+import { chooseServer, choiceFile, clearChoice, normaliseWhere, readChoice, writeChoice, describeWhere, markWarned } from '../src/choice.js'
 import { DEFAULT_SERVER, LOCAL } from '../src/session.js'
 
 let dir: string
@@ -37,5 +37,19 @@ describe('room choice', () => {
   it('describes the room in one word for humans', () => {
     expect(describeWhere(LOCAL)).toBe('local (this machine)')
     expect(describeWhere(DEFAULT_SERVER)).toBe(`team (${DEFAULT_SERVER})`)
+  })
+})
+
+describe('visibility warning per worktree', () => {
+  it('warns once per worktree and keeps the list across re-choices of the same room', async () => {
+    await writeChoice(dir, 'team', 'rohanz')
+    expect(await markWarned(dir, dir)).toBe(true)
+    expect(await markWarned(dir, dir)).toBe(false)
+    expect(await markWarned(dir, join(dir, 'other-worktree'))).toBe(true)
+    await writeChoice(dir, 'team', 'rohanz') // same choice: keeps who was warned
+    expect(await markWarned(dir, dir)).toBe(false)
+    await writeChoice(dir, 'local') // a new choice starts over
+    expect((await readChoice(dir))?.warned).toBeUndefined()
+    await clearChoice(dir)
   })
 })

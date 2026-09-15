@@ -4,7 +4,7 @@
  * the lead's room as `<owner>+<tag>`, and reports back with room_done, which reaches the lead
  * as an addressed `done` message. The doc's `workers` map is the ledger of who was spawned.
  */
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Worker } from '@room/shared'
@@ -20,8 +20,11 @@ export interface SpawnSpec {
   logFile: string
 }
 export interface SpawnedProcess {
+  /** -1 when the process could not be started (see onError). */
   pid: number
   onExit(cb: (code: number | null) => void): void
+  /** Fires when the process could not be started at all (e.g. the binary is missing). */
+  onError?(cb: (err: Error) => void): void
   kill(): void
 }
 /** Injectable for tests: how a worker process is started. */
@@ -76,13 +79,34 @@ export const defaultSpawner: Spawner = spec => {
   return {
     pid: child.pid ?? -1,
     onExit: cb => { child.once('exit', code => { try { fs.closeSync(fd) } catch { /* closed */ } cb(code) }) },
-    kill: () => { try { process.kill(-(child.pid ?? 0), 'SIGTERM') } catch { try { child.kill('SIGTERM') } catch { /* gone */ } } },
+    onError: cb => { child.once('error', err => { try { fs.closeSync(fd) } catch { /* closed */ } cb(err) }) },
+    // Only ever signal a real pid: kill(-0) would hit our own process group.
+    kill: () => { const pid = child.pid; if (!pid || pid <= 0) return; try { process.kill(-pid, 'SIGTERM') } catch { try { child.kill('SIGTERM') } catch { /* gone */ } } },
   }
 }
 
 export function pidAlive(pid: number): boolean {
-  if (pid <= 0) return false
+  if (!pid || pid <= 0) return false
   try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
+}
+
+/** When a process started (ms since epoch), from `ps -o lstart=`; undefined when unknown. */
+export function processStartTime(pid: number): number | undefined {
+  if (!pid || pid <= 0) return undefined
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim()
+    if (!out) return undefined
+    const t = Date.parse(out)
+    return Number.isFinite(t) ? t : undefined
+  } catch { return undefined }
+}
+
+/** May this session signal `pid` as worker `startedAt`? Only when it is alive and started no earlier than the worker record (allowing clock slop). */
+export function pidIsOurWorker(pid: number, startedAt: number): boolean {
+  if (!pidAlive(pid)) return false
+  const began = processStartTime(pid)
+  if (began === undefined) return false
+  return began >= startedAt - 5000
 }
 
 /** One line per worker of this lead, for room_state. */
