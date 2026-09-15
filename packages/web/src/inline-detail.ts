@@ -16,13 +16,45 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
     row.tabIndex = 0
     row.setAttribute('aria-expanded', 'false')
     row.setAttribute('aria-label', 'Line ' + number + '. Show details')
+    const targets = new Set<HTMLElement>()
     const hovered = new Set<HTMLElement>()
     const focused = new Set<HTMLElement>()
+    let resize: ResizeObserver | undefined
     const update = () => {
       const active = hovered.size > 0 || focused.size > 0
-      row.classList.toggle('line-hovered', active)
-      if (active) { annotation.textContent = lineAnnotation(input); row.append(annotation) }
-      else annotation.remove()
+      for (const target of targets) target.classList.toggle('line-hovered', active)
+      const code = row.querySelector('code')!
+      if (active) {
+        annotation.textContent = lineAnnotation(input)
+        row.append(annotation)
+        // Mask only code under the annotation: short text remains untouched and
+        // the row itself supplies the one continuous background, including the fade.
+        const mask = () => {
+          if (!row.isConnected) { resize?.disconnect(); resize = undefined; return }
+          const annotationLeft = annotation.getBoundingClientRect().left
+          const range = document.createRange()
+          range.selectNodeContents(code)
+          if (typeof range.getBoundingClientRect === 'function' && range.getBoundingClientRect().right <= annotationLeft) {
+            code.style.maskImage = ''
+            return
+          }
+          const end = annotationLeft - code.getBoundingClientRect().left
+          code.style.maskImage = 'linear-gradient(to right, black ' + Math.max(0, end - 24) + 'px, transparent ' + Math.max(0, end) + 'px)'
+        }
+        mask()
+        code.onscroll = mask
+        if (!resize && typeof ResizeObserver !== 'undefined') {
+          resize = new ResizeObserver(mask)
+          resize.observe(row)
+          resize.observe(annotation)
+        }
+      } else {
+        resize?.disconnect()
+        resize = undefined
+        annotation.remove()
+        code.style.maskImage = ''
+        code.onscroll = null
+      }
     }
     const toggle = () => {
       if (opened?.index === index) { close(); return }
@@ -62,6 +94,7 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
       region.style.gridColumn = '1'
     }
     const bind = (target: HTMLElement) => {
+      targets.add(target)
       target.addEventListener('pointerenter', () => { hovered.add(target); update() })
       target.addEventListener('pointerleave', () => { hovered.delete(target); update() })
       target.onfocus = () => { focused.add(target); update() }

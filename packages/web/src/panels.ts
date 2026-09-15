@@ -314,8 +314,8 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   const regions = spans.filter((s, index) => !spans.some((other, j) => j > index &&
     other.start === s.start && other.end === s.end && other.resolved === s.resolved &&
     other.people.length === s.people.length && other.people.every(p => s.people.includes(p))))
-  // A separate horizontal viewport keeps long lines out of the tag column,
-  // including after scrolling. Both columns share the same row tracks.
+  // Full-width rows paint through the tag column; code cells own horizontal
+  // scrolling so their text stays inside the code area.
   const text = h('div', { class: 'line-text' }, ...rows)
   text.style.gridRow = '1 / ' + (lines.length + 1)
   const grid = h('div', { class: 'conflict-code-grid' + (merged ? ' merged-code' : '') }, text)

@@ -40,7 +40,7 @@ it('shows an absolute annotation inside only the hovered row', () => {
   const rule = css.match(/\.line-annotation \{([^}]+)\}/)![1]
   expect(rule).toContain('position: absolute')
   expect(rule).toContain('max-width: 50%')
-  expect(rule).toContain('24px')
+  expect(rule).toContain('background: none')
   expect(css).toContain('.code-line { position: relative; }')
   rows()[0].dispatchEvent(new dom.window.Event('pointerleave'))
   expect(host.querySelector('.line-annotation')).toBeNull()
@@ -125,4 +125,64 @@ it('omits claims and resolution for an unclaimed unresolved text conflict', () =
   expect([...details()[0].querySelectorAll('.inline-detail-label')].map(el => el.textContent)).toEqual(['Line', 'Conflict'])
   expect(details()[0].textContent).not.toContain('unavailable')
   expect(details()[0].textContent!.match(/rohanz ↔ codex/g)).toHaveLength(1)
+})
+
+const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+const rule = (selector: string) => css.slice(css.indexOf(selector + ' {')).split('{')[1].split('}')[0]
+it('paints one full-width row band with transparent annotation and marker slots', () => {
+  render(); rows()[0].dispatchEvent(new dom.window.Event('pointerenter'))
+  expect(rule('.conflict-code-grid > .line-text')).toContain('grid-column: 1 / -1')
+  expect(rule('.conflict-code-grid .code-line.line-hovered')).toContain('background: var(--hover-row-bg)')
+  expect(rule('.line-annotation')).toContain('background: none')
+  expect(host.querySelector('.annotation-box')).toBeNull()
+  const style = document.createElement('style')
+  style.textContent = '.side-marker {' + rule('.side-marker') + '} .diff-prefix {' + rule('.conflict-code-grid .diff-prefix') + '}'
+  document.head.append(style)
+  for (const slot of host.querySelectorAll('.side-marker, .diff-prefix')) {
+    const computed = dom.window.getComputedStyle(slot)
+    expect(computed.backgroundColor).toBe('rgba(0, 0, 0, 0)')
+    expect(computed.borderTopWidth).toBe('')
+  }
+  expect(rows()[0].querySelectorAll('.side-marker .dot')).toHaveLength(1)
+  expect(rows()[1].querySelectorAll('.side-marker .dot')).toHaveLength(0)
+})
+it.each([true, false])('aligns detail bounds to the code text area (merged=%s)', merged => {
+  render(); const grid = host.querySelector('.conflict-code-grid')!
+  grid.classList.toggle('merged-code', merged)
+  rows()[0].click()
+  const style = document.createElement('style')
+  style.textContent = '.inline-detail {' + rule('.inline-detail') + '} .merged-code .inline-detail {' + rule('.merged-code .inline-detail') + '}'
+  document.head.append(style)
+  const computed = dom.window.getComputedStyle(details()[0])
+  // JSDOM does not lay out grids: resolve the actual CSS tracks and computed
+  // margins against several pane widths, including the narrow split-pane case.
+  const tracks = rule(merged ? '.conflict-code-grid.merged-code .code-line' : '.conflict-code-grid .code-line').match(/grid-template-columns: (\d+)px (\d+)px (\d+)px/)!
+  const codeTextLeft = 2 + Number(tracks[1]) + Number(tracks[2]) + Number(tracks[3]) + 9
+  const detailLeft = parseFloat(computed.marginLeft)
+  expect(detailLeft).toBe(codeTextLeft)
+  for (const paneWidth of [320, 800, 1400]) {
+    const detailWidth = paneWidth - detailLeft - parseFloat(computed.marginRight)
+    expect(detailWidth).toBe(paneWidth - 96 - codeTextLeft)
+  }
+  expect(rule('.inline-detail-close')).toContain('width: 22px')
+  expect(rule('.inline-detail-close')).toContain('height: 22px')
+  expect(rule('.inline-detail-close')).toContain('border-radius: 50%')
+  expect(rule('.inline-detail-close:hover')).toContain('border-color: var(--accent)')
+})
+it('fades code only in the 24px before the annotation, without painting a box', () => {
+  render(); const row = rows()[0], code = row.querySelector('code')!
+  vi.spyOn(code, 'getBoundingClientRect').mockReturnValue({ left: 69 } as DOMRect)
+  vi.spyOn(dom.window.HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 500 } as DOMRect)
+  row.dispatchEvent(new dom.window.Event('pointerenter'))
+  expect(code.style.maskImage).toBe('linear-gradient(to right, black 407px, transparent 431px)')
+  row.dispatchEvent(new dom.window.Event('pointerleave'))
+  expect(code.style.maskImage).toBe('')
+})
+
+it('leaves short code unfaded when its text ends before the annotation', () => {
+  render()
+  vi.spyOn(document, 'createRange').mockReturnValue({ selectNodeContents() {}, getBoundingClientRect: () => ({ right: 200 }) } as unknown as Range)
+  vi.spyOn(dom.window.HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 500 } as DOMRect)
+  rows()[0].dispatchEvent(new dom.window.Event('pointerenter'))
+  expect(rows()[0].querySelector('code')!.style.maskImage).toBe('')
 })
