@@ -20,6 +20,7 @@ import { HooksBridge } from './hooks-bridge.js'
 import { ConflictWatcher } from './conflicts.js'
 import { Bridge } from './bridge.js'
 import { branchOf, fetchPrs, isPrName, openPrs, postPrNote, prLeader, renderPrNote, syncPrs, type PrInfo } from './prs.js'
+import { Rooms, workerId, workerIdBase, type Attachment, type Role } from './registry.js'
 
 export interface ToolDef {
   name: string
@@ -163,33 +164,50 @@ export function createTools(ctx: ToolCtx): Tools {
   const seen = new Set<string>() // message ids already shown in the inbox (ids, not indexes: the bus is a concurrent array)
   const upgraded = new Set<string>() // "msgId:person" copies already posted
   const conflictPairs = new Set<string>() // sorted "a:b" claim-id pairs already reported
-  let observedSession: Session | null = null
-  let bridge: HooksBridge | null = null
-  let watcher: ConflictWatcher | null = null
   let pendingJoin: Promise<void> | null = null
-  /** A local room on this machine holding this lead's workers while the lead itself is in a team room. */
-  let workersSession: Session | null = null
+  /** The lead-in-two-rooms bridge, while a workers room is open (owned by that session's attachment). */
   let roomBridge: Bridge | null = null
-  /** Wake-ups from the workers room (questions to the lead, done messages): no state file, that is the team room's. */
-  let workersHooks: HooksBridge | null = null
+  /** The primary session's hooks bridge (state file); the inbox asks it to rewrite after marking messages seen. */
+  let primaryHooks: HooksBridge | null = null
   const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { gh: a.gh, token: a.token }) })
-  const attachHooks = (s: Session) => {
-    if (bridge && (bridge as unknown as { s: Session }).s === s) return
-    bridge?.stop()
-    bridge = new HooksBridge(s, { forMe: m => forMe(s, m), isSeen: id => seen.has(id), log, queue: ctx.queue })
-    bridge.start()
-    watcher?.stop()
-    watcher = new ConflictWatcher({
-      room: s.room, me: s.me, log, debounceMs: ctx.conflictDebounceMs,
-      liveText: (p, person) => liveText(s, p, person),
-      baseText: (sha, p) => gitShow(s.dir, sha, p),
-      baseFor: person => baseFor(s, person),
-      mergeBase: async (a, b) => (await git(s.dir, ['merge-base', a, b])).trim(),
-    })
-    watcher.start()
-    startPrSync(s)
+  /**
+   * Everything a joined session needs running. The primary gets the hooks bridge (state file + wake),
+   * the conflict watcher and the PR mirror. The workers room gets a wake-only hooks bridge (the state
+   * file is the team room's), the host's channel push, and the bridge to the lead's team room.
+   */
+  const attach = (s: Session, role: Role, lead?: Session): Attachment => {
+    const hooks = new HooksBridge(s, { forMe: m => forMe(s, m), isSeen: id => seen.has(id), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}) })
+    hooks.start()
+    if (role === 'primary') primaryHooks = hooks
+    let watcher: ConflictWatcher | null = null
+    let bridge: Bridge | null = null
+    if (role === 'primary') {
+      watcher = new ConflictWatcher({
+        room: s.room, me: s.me, log, debounceMs: ctx.conflictDebounceMs,
+        liveText: (p, person) => liveText(s, p, person),
+        baseText: (sha, p) => gitShow(s.dir, sha, p),
+        baseFor: person => baseFor(s, person),
+        mergeBase: async (a, b) => (await git(s.dir, ['merge-base', a, b])).trim(),
+      })
+      watcher.start()
+      startPrSync(s)
+    } else if (lead) {
+      bridge = new Bridge(lead, s, { log, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : undefined })
+      bridge.start()
+      roomBridge = bridge
+      ctx.attachChannel?.(s)
+    }
+    return {
+      stop() {
+        hooks.stop(); watcher?.stop()
+        if (primaryHooks === hooks) primaryHooks = null
+        if (role === 'primary') stopPrSync()
+        if (bridge) { bridge.stop(); if (roomBridge === bridge) roomBridge = null }
+      },
+      flush: () => watcher?.flush() ?? Promise.resolve(),
+    }
   }
-  const detach = () => { bridge?.stop(); bridge = null; watcher?.stop(); watcher = null; stopPrSync() }
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => observeClaims(s), attach })
 
   // ---- pull requests as intent ------------------------------------------------
   /** Refresh the PR mirror in the doc when I am the elected maintainer (lowest present name). Never throws. */
@@ -242,8 +260,6 @@ export function createTools(ctx: ToolCtx): Tools {
   /** Two room_claim calls on different machines can both pass the overlap pre-check. When the
    *  other claim arrives, the owner of the lexicographically smaller id reports the conflict. */
   const observeClaims = (s: Session) => {
-    if (observedSession === s) return
-    observedSession = s
     s.room.claims.observe((ev, tr) => {
       if (tr.local) return
       for (const [id, ch] of ev.changes.keys) {
@@ -271,55 +287,30 @@ export function createTools(ctx: ToolCtx): Tools {
   const isMe = (s: Session, p: { name: string; kind: string }) => p.name === s.me.name && p.kind === s.me.kind
   const mine = (s: Session) => s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === s.me.kind)
   const myWorkers = (s: Session): Worker[] => Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name)
-  /** Processes this MCP instance started (room_spawn), keyed "<room>/<tag>": a lead may hold the same tag in its own
-   *  room and in the workers room. A lead that restarted only has the pid. */
-  const procs = new Map<string, SpawnedProcess>()
-  const procKey = (s: Session, tag: string): string => `${s.roomName}/${tag}`
-  /** Tags whose worktree is being prepared: reserved synchronously so two concurrent room_spawn calls cannot both pass the tag check. */
-  const reserving = new Set<string>()
   /** Is a process for this worker record alive: one we spawned, or (after a lead restart) one `ps` vouches for. */
-  const workerAlive = (s: Session, w: Worker): boolean => procs.has(procKey(s, w.tag)) || pidIsOurWorker(w.pid, w, ctx.probe)
-  /** The session in which a participant name lives: mine, or the workers room when the name is only known there. */
-  const sessionOf = (s: Session, name: string): Session => {
-    const ws = workersSession
-    if (!ws || ws === s || name === s.me.name) return s
-    // Where the person is actually present or has work wins; a worker record alone (the same tag can be
-    // spawned in both rooms) only decides when neither room shows them otherwise.
-    const activeIn = (x: Session) => x.room.scopes.has(name) || x.room.overlays.has(name) || presences(x).some(p => p.user.name === name)
-    if (activeIn(s)) return s
-    if (activeIn(ws)) return ws
-    return s.room.workerOf(name) ? s : ws.room.workerOf(name) ? ws : s
-  }
+  const workerAlive = (s: Session, w: Worker): boolean => rooms.hasHandle(s, w) || pidIsOurWorker(w.pid, w, ctx.probe)
   /** Open (once) the local workers room next to a team session and bridge the two. */
   const ensureWorkersRoom = async (lead: Session): Promise<Session> => {
     if (lead.local) return lead
-    if (workersSession) return workersSession
+    const have = rooms.workers()
+    if (have) return have
     const ws = await doJoin({ dir: lead.dir, server: LOCAL, name: lead.me.owner ?? lead.me.name, tag: lead.me.label, log })
     for (const m of ws.room.messages()) seen.add(m.id)
-    workersSession = ws
-    roomBridge = new Bridge(lead, ws, { log, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : undefined })
-    roomBridge.start()
-    workersHooks = new HooksBridge(ws, { forMe: m => forMe(ws, m), isSeen: id => seen.has(id), log, queue: ctx.queue, writeState: false })
-    workersHooks.start()
-    ctx.attachChannel?.(ws)
+    rooms.add(ws, 'workers', lead)
     log(`workers room: ${ws.roomName} (${ws.local?.url ?? 'local'}), bridged to ${lead.roomName}`)
     return ws
   }
   const closeWorkersRoom = async (): Promise<void> => {
-    const ws = workersSession
+    const ws = rooms.workers()
     if (!ws) return
-    workersSession = null
-    roomBridge?.stop(); roomBridge = null
-    workersHooks?.stop(); workersHooks = null
+    rooms.remove(ws)
     try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
     await doLeave(ws)
   }
-  /** The session (mine, or the workers room) that holds a worker with this tag. */
-  const sessionOfWorker = (s: Session, tag: string): Session => (s.room.workers.get(tag) ? s : workersSession?.room.workers.get(tag) ? workersSession : s)
-  /** Workers this lead has running, in its own room and in the workers room. */
+  /** Workers this lead has running, in every room it is in. */
   const runningWorkers = (s: Session): { s: Session; w: Worker }[] => {
     const out: { s: Session; w: Worker }[] = []
-    for (const sess of [s, workersSession]) if (sess) for (const w of myWorkers(sess)) if (w.status === 'running' || workerAlive(sess, w)) out.push({ s: sess, w })
+    for (const sess of [s, ...rooms.all().filter(x => x !== s)]) for (const w of myWorkers(sess)) if (w.status === 'running' || workerAlive(sess, w)) out.push({ s: sess, w })
     return out
   }
   /**
@@ -329,8 +320,7 @@ export function createTools(ctx: ToolCtx): Tools {
    * a signal was actually delivered; otherwise its status stands and the reply says so.
    */
   const dismissWorker = (s: Session, w: Worker, why: string): string => {
-    const key = procKey(s, w.tag)
-    const proc = procs.get(key)
+    const proc = rooms.handle(s, w.id)
     let how: string, signalled: boolean
     if (proc) {
       signalled = proc.kill()
@@ -342,8 +332,8 @@ export function createTools(ctx: ToolCtx): Tools {
       signalled = false
       how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone and its status stands`
     }
-    if (signalled || !proc) procs.delete(key)
-    if (signalled && w.status === 'running') s.room.updateWorker(w.tag, { status: 'dismissed' })
+    if (signalled || !proc) rooms.dropHandle(s, w.id)
+    if (signalled && w.status === 'running') s.room.updateWorker(w.tag, { status: 'dismissed' }, w.id)
     s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
     return how
   }
@@ -468,7 +458,7 @@ export function createTools(ctx: ToolCtx): Tools {
       seen.add(m.id)
       if (forMe(s, m)) fresh.push(m)
     }
-    const ws = workersSession
+    const ws = rooms.workers()
     if (ws && ws !== s) for (const m of ws.room.messages()) {
       if (seen.has(m.id)) continue
       seen.add(m.id)
@@ -480,7 +470,7 @@ export function createTools(ctx: ToolCtx): Tools {
     fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at)
     s.room.markSeen(s.me.name, fresh.map(m => m.id))
     for (const m of fresh) log(`inbox → ${s.me.name}: [${m.priority}] ${formatMsg(m)}`)
-    bridge?.scheduleWrite()
+    primaryHooks?.scheduleWrite()
     return `[inbox ${fresh.length}]\n${fresh.map(m => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
   }
 
@@ -573,14 +563,12 @@ export function createTools(ctx: ToolCtx): Tools {
     const target = `${repo}/${branch}`
     log(`branch changed ${current} -> ${branch}; moving room`)
     cleanupMine(s, `switched branch to ${branch}`)
-    ctx.setSession(null)
-    detach()
+    rooms.remove(s)
     await doLeave(s)
     try {
       const n = await doJoin({ dir: s.dir, name: s.me.name, room: target, server: s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')) })
-      ctx.setSession(n)
       for (const m of n.room.messages()) seen.add(m.id)
-      observeClaims(n); attachHooks(n); cleanupMine(n, 'stale from an earlier session')
+      rooms.add(n, 'primary'); cleanupMine(n, 'stale from an earlier session')
       return `[room] your clone switched to branch ${branch}: left ${current}, joined ${target}. Scope and claims were reset; declare a scope before editing.`
     } catch (e) {
       return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`
@@ -684,12 +672,12 @@ export function createTools(ctx: ToolCtx): Tools {
       if (!task) return 'error: task is required'
       const host: WorkerHost = a.host === 'codex' ? 'codex' : 'claude'
       const model = typeof a.model === 'string' && a.model.trim() ? a.model.trim() : undefined
-      const key = procKey(s, tag)
-      if (reserving.has(key)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
+      const idBase = workerIdBase(s.roomName, s.me.name, tag)
       const existing = s.room.workers.get(tag)
       if (existing && existing.lead !== s.me.name && existing.status === 'running') return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; pick another tag`
       if (existing && (existing.status === 'running' || workerAlive(s, existing))) return `error: worker ${tag} is ${existing.status === 'running' ? 'already running' : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_dismiss it first or pick another tag`
       const gen = (existing?.gen ?? 0) + 1
+      const id = workerId(s.me.name, tag, gen)
       const running = myWorkers(s).filter(w => w.status === 'running')
       const max = ctx.maxWorkers ?? Number(process.env.ROOM_MAX_WORKERS ?? DEFAULT_MAX_WORKERS)
       if (running.length >= max) return `error: ${running.length} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`
@@ -697,7 +685,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (typeof a.share === 'string' && a.share && !share) return 'error: share must be intent, declared or full'
       // The tag is reserved from here until the process record exists (or this call fails): the worktree
       // preparation below awaits git, and a second room_spawn for the same tag must not slip in meanwhile.
-      reserving.add(key)
+      if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
       try {
         let dir: string, branch: string, created = false, outside = false
         if (typeof a.dir === 'string' && a.dir) {
@@ -721,7 +709,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
         const env: Record<string, string> = {
           ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_DIR: dir, PWD: dir, ROOM_TAG: tag, ROOM_LEAD: s.me.name, ROOM_OWNER: owner,
-          ROOM_SHARE: share ?? s.daemon.share ?? 'full', ROOM_GEN: String(gen),
+          ROOM_SHARE: share ?? s.daemon.share ?? 'full', ROOM_GEN: String(gen), ROOM_WORKER_ID: id,
           ...(s.token && !s.local ? { ROOM_TOKEN: s.token } : {}),
           ROOM_LOG_FILE: path.join(s.dir, '.room', 'workers', `${tag}.mcp.log`),
         }
@@ -729,23 +717,25 @@ export function createTools(ctx: ToolCtx): Tools {
         let proc: SpawnedProcess
         try { proc = (ctx.spawner ?? defaultSpawner)({ cmd, args, cwd: dir, env, logFile }) }
         catch (e) { return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}` }
-        procs.set(key, proc)
-        const w: Worker = { tag, name, host, ...(model ? { model } : {}), task, dir, branch, pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
+        rooms.setHandle(s, id, proc)
+        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), task, dir, branch, pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
         s.room.setWorker(w)
+        // Callbacks resolve the record by this spawn's id: a reused tag has a new id, so an older process
+        // (or another lead's record under the same tag) is simply not found and touches nothing.
         proc.onError?.(err => {
-          const cur = s.room.workers.get(tag)
-          if (cur?.gen !== gen || cur.lead !== s.me.name) return // an older process of a reused tag, or another lead's record
-          if (procs.get(key) === proc) procs.delete(key)
-          if (cur && cur.status === 'running') s.room.updateWorker(tag, { status: 'failed', exitCode: -1, summary: `could not start ${cmd}: ${err.message}` })
+          rooms.dropHandle(s, id, proc)
+          const cur = s.room.workerById(id)
+          if (!cur) return
+          if (cur.status === 'running') s.room.updateWorker(tag, { status: 'failed', exitCode: -1, summary: `could not start ${cmd}: ${err.message}` }, id)
           s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` })
         })
         proc.onExit(code => {
-          const cur = s.room.workers.get(tag)
-          if (procs.get(key) === proc) procs.delete(key) // this process is gone whatever record the tag holds now
-          if (cur?.gen !== gen || cur.lead !== s.me.name) return // an older process of a reused tag, or another lead's record
-          if (!cur || cur.status !== 'running') { s.room.updateWorker(tag, { exitCode: code ?? -1 }); return }
+          rooms.dropHandle(s, id, proc) // this process is gone whatever record the tag holds now
+          const cur = s.room.workerById(id)
+          if (!cur) return
+          if (cur.status !== 'running') { s.room.updateWorker(tag, { exitCode: code ?? -1 }, id); return }
           const summary = cur.summary ?? (code === 0 ? 'process exited without room_done' : `process exited with code ${code}`)
-          s.room.updateWorker(tag, { status: code === 0 ? 'done' : 'failed', exitCode: code ?? -1, summary })
+          s.room.updateWorker(tag, { status: code === 0 ? 'done' : 'failed', exitCode: code ?? -1, summary }, id)
           s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? '' : `; see ${logFile}`}` })
           // An exit without room_done still ends the lead's wait: post the done message the worker never sent, as the worker.
           s.room.post<DoneMsg>({ name, kind: 'agent', owner, label: tag }, { type: 'done', tag, summary: `${summary} (exit ${code})`, changed: s.room.changedPaths(name), to: s.me.name, priority: 'notify' })
@@ -758,13 +748,13 @@ export function createTools(ctx: ToolCtx): Tools {
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         return out.join('\n')
       } finally {
-        reserving.delete(key)
+        rooms.unreserve(idBase)
       }
     },
     async room_dismiss(a) {
       const tag = validTag(a.tag)
       if (!tag) return 'error: tag is required'
-      const s = sessionOfWorker(S(), tag)
+      const s = rooms.holdingWorker(tag, S())
       const w = s.room.workers.get(tag)
       if (!w) return `error: no worker ${tag}`
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`
@@ -820,10 +810,8 @@ export function createTools(ctx: ToolCtx): Tools {
         share: typeof a.share === 'string' && a.share ? a.share : undefined,
       })
       if (choice.rule === 'argument') { try { await writeChoice(dir, choice.where, s.me.name) } catch { /* not a repository? keep going */ } }
-      ctx.setSession(s)
       for (const m of s.room.messages()) seen.add(m.id)
-      observeClaims(s)
-      attachHooks(s)
+      rooms.add(s, 'primary')
       const stale = cleanupMine(s, 'stale from an earlier session')
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
       evictStale(s)
@@ -858,8 +846,7 @@ export function createTools(ctx: ToolCtx): Tools {
       for (const r of running) dismissWorker(r.s, r.w, 'the lead left the room')
       await closeWorkersRoom()
       const released = cleanupMine(s, 'left the room')
-      ctx.setSession(null)
-      detach()
+      rooms.remove(s)
       await doLeave(s)
       let forgot = ''
       if (a.forget === true) { const had = await clearChoice(s.dir).catch(() => false); forgot = had ? '; forgot the remembered room choice for this clone (next session starts local)' : '; nothing was remembered for this clone' }
@@ -873,8 +860,7 @@ export function createTools(ctx: ToolCtx): Tools {
       await closeWorkersRoom()
       cleanupMine(s, 'closing the room')
       s.room.post<NoteMsg>(s.me, { type: 'note', text: `closing the room for ${repo}: every branch room and all shared work is being removed`, priority: 'interrupt' })
-      ctx.setSession(null)
-      detach()
+      rooms.remove(s)
       const closed = await doClose(s)
       await doLeave(s)
       return `closed ${repo} for everyone: removed ${closed.length ? closed.join(', ') : 'its rooms'}; room_create reopens it`
@@ -902,7 +888,8 @@ export function createTools(ctx: ToolCtx): Tools {
       await loadAreas(s)
       const m = s.room.meta
       const out: string[] = []
-      out.push(`room: ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${workersSession ? `; workers room: local (${workersSession.roomName}, this machine only)` : ''}`)
+      const wsRoom = rooms.workers()
+      out.push(`room: ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ''}`)
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? '?').slice(0, 10)})`)
       // Folder-scoped view: only people, claims and changes in my areas, unless all=true (or I am in none yet).
       const mineA = myAreas(s)
@@ -955,7 +942,7 @@ export function createTools(ctx: ToolCtx): Tools {
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
       out.push(...workerLines(myWorkers(s), n => { const last = s.room.messages().filter(x => x.from === n).slice(-1)[0]; return last ? formatMsg(last) : undefined }, n => s.room.changedPaths(n).length, now()))
-      const ws = workersSession
+      const ws = wsRoom
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${roomBridge?.workerPaths().length ?? 0} path(s) from these workers; their claims appear in the team room under your name`)
         out.push(...workerLines(myWorkers(ws), n => { const last = ws.room.messages().filter(x => x.from === n).slice(-1)[0]; return last ? formatMsg(last) : undefined }, n => ws.room.changedPaths(n).length, now()))
@@ -966,7 +953,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
       const p = a.path
       const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
-      const s = sessionOf(S(), person) // a local worker's overlay lives in the workers room, not the team room
+      const s = rooms.holding(person, S()) // a local worker's overlay lives in the workers room, not the team room
       const held = withheld(s, person, p)
       if (held) return held
       const t = await liveText(s, p, person)
@@ -982,7 +969,7 @@ export function createTools(ctx: ToolCtx): Tools {
     },
     async room_diff(a) {
       const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
-      const s = sessionOf(S(), person)
+      const s = rooms.holding(person, S())
       const one = async (p: string) => {
         const b = (await baseText(s, p)) ?? ''
         const l = await liveText(s, p, person)
@@ -1021,10 +1008,10 @@ export function createTools(ctx: ToolCtx): Tools {
       const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n)
       const out: string[] = []
       // Workers in the local workers room hold their own claims and scopes there: show both rooms.
-      const rooms = workersSession && workersSession !== s ? [s, workersSession] : [s]
+      const inRooms = [s, ...rooms.all().filter(x => x !== s)]
       const tagged = (x: Session, line: string) => x === s ? line : `${line} (workers room)`
       const who = new Set<string>()
-      for (const x of rooms) {
+      for (const x of inRooms) {
         for (const c of x.room.claimsFor(p)) if (rangesOverlap(c.from, c.to, r.from, r.to)) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`))
         for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
         for (const n of x.room.whoChanged(p)) if (n !== s.me.name) who.add(n)
@@ -1120,9 +1107,9 @@ export function createTools(ctx: ToolCtx): Tools {
       const lead = S()
       const to = typeof a.to === 'string' && a.to ? a.to : undefined
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
-      const wsr = workersSession && workersSession !== lead ? workersSession : null
-      const inWorkersRoom = !!wsr && ((typeof a.inReplyTo === 'string' && wsr.room.messages().some(m => m.id === a.inReplyTo)) || (!!to && myWorkers(wsr).some(w => w.name === to)))
-      const s = inWorkersRoom ? wsr! : lead
+      const wsr = rooms.workers()
+      const byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
+      const s = byQuestion ?? (wsr && wsr !== lead && to && myWorkers(wsr).some(w => w.name === to) ? wsr : lead)
       const text = typeof a.text === 'string' ? a.text : ''
       if (!text) return 'error: text is required'
       if (to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
@@ -1158,7 +1145,7 @@ export function createTools(ctx: ToolCtx): Tools {
         default: return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       }
       s.daemon.touch()
-      return [`sent [${msg.id}] ${formatMsg(msg)}${inWorkersRoom ? ' (in the workers room)' : ''}`, ...notes].join('\n')
+      return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes].join('\n')
     },
     async room_wait(a) {
       const s = S()
@@ -1166,12 +1153,12 @@ export function createTools(ctx: ToolCtx): Tools {
       const questionId = typeof a.questionId === 'string' && a.questionId ? a.questionId : undefined
       const timeoutMs = Math.min(WAIT_MAX, Math.max(0, Number(a.timeoutMs ?? WAIT_DEFAULT) || WAIT_DEFAULT))
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`
-      const qRoom = questionId && workersSession && workersSession !== s && workersSession.room.messages().some(m => m.id === questionId) ? workersSession : s
+      const qRoom = (questionId && rooms.holdingQuestion(questionId, s)) || s
       const answered = (id: string) => qRoom.room.messages().find(m => m.type === 'answer' && m.inReplyTo === id)
       if (questionId) { const an = answered(questionId); if (an) return `answered: ${formatMsg(an)}` }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
       const result = await new Promise<string>(resolve => {
-        const ws = workersSession && workersSession !== s ? workersSession : null
+        const ws = rooms.all().find(x => x !== s) ?? null
         const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); ws?.room.bus.unobserve(onWorkersBus); resolve(r) }
         const onWorkersBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           if (!ws) return
@@ -1207,12 +1194,12 @@ export function createTools(ctx: ToolCtx): Tools {
       const kept = mine(s).filter(c => c.mirrorOf && live.has(c.mirrorOf)).length
       const released = cleanupMine(s, `done: ${summary}`, c => !!c.mirrorOf && live.has(c.mirrorOf))
       const asWorker = s.room.workerOf(s.me.name)
-      // A worker spawned with ROOM_GEN only finishes the record of its own generation: a stale process of a
-      // reused tag must not mark the lead's current worker done. Its report still reaches the lead.
-      const gen = process.env.ROOM_GEN?.trim()
-      const stale = !!asWorker && !!gen && asWorker.gen !== undefined && String(asWorker.gen) !== gen
+      // A worker finishes only the record of its own spawn (ROOM_WORKER_ID; older leads passed ROOM_GEN): a stale
+      // process of a reused tag must not mark the lead's current worker done. Its report still reaches the lead.
+      const myId = process.env.ROOM_WORKER_ID?.trim(), gen = process.env.ROOM_GEN?.trim()
+      const stale = !!asWorker && (myId ? asWorker.id !== undefined && asWorker.id !== myId : !!gen && asWorker.gen !== undefined && String(asWorker.gen) !== gen)
       if (asWorker) {
-        if (!stale) s.room.updateWorker(asWorker.tag, { status: 'done', summary })
+        if (!stale) s.room.updateWorker(asWorker.tag, { status: 'done', summary }, asWorker.id)
         s.room.post<DoneMsg>(s.me, { type: 'done', tag: asWorker.tag, summary: stale ? `${summary} (from an earlier generation of ${asWorker.tag}; the current worker's record was left alone)` : summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: 'notify' })
       } else {
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
@@ -1267,7 +1254,7 @@ export function createTools(ctx: ToolCtx): Tools {
     async room_preview_merge(a) {
       const person = typeof a.person === 'string' && a.person ? a.person : ''
       if (!person || person === S().me.name) return 'error: person is required (someone other than you)'
-      const s = sessionOf(S(), person) // my own overlay is in both rooms; a local worker's only in the workers room
+      const s = rooms.holding(person, S()) // my own overlay is in both rooms; a local worker's only in the workers room
       const held = withheld(s, person)
       if (held) return held
       const declaredNote = shareOf(s, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
@@ -1342,7 +1329,7 @@ export function createTools(ctx: ToolCtx): Tools {
 
   return {
     list: () => DEFS,
-    attachHooks,
+    attachHooks: (s: Session) => rooms.add(s, 'primary'),
     clearStale: (s: Session) => { evictStale(s); return cleanupMine(s, 'stale from an earlier session') },
     setPendingJoin(p) { pendingJoin = p.catch(() => {}) },
     async shutdown() {
@@ -1351,11 +1338,10 @@ export function createTools(ctx: ToolCtx): Tools {
       for (const r of runningWorkers(s)) { try { dismissWorker(r.s, r.w, "the lead's session ended") } catch { /* best effort */ } }
       await closeWorkersRoom().catch(() => {})
       try { cleanupMine(s, 'session ended') } catch { /* best effort */ }
-      ctx.setSession(null)
-      detach()
+      rooms.remove(s)
       await doLeave(s)
     },
-    async flushConflicts() { await watcher?.flush() },
+    async flushConflicts() { await rooms.flush() },
     async call(name, args) {
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
@@ -1365,7 +1351,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const moved = await followBranch()
       const s = ctx.getSession()
       if (s && !s.provider.synced && name !== 'room_leave') return 'error: room not synced yet, retry'
-      if (s) observeClaims(s)
+      if (s) rooms.track(s)
       try {
         const body = await h(args ?? {})
         const s2 = ctx.getSession()

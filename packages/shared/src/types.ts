@@ -101,6 +101,8 @@ export type Msg = ClaimMsg | ReleaseMsg | ChangedMsg | QuestionMsg | AnswerMsg |
 /** A worker agent dispatched by a lead (room_spawn) into this room. Keyed by tag in RoomDoc.workers. */
 export type WorkerStatus = 'running' | 'done' | 'failed' | 'dismissed'
 export interface Worker {
+  /** Stable identity of this spawn: `<lead>/<tag>#<gen>`. Everything about the worker (process, worktree, log, doc entry) is looked up by it. Absent on records from older clients. */
+  id?: string
   tag: string
   /** Participant name the worker joins as (lead's owner + tag). */
   name: string

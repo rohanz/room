@@ -63,14 +63,16 @@ export class RoomDoc {
   /** Workers dispatched into this room by leads (room_spawn), keyed by tag. */
   get workers(): Y.Map<Worker> { return this.doc.getMap<Worker>('workers') }
   setWorker(w: Worker): void { this.workers.set(w.tag, w) }
-  updateWorker(tag: string, patch: Partial<Worker>): Worker | undefined {
+  /** Patch the record under `tag`; with `id`, only if that is still the record's identity (an older spawn must not touch a newer one). */
+  updateWorker(tag: string, patch: Partial<Worker>, id?: string): Worker | undefined {
     const w = this.workers.get(tag)
-    if (!w) return undefined
+    if (!w || (id !== undefined && w.id !== id)) return undefined
     const next = { ...w, ...patch }
     this.workers.set(tag, next)
     return next
   }
   workerOf(name: string): Worker | undefined { for (const w of this.workers.values()) if (w.name === name) return w; return undefined }
+  workerById(id: string): Worker | undefined { for (const w of this.workers.values()) if (w.id === id) return w; return undefined }
   get metaMap(): Y.Map<string | number> { return this.doc.getMap<string | number>('meta') }
   /** Base-commit text of files someone has changed, keyed "<sha>:<path>", so browsers can three-way merge. */
   get baseTexts(): Y.Map<string> { return this.doc.getMap<string>('basetext') }
