@@ -1,3 +1,4 @@
+import { reconnectStatus } from './reconnect.ts'
 import { applyTheme, readTheme, nextTheme, type Theme } from './theme.ts'
 import { connect } from './conn.ts'
 import { centrePanel, createFocusState, h, header, participantsPanel, timelinePanel } from './panels.ts'
@@ -32,7 +33,7 @@ try {
     const label = value[0].toUpperCase() + value.slice(1)
     const icon = h('span', {}, ['☀', '☾', '◐'][i])
     icon.setAttribute('aria-hidden', 'true')
-    const button = h('button', { title: label + ' theme (T to cycle)', ariaLabel: label + ' theme', onclick: () => chooseTheme(value) }, icon, label)
+    const button = h('button', { title: label + ' theme (T to cycle)', ariaLabel: label + ' theme', onclick: () => chooseTheme(value) }, icon, h('span', { class: 'theme-label' }, label))
     themeSwitcher.append(button)
     return button
   })
@@ -46,7 +47,7 @@ try {
   chooseTheme(theme)
   switcher.append(boardButton, codeButton); top.append(themeSwitcher, switcher)
   const reconnect = h('div', { class: 'reconnecting', role: 'status' }, 'reconnecting…')
-  conn.onStatus(connected => { reconnect.hidden = connected })
+  conn.onStatus(reconnectStatus(reconnect))
   function choose(view: View, update = true) {
     board.hidden = view !== 'board'; code.hidden = view !== 'code'
     for (const [button, active] of [[boardButton, view === 'board'], [codeButton, view === 'code']] as const) { button.classList.toggle('active', active); button.ariaPressed = String(active) }

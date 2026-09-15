@@ -1,4 +1,4 @@
-import { areaMembershipSummary, deriveParticipants, participantClaimLine, personLine, workerLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
+import { formatCount, areaMembershipSummary, deriveParticipants, participantClaimLine, personLine, workerLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
 import type { Conn } from './conn.ts'
 import { h, conflictCard, messageBody, participantInput, relativeTime } from './panels.ts'
 import { collapseConflictTimeline } from './timeline.ts'
@@ -9,11 +9,12 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
   const offline = h('details', { class: 'offline-group' })
   const feed = h('div', { class: 'board-feed' })
   const filters = h('div', { class: 'filter-chips', ariaLabel: 'Filter timeline' })
-  const hide = h('input', { type: 'checkbox' })
-  try { hide.checked = localStorage.getItem('room.hideOffline') === 'true' } catch { /* storage may be disabled */ }
+  const hide = h('button', { type: 'button', ariaPressed: 'false' }, 'Hide offline')
+  let hideOffline = false
+  try { hideOffline = localStorage.getItem('room.hideOffline') === 'true' } catch { /* storage may be disabled */ }
   const element = h('main', { class: 'board scroll' },
     h('div', { class: 'board-heading' }, h('div', {}, h('h2', {}, 'People at work'), h('p', { class: 'muted' }, 'Live intent, shared changes, and the conversation around them.')),
-      h('label', {}, hide, ' Hide offline')),
+      h('div', { class: 'view-switcher offline-toggle' }, hide)),
     grid, offline,
     h('section', { class: 'board-timeline' }, h('div', { class: 'board-heading' }, h('h2', {}, 'Timeline'), h('span', { class: 'muted' }, 'Newest first')), filters, feed))
   let personFilter: string | null = null, areaFilter: string | null = null
@@ -43,7 +44,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
         h('p', { class: 'participant-line', title: label }, label),
         h('div', { class: 'sharing muted' }, `Sharing: ${share}`),
         h('div', { class: 'person-claims' }, ...(person.claims.length ? person.claims.map(claim => h('div', { class: 'person-claim', title: participantClaimLine(claim), tabIndex: 0 }, participantClaimLine(claim))) : [h('p', { class: 'muted' }, 'No claims yet — agents claim lines before editing')])),
-        h('div', { class: 'board-card-footer' }, h('span', {}, `${person.files.length} changed files`), h('span', { class: 'muted', title: person.online ? 'Online' : 'Offline' }, person.latestActive ? `active ${relativeTime(person.latestActive)}` : person.online ? 'Online · activity unknown' : 'Offline')),
+        h('div', { class: 'board-card-footer' }, h('span', {}, formatCount(person.files.length, 'changed file')), h('span', { class: 'muted', title: person.online ? 'Online' : 'Offline' }, person.latestActive ? `active ${relativeTime(person.latestActive)}` : person.online ? 'Online · activity unknown' : 'Offline')),
         h('div', { class: 'last-message' }, last ? h('span', {}, ...messageBody(last)) : h('span', { class: 'muted' }, 'No messages yet')))
       const ownWorkers = workers.filter(w => w.lead === person.name)
       if (ownWorkers.length) {
@@ -61,7 +62,9 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     const online = leads.filter(p => p.online), away = leads.filter(p => !p.online)
     grid.replaceChildren(...online.map(card))
     if (!online.length) grid.append(h('div', { class: 'board-empty muted' }, 'No one is online yet — join this room from your agent.'))
-    offline.hidden = hide.checked || !away.length
+    hide.ariaPressed = String(hideOffline)
+    hide.classList.toggle('active', hideOffline)
+    offline.hidden = hideOffline || !away.length
     offline.replaceChildren(h('summary', {}, `${away.length} offline`), h('div', { class: 'board-grid' }, ...away.map(card)))
     const events = collapseConflictTimeline(messages, conn.room.openClaims(), conn.room.meta.base).reverse()
     const areaOf = (m: typeof messages[number]) => 'area' in m && typeof m.area === 'string' ? m.area : conn.room.scopes.get(m.from)?.area ?? 'other'
@@ -77,7 +80,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     }))
     if (!visible.length) feed.append(h('p', { class: 'muted' }, 'No events yet — room activity will appear here.'))
   }
-  hide.onchange = () => { try { localStorage.setItem('room.hideOffline', String(hide.checked)) } catch { /* optional preference */ }; render() }
+  hide.onclick = () => { hideOffline = !hideOffline; try { localStorage.setItem('room.hideOffline', String(hideOffline)) } catch { /* optional preference */ }; render() }
   conn.room.doc.on('update', render)
   conn.provider.awareness.on('change', render)
   // Refresh relative ages while leaving a focused control undisturbed.

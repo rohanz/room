@@ -592,3 +592,11 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .network-node.file-edited > .network-filename, .network-node.file-edited > .network-directory { fill: var(--ink); }
 .network-node.file-edited > circle, .network-node.file-edited .edit-badge text { fill: var(--accent-text); }
 .network-node.file-edited .edit-badge rect { fill: var(--surface); stroke: var(--accent); }
+
+.board-card .person-claim { font-weight: 400; }
+.offline-toggle { flex: none; }
+@media (max-width: 639px) {
+  .room-name { direction: rtl; text-align: left; }
+  .theme-switcher button .theme-label { display: none; }
+  .theme-switcher button { gap: 0; padding-inline: 8px; }
+}

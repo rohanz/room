@@ -2,6 +2,11 @@ import { describeClaim } from './claims.js'
 import { describeIdentity, isAgentic } from './identity.js'
 import type { Claim, Kind, NoteMsg, Presence, Scope, ShareLevel, Worker } from './types.js'
 
+/** Format a count with its singular or plural label. */
+export function formatCount(count: number, singular: string, plural = singular + 's'): string {
+  return count + ' ' + (count === 1 ? singular : plural)
+}
+
 export interface ParticipantClaim extends Claim { stale: boolean }
 export interface Participant {
   name: string
@@ -139,7 +144,7 @@ export function workerLine({ worker: w, processGone = false, changedCount, last,
   const alive = w.status === 'running' && processGone ? ' (process gone)' : ''
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
-    `      ${changedCount} changed file(s) · branch ${w.branch}${w.summary ? ` · ${w.summary.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
+    `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${w.summary ? ` · ${w.summary.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
   ]
 }
 

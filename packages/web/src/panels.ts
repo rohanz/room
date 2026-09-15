@@ -587,7 +587,7 @@ export function activityGraphPanel(conn: Conn, focus: FocusState): HTMLElement {
 }
 
 export function header(conn: Conn): HTMLElement {
-  const roomName = h('span', { class: 'room-name' }, conn.displayRoomName)
+  const roomName = h('span', { class: 'room-name', title: conn.displayRoomName }, h('bdi', { dir: 'ltr' }, conn.displayRoomName))
   const base = h('span', { class: 'header-detail mono' }, 'base —')
   const count = h('span', { class: 'header-detail' }, '0 participants')
   const connection = h('span', { class: 'connection' }, 'disconnected')
