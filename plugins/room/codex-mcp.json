@@ -27,9 +27,13 @@
         "ROOM_KIND",
         "ROOM_MAX_WORKERS",
         "ROOM_LOG_FILE",
-        "ROOM_OWNER"
+        "ROOM_OWNER",
+        "ROOM_CLAUDE_CHANNEL"
       ],
-      "startup_timeout_sec": 30
+      "startup_timeout_sec": 30,
+      "env": {
+        "ROOM_HOST": "codex"
+      }
     }
   }
 }
