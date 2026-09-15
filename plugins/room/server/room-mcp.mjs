@@ -29944,6 +29944,36 @@ function workerLines(inputs) {
   return [`workers (${inputs.length}):`, ...[...inputs].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
 }
 
+// packages/room-mcp/src/connection.ts
+var OFFLINE_GRACE_MS = 2e3;
+var connections = /* @__PURE__ */ new WeakMap();
+function trackConnection(session, now = Date.now) {
+  if (connections.has(session)) return;
+  const state = { connectedOnce: false, update: () => {
+  } };
+  state.update = () => {
+    const connected = !session.closed && session.provider.wsconnected === true && session.provider.synced;
+    if (connected) {
+      state.connectedOnce = true;
+      delete state.disconnectedAt;
+    } else if (state.connectedOnce && state.disconnectedAt === void 0) state.disconnectedAt = now();
+  };
+  connections.set(session, state);
+  session.provider.on?.("status", state.update);
+  session.provider.on?.("sync", state.update);
+  session.provider.on?.("connection-close", state.update);
+  state.update();
+}
+function offlineSince(session, now = Date.now) {
+  trackConnection(session, now);
+  const state = connections.get(session);
+  state.update();
+  return state.disconnectedAt !== void 0 && now() - state.disconnectedAt > OFFLINE_GRACE_MS ? state.disconnectedAt : void 0;
+}
+function connectedBefore(session) {
+  return connections.get(session)?.connectedOnce ?? false;
+}
+
 // packages/room-mcp/src/session.ts
 import { existsSync, readFileSync } from "node:fs";
 import { dirname as dirname3, resolve as resolve3 } from "node:path";
@@ -33688,6 +33718,7 @@ import fs4 from "node:fs";
 
 // packages/room-mcp/src/config.ts
 import os from "node:os";
+import { execFileSync } from "node:child_process";
 import path4 from "node:path";
 import fs3 from "node:fs";
 var DEFAULT_SERVER = "wss://room-rohanz.fly.dev";
@@ -33760,9 +33791,15 @@ async function resolveConfig({ env, args: args2 = {}, dir }) {
     web: value(args2.web) ?? value(e.ROOM_WEB)
   };
 }
-function resolveSessionHost(dir, env = process.env) {
+function resolveSessionHost(dir, env = process.env, parentCommand = () => execFileSync("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] })) {
   const host = (v) => v === "claude" || v === "codex" ? v : void 0;
   if (host(env.ROOM_HOST)) return env.ROOM_HOST;
+  try {
+    const command = path4.basename(parentCommand().trim()).toLowerCase();
+    if (/^codex(?:[.-]|$)/.test(command)) return "codex";
+    if (/^claude(?:[.-]|$)/.test(command)) return "claude";
+  } catch {
+  }
   try {
     let gitDir = path4.join(dir, ".git");
     if (fs3.statSync(gitDir).isFile()) {
@@ -33838,11 +33875,13 @@ function removeCredential(server) {
 // packages/room-mcp/src/session.ts
 var DEFAULT_WEB = "http://localhost:5173";
 var NoRoom = class extends RoomdError {
-  constructor(roomName, detail) {
+  constructor(roomName, detail, server) {
     super(detail, 3);
     this.roomName = roomName;
+    this.server = server;
   }
   roomName;
+  server;
 };
 var NotLoggedIn = class extends RoomdError {
   constructor(server) {
@@ -34056,7 +34095,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
         let suffix = 2;
         while (names.has(`${options.name}+${label}`)) label = `${host}-${suffix++}`;
         name = `${options.name}+${label}`;
-        autoTagNote = `joined as ${name} (${options.name} is already here from another session)`;
+        autoTagNote = `joined as ${name} (${options.name} was already here from another session)`;
         (options.log ?? console.error)(autoTagNote);
       }
     } finally {
@@ -34095,12 +34134,14 @@ async function joinSession(opts) {
   const name = label ? `${owner}+${label}` : owner;
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`);
   const { login: _login, ...creds } = auth;
-  if (opts.create) {
+  let pre = await preflight(server, roomName, creds);
+  if (opts.create && pre?.missing) {
+    if (opts.confirm !== true) throw new RoomdError("room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed", 2);
     const err = await createRoom(server, roomName, { ...creds, by: name });
     if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}`, 2);
+    pre = await preflight(server, roomName, creds);
   }
-  const pre = await preflight(server, roomName, creds);
-  if (pre?.missing) throw new NoRoom(roomName, pre.reason);
+  if (pre?.missing) throw new NoRoom(roomName, pre.reason, server);
   if (pre?.loginNeeded) throw new NotLoggedIn(server);
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2);
   const shareRequested = requestedShare(config2.share);
@@ -34129,6 +34170,7 @@ async function joinSession(opts) {
     ...token ? { token } : {},
     ...opts.room ? { pinnedRoom: true } : {}
   };
+  trackConnection(session);
   watchClosed(session, opts.log);
   return session;
 }
@@ -34156,7 +34198,7 @@ async function joinLocal(dir, opts) {
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&key=${encodeURIComponent(local.key)}`;
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
   graph.start();
-  return {
+  const session = {
     graph,
     room: daemon.roomDoc,
     provider: daemon.provider,
@@ -34173,6 +34215,8 @@ async function joinLocal(dir, opts) {
     local,
     pinnedRoom: true
   };
+  trackConnection(session);
+  return session;
 }
 var ROOM_CLOSED_CODE = 4001;
 function watchClosed(s, log2) {
@@ -35012,10 +35056,11 @@ function createHandlerState(ctx) {
 }
 
 // packages/room-mcp/src/prompt.ts
-function claudeWakeNote(session, done = false) {
-  const host = new HooksBridge(session, { forMe: () => false, isSeen: () => true }).freshSession()?.host;
-  if (host !== "claude") return "";
-  return done ? "Note for the user: I will only see new room messages on your next message unless Claude Code was started with --dangerously-load-development-channels plugin:room@room." : "Wake-ups need Claude Code started with --dangerously-load-development-channels plugin:room@room.";
+var wakeNoted = /* @__PURE__ */ new WeakSet();
+function claudeWakeNote(session) {
+  if (process.env.ROOM_CLAUDE_CHANNEL === "" || wakeNoted.has(session) || resolveSessionHost(session.dir) !== "claude") return "";
+  wakeNoted.add(session);
+  return "Wake-ups on Claude Code need the session started with claude-room (or the channels flag).";
 }
 var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
 
@@ -35101,13 +35146,13 @@ var defs = [
   {
     name: "room_create",
     annotations: RW,
-    description: "Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.",
-    inputSchema: { type: "object", properties: { room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
+    description: "Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Ask the user before opening and pass confirm=true only after they agree. Idempotent: on an already-open repo it just joins without confirmation.",
+    inputSchema: { type: "object", properties: { confirm: { type: "boolean", description: "true only after the user agrees to open the repo for everyone with push access; unnecessary if already open" }, where: str("team | ws(s)://server"), room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
   },
   {
     name: "room_join",
     annotations: RW,
-    description: "Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo's room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: room_create does that.",
+    description: "Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo's room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: ask the user whether to open one, and call room_create with confirm=true only after they agree.",
     inputSchema: { type: "object", properties: { where: str("local | team | ws(s)://server"), room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("alias of where for a server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
   },
   {
@@ -35192,15 +35237,23 @@ function handlers(state) {
       if (a.create === true && choice.server === LOCAL && choice.rule !== "argument") {
         return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.';
       }
-      const s = await doJoin({
-        dir,
-        credentialsPath: resolved.credentialsPath,
-        name: resolved.name,
-        room: resolved.room,
-        server: choice.server,
-        create: a.create === true,
-        share: resolved.share
-      });
+      let s;
+      try {
+        s = await doJoin({
+          dir,
+          credentialsPath: resolved.credentialsPath,
+          name: resolved.name,
+          room: resolved.room,
+          server: choice.server,
+          create: a.create === true,
+          confirm: a.confirm === true,
+          share: resolved.share
+        });
+      } catch (e) {
+        if (!(e instanceof NoRoom)) throw e;
+        const repo = e.roomName.startsWith("github.com/") ? e.roomName.split("/").slice(1, 3).join("/") : e.roomName.slice(0, e.roomName.lastIndexOf("/"));
+        return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`;
+      }
       if (choice.rule === "argument") {
         try {
           await writeChoice(dir, choice.where, s.me.name);
@@ -35229,7 +35282,10 @@ function handlers(state) {
       for (const n of here) out.push(`  ${n}: ${personLine2(s, n)}`);
       const away = others(s).filter((n) => !here.includes(n) && s.room.changedPaths(n).length);
       for (const n of away) out.push(`  ${n} (offline): ${personLine2(s, n)}`);
-      if (s.autoTagNote) out.push(s.autoTagNote);
+      if (s.autoTagNote) {
+        out.push(s.autoTagNote);
+        delete s.autoTagNote;
+      }
       const cs = s.room.openClaims();
       if (cs.length) {
         out.push(`open claims (${cs.length}):`);
@@ -35350,7 +35406,7 @@ function install(state) {
 }
 
 // packages/room-mcp/src/workers.ts
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync as execFileSync2, spawn } from "node:child_process";
 import fs8 from "node:fs";
 import path9 from "node:path";
 var WORKERS_DIR = path9.join(".room", "workers");
@@ -35451,8 +35507,8 @@ function pidAlive2(pid) {
 function probeProcess(pid) {
   if (!pid || pid <= 0) return void 0;
   try {
-    const start = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
-    const command = execFileSync("ps", ["-o", "command=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
+    const start = execFileSync2("ps", ["-o", "lstart=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
+    const command = execFileSync2("ps", ["-o", "command=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
     const t = Date.parse(start);
     return { ...Number.isFinite(t) ? { start: t } : {}, ...command ? { command } : {} };
   } catch {
@@ -35469,7 +35525,6 @@ function pidIsOurWorker(pid, w, probe = probeProcess) {
 }
 
 // packages/room-mcp/src/tools/scope.ts
-var offlineSince = /* @__PURE__ */ new WeakMap();
 var defs2 = [
   {
     name: "room_scope",
@@ -35517,13 +35572,11 @@ function handlers2(state) {
       const m = s.room.meta;
       const out = [];
       const wsRoom = rooms.workers();
-      const disconnected = !!s.closed || s.provider.wsconnected === false;
-      if (disconnected) {
-        const since = offlineSince.get(s) ?? now();
-        offlineSince.set(s, since);
+      const since = offlineSince(s, now);
+      if (since !== void 0) {
         const server = s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server;
         out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state`);
-      } else offlineSince.delete(s);
+      }
       out.push(`room: ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ""}`);
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? "?").slice(0, 10)})`);
       const mineA = myAreas(s);
@@ -36769,7 +36822,7 @@ var defs4 = [
 ];
 function handlers4(state) {
   const { S, rooms, myWorkers, upgrade, setPresence, forMe, seen } = state;
-  const offline = (s) => !!s.closed || s.provider.wsconnected === false;
+  const offline = (s) => !!s.closed || !s.provider.synced || s.provider.wsconnected === false;
   const handlers9 = {
     async room_send(a) {
       const lead = S();
@@ -37648,8 +37701,6 @@ function handlers6(state) {
           }
         }
       }
-      const wakeNote = claudeWakeNote(s, true);
-      if (wakeNote) out.push(wakeNote);
       return out.join("\n");
     },
     async room_spawn(a) {
@@ -37986,6 +38037,8 @@ var DEF_ORDER = ["room_login", "room_logout", "room_create", "room_join", "room_
 var DEFS = DEF_ORDER.map((name) => ALL_DEFS.find((d) => d.name === name));
 function createTools(ctx) {
   const state = createHandlerState(ctx);
+  const initial = ctx.getSession();
+  if (initial) trackConnection(initial, state.now);
   install2(state);
   install3(state);
   install4(state);
@@ -38020,9 +38073,11 @@ function createTools(ctx) {
       }
       const moved = await state.followBranch();
       const s = ctx.getSession();
-      const disconnected = !!s?.closed || s?.provider?.wsconnected === false;
-      if (s && !s.provider.synced && name !== "room_leave" && !(offlineTool && disconnected)) return "error: room not synced yet, retry";
-      if (s) state.rooms.track(s);
+      if (s && !s.provider.synced && name !== "room_leave" && !(offlineTool && (s.closed || connectedBefore(s)))) return "error: room not synced yet, retry";
+      if (s) {
+        trackConnection(s, state.now);
+        state.rooms.track(s);
+      }
       try {
         const body = await h(args2 ?? {});
         const s2 = ctx.getSession();
@@ -38031,7 +38086,9 @@ function createTools(ctx) {
 
 ` : "";
         const unread = s2 && name !== "room_join" && name !== "room_create" ? state.inbox(s2) : "";
-        return prefix + (unread ? unread + body : body);
+        const autoTag = s2?.autoTagNote;
+        if (s2) delete s2.autoTagNote;
+        return prefix + (autoTag ? autoTag + "\n\n" : "") + (unread ? unread + body : body);
       } catch (e) {
         if (e instanceof NotJoined) return "error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.";
         if (e instanceof NotLoggedIn) return `error: ${e.message}`;

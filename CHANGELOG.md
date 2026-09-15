@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.6 — 2026-09-15
+
+- "Join the team room" on a repo nobody has opened now asks before opening; `room_create` needs `confirm=true` for a new repo.
+- Automatic tags use the host the plugin sets (`ROOM_HOST`), so a Codex session next to a Claude one is `+codex`; the tag is announced in the first reply.
+- The offline banner in room_state is computed from the primary session and only after a real disconnect.
+- The channels note prints once at join, neutrally; the merged pane tints every changed line by author; tooltips wrap and stay inside the viewport.
+
 ## 0.6.5 — 2026-09-15
 
 - `claude-room` launcher: starts Claude Code with `--dangerously-load-development-channels plugin:room@room`, the one flag Room's wake-ups need during the channels research preview. The flag, what it does, and why, are explained in the launcher, the README, the onboarding page and the join skill.
