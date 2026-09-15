@@ -1,5 +1,6 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,6 +9,12 @@ import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, RoomdError, clampShare, parseShare, type Roomd, type RoomdOptions } from '../src/index.js'
 import { normalizeGitOrigin } from '../src/git.js'
+
+vi.setConfig({ testTimeout: 30_000 })
+// Use real chokidar polling consistently: native events can be lost in sandboxes.
+// Each mutation below waits for its effect before a subsequent mutation.
+beforeAll(() => { vi.stubEnv('CHOKIDAR_USEPOLLING', '1') })
+afterAll(() => { vi.unstubAllEnvs() })
 
 function sh(dir: string, args: string[]): string {
   return execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
@@ -74,11 +81,11 @@ class MemoryHub {
   }
 }
 
-async function waitFor(pred: () => boolean, ms = 4000, step = 25): Promise<void> {
+async function waitFor(pred: () => boolean, ms = 15_000, step = 25): Promise<void> {
   const until = Date.now() + ms
   while (Date.now() < until) {
     if (pred()) return
-    await new Promise(resolve => setTimeout(resolve, step))
+    await delay(step)
   }
   if (!pred()) throw new Error(`condition not met within ${ms}ms`)
 }
@@ -110,7 +117,7 @@ describe('roomd v2 push-only overlays', () => {
     return daemon
   }
 
-  afterAll(async () => { await Promise.all(daemons.map(daemon => daemon.stop())) })
+  afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
 
   it('a committed symlink is not reported as changed, and a retargeted one is', async () => {
     const dir = await makeRepo({ 'AGENTS.md': '# rules\n', 'app.py': 'x = 1\n' })
@@ -119,29 +126,35 @@ describe('roomd v2 push-only overlays', () => {
     execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'link'], { stdio: 'pipe' })
     const daemon = await start({ room: room(), dir, name: 'Ann' })
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
-    await waitFor(() => daemon.roomDoc.changedPaths('Ann').includes('app.py'))
-    await new Promise(resolve => setTimeout(resolve, 150))
+    await waitFor(() => daemon.roomDoc.text('app.py', 'Ann') === 'x = 2\n')
     expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
     await fsp.unlink(path.join(dir, 'CLAUDE.md'))
+    // Let polling observe the unlink before recreating the same path.
+    await waitFor(() => daemon.roomDoc.deletedFor('Ann').has('CLAUDE.md'))
     await fsp.symlink('app.py', path.join(dir, 'CLAUDE.md'))
-    await waitFor(() => daemon.roomDoc.changedPaths('Ann').includes('CLAUDE.md'))
+    await waitFor(() => daemon.roomDoc.overlayText('Ann', 'CLAUDE.md')?.toString() === 'app.py'
+      && !daemon.roomDoc.deletedFor('Ann').has('CLAUDE.md'))
     expect(daemon.roomDoc.overlayText('Ann', 'CLAUDE.md')?.toString()).toBe('app.py')
   })
 
   it('skips files matched by .roomignore and re-evaluates when it changes', async () => {
     const dir = await makeRepo({ 'app.py': 'x = 1\n', 'fixtures/big.json': '{}\n', '.roomignore': 'fixtures/\n' })
-    const daemon = await start({ room: room(), dir, name: 'Ann' })
+    let fixtureScans = 0
+    const daemon = await start({ room: room(), dir, name: 'Ann', onScanned: p => { if (p === 'fixtures/big.json') fixtureScans++ } })
     await fsp.writeFile(path.join(dir, 'fixtures/big.json'), '{"changed":true}\n')
+    await waitFor(() => fixtureScans > 0 && daemon.skipped().ignore.includes('fixtures/big.json'))
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
-    await waitFor(() => daemon.roomDoc.changedPaths('Ann').includes('app.py'))
-    await waitFor(() => daemon.skipped().ignore.includes('fixtures/big.json')) // the ignored file was seen and skipped, not merely not-yet-scanned
+    await waitFor(() => daemon.roomDoc.text('app.py', 'Ann') === 'x = 2\n')
     expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
     expect(daemon.skipped().ignore).toEqual(['fixtures/big.json'])
     // Lifting the rule publishes the file; adding one back clears its overlay.
+    const ignoredScans = fixtureScans
     await fsp.writeFile(path.join(dir, '.roomignore'), '')
-    await waitFor(() => daemon.roomDoc.changedPaths('Ann').includes('fixtures/big.json'))
+    await waitFor(() => fixtureScans > ignoredScans && daemon.roomDoc.text('fixtures/big.json', 'Ann') === '{"changed":true}\n')
+    await daemon.settle()
     await fsp.writeFile(path.join(dir, '.roomignore'), '*.json\n')
-    await waitFor(() => !daemon.roomDoc.changedPaths('Ann').includes('fixtures/big.json'))
+    await waitFor(() => daemon.roomDoc.changedPaths('Ann').join(',') === 'app.py'
+      && daemon.skipped().ignore.includes('fixtures/big.json'))
     expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
   })
 
@@ -157,7 +170,9 @@ describe('roomd v2 push-only overlays', () => {
     // The level drops while the first publish is parked after reading the base text.
     await daemon.setShare('intent')
     gate!()
-    await new Promise(resolve => setTimeout(resolve, 200))
+    await daemon.settle()
+    await waitFor(() => daemon.roomDoc.changedPaths('Race').length === 0
+      && daemon.skipped().share.includes('a.txt'))
     expect(daemon.roomDoc.changedPaths('Race')).toEqual([])
     expect(daemon.skipped().share).toContain('a.txt')
   })
@@ -166,18 +181,20 @@ describe('roomd v2 push-only overlays', () => {
     const dir = await makeRepo({ 'a.txt': 'a\n', 'b.txt': 'b\n', 'c.txt': 'c\n' })
     const daemon = await start({ room: room(), dir, name: 'Bud', totalBudget: 250 })
     await fsp.writeFile(path.join(dir, 'a.txt'), 'A'.repeat(100))
-    await waitFor(() => daemon.roomDoc.changedPaths('Bud').includes('a.txt'))
+    await waitFor(() => daemon.roomDoc.text('a.txt', 'Bud') === 'A'.repeat(100))
     await fsp.writeFile(path.join(dir, 'b.txt'), 'B'.repeat(100))
-    await waitFor(() => daemon.roomDoc.changedPaths('Bud').includes('b.txt'))
+    await waitFor(() => daemon.roomDoc.text('b.txt', 'Bud') === 'B'.repeat(100))
     await fsp.writeFile(path.join(dir, 'c.txt'), 'C'.repeat(100))
-    await new Promise(resolve => setTimeout(resolve, 200))
+    await waitFor(() => daemon.skipped().budget.includes('c.txt')
+      && daemon.roomDoc.changedPaths('Bud').join(',') === 'a.txt,b.txt')
     expect(daemon.roomDoc.changedPaths('Bud').sort()).toEqual(['a.txt', 'b.txt'])
     expect(daemon.skipped().budget).toEqual(['c.txt'])
     // Freeing room lets the skipped file in on its next change.
     await fsp.writeFile(path.join(dir, 'a.txt'), 'a\n')
     await waitFor(() => !daemon.roomDoc.changedPaths('Bud').includes('a.txt'))
     await fsp.writeFile(path.join(dir, 'c.txt'), 'C'.repeat(100) + '!')
-    await waitFor(() => daemon.roomDoc.changedPaths('Bud').includes('c.txt'))
+    await waitFor(() => daemon.roomDoc.text('c.txt', 'Bud') === 'C'.repeat(100) + '!'
+      && daemon.skipped().budget.length === 0)
     expect(daemon.skipped().budget).toEqual([])
   })
 
@@ -232,12 +249,13 @@ describe('roomd v2 push-only overlays', () => {
 
   it('includes untracked non-ignored files and records their deletion', async () => {
     const dir = await makeRepo({ '.gitignore': 'ignored.txt\n' })
-    const daemon = await start({ room: room(), dir, name: 'Alice' })
+    let ignoredScanned = false
+    const daemon = await start({ room: room(), dir, name: 'Alice', onScanned: p => { if (p === 'ignored.txt') ignoredScanned = true } })
 
     await fsp.writeFile(path.join(dir, 'new.py'), 'new\n')
     await waitFor(() => daemon.roomDoc.text('new.py', 'Alice') === 'new\n')
     await fsp.writeFile(path.join(dir, 'ignored.txt'), 'secret\n')
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await waitFor(() => ignoredScanned && daemon.roomDoc.text('ignored.txt', 'Alice') === undefined)
     expect(daemon.roomDoc.text('ignored.txt', 'Alice')).toBeUndefined()
 
     await fsp.unlink(path.join(dir, 'new.py'))
@@ -309,15 +327,15 @@ describe('roomd v2 push-only overlays', () => {
     const roomUrl = room()
     await start({ room: roomUrl, dir: source, name: 'Alice' })
     const bob = await start({ room: roomUrl, dir: behind, name: 'Bob', basePollMs: 30 })
-    await waitFor(() => (bob.provider.awareness.getLocalState() as { status: string }).status === 'behind base by 1 commit: git pull', 15_000)
+    await waitFor(() => (bob.provider.awareness.getLocalState() as { status: string }).status === 'behind base by 1 commit: git pull')
     expect(bob.provider.awareness.getLocalState()).toMatchObject({ status: 'behind base by 1 commit: git pull' })
     const expectedBase = sh(source, ['rev-parse', 'HEAD'])
     sh(behind, ['pull', '-q', '--ff-only'])
     // Git polling and presence publication finish asynchronously under suite load.
     await waitFor(() => bob.base === expectedBase && bob.roomDoc.baseOf('Bob') === expectedBase
-      && (bob.provider.awareness.getLocalState() as { status: string }).status === 'synced', 15_000)
+      && (bob.provider.awareness.getLocalState() as { status: string }).status === 'synced')
     expect(bob.base).toBe(expectedBase)
-  }, 45_000)
+  })
 
   it('a diverged clone is refused with a rebase hint', async () => {
     const source = await makeRepo({ 'app.py': 'base\n' })
@@ -379,7 +397,7 @@ describe('sharing levels', () => {
     return daemon
   }
   const presence = (d: Roomd) => d.provider.awareness.getLocalState() as { share?: string; status?: string }
-  afterAll(async () => { await Promise.all(daemons.map(daemon => daemon.stop())) })
+  afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
 
   it('parseShare and clampShare', () => {
     expect(parseShare('Declared ')).toBe('declared')
@@ -426,12 +444,14 @@ describe('sharing levels', () => {
     expect(daemon.roomDoc.changedPaths('Decl')).toEqual([])
     expect(daemon.skipped().share).toEqual(['docs/b.md', 'src/a.py'])
     daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'src', summary: 's', paths: ['src/'] })
-    await waitFor(() => daemon.roomDoc.changedPaths('Decl').includes('src/a.py'))
+    await waitFor(() => daemon.roomDoc.changedPaths('Decl').join(',') === 'src/a.py'
+      && daemon.skipped().share.join(',') === 'docs/b.md')
     expect(daemon.roomDoc.changedPaths('Decl')).toEqual(['src/a.py'])
     expect(daemon.skipped().share).toEqual(['docs/b.md'])
     // moving the scope withdraws src and publishes docs
     daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'docs', summary: 'd', paths: ['docs'] })
-    await waitFor(() => daemon.roomDoc.changedPaths('Decl').includes('docs/b.md') && !daemon.roomDoc.changedPaths('Decl').includes('src/a.py'))
+    await waitFor(() => daemon.roomDoc.changedPaths('Decl').join(',') === 'docs/b.md'
+      && daemon.skipped().share.join(',') === 'src/a.py')
     expect(daemon.skipped().share).toEqual(['src/a.py'])
     // explicit scopePaths win over the doc
     await daemon.setShare('declared', ['src/'])
@@ -442,8 +462,11 @@ describe('sharing levels', () => {
     const dir = await makeRepo({ 'a.py': 'a\n', 'b.py': 'b\n' })
     const daemon = await start({ room: room(), dir, name: 'Dial' })
     await fsp.writeFile(path.join(dir, 'a.py'), 'A\n')
+    await waitFor(() => daemon.roomDoc.text('a.py', 'Dial') === 'A\n')
     await fsp.writeFile(path.join(dir, 'b.py'), 'B\n')
-    await waitFor(() => daemon.roomDoc.changedPaths('Dial').length === 2)
+    await waitFor(() => daemon.roomDoc.text('b.py', 'Dial') === 'B\n'
+      && daemon.roomDoc.changedPaths('Dial').join(',') === 'a.py,b.py')
+    await daemon.settle()
     await daemon.setShare('intent')
     expect(daemon.share).toBe('intent')
     expect(presence(daemon).share).toBe('intent')

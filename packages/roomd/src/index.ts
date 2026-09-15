@@ -57,6 +57,8 @@ export interface RoomdOptions {
   log?: (line: string) => void
   /** Test hook: awaited inside the publish path after the base text is read, before the room is written. */
   beforePublishWrite?: (relpath: string) => Promise<void>
+  /** Test hook: called after a watched disk change has finished processing, including skipped files. */
+  onScanned?: (relpath: string) => void
   /** Max time to wait for the initial sync; default 15s. */
   connectTimeoutMs?: number
   /** Overrides for tests. */
@@ -83,6 +85,8 @@ export interface Skipped { size: string[]; budget: string[]; ignore: string[]; s
 
 export interface Roomd {
   stop(): Promise<void>
+  /** Test barrier for already-observed watcher events: drains debounces and in-flight disk publishes. */
+  settle(): Promise<void>
   touch(): void
   readonly dir: string
   readonly name: string
@@ -167,10 +171,13 @@ class Daemon implements Roomd {
   private explicitScopePaths?: string[]
   private beforePublishWrite?: (relpath: string) => Promise<void>
 
+  private onScanned?: (relpath: string) => void
+
   private tracked = new Set<string>()
   private watcher: FSWatcher | null = null
   private timers = new Set<NodeJS.Timeout>()
   private debounce = new Map<string, NodeJS.Timeout>()
+  private diskWork = new Set<Promise<void>>()
   private stopped = false
   private lastActive = Date.now()
 
@@ -193,6 +200,7 @@ class Daemon implements Roomd {
     this.busTrimMs = options.busTrimMs ?? 60_000
     this.share = options.share ?? 'full'
     this.explicitScopePaths = options.scopePaths
+    this.onScanned = options.onScanned
     this.beforePublishWrite = options.beforePublishWrite
     const { serverUrl, roomName } = splitRoomUrl(options.room)
     this.provider = options.providerFactory
@@ -631,7 +639,8 @@ class Daemon implements Roomd {
       if (event === 'add') countFile(absolute, true)
       else if (event === 'unlink') countFile(absolute, false)
       const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
-      if (this.isIgnoredPath(relpath) || event === 'addDir' || event === 'unlinkDir') return
+      if (this.isIgnoredPath(relpath)) { this.onScanned?.(relpath); return }
+      if (event === 'addDir' || event === 'unlinkDir') return
       if (path.basename(relpath) === '.gitignore') this.refreshTracked().catch(() => {})
       if (relpath === ROOMIGNORE) { this.reloadRoomIgnore(); return }
       this.scheduleDisk(relpath, event === 'add')
@@ -659,12 +668,23 @@ class Daemon implements Roomd {
     }
   }
 
+  /** Does not synthesize events: callers must first observe the change they are waiting for. */
+  async settle(): Promise<void> {
+    while (this.debounce.size || this.diskWork.size) {
+      await Promise.all([...this.diskWork, new Promise<void>(resolve => setTimeout(resolve, this.debounceMs))])
+    }
+  }
+
   private scheduleDisk(relpath: string, isNew: boolean): void {
     const previous = this.debounce.get(relpath)
     if (previous) clearTimeout(previous)
     const timer = setTimeout(() => {
       this.debounce.delete(relpath)
-      this.onDiskChange(relpath, isNew).catch(error => this.log(`warn: ${relpath}: ${errMsg(error)}`))
+      const work = this.onDiskChange(relpath, isNew)
+        .then(() => this.onScanned?.(relpath))
+        .catch(error => this.log(`warn: ${relpath}: ${errMsg(error)}`))
+      this.diskWork.add(work)
+      void work.finally(() => this.diskWork.delete(work))
     }, this.debounceMs)
     this.debounce.set(relpath, timer)
   }
