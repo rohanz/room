@@ -497,8 +497,9 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .side-marker .dot { width: 5px; height: 5px; margin: 0; }
 .merged-code .claim-overlap-line:not(.conflict-line):not(.changed-line) { background: var(--code-bg); }
 .conflict-bar.resolved { background: var(--muted); color: var(--muted); }
-.conflict-tag { position: absolute; padding: 0 2px; border: 0; border-radius: 0; font: 11px/16px var(--sans); color: inherit; background: var(--code-bg); white-space: nowrap; }
-.conflict-tag.resolved { color: var(--muted); border-radius: 8px; }
+.conflict-tag { position: static; padding: 0; border: 0; border-radius: 0; box-shadow: none; font: 11px/17px var(--sans); color: var(--conflict-red); background: transparent; white-space: nowrap; text-align: right; }
+.conflict-tag.claim-overlap { color: var(--claim-amber); }
+.conflict-tag.resolved { color: var(--muted); }
 .conflict-tag:focus-visible { outline-offset: 0; }
 .conflict-card { padding: 12px; border-left: 3px solid var(--danger); background: var(--surface); font-size: 12px; }
 .conflict-card.resolved { border-color: var(--muted); }
@@ -719,10 +720,12 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .merge-chip:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
 .merge-hint { padding: 0 12px 8px; font-size: 12px; }
 
-/* Hover annotations overlay code; the gutter stays reserved for tags. */
-.line-annotation { box-sizing: border-box; position: sticky; right: 0; grid-column: 1 / -1; grid-row: 1; justify-self: end; align-self: start; z-index: 4; max-width: 50cqi; padding: 0 8px; font: 12px/17px var(--sans); color: var(--muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; pointer-events: none; background: none; }
+/* Annotation and tags share one sticky row band, in reading order. */
+.line-band { position: sticky; right: 0; grid-column: 1 / -1; grid-row: 1; justify-self: end; align-self: start; display: flex; align-items: flex-start; gap: 12px; z-index: 4; background: none; }
+.line-tags { box-sizing: border-box; width: 96px; flex: 0 0 96px; padding-right: 8px; display: flex; flex-direction: column; align-items: flex-end; }
+.line-annotation { box-sizing: border-box; min-width: 0; max-width: 50cqi; padding: 0; font: 12px/17px var(--sans); color: var(--muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; pointer-events: none; background: none; }
 .conflict-code-grid .code-line.line-hovered { --hover-row-bg: color-mix(in srgb, var(--code-ink) 7%, var(--code-bg)); background: var(--hover-row-bg); }
-.inline-detail { box-sizing: border-box; position: sticky; left: 89px; width: calc(100cqi - 185px); margin-left: 89px; margin-right: 96px; min-width: 0; padding: 8px 42px 8px 12px; border-block: 1px solid var(--line); font: 12px/1.5 var(--sans); color: var(--muted); background: var(--soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.inline-detail { outline: none; box-shadow: none; box-sizing: border-box; position: sticky; left: 89px; width: calc(100cqi - 185px); margin-left: 89px; margin-right: 96px; min-width: 0; padding: 8px 42px 8px 12px; border-block: 1px solid var(--line); font: 12px/1.5 var(--sans); color: var(--muted); background: var(--soft); white-space: pre-wrap; overflow-wrap: anywhere; }
 .inline-detail-close { position: absolute; top: 8px; right: 12px; box-sizing: border-box; width: 22px; height: 22px; border: 1px solid var(--line); border-radius: 50%; display: grid; place-items: center; color: var(--muted); font: 16px/1 var(--sans); padding: 0; }
 .inline-detail-close:hover { border-color: var(--accent); }
 .merged-code .inline-detail { left: 69px; width: calc(100cqi - 165px); margin-left: 69px; }
@@ -732,7 +735,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .inline-detail-label { font: 10px/1.5 var(--mono); text-transform: uppercase; color: var(--muted); }
 .inline-detail section + section { margin-top: 6px; }
 
-.conflict-tag.line-hovered { opacity: 0; }
+.inline-detail:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
 
 .conflict-edge { pointer-events: none; }
 .conflict-tag { pointer-events: auto; }

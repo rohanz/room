@@ -2,11 +2,13 @@ import { lineAnnotation, lineDetail, type LineDetailInput } from '@room/shared'
 
 /** One controller per rendered pane; no document listeners or floating overlays. */
 export function inlineDetails(onLayout: (open: number | null) => void) {
-  let opened: { index: number; row: HTMLElement; region: HTMLElement } | undefined
+  let opened: { index: number; row: HTMLElement; region: HTMLElement; clearHover: () => void } | undefined
   const close = (restoreFocus = false) => {
     if (!opened) return
-    const { row, region } = opened
+    const { row, region, clearHover } = opened
     region.remove()
+    row.classList.remove('line-expanded')
+    if (!row.matches(':hover')) clearHover()
     row.setAttribute('aria-expanded', 'false')
     opened = undefined
     onLayout(null)
@@ -18,15 +20,14 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
     row.setAttribute('aria-label', 'Line ' + number + '. Show details')
     const targets = new Set<HTMLElement>()
     const hovered = new Set<HTMLElement>()
-    const focused = new Set<HTMLElement>()
     let resize: ResizeObserver | undefined
     const update = () => {
-      const active = hovered.size > 0 || focused.size > 0
+      const active = hovered.size > 0
       for (const target of targets) target.classList.toggle('line-hovered', active)
       const code = row.querySelector('code')!
       if (active) {
         annotation.textContent = lineAnnotation(input)
-        row.append(annotation)
+        row.querySelector('.line-band')!.prepend(annotation)
         // Mask only code under the annotation: short text remains untouched and
         // the row itself supplies the one continuous background, including the fade.
         const mask = () => {
@@ -87,8 +88,9 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
       region.onkeydown = event => { if (event.key === 'Escape') { event.preventDefault(); close(true) } }
       row.insertAdjacentElement('afterend', region)
       row.setAttribute('aria-expanded', 'true')
+      row.classList.add('line-expanded')
       row.focus()
-      opened = { index, row, region }
+      opened = { index, row, region, clearHover: () => { hovered.clear(); update() } }
       onLayout(index)
       region.style.gridRow = String(index + 2)
       region.style.gridColumn = '1'
@@ -96,11 +98,10 @@ export function inlineDetails(onLayout: (open: number | null) => void) {
     const bind = (target: HTMLElement) => {
       targets.add(target)
       target.addEventListener('pointerenter', () => { hovered.add(target); update() })
-      target.addEventListener('pointerleave', () => { hovered.delete(target); update() })
-      target.onfocus = () => { focused.add(target); update() }
-      target.onblur = () => { focused.delete(target); update() }
-      target.onclick = toggle
+      target.addEventListener('pointerleave', () => { if (target === row) hovered.clear(); else hovered.delete(target); update() })
+      target.onclick = event => { event.stopPropagation(); toggle() }
       target.onkeydown = event => {
+        if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') event.stopPropagation()
         if (event.key === 'Escape') { event.preventDefault(); close(true) }
         else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle() }
       }

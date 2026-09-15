@@ -119,7 +119,7 @@ it('limits transitions to six containers, excludes code and canvas, and confines
   expect(css).toContain('transition: background-color 160ms ease, color 160ms ease')
   expect(css).toContain('.code-line, .code-line *, .cm-line, .cm-line *, .network-canvas, .network-canvas * { transition: none !important; }')
   const layers = [...css.matchAll(/([^{}]+)\{[^{}]*z-index:[^{}]*\}/g)].map(match => match[1].trim())
-  expect(layers.filter(selector => !selector.includes('.line-annotation') && !selector.includes('.line-gutter') && !selector.includes('.conflict-edge') && !selector.includes('.code-line::after'))).toHaveLength(3)
+  expect(layers.filter(selector => !selector.includes('.line-band') && !selector.includes('.line-gutter') && !selector.includes('.conflict-edge') && !selector.includes('.code-line::after'))).toHaveLength(3)
   expect(css).toContain('prefers-reduced-motion: reduce')
 })
 

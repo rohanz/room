@@ -35,10 +35,10 @@ it('shows a sticky annotation inside only the hovered row', () => {
   rows()[0].dispatchEvent(new dom.window.Event('pointerenter'))
   expect(host.querySelector('.line-annotation')?.textContent).toBe('rohanz · claimed: apply tier discount')
   expect(rows()[0].classList.contains('line-hovered')).toBe(true)
-  expect(host.querySelector('.line-annotation')!.parentElement).toBe(rows()[0])
+  expect(host.querySelector('.line-annotation')!.parentElement).toBe(rows()[0].querySelector('.line-band'))
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
   const rule = css.match(/\.line-annotation \{([^}]+)\}/)![1]
-  expect(rule).toContain('position: sticky')
+  expect(css).toContain('.line-band { position: sticky')
   expect(rule).toContain('max-width: 50cqi')
   expect(rule).toContain('background: none')
   expect(css).toContain('.code-line { position: relative; }')
@@ -110,12 +110,12 @@ it('clears an open detail when the pane rerenders', () => {
   expect(rows()[1].nextElementSibling).toBe(details()[0])
 })
 
-it('keeps a focused annotation through pointer leave and removes it on blur', () => {
+it('never derives hover from focus and clears it on pointer leave', () => {
   render(); const row = rows()[0]
   row.focus()
   row.dispatchEvent(new dom.window.Event('pointerenter'))
   row.dispatchEvent(new dom.window.Event('pointerleave'))
-  expect(row.querySelector('.line-annotation')).not.toBeNull()
+  expect(row.classList.contains('line-hovered')).toBe(false)
   row.blur()
   expect(row.querySelector('.line-annotation')).toBeNull()
 })
@@ -227,4 +227,61 @@ it('refreshes the hover fade when the pane scrolls', () => {
   code.onscroll = mask
   host.querySelector('.code-scroll')!.dispatchEvent(new dom.window.Event('scroll'))
   expect(mask).toHaveBeenCalledOnce()
+})
+
+
+it('clears hover and expanded state after click-open, click-close, and pointerleave', () => {
+  render(); const row = rows()[0]
+  row.dispatchEvent(new dom.window.Event('pointerenter'))
+  row.click(); row.click()
+  row.dispatchEvent(new dom.window.Event('pointerleave'))
+  expect(row.classList.contains('line-hovered')).toBe(false)
+  expect(row.classList.contains('line-expanded')).toBe(false)
+})
+it('click and focus only set expanded state; pointerleave preserves expansion', () => {
+  render(); const row = rows()[0]
+  row.click()
+  expect(row.classList.contains('line-expanded')).toBe(true)
+  expect(row.classList.contains('line-hovered')).toBe(false)
+  row.dispatchEvent(new dom.window.Event('pointerenter'))
+  row.dispatchEvent(new dom.window.Event('pointerleave'))
+  expect(row.classList.contains('line-expanded')).toBe(true)
+  expect(row.classList.contains('line-hovered')).toBe(false)
+})
+it('preserves real pointer hover on collapse until pointerleave', () => {
+  render(); const row = rows()[0]
+  row.dispatchEvent(new dom.window.Event('pointerenter'))
+  vi.spyOn(row, 'matches').mockImplementation(selector => selector === ':hover')
+  row.click(); row.click()
+  expect(row.classList.contains('line-expanded')).toBe(false)
+  expect(row.classList.contains('line-hovered')).toBe(true)
+  row.dispatchEvent(new dom.window.Event('pointerleave'))
+  expect(row.classList.contains('line-hovered')).toBe(false)
+})
+it('places transparent text tags after the annotation in a non-overlapping row band', () => {
+  renderCodeLines(host, [{ ...lines[0], conflict: true, conflictPair: ['rohanz', 'codex'] }], ['rohanz', 'codex'])
+  const row = rows()[0], tag = row.querySelector<HTMLElement>('.conflict-tag')!
+  row.dispatchEvent(new dom.window.Event('pointerenter'))
+  const band = row.querySelector('.line-band')!
+  expect(band.firstElementChild?.className).toBe('line-annotation')
+  expect(band.lastElementChild?.contains(tag)).toBe(true)
+  const style = document.createElement('style')
+  style.textContent = '.conflict-tag {' + rule('.conflict-tag') + '}'
+  document.head.append(style)
+  const computed = dom.window.getComputedStyle(tag)
+  expect(computed.backgroundColor).toBe('rgba(0, 0, 0, 0)')
+  expect(computed.boxShadow).toBe('none')
+  expect(['', '0px']).toContain(computed.borderTopWidth)
+  expect(computed.position).toBe('static')
+  // Normal flex flow allocates separate boxes; neither item is positioned over the other.
+  expect(rule('.line-band')).toContain('display: flex')
+  expect(rule('.line-band')).toContain('gap: 12px')
+  expect(rule('.line-tags')).toContain('flex: 0 0 96px')
+  expect(css).not.toContain('.conflict-tag.line-hovered')
+})
+it('only shows an inset keyboard focus ring on the detail', () => {
+  expect(rule('.inline-detail')).toContain('outline: none')
+  expect(rule('.inline-detail')).toContain('box-shadow: none')
+  expect(rule('.inline-detail:focus-visible')).toContain('outline: none')
+  expect(rule('.inline-detail:focus-visible')).toContain('box-shadow: inset 0 0 0 2px var(--accent)')
 })

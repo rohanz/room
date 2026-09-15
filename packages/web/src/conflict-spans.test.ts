@@ -76,7 +76,7 @@ it('renders one right-edge tag and tints each conflict line by its participant',
   expect(host.find('conflict-span-gutter')).toHaveLength(0)
   expect(host.find('conflict-tag')[0].ariaLabel).toContain('money ↔ tiers')
   expect(host.find('conflict-tag')[0].ariaLabel).toContain('Unresolved')
-  expect(host.find('conflict-tag')[0].onfocus).toBeTypeOf('function')
+  expect(host.find('conflict-tag')[0].onfocus).toBeUndefined()
   expect(host.find('conflict-tag')[0].events.get('pointerenter')).toBeTypeOf('function')
   expect(host.find('conflict-line')).toHaveLength(6)
 })
@@ -117,7 +117,7 @@ it('uses theme-aware participant tints, slim separated edge lines, and accessibl
   expect(css).toContain('var(--line-owner) var(--conflict-tint)')
   expect(css).toContain('column-gap: 2px')
   expect(css).toContain('width: 2px')
-  expect(css).toContain('font: 11px/16px')
+  expect(css).toContain('font: 11px/17px')
   expect(css).not.toContain('.conflict-gutter')
   expect(css).toContain('#overlay-root { position: fixed;')
   expect(css).not.toContain('.conflict-tooltip')
@@ -235,7 +235,7 @@ it('tints all base-relative edits and keeps stronger conflict annotations', () =
 })
 
 
-it.each([false, true])('stacks open tags above resolved tags at distinct offsets (text conflict: %s)', textConflict => {
+it.each([false, true])('stacks open tags above resolved tags in row flow (text conflict: %s)', textConflict => {
   vi.stubGlobal('document', { createElement: () => new Element() })
   const host = new Element()
   const span = deriveConflictSpans([conflict], claims)[0]
@@ -246,12 +246,12 @@ it.each([false, true])('stacks open tags above resolved tags at distinct offsets
   ])
   const tags = host.find('conflict-tag')
   expect(tags.map(t => t.textContent)).toEqual([textConflict ? 'conflict' : 'both claimed', 'resolved'])
-  expect(tags.map(t => t.style.top)).toEqual(['0px', '20px'])
-  expect(host.find('code-line')[1].style.minHeight).toBe('40px')
+  expect(host.find('code-line')[1].find('line-tags')[0].children).toEqual(tags)
+  expect(tags.map(t => t.style.top)).toEqual(['', ''])
   expect(host.find('conflict-bar').map(b => b.style.gridColumn)).toEqual(['1', '2'])
 })
 
-it('collapses multiple resolved same-line regions into one pill while retaining edge bars', () => {
+it('collapses multiple resolved same-line regions into one text tag while retaining edge bars', () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
   const host = new Element()
   const span = deriveConflictSpans([conflict], claims)[0]
@@ -264,16 +264,12 @@ it('collapses multiple resolved same-line regions into one pill while retaining 
   ])
   const tags = host.find('conflict-tag')
   expect(tags.map(t => t.textContent)).toEqual(['both claimed', 'both claimed', '3 resolved', 'both claimed'])
-  expect(tags.slice(0, 3).map(t => t.style.top)).toEqual(['0px', '20px', '40px'])
+  expect(host.find('code-line')[1].find('line-tags')[0].children).toEqual(tags.slice(0, 3))
   expect(tags[2].className).toContain('resolved')
   expect(tags[2].ariaLabel.match(/money released/g)).toHaveLength(3)
   expect(host.find('conflict-bar')).toHaveLength(6)
-  const rowHeights = host.find('code-line').map(r => parseFloat(r.style.minHeight) || 17)
-  const tops = host.find('conflict-bar').flatMap(bar => bar.find('conflict-tag').map(tag =>
-    rowHeights.slice(0, Number(bar.style.gridRow.split(' / ')[0]) - 1).reduce((a, b) => a + b, 0) + parseFloat(tag.style.top)))
-  expect(new Set(tops).size).toBe(tags.length)
-  const sorted = [...tops].sort((a, b) => a - b)
-  expect(sorted.slice(1).every((top, i) => top - sorted[i] >= 20)).toBe(true)
+  expect(host.find('conflict-bar').flatMap(bar => bar.find('conflict-tag'))).toHaveLength(0)
+  expect(host.find('code-line')[2].find('line-tags')[0].children).toEqual([tags[3]])
 })
 
 it.each([
@@ -315,7 +311,7 @@ it('reserves a sticky tag column while full-width rows share the pane scroller',
   const gutter = host.find('conflict-edge')[0]
   expect(grid.children).toEqual([text, gutter, ...host.find('line-annotation')])
   expect(text.find('code-line')).toHaveLength(1)
-  expect(text.find('conflict-tag')).toHaveLength(0)
+  expect(text.find('conflict-tag')).toHaveLength(1)
   expect(grid.style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
   expect(text.style.gridRow).toBe(gutter.style.gridRow)
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
