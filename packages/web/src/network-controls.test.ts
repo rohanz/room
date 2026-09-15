@@ -24,7 +24,7 @@ it('renders compact zoom controls, help, three legend labels and details empty s
   const panel = networkPanel(conn) as unknown as Element
   expect(panel.find('network-zoom')[0].textContent).toBe('−Fit+')
   expect(panel.find('network-percentage')[0].textContent).toBe('100%')
-  expect(panel.find('network-help')[0].textContent).toContain('Impact is inferred')
+  expect((panel.find('network-help')[0].children[0] as Element).attributes.get('data-tooltip')).toContain('Impact is inferred')
   expect(panel.find('network-legend')[0].children).toHaveLength(3)
   expect(panel.find('network-details')[0].textContent).toContain('Select a file')
   expect(panel.find('network-footnote')).toHaveLength(0)

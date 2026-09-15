@@ -95,7 +95,7 @@ it('sets Light before paint when storage cannot be read', () => {
   expect(env.attributes.get('data-theme')).toBe('light')
 })
 
-it('animates a changed theme for 220ms but not initial matching theme or reduced motion', () => {
+it('animates a changed theme for 160ms but not initial matching theme or reduced motion', () => {
   vi.useFakeTimers()
   const env = environment()
   env.attributes.set('data-theme', 'light')
@@ -103,7 +103,7 @@ it('animates a changed theme for 220ms but not initial matching theme or reduced
   expect(env.classes.has('theme-transition')).toBe(false)
   applyTheme('dark')
   expect(env.classes.has('theme-transition')).toBe(true)
-  vi.advanceTimersByTime(220)
+  vi.advanceTimersByTime(160)
   expect(env.classes.has('theme-transition')).toBe(false)
   vi.stubGlobal('matchMedia', () => ({ matches: true }))
   applyTheme('light')

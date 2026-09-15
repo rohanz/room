@@ -1,3 +1,4 @@
+import { bindTooltip } from './tooltip.ts'
 import { deriveConflictSpans } from './conflicts.ts'
 import {
   RoomDoc,
@@ -30,9 +31,10 @@ export const h = <K extends keyof HTMLElementTagNameMap>(
   ...children: (Node | string | null | undefined)[]
 ) => {
   const element = document.createElement(tag)
-  const { class: className, ...rest } = props
+  const { class: className, title, ...rest } = props
   if (className) element.className = className
   Object.assign(element, rest)
+  if (title) bindTooltip(element, title)
   for (const child of children) if (child != null) element.append(child)
   return element
 }
@@ -305,18 +307,12 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
     let lane = laneEnds.findIndex(end => end < s.start)
     if (lane === -1) lane = laneEnds.length
     laneEnds[lane] = s.end
-    const tooltip = h('span', { class: 'conflict-tooltip', role: 'tooltip' }, s.detail)
-    const label = h('button', { class: 'conflict-tag', ariaLabel: s.detail }, s.resolved ? 'resolved' : s.claimOnly ? 'both claimed' : 'conflict', tooltip)
+    const label = h('button', { class: 'conflict-tag', ariaLabel: s.detail }, s.resolved ? 'resolved' : s.claimOnly ? 'both claimed' : 'conflict')
+    bindTooltip(label, s.detail)
     const bar = h('div', { class: 'conflict-bar' + (s.claimOnly ? ' claim-overlap' : '') + (s.resolved ? ' resolved' : '') }, label)
     // Tags stack at the start of overlapping regions; edge lanes stay 2px apart.
     label.style.right = lane * 4 + 4 + 'px'
     label.style.top = lane * 16 + 'px'
-    const positionTooltip = () => {
-      const rect = label.getBoundingClientRect()
-      tooltip.style.left = Math.max(8, Math.min(rect.right + 8, window.innerWidth - 300)) + 'px'
-      tooltip.style.top = Math.max(8, Math.min(rect.top, window.innerHeight - 160)) + 'px'
-    }
-    label.onmouseenter = positionTooltip; label.onfocus = positionTooltip
     bar.style.gridRow = s.start + 1 + ' / ' + (s.end + 2)
     bar.style.gridColumn = String(lane + 1)
     for (let i = s.start; i <= s.end; i++) {
@@ -556,13 +552,14 @@ function overlays(room: RoomDoc): OverlayVersion[] {
 
 export function activityGraphPanel(conn: Conn, focus: FocusState): HTMLElement {
   const content = h('div', { class: 'graph-content' })
-  const toggle = h('button', { class: 'graph-toggle', title: 'Collapse activity graph' }, 'Activity graph', h('span', { class: 'chevron' }, '⌄'))
+  const toggle = h('button', { class: 'graph-toggle', ariaLabel: 'Collapse activity graph' }, 'Activity graph', h('span', { class: 'chevron' }, '⌄'))
   const element = h('section', { class: 'activity-graph' }, toggle, content)
   let collapsed = false
+  bindTooltip(toggle, () => `${collapsed ? 'Expand' : 'Collapse'} activity graph`)
   toggle.onclick = () => {
     collapsed = !collapsed
     element.classList.toggle('collapsed', collapsed)
-    toggle.title = `${collapsed ? 'Expand' : 'Collapse'} activity graph`
+    toggle.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} activity graph`)
     toggle.querySelector('.chevron')!.textContent = collapsed ? '⌃' : '⌄'
   }
   const render = () => {

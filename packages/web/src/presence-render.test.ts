@@ -5,6 +5,10 @@ import { createFocusState, participantsPanel } from './panels.ts'
 
 // Minimal DOM surface used by h()/the rail; no browser or socket required.
 class Element {
+  attributes = new Map<string, string>()
+  events = new Map<string, unknown>()
+  setAttribute(name: string, value: string) { this.attributes.set(name, value) }
+  addEventListener(name: string, fn: unknown) { this.events.set(name, fn) }
   className = ''; title = ''; style = {}; children: (Element | string)[] = []
   append(...children: (Element | string)[]) { this.children.push(...children) }
   replaceChildren(...children: (Element | string)[]) { this.children = children }

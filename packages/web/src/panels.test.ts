@@ -85,6 +85,10 @@ describe('roomNameParts', () => {
 
 // Minimal DOM surface for the header, following the other render tests.
 class HeaderElement {
+  attributes = new Map<string, string>()
+  events = new Map<string, unknown>()
+  setAttribute(name: string, value: string) { this.attributes.set(name, value) }
+  addEventListener(name: string, fn: unknown) { this.events.set(name, fn) }
   className = ''; title = ''; children: (HeaderElement | string)[] = []
   classList = { toggle: vi.fn() }
   append(...children: (HeaderElement | string)[]) { this.children.push(...children) }
@@ -115,7 +119,7 @@ describe('room header', () => {
       expect(element.textContent).not.toContain('github.com')
       expect(element.textContent).not.toContain('gitlab.com')
       expect(element.find('room-name')?.textContent).toBe(label)
-      expect(element.find('room-name')?.title).toBe(displayRoomName)
+      expect(element.find('room-name')?.attributes.get('data-tooltip')).toBe(displayRoomName)
       expect(element.children.filter((c): c is HeaderElement => typeof c !== 'string' && c.className === 'room-chip mono').map(c => c.textContent)).toEqual(chips)
       expect(element.textContent).toContain('base abcdef1')
       expect(element.textContent).toContain('0 participants')

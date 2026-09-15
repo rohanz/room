@@ -1,3 +1,4 @@
+import { bindTooltip, showTooltip, hideTooltip } from './tooltip.ts'
 import type { GraphSnapshot } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
 import { h, type FocusState } from './panels.ts'
@@ -30,17 +31,18 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   const stats = h('div', { class: 'network-stats' })
   const canvas = h('div', { class: 'network-canvas' })
   const details = h('div', { class: 'network-details' })
-  const tooltip = h('div', { class: 'network-tooltip', hidden: true })
-  tooltip.id = 'network-tooltip'; tooltip.setAttribute('role', 'tooltip')
-  const help = h('span', { class: 'network-help' }, h('button', { ariaLabel: 'About contract risks' }, '?'),
-    h('span', { class: 'network-help-text', role: 'tooltip' }, 'No declared contract plans of yours; ordinary edits do not imply downstream breakage. Impact is inferred from declared plans and symbol references; the merged-tree test run is the proof.'))
+  const tooltip = h('div', { class: 'network-tooltip' })
+  const help = h('span', { class: 'network-help' }, h('button', {
+    ariaLabel: 'About contract risks',
+    title: 'No declared contract plans of yours; ordinary edits do not imply downstream breakage. Impact is inferred from declared plans and symbol references; the merged-tree test run is the proof.',
+  }, '?'))
   const emptyDetails = () => details.replaceChildren(h('div', { class: 'network-details-empty muted' }, 'Select a file to inspect its dependencies, current owners, and declared plans.'))
   const root = h('section', { class: 'network-panel' },
     h('div', { class: 'network-heading' }, h('div', {}, h('h2', {}, 'My work & contract risks', help), h('p', { class: 'muted' }, 'Upstream risks → my edits and plans → consumers of my planned changes')), h('label', {}, 'Viewing as ', person)),
     h('div', { class: 'network-controls' }, search, h('label', {}, focus, ' Relevant to my work'), h('div', { class: 'view-switcher network-zoom', role: 'group', ariaLabel: 'Network zoom' }, minus, fit, plus), percentage, expand),
     stats,
     h('div', { class: 'network-legend' }, h('span', { class: 'legend-changed' }, 'Edits'), h('span', { class: 'legend-contract' }, 'Declared plans'), h('span', { class: 'legend-impact' }, 'Consumers')),
-    status, canvas, details, tooltip)
+    status, canvas, details)
   let selectedPerson = new URLSearchParams(location.search).get('participant') ?? new URLSearchParams(location.search).get('name') ?? ''
   let selectedPath = ''
   let drawing: SVGSVGElement | undefined
@@ -48,7 +50,6 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   let fileSet = ''
   let impact: ReturnType<typeof deriveContractImpact>
   let workView: ReturnType<typeof deriveWorkImpact>
-  const hideTooltip = () => { tooltip.hidden = true }
   const risk = (path: string) => workView.work.has(path) ? 'work' : workView.upstream.has(path) ? 'upstream' : workView.downstream.has(path) ? 'downstream' : 'context'
   const contractStyle = (path: string) => impact.contracts.has(path) ? 'contract' : impact.direct.has(path) ? 'direct' : impact.indirect.has(path) ? 'indirect' : 'neutral'
   const exposure = (path: string) => [...(impact.direct.get(path) ?? []), ...(impact.indirect.get(path) ?? [])]
@@ -163,7 +164,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
       const mid = nodeHeight / 2
       const edge = svg('path', { d: `M ${start} ${a.y + mid} C ${start + bend} ${a.y + mid}, ${sameColumn ? end + bend : end - bend} ${b.y + mid}, ${end} ${b.y + mid}`, class: `network-edge${impact.affectedEdges.has(JSON.stringify([e.source, e.target])) ? ' impact' : ' background'}`, 'marker-end': 'url(#network-arrow)' })
       edge.setAttribute('data-source', e.source); edge.setAttribute('data-target', e.target)
-      edge.append(svg('title', {}, `${e.source} → ${e.target}: ${e.symbols.join(', ')}`)); drawing.append(edge)
+      bindTooltip(edge, `${e.source} → ${e.target}: ${e.symbols.join(', ')}`); drawing.append(edge)
     }
     for (const node of nodes) {
       const { x, y } = positions.get(node.path)!
@@ -181,7 +182,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
       group.append(svg('text', { x: '25', y: compact ? '19' : '26', class: 'network-filename' }, filename.length > maxLabel ? `${filename.slice(0, maxLabel - 2)}…` : filename))
       if (editedBy.length) {
         const badge = svg('g', { class: 'edit-badge', transform: `translate(203 ${compact ? 7 : 14})` })
-        badge.append(svg('rect', { width: '34', height: '16', rx: '4' }), svg('text', { x: '17', y: '11', 'text-anchor': 'middle' }, 'EDIT'), svg('title', {}, `File modified by ${editedBy.join(', ')}; contract implementation is not verified`))
+        badge.append(svg('rect', { width: '34', height: '16', rx: '4' }), svg('text', { x: '17', y: '11', 'text-anchor': 'middle' }, 'EDIT'))
         group.append(badge)
       }
       const subtitle = node.deleted ? 'DELETED' : node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'repository root'
@@ -195,11 +196,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
           ...plans.slice(0, 2).map(p => h('div', {}, `${p.owner} · ${p.kind} ${p.symbol}: ${p.detail}`)),
           ...affected.slice(0, 2).map(p => h('div', {}, `Depends on ${p.symbol} · ${p.owner}`)),
           h('div', { class: 'muted' }, `${node.role === 'changed' ? 'You have edits here. ' : ''}Click for full plans and dependency details.`))
-        tooltip.hidden = false
-        const box = group.getBoundingClientRect()
-        tooltip.style.left = `${Math.max(8, Math.min(box.left, window.innerWidth - tooltip.offsetWidth - 8))}px`
-        tooltip.style.top = `${Math.max(8, Math.min(box.bottom + 8, window.innerHeight - tooltip.offsetHeight - 8))}px`
-        group.setAttribute('aria-describedby', tooltip.id)
+        showTooltip(group, tooltip)
       }
       group.onpointerenter = preview; group.onpointerleave = hideTooltip
       group.onfocus = preview; group.onblur = hideTooltip

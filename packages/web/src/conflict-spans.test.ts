@@ -47,6 +47,10 @@ it('folds pairwise merge notes and both addressed overlap notifications', () => 
 })
 
 class Element {
+  attributes = new Map<string, string>()
+  events = new Map<string, unknown>()
+  setAttribute(name: string, value: string) { this.attributes.set(name, value) }
+  addEventListener(name: string, fn: unknown) { this.events.set(name, fn) }
   className = ''; children: (Element | string)[] = []; properties = new Map<string, string>(); style = { background: '', setProperty: (name: string, value: string) => this.properties.set(name, value), gridRow: '', gridColumn: '', gridTemplateColumns: '' }; dataset = {}
   ariaLabel = ''; onfocus?: () => void; onmouseenter?: () => void
   get textContent(): string { return this.children.map(c => typeof c === 'string' ? c : c.textContent).join('') }
@@ -72,8 +76,8 @@ it('renders one right-edge tag and tints each conflict line by its participant',
   expect(host.find('conflict-span-gutter')).toHaveLength(0)
   expect(host.find('conflict-tag')[0].ariaLabel).toContain('money ↔ tiers')
   expect(host.find('conflict-tag')[0].ariaLabel).toContain('Unresolved')
-  expect(host.find('conflict-tag')[0].onfocus).toBeTypeOf('function')
-  expect(host.find('conflict-tag')[0].onmouseenter).toBeTypeOf('function')
+  expect(host.find('conflict-tag')[0].events.get('focus')).toBeTypeOf('function')
+  expect(host.find('conflict-tag')[0].events.get('pointerenter')).toBeTypeOf('function')
   expect(host.find('conflict-line')).toHaveLength(6)
 })
 
@@ -115,7 +119,8 @@ it('uses theme-aware participant tints, slim separated edge lines, and accessibl
   expect(css).toContain('width: 2px')
   expect(css).toContain('font: 11px/16px')
   expect(css).not.toContain('.conflict-gutter')
-  expect(css).toContain('.conflict-tag:hover .conflict-tooltip, .conflict-tag:focus .conflict-tooltip { display: block; }')
+  expect(css).toContain('#overlay-root { position: fixed;')
+  expect(css).not.toContain('.conflict-tooltip')
 })
 
 it('does not duplicate a text region with a recorded conflict and preserves outside ownership', () => {

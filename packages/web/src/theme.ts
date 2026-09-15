@@ -16,7 +16,7 @@ export function applyTheme(theme: Theme): void {
   if (root.getAttribute('data-theme') && root.getAttribute('data-theme') !== theme && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
     clearTimeout(transitionTimer)
     root.classList.add('theme-transition')
-    transitionTimer = setTimeout(() => root.classList.remove('theme-transition'), 220)
+    transitionTimer = setTimeout(() => root.classList.remove('theme-transition'), 160)
   }
   root.setAttribute('data-theme', theme)
   try { localStorage.setItem('room.theme', theme) } catch { /* Keep the in-page choice. */ }
