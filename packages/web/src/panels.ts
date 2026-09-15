@@ -9,6 +9,7 @@ import {
   describeClaim,
   formatPlans,
   participantClaimLine,
+  presentPeople,
   scopeCovers,
   roomNameParts,
   type Claim,
@@ -376,7 +377,13 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   const legend = h('div', { class: 'legend' })
   const chips = h('div', { class: 'merge-chips', role: 'group', ariaLabel: 'Participants in merge' })
   const excluded = new Map<string, Set<string>>()
-  const included = (path: string, people: readonly string[]) => people.filter(p => !excluded.get(path)?.has(p))
+  const included = (path: string, people: readonly string[]) => {
+    if (!excluded.has(path)) {
+      const defaults = new Set(presentPeople(people, presences(conn.provider)))
+      excluded.set(path, new Set(people.filter(person => !defaults.has(person))))
+    }
+    return people.filter(p => !excluded.get(path)!.has(p))
+  }
   const host = h('div', { class: 'editor-wrap' })
   const editor = new Editor(host)
   const tabs = ['Merged', 'Diff', 'File'] as const

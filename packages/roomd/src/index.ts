@@ -346,6 +346,13 @@ class Daemon implements Roomd {
     for (const timer of this.debounce.values()) clearTimeout(timer)
     await this.watcher?.close().catch(() => {})
     try { this.provider.awareness.setLocalState(null) } catch { /* already disconnected */ }
+    // y-websocket sends awareness updates immediately, but the OS socket may still have bytes queued.
+    // Give the offline update a bounded chance to leave before a signal handler exits the process.
+    const socket = this.provider.ws
+    if (socket) {
+      const deadline = Date.now() + 1000
+      while (socket.bufferedAmount > 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+    }
     this.provider.destroy()
     this.roomDoc.doc.destroy()
   }

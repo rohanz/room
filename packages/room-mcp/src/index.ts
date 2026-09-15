@@ -112,6 +112,8 @@ async function main() {
   const bye = async () => {
     if (closing) return
     closing = true
+    // A close/signal can race startup. Do not let a late auto-join create presence after shutdown.
+    try { await autoJoin } catch { /* startup already reported the error */ }
     try { await tools.shutdown() } catch { /* ignore */ }
     process.exit(0)
   }

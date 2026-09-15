@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Claim, Presence, Scope, Worker } from './types.js'
-import { areaMembershipSummary, claimLine, deriveParticipants, otherAreasLine, participantClaimLine, personLine, workerLine } from './views.js'
+import { areaMembershipSummary, claimLine, deriveParticipants, otherAreasLine, participantClaimLine, personLine, presentPeople, workerLine } from './views.js'
 
 describe('shared room views', () => {
   const scope: Scope = { by: 'Kieran', byKind: 'agent', area: 'api', summary: 'handlers', paths: ['api/'], at: 1 }
@@ -19,6 +19,11 @@ describe('shared room views', () => {
     })
     expect(participants.map(p => p.name)).toEqual(['Ada', 'Kieran', 'Rohan'])
     expect(participants.find(p => p.name === 'Kieran')?.claims[0].stale).toBe(true)
+  })
+
+  it('keeps only present people for a default merge selection', () => {
+    expect(presentPeople(['Ada', 'Kieran', 'Rohan'], [{ user: { name: 'Rohan', kind: 'agent', color: '#000' } }, { user: { name: 'Ada', kind: 'agent', color: '#000' } }]))
+      .toEqual(['Ada', 'Rohan'])
   })
 
   it('keeps room_state participant and claim wording exact', () => {
