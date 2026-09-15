@@ -1,13 +1,13 @@
-import { HooksBridge } from './hooks-bridge.js'
+import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
 
-/** Reuse the hooks bridge's clone and freshness checks without starting a bridge. */
-export function claudeWakeNote(session: Session, done = false): string {
-  const host = new HooksBridge(session, { forMe: () => false, isSeen: () => true }).freshSession()?.host
-  if (host !== 'claude') return ''
-  return done
-    ? 'Note for the user: I will only see new room messages on your next message unless Claude Code was started with --dangerously-load-development-channels plugin:room@room.'
-    : 'Wake-ups need Claude Code started with --dangerously-load-development-channels plugin:room@room.'
+const wakeNoted = new WeakSet<Session>()
+
+/** A neutral reminder on join, once per session; an explicit opt-out stays quiet. */
+export function claudeWakeNote(session: Session): string {
+  if (process.env.ROOM_CLAUDE_CHANNEL === '' || wakeNoted.has(session) || resolveSessionHost(session.dir) !== 'claude') return ''
+  wakeNoted.add(session)
+  return 'Wake-ups on Claude Code need the session started with claude-room (or the channels flag).'
 }
 
 /** Agent instructions: MCP `instructions` for Claude Code, the first-turn preamble for the Codex runner, and the source of the plugin's room-etiquette skill. */

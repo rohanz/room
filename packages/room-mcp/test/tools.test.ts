@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -8,7 +8,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
-import type { Session } from '../src/session.js'
+import { NoRoom, type Session } from '../src/session.js'
 import { resolveConfig, type ResolvedConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 
@@ -82,8 +82,12 @@ describe('session gating', () => {
   it('shows last-known state and reports queued sends and unavailable waits while offline', async () => {
     const { a } = pair()
     a.setMeta({ repo: 'demo', branch: 'main', base })
-    const session = fakeSession(a, true, false)
-    const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
+    const session = fakeSession(a, true, true)
+    let clock = 1000
+    const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: dir, now: () => clock })
+    session.provider.wsconnected = false
+    expect(await tools.call('room_state', {})).not.toContain('OFFLINE')
+    clock += 2001
     expect(await tools.call('room_state', {})).toMatch(/^OFFLINE: not connected to ws:\/\/x since .*; showing the last known state\nroom:/)
     expect(await tools.call('room_send', { type: 'note', text: 'queued' })).toContain('offline: queued/not delivered')
     expect(await tools.call('room_wait', { timeoutMs: 100 })).toContain('offline: queued/not delivered')
@@ -139,6 +143,27 @@ describe('session gating', () => {
     expect(t.session).not.toBeNull()
   })
 
+  it('offers the repo rather than part of a slash-containing branch', async () => {
+    const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {}, join: async () => { throw new NoRoom('github.com/o/r/feature/fix', 'missing') } })
+    expect(await tools.call('room_join', { where: 'team' })).toContain('No room for o/r on wss://room-rohanz.fly.dev yet.')
+  })
+
+  it.each(['room_state', 'room_join', 'room_done'])('shows an auto-join tag once in the first %s reply', async tool => {
+    const t = setup()
+    const note = 'joined as rohanz+codex (rohanz was already here from another session)'
+    t.session!.autoTagNote = note
+    expect(await t.tools.call(tool, {})).toContain(note)
+    expect(await t.tools.call('room_state', {})).not.toContain(note)
+  })
+
+  it('omits Claude wake guidance when channels were explicitly disabled', async () => {
+    vi.stubEnv('ROOM_HOST', 'claude'); vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
+    try {
+      const t = setup({ joined: false })
+      expect(await t.tools.call('room_join', { where: 'local' })).not.toContain('Wake-ups')
+    } finally { vi.unstubAllEnvs() }
+  })
+
   it.each(['claude', 'codex', undefined])('adds wake-up guidance only for a Claude session (%s)', async host => {
     const file = join(dir, '.git', 'room-session.json')
     writeFileSync(file, JSON.stringify({ session_id: 'test-session', at: Date.now(), cwd: dir, host }))
@@ -146,11 +171,12 @@ describe('session gating', () => {
       const t = setup({ joined: false })
       for (const tool of ['room_join', 'room_create']) {
         const reply = await t.tools.call(tool, { where: 'local' })
-        expect(reply.endsWith('Wake-ups need Claude Code started with --dangerously-load-development-channels plugin:room@room.')).toBe(host === 'claude')
+        expect(reply.endsWith('Wake-ups on Claude Code need the session started with claude-room (or the channels flag).')).toBe(host === 'claude')
         const again = await t.tools.call(tool, {})
-        expect(again.includes('Wake-ups need Claude Code')).toBe(host === 'claude')
+        expect(again.includes('Wake-ups on Claude Code')).toBe(false)
         const done = await t.tools.call('room_done', { summary: 'tested' })
-        expect(done.endsWith('Note for the user: I will only see new room messages on your next message unless Claude Code was started with --dangerously-load-development-channels plugin:room@room.')).toBe(host === 'claude')
+        expect(done).not.toContain('Wake-ups')
+        expect(done).not.toContain('only see new room messages')
         await t.tools.call('room_leave', {})
       }
     } finally { rmSync(file, { force: true }) }

@@ -1,3 +1,4 @@
+import { connectedBefore, trackConnection } from '../connection.js'
 import { NotLoggedIn, type Session } from '../session.js'
 import { createHandlerState, NeedFetch, NotJoined, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { defs as joinDefs, handlers as joinHandlers, install as installJoin } from './join.js'
@@ -30,6 +31,8 @@ export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name =
 
 export function createTools(ctx: ToolCtx): Tools {
   const state: HandlerState = createHandlerState(ctx)
+  const initial = ctx.getSession()
+  if (initial) trackConnection(initial, state.now)
   installScope(state)
   installClaims(state)
   installMessaging(state)
@@ -56,16 +59,17 @@ export function createTools(ctx: ToolCtx): Tools {
       if (closed && name !== 'room_leave' && !offlineTool) { const rn = current!.roomName; return `error: the room for ${rn.slice(0, rn.lastIndexOf('/'))} was closed (${closed.reason}); room_leave, then room_create to reopen` }
       const moved = await state.followBranch()
       const s = ctx.getSession()
-      const disconnected = !!s?.closed || (s?.provider as { wsconnected?: boolean } | undefined)?.wsconnected === false
-      if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && disconnected)) return 'error: room not synced yet, retry'
-      if (s) state.rooms.track(s)
+      if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && (s.closed || connectedBefore(s)))) return 'error: room not synced yet, retry'
+      if (s) { trackConnection(s, state.now); state.rooms.track(s) }
       try {
         const body = await h(args ?? {})
         const s2 = ctx.getSession()
         if (s2 && name !== 'room_join' && name !== 'room_create') s2.daemon.touch()
         const prefix = moved ? `${moved}\n\n` : ''
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) : ''
-        return prefix + (unread ? unread + body : body)
+        const autoTag = s2?.autoTagNote
+        if (s2) delete s2.autoTagNote
+        return prefix + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
       } catch (e) {
         if (e instanceof NotJoined) return 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
         if (e instanceof NotLoggedIn) return `error: ${e.message}`

@@ -1,7 +1,7 @@
 import { claudeWakeNote } from '../prompt.js'
 import { formatPlans, type Claim, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { git } from '@room/roomd/git'
-import { DEFAULT_SERVER, resolveServer, type Session } from '../session.js'
+import { DEFAULT_SERVER, NoRoom, resolveServer, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { clearChoice, chooseServer, describeWhere, markWarned, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
@@ -15,9 +15,9 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { provider: { type: 'string', enum: ['github', 'oidc'], description: 'login provider (default: the server\'s first; github.com rooms need github)' }, wait: int('seconds to wait for confirmation on a follow-up call (default 90, max 600)'), server: str('override ws server URL'), credentials: str('override credentials file path') } } },
   { name: 'room_logout', annotations: RW, description: 'Forget the GitHub login for the room server on this machine (and revoke the session on the server).',
     inputSchema: { type: 'object', properties: { server: str('override ws server URL'), credentials: str('override credentials file path') } } },
-  { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.',
-    inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
-  { name: 'room_join', annotations: RW, description: 'Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo\'s room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: room_create does that.',
+  { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Ask the user before opening and pass confirm=true only after they agree. Idempotent: on an already-open repo it just joins without confirmation.',
+    inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'true only after the user agrees to open the repo for everyone with push access; unnecessary if already open' }, where: str('team | ws(s)://server'), room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
+  { name: 'room_join', annotations: RW, description: 'Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo\'s room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: ask the user whether to open one, and call room_create with confirm=true only after they agree.',
     inputSchema: { type: 'object', properties: { where: str('local | team | ws(s)://server'), room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('alias of where for a server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
   { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.',
     inputSchema: { type: 'object', properties: { forget: { type: 'boolean', description: 'also forget the remembered choice (local/team) for this clone' }, force: { type: 'boolean', description: 'dismiss running workers first instead of refusing' } } } },
@@ -83,15 +83,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // room_create with nothing chosen: opening a repo needs a server, and that is the team room.
         return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.'
       }
-      const s = await doJoin({
+      let s: Session
+      try { s = await doJoin({
         dir,
         credentialsPath: resolved.credentialsPath,
         name: resolved.name,
         room: resolved.room,
         server: choice.server,
         create: a.create === true,
+        confirm: a.confirm === true,
         share: resolved.share,
-      })
+      }) } catch (e) {
+        if (!(e instanceof NoRoom)) throw e
+        const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName.slice(0, e.roomName.lastIndexOf('/'))
+        return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`
+      }
       if (choice.rule === 'argument') { try { await writeChoice(dir, choice.where, s.me.name) } catch { /* not a repository? keep going */ } }
       for (const m of s.room.messages()) seen.add(m.id)
       rooms.add(s, 'primary')
@@ -116,7 +122,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`)
       const away = others(s).filter(n => !here.includes(n) && s.room.changedPaths(n).length)
       for (const n of away) out.push(`  ${n} (offline): ${personLine(s, n)}`)
-      if (s.autoTagNote) out.push(s.autoTagNote)
+      if (s.autoTagNote) { out.push(s.autoTagNote); delete s.autoTagNote }
       const cs = s.room.openClaims()
       if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`)

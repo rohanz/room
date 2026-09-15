@@ -1,4 +1,3 @@
-import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
 import { pidIsOurWorker, signalWorker } from '../workers.js'
 import fs from 'node:fs'
@@ -54,8 +53,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!pr) out.push(`pr_note: no open PR has ${branchOf(s.roomName)} as its head; nothing posted (room_pr_note number=<n> to pick one)`)
         else { try { out.push(await postLedger(s, pr)) } catch (e) { out.push(`pr_note failed: ${e instanceof Error ? e.message : String(e)}`) } }
       }
-      const wakeNote = claudeWakeNote(s, true)
-      if (wakeNote) out.push(wakeNote)
       return out.join('\n')
     },
     async room_spawn(a) {

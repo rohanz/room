@@ -173,7 +173,11 @@ describe('room lifecycle', () => {
   })
 
   it('a session whose room the server closed refuses tools until leave + create', async () => {
-    const t = setup({ session: { closed: { reason: 'room closed' } } })
+    let clock = 1000
+    const t = setup({ session: { provider: { synced: true, wsconnected: true } as Session['provider'] }, now: () => clock })
+    t.session!.closed = { reason: 'room closed' }
+    await t.tools.call('room_state', {})
+    clock += 2001
     const state = await t.tools.call('room_state', {})
     expect(state).toContain('OFFLINE: not connected to ')
     expect(state).toContain('showing the last known state')

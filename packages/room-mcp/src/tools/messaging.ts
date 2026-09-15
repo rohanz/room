@@ -23,7 +23,7 @@ export const defs: ToolDef[] = [
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, rooms, myWorkers, upgrade, setPresence, forMe, seen } = state
-  const offline = (s: Session) => !!s.closed || (s.provider as { wsconnected?: boolean }).wsconnected === false
+  const offline = (s: Session) => !!s.closed || !s.provider.synced || (s.provider as { wsconnected?: boolean }).wsconnected === false
   const handlers: Record<string, Handler> = {
     async room_send(a) {
       const lead = S()

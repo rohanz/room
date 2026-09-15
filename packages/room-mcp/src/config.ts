@@ -5,6 +5,7 @@
  * (`<git common dir>/room-choice.json`, for `where` only) > default.
  */
 import os from 'node:os'
+import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { gitCommonDir } from '@room/roomd/local'
@@ -86,10 +87,15 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   }
 }
 
-/** SessionStart records the host in the worktree's own git directory. */
-export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process.env): string {
+/** Static plugin env wins over the parent process, then the shared SessionStart hint. */
+export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process.env, parentCommand: () => string = () => execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] })): string {
   const host = (v: unknown) => v === 'claude' || v === 'codex' ? v : undefined
   if (host(env.ROOM_HOST)) return env.ROOM_HOST!
+  try {
+    const command = path.basename(parentCommand().trim()).toLowerCase()
+    if (/^codex(?:[.-]|$)/.test(command)) return 'codex'
+    if (/^claude(?:[.-]|$)/.test(command)) return 'claude'
+  } catch { /* ps unavailable: try the session file */ }
   try {
     let gitDir = path.join(dir, '.git')
     if (fs.statSync(gitDir).isFile()) {

@@ -1,3 +1,4 @@
+import { trackConnection } from './connection.js'
 /**
  * A session is one joined room: the embedded daemon (which owns the Y.Doc and the
  * websocket provider) plus the identity the tools act as. `room_join` creates it,
@@ -62,6 +63,7 @@ export interface JoinOptions {
   token?: string
   /** Open the repo on the server first (room_create). Without it, joining an unopened repo fails with NoRoom. */
   create?: boolean
+  confirm?: boolean
   /** Local mode: the branch to name the room after (default: the main worktree's branch). */
   localBranch?: string
   /** Label for a second principal under the same login: name becomes login+label. Default from ROOM_TAG. */
@@ -76,7 +78,7 @@ export interface JoinOptions {
 
 /** The repo has not been opened on the server; room_create does that. */
 export class NoRoom extends RoomdError {
-  constructor(public roomName: string, detail: string) { super(detail, 3) }
+  constructor(public roomName: string, detail: string, public server?: string) { super(detail, 3) }
 }
 /** The server uses GitHub device login and this machine holds no session for it; room_login does that. */
 export class NotLoggedIn extends RoomdError {
@@ -299,7 +301,7 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
         let suffix = 2
         while (names.has(`${options.name}+${label}`)) label = `${host}-${suffix++}`
         name = `${options.name}+${label}`
-        autoTagNote = `joined as ${name} (${options.name} is already here from another session)`
+        autoTagNote = `joined as ${name} (${options.name} was already here from another session)`
         ;(options.log ?? console.error)(autoTagNote)
       }
     } finally {
@@ -342,13 +344,15 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const name = label ? `${owner}+${label}` : owner
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`)
   const { login: _login, ...creds } = auth
-  if (opts.create) {
+  let pre = await preflight(server, roomName, creds)
+  if (opts.create && pre?.missing) {
+    if (opts.confirm !== true) throw new RoomdError('room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed', 2)
     const err = await createRoom(server, roomName, { ...creds, by: name })
     if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}`, 2)
+    pre = await preflight(server, roomName, creds)
   }
   // Preflight over HTTP: a refused websocket only shows up as a sync timeout, so ask the server first.
-  const pre = await preflight(server, roomName, creds)
-  if (pre?.missing) throw new NoRoom(roomName, pre.reason)
+  if (pre?.missing) throw new NoRoom(roomName, pre.reason, server)
   if (pre?.loginNeeded) throw new NotLoggedIn(server)
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2)
   const shareRequested = requestedShare(config.share)
@@ -376,6 +380,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     ...(token ? { token } : {}),
     ...(opts.room ? { pinnedRoom: true } : {}),
   }
+  trackConnection(session)
   watchClosed(session, opts.log)
   return session
 }
@@ -404,7 +409,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&key=${encodeURIComponent(local.key)}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
-  return {
+  const session: Session = {
     graph,
     room: daemon.roomDoc,
     provider: daemon.provider,
@@ -420,6 +425,8 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     local,
     pinnedRoom: true,
   }
+  trackConnection(session)
+  return session
 }
 
 /** Server close code when a repo is closed (DELETE /rooms): stop reconnecting and remember why. */

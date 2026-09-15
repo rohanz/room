@@ -59,7 +59,7 @@ describe('automatic session tags', () => {
     const s = await start(['name'])
     expect(s.me).toMatchObject({ name: 'name+claude', label: 'claude', owner: 'name' })
     expect(s.daemon.name).toBe(s.me.name)
-    expect(s.autoTagNote).toBe('joined as name+claude (name is already here from another session)')
+    expect(s.autoTagNote).toBe('joined as name+claude (name was already here from another session)')
     expect(s.log).toHaveBeenCalledExactlyOnceWith(s.autoTagNote)
   })
   it('numbers the third join', async () => {
@@ -75,8 +75,12 @@ describe('automatic session tags', () => {
   })
   it('resolves environment hints and falls back for unknown or missing hosts', () => {
     const dir = repo()
-    expect(resolveSessionHost(dir, { ROOM_HOST: 'codex' })).toBe('codex')
+    expect(resolveSessionHost(dir, { ROOM_HOST: 'codex' }, () => 'claude')).toBe('codex')
+    expect(resolveSessionHost(dir, {}, () => '/usr/bin/codex')).toBe('codex')
+    expect(resolveSessionHost(dir, {}, () => '/usr/bin/claude')).toBe('claude')
+    expect(resolveSessionHost(dir, {}, () => 'node')).toBe('claude')
+    expect(resolveSessionHost(dir, {}, () => { throw new Error('ps denied') })).toBe('claude')
     writeFileSync(join(dir, '.git/room-session.json'), '{bad json')
-    expect(resolveSessionHost(dir, {})).toBe('agent')
+    expect(resolveSessionHost(dir, {}, () => 'node')).toBe('agent')
   })
 })

@@ -1,3 +1,4 @@
+import { offlineSince } from '../connection.js'
 import { Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, describeClaim, describeIdentity, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
@@ -6,7 +7,6 @@ import { LOCAL } from '../session.js'
 import { pidAlive } from '../workers.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
-const offlineSince = new WeakMap<Session, number>()
 
 export const defs: ToolDef[] = [
   { name: 'room_scope', annotations: RW, description: 'Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. Do this before editing. Replaces your previous scope. The reply ends with the area ledger: what others changed there and their open plans.',
@@ -44,13 +44,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const m = s.room.meta
       const out: string[] = []
       const wsRoom = rooms.workers()
-      const disconnected = !!s.closed || (s.provider as { wsconnected?: boolean }).wsconnected === false
-      if (disconnected) {
-        const since = offlineSince.get(s) ?? now()
-        offlineSince.set(s, since)
+      const since = offlineSince(s, now)
+      if (since !== undefined) {
         const server = s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
         out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state`)
-      } else offlineSince.delete(s)
+      }
       out.push(`room: ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ''}`)
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? '?').slice(0, 10)})`)
       // Folder-scoped view: only people, claims and changes in my areas, unless all=true (or I am in none yet).
