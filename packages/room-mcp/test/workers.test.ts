@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -17,6 +17,17 @@ let dir: string
 let base: string
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 const workerId: Identity = { name: 'rohanz+money', kind: 'agent', owner: 'rohanz', label: 'money' }
+
+let roomEnv: Record<string, string | undefined>
+beforeEach(() => {
+  roomEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('ROOM_')))
+  for (const key of Object.keys(roomEnv)) delete process.env[key]
+})
+afterEach(() => {
+  vi.unstubAllEnvs()
+  for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
+  Object.assign(process.env, roomEnv)
+})
 
 function pair() {
   const a = new Y.Doc(), b = new Y.Doc()
@@ -394,15 +405,17 @@ describe('review fixes: workers', () => {
 
   it('a shared-token server reaches the worker as a bare URL plus ROOM_TOKEN, whatever way the lead got the token (fix 10, W1)', async () => {
     const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
-    // the lead joined with where=ws://team.example/?token=abc: only the session knows the token, not the environment
-    let ls: Session | null = { ...fakeSession(a, lead, false), roomUrl: 'ws://team.example/local%2Fx%2Fmain', token: 'abc' } as Session
+    // A short hex token (e.g. abc) can occur in the Git SHA printed by room_state.
+    const token = 'worker-test-secret-token'
+    // The lead joined with a token in the URL: only the session knows it, not the environment.
+    let ls: Session | null = { ...fakeSession(a, lead, false), roomUrl: 'ws://team.example/local%2Fx%2Fmain', token } as Session
     const specs: SpawnSpec[] = []
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, spawner: spec => { specs.push(spec); return { pid: 5, onExit: () => {}, kill: () => true } }, worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }) })
     await tools.call('room_spawn', { tag: 'w', task: 't' })
     expect(specs[0].env.ROOM_SERVER).toBe('ws://team.example')
-    expect(specs[0].env.ROOM_TOKEN).toBe('abc')
+    expect(specs[0].env.ROOM_TOKEN).toBe(token)
     // the join reply and room_state never print the token
-    expect(await tools.call('room_state', {})).not.toContain('abc')
+    expect(await tools.call('room_state', {})).not.toContain(token)
   })
 
   it('a finished worker whose process is alive can still be stopped; leave and shutdown stop it too (fix 8)', async () => {

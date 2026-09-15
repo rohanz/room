@@ -309,11 +309,15 @@ describe('roomd v2 push-only overlays', () => {
     const roomUrl = room()
     await start({ room: roomUrl, dir: source, name: 'Alice' })
     const bob = await start({ room: roomUrl, dir: behind, name: 'Bob', basePollMs: 30 })
+    await waitFor(() => (bob.provider.awareness.getLocalState() as { status: string }).status === 'behind base by 1 commit: git pull', 15_000)
     expect(bob.provider.awareness.getLocalState()).toMatchObject({ status: 'behind base by 1 commit: git pull' })
+    const expectedBase = sh(source, ['rev-parse', 'HEAD'])
     sh(behind, ['pull', '-q', '--ff-only'])
-    await waitFor(() => (bob.provider.awareness.getLocalState() as { status: string }).status === 'synced')
-    expect(bob.base).toBe(sh(source, ['rev-parse', 'HEAD']))
-  })
+    // Git polling and presence publication finish asynchronously under suite load.
+    await waitFor(() => bob.base === expectedBase && bob.roomDoc.baseOf('Bob') === expectedBase
+      && (bob.provider.awareness.getLocalState() as { status: string }).status === 'synced', 15_000)
+    expect(bob.base).toBe(expectedBase)
+  }, 45_000)
 
   it('a diverged clone is refused with a rebase hint', async () => {
     const source = await makeRepo({ 'app.py': 'base\n' })
