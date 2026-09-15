@@ -1,16 +1,20 @@
 import {
   RoomDoc,
+  areaMembershipSummary,
   colorFor,
+  deriveParticipants,
   describeClaim,
   formatPlans,
+  participantClaimLine,
   scopeCovers,
   type Claim,
-  type Kind,
   type Msg,
-  type Presence,
+  type Participant,
+  type ParticipantClaim,
+  type ParticipantInput,
   type Scope,
-  describeIdentity,
 } from '@room/shared'
+export { deriveParticipants, type Participant, type ParticipantClaim, type ParticipantInput } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
 import { Editor } from './editor.ts'
 import { buildActivityGraph, type OverlayVersion } from './activity-graph.ts'
@@ -67,76 +71,6 @@ export function createFocusState(): FocusState {
   }
 }
 
-export interface ParticipantClaim extends Claim { stale: boolean }
-export interface Participant {
-  name: string
-  online: boolean
-  behindBase: boolean
-  latestActive?: number
-  kinds: Kind[]
-  /** e.g. "agent of rohanz · codex"; empty for a plain human. */
-  identity: string
-  statuses: { kind: Kind; status: string }[]
-  scope?: Scope
-  files: string[]
-  claims: ParticipantClaim[]
-}
-
-export interface ParticipantInput {
-  presences: readonly Presence[]
-  scopes: readonly (readonly [string, Scope])[]
-  overlayPeople: readonly string[]
-  changesByPerson: ReadonlyMap<string, readonly string[]>
-  claims: readonly Claim[]
-  roomBase?: string
-  basesByPerson?: ReadonlyMap<string, string>
-  now?: number
-}
-
-/** One card model per person, derived without mutating room state. */
-export function deriveParticipants(input: ParticipantInput): Participant[] {
-  const now = input.now ?? Date.now()
-  const names = new Set<string>()
-  for (const presence of input.presences) names.add(presence.user.name)
-  for (const [name] of input.scopes) names.add(name)
-  for (const name of input.overlayPeople) names.add(name)
-
-  return Array.from(names).sort().map(name => {
-    const current = input.presences.filter(presence => presence.user.name === name)
-    const latest = new Map<Kind, Presence>()
-    for (const presence of current) {
-      const previous = latest.get(presence.user.kind)
-      if (!previous || (presence.lastActive ?? 0) >= (previous.lastActive ?? 0)) latest.set(presence.user.kind, presence)
-    }
-    const scope = input.scopes.find(([scopeName]) => scopeName === name)?.[1]
-    const kinds = new Set<Kind>(latest.keys())
-    if (scope) kinds.add(scope.byKind)
-    for (const claim of input.claims) if (claim.by === name) kinds.add(claim.byKind)
-    const latestActive = current.reduce<number | undefined>((value, presence) => {
-      if (presence.lastActive === undefined) return value
-      return value === undefined ? presence.lastActive : Math.max(value, presence.lastActive)
-    }, undefined)
-    const online = current.length > 0
-    const ownBase = input.basesByPerson?.get(name)
-    return {
-      name,
-      online,
-      behindBase: Boolean(input.roomBase && ownBase && ownBase !== input.roomBase),
-      latestActive,
-      kinds: Array.from(kinds).sort((a, b) => a.localeCompare(b)),
-      identity: identityLine(current, name),
-      statuses: Array.from(latest.entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([kind, presence]) => ({ kind, status: presence.status ?? 'online' })),
-      scope,
-      files: [...(input.changesByPerson.get(name) ?? [])].sort(),
-      claims: input.claims
-        .filter(claim => claim.by === name)
-        .map(claim => ({ ...claim, stale: !online && now - claim.at > 10 * 60_000 })),
-    }
-  })
-}
-
 /** Pill text fit for one line: keep the state word, shorten the detail to a symbol or file basename. */
 export function shortPill(state: string, max = 26): string {
   const m = state.match(/^(editing|waiting on|waiting|done|behind base|ahead|working|idle|offline)\s*(.*)$/)
@@ -149,14 +83,6 @@ export function shortPill(state: string, max = 26): string {
 }
 
 /** Derives the single prominent state shown on a person card. */
-/** "agent of rohanz · codex" from the freshest presence that carries an owner/label; '' for a plain human. */
-function identityLine(current: Presence[], name: string): string {
-  const p = [...current].sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0)).find(x => x.user.owner || x.user.label) ?? current[0]
-  if (!p) return ''
-  const line = describeIdentity(p.user)
-  return line === name ? '' : line.slice(name.length + 3)
-}
-
 export function deriveStatePill(person: Pick<Participant, 'online' | 'behindBase' | 'statuses' | 'claims'>): string {
   if (!person.online) return 'offline'
   const statuses = person.statuses.map(item => item.status.trim()).filter(Boolean)
@@ -218,10 +144,6 @@ function displayPlans(plans: NonNullable<Claim['plans']>): string {
   return plans.map(plan => `→ ${plan.kind} ${plan.symbol}${plan.detail ? ` to ${plan.detail}` : ''}`).join(' · ')
 }
 
-function planText(claim: Claim): string {
-  return claim.plans?.length ? ` ${displayPlans(claim.plans)}` : ''
-}
-
 export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
   const list = h('div', { class: 'participant-list' })
   const element = h('aside', { class: 'participants scroll' }, h('div', { class: 'panel-title' }, 'People'), list)
@@ -240,12 +162,12 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
       participant.scope
         ? h('div', { class: 'scope-line' }, h('strong', {}, `${participant.scope.area}:`), ` ${participant.scope.summary}`)
         : h('div', { class: 'scope-line muted' }, 'no area declared'),
-      participant.scope?.areas?.length ? h('div', { class: 'micro muted' }, `in ${participant.scope.areas.join(', ')}`) : null,
+      participant.scope?.areas?.length ? h('div', { class: 'micro muted' }, `in ${areaMembershipSummary(participant.scope.areas)}`) : null,
       participant.claims.length
         ? h('div', { class: 'person-claims' }, ...participant.claims.map(claim => h('div', {
             class: `person-claim${claim.stale ? ' stale' : ''}`,
             title: describeClaim(claim),
-          }, `${claim.path}:${claim.from}-${claim.to} · ${claim.intent}${planText(claim)}`)))
+          }, participantClaimLine(claim))))
         : h('div', { class: 'micro muted' }, 'no active claims'),
       h('div', { class: 'files-summary' }, h('span', { class: 'micro-label' }, 'FILES'),
         h('span', { class: `mono ${participant.files.length ? '' : 'muted'}` }, participant.files.join(', ') || 'none')),

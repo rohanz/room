@@ -1,9 +1,9 @@
-import { Areas, CODEOWNERS_PATHS, RoomDoc, clampRange, describeClaim, describeIdentity, displayName, formatMsg, formatPlans, isAgentic, msgPaths, rangesOverlap, scopeCovers, sharesArea, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, describeClaim, describeIdentity, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
-import { workerLines } from '../workers.js'
+import { pidAlive } from '../workers.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -60,12 +60,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1000))}s ago` : 'offline'
         const who = p ? describeIdentity(p.user) : n
         const theirs = areasFor(s, n)
-        out.push(`  - ${who}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)}${theirs.length ? ` · areas ${theirs.join(', ')}` : ''} · ${ago}`)
+        const areaSummary = areaMembershipSummary(theirs)
+        out.push(`  - ${who}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)}${areaSummary ? ` · ${areaSummary}` : ''} · ${ago}`)
       }
       if (hidden.length) {
         const otherAreas = new Set<string>()
         for (const n of hidden) for (const x of areasFor(s, n)) if (!mineA.includes(x)) otherAreas.add(x)
-        out.push(`  ${hidden.length} other${hidden.length === 1 ? '' : 's'} in ${otherAreas.size} other area${otherAreas.size === 1 ? '' : 's'}${otherAreas.size ? ` (${Array.from(otherAreas).sort().join(', ')})` : ''}`)
+        out.push(`  ${otherAreasLine(hidden.length, Array.from(otherAreas))}`)
       }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       const areaScopes = all ? s.room.allScopes() : s.room.allScopes().filter(sc => inView(sc.by))
@@ -94,11 +95,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
-      out.push(...workerLines(myWorkers(s), n => { const last = s.room.messages().filter(x => x.from === n).slice(-1)[0]; return last ? formatMsg(last) : undefined }, n => s.room.changedPaths(n).length, now()))
+      out.push(...formatWorkerLines(myWorkers(s).map(worker => ({ worker, processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() }))))
       const ws = wsRoom
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)
-        out.push(...workerLines(myWorkers(ws), n => { const last = ws.room.messages().filter(x => x.from === n).slice(-1)[0]; return last ? formatMsg(last) : undefined }, n => ws.room.changedPaths(n).length, now()))
+        out.push(...formatWorkerLines(myWorkers(ws).map(worker => ({ worker, processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: ws.room.changedPaths(worker.name).length, last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() }))))
       }
       return out.join('\n')
     },
@@ -178,7 +179,7 @@ export function install(state: HandlerState): void {
     }
   const claimLine = (s: Session, c: Claim) => {
       const stale = !presences(s).some(p => p.user.name === c.by) && now() - c.at > STALE_MS
-      return `  - ${c.id}: ${describeClaim(c)}${isMe(s, { name: c.by, kind: c.byKind }) ? ' (yours)' : ''}${stale ? ' [stale: owner offline]' : ''}`
+      return formatClaimLine(c, { yours: isMe(s, { name: c.by, kind: c.byKind }), stale })
     }
   const ledgerLines = (s: Session, q: NonNullable<Parameters<RoomDoc['ledger']>[0]>, label: string): string[] => {
       const entries = s.room.ledger({ ...q, limit: q.limit ?? 10 }).filter(m => !(m.to && m.to !== s.me.name && m.from !== s.me.name))
@@ -188,20 +189,16 @@ export function install(state: HandlerState): void {
       if (plans.length) { out.push('open plans by others:'); for (const c of plans) out.push(`  - ${c.by}'s agent in ${c.path}: ${formatPlans(c.plans!)}`) }
       return out
     }
-  const scopeLine = (sc: Scope) => `${sc.area}: ${sc.summary} (${sc.paths.join(', ')})`
+  const scopeLine = formatScopeLine
   const personLine = (s: Session, name: string): string => {
-      const sc = s.room.scope(name)
-      const p = presences(s).find(x => x.user.name === name && isAgentic(x.user.kind)) ?? presences(s).find(x => x.user.name === name)
-      const changed = s.room.changedPaths(name)
-      const lastDone = [...s.room.messages()].reverse().find((m): m is NoteMsg => m.from === name && m.type === 'note' && m.text.startsWith('done'))
-      let what: string
-      if (sc) what = `working on ${scopeLine(sc)}`
-      else if (p?.status?.startsWith('done')) what = `${p.status}`
-      else if (lastDone && (!p || p.status === 'idle' || p.status === 'synced')) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`
-      else what = p ? `${p.status ?? 'idle'}, no task declared` : 'offline'
-      const level = shareOf(s, name)
-      const share = level === 'full' ? '' : `; shares ${level}${level === 'intent' ? ' (no file text)' : ' (file text only under their scope paths)'}`
-      return `${what}${share}${changed.length ? `; uncommitted, not yet pushed: ${changed.join(', ')}` : ''}`
+      return formatPersonLine({
+        name,
+        scope: s.room.scope(name),
+        presences: presences(s),
+        changedPaths: s.room.changedPaths(name),
+        messages: s.room.messages().filter((m): m is NoteMsg => m.type === 'note'),
+        share: shareOf(s, name),
+      })
     }
   Object.assign(state, { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine, ledgerLines, scopeLine, personLine })
 }
