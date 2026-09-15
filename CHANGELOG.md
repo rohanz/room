@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.7 — 2026-09-15
+
+- Merge previews and the conflict watcher use git's own merge (`git merge-file`), so a clean preview means a clean push; the reply says so.
+- Previews and conflict checks consider present participants only; offline overlays are skipped by default (`includeOffline`), and the browser's merge chips start off for offline people.
+- Sessions clear their presence on exit; a restart seconds later no longer tags itself; room_done explains local test failures that a clean combined preview makes expected.
+- Browser view: every changed line tinted by author with a participant chip row and an n-way merge; resizable columns; stacked or collapsed conflict tags in a reserved column; tooltips wrap and stay on screen.
+
 ## 0.6.6 — 2026-09-15
 
 - "Join the team room" on a repo nobody has opened now asks before opening; `room_create` needs `confirm=true` for a new repo.
