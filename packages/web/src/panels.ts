@@ -171,18 +171,17 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
         : h('div', { class: 'micro muted' }, 'no active claims'),
       h('div', { class: 'files-summary' }, h('span', { class: 'micro-label' }, 'FILES'),
         h('span', { class: `mono ${participant.files.length ? '' : 'muted'}` }, participant.files.join(', ') || 'none')),
-      h('div', { class: 'card-foot muted' }, participant.latestActive ? relativeTime(participant.latestActive) : 'not connected'))
+      h('div', { class: 'card-foot muted', title: participant.online ? 'Online' : 'Offline' }, participant.latestActive !== undefined ? `active ${relativeTime(participant.latestActive)}` : participant.online ? 'Online · activity unknown' : 'Offline'))
       card.onclick = () => focus.set(focus.person === participant.name ? null : participant.name)
       return card
     }))
     if (!participants.length) list.append(h('div', { class: 'empty-note muted' }, 'Waiting for participants…'))
   }
   conn.provider.awareness.on('change', render)
-  conn.room.scopes.observe(render)
-  conn.room.overlays.observeDeep(render)
-  conn.room.deleted.observeDeep(render)
-  conn.room.claims.observe(render)
-  conn.room.bases.observe(render)
+  conn.room.doc.on('update', render)
+  // Match Board's refresh: awareness can recover while this rail is hidden.
+  const refresh = setInterval(() => { if (!element.contains(document.activeElement)) render() }, 15_000)
+  conn.room.doc.on('destroy', () => clearInterval(refresh))
   focus.subscribe(render)
   render()
   return element

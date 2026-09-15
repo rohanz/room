@@ -472,3 +472,23 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .state-pill.editing, .state-pill.working { color: var(--accent-text); }
 .network-node:focus-visible { outline: none; }
 .network-node:focus-visible rect { stroke: var(--accent); stroke-width: 3; }
+
+/* Dark overrides for legacy light-only surfaces and graph annotations. */
+@media (prefers-color-scheme: dark) {
+  .product-mark { width: 36px; height: 36px; padding: 4px; background: #fff; border-radius: 9px; }
+  .product-mark img { width: 28px; height: 28px; margin: 0; border-radius: 5px; }
+  .network-controls button:hover, .network-tooltip, .activity-graph { background: var(--surface); }
+  .network-tooltip strong { color: var(--heading); }
+  .legend-contract { color: var(--accent-text); }
+  .legend-impact { color: var(--danger); }
+  .network-stats > div:last-child strong { color: var(--accent-text); }
+  .network-node.direct > rect, .network-node.indirect > rect { fill: #3e242b; }
+  .network-node.my-work.neutral:not(.file-edited) > rect { fill: var(--floor); }
+  .network-node:is(.contract, .file-edited) .edit-badge rect { fill: #141e33; }
+  .graph-content text { fill: var(--ink); }
+  .code-line[data-owner]:hover::after { color: var(--ink); background: var(--surface); opacity: 1; }
+  /* basicSetup supplies light syntax colors; inherit the accessible dark ink. */
+  .cm-content span { color: inherit !important; }
+  .cm-selectionBackground, .cm-editor.cm-focused .cm-selectionBackground { background: var(--floor) !important; }
+  @keyframes room-flash { from { background: var(--floor); } to { background: transparent; } }
+}
