@@ -94,7 +94,7 @@ export async function serverAuthConfig(server: string): Promise<AuthConfig> {
   if (hit) return hit
   const cfg: AuthConfig = { mode: 'token', providers: [] }
   try {
-    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(20000) })
+    const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 })
     if (res.ok) {
       const b = await res.json() as { github?: string; providers?: string[] }
       if (b.github === 'device') cfg.mode = 'device'
@@ -130,7 +130,7 @@ export async function resolveAuth(server: string, roomName: string, token?: stri
 export interface LoginProgress { provider: Provider; device: string; expires_in: number; interval: number; user_code?: string; verification_uri?: string; url?: string }
 /** Start a login against the server (default provider: the server's first). Show the user the code/URL; then pollLogin until done. */
 export async function startLogin(server: string, provider?: Provider): Promise<LoginProgress> {
-  const res = await fetch(`${httpOf(server)}/auth/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(provider ? { provider } : {}), signal: AbortSignal.timeout(15000) })
+  const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15000 })
   if (res.status === 404 && !provider) { // older server: only the GitHub device flow
     const old = await fetch(`${httpOf(server)}/auth/device`, { method: 'POST', signal: AbortSignal.timeout(15000) })
     if (!old.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await old.text()).trim() || `HTTP ${old.status}`}`, 2)
@@ -224,7 +224,7 @@ export async function serverShareMax(server: string): Promise<ShareLevel> {
   if (hit) return hit
   let max: ShareLevel = 'full'
   try {
-    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(20000) })
+    const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 })
     if (res.ok) max = parseShare(((await res.json()) as { shareMax?: unknown }).shareMax) ?? 'full'
   } catch { /* unreachable: the join will report it */ }
   shareMaxCache.set(server, max)
@@ -247,6 +247,32 @@ export function defaultWeb(server: string): string {
     u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:'
     return u.toString().replace(/\/+$/, '')
   } catch { return DEFAULT_WEB }
+}
+
+/**
+ * HTTP to the room server with patience for a cold start: the hosted machine stops when idle and
+ * takes up to a minute to answer its first request (timeouts, 502/503/504 from the proxy). Retry
+ * those for up to ~100 s, then give up with the last error.
+ */
+export async function serverFetch(url: string, init: RequestInit & { timeoutMs?: number } = {}, log?: (line: string) => void): Promise<Response> {
+  const { timeoutMs = 25_000, ...rest } = init
+  const deadline = Date.now() + 100_000
+  let attempt = 0
+  for (;;) {
+    attempt++
+    try {
+      const res = await fetch(url, { ...rest, signal: AbortSignal.timeout(timeoutMs) })
+      if (![502, 503, 504].includes(res.status) || Date.now() > deadline) return res
+      log?.(`server answered ${res.status}; it is probably starting up (attempt ${attempt}), retrying`)
+    } catch (e) {
+      const name = e instanceof Error ? e.name : ''
+      const code = (e as { cause?: { code?: string } })?.cause?.code ?? (e as { code?: string })?.code ?? ''
+      const coldStart = name === 'TimeoutError' || name === 'AbortError' || code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' || code === 'UND_ERR_HEADERS_TIMEOUT'
+      if (!coldStart || Date.now() > deadline) throw e
+      log?.(`waiting for the server to wake (attempt ${attempt}: ${e instanceof Error ? e.message : String(e)})`)
+    }
+    await new Promise(r => setTimeout(r, 3000))
+  }
 }
 
 export function encodeRoom(roomName: string): string { return encodeURIComponent(roomName) }
@@ -378,7 +404,7 @@ function removeStaleCredential(server: string, reason: string): void { if (/expi
  *  `missing`: access is fine but nobody has opened this repo yet. */
 export async function preflight(server: string, roomName: string, auth: Creds): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean } | undefined> {
   try {
-    const res = await fetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(20000) })
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 20000 })
     if (res.ok) return undefined
     if (res.status === 401) { const reason = (await res.text()).trim() || 'unauthorized'; if (/room_login/.test(reason)) { removeStaleCredential(server, reason); return { reason, loginNeeded: true } } return { reason } }
     if (res.status === 403) return { reason: (await res.text()).trim() || 'forbidden' }
@@ -392,7 +418,7 @@ export async function preflight(server: string, roomName: string, auth: Creds): 
 /** Open the repo on the server so its branch rooms can be joined. Idempotent. Returns the refusal, if any. */
 export async function createRoom(server: string, roomName: string, auth: Creds & { by?: string }): Promise<string | undefined> {
   try {
-    const res = await fetch(`${httpOf(server)}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(20000) })
+    const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 20000 })
     if (res.ok) return undefined
     return (await res.text()).trim() || `HTTP ${res.status}`
   } catch (e) {
@@ -402,7 +428,7 @@ export async function createRoom(server: string, roomName: string, auth: Creds &
 
 /** Close the repo on the server: every branch room, every overlay, every connection. Returns the rooms closed, or throws with the refusal. */
 export async function closeRoom(server: string, roomName: string, auth: Creds): Promise<string[]> {
-  const res = await fetch(`${httpOf(server)}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(20000) })
+  const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 20000 })
   if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2)
   const body = (await res.json().catch(() => ({}))) as { closed?: string[] }
   return body.closed ?? []
@@ -421,7 +447,7 @@ export async function authFor(s: Session): Promise<Creds & { server: string }> {
 export async function viewToken(server: string, roomName: string, auth: Creds): Promise<string | undefined> {
   if (!auth.gh && !auth.token && !auth.session) return undefined
   try {
-    const res = await fetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(20000) })
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 20000 })
     if (!res.ok) return undefined
     return ((await res.json()) as { view?: string }).view
   } catch { return undefined }

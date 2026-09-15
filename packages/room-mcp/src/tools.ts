@@ -1077,6 +1077,7 @@ export function createTools(ctx: ToolCtx): Tools {
             if (questionId && m.type === 'answer' && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`)
             if (m.priority === 'interrupt' && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`)
             if (m.type === 'done' && m.to === s.me.name) return finish(`worker done: ${formatMsg(m)}`)
+            if (m.type === 'question' && m.to === s.me.name && !(questionId || claimId)) return finish(`question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`)
           }
         }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)

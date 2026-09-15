@@ -34191,7 +34191,7 @@ async function serverAuthConfig(server) {
   if (hit) return hit;
   const cfg = { mode: "token", providers: [] };
   try {
-    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 2e4 });
     if (res.ok) {
       const b = await res.json();
       if (b.github === "device") cfg.mode = "device";
@@ -34227,7 +34227,7 @@ async function resolveAuth(server, roomName, token) {
   return { token, gh: await githubToken() };
 }
 async function startLogin(server, provider) {
-  const res = await fetch(`${httpOf(server)}/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(provider ? { provider } : {}), signal: AbortSignal.timeout(15e3) });
+  const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15e3 });
   if (res.status === 404 && !provider) {
     const old = await fetch(`${httpOf(server)}/auth/device`, { method: "POST", signal: AbortSignal.timeout(15e3) });
     if (!old.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await old.text()).trim() || `HTTP ${old.status}`}`, 2);
@@ -34322,7 +34322,7 @@ async function serverShareMax(server) {
   if (hit) return hit;
   let max2 = "full";
   try {
-    const res = await fetch(`${httpOf(server)}/auth/config`, { signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 2e4 });
     if (res.ok) max2 = parseShare((await res.json()).shareMax) ?? "full";
   } catch {
   }
@@ -34343,6 +34343,26 @@ function defaultWeb(server) {
     return u.toString().replace(/\/+$/, "");
   } catch {
     return DEFAULT_WEB;
+  }
+}
+async function serverFetch(url, init = {}, log2) {
+  const { timeoutMs: timeoutMs2 = 25e3, ...rest } = init;
+  const deadline = Date.now() + 1e5;
+  let attempt = 0;
+  for (; ; ) {
+    attempt++;
+    try {
+      const res = await fetch(url, { ...rest, signal: AbortSignal.timeout(timeoutMs2) });
+      if (![502, 503, 504].includes(res.status) || Date.now() > deadline) return res;
+      log2?.(`server answered ${res.status}; it is probably starting up (attempt ${attempt}), retrying`);
+    } catch (e) {
+      const name = e instanceof Error ? e.name : "";
+      const code = e?.cause?.code ?? e?.code ?? "";
+      const coldStart = name === "TimeoutError" || name === "AbortError" || code === "ECONNRESET" || code === "UND_ERR_SOCKET" || code === "UND_ERR_HEADERS_TIMEOUT";
+      if (!coldStart || Date.now() > deadline) throw e;
+      log2?.(`waiting for the server to wake (attempt ${attempt}: ${e instanceof Error ? e.message : String(e)})`);
+    }
+    await new Promise((r) => setTimeout(r, 3e3));
   }
 }
 function encodeRoom(roomName) {
@@ -34475,7 +34495,7 @@ function removeStaleCredential(server, reason) {
 }
 async function preflight(server, roomName, auth) {
   try {
-    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
     if (res.ok) return void 0;
     if (res.status === 401) {
       const reason = (await res.text()).trim() || "unauthorized";
@@ -34494,7 +34514,7 @@ async function preflight(server, roomName, auth) {
 }
 async function createRoom(server, roomName, auth) {
   try {
-    const res = await fetch(`${httpOf(server)}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
     if (res.ok) return void 0;
     return (await res.text()).trim() || `HTTP ${res.status}`;
   } catch (e) {
@@ -34502,7 +34522,7 @@ async function createRoom(server, roomName, auth) {
   }
 }
 async function closeRoom(server, roomName, auth) {
-  const res = await fetch(`${httpOf(server)}/rooms`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
+  const res = await serverFetch(`${httpOf(server)}/rooms`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
   if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2);
   const body = await res.json().catch(() => ({}));
   return body.closed ?? [];
@@ -34517,7 +34537,7 @@ async function authFor(s) {
 async function viewToken(server, roomName, auth) {
   if (!auth.gh && !auth.token && !auth.session) return void 0;
   try {
-    const res = await fetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), signal: AbortSignal.timeout(2e4) });
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 2e4 });
     if (!res.ok) return void 0;
     return (await res.json()).view;
   } catch {
@@ -34558,7 +34578,7 @@ function workerPrompt(lead, tag, task) {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
-    `room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
+    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     "",
     `TASK: ${task}`
@@ -36577,6 +36597,7 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
             if (questionId && m.type === "answer" && m.inReplyTo === questionId) return finish(`answered: ${formatMsg(m)}`);
             if (m.priority === "interrupt" && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`);
             if (m.type === "done" && m.to === s.me.name) return finish(`worker done: ${formatMsg(m)}`);
+            if (m.type === "question" && m.to === s.me.name && !(questionId || claimId)) return finish(`question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`);
           }
         };
         s.room.claims.observe(onClaims);

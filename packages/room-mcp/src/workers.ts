@@ -41,7 +41,7 @@ export function workerPrompt(lead: string, tag: string, task: string): string {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
-    `room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
+    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     '',
     `TASK: ${task}`,
