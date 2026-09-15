@@ -57,6 +57,8 @@ export interface RoomdOptions {
   /** Local relay key (room-local.json): sent as ?key= so only sessions that can read the clone's git dir connect. */
   localKey?: string
   log?: (line: string) => void
+  /** Test hook: awaited inside the publish path after the base text is read, before the room is written. */
+  beforePublishWrite?: (relpath: string) => Promise<void>
   /** Max time to wait for the initial sync; default 15s. */
   connectTimeoutMs?: number
   /** Overrides for tests. */
@@ -157,6 +159,7 @@ class Daemon implements Roomd {
   share: ShareLevel
   /** Explicit scope paths (option / setShare); when unset, the person's scope in the room doc decides. */
   private explicitScopePaths?: string[]
+  private beforePublishWrite?: (relpath: string) => Promise<void>
 
   private tracked = new Set<string>()
   private watcher: FSWatcher | null = null
@@ -181,6 +184,7 @@ class Daemon implements Roomd {
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000
     this.share = options.share ?? 'full'
     this.explicitScopePaths = options.scopePaths
+    this.beforePublishWrite = options.beforePublishWrite
     const { serverUrl, roomName } = splitRoomUrl(options.room)
     this.provider = options.providerFactory
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
@@ -546,6 +550,9 @@ class Daemon implements Roomd {
       const disk = this.readText(relpath)
       if (disk === undefined) return
       const base = await gitShow(this.dir, this.base, relpath)
+      await this.beforePublishWrite?.(relpath)
+      // The level or scope may have changed while we waited on git: never write text the current level withholds.
+      if (!this.isShared(relpath)) { this.withhold(relpath, disk !== base); return }
       if (disk !== base && this.sharedBytes(relpath) + disk.length > this.totalBudget) {
         if (!this.skips.budget.has(relpath)) { this.skips.budget.add(relpath); this.log(`skip ${relpath}: sharing it would exceed the ${Math.round(this.totalBudget / 1024)} KB total budget`) }
         return

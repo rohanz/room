@@ -145,6 +145,23 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
   })
 
+  it('a publish already in flight when sharing drops to intent writes nothing', async () => {
+    const dir = await makeRepo({ 'a.txt': 'a\n' })
+    let gate: (() => void) | null = null
+    const held = new Promise<void>(resolve => { gate = resolve })
+    let armed = false, parked = 0
+    const daemon = await start({ room: room(), dir, name: 'Race', share: 'full', beforePublishWrite: async p => { if (armed && p === 'a.txt' && parked++ === 0) await held } })
+    armed = true
+    await fsp.writeFile(path.join(dir, 'a.txt'), 'changed\n')
+    await waitFor(() => parked >= 1)
+    // The level drops while the first publish is parked after reading the base text.
+    await daemon.setShare('intent')
+    gate!()
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(daemon.roomDoc.changedPaths('Race')).toEqual([])
+    expect(daemon.skipped().share).toContain('a.txt')
+  })
+
   it('stops sharing once the total budget is reached and records what was skipped', async () => {
     const dir = await makeRepo({ 'a.txt': 'a\n', 'b.txt': 'b\n', 'c.txt': 'c\n' })
     const daemon = await start({ room: room(), dir, name: 'Bud', totalBudget: 250 })
