@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2 — 2026-09-15
+
+- Browser view redesigned: Room brand and logo, a Board view for projectors and shared links (participant cards with areas, sharing level, claims and plans, nested workers, hide-offline, full-width timeline with filters) and the restyled Code inspector; dark mode with checked contrast; no more spurious view-token call on load.
+
 ## 0.6.1 — 2026-09-15
 
 - Less noise by default: routine scope, release, change and note events stay in the feed; the inbox prefix appears only when something is unread; `room_state` shows the people and claims near your work in full and one line for the rest; the agent instructions are six rules, with detail in the etiquette skill.
