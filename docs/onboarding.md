@@ -30,8 +30,8 @@ For `rohanz/room-playground` (Kieran, Hrishi) or any GitHub repo you can push to
    > Open https://github.com/login/device and enter the code XXXX-XXXX (valid 15 min).
 
    Do that in a browser, approve "room", then tell the agent "done" so it finishes the login and joins. Ninety days, per machine. Your participant name is your GitHub login. The agent also says, once, that uncommitted work in this clone is now visible to the repo's room members; that is the moment you are sharing. The choice is remembered for that clone, so later sessions join without being asked.
-4. If the repo has no room yet, one person says **"open a room for this repo"**. Every branch of the repo then has a room and sessions join on their own.
-5. Work as usual. Ask **"show room state"**, open the browser link it prints for the shared view.
+3. If the repo has no room yet, one person says **"open a room for this repo"**. Every branch of the repo then has a room and sessions join on their own.
+4. Work as usual. Ask **"show room state"**, open the browser link it prints for the shared view.
 
 By default the room sees the full text of files you change. If you'd rather share only the files you've declared you're working on, start with `ROOM_SHARE=declared`; `ROOM_SHARE=intent` shares only your plans and claims, no file text. You can change it live with "share declared" / "share full".
 
