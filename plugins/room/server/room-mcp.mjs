@@ -21187,7 +21187,7 @@ var StdioServerTransport = class {
 };
 
 // packages/shared/src/identity.ts
-var PALETTE = ["#0f8b8d", "#c9761a", "#6d4fc2", "#c0392b", "#2e86de", "#27ae60", "#b5179e", "#8d6e63"];
+var PALETTE = ["#2e86de", "#c9761a", "#6d4fc2", "#27ae60", "#c0392b", "#b5179e", "#0f8b8d", "#8d6e63"];
 function colorFor(name, room) {
   const assigned = typeof room === "object" ? room.colors.get(name) : void 0;
   if (assigned !== void 0 && Number.isInteger(assigned)) return PALETTE[(assigned % PALETTE.length + PALETTE.length) % PALETTE.length];

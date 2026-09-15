@@ -1,7 +1,8 @@
 import type { Identity, Kind } from './types.js'
 
-/** High-contrast order keeps adjacent join slots visually distinct on light and dark surfaces. */
-export const PALETTE = ['#0f8b8d', '#c9761a', '#6d4fc2', '#c0392b', '#2e86de', '#27ae60', '#b5179e', '#8d6e63'] as const
+/** Join-order slots. Ordered so the first few participants are far apart in hue (blue, orange,
+ *  purple, green, red, magenta, teal, brown); every colour reads on both the light and dark grounds. */
+export const PALETTE = ['#2e86de', '#c9761a', '#6d4fc2', '#27ae60', '#c0392b', '#b5179e', '#0f8b8d', '#8d6e63'] as const
 export interface ColorAssignments { colors: { get(name: string): number | undefined } }
 
 /** Use the room's join-order slot when available, with the stable hash for older/offline callers. */
