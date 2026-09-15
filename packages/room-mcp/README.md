@@ -178,8 +178,12 @@ workers per lead. The daemon ignores `.room/`; add it to `.gitignore` too.
 
 ## Limitations
 
-Access: the server admits a GitHub-named room only to GitHub tokens that can read the repo
-with push access (or a shared `ROOM_TOKEN`), and only after someone has opened the repo with `room_create`.
+Access: a GitHub-named room requires a GitHub device-login session with push access to the repo;
+`ROOM_TOKEN` does not admit it. The repo must first be opened with `room_create`.
+For non-GitHub rooms, a client presenting the configured `ROOM_TOKEN` is admitted even when
+the server has a login provider. A client without a matching token falls through to login
+when a provider is configured. With no provider, the token is required when set; with
+neither a provider nor a token, non-GitHub rooms are open.
 Inside a room everything in the doc is visible to every member (subject to each person's sharing level). Claim ranges are not
 remapped as files change. Disk edits are attributed to the machine's human; the agent is visible via claims,
 cursor, status and bus messages.

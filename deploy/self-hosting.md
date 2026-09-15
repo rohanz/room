@@ -50,7 +50,7 @@ Which rooms a login can enter:
 | Room name | Who is admitted |
 | --- | --- |
 | `github.com/<owner>/<repo>/<branch>` | A GitHub device-flow login with push access to the repo. Nothing else: `ROOM_TOKEN` is refused, a GitHub token forwarded by a client is refused (401 pointing at `room_login`), and OIDC logins are refused because the server cannot check GitHub permissions for them. |
-| `git/<host>/<owner>/<repo>/<branch>` (self-hosted GitLab, Gitea, Bitbucket, ...) | Any login (GitHub or OIDC) when a provider is configured, else `ROOM_TOKEN`, else open. |
+| `git/<host>/<owner>/<repo>/<branch>` (self-hosted GitLab, Gitea, Bitbucket, ...) | A client presenting the configured `ROOM_TOKEN` is admitted, including when a login provider is configured. Without a matching token, a configured provider requires a valid login (GitHub or OIDC). With no provider, the token is required when set; with neither, the room is open. |
 | `local/<dir>/<branch>` (filesystem remotes) | Same as `git/`. |
 
 ## GitHub login (OAuth App)
