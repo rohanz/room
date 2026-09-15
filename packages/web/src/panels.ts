@@ -9,6 +9,7 @@ import {
   formatPlans,
   participantClaimLine,
   scopeCovers,
+  roomNameParts,
   type Claim,
   type Msg,
   type Participant,
@@ -616,11 +617,15 @@ export function activityGraphPanel(conn: Conn, focus: FocusState): HTMLElement {
 }
 
 export function header(conn: Conn): HTMLElement {
-  const roomName = h('span', { class: 'room-name', title: conn.displayRoomName }, h('bdi', { dir: 'ltr' }, conn.displayRoomName))
+  const parts = roomNameParts(conn.displayRoomName)
+  const label = parts.owner ? parts.owner + ' / ' + parts.repo : parts.repo
+  const roomName = h('span', { class: 'room-name', title: conn.displayRoomName }, h('bdi', { dir: 'ltr' }, label))
+  const local = parts.local ? h('span', { class: 'room-chip mono' }, 'local') : null
+  const branch = parts.branch ? h('span', { class: 'room-chip mono', title: parts.branch }, h('bdi', { dir: 'ltr' }, parts.branch)) : null
   const base = h('span', { class: 'header-detail mono' }, 'base —')
   const count = h('span', { class: 'header-detail' }, '0 participants')
   const connection = h('span', { class: 'connection' }, 'disconnected')
-  const element = h('header', { class: 'header' }, h('span', { class: 'product-mark' }, h('img', { src: '/logo.png', alt: 'Room', width: 28, height: 28 })), roomName, base, count, h('span', { class: 'sp' }), connection)
+  const element = h('header', { class: 'header' }, h('span', { class: 'product-mark' }, h('img', { src: '/logo.png', alt: 'Room', width: 40, height: 40 })), h('span', { class: 'header-divider' }), roomName, local, branch, base, count, h('span', { class: 'sp' }), connection)
   const render = () => {
     base.textContent = `base ${(conn.room.meta.base ?? '').slice(0, 7) || '—'}`
     const total = deriveParticipants(participantInput(conn)).length

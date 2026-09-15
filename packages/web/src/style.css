@@ -322,10 +322,12 @@ h2, .panel-title { color: var(--heading); font-size: 15px; font-weight: 600; let
 h2, p { margin: 0; }
 .shell { height: 100%; display: flex; flex-direction: column; }
 .header { min-height: 64px; flex: none; gap: 16px; padding: 8px 24px; background: var(--surface); }
-.room-name { font-size: 18px; color: var(--heading); }
+.room-name { font-size: 15px; font-weight: 500; color: var(--heading); }
+.header-divider { flex: none; width: 1px; height: 16px; background: var(--line); }
+.room-chip { min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 6px; border-radius: 5px; font-size: 11px; background: var(--line-soft); color: var(--muted); }
 .header-detail, .connection { font-size: 12px; }
-.product-mark { width: 30px; height: 30px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
-.product-mark img { width: 30px; height: 30px; object-fit: contain; display: block; }
+.product-mark { width: 40px; height: 40px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
+.product-mark img { width: 40px; height: 40px; object-fit: contain; display: block; }
 .view-switcher { display: flex; padding: 3px; gap: 4px; background: var(--line-soft); border: 1px solid var(--line); border-radius: 10px; }
 .view-switcher button { padding: 4px 16px; border: 0; background: transparent; }
 .view-switcher button.active { color: var(--accent-text); background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.05); }
@@ -429,7 +431,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 }
 @media (max-width: 600px) {
   .header { min-height: 64px; flex-wrap: wrap; padding: 8px 16px; }
-  .room-name { flex: 1; font-size: 18px; }
+  .room-name { flex: 1; }
   .header > .sp { display: none; }
   .connection { font-size: 0; }
   .view-switcher button { padding-inline: 12px; }
@@ -492,8 +494,8 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 
 /* Dark overrides for legacy light-only surfaces and graph annotations. */
 :root[data-theme="dark"] {
-  .product-mark { width: 36px; height: 36px; padding: 3px; background: #fff; border-radius: 9px; }
-  .product-mark img { width: 30px; height: 30px; }
+  .product-mark { width: 46px; height: 46px; padding: 3px; background: #fff; border-radius: 9px; }
+  .product-mark img { width: 40px; height: 40px; }
   .network-controls button:hover, .network-tooltip, .activity-graph { background: var(--surface); }
   .network-tooltip strong { color: var(--heading); }
   .legend-contract { color: var(--accent-text); }
@@ -511,8 +513,8 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] {
-    .product-mark { width: 36px; height: 36px; padding: 3px; background: #fff; border-radius: 9px; }
-    .product-mark img { width: 30px; height: 30px; }
+    .product-mark { width: 46px; height: 46px; padding: 3px; background: #fff; border-radius: 9px; }
+    .product-mark img { width: 40px; height: 40px; }
     .network-controls button:hover, .network-tooltip, .activity-graph { background: var(--surface); }
     .network-tooltip strong { color: var(--heading); }
     .legend-contract { color: var(--accent-text); }

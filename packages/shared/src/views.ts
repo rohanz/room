@@ -2,6 +2,19 @@ import { describeClaim } from './claims.js'
 import { describeIdentity, isAgentic } from './identity.js'
 import type { Claim, Kind, NoteMsg, Presence, Scope, ShareLevel, Worker } from './types.js'
 
+/** Split a room identity while preserving slashes within its branch. */
+export function roomNameParts(roomName: string): { host?: string; owner?: string; repo: string; branch: string; local: boolean } {
+  const parts = roomName.split('/')
+  if (parts[0] === 'local' && parts.length >= 3) {
+    return { repo: parts[1], branch: parts.slice(2).join('/'), local: true }
+  }
+  const offset = parts[0] === 'git' ? 1 : 0
+  if ((parts[0] === 'github.com' || offset === 1) && parts.length >= offset + 4) {
+    return { host: parts[offset], owner: parts[offset + 1], repo: parts[offset + 2], branch: parts.slice(offset + 3).join('/'), local: false }
+  }
+  return { repo: roomName, branch: '', local: false }
+}
+
 /** Format a count with its singular or plural label. */
 export function formatCount(count: number, singular: string, plural = singular + 's'): string {
   return count + ' ' + (count === 1 ? singular : plural)

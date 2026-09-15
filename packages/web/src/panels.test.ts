@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest'
-import type { Claim, Presence, Scope } from '@room/shared'
-import { parseRoomUrl } from './conn.ts'
-import { deriveParticipants, deriveStatePill, shortPill } from './panels.ts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { RoomDoc, roomNameParts, type Claim, type Presence, type Scope } from '@room/shared'
+import { parseRoomUrl, type Conn } from './conn.ts'
+import { deriveParticipants, deriveStatePill, shortPill, header } from './panels.ts'
 
 describe('shortPill', () => {
   it('keeps the state and a short detail', () => {
@@ -65,5 +65,60 @@ describe('participant cards', () => {
     expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'ahead by 1' }] })).toBe('ahead (unpushed)')
     expect(deriveStatePill({ ...base, claims: [claim] })).toBe('editing parse')
     expect(deriveStatePill(base)).toBe('idle')
+  })
+})
+
+
+describe('roomNameParts', () => {
+  it.each([
+    ['github.com/rohanz/room/main', { host: 'github.com', owner: 'rohanz', repo: 'room', branch: 'main', local: false }],
+    ['local/room/main', { repo: 'room', branch: 'main', local: true }],
+    ['git/gitlab.com/team/room/main', { host: 'gitlab.com', owner: 'team', repo: 'room', branch: 'main', local: false }],
+    ['github.com/rohanz/room/feature/header/chips', { host: 'github.com', owner: 'rohanz', repo: 'room', branch: 'feature/header/chips', local: false }],
+    ['local/room/feature/header', { repo: 'room', branch: 'feature/header', local: true }],
+    ['git/gitlab.com/team/room/feature/header', { host: 'gitlab.com', owner: 'team', repo: 'room', branch: 'feature/header', local: false }],
+    ['demo', { repo: 'demo', branch: '', local: false }],
+  ])('parses %s', (name, expected) => {
+    expect(roomNameParts(name)).toEqual(expected)
+  })
+})
+
+// Minimal DOM surface for the header, following the other render tests.
+class HeaderElement {
+  className = ''; title = ''; children: (HeaderElement | string)[] = []
+  classList = { toggle: vi.fn() }
+  append(...children: (HeaderElement | string)[]) { this.children.push(...children) }
+  get textContent(): string { return this.children.map(c => typeof c === 'string' ? c : c.textContent).join('') }
+  set textContent(value: string) { this.children = [value] }
+  find(cls: string): HeaderElement | undefined {
+    return this.className === cls ? this : this.children.flatMap(c => typeof c === 'string' ? [] : [c.find(cls)]).find(Boolean)
+  }
+}
+
+describe('room header', () => {
+  afterEach(() => vi.unstubAllGlobals())
+  it.each([
+    ['github.com/rohanz/room/feature/header', 'rohanz / room', ['feature/header']],
+    ['local/room/main', 'room', ['local', 'main']],
+    ['git/gitlab.com/team/room/main', 'team / room', ['main']],
+  ])('renders %s with host only in the title', (displayRoomName, label, chips) => {
+    vi.stubGlobal('document', { createElement: () => new HeaderElement() })
+    const room = new RoomDoc()
+    room.metaMap.set('base', 'abcdef123456')
+    const conn = {
+      displayRoomName, room,
+      provider: { awareness: { getStates: () => new Map(), on: vi.fn() } },
+      onStatus: (fn: (connected: boolean) => void) => fn(true),
+    } as unknown as Conn
+    try {
+      const element = header(conn) as unknown as HeaderElement
+      expect(element.textContent).not.toContain('github.com')
+      expect(element.textContent).not.toContain('gitlab.com')
+      expect(element.find('room-name')?.textContent).toBe(label)
+      expect(element.find('room-name')?.title).toBe(displayRoomName)
+      expect(element.children.filter((c): c is HeaderElement => typeof c !== 'string' && c.className === 'room-chip mono').map(c => c.textContent)).toEqual(chips)
+      expect(element.textContent).toContain('base abcdef1')
+      expect(element.textContent).toContain('0 participants')
+    } finally { room.doc.destroy() }
   })
 })
