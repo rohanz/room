@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveNetwork } from './network-model.ts'
+import { deriveNetwork, rememberPlanClaims } from './network-model.ts'
 import type { GraphSnapshot } from '@room/shared'
 const graph: GraphSnapshot = {
   version: 1, base: 'abc', at: 0, status: 'ready', truncated: false,
@@ -55,6 +55,27 @@ describe('contract impact', () => {
     const result = deriveContractImpact({ ...graph, edges: [...graph.edges, { source: 'receipt', target: 'pricing', symbols: ['callback'] }] }, [contract])
     expect(result.indirect.has('pricing')).toBe(false)
     expect(deriveContractImpact(graph, [{ ...contract, path: 'deleted.ts' }]).contracts.has('deleted.ts')).toBe(true)
+  })
+  it('matches bare symbols case-insensitively and returns every direct consumer', () => {
+    const shop: GraphSnapshot = {
+      version: 1, base: 'shop', at: 0, status: 'ready', truncated: false,
+      paths: ['api/money.py', 'api/tax.py', 'api/reports.py'],
+      edges: [
+        { source: 'api/money.py', target: 'api/tax.py', symbols: ['api.money.Money'] },
+        { source: 'api/money.py', target: 'api/reports.py', symbols: ['money'] },
+      ],
+    }
+    const claim: Claim = { ...contract, path: 'api/money.py', plans: [{ kind: 'signature', symbol: 'Money' }] }
+    const result = deriveContractImpact(shop, [claim])
+    expect([...result.direct.keys()].sort()).toEqual(['api/reports.py', 'api/tax.py'])
+    expect([...deriveWorkImpact(shop, [claim], 'Rohan', []).downstream].sort()).toEqual(['api/reports.py', 'api/tax.py'])
+  })
+  it('retains observed plans as released after their claim disappears', () => {
+    const history = new Map()
+    expect(rememberPlanClaims(history, [contract])[0].released).toBeFalsy()
+    const remembered = rememberPlanClaims(history, [])
+    expect(remembered).toMatchObject([{ id: 'plan', released: true }])
+    expect(deriveContractImpact(graph, remembered).direct.has('checkout')).toBe(true)
   })
 })
 

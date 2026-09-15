@@ -1,7 +1,18 @@
-import type { GraphSnapshot } from '@room/shared'
+import type { Claim, GraphSnapshot } from '@room/shared'
 
 export type NetworkRole = 'changed' | 'upstream' | 'downstream' | 'context'
 export interface NetworkNode { path: string; role: NetworkRole; deleted: boolean }
+export type ImpactClaim = Claim & { released?: boolean }
+
+/** Retain plan-bearing claims after release for the lifetime of this browser view. */
+export function rememberPlanClaims(history: Map<string, ImpactClaim>, claims: readonly Claim[]): ImpactClaim[] {
+  const open = new Set(claims.map(c => c.id))
+  for (const claim of claims) if (claim.plans?.length) history.set(claim.id, { ...claim, released: false })
+  for (const [id, claim] of history) if (!open.has(id)) history.set(id, { ...claim, released: true })
+  return [...claims, ...[...history.values()].filter(c => c.released)]
+}
+
+const bareSymbol = (symbol: string) => symbol.trim().split(/[.:]+/).filter(Boolean).at(-1)?.toLowerCase() ?? ''
 
 /** Edges point from a provider to its consumer. Traversal handles cycles. */
 export function deriveNetwork(snapshot: GraphSnapshot, changed: readonly string[], deleted: readonly string[] = [], focused = true) {
@@ -30,10 +41,10 @@ export function deriveNetwork(snapshot: GraphSnapshot, changed: readonly string[
 
 /** Contract declarations remain separate from actual overlay edits. A graph match is
  * potential impact, never proof of a breaking change or completed implementation. */
-export function deriveContractImpact(snapshot: GraphSnapshot, claims: readonly import('@room/shared').Claim[]) {
-  type Declaration = { claimId: string; path: string; owner: string; kind: string; symbol: string; detail: string }
+export function deriveContractImpact(snapshot: GraphSnapshot, claims: readonly ImpactClaim[]) {
+  type Declaration = { claimId: string; path: string; owner: string; kind: string; symbol: string; detail: string; released: boolean }
   const declarations: Declaration[] = claims.flatMap(c => (c.plans ?? []).map(p => ({
-    claimId: c.id, path: c.path, owner: c.by, kind: p.kind, symbol: p.symbol, detail: p.detail ?? c.intent,
+    claimId: c.id, path: c.path, owner: c.by, kind: p.kind, symbol: p.symbol, detail: p.detail ?? c.intent, released: !!c.released,
   })))
   const contracts = new Map<string, Declaration[]>()
   const direct = new Map<string, Declaration[]>(), indirect = new Map<string, Declaration[]>()
@@ -46,7 +57,8 @@ export function deriveContractImpact(snapshot: GraphSnapshot, claims: readonly i
   for (const edge of snapshot.edges) outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge])
   for (const declaration of declarations) {
     append(contracts, declaration.path, declaration)
-    const first = (outgoing.get(declaration.path) ?? []).filter(edge => edge.symbols.includes(declaration.symbol))
+    const symbol = bareSymbol(declaration.symbol)
+    const first = (outgoing.get(declaration.path) ?? []).filter(edge => edge.symbols.some(candidate => bareSymbol(candidate) === symbol))
     const visited = new Set([declaration.path]), queue: string[] = []
     for (const edge of first) {
       append(direct, edge.target, declaration)
@@ -66,7 +78,7 @@ export function deriveContractImpact(snapshot: GraphSnapshot, claims: readonly i
 
 /** A participant's work is the anchor. Foreign plans only contribute paths that
  * reach that work; outgoing impact is inferred only from this participant's plans. */
-export function deriveWorkImpact(snapshot: GraphSnapshot, claims: readonly import('@room/shared').Claim[], person: string, changed: readonly string[]) {
+export function deriveWorkImpact(snapshot: GraphSnapshot, claims: readonly ImpactClaim[], person: string, changed: readonly string[]) {
   const mine = claims.filter(c => c.by === person)
   const work = new Set([...changed, ...mine.map(c => c.path)])
   const ancestors = new Set(work), queue = [...work]

@@ -2,7 +2,7 @@ import { bindTooltip, showTooltip, hideTooltip } from './tooltip.ts'
 import type { GraphSnapshot } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
 import { h, type FocusState } from './panels.ts'
-import { deriveNetwork, deriveContractImpact, deriveWorkImpact, type NetworkNode } from './network-model.ts'
+import { deriveNetwork, deriveContractImpact, deriveWorkImpact, rememberPlanClaims, type ImpactClaim, type NetworkNode } from './network-model.ts'
 
 const NS = 'http://www.w3.org/2000/svg'
 function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, text?: string) {
@@ -51,6 +51,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
   let fileSet = ''
   let impact: ReturnType<typeof deriveContractImpact>
   let workView: ReturnType<typeof deriveWorkImpact>
+  const planHistory = new Map<string, ImpactClaim>()
   const risk = (path: string) => workView.work.has(path) ? 'work' : workView.upstream.has(path) ? 'upstream' : workView.downstream.has(path) ? 'downstream' : 'context'
   const contractStyle = (path: string) => impact.contracts.has(path) ? 'contract' : impact.direct.has(path) ? 'direct' : impact.indirect.has(path) ? 'indirect' : 'neutral'
   const exposure = (path: string) => [...(impact.direct.get(path) ?? []), ...(impact.indirect.get(path) ?? [])]
@@ -86,14 +87,14 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
       h('p', { class: 'muted' }, `${node.deleted ? 'Deleted locally. ' : ''}${changers.length ? `Changed by ${changers.join(', ')}.` : 'No current overlay changes.'}`),
       h('p', {}, risk(node.path) === 'work' ? 'Your current work: edited locally or held in one of your open claims.' : risk(node.path) === 'upstream' ? 'Your work depends on this file. Contract exposures below are scoped to paths reaching your work.' : risk(node.path) === 'downstream' ? 'Potential consumer impact from your declared contract changes.' : 'Outside your current work and its contract-impact paths.'),
       h('div', { class: 'network-contract-details' },
-        ...(impact.contracts.get(node.path) ?? []).map(p => h('p', {}, `Declared ${p.kind} · ${p.symbol} · ${p.owner}: ${p.detail}`)),
+        ...(impact.contracts.get(node.path) ?? []).map(p => h('p', { class: p.released ? 'muted' : '' }, `${p.released ? 'Released' : 'Declared'} ${p.kind} · ${p.symbol} · ${p.owner}: ${p.detail}`)),
         ...(impact.direct.get(node.path) ?? []).map(p => h('p', {}, `Direct consumer of ${p.owner}'s ${p.symbol} in ${p.path} · ${p.kind}: ${p.detail}`)),
         ...(impact.indirect.get(node.path) ?? []).map(p => h('p', {}, `Further downstream of ${p.owner}'s ${p.symbol} in ${p.path} · potential transitive impact`)),
         ownedPlans.length ? h('div', {}, h('h3', {}, 'Potentially affected consumers in this view'),
           ...directConsumers.map(([path]) => h('div', { class: 'network-dependency mono' }, `Direct · ${path}`)),
           h('p', { class: 'muted' }, `${indirectConsumers.length} additional downstream exposures; behavior has not been tested.`)) : null,
-        impact.contracts.has(node.path) && !snapshot.edges.some(e => e.source === node.path && (impact.contracts.get(node.path) ?? []).some(p => e.symbols.includes(p.symbol))) ? h('p', { class: 'muted' }, 'No matching consumer in this snapshot. This does not establish compatibility; the symbol may already have changed or be unresolved.') : null,
-        h('p', { class: 'muted' }, 'Plan status: declared. Modified code does not establish that the plan is implemented. Run consumer tests to confirm compatibility.')),
+        impact.contracts.has(node.path) && !directConsumers.length ? h('p', { class: 'muted' }, 'No matching consumer in this snapshot. This does not establish compatibility; the symbol may already have changed or be unresolved.') : null,
+        h('p', { class: 'muted' }, `Plan status: ${ownedPlans.length && ownedPlans.every(p => p.released) ? 'released; retained from this page session.' : 'declared.'} Modified code does not establish that the plan is implemented. Run consumer tests to confirm compatibility.`)),
       h('div', { class: 'network-detail-columns' }, linkList('All indexed dependencies (context)', upstream, true), linkList('All indexed consumers (context)', downstream, false)),
       ...claims.map(c => h('p', {}, `${c.by}: ${c.intent}${c.plans?.length ? ` · ${c.plans.map(p => `${p.kind} ${p.symbol}: ${p.detail ?? ''}`).join('; ')}` : ''}`)))
     drawing?.querySelectorAll('[data-path]').forEach(el => el.classList.toggle('selected', el.getAttribute('data-path') === selectedPath))
@@ -106,6 +107,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     const names = [...new Set([...conn.room.graphs.keys(), ...conn.room.overlays.keys(), ...conn.room.deleted.keys(), ...conn.room.scopes.keys(), ...presences(conn.provider).map(p => p.user.name)])].sort()
     if (!names.includes(selectedPerson)) selectedPerson = names[0] ?? ''
     person.replaceChildren(...names.map(name => h('option', { value: name, selected: name === selectedPerson }, name)))
+    const claims = rememberPlanClaims(planHistory, conn.room.openClaims())
     const snapshot = conn.room.graphs.get(selectedPerson)
     if (!snapshot || snapshot.version !== 1) {
       stats.replaceChildren(); status.textContent = ''
@@ -114,7 +116,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     }
     const changed = conn.room.changedPaths(selectedPerson)
     const model = deriveNetwork(snapshot, changed, [...(conn.room.deleted.get(selectedPerson)?.keys() ?? [])], false)
-    workView = deriveWorkImpact(snapshot, conn.room.openClaims(), selectedPerson, changed)
+    workView = deriveWorkImpact(snapshot, claims, selectedPerson, changed)
     impact = workView.impact
     for (const path of new Set([...workView.work, ...impact.contracts.keys()])) if (!model.nodes.some(n => n.path === path)) model.nodes.push({ path, role: 'context', deleted: false })
     stats.replaceChildren(...[[workView.upstreamPlans, 'upstream contract risks'], [workView.work.size, 'my work files'], [workView.ownPlans, 'my declared plans'], [workView.downstream.size, 'potential consumers']].map(([count, label]) => h('div', {}, h('strong', {}, String(count)), h('span', {}, String(label)))))
@@ -172,7 +174,8 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
       const { x, y } = positions.get(node.path)!
       const editedBy = [...new Set([...conn.room.overlays.keys(), ...conn.room.deleted.keys()])].filter(p => conn.room.changedPaths(p).includes(node.path))
       const declared = impact.contracts.has(node.path)
-      const group = svg('g', { transform: `translate(${x} ${y})`, class: `network-node ${contractStyle(node.path)}${workView.work.has(node.path) ? ' my-work' : ''}${node.role === 'changed' ? ' own-edit' : ''}${node.path === selectedPath ? ' selected' : ''}`, tabindex: '0', role: 'button', 'aria-label': `${node.path}, ${risk(node.path)}, ${contractStyle(node.path)}${node.role === 'changed' ? ', my edits' : ''}`, 'data-path': node.path })
+      const released = declared && (impact.contracts.get(node.path) ?? []).every(p => p.released)
+      const group = svg('g', { transform: `translate(${x} ${y})`, class: `network-node ${contractStyle(node.path)}${released ? ' released-plan' : ''}${workView.work.has(node.path) ? ' my-work' : ''}${node.role === 'changed' ? ' own-edit' : ''}${node.path === selectedPath ? ' selected' : ''}`, tabindex: '0', role: 'button', 'aria-label': `${node.path}, ${risk(node.path)}, ${contractStyle(node.path)}${node.role === 'changed' ? ', my edits' : ''}`, 'data-path': node.path })
       group.classList.toggle('file-edited', editedBy.length > 0)
       group.classList.toggle('exposed', impact.direct.has(node.path) || impact.indirect.has(node.path))
       group.setAttribute('aria-label', `${node.path}, ${risk(node.path)}${declared ? ', contract change declared' : ''}${editedBy.length ? `, file modified by ${editedBy.join(', ')}` : ', no file edits'}`)
@@ -195,7 +198,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
           h('div', {}, risk(node.path) === 'work' ? 'My edited or planned work' : risk(node.path) === 'upstream' ? 'Upstream dependency of my work' : risk(node.path) === 'downstream' ? 'Consumer of my planned contract change' : 'Other file'),
           h('div', {}, plans.length ? `${plans.length} declared contract change(s)` : affected.length ? 'Potential consumer impact — not verified breakage' : 'No declared contract impact'),
           h('div', {}, editedBy.length ? `Actual file edits: ${editedBy.join(', ')}. Contract implementation is not verified.` : 'No actual file edits in the room; plans can exist before editing.'),
-          ...plans.slice(0, 2).map(p => h('div', {}, `${p.owner} · ${p.kind} ${p.symbol}: ${p.detail}`)),
+          ...plans.slice(0, 2).map(p => h('div', { class: p.released ? 'muted' : '' }, `${p.released ? 'Released · ' : ''}${p.owner} · ${p.kind} ${p.symbol}: ${p.detail}`)),
           ...affected.slice(0, 2).map(p => h('div', {}, `Depends on ${p.symbol} · ${p.owner}`)),
           h('div', { class: 'muted' }, `${node.role === 'changed' ? 'You have edits here. ' : ''}Click for full plans and dependency details.`))
         showTooltip(group, tooltip)
