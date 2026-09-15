@@ -134,7 +134,7 @@ describe('roomd v2 push-only overlays', () => {
     await fsp.writeFile(path.join(dir, 'fixtures/big.json'), '{"changed":true}\n')
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
     await waitFor(() => daemon.roomDoc.changedPaths('Ann').includes('app.py'))
-    await new Promise(resolve => setTimeout(resolve, 150))
+    await waitFor(() => daemon.skipped().ignore.includes('fixtures/big.json')) // the ignored file was seen and skipped, not merely not-yet-scanned
     expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
     expect(daemon.skipped().ignore).toEqual(['fixtures/big.json'])
     // Lifting the rule publishes the file; adding one back clears its overlay.
