@@ -376,11 +376,12 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   const compareLabel = h('span', { class: 'compare-label muted' })
   const legend = h('div', { class: 'legend' })
   const chips = h('div', { class: 'merge-chips', role: 'group', ariaLabel: 'Participants in merge' })
+  const chipHint = h('div', { class: 'merge-hint muted' })
   const excluded = new Map<string, Set<string>>()
   const included = (path: string, people: readonly string[]) => {
     if (!excluded.has(path)) {
       const defaults = new Set(presentPeople(people, presences(conn.provider)))
-      excluded.set(path, new Set(people.filter(person => !defaults.has(person))))
+      excluded.set(path, new Set(defaults.size ? people.filter(person => !defaults.has(person)) : []))
     }
     return people.filter(p => !excluded.get(path)!.has(p))
   }
@@ -401,10 +402,12 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     h('section', { class: 'center-files' }, h('div', { class: 'panel-title' }, 'Changed files'), fileList),
     h('section', { class: 'viewer' },
       h('div', { class: 'viewer-top' }, tabStrip, h('div', { class: 'toolbar' }, pathLabel, h('span', { class: 'sp' }), compareLabel, personSelect)),
-      chips, legend,
+      chips, chipHint, legend,
       host))
 
   const showViewer = (rows: FileRow[]) => {
+    chipHint.hidden = true
+    chipHint.textContent = ''
     chips.replaceChildren()
     chips.hidden = tab !== 'Merged'
     const selected = rows.find(candidate => candidate.path === selectedPath)
@@ -450,6 +453,12 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
         }
         return button
       }))
+      const online = new Set(presentPeople(people, presences(conn.provider)))
+      const hiddenOffline = people.filter(person => !online.has(person) && !active.includes(person)).length
+      chipHint.textContent = hiddenOffline
+        ? `${hiddenOffline} offline participants hidden — toggle their chips to include them`
+        : !online.size && active.length === people.length ? `Showing ${active.length} participants' changes` : ''
+      chipHint.hidden = !chipHint.textContent
       legend.replaceChildren(...active.map(person => h('span', {}, dot(person), ` lines by ${person}`)))
       const sha = conn.room.baseOf(people[0])
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
@@ -482,13 +491,19 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
         const item = h('button', { class: `file-item${row.path === selectedPath ? ' active' : ''}`, title: row.path },
           h('span', { class: 'file-path mono' }, row.path),
           row.claimCount ? h('span', { class: 'claim-count', title: `${row.claimCount} active claim${row.claimCount === 1 ? '' : 's'}` }, String(row.claimCount)) : null,
-          h('span', { class: 'file-dots' }, ...included(row.path, recentPeople(conn.room, row.path, row.people)).map(person => dot(person, `${person} changed this file`))))
+          h('span', { class: 'file-dots' }, ...row.people.map(person => {
+            const online = presentPeople([person], presences(conn.provider)).length > 0
+            const marker = dot(person, online ? `${person} changed this file` : 'offline')
+            if (!online) { marker.style.opacity = '0.5'; marker.title = 'offline' }
+            return marker
+          })))
         item.onclick = () => { selectedPath = row.path; selectedPerson = focus.person; render() }
         return item
       }))))
     if (!rows.length) fileList.append(h('div', { class: 'empty-note muted' }, 'No changed files'))
     showViewer(rows)
   }
+  conn.provider.awareness.on('change', render)
   personSelect.onchange = () => { selectedPerson = personSelect.value; render() }
   conn.room.metaMap.observe(render)
   conn.room.overlays.observeDeep(render)

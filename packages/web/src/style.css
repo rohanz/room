@@ -704,7 +704,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 }
 
 .merge-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; }
-.merge-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 16px; padding: 4px 8px; }
+.merge-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 16px; min-height: 28px; padding: 4px 10px; }
 .merge-chip[aria-pressed="false"] { opacity: .5; }
 .merge-chip[aria-pressed="true"] { border-color: var(--accent-text); }
 
@@ -713,3 +713,6 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .resize-handle { width: 6px; position: relative; cursor: col-resize; touch-action: none; user-select: none; }
 .resize-handle::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--line); }
 .resize-handle:hover::after, .resize-handle:focus-visible::after { background: var(--accent-text); }
+
+.merge-chip:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+.merge-hint { padding: 0 12px 8px; font-size: 12px; }

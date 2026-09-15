@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RoomDoc, roomNameParts, type Claim, type Presence, type Scope } from '@room/shared'
+import { RoomDoc, colorFor, roomNameParts, type Claim, type Presence, type Scope } from '@room/shared'
 import { parseRoomUrl, type Conn } from './conn.ts'
-import { deriveParticipants, deriveStatePill, shortPill, header } from './panels.ts'
+import { deriveParticipants, deriveStatePill, shortPill, header, centrePanel, createFocusState } from './panels.ts'
 
 describe('shortPill', () => {
   it('keeps the state and a short detail', () => {
@@ -124,5 +124,107 @@ describe('room header', () => {
       expect(element.textContent).toContain('base abcdef1')
       expect(element.textContent).toContain('0 participants')
     } finally { room.doc.destroy() }
+  })
+})
+
+// Exercise the real merged-pane render and click handlers without CodeMirror.
+class MergeElement extends HeaderElement {
+  style = { background: '', opacity: '', setProperty: vi.fn() }
+  dataset = {}
+  hidden = false
+  ariaPressed = ''
+  onclick = () => {}
+  classList = { toggle: vi.fn(), remove: vi.fn(), add: vi.fn() }
+  replaceChildren(...children: (HeaderElement | string)[]) { this.children = children }
+  querySelectorAll(selector: string): MergeElement[] {
+    const cls = selector.slice(1)
+    return this.children.flatMap(c => typeof c === 'string' ? [] : [
+      ...(c.className.split(' ').includes(cls) ? [c as MergeElement] : []),
+      ...(c as MergeElement).querySelectorAll(selector),
+    ])
+  }
+}
+
+describe('merged pane participant choices', () => {
+  afterEach(() => vi.unstubAllGlobals())
+  const setup = (online: string[]) => {
+    vi.stubGlobal('document', { createElement: () => new MergeElement() })
+    const room = new RoomDoc()
+    for (const person of ['Ada', 'Ben', 'Cy']) {
+      room.setBaseOf(person, 'base')
+      for (const path of ['a.ts', 'b.ts']) {
+        room.setBaseText('base', path, 'base')
+        room.setOverlay(person, path, person)
+      }
+    }
+    const states = new Map<number, unknown>()
+    const listeners = new Map<string, () => void>()
+    const presence = (names: string[]) => {
+      states.clear()
+      names.forEach((name, i) => states.set(i, { user: { name, kind: 'agent' } }))
+      listeners.get('change')?.()
+    }
+    presence(online)
+    const conn = { room, provider: { awareness: { getStates: () => states, on: (event: string, fn: () => void) => listeners.set(event, fn) } } } as unknown as Conn
+    const panel = centrePanel(conn, createFocusState()) as unknown as MergeElement
+    const chips = () => panel.querySelectorAll('.merge-chip')
+    const selected = () => chips().filter(c => c.ariaPressed === 'true').map(c => c.textContent)
+    return { room, panel, presence, chips, selected }
+  }
+
+  it('defaults all chips on when no participant with file changes is online', () => {
+    const s = setup(['Unrelated'])
+    try {
+      expect(s.selected()).toEqual(['Ada', 'Ben', 'Cy'])
+      expect(s.panel.find('merge-hint muted')?.textContent).toBe("Showing 3 participants' changes")
+      expect(s.panel.find('editor-wrap')?.textContent).toContain('Ada')
+    } finally { s.room.doc.destroy() }
+  })
+
+  it('defaults two online participants on and the offline participant off', () => {
+    const s = setup(['Ada', 'Ben'])
+    try {
+      expect(s.selected()).toEqual(['Ada', 'Ben'])
+      expect(s.panel.find('merge-hint muted')?.textContent).toBe('1 offline participants hidden — toggle their chips to include them')
+    } finally { s.room.doc.destroy() }
+  })
+
+  it('preserves manual toggles and per-file defaults across presence changes and file switches', () => {
+    const s = setup(['Ada', 'Ben'])
+    try {
+      s.chips()[0].onclick()
+      s.chips()[2].onclick()
+      s.presence(['Ada', 'Cy'])
+      expect(s.selected()).toEqual(['Ben', 'Cy'])
+      s.panel.querySelectorAll('.file-item')[1].onclick()
+      expect(s.selected()).toEqual(['Ada', 'Cy'])
+      s.presence([])
+      expect(s.selected()).toEqual(['Ada', 'Cy'])
+      s.panel.querySelectorAll('.file-item')[0].onclick()
+      expect(s.selected()).toEqual(['Ben', 'Cy'])
+    } finally { s.room.doc.destroy() }
+  })
+
+  it('renders every file participant dot in assigned colours regardless of chips or presence', () => {
+    const s = setup(['Ada', 'Ben'])
+    try {
+      const check = (offline: string[]) => {
+        for (const row of s.panel.querySelectorAll('.file-item')) {
+          const dots = row.querySelectorAll('.dot')
+          expect(dots.map(d => d.style.background)).toEqual(['Ada', 'Ben', 'Cy'].map(colorFor))
+          dots.forEach((d, i) => {
+            const absent = offline.includes(['Ada', 'Ben', 'Cy'][i])
+            expect(d.style.opacity).toBe(absent ? '0.5' : '')
+            if (absent) expect(d.title).toBe('offline')
+          })
+        }
+      }
+      check(['Cy'])
+      s.chips()[0].onclick()
+      s.chips()[2].onclick()
+      check(['Cy'])
+      s.presence([])
+      check(['Ada', 'Ben', 'Cy'])
+    } finally { s.room.doc.destroy() }
   })
 })
