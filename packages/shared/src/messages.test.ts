@@ -7,6 +7,7 @@ import {
   registerMessageKind,
   shouldWakeOnMsg,
   type MsgBase,
+  type BaseMsg,
 } from './index.js'
 
 declare module './types.js' {
@@ -25,7 +26,7 @@ describe('MessageKinds', () => {
 
   it('wakes for base moves only with uncommitted work', () => {
     const room = new RoomDoc()
-    const m = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'abc', commits: 1, summary: 'update', paths: [] })
+    const m = room.post<BaseMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'abc', commits: 1, summary: 'update', paths: [] })
     const me = { name: 'Rohan', kind: 'agent' } as const
     expect(shouldWakeOnMsg(me, m, [], false).wake).toBe(false)
     expect(shouldWakeOnMsg(me, m, [], true).wake).toBe(true)
@@ -35,7 +36,7 @@ describe('MessageKinds', () => {
   it('uses a registered priority when posting a waking kind', () => {
     registerMessageKind('ping', { audience: 'broadcast', wakes: 'always', priority: 'interrupt', format: m => m.text })
     const room = new RoomDoc()
-    const m = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'ping', text: 'look' })
+    const m = room.post<PingMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'ping', text: 'look' })
     expect(m.priority).toBe('interrupt')
     expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m).wake).toBe(true)
     room.doc.destroy()

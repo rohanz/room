@@ -129,7 +129,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 
 
 export function install(state: HandlerState): void {
-  const { log, base, presences, others, shareOf, now, isMe } = state
+  const { ctx, log, base, presences, others, shareOf, now, isMe } = state
   const STALE_MS = (ctx.config?.staleDays ?? 7) * 24 * 60 * 60 * 1000
   const areaIndex = new WeakMap<Session, Areas>()
   const loadAreas = async (s: Session): Promise<Areas> => {

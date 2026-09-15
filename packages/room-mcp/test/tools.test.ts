@@ -9,6 +9,7 @@ import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import type { Session } from '../src/session.js'
+import { resolveConfig, type ResolvedConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
@@ -37,7 +38,7 @@ function fakeSession(room: RoomDoc, synced = true): Session {
   }
 }
 
-function setup(opts: { synced?: boolean; joined?: boolean } = {}) {
+function setup(opts: { synced?: boolean; joined?: boolean; config?: ResolvedConfig } = {}) {
   const { a, b } = pair()
   a.setMeta({ repo: 'demo', branch: 'main', base })
   a.setOverlay('Rohan', 'app.py', MINE)
@@ -45,7 +46,7 @@ function setup(opts: { synced?: boolean; joined?: boolean } = {}) {
   const joined: string[] = []
   const created: boolean[] = []
   const tools = createTools({
-    getSession: () => session, setSession: s => { session = s }, cwd: dir,
+    config: opts.config, getSession: () => session, setSession: s => { session = s }, cwd: dir,
     join: async o => { joined.push(o.dir); created.push(!!o.create); return fakeSession(a) },
     leave: async () => {},
   })
@@ -64,6 +65,13 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('session gating', () => {
+  it('renders stale claims using the resolved staleDays argument', async () => {
+    const config = await resolveConfig({ dir, env: { ROOM_STALE_DAYS: '7' }, args: { staleDays: 1 } })
+    const t = setup({ config })
+    const c = t.other.addClaim({ by: 'Kieran', byKind: 'agent', path: 'app.py', from: 1, to: 2, intent: 'old work' })
+    t.other.claims.set(c.id, { ...c, at: Date.now() - 2 * 86400000 })
+    expect(await t.tools.call('room_state', {})).toContain('stale')
+  })
   it('refuses tools before join and gates until synced', async () => {
     const t = setup({ joined: false })
     expect(await t.tools.call('room_state', {})).toBe('error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.')
