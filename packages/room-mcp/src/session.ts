@@ -13,19 +13,12 @@ import { gitCommonDir, localRoomName } from '@room/roomd/local'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import type { Identity, Kind, RoomDoc } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
-import { getCredential, removeCredential, setCredential } from './credentials.js'
+import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
+import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveServer } from './config.js'
 
 /** The hosted room server. Override with ROOM_SERVER (e.g. ws://localhost:1234 for local dev). */
 /** The hosted server, used when ROOM_SERVER=hosted (or an explicit URL). Without ROOM_SERVER a session is LOCAL: no server at all. */
-export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
-export const LOCAL = 'local'
-/** Resolve ROOM_SERVER / the server argument: unset or "local" → local mode; "hosted" → DEFAULT_SERVER; else the URL. */
-export function resolveServer(raw?: string): string {
-  const v = raw?.trim()
-  if (!v || v === LOCAL) return LOCAL
-  if (v === 'hosted') return DEFAULT_SERVER
-  return v
-}
+export { DEFAULT_SERVER, LOCAL, resolveServer }
 export const DEFAULT_WEB = 'http://localhost:5173'
 
 export interface Session {
@@ -218,7 +211,7 @@ export async function serverShareMax(server: string): Promise<ShareLevel> {
 
 /** The level to join with: the explicit argument, else ROOM_SHARE, else full. Throws on an unknown value. */
 export function requestedShare(explicit?: string): ShareLevel {
-  const raw = explicit?.trim() || process.env.ROOM_SHARE?.trim() || 'full'
+  const raw = explicit?.trim() || 'full'
   const level = parseShare(raw)
   if (!level) throw new RoomdError(`share must be intent, declared or full (got "${raw}")`, 2)
   return level
@@ -271,13 +264,15 @@ export function decodeRoom(encoded: string): string { try { return decodeURIComp
 
 export async function joinSession(opts: JoinOptions): Promise<Session> {
   const dir = resolve(opts.dir)
+  const config = await resolveConfig({ dir, env: process.env, args: opts })
+  configureCredentials(config.credentialsPath)
   if (opts.log) setServerLog(opts.log)
-  const chosen = resolveServer(opts.server ?? process.env.ROOM_SERVER)
-  if (chosen === LOCAL) return joinLocal(dir, opts)
+  const chosen = config.server
+  if (chosen === LOCAL) return joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, web: config.web })
   const parsed = parseServer(chosen)
   const server = parsed.server
-  const token = opts.token ?? process.env.ROOM_TOKEN?.trim() ?? parsed.token
-  const web = (opts.web ?? process.env.ROOM_WEB ?? defaultWeb(server)).replace(/\/+$/, '')
+  const token = config.token ?? parsed.token
+  const web = (config.web ?? defaultWeb(server)).replace(/\/+$/, '')
 
   let roomName = opts.room
   if (!roomName) {
@@ -289,10 +284,10 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const auth = await resolveAuth(server, roomName, token)
   // Logged in with GitHub: the owner is the verified login, whatever git config says. A label (ROOM_TAG)
   // makes this a second principal under the same owner: name = login+label (e.g. rohanz+codex).
-  const label = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, '') || undefined
-  const kindEnv = (opts.kind ?? process.env.ROOM_KIND)?.trim()
+  const label = config.tag?.replace(/[^A-Za-z0-9_-]/g, '') || undefined
+  const kindEnv = config.kind
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
-  const owner = auth.login ?? opts.name ?? await defaultName(dir)
+  const owner = auth.login ?? config.owner ?? config.name ?? await defaultName(dir)
   if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
   const name = label ? `${owner}+${label}` : owner
   const me: Identity = { name, kind, owner, ...(label ? { label } : {}) }
@@ -307,7 +302,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (pre?.missing) throw new NoRoom(roomName, pre.reason)
   if (pre?.loginNeeded) throw new NotLoggedIn(server)
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2)
-  const shareRequested = requestedShare(opts.share)
+  const shareRequested = requestedShare(config.share)
   const shareMax = await serverShareMax(server)
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
@@ -340,10 +335,10 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
 async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const roomName = opts.room ?? await localRoomName(dir, opts.localBranch)
   // A dispatched worker is named after its lead's verified owner (ROOM_OWNER), not this clone's git config.
-  const owner = opts.name ?? (process.env.ROOM_OWNER?.trim() || await defaultName(dir))
+  const owner = opts.name ?? await defaultName(dir)
   if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
-  const label = (opts.tag ?? process.env.ROOM_TAG)?.trim().replace(/[^A-Za-z0-9_-]/g, '') || undefined
-  const kindEnv = (opts.kind ?? process.env.ROOM_KIND)?.trim()
+  const label = opts.tag?.trim().replace(/[^A-Za-z0-9_-]/g, '') || undefined
+  const kindEnv = opts.kind?.trim()
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
   const name = label ? `${owner}+${label}` : owner
   const me: Identity = { name, kind, owner, ...(label ? { label } : {}) }
@@ -356,7 +351,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     daemon = await startRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log })
   } catch (e) { await local.stop(); throw e }
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
-  const web = (opts.web ?? process.env.ROOM_WEB ?? local.httpUrl).replace(/\/+$/, '')
+  const web = (opts.web ?? local.httpUrl).replace(/\/+$/, '')
   // The link carries the relay key: it is machine-local, and anyone holding it can read the room.
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(name)}&key=${encodeURIComponent(local.key)}`
   const graph = new GraphIndex(daemon.roomDoc, name, dir, opts.log)
@@ -438,7 +433,7 @@ export async function closeRoom(server: string, roomName: string, auth: Creds): 
 export async function authFor(s: Session): Promise<Creds & { server: string }> {
   if (s.local) throw new RoomdError('local room: no server to authenticate to', 2)
   const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
-  const token = process.env.ROOM_TOKEN?.trim() ?? parseServer(process.env.ROOM_SERVER ?? '').token
+  const token = s.token
   const { login: _login, ...creds } = await resolveAuth(server, s.roomName, token)
   return { ...creds, server }
 }

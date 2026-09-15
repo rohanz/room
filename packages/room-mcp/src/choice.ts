@@ -9,7 +9,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { gitCommonDir } from '@room/roomd/local'
-import { DEFAULT_SERVER, LOCAL, resolveServer } from './session.js'
+import { DEFAULT_SERVER, LOCAL, normaliseWhere, resolveConfig } from './config.js'
 
 export const CHOICE_FILE = 'room-choice.json'
 
@@ -27,18 +27,7 @@ export interface ServerChoice {
 }
 
 /** "team"/"hosted" → the hosted server; "local" or empty → local; anything else is a server URL. */
-export function normaliseWhere(where?: string): string | undefined {
-  const w = where?.trim()
-  if (!w) return undefined
-  if (w === 'team' || w === 'hosted' || w === 'web' || w === 'shared') return 'team'
-  if (w === LOCAL) return LOCAL
-  return w
-}
-
-function serverFor(where: string): string {
-  if (where === 'team') return DEFAULT_SERVER
-  return resolveServer(where)
-}
+export { normaliseWhere }
 
 export async function choiceFile(dir: string): Promise<string> {
   return path.join(await gitCommonDir(dir), CHOICE_FILE)
@@ -78,16 +67,8 @@ export async function clearChoice(dir: string): Promise<boolean> {
 
 /** Decide the server for a join. `where` is the tool argument; `env` is ROOM_SERVER. */
 export async function chooseServer(dir: string, where?: string, env?: string): Promise<ServerChoice> {
-  const arg = normaliseWhere(where)
-  if (arg) return { server: serverFor(arg), rule: 'argument', where: arg }
-  const e = normaliseWhere(env)
-  if (e) return { server: serverFor(e), rule: 'env', where: e }
-  const remembered = await readChoice(dir).catch(() => undefined)
-  if (remembered) {
-    const w = normaliseWhere(remembered.where) ?? LOCAL
-    return { server: serverFor(w), rule: 'remembered', where: w }
-  }
-  return { server: LOCAL, rule: 'default', where: LOCAL }
+  const c = await resolveConfig({ dir, args: { where }, env: { ROOM_SERVER: env } })
+  return { server: c.server, rule: c.whereRule, where: c.where }
 }
 
 /** One word for humans: "local" or "team", else the URL. */

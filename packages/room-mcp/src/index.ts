@@ -1,6 +1,5 @@
 #!/usr/bin/env tsx
 import fs from 'node:fs'
-import { resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
@@ -10,7 +9,7 @@ import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
-import { chooseServer } from './choice.js'
+import { resolveConfig } from './config.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
@@ -18,11 +17,13 @@ export type { WakeEvent, RoomEvent } from './wake.js'
 export { createTools, DEFS } from './tools.js'
 export type { ToolCtx, ToolDef, Tools } from './tools.js'
 export { joinSession, leaveSession, createRoom, closeRoom, NoRoom, NotLoggedIn, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer, serverAuthMode, serverShareMax, requestedShare, resolveAuth, startLogin, pollLogin, logout } from './session.js'
-export { credentialsPath, getCredential, setCredential, removeCredential } from './credentials.js'
+export { credentialsPath, configureCredentials, getCredential, setCredential, removeCredential } from './credentials.js'
 export type { Session, JoinOptions } from './session.js'
+export { resolveConfig } from './config.js'
+export type { ResolvedConfig, ConfigArgs, ConfigRule } from './config.js'
 
 // ROOM_LOG_FILE: also append every log line to a file (workers spawned by room_spawn get one per tag).
-const LOG_FILE = process.env.ROOM_LOG_FILE?.trim()
+let LOG_FILE: string | undefined
 const log = (s: string) => {
   process.stderr.write(`room-mcp: ${s}\n`)
   if (LOG_FILE) { try { fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${s}\n`) } catch { /* best effort */ } }
@@ -31,14 +32,16 @@ const log = (s: string) => {
 /** Where the user is working: the runner passes ROOM_DIR; the Codex plugin passes PWD through. */
 function cwd(): string {
   const e = (k: string) => (process.env[k] && process.env[k]!.trim()) || undefined
-  return resolve(e('ROOM_DIR') ?? e('PWD') ?? e('INIT_CWD') ?? process.cwd())
+  return e('ROOM_DIR') ?? e('PWD') ?? e('INIT_CWD') ?? process.cwd()
 }
 
 async function main() {
   let session: Session | null = null
   const dir = cwd()
+  const startup = await resolveConfig({ dir, env: process.env })
+  LOG_FILE = startup.logFile
   // attachChannel is also handed to the tools so the workers room (opened by room_spawn next to a team session) pushes its wake-ups too.
-  const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir, attachChannel: s => attachChannel(s) })
+  const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir, config: startup, attachChannel: s => attachChannel(s) })
   const adopt = (s: Session) => { session = s; attachChannel(s); tools.attachHooks(s); const n = tools.clearStale(s); if (n) log(`cleared ${n} stale claim(s) from an earlier session`) }
 
   const mcp = new Server(
@@ -73,24 +76,23 @@ async function main() {
 
   // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
   // simply a clone with a git origin. A repo nobody has opened waits for room_create.
-  const env = (k: string) => (process.env[k] && process.env[k]!.trim()) || undefined
   const prior = findRoomFile(dir)
   const autoJoin = (async () => {
     try {
       // The clone's origin + current branch always decides the room. ROOM_URL (runner) or a
       // prior .room.json only fill in when the clone has no origin.
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
-      const choice = await chooseServer(dir, undefined, env('ROOM_SERVER'))
-      const chosen = choice.server
-      log(`room: ${choice.where.replace(/\?.*$/, '')} (${choice.rule === 'env' ? 'ROOM_SERVER' : choice.rule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
-      if (env('ROOM_URL')) {
-        const u = new URL(env('ROOM_URL')!)
-        adopt(await joinSession({ dir: env('ROOM_DIR') ?? dir, name: env('ROOM_NAME'), room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))
+      const chosen = startup.server
+      log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
+      const roomUrl = process.env.ROOM_URL?.trim()
+      if (roomUrl) {
+        const u = new URL(roomUrl)
+        adopt(await joinSession({ dir: startup.dir, name: startup.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))
       } else if (chosen === LOCAL) {
         // No server configured: a local room on this machine (workers get the lead's room via ROOM_ROOM).
-        adopt(await joinSession({ dir, room: env('ROOM_ROOM'), server: LOCAL, log }))
-      } else if (env('ROOM_ROOM')) {
-        adopt(await joinSession({ dir, room: env('ROOM_ROOM'), server: chosen, log }))
+        adopt(await joinSession({ dir, room: startup.room, server: LOCAL, log }))
+      } else if (startup.room) {
+        adopt(await joinSession({ dir, room: startup.room, server: chosen, log }))
       } else if (derived.roomName) {
         adopt(await joinSession({ dir, server: chosen, log }))
       } else if (prior) {
