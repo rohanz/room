@@ -47,13 +47,14 @@ export function connect(search = location.search): Conn {
   const roomLocation = roomLocationFromQuery(search)
   const doc = new Y.Doc()
   const room = new RoomDoc(doc)
-  const q = new URLSearchParams(location.search)
-  const token = q.get('token') ?? '', view = q.get('view') ?? '', key = q.get('key') ?? ''
+  const q = new URLSearchParams(search)
+  const token = q.get('token') ?? '', view = q.getAll('view').find(value => value !== 'board' && value !== 'code') ?? '', key = q.get('key') ?? ''
   const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: key ? { key } : view ? { view } : token ? { token } : {} })
   // A refused websocket never surfaces a status code; ask the server over HTTP why, and say so.
-  // A local relay (loopback) needs no key and has no /view-token endpoint.
+  // Shared view links and local keys already carry access; avoid an unauthenticated preflight.
+  // A local relay has no /view-token endpoint.
   const host = new URL(roomLocation.serverUrl).hostname
-  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]') void explainAccess(roomLocation, { view, token }, provider)
+  if (!q.has('view') && !q.has('key') && host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]') void explainAccess(roomLocation, { view, token }, provider)
   // A successful sync supersedes any earlier HTTP preflight error.
   provider.on('sync', (synced: boolean) => {
     if (synced) document.getElementById('access-error')?.remove()
