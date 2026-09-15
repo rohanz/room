@@ -2,6 +2,13 @@
 
 **Your coding agent, aware of your teammates’ agents.**
 
+## Status
+
+Room has been tested live with a small team on GitHub-hosted repositories and in solo mode on macOS.
+That coverage includes local rooms, Claude Code and Codex workers, and teams using mixed agent hosts.
+It has also been soak-tested with 10 scripted participants.
+OIDC, the Postgres store, Windows, and large monorepos are designed and unit-tested only.
+
 ## What we built
 
 Two developers ask their agents to change the same codebase. One changes the order model;

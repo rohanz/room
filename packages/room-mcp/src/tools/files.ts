@@ -16,8 +16,8 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { path: str('optional path'), person: str('default you') } } },
   { name: 'room_impact', annotations: RO, description: 'Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
-  { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and another person\'s combine cleanly? Three-way merge against the common base; nothing in any clone is written. Reports clean paths and conflicting hunks. With `run`, materialises the merged tree in a scratch directory and runs that command there (e.g. the tests), so you can verify code that depends on their unmerged work.',
-    inputSchema: { type: 'object', properties: { person: str('the other person'), run: str('optional shell command to run in the merged tree, e.g. "uv run pytest -q"'), resolve: { type: 'boolean', description: 'when a conflicting region on one side contains the other side\'s lines in order (you built on their change), take the larger side and return the resolved file text so you can write it to your own clone' } }, required: ['person'] } }
+  { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and other people\'s combine cleanly? A lead can preview all its workers at once. Merges each listed person\'s live tree in order, three-way against the common base; nothing in any clone is written. Reports per-step clean paths and conflicting hunks with the people involved, then the final combined tree. `person` is a one-person alias for `people`. With `run`, materialises the fully combined tree in a scratch directory and runs that command there (e.g. the tests).',
+    inputSchema: { type: 'object', properties: { people: strs('people to merge in order'), person: str('one-person alias for people'), run: str('optional shell command to run in the fully combined tree, e.g. "uv run pytest -q"'), resolve: { type: 'boolean', description: 'when a conflicting region on one side contains the other side\'s lines in order, take the larger side and return the resolved file text so you can write it to your own clone' } } } }
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -81,77 +81,130 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return out.join('\n')
     },
     async room_preview_merge(a) {
-      const person = typeof a.person === 'string' && a.person ? a.person : ''
-      if (!person || person === S().me.name) return 'error: person is required (someone other than you)'
-      const s = rooms.holding(person, S()) // my own overlay is in both rooms; a local worker's only in the workers room
-      const held = withheld(s, person)
-      if (held) return held
-      const declaredNote = shareOf(s, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
-      const myBase = baseFor(s, s.me.name), theirBase = baseFor(s, person)
-      let ancestor = myBase
-      if (theirBase !== myBase) {
-        try { ancestor = (await git(s.dir, ['merge-base', myBase, theirBase])).trim() }
-        catch { return `error: ${person}'s HEAD ${theirBase.slice(0, 10)} is not in this clone; git fetch, then retry` }
+      const caller = S()
+      const alias = typeof a.person === 'string' && a.person.trim() ? a.person.trim() : ''
+      if (a.people !== undefined && !Array.isArray(a.people)) return 'error: people must be an array of names'
+      if (Array.isArray(a.people) && a.people.some(p => typeof p !== 'string' || !p.trim())) return 'error: people must contain non-empty names'
+      if (Array.isArray(a.people) && alias) return 'error: pass people or person, not both'
+      const people = Array.from(new Set(Array.isArray(a.people) ? (a.people as string[]).map(p => p.trim()) : alias ? [alias] : []))
+      if (!people.length || people.includes(caller.me.name)) return 'error: people is required (one or more people other than you); person is a one-person alias'
+      const participants = people.map(person => ({ person, session: rooms.holding(person, caller) }))
+      for (const { person, session } of participants) {
+        const held = withheld(session, person)
+        if (held) return held
       }
-      const committedBetween = theirBase === myBase ? [] : (await git(s.dir, ['diff', '--name-only', ancestor, theirBase])).split('\n').filter(Boolean)
-      const paths = Array.from(new Set([...s.room.changedPaths(s.me.name), ...s.room.changedPaths(person), ...committedBetween])).sort()
-      if (!paths.length) return `neither you nor ${person} has changes relative to ${ancestor.slice(0, 10)}`
-      const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], resolvable: string[] = []
-      const resolvedText = new Map<string, string>()
-      const merged = new Map<string, string | null>() // path -> merged text, null = deleted
+      const bases = [{ person: caller.me.name, base: baseFor(caller, caller.me.name) }, ...participants.map(({ person, session }) => ({ person, base: baseFor(session, person) }))]
+      let ancestor = bases[0].base
+      for (const item of bases.slice(1)) {
+        if (item.base === ancestor) continue
+        try { ancestor = (await git(caller.dir, ['merge-base', ancestor, item.base])).trim() }
+        catch { return `error: ${item.person}'s HEAD ${item.base.slice(0, 10)} is not in this clone; git fetch, then retry` }
+      }
+      const pathSet = new Set<string>()
+      for (const item of [{ person: caller.me.name, session: caller }, ...participants]) {
+        for (const p of item.session.room.changedPaths(item.person)) pathSet.add(p)
+        if (baseFor(item.session, item.person) !== ancestor) {
+          for (const p of (await git(caller.dir, ['diff', '--name-only', ancestor, baseFor(item.session, item.person)])).split('\n').filter(Boolean)) pathSet.add(p)
+        }
+      }
+      const paths = Array.from(pathSet).sort()
+      if (!paths.length) return `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`
+      const baseTexts = new Map<string, string>()
+      const merged = new Map<string, string | null>()
+      const owners = new Map<string, string[]>()
       for (const p of paths) {
-        const b = (await gitShow(s.dir, ancestor, p)) ?? ''
-        const m = await liveText(s, p, s.me.name), t = await liveText(s, p, person)
-        const mineT = m === null ? '' : m ?? b, theirs = t === null ? '' : t ?? b
-        if (mineT === b || theirs === b) {
-          onlyOne.push(`${p} (${mineT === b ? person : 'you'} only)`)
-          const side = mineT === b ? t : m
-          merged.set(p, side === null ? null : side ?? b)
-          continue
-        }
-        const res = diff3Merge(mineT.split('\n'), b.split('\n'), theirs.split('\n'))
-        const hunks = res.filter(r => 'conflict' in r)
-        if (!hunks.length) { clean.push(p); merged.set(p, res.flatMap(r => r.ok ?? []).join('\n')); continue }
-        let line = 1
-        const detail: string[] = []
-        const resolvedLines: string[] = []
-        let unresolved = 0
-        for (const r of res) {
-          if (r.ok) { line += r.ok.length; resolvedLines.push(...r.ok); continue }
-          const c = r.conflict
-          if (!c) continue
-          const sup = supersetSide(c.a, c.b)
-          if (sup) {
-            detail.push(`  around line ${line}: ${sup === 'a' ? 'your' : `${person}'s`} version contains ${sup === 'a' ? `${person}'s` : 'your'} change in order — resolvable by taking ${sup === 'a' ? 'yours' : 'theirs'}`)
-            resolvedLines.push(...(sup === 'a' ? c.a : c.b))
-          } else {
-            unresolved++
-            detail.push(`  around line ${line}: you changed ${c.a.length} line(s), ${person} changed ${c.b.length} line(s) — needs a human or a rewrite`)
-            resolvedLines.push('<<<<<<< yours', ...c.a, '=======', ...c.b, `>>>>>>> ${person}`)
-          }
-          line += c.o.length
-        }
-        if (!unresolved) { resolvable.push(p); merged.set(p, resolvedLines.join('\n') + (resolvedLines.length ? '\n' : '')) }
-        conflicts.push(`${p}${unresolved ? '' : ' (resolvable)'}\n${detail.join('\n')}`)
-        if (!unresolved && a.resolve === true) resolvedText.set(p, merged.get(p)!)
+        const b = (await gitShow(caller.dir, ancestor, p)) ?? ''
+        baseTexts.set(p, b)
+        const mine = await liveText(caller, p, caller.me.name)
+        const text = mine === undefined ? b : mine
+        merged.set(p, text)
+        if ((text ?? '') !== b) owners.set(p, [caller.me.name])
       }
-      const out = [`preview merge of your changes with ${person}'s (common ancestor ${ancestor.slice(0, 10)}${theirBase !== myBase ? `; ${person} is on ${theirBase.slice(0, 10)}, you on ${myBase.slice(0, 10)}` : ''}):`]
-      if (declaredNote) out.push(declaredNote)
-      if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
-      if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
-      const hard = conflicts.filter(c => !c.includes(' (resolvable)'))
-      if (conflicts.length) out.push(`CONFLICTS:\n${conflicts.join('\n')}`)
-      else out.push('no conflicts')
-      if (resolvable.length && a.resolve !== true) out.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone (only your side changes).`)
+      const out = [`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}):`]
+      let hardCount = 0
+      let conflictCount = 0
+      const resolvedText = new Map<string, string>()
+      for (const [index, { person, session }] of participants.entries()) {
+        const declaredNote = shareOf(session, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
+        const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], resolvable: string[] = []
+        for (const p of paths) {
+          const b = baseTexts.get(p)!
+          const mine = merged.get(p)
+          const theirsRaw = await liveText(session, p, person)
+          const mineT = mine ?? '', theirs = theirsRaw === null ? '' : theirsRaw ?? b
+          if (theirs === b) continue
+          if (mineT === b) {
+            onlyOne.push(`${p} (${person} only)`)
+            merged.set(p, theirsRaw === null ? null : theirs)
+            owners.set(p, [...(owners.get(p) ?? []), person])
+            continue
+          }
+          const res = diff3Merge(mineT.split('\n'), b.split('\n'), theirs.split('\n'))
+          const hunks = res.filter(r => 'conflict' in r)
+          if (!hunks.length) {
+            clean.push(p)
+            merged.set(p, res.flatMap(r => r.ok ?? []).join('\n'))
+            owners.set(p, [...(owners.get(p) ?? []), person])
+            continue
+          }
+          let line = 1, unresolved = 0
+          const detail: string[] = [], resolvedLines: string[] = []
+          const prior = owners.get(p) ?? [caller.me.name]
+          const pairNames: string[] = []
+          for (const owner of prior) {
+            const ownerSession = owner === caller.me.name ? caller : rooms.holding(owner, caller)
+            const ownerRaw = await liveText(ownerSession, p, owner)
+            const ownerText = ownerRaw === null ? '' : ownerRaw ?? b
+            if (diff3Merge(ownerText.split('\n'), b.split('\n'), theirs.split('\n')).some(r => 'conflict' in r)) pairNames.push(owner)
+          }
+          const conflictsWith = pairNames.length ? pairNames : [prior[prior.length - 1]]
+          for (const r of res) {
+            if (r.ok) { line += r.ok.length; resolvedLines.push(...r.ok); continue }
+            const c = r.conflict
+            if (!c) continue
+            const who = conflictsWith.map(owner => `${owner} and ${person}`).join(', ')
+            const sup = supersetSide(c.a, c.b)
+            if (sup) {
+              const contains = sup === 'a'
+                ? conflictsWith.length === 1 && conflictsWith[0] === caller.me.name ? `your version contains ${person}'s change in order` : `the combined version contains ${person}'s change in order`
+                : `${person}'s version contains ${conflictsWith.length === 1 && conflictsWith[0] === caller.me.name ? 'your' : 'the combined'} change in order`
+              detail.push(`  around line ${line}: conflict between ${who}; ${contains} — resolvable by taking ${sup === 'a' ? 'the combined version' : `${person}'s`}`)
+              resolvedLines.push(...(sup === 'a' ? c.a : c.b))
+            } else {
+              unresolved++
+              detail.push(`  around line ${line}: conflict between ${who}; combined tree changed ${c.a.length} line(s), ${person} changed ${c.b.length} line(s) — needs a human or a rewrite`)
+              resolvedLines.push('<<<<<<< combined', ...c.a, '=======', ...c.b, `>>>>>>> ${person}`)
+            }
+            line += c.o.length
+          }
+          conflictCount++
+          if (!unresolved) {
+            resolvable.push(p)
+            const text = resolvedLines.join('\n') + (resolvedLines.length ? '\n' : '')
+            merged.set(p, text)
+            owners.set(p, [...prior, person])
+            if (a.resolve === true) resolvedText.set(p, text)
+          } else hardCount++
+          conflicts.push(`${p}${unresolved ? '' : ' (resolvable)'}\n${detail.join('\n')}`)
+        }
+        out.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(' + ')}`)
+        if (declaredNote) out.push(declaredNote)
+        if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
+        if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
+        if (conflicts.length) out.push(`CONFLICTS:\n${conflicts.join('\n')}`)
+        else out.push('no conflicts')
+        if (resolvable.length && a.resolve !== true) out.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone.`)
+      }
       for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
+      out.push(`final combined tree: ${merged.size} path(s) applied over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       let ranOk = !run
       if (run) {
-        if (hard.length) out.push(`not running "${run}": ${hard.length} conflict(s) need a human first`)
-        else { const r = await runInMergedTree(s, ancestor, merged, run); out.push(r); ranOk = /: exit 0\n/.test(r) }
+        if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
+        else { const r = await runInMergedTree(caller, ancestor, merged, run); out.push(r); ranOk = /: exit 0\n/.test(r) }
       }
       // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
-      if (!hard.length && ranOk) s.room.post<NoteMsg>(s.me, { type: 'note', text: `merge preview with ${person}: ${conflicts.length ? `${resolvable.length} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
+      if (!hardCount && ranOk) caller.room.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
       return out.join('\n')
     }
   }

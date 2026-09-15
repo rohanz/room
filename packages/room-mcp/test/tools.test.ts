@@ -139,8 +139,8 @@ describe('session gating', () => {
     expect(t.session).not.toBeNull()
   })
 
-  it('lists the twenty-two tools', () => {
-    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss'])
+  it('lists the twenty-three tools', () => {
+    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss'])
   })
 })
 
@@ -413,6 +413,30 @@ describe('wait', () => {
 })
 
 describe('preview merge', () => {
+  it('merges multiple people in order into one combined scratch tree', async () => {
+    const t = setup()
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    t.other.setOverlay('Ada', 'session.py', 'from app import validate\n# Ada was here\n')
+    const out = await t.tools.call('room_preview_merge', { people: ['Kieran', 'Ada'], run: 'cat app.py session.py' })
+    expect(out).toContain('step 1: merge Kieran')
+    expect(out).toContain('step 2: merge Ada')
+    expect(out).toContain('return x + 1')
+    expect(out).toContain('return 22')
+    expect(out).toContain('# Ada was here')
+    expect(out).toContain('final combined tree:')
+    expect(out).toContain('exit 0')
+  })
+
+  it('names the two people whose overlapping changes conflict', async () => {
+    const t = setup()
+    t.room.setOverlay('Rohan', 'app.py', COMMITTED)
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
+    t.other.setOverlay('Ada', 'app.py', COMMITTED.replace('return 2', 'return 4'))
+    const out = await t.tools.call('room_preview_merge', { people: ['Kieran', 'Ada'] })
+    expect(out).toContain('step 2: merge Ada')
+    expect(out).toContain('conflict between Kieran and Ada')
+  })
+
   it('reports clean merges and conflicts against base', async () => {
     const t = setup()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
