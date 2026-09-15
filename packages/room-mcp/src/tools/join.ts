@@ -3,16 +3,16 @@ import { git } from '@room/roomd/git'
 import { DEFAULT_SERVER, resolveServer, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { clearChoice, chooseServer, describeWhere, markWarned, writeChoice } from '../choice.js'
-import { getCredential, getPending, setPending } from '../credentials.js'
+import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
 import { LOCAL, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_login', annotations: RW, description: 'Log in to the room server. GitHub (device flow): the first call returns a one-time code and URL. OIDC (self-hosted servers with a company identity provider): the first call returns a URL to open. Show them to the user VERBATIM. Call again to wait for the login to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your login (GitHub login or email).',
-    inputSchema: { type: 'object', properties: { provider: { type: 'string', enum: ['github', 'oidc'], description: 'login provider (default: the server\'s first; github.com rooms need github)' }, wait: int('seconds to wait for confirmation on a follow-up call (default 90, max 600)'), server: str('override ws server URL') } } },
+    inputSchema: { type: 'object', properties: { provider: { type: 'string', enum: ['github', 'oidc'], description: 'login provider (default: the server\'s first; github.com rooms need github)' }, wait: int('seconds to wait for confirmation on a follow-up call (default 90, max 600)'), server: str('override ws server URL'), credentials: str('override credentials file path') } } },
   { name: 'room_logout', annotations: RW, description: 'Forget the GitHub login for the room server on this machine (and revoke the session on the server).',
-    inputSchema: { type: 'object', properties: { server: str('override ws server URL') } } },
+    inputSchema: { type: 'object', properties: { server: str('override ws server URL'), credentials: str('override credentials file path') } } },
   { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Idempotent: on an already-open repo it just joins.',
     inputSchema: { type: 'object', properties: { room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
   { name: 'room_join', annotations: RW, description: 'Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo\'s room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: room_create does that.',
@@ -25,8 +25,14 @@ export const defs: ToolDef[] = [
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { ctx, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
+  async function configureLogin(a: Record<string, unknown>) {
+    const config = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
+    configureCredentials(config.credentialsPath)
+    ctx.config = { ...config, ...ctx.config, credentialsPath: config.credentialsPath }
+  }
   const handlers: Record<string, Handler> = {
     async room_login(a) {
+      await configureLogin(a)
       const server = serverOf(a)
       if (server === LOCAL) return LOCAL_LOGIN
       const cfg = await serverAuthConfig(server)
@@ -48,6 +54,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return `${p.provider === 'oidc' ? 'Single sign-on' : 'GitHub'} login for ${server}. Tell the user exactly this: ${codeLine(p)}`
     },
     async room_logout(a) {
+      await configureLogin(a)
       const server = serverOf(a)
       if (server === LOCAL) return LOCAL_LOGIN
       setPending(server, undefined)

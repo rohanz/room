@@ -50,6 +50,11 @@ async function rememberedWhere(dir: string): Promise<string | undefined> {
   } catch { return undefined }
 }
 
+export function resolveCredentialsPath(args: ConfigArgs = {}, e: NodeJS.ProcessEnv = process.env): string {
+  return value(args.credentialsPath ?? args.credentials) ?? value(e.ROOM_CREDENTIALS)
+    ?? path.join(value(e.XDG_CONFIG_HOME) ?? path.join(os.homedir(), '.config'), 'room', 'credentials.json')
+}
+
 export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.ProcessEnv | Record<string, string | undefined>; args?: ConfigArgs; dir: string }): Promise<ResolvedConfig> {
   const e = env ?? process.env
   const argWhere = normaliseWhere(args.where ?? args.server)
@@ -61,8 +66,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const kind = rawKind === 'bot' || rawKind === 'ci' ? rawKind : 'agent'
   const rawShare = value(args.share) ?? value(e.ROOM_SHARE) ?? 'full'
   const share: ShareLevel = rawShare === 'intent' || rawShare === 'declared' ? rawShare : 'full'
-  const credentialsPath = value(args.credentialsPath ?? args.credentials) ?? value(e.ROOM_CREDENTIALS)
-    ?? path.join(value(e.XDG_CONFIG_HOME) ?? path.join(os.homedir(), '.config'), 'room', 'credentials.json')
+  const credentialsPath = resolveCredentialsPath(args, e)
   return {
     dir: path.resolve(dir), server: resolveServer(where), where, whereRule,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
