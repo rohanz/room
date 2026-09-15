@@ -1,4 +1,5 @@
-import { deriveConflictSpans, type Claim, type ConflictSpan } from '@room/shared'
+import { type Claim, type ConflictSpan } from '@room/shared'
+import { deriveConflictSpans } from './conflicts.ts'
 import type { Msg, ScopeMsg } from '@room/shared'
 
 export interface TimelineItem {

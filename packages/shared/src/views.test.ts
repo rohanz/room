@@ -40,7 +40,7 @@ describe('shared room views', () => {
     const worker: Worker = { tag: 'views', name: 'Rohan+views', host: 'codex', task: 'share browser formatting', dir: '/tmp/views', branch: 'room/views', pid: 1, startedAt: 0, status: 'running', lead: 'Rohan' }
     expect(workerLine({ worker, processGone: true, changedCount: 2, now: 60_000 })).toEqual([
       '  - views (codex, running (process gone), 1m): share browser formatting',
-      '      2 changed file(s) · branch room/views',
+      '      2 changed files · branch room/views',
     ])
   })
 })

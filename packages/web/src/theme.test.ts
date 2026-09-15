@@ -6,15 +6,19 @@ import { applyTheme, nextTheme, readTheme } from './theme.ts'
 
 function environment(value: string | null = null) {
   const attributes = new Map<string, string>()
+  const classes = new Set<string>()
   const document = { documentElement: {
+    getAttribute: (name: string) => attributes.get(name),
+    classList: { add: (name: string) => classes.add(name), remove: (name: string) => classes.delete(name) },
     setAttribute: (name: string, value: string) => attributes.set(name, value),
     removeAttribute: (name: string) => attributes.delete(name),
   } }
   const localStorage = { getItem: vi.fn(() => value), setItem: vi.fn() }
+  vi.stubGlobal('matchMedia', () => ({ matches: false }))
   vi.stubGlobal('document', document); vi.stubGlobal('localStorage', localStorage)
-  return { attributes, document, localStorage }
+  return { attributes, document, localStorage, classes }
 }
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 it('applies and persists each state, including explicit System', () => {
   const { attributes, localStorage } = environment()
   for (const theme of ['dark', 'light', 'system'] as const) {
@@ -89,4 +93,19 @@ it('sets Light before paint when storage cannot be read', () => {
     ...env, localStorage: { getItem() { throw Error('blocked') } },
   })
   expect(env.attributes.get('data-theme')).toBe('light')
+})
+
+it('animates a changed theme for 220ms but not initial matching theme or reduced motion', () => {
+  vi.useFakeTimers()
+  const env = environment()
+  env.attributes.set('data-theme', 'light')
+  applyTheme('light')
+  expect(env.classes.has('theme-transition')).toBe(false)
+  applyTheme('dark')
+  expect(env.classes.has('theme-transition')).toBe(true)
+  vi.advanceTimersByTime(220)
+  expect(env.classes.has('theme-transition')).toBe(false)
+  vi.stubGlobal('matchMedia', () => ({ matches: true }))
+  applyTheme('light')
+  expect(env.classes.has('theme-transition')).toBe(false)
 })
