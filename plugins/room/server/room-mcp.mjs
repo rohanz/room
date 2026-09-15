@@ -33827,6 +33827,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   const write2 = () => {
     try {
       fs2.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key }) + "\n", { mode: 384 });
+      fs2.chmodSync(relayFile(commonDir), 384);
     } catch (e) {
       log2(`local relay: could not write ${relayFile(commonDir)}: ${e instanceof Error ? e.message : e}`);
     }
@@ -34782,9 +34783,15 @@ async function readChoice(dir) {
   }
 }
 async function writeChoice(dir, where, by) {
+  where = where.replace(/\?.*$/, "");
   const prev = await readChoice(dir);
   const c = { where, at: Date.now(), ...by ? { by } : {}, ...prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {} };
-  fs5.writeFileSync(await choiceFile(dir), JSON.stringify(c) + "\n");
+  const file = await choiceFile(dir);
+  fs5.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
+  try {
+    fs5.chmodSync(file, 384);
+  } catch {
+  }
   return c;
 }
 async function markWarned(dir, worktree) {
@@ -34794,7 +34801,9 @@ async function markWarned(dir, worktree) {
   const warned = c.warned ?? [];
   if (warned.includes(key)) return false;
   try {
-    fs5.writeFileSync(await choiceFile(dir), JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + "\n");
+    const file = await choiceFile(dir);
+    fs5.writeFileSync(file, JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + "\n", { mode: 384 });
+    fs5.chmodSync(file, 384);
   } catch {
   }
   return true;
@@ -34878,9 +34887,11 @@ var HooksBridge = class {
     if (this.timer) clearTimeout(this.timer);
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     this.pending.clear();
-    try {
-      fs6.rmSync(this.stateFile(), { force: true });
-    } catch {
+    if (this.o.writeState !== false) {
+      try {
+        fs6.rmSync(this.stateFile(), { force: true });
+      } catch {
+      }
     }
   }
   stateFile() {
@@ -35492,8 +35503,10 @@ function syncPrs(room, prs, origin) {
   return { added, updated, removed };
 }
 var sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
-function prLeader(present) {
-  return present.filter((n) => !isPrName(n)).sort()[0];
+function prLeader(present, workerNames = []) {
+  const workers = new Set(workerNames);
+  const leads = present.filter((n) => !isPrName(n) && !workers.has(n)).sort();
+  return leads[0] ?? present.filter((n) => !isPrName(n)).sort()[0];
 }
 var httpOf2 = (server) => server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
 var query = (o) => Object.entries(o).filter((e) => !!e[1]).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
@@ -35794,7 +35807,7 @@ function createTools(ctx) {
   const refreshPrs = async (s) => {
     if (!s.roomName.startsWith("github.com/")) return "";
     const present = presences(s).map((p) => p.user.name);
-    const leader = prLeader(present.length ? present : [s.me.name]);
+    const leader = prLeader(present.length ? present : [s.me.name], Array.from(s.room.workers.values()).map((w) => w.name));
     if (leader !== s.me.name) return "";
     let prs;
     try {
@@ -35920,7 +35933,7 @@ function createTools(ctx) {
   };
   const dismissWorker = (s, w, why) => {
     const proc = procs.get(w.tag);
-    let how;
+    let how, signalled = true;
     if (proc) {
       proc.kill();
       how = `pid ${w.pid} signalled`;
@@ -35934,10 +35947,13 @@ function createTools(ctx) {
         }
       }
       how = `pid ${w.pid} signalled`;
-    } else how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone`;
+    } else {
+      signalled = false;
+      how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone and its status stands`;
+    }
     procs.delete(w.tag);
-    if (w.status === "running") s.room.updateWorker(w.tag, { status: "dismissed" });
-    s.room.post(s.me, { type: "note", text: `dismissed worker ${w.tag} (${w.name}): ${why}` });
+    if (signalled && w.status === "running") s.room.updateWorker(w.tag, { status: "dismissed" });
+    s.room.post(s.me, { type: "note", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
     return how;
   };
   const gitignored = (dir) => {
@@ -36293,6 +36309,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       const host = a.host === "codex" ? "codex" : "claude";
       const model = typeof a.model === "string" && a.model.trim() ? a.model.trim() : void 0;
       const existing = s.room.workers.get(tag);
+      if (existing && existing.lead !== s.me.name && existing.status === "running") return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; pick another tag`;
       if (existing && (existing.status === "running" || procs.has(tag))) return `error: worker ${tag} is ${existing.status === "running" ? "already running" : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_dismiss it first or pick another tag`;
       const gen = (existing?.gen ?? 0) + 1;
       const running = myWorkers(s).filter((w2) => w2.status === "running");
@@ -36340,14 +36357,14 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
       s.room.setWorker(w);
       proc.onError?.((err) => {
         const cur = s.room.workers.get(tag);
-        if (cur?.gen !== gen) return;
+        if (cur?.gen !== gen || cur.lead !== s.me.name) return;
         procs.delete(tag);
         if (cur && cur.status === "running") s.room.updateWorker(tag, { status: "failed", exitCode: -1, summary: `could not start ${cmd}: ${err.message}` });
         s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` });
       });
       proc.onExit((code) => {
         const cur = s.room.workers.get(tag);
-        if (cur?.gen !== gen) return;
+        if (cur?.gen !== gen || cur.lead !== s.me.name) return;
         procs.delete(tag);
         if (!cur || cur.status !== "running") {
           s.room.updateWorker(tag, { exitCode: code ?? -1 });
@@ -37296,7 +37313,7 @@ async function main() {
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
       const choice = await chooseServer(dir, void 0, env("ROOM_SERVER"));
       const chosen = choice.server;
-      log(`room: ${choice.where} (${choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
+      log(`room: ${choice.where.replace(/\?.*$/, "")} (${choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
       if (env("ROOM_URL")) {
         const u = new URL(env("ROOM_URL"));
         adopt(await joinSession({ dir: env("ROOM_DIR") ?? dir, name: env("ROOM_NAME"), room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: `${u.protocol}//${u.host}`, log }));

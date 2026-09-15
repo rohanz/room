@@ -198,7 +198,7 @@ export function createTools(ctx: ToolCtx): Tools {
   const refreshPrs = async (s: Session): Promise<string> => {
     if (!s.roomName.startsWith('github.com/')) return ''
     const present = presences(s).map(p => p.user.name)
-    const leader = prLeader(present.length ? present : [s.me.name])
+    const leader = prLeader(present.length ? present : [s.me.name], Array.from(s.room.workers.values()).map(w => w.name))
     if (leader !== s.me.name) return ''
     let prs: PrInfo[]
     try { prs = await fetchPrList(s) } catch (e) { log(`pull requests: ${e instanceof Error ? e.message : String(e)}`); return '' }
@@ -310,13 +310,13 @@ export function createTools(ctx: ToolCtx): Tools {
    */
   const dismissWorker = (s: Session, w: Worker, why: string): string => {
     const proc = procs.get(w.tag)
-    let how: string
+    let how: string, signalled = true
     if (proc) { proc.kill(); how = `pid ${w.pid} signalled` }
     else if (pidIsOurWorker(w.pid, w)) { try { process.kill(-w.pid, 'SIGTERM') } catch { try { process.kill(w.pid, 'SIGTERM') } catch { /* gone */ } } how = `pid ${w.pid} signalled` }
-    else how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone`
+    else { signalled = false; how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it), so it was left alone and its status stands` }
     procs.delete(w.tag)
-    if (w.status === 'running') s.room.updateWorker(w.tag, { status: 'dismissed' })
-    s.room.post<NoteMsg>(s.me, { type: 'note', text: `dismissed worker ${w.tag} (${w.name}): ${why}` })
+    if (signalled && w.status === 'running') s.room.updateWorker(w.tag, { status: 'dismissed' })
+    s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
     return how
   }
   const gitignored = (dir: string): boolean => { try { return fs.readFileSync(path.join(dir, '.gitignore'), 'utf8').split('\n').some(l => l.trim() === '.room/' || l.trim() === '.room') } catch { return false } }
@@ -656,6 +656,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const host: WorkerHost = a.host === 'codex' ? 'codex' : 'claude'
       const model = typeof a.model === 'string' && a.model.trim() ? a.model.trim() : undefined
       const existing = s.room.workers.get(tag)
+      if (existing && existing.lead !== s.me.name && existing.status === 'running') return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; pick another tag`
       if (existing && (existing.status === 'running' || procs.has(tag))) return `error: worker ${tag} is ${existing.status === 'running' ? 'already running' : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_dismiss it first or pick another tag`
       const gen = (existing?.gen ?? 0) + 1
       const running = myWorkers(s).filter(w => w.status === 'running')
@@ -694,14 +695,14 @@ export function createTools(ctx: ToolCtx): Tools {
       s.room.setWorker(w)
       proc.onError?.(err => {
         const cur = s.room.workers.get(tag)
-        if (cur?.gen !== gen) return // an older process of a reused tag
+        if (cur?.gen !== gen || cur.lead !== s.me.name) return // an older process of a reused tag, or another lead's record
         procs.delete(tag)
         if (cur && cur.status === 'running') s.room.updateWorker(tag, { status: 'failed', exitCode: -1, summary: `could not start ${cmd}: ${err.message}` })
         s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` })
       })
       proc.onExit(code => {
         const cur = s.room.workers.get(tag)
-        if (cur?.gen !== gen) return // an older process of a reused tag: the newer record is not ours to touch
+        if (cur?.gen !== gen || cur.lead !== s.me.name) return // an older process of a reused tag, or another lead's record
         procs.delete(tag)
         if (!cur || cur.status !== 'running') { s.room.updateWorker(tag, { exitCode: code ?? -1 }); return }
         const summary = cur.summary ?? (code === 0 ? 'process exited without room_done' : `process exited with code ${code}`)

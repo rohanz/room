@@ -74,8 +74,10 @@ export function syncPrs(room: RoomDoc, prs: PrInfo[], origin?: unknown): { added
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i])
 
 /** Who maintains the PR mirror: the lowest present participant name (so four clients do not fight). */
-export function prLeader(present: string[]): string | undefined {
-  return present.filter(n => !isPrName(n)).sort()[0]
+export function prLeader(present: string[], workerNames: Iterable<string> = []): string | undefined {
+  const workers = new Set(workerNames)
+  const leads = present.filter(n => !isPrName(n) && !workers.has(n)).sort()
+  return leads[0] ?? present.filter(n => !isPrName(n)).sort()[0]
 }
 
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')

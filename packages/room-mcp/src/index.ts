@@ -78,7 +78,7 @@ async function main() {
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
       const choice = await chooseServer(dir, undefined, env('ROOM_SERVER'))
       const chosen = choice.server
-      log(`room: ${choice.where} (${choice.rule === 'env' ? 'ROOM_SERVER' : choice.rule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
+      log(`room: ${choice.where.replace(/\?.*$/, '')} (${choice.rule === 'env' ? 'ROOM_SERVER' : choice.rule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
       if (env('ROOM_URL')) {
         const u = new URL(env('ROOM_URL')!)
         adopt(await joinSession({ dir: env('ROOM_DIR') ?? dir, name: env('ROOM_NAME'), room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))

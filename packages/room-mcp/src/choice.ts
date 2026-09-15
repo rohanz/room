@@ -52,9 +52,12 @@ export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
 }
 
 export async function writeChoice(dir: string, where: string, by?: string): Promise<RoomChoice> {
+  where = where.replace(/\?.*$/, '') // never remember a token; it comes from ROOM_SERVER/ROOM_TOKEN at join time
   const prev = await readChoice(dir)
   const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {}) }
-  fs.writeFileSync(await choiceFile(dir), JSON.stringify(c) + '\n')
+  const file = await choiceFile(dir)
+  fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
+  try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }
   return c
 }
 
@@ -65,7 +68,7 @@ export async function markWarned(dir: string, worktree: string): Promise<boolean
   const key = path.resolve(worktree)
   const warned = c.warned ?? []
   if (warned.includes(key)) return false
-  try { fs.writeFileSync(await choiceFile(dir), JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + '\n') } catch { /* best effort */ }
+  try { const file = await choiceFile(dir); fs.writeFileSync(file, JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + '\n', { mode: 0o600 }); fs.chmodSync(file, 0o600) } catch { /* best effort */ }
   return true
 }
 

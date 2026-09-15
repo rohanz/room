@@ -154,3 +154,20 @@ describe('hooks bridge + plugin hook scripts', () => {
     expect(existsSync(join(dir, '.git/room-state.json'))).toBe(false)
   })
 })
+
+describe('workers-room bridge', () => {
+  it('a bridge with writeState:false never deletes the lead\'s state file on stop', async () => {
+    const { HooksBridge } = await import('../src/hooks-bridge.js')
+    const { mkdtempSync, mkdirSync, writeFileSync, existsSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'room-hooks-')); mkdirSync(join(dir, '.git'))
+    writeFileSync(join(dir, '.git', 'room-state.json'), '{}')
+    const { RoomDoc } = await import('@room/shared')
+    const room = new RoomDoc()
+    const fake = { room, dir, me: { name: 'rohanz', kind: 'agent' } } as unknown as import('../src/session.js').Session
+    const b = new HooksBridge(fake, { forMe: () => false, isSeen: () => false, writeState: false })
+    b.start(); b.stop()
+    expect(existsSync(join(dir, '.git', 'room-state.json'))).toBe(true)
+  })
+})

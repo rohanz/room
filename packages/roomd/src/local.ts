@@ -274,7 +274,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
   let port = 0
   let key = ''
   const write = () => {
-    try { fs.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key } satisfies LocalRelayInfo) + '\n', { mode: 0o600 }) }
+    try { fs.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key } satisfies LocalRelayInfo) + '\n', { mode: 0o600 }); fs.chmodSync(relayFile(commonDir), 0o600) }
     catch (e) { log(`local relay: could not write ${relayFile(commonDir)}: ${e instanceof Error ? e.message : e}`) }
   }
   /** A live relay recorded in the file, if any. */

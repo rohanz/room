@@ -209,3 +209,8 @@ describe('PR selection by head (fix 13)', () => {
     expect(asks.some(x => x.head === true)).toBe(true)
   })
 })
+
+it('the PR-mirror leader is never a worker', () => {
+  expect(prLeader(['aaron', 'a+z', 'pr#7'], ['a+z'])).toBe('aaron')
+  expect(prLeader(['a+z'], ['a+z'])).toBe('a+z') // only workers present: someone still has to do it
+})

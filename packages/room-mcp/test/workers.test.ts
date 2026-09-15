@@ -264,7 +264,7 @@ describe('worker safety', () => {
     expect(pidIsOurWorker(1, rec)).toBe(false)
   })
 
-  it('dismissing a worker whose process is unknown and old leaves the pid alone but marks it dismissed', async () => {
+  it('dismissing a worker whose process is unknown and old leaves the pid alone and keeps its status', async () => {
     const { a, b } = pair()
     a.setMeta({ repo: 'x', branch: 'main', base })
     // a worker record left by a lead that has since restarted: pid 1 is alive but not ours
@@ -273,7 +273,7 @@ describe('worker safety', () => {
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir })
     const out = await tools.call('room_dismiss', { tag: 'ghost' })
     expect(out).toContain('not signalled')
-    expect(a.workers.get('ghost')?.status).toBe('dismissed')
+    expect(a.workers.get('ghost')?.status).toBe('running') // nothing was signalled, so nothing changed
   })
 
   it('room_leave refuses while workers run, force dismisses them; shutdown dismisses too', async () => {
@@ -456,5 +456,14 @@ describe('review fixes: the workers room', () => {
     await new Promise(r => setTimeout(r, 200))
     expect(woken.some(x => x.includes('all in cents'))).toBe(true)
     await t.leadTools.call('room_leave', { force: true })
+  })
+})
+
+describe('review round 3', () => {
+  it("a tag held by another lead's running worker is refused, and its record is never touched", async () => {
+    const t = setupLead()
+    t.a.setWorker({ tag: 'money', name: 'kieran+money', host: 'claude', task: 'theirs', dir: '/x', branch: 'room/money', pid: 4242, startedAt: Date.now(), status: 'running', lead: 'kieran', gen: 1 })
+    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'mine' })).toContain("in use by kieran's worker")
+    expect(t.a.workers.get('money')).toMatchObject({ lead: 'kieran', status: 'running' })
   })
 })

@@ -79,7 +79,7 @@ export class HooksBridge {
     if (this.timer) clearTimeout(this.timer)
     if (this.pendingTimer) clearTimeout(this.pendingTimer)
     this.pending.clear()
-    try { fs.rmSync(this.stateFile(), { force: true }) } catch { /* ignore */ }
+    if (this.o.writeState !== false) { try { fs.rmSync(this.stateFile(), { force: true }) } catch { /* ignore */ } }
   }
 
   stateFile(): string { return gitStatePath(this.s.dir, 'room-state.json') }
