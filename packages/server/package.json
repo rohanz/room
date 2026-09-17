@@ -20,5 +20,6 @@
   "devDependencies": {
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.0"
-  }
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
 }

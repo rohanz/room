@@ -26,5 +26,6 @@
   },
   "overrides": {
     "@y/websocket-server": "0.1.1"
-  }
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
 }

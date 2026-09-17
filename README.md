@@ -427,3 +427,11 @@ npm run build:plugin  # regenerate after MCP or daemon changes
 
 [Original v2 design (historical)](docs/superpowers/specs/2026-09-12-room-v2-design.md) · [Changelog](CHANGELOG.md) ·
 [Decisions and build history](docs/decisions.md) · [Prior art](docs/prior-art.md)
+
+## License
+
+Room is released under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use,
+modify, fork and share it for any noncommercial purpose, which includes personal use and
+research. Using it at work is not something we intend to pursue. Selling Room, or running it
+as a paid service, is not permitted without a commercial licence: open an issue or write to
+the author.

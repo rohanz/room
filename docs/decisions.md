@@ -321,3 +321,11 @@ but there is no prebuilt image. When someone asks: multi-stage Dockerfile that b
 view inside the image, a GitHub Actions workflow publishing `ghcr.io/rohanz/room:<version>` on
 `v*` tags with `latest` following, compose pointing at the image with a build override for
 source users, runbook and Fly command updated. Not Docker Hub, not per-commit builds.
+
+## 2026-09-17 — License: PolyForm Noncommercial 1.0.0
+
+**Why:** MIT let anyone sell Room or host it for money. Rohan wants forks and contributions
+to stay easy, does not intend to pursue people using it at work, but wants the option to act
+if someone sells Room itself or runs it as a paid service. PolyForm Noncommercial says exactly
+that in plain terms; a commercial licence can be granted case by case. It is source-available,
+not OSI open source. Releases up to 0.6.8 stay MIT.
