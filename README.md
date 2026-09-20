@@ -101,11 +101,11 @@ key stops other users of a shared machine from guessing their way in.
 
 ### Dispatching workers
 
-A session can fan work out to other agents through the room instead of around it:
+Ask in your own words: "use a couple of subagents for this" or "split this up".
+The agent loads the room-workers skill and handles dispatch, questions, preview and merge.
+You do not need to know any tool names. For example:
 
-> Spawn a worker tagged `money` to switch prices to whole cents with a Money type, and one
-> tagged `tiers` to add gold/silver discounts on top of it. Wait for both, preview the
-> merges, and report.
+> Use a couple of subagents for this: add the endpoint in api.ts and its tests in api.test.ts.
 
 `room_spawn` creates a git worktree at `.room/workers/<tag>` on branch `room/<tag>`,
 starts a Claude Code or Codex agent there (`host` and `model` are arguments), and passes
@@ -168,8 +168,8 @@ For a local checkout, `claude plugin marketplace add /path/to/room` instead. Upd
 so a new version on main reaches a session only after a reinstall). `claude plugin validate plugins/room`
 checks the manifest.
 
-Claude Code loads the `room_*` tools from the bundled MCP server, the `room-join` and
-`room-etiquette` skills, and two hooks: SessionStart records the session id and host next
+Claude Code loads the `room_*` tools from the bundled MCP server, the `room-join`,
+`room-workers` and `room-etiquette` skills, and two hooks: SessionStart records the session id and host next
 to the clone, and PreToolUse on Edit, Write, MultiEdit and NotebookEdit puts your unread
 inbox and any teammate claims on the file in front of the model before the edit. Trust the
 hooks when prompted or through `/hooks`.

@@ -11,11 +11,11 @@ Two ways in. Pick the one that matches you.
    ```
    Trust the hooks when asked.
 2. Start your agent in any clone (`claude` or `codex`, interactively). It is already in a local room; nothing leaves your machine. The first time Claude Code loads the plugin it asks you to trust its hooks; say yes.
-3. Ask it to fan out:
-   > Spawn a worker tagged `api` for the endpoint and one tagged `tests` for the tests, wait for both, preview the merges and report.
-4. Ask **"show room state"** at any point. Workers appear with their status, claims and last message. The browser link it prints works while a session is open. When a worker reports done, its work sits uncommitted on branch `room/<tag>`; ask the lead to preview and merge it. It also prints a browser link for the room; open it in a tab while your session is running. The local room lives only as long as a session is open, so the link from a one-shot `claude -p` run is gone once that run ends.
+3. Ask in your own words: "use a couple of subagents for this" or "split this up". The agent handles the Room moves; no tool names needed. For example:
+   > Split this up: add the endpoint in api.ts and its tests in api.test.ts.
+4. Ask **"show room state"** at any point. Workers appear with their status, claims and last message. The browser link it prints works while a session is open. When a worker reports done, its work sits uncommitted on branch `room/<tag>`; the lead previews, commits in the worker worktree, and merges it unless you asked it not to. It also prints a browser link for the room; open it in a tab while your session is running. The local room lives only as long as a session is open, so the link from a one-shot `claude -p` run is gone once that run ends.
 
-Workers' branches are not merged for you: when a worker reports done, ask the lead to preview and merge `room/<tag>`. Worktrees land in `.room/workers/<tag>`. Add `.room/` to your `.gitignore`.
+Room tools do not merge branches themselves: the lead follows the room-workers skill to preview and merge `room/<tag>` with Git, without pushing. Worktrees land in `.room/workers/<tag>`. Add `.room/` to your `.gitignore`.
 
 Running Claude Code and Codex side by side under the same login? The second one to join is tagged automatically after its host (`rohanz+claude`, `rohanz+codex`), and that tag sticks to the clone across sessions so they remain distinct participants. Set `ROOM_TAG=<label>` if you want to name them yourself.
 

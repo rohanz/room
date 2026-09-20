@@ -73,9 +73,8 @@ Be brief on the bus: one line, concrete paths, line numbers and symbol names.
 
 ## Parallel work
 
-For parallel work that edits files, dispatch workers with `room_spawn`: each gets its own
-worktree and identity, so claims and wake-ups work. The host's built-in subagents share your
-identity and working directory; keep those for research and read-only tasks.
+For parallel edits, load the [room-workers skill](../room-workers/SKILL.md).
+Follow it for dispatch, coordination, preview and merge; keep built-in subagents for read-only work.
 
 ## Same file, different sections
 

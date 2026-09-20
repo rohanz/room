@@ -2,6 +2,7 @@
 
 ## 0.7.0 — 2026-09-21
 
+- New `room-workers` skill: the procedure for running parallel work through room workers (split, spawn, answer, preview all together, commit for the workers, merge, report). A phrasing check showed five of six everyday requests already reached `room_spawn`; the miss, "get codex to do half", is now named in the tool description.
 - Fixed two sessions under one login both joining as the bare login when one runs in a worktree of the other's clone: the remembered tag is now stored per worktree, and the name probe judges presence by the connection heartbeat (one shared definition with company), not by the last file change.
 - Company is detected from the connection heartbeat, not from the last file change, so an agent that thinks for a minute between edits still counts as present.
 - Instructions, the etiquette skill and the `room_spawn` description say to prefer `room_spawn` over a host's built-in subagents for parallel edits: separate worktree, identity, claims and wake-ups.
