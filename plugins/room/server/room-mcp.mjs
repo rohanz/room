@@ -34567,14 +34567,14 @@ import os2 from "node:os";
 import path7 from "node:path";
 
 // packages/room-mcp/src/company.ts
-var PRESENCE_FRESH_MS = 2e4;
+var AWARENESS_FRESH_MS = 3e4;
 function hasCompany(s, runningWorkers = [], now = Date.now()) {
   const names = /* @__PURE__ */ new Map();
   for (const [clientId, value2] of s.awareness.getStates()) {
     const p = value2;
     if (!p.user || clientId === s.awareness.clientID || p.user.name === s.me.name) continue;
-    const activeAt = typeof p.lastActive === "number" ? p.lastActive : s.awareness.meta.get(clientId)?.lastUpdated ?? 0;
-    if (now - activeAt > PRESENCE_FRESH_MS) continue;
+    const lastUpdated = s.awareness.meta.get(clientId)?.lastUpdated;
+    if (lastUpdated === void 0 || now - lastUpdated > AWARENESS_FRESH_MS) continue;
     if (p.user.kind === "human" && p.status === "viewing") continue;
     names.set(p.user.name, displayName(p.user));
   }
@@ -35343,7 +35343,7 @@ function claudeWakeNote(session) {
 var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a room. Room tools coordinate shared work but never touch your disk.
 
 Rules:
-1. While you are alone in the room, ignore the room tools and work normally; do not scope, claim, release or call room_done. The room tells you when someone joins. Follow the rules below only when someone else is in the room, you spawned workers, or your human mentions the room.
+1. While alone, work normally without room tools; the room announces company. Coordinate when others are present, you spawn workers, or your human mentions the room. For parallel edits, prefer room_spawn for separate worktrees, identities, claims and wake-ups; reserve built-in subagents, which share your identity and working directory, for research and read-only tasks.
 2. You join automatically. Change local/team-room choice only when your human asks; follow login instructions.
 3. Before editing, call room_scope, then room_read and room_claim. Never edit another person's claim; declare public-symbol plans before changing them.
 4. Answer addressed questions promptly; ask the relevant agent and wait when unsure.
@@ -38035,7 +38035,7 @@ var defs6 = [
   {
     name: "room_spawn",
     annotations: RW,
-    description: "Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Max running workers per lead: ROOM_MAX_WORKERS (8).",
+    description: "Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Max running workers per lead: ROOM_MAX_WORKERS (8). Prefer this over built-in subagents for parallel edits.",
     inputSchema: { type: "object", properties: { tag: str("short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>"), task: str("what the worker should do, self-contained"), host: { type: "string", enum: ["claude", "codex"], description: "which agent runs it (default claude)" }, model: str("model override for that host (optional)"), share: SHARE, allowOutside: { type: "boolean", description: "permit dir outside this repo (no worktree bookkeeping)" }, dir: str("use this existing directory instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims)." } }, required: ["tag", "task"] }
   },
   {

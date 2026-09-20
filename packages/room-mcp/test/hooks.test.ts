@@ -55,11 +55,26 @@ describe('hasCompany', () => {
     addPresence(viewed, 'Kieran', 'human', 'viewing')
     expect(hasCompany(viewed)).toEqual({ company: false, others: [] })
 
+  })
+
+  it('counts an old lastActive with a fresh awareness heartbeat', () => {
     const stale = session(new RoomDoc())
     const peer = new Awareness(new Y.Doc())
-    peer.setLocalState({ user: { name: 'Kieran', kind: 'agent', color: '#111' }, status: 'idle', lastActive: Date.now() - 20_001 })
+    peer.setLocalState({ user: { name: 'Kieran', kind: 'agent', color: '#111' }, status: 'idle', lastActive: Date.now() - 5 * 60_000 })
     applyAwarenessUpdate(stale.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
-    expect(hasCompany(stale)).toEqual({ company: false, others: [] })
+    expect(hasCompany(stale)).toEqual({ company: true, others: ["Kieran's agent"] })
+    peer.destroy()
+    stale.awareness.destroy()
+  })
+
+  it('ignores a 31-second-old heartbeat even with fresh lastActive', () => {
+    const s = session(new RoomDoc())
+    const peer = addPresence(s, 'Kieran')
+    const now = Date.now()
+    s.awareness.meta.get(peer.clientID)!.lastUpdated = now - 31_000
+    expect(hasCompany(s, [], now)).toEqual({ company: false, others: [] })
+    peer.destroy()
+    s.awareness.destroy()
   })
 
   it('counts a running worker', () => {

@@ -2,6 +2,8 @@
 
 ## 0.7.0 — 2026-09-21
 
+- Company is detected from the connection heartbeat, not from the last file change, so an agent that thinks for a minute between edits still counts as present.
+- Instructions, the etiquette skill and the `room_spawn` description say to prefer `room_spawn` over a host's built-in subagents for parallel edits: separate worktree, identity, claims and wake-ups.
 - Code view handles large files: above 3,000 lines it shows changed regions with context, collapses unchanged runs and pages long runs 500 lines at a time, with "show all" rendered in chunks. Lines over 2,000 characters are clipped with a control to show the rest, and the changed-files list caps at 300 rows. A 32,000-line file that used to hang the tab now opens in under 50 ms.
 - Room stays silent while a session is alone and starts coordinating when another participant joins or the session spawns workers.
 

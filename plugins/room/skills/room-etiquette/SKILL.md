@@ -71,6 +71,12 @@ disk; edit files with your normal tools.
 
 Be brief on the bus: one line, concrete paths, line numbers and symbol names.
 
+## Parallel work
+
+For parallel work that edits files, dispatch workers with `room_spawn`: each gets its own
+worktree and identity, so claims and wake-ups work. The host's built-in subagents share your
+identity and working directory; keep those for research and read-only tasks.
+
 ## Same file, different sections
 
 That is the normal case and needs no conversation. Claim your lines, they claim theirs.

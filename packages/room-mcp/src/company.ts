@@ -2,7 +2,8 @@ import { displayName, type Worker } from '@room/shared'
 import type { Presence } from '@room/shared'
 import type { Session } from './session.js'
 
-const PRESENCE_FRESH_MS = 20_000
+// Awareness renews heartbeats every 15s and expires states after its 30s outdatedTimeout.
+const AWARENESS_FRESH_MS = 30_000
 
 export interface CompanyState {
   company: boolean
@@ -18,8 +19,8 @@ export function hasCompany(s: Session, runningWorkers: readonly Worker[] = [], n
   for (const [clientId, value] of s.awareness.getStates()) {
     const p = value as Partial<Presence>
     if (!p.user || clientId === s.awareness.clientID || p.user.name === s.me.name) continue
-    const activeAt = typeof p.lastActive === 'number' ? p.lastActive : s.awareness.meta.get(clientId)?.lastUpdated ?? 0
-    if (now - activeAt > PRESENCE_FRESH_MS) continue
+    const lastUpdated = s.awareness.meta.get(clientId)?.lastUpdated
+    if (lastUpdated === undefined || now - lastUpdated > AWARENESS_FRESH_MS) continue
     if (p.user.kind === 'human' && p.status === 'viewing') continue
     names.set(p.user.name, displayName(p.user))
   }
