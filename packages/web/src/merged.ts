@@ -24,7 +24,7 @@ function lines(value: string): string[] {
 
 /** Pairwise, line-oriented view. Adjacent remove/add hunks are competing edits. */
 export function classifyMergedLines(a: string, b: string): MergedLine[] {
-  const changes = diffLines(a, b)
+  const changes = boundedDiff(a, b)
   const result: MergedLine[] = []
   let aLine = 1
   let bLine = 1
@@ -80,7 +80,7 @@ export function classifyNWay(base: string, participants: readonly MergeParticipa
     const before = running
     const beforeText = asText(before.map(l => l.text))
     const next: NamedMergedLine[] = []
-    for (const region of diff3Merge(before.map(l => l.text), O, lines(participant.text))) {
+    for (const region of boundedMerge(before.map(l => l.text), O, lines(participant.text))) {
       if (region.ok) {
         next.push(...region.ok.map(text => ({ text, side: 'common' as const, changedBy: [], conflict: false, lineNumbers: {} })))
       } else if (region.conflict) {
@@ -88,7 +88,7 @@ export function classifyNWay(base: string, participants: readonly MergeParticipa
         const previous = before.slice(c.aIndex, c.aIndex + c.a.length)
         // Include deletion authors, which have no surviving line in the running result.
         const opponent = previous.flatMap(l => l.changedBy)[0] ?? prior.find(p =>
-          diff3Merge(lines(p.text), O, lines(participant.text)).some(r => r.conflict && r.conflict.oIndex <= c.oIndex + c.o.length && r.conflict.oIndex + r.conflict.o.length >= c.oIndex))?.name
+          boundedMerge(lines(p.text), O, lines(participant.text)).some(r => r.conflict && r.conflict.oIndex <= c.oIndex + c.o.length && r.conflict.oIndex + r.conflict.o.length >= c.oIndex))?.name
         const pair: [string, string] = [opponent ?? prior[0]?.name ?? participant.name, participant.name]
         next.push(...previous.map(l => ({ ...l, conflict: true, conflictPair: l.conflictPair ?? pair, conflictOwner: l.conflictOwner ?? l.changedBy[0] ?? pair[0] })))
         next.push(...c.b.map(text => ({ text, side: 'common' as const, changedBy: [], lineNumbers: {}, conflict: true, conflictPair: pair, conflictOwner: participant.name })))
@@ -127,9 +127,10 @@ export function classifyThreeWay(base: string, a: string, b: string): MergedLine
 /** For each line of `after`, true when it is not present at that position in `before`. */
 function markAdded(before: string, after: string): boolean[] {
   const out: boolean[] = []
-  for (const ch of diffLines(before, after)) {
+  for (const ch of boundedDiff(before, after)) {
     if (ch.removed) continue
-    for (let k = 0; k < lines(ch.value).length; k++) out.push(!!ch.added)
+    const count = lines(ch.value).length
+    for (let k = 0; k < count; k++) out.push(!!ch.added)
   }
   return out
 }
@@ -138,10 +139,50 @@ function markAdded(before: string, after: string): boolean[] {
 function lineMap(side: string, after: string): (number | undefined)[] {
   const out: (number | undefined)[] = []
   let n = 0
-  for (const ch of diffLines(side, after)) {
+  for (const ch of boundedDiff(side, after)) {
     const count = lines(ch.value).length
     if (ch.removed) { n += count; continue }
     for (let k = 0; k < count; k++) { if (ch.added) out.push(undefined); else out.push(++n) }
   }
   return out
+}
+
+const MAX_DIFF_LINES = 20000
+
+/** Trivial cases never enter Myers; large edits have a fixed edit-distance budget. */
+function boundedDiff(before: string, after: string): { value: string; added?: boolean; removed?: boolean }[] {
+  if (before === after) return before ? [{ value: before }] : []
+  if (!before) return [{ value: after, added: true }]
+  if (!after) return [{ value: before, removed: true }]
+  const a = lines(before), b = lines(after)
+  if (Math.max(a.length, b.length) <= MAX_DIFF_LINES) return diffLines(before, after)
+  const exact = diffLines(before, after, { maxEditLength: 128 })
+  if (exact) return exact
+  // Preserve common edges; report the unresolved middle as a replacement.
+  let from = 0, tail = 0
+  while (from < Math.min(a.length, b.length) && a[from] === b[from]) from++
+  while (tail < Math.min(a.length, b.length) - from && a[a.length - tail - 1] === b[b.length - tail - 1]) tail++
+  return [
+    { value: asText(a.slice(0, from)) },
+    { value: asText(a.slice(from, a.length - tail)), removed: true },
+    { value: asText(b.slice(from, b.length - tail)), added: true },
+    { value: asText(a.slice(a.length - tail)) },
+  ].filter(change => change.value.length)
+}
+
+/** Avoid node-diff3's unbounded LCS on large inputs. Keep uncertain edits as conflicts. */
+function boundedMerge(a: string[], o: string[], b: string[]): ReturnType<typeof diff3Merge<string>> {
+  const equal = (x: string[], y: string[]) => x.length === y.length && x.every((line, i) => line === y[i])
+  if (equal(a, b) || equal(o, b)) return [{ ok: a }]
+  if (equal(a, o)) return [{ ok: b }]
+  if (Math.max(a.length, o.length, b.length) <= MAX_DIFF_LINES) return diff3Merge(a, o, b)
+  let from = 0, tail = 0
+  const shortest = Math.min(a.length, o.length, b.length)
+  while (from < shortest && a[from] === o[from] && b[from] === o[from]) from++
+  while (tail < shortest - from && a[a.length - tail - 1] === o[o.length - tail - 1] && b[b.length - tail - 1] === o[o.length - tail - 1]) tail++
+  return [
+    { ok: a.slice(0, from) },
+    { conflict: { a: a.slice(from, a.length - tail), aIndex: from, o: o.slice(from, o.length - tail), oIndex: from, b: b.slice(from, b.length - tail), bIndex: from } },
+    { ok: a.slice(a.length - tail) },
+  ]
 }

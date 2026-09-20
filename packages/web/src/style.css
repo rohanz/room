@@ -748,3 +748,16 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .line-gutter { grid-column: 1 / 4; grid-row: 1; display: grid; grid-template-columns: subgrid; position: sticky; left: 0; z-index: 2; background: inherit; }
 .conflict-code-grid .code-line::after { content: ""; position: sticky; right: 0; grid-column: 5; grid-row: 1; width: 96px; background: inherit; z-index: 1; }
 .conflict-code-grid .code-line code { grid-column: 4; grid-row: 1; }
+
+.code-windows { width: max-content; min-width: 100%; }
+.code-windows > .conflict-code-grid { width: 100%; }
+.line-gap { display: flex; height: 20px; align-items: center; justify-content: center; color: var(--muted); background: var(--code-bg); }
+.line-gap button { border: 0; padding: 0 8px; height: 20px; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+.line-gap-show { flex: 1; text-align: center; }
+.large-file-notice { padding: 4px 10px; }
+.editor-wrap:has(> .large-file-notice) { display: flex; flex-direction: column; }
+.large-file-notice + .code-scroll { flex: 1; min-height: 0; height: auto; }
+
+.line-text-show, .file-more { border: 0; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+.line-text-show { padding: 0 6px; }
+.file-more { display: block; width: 100%; padding: 8px 10px; text-align: left; }

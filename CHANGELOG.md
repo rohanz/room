@@ -2,6 +2,7 @@
 
 ## 0.7.0 — 2026-09-21
 
+- Code view handles large files: above 3,000 lines it shows changed regions with context, collapses unchanged runs and pages long runs 500 lines at a time, with "show all" rendered in chunks. Lines over 2,000 characters are clipped with a control to show the rest, and the changed-files list caps at 300 rows. A 32,000-line file that used to hang the tab now opens in under 50 ms.
 - Room stays silent while a session is alone and starts coordinating when another participant joins or the session spawns workers.
 
 ## 0.6.9 — 2026-09-16

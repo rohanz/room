@@ -1,3 +1,4 @@
+import { LARGE_LINES, PAGE, planWindows, type WindowOptions } from './line-window.ts'
 import { inlineDetails } from './inline-detail.ts'
 import { deriveConflictSpans } from './conflicts.ts'
 import {
@@ -227,12 +228,29 @@ export function lineHoverText(line: MergedLine, names: readonly string[], claims
   return parts.join('\n')
 }
 
-function lineElement(line: MergedLine, names: readonly string[], prefix = '', claimsAt?: ClaimsAt, mergedNumber?: number, room?: RoomDoc): HTMLElement {
+const MAX_LINE_CHARS = 2000
+const MAX_FILE_ROWS = 300
+type CodeWindowState = WindowOptions & { expanded?: Set<string>; expandedLines?: Map<number, string> }
+
+function lineElement(line: MergedLine, names: readonly string[], prefix = '', claimsAt?: ClaimsAt, mergedNumber?: number, room?: RoomDoc, expandedLines?: Map<number, string>, index = 0): HTMLElement {
   const changed = authors(line, names)
   const owner = line.conflictOwner ?? changed[0] ?? ''
   const changedOwner = changed[0] ?? ''
   const marker = owner ? h('span', { class: 'dot' }) : null
   if (marker) marker.style.background = colorFor(owner, room)
+  const clipped = line.text.length > MAX_LINE_CHARS && expandedLines?.get(index) !== line.text
+  const code = h('code', {}, (clipped ? line.text.slice(0, MAX_LINE_CHARS) : line.text) || ' ')
+  if (clipped) {
+    const show = h('button', { class: 'line-text-show muted', type: 'button' }, `… +${(line.text.length - MAX_LINE_CHARS).toLocaleString('en-US')} chars · show`)
+    show.onclick = event => {
+      event.stopPropagation()
+      expandedLines?.set(index, line.text)
+      code.replaceChildren(line.text)
+      code.onscroll?.call(code, event)
+    }
+    show.onkeydown = event => event.stopPropagation()
+    code.append(show)
+  }
   const row = h('div', { class: `code-line side-${line.side}${changed.length ? ' changed-line' : ''}${line.conflict ? ' conflict-line' : ''}` },
     h('span', { class: 'line-gutter' },
       h('span', { class: 'line-number' }, mergedNumber?.toString() ?? line.aLine?.toString() ?? ''),
@@ -240,7 +258,7 @@ function lineElement(line: MergedLine, names: readonly string[], prefix = '', cl
         ? h('span', { class: 'side-marker' }, marker)
         : h('span', { class: 'line-number' }, line.bLine?.toString() ?? ''),
       h('span', { class: 'diff-prefix' }, prefix)),
-    h('code', {}, line.text || ' '))
+    code)
   if (changed.length) {
     row.dataset.changedBy = Array.isArray(line.changedBy) ? changed.join(', ') : line.changedBy ?? changed.join(', ')
     row.style.setProperty('--line-change-owner', changedOwner ? colorFor(changedOwner, room) : 'var(--muted)')
@@ -265,8 +283,73 @@ export function conflictCard(span: ConflictSpan, expanded?: Set<string>): HTMLEl
     h('div', {}, resolutionLabel(span)), details)
 }
 
-export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true, room?: RoomDoc): void {
-  const rows = lines.map((line, i) => lineElement(line, names, line.prefix, claimsAt, merged ? i + 1 : undefined, room))
+// Replacing the host invalidates pending frames, including selection changes to empty files.
+export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true, room?: RoomDoc, state: CodeWindowState = {}): void {
+  state.expandedLines ??= new Map<number, string>()
+  if (lines.length <= LARGE_LINES) {
+    renderCodeBatch(host, lines, names, claimsAt, conflicts, merged, room, 0, state.expandedLines)
+    return
+  }
+  state.expanded ??= new Set<string>()
+  const pane = h('div', { class: 'code-scroll scroll mono' })
+  const content = h('div', { class: 'code-windows' })
+  pane.append(content)
+  const notice = h('div', { class: 'large-file-notice micro muted' })
+  host.replaceChildren(notice, pane)
+  let generation = 0
+  const paint = () => {
+    const current = ++generation
+    content.replaceChildren()
+    let shown = 0
+    const updateNotice = () => { notice.textContent = `Large file: ${lines.length.toLocaleString('en-US')} lines, showing ${shown.toLocaleString('en-US')}. Unchanged regions are collapsed.` }
+    const segments = planWindows(lines, state)
+    const jobs: (() => void)[] = []
+    for (const segment of segments) {
+      if (segment.kind === 'lines') {
+        for (let from = segment.from; from < segment.to; from += PAGE) {
+          const begin = from, end = Math.min(segment.to, from + PAGE)
+          jobs.push(() => {
+            const temp = h('div')
+            renderCodeBatch(temp, lines.slice(begin, end), names, claimsAt, conflicts, merged, room, begin, state.expandedLines)
+            const batchPane = temp.firstElementChild as HTMLElement
+            content.append(...Array.from(batchPane.children))
+            shown += end - begin
+            updateNotice()
+          })
+        }
+      } else {
+        jobs.push(() => {
+          const count = (segment.to - segment.from).toLocaleString('en-US')
+          const button = h('button', { class: 'line-gap-show muted' }, `⋯ ${count} ${segment.reason === 'unchanged' ? 'unchanged lines · show' : 'more lines · show next 500'}`)
+          button.onclick = () => { state.expanded!.add(`${segment.from}-${segment.to}`); paint() }
+          const row = h('div', { class: 'line-gap' }, button)
+          if (segment.reason === 'more') {
+            const all = h('button', { class: 'muted' }, 'show all')
+            all.onclick = () => { state.all = true; paint() }
+            row.append(' · ', all)
+          }
+          content.append(row)
+        })
+      }
+    }
+    updateNotice()
+    let job = 0
+    const next = () => {
+      if (current !== generation || pane.parentElement !== host) return
+      jobs[job++]?.()
+      if (job < jobs.length) requestAnimationFrame(next)
+    }
+    if (lines.length > 20000 && state.all) next()
+    else for (const job of jobs) job()
+  }
+  pane.onscroll = event => {
+    for (const code of content.querySelectorAll('code')) code.onscroll?.call(code, event)
+  }
+  paint()
+}
+
+function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true, room?: RoomDoc, offset = 0, expandedLines?: Map<number, string>): void {
+  const rows = lines.map((line, i) => lineElement(line, names, line.prefix, claimsAt, merged ? offset + i + 1 : undefined, room, expandedLines, offset + i))
   const spans: { start: number; end: number; people: readonly string[]; detail: string; resolution?: string; resolved: boolean; claimOnly?: boolean; textConflict?: boolean }[] = []
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].conflict) continue
@@ -279,7 +362,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
         if (line !== undefined) for (const claim of claimsAt?.(person, line) ?? []) intents.set(claim.id, person + ': ' + claim.intent + (claim.plans?.length ? ` (plans: ${formatPlans(claim.plans)})` : ''))
       }
     }
-    spans.push({ start, end: i, people: pair, detail: pair.join(' ↔ ') + `\nMerged lines ${start + 1}-${i + 1}\nUnresolved: both sides changed these lines\n` + ([...intents.values()].join('\n') || 'Claim intents unavailable'), resolved: false, textConflict: true })
+    spans.push({ start, end: i, people: pair, detail: pair.join(' ↔ ') + `\nMerged lines ${offset + start + 1}-${offset + i + 1}\nUnresolved: both sides changed these lines\n` + ([...intents.values()].join('\n') || 'Claim intents unavailable'), resolved: false, textConflict: true })
   }
   for (const s of conflicts) {
     if (s.hidden || s.from === undefined || s.to === undefined) continue
@@ -337,12 +420,12 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   }
   const bindDetail = inlineDetails(layout)
   const bindRows = rows.map((row, i) => bindDetail(row, annotations[i], i,
-    merged ? i + 1 : lines[i].bLine ?? lines[i].aLine ?? i + 1, {
+    merged ? offset + i + 1 : lines[i].bLine ?? lines[i].aLine ?? i + 1, {
       owners: authors(lines[i], names),
       claims: sourceLines(lines[i], names).flatMap(([person, n]) => n === undefined ? [] : claimsAt?.(person, n) ?? []),
       conflicts: regions.filter(s => s.start <= i && s.end >= i).map(s => ({
         people: s.people, resolved: s.resolved, resolution: s.resolution,
-        range: `Merged lines ${s.start + 1}-${s.end + 1}`,
+        range: `Merged lines ${offset + s.start + 1}-${offset + s.end + 1}`,
         status: s.resolved ? 'Resolved' : s.textConflict ? 'Unresolved: both sides changed these lines' : s.claimOnly ? 'Unresolved: both claimed' : 'Unresolved conflict',
       })),
     }))
@@ -414,9 +497,12 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   }
   const host = h('div', { class: 'editor-wrap' })
   const editor = new Editor(host, conn.room)
+  let windowState: CodeWindowState = {}
+  let windowKey = ''
   const tabs = ['Merged', 'Diff', 'File'] as const
   type Tab = typeof tabs[number]
   let tab: Tab = 'Merged'
+  let showAllFiles = false
   let selectedPath: string | null = null
   let selectedPerson: string | null = null
   let render = () => {}
@@ -451,6 +537,8 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     const people = recentPeople(conn.room, selected.path, selected.people)
     if (focus.person && people.includes(focus.person)) selectedPerson = focus.person
     if (!selectedPerson || !people.includes(selectedPerson)) selectedPerson = people[0]
+    const key = `${selectedPath}\0${tab}\0${selectedPerson}`
+    if (key !== windowKey) { windowState = {}; windowKey = key }
     personSelect.replaceChildren(...people.map(person => h('option', { value: person, selected: person === selectedPerson }, person)))
     personSelect.hidden = tab === 'Merged'
     compareLabel.hidden = tab !== 'Diff'
@@ -467,7 +555,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const sha = conn.room.baseOf(person)
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
       const lines = classifyNWay(base ?? '', [{ name: person, text }]).map(line => ({ ...line, aLine: line.lineNumbers[person] }))
-      renderCodeLines(host, lines, [person], (owner, n) => conn.room.claimsFor(selected.path).filter(c => c.by === owner && n >= c.from && n <= c.to), conflicts, false, conn.room)
+      renderCodeLines(host, lines, [person], (owner, n) => conn.room.claimsFor(selected.path).filter(c => c.by === owner && n >= c.from && n <= c.to), conflicts, false, conn.room, windowState)
       return
     }
     editor.empty()
@@ -493,7 +581,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
       if (base === undefined) legend.append(h('span', { class: 'muted' }, 'Base unavailable; showing changes against an empty file'))
       const claimsAt: ClaimsAt = (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to)
-      renderCodeLines(host, classifyNWay(base ?? '', active.map(name => ({ name, text: conn.room.text(selected.path, name) ?? '' }))), active, claimsAt, conflicts.filter(s => s.people.every(p => active.includes(p))), true, conn.room)
+      renderCodeLines(host, classifyNWay(base ?? '', active.map(name => ({ name, text: conn.room.text(selected.path, name) ?? '' }))), active, claimsAt, conflicts.filter(s => s.people.every(p => active.includes(p))), true, conn.room, windowState)
       return
     }
 
@@ -501,7 +589,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person) ?? person
     compareLabel.textContent = `vs ${other}`
     legend.replaceChildren(h('span', {}, dot(other, other, conn.room), ` removed from ${other}`), h('span', {}, dot(person, person, conn.room), ` added by ${person}`))
-    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to), conflicts, false, conn.room)
+    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to), conflicts, false, conn.room, windowState)
   }
 
   render = () => {
@@ -512,8 +600,12 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     if (focus.person && !rows.find(row => row.path === selectedPath)?.people.includes(focus.person)) {
       selectedPath = rows.find(row => row.people.includes(focus.person!))?.path ?? selectedPath
     }
+    const visibleRows = showAllFiles ? rows : rows.filter((row, index) => index < MAX_FILE_ROWS || row.path === selectedPath)
     const grouped = new Map<string, FileRow[]>()
-    for (const row of rows) grouped.set(row.area, [...(grouped.get(row.area) ?? []), row])
+    for (const row of visibleRows) {
+      if (!grouped.has(row.area)) grouped.set(row.area, [])
+      grouped.get(row.area)!.push(row)
+    }
     fileList.replaceChildren(...Array.from(grouped, ([area, areaRows]) => h('div', { class: 'file-group' },
       h('div', { class: 'file-area' }, area),
       ...areaRows.map(row => {
@@ -529,6 +621,11 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
         item.onclick = () => { selectedPath = row.path; selectedPerson = focus.person; render() }
         return item
       }))))
+    if (visibleRows.length < rows.length) {
+      const more = h('button', { class: 'file-more muted', type: 'button' }, `and ${(rows.length - visibleRows.length).toLocaleString('en-US')} more files · show all`)
+      more.onclick = () => { showAllFiles = true; render() }
+      fileList.append(more)
+    }
     if (!rows.length) fileList.append(h('div', { class: 'empty-note muted' }, 'No changed files'))
     showViewer(rows)
   }
