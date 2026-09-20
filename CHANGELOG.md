@@ -2,6 +2,8 @@
 
 ## 0.7.0 — 2026-09-21
 
+- Reset `companyTold` at every session start while preserving seen inbox ids, so a new session hears about teammates already present in the clone.
+- Hook re-trust note: this release widened the before-edit hook matcher. Start Codex interactively and trust the Room hooks again; until then, `codex exec` silently skips the changed hook.
 - The before-edit hook also runs on the host's shell tool. A Codex session that edited only through shell commands was never told it had company and never saw its inbox or teammates' claims. Inbox and company lines are delivered on any call; the claims warning fires only when the command looks like a write.
 - New `room-workers` skill: the procedure for running parallel work through room workers (split, spawn, answer, preview all together, commit for the workers, merge, report). A phrasing check showed five of six everyday requests already reached `room_spawn`; the miss, "get codex to do half", is now named in the tool description.
 - Fixed two sessions under one login both joining as the bare login when one runs in a worktree of the other's clone: the remembered tag is now stored per worktree, and the name probe judges presence by the connection heartbeat (one shared definition with company), not by the last file change.

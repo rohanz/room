@@ -47,6 +47,8 @@ Anything that surprised you, and the moment you wanted to turn it off. Both are 
 
 ## Known issues
 
+After a plugin update that changes a hook definition, Codex asks you to trust the Room hooks again the next time it starts interactively. Until then, headless runs (`codex exec`) silently skip that hook, so the agent is not shown its room inbox, claims, or company before edits.
+
 - Claude Code wake-ups need the channels flag (`claude-room` adds it). Without it, an idle Claude session does not react to questions or interrupts until your next message. Codex does not have this limitation. This is a Claude Code research-preview restriction, not a Room design choice; it goes away when Room is on the channel allowlist or channels leave preview.
 
 - Codex occasionally hangs at startup before its MCP servers come up (seen twice in testing, never twice in a row). If `codex` shows nothing for a minute, quit and start it again.

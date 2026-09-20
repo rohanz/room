@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readStdinJson, gitRoot, gitStatePath, readJson } from './common.mjs'
+import { readStdinJson, gitRoot, gitStatePath, readJson, readHookSeen, writeHookSeen } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -20,6 +20,10 @@ if (root && id) {
   try { fs.appendFileSync(path.join(os.tmpdir(), 'room-hook.log'), `${new Date().toISOString()} session-start: no root/id; keys=${Object.keys(ev).join(',')} cwd=${ev.cwd}\n`) } catch { /* ignore */ }
 }
 if (root) {
+  const seenFile = gitStatePath(root, 'room-hook-seen.json')
+  const hookSeen = readHookSeen(seenFile)
+  // Company must be announced to each new session; delivered inbox ids stay seen.
+  writeHookSeen(seenFile, { ...hookSeen, companyTold: false })
   const state = readJson(gitStatePath(root, 'room-state.json'), null)
   if (state?.company === true) {
     const names = Array.isArray(state.others) ? state.others.join(', ') : 'Company'

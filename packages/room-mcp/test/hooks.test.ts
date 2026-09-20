@@ -185,6 +185,23 @@ describe('hooks bridge + plugin hook scripts', () => {
     expect(out.hookSpecificOutput.additionalContext).toBe("Room: Kieran's agent in this room. Follow the room-etiquette skill.")
   })
 
+  it('SessionStart resets company delivery for a new session without forgetting seen inbox ids', async () => {
+    const seenFile = join(dir, '.git/room-hook-seen.json')
+    writeFileSync(seenFile, JSON.stringify({ seen: ['old'], companyTold: true }))
+    writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({
+      company: true, others: ['Kieran'],
+      unread: [{ id: 'old', priority: 'notify', line: 'old message' }], claims: [],
+    }))
+    await runHook('session-start.mjs', { session_id: 'new-session', cwd: dir })
+    expect(JSON.parse(readFileSync(seenFile, 'utf8'))).toEqual({ seen: ['old'], companyTold: false })
+    const input = { tool_name: 'Write', cwd: dir, tool_input: { file_path: join(dir, 'app.py') } }
+    const out = JSON.parse(await runHook('before-edit.mjs', input)).hookSpecificOutput.additionalContext
+    expect(out).toContain('[room] Kieran is in this room')
+    expect(out).not.toContain('old message')
+    expect(JSON.parse(readFileSync(seenFile, 'utf8'))).toEqual({ seen: ['old'], companyTold: true })
+    expect(await runHook('before-edit.mjs', input)).toBe('')
+  })
+
   it('PreToolUse announces company once, then again after company went false', async () => {
     const state = join(dir, '.git/room-state.json')
     writeFileSync(state, JSON.stringify({ company: true, others: ['Kieran'], unread: [], claims: [] }))
