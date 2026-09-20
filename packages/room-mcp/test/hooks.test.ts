@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { execFileSync, execFile } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
@@ -17,6 +17,8 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'room-hooks-'))
   execFileSync('git', ['-C', dir, 'init', '-q'])
   writeFileSync(join(dir, 'app.py'), 'x = 1\n')
+  mkdirSync(join(dir, 'api'))
+  writeFileSync(join(dir, 'api/tax.py'), 'x = 1\n')
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
@@ -99,6 +101,77 @@ describe('hasCompany', () => {
     const s = session(new RoomDoc())
     s.room.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'offline work' })
     expect(hasCompany(s)).toEqual({ company: false, others: [] })
+  })
+})
+
+describe('shell edit hooks', () => {
+  const shellNames = ['Bash', 'shell', 'local_shell', 'exec', 'exec_command', 'unified_exec']
+  const claim = { by: 'Kieran', path: 'api/tax.py', from: 1, to: 1, intent: 'tax rules' }
+  const state = (extra = {}) => writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ claims: [claim], ...extra }))
+
+  it.each(shellNames)('%s matches Codex hooks and announces company only once', async tool_name => {
+    const manifest = JSON.parse(readFileSync(join(HOOKS, '../hooks.json'), 'utf8'))
+    expect(new RegExp(manifest.hooks.PreToolUse[0].matcher).test(tool_name)).toBe(true)
+    state({ company: true, others: ['Kieran'] })
+    const input = { tool_name, cwd: dir, tool_input: { command: 'git status' } }
+    expect(JSON.parse(await runHook('before-edit.mjs', input)).hookSpecificOutput.additionalContext).toContain('[room] Kieran is in this room')
+    expect(await runHook('before-edit.mjs', input)).toBe('')
+  })
+
+  it('matches Bash in the Claude hook manifest', () => {
+    const manifest = JSON.parse(readFileSync(join(HOOKS, 'claude.json'), 'utf8'))
+    expect(new RegExp(manifest.hooks.PreToolUse[0].matcher).test('Bash')).toBe(true)
+  })
+
+  it.each([
+    "sed -i '' 's/x/y/' api/tax.py", "perl -pi -e 's/x/y/' api/tax.py",
+    'echo x >api/tax.py', 'echo x >>api/tax.py', 'tee api/tax.py',
+    'mv api/tax.py old.py', 'cp app.py api/tax.py', 'rm api/tax.py',
+    'python3 -c "pass" api/tax.py', 'node -e "0" api/tax.py',
+    "python <<'PY'\nopen('api/tax.py', 'w')\nPY", "node <<'JS'\nwrite('api/tax.py')\nJS",
+    'apply_patch api/tax.py', 'git apply api/tax.py', 'git checkout -- api/tax.py',
+    'git restore api/tax.py', 'git stash -- api/tax.py', 'git merge api/tax.py', 'git rebase api/tax.py',
+  ])('warns on likely shell write: %s', async cmd => {
+    state()
+    const out = JSON.parse(await runHook('before-edit.mjs', { tool_name: 'exec', cwd: dir, tool_input: { cmd } }))
+    expect(out.hookSpecificOutput.additionalContext).toContain("Kieran's agent holds api/tax.py:1-1")
+  })
+
+  it.each(['cat', 'ls', 'grep x', 'git status', 'git diff', 'git log', 'pytest', 'npm test'])('does not warn on claims for %s', async command => {
+    state()
+    expect(await runHook('before-edit.mjs', { tool_name: 'Bash', cwd: dir, tool_input: { command: command + ' api/tax.py' } })).toBe('')
+  })
+
+  it('delivers unread inbox messages on read-only shell calls once', async () => {
+    state({ unread: [{ id: 'shell-inbox', priority: 'notify', line: 'check the new tax rules' }] })
+    const input = { tool_name: 'exec_command', cwd: dir, tool_input: { cmd: 'cat api/tax.py' } }
+    const out = JSON.parse(await runHook('before-edit.mjs', input)).hookSpecificOutput.additionalContext
+    expect(out).toContain('check the new tax rules')
+    expect(out).not.toContain('[room claims')
+    expect(await runHook('before-edit.mjs', input)).toBe('')
+  })
+
+  it('bounds path candidates across input strings and supports shell argv', async () => {
+    const { pathsOf, shellLooksLikeWrite } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('exec', { cmd: 'sed -i "s/x/y/" "api/tax.py"' }, dir)).toContain('api/tax.py')
+    expect(pathsOf('exec', { cmd: 'x '.repeat(200), extra: 'api/tax.py' }, dir)).toEqual([])
+    expect(pathsOf('exec', { cmd: 'x'.repeat(20_001), extra: 'api/tax.py' }, dir)).toEqual(['api/tax.py'])
+    expect(shellLooksLikeWrite({ command: ['python3', '-c', 'pass', 'api/tax.py'] })).toBe(true)
+    expect(pathsOf('shell', { command: ['python3', '-c', 'pass', 'api/tax.py'] }, dir)).toEqual(['api/tax.py'])
+    expect(pathsOf('exec', { cmd: 'rm ../outside.py /etc/hosts' }, dir)).toEqual([])
+  })
+
+  it('skips a 1 MB command within 100 ms and still delivers company', async () => {
+    const { pathsOf, shellLooksLikeWrite } = await import(join(HOOKS, 'common.mjs'))
+    const tool_input = { cmd: 'sed -i ' + 'x'.repeat(1_000_000) + ' api/tax.py' }
+    const start = performance.now()
+    expect(pathsOf('exec', tool_input, dir)).toEqual([])
+    expect(shellLooksLikeWrite(tool_input)).toBe(false)
+    expect(performance.now() - start).toBeLessThan(100)
+    state({ company: true, others: ['Kieran'] })
+    const out = JSON.parse(await runHook('before-edit.mjs', { tool_name: 'exec', cwd: dir, tool_input }))
+    expect(out.hookSpecificOutput.additionalContext).toContain('[room] Kieran is in this room')
+    expect(out.hookSpecificOutput.additionalContext).not.toContain('[room claims')
   })
 })
 

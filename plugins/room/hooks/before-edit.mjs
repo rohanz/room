@@ -1,8 +1,8 @@
-// PreToolUse on edit tools (Codex apply_patch/Write/Edit; Claude Code Edit/Write/MultiEdit/
-// NotebookEdit): put the agent's unread room messages, and any teammate claims on the files it
-// is about to edit, in front of the model before the edit happens.
+// PreToolUse from hooks.json / hooks/claude.json: before every edit, including edits
+// made through the shell. Codex documents Bash as canonical; keep shell/exec aliases
+// for other versions. Deliver inbox/company on all calls; claims only on likely writes.
 // Reads .git/room-state.json, which the room MCP server keeps current.
-import { readStdinJson, gitRoot, gitStatePath, readJson, readHookSeen, writeHookSeen, pathsOf } from './common.mjs'
+import { readStdinJson, gitRoot, gitStatePath, readJson, readHookSeen, writeHookSeen, pathsOf, isShellTool, shellLooksLikeWrite } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -15,7 +15,8 @@ const hookSeen = readHookSeen(seenFile)
 const companyWasTold = hookSeen.companyTold
 const seen = new Set(hookSeen.seen)
 const fresh = (state.unread ?? []).filter(m => !seen.has(m.id))
-const paths = pathsOf(ev.tool_name, ev.tool_input, root)
+const paths = !isShellTool(ev.tool_name) || shellLooksLikeWrite(ev.tool_input)
+  ? pathsOf(ev.tool_name, ev.tool_input, root) : []
 const claims = (state.claims ?? []).filter(c => paths.includes(c.path))
 
 const lines = []

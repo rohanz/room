@@ -13,7 +13,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "apply_patch|Write|Edit",
+        "matcher": "apply_patch|Write|Edit|Bash|shell|local_shell|exec|exec_command|unified_exec",
         "hooks": [
           {
             "type": "command",

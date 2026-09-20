@@ -60,7 +60,7 @@ manifests). Install with `claude plugin marketplace add rohanz/room && claude pl
 room@room` or `codex plugin marketplace add rohanz/room && codex plugin add room@room`; the
 bundled server is `plugins/room/server/room-mcp.mjs` (rebuild with `npm run build:plugin`).
 The plugin's hooks record the session so it can be woken and put unread inbox lines and
-teammate claims in front of the model before every edit.
+teammate claims in front of the model before every edit, including edits made through the shell.
 
 Wake-ups differ by host. A Claude Code session receives interrupts and questions addressed
 to it through the MCP channel (`notifications/claude/channel`, a research-preview feature

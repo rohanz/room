@@ -44,7 +44,7 @@ claude plugin marketplace add rohanz/room && claude plugin install room@room # C
 ```
 
 Trust Room's hooks when prompted (or through `/hooks`). They put teammate claims and your
-unread room messages in front of the model before every edit, and record the session so
+unread room messages in front of the model before every edit, including edits made through the shell, and record the session so
 it can be woken.
 
 Room stays silent while you are alone and starts coordinating when someone joins or you spawn workers.
@@ -170,7 +170,7 @@ checks the manifest.
 
 Claude Code loads the `room_*` tools from the bundled MCP server, the `room-join`,
 `room-workers` and `room-etiquette` skills, and two hooks: SessionStart records the session id and host next
-to the clone, and PreToolUse on Edit, Write, MultiEdit and NotebookEdit puts your unread
+to the clone, and PreToolUse on Edit, Write, MultiEdit, NotebookEdit and Bash puts your unread
 inbox and any teammate claims on the file in front of the model before the edit. Trust the
 hooks when prompted or through `/hooks`.
 

@@ -45,17 +45,51 @@ export function writeHookSeen(file, value) {
   try { fs.writeFileSync(file, JSON.stringify({ seen: value.seen.slice(-2000), companyTold: value.companyTold === true })) } catch { /* best effort */ }
 }
 
-/** Repo-relative paths an edit tool call touches. Scans every string in the input: patch
- *  file markers (apply_patch) and any value that resolves to a file inside the clone. */
+// Both hook manifests include shell tools. Bash is Codex's documented canonical name;
+// the remaining aliases cover host/version differences (exec is also a display name).
+export function isShellTool(name) {
+  return /^(?:Bash|shell|local_shell|exec|exec_command|unified_exec)$/.test(name)
+}
+
+function* inputStrings(value) {
+  if (typeof value === 'string') yield value
+  else if (Array.isArray(value)) { for (const item of value) yield* inputStrings(item) }
+  else if (value && typeof value === 'object') { for (const item of Object.values(value)) yield* inputStrings(item) }
+}
+
+/** Advisory write heuristic, not a shell parser. Never scan oversized command strings. */
+export function shellLooksLikeWrite(input) {
+  const command = input?.command ?? input?.cmd ?? input
+  const strings = Array.isArray(command) && command.every(v => typeof v === 'string')
+    ? [command.reduce((s, v) => s.length > 20_000 ? s : s + ' ' + v, '')] : inputStrings(command)
+  for (const text of strings) {
+    if (text.length > 20_000) continue
+    if (/>|(?:^|[\s;|&()])(?:\S*\/)?(?:sed\s+[^\n;|&]*?-[^\s]*i|perl\s+[^\n;|&]*?-[^\s]*i|(?:tee|mv|cp|rm|apply_patch)(?=\s|$)|git\s+(?:apply|checkout|restore|stash|merge|rebase)(?=\s|$)|(?:python[\d.]*|node)\s+[^\n;|&]*?(?:-[ce](?=\s|['"]|$)|<<))/.test(text)) return true
+  }
+  return false
+}
+
+/** Repo-relative paths touched by an edit or shell tool. Shell scanning skips strings
+ * over 20,000 chars and checks at most 200 tokens across the entire tool input. */
 export function pathsOf(toolName, input, root) {
   const out = new Set()
-  const rel = p => { const abs = path.isAbsolute(p) ? p : path.resolve(root, p); const r = path.relative(root, abs); return r && !r.startsWith('..') ? r.split(path.sep).join('/') : undefined }
-  const strings = []
-  const walk = v => { if (typeof v === 'string') strings.push(v); else if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') Object.values(v).forEach(walk) }
-  walk(input)
-  for (const text of strings) {
-    for (const m of text.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) { const r = rel(m[1].trim()); if (r) out.add(r) }
-    if (!text.includes('\n') && text.length < 400 && /[\w./-]+\.[A-Za-z0-9]+$/.test(text.trim())) { const r = rel(text.trim()); if (r && fs.existsSync(path.join(root, r))) out.add(r) }
+  const shell = isShellTool(toolName)
+  let candidates = 0
+  const rel = p => { const abs = path.isAbsolute(p) ? p : path.resolve(root, p); const r = path.relative(root, abs); return r && r !== '..' && !r.startsWith('..' + path.sep) ? r.split(path.sep).join('/') : undefined }
+  for (const text of inputStrings(input)) {
+    if (shell && text.length > 20_000) continue
+    if (!shell) {
+      for (const m of text.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) { const r = rel(m[1].trim()); if (r) out.add(r) }
+    }
+    // Keep whole values for edit tools (including paths containing spaces). Shell
+    // punctuation separates tokens so redirects and quoted arguments work too.
+    const tokens = shell ? text.matchAll(/[^\s'"\x60;|&<>()]+/g) : [[text.trim()]]
+    for (const [token] of tokens) {
+      if (shell && candidates++ >= 200) return Array.from(out)
+      if (!token || token.length >= 400 || token.includes('\n')) continue
+      const r = rel(token)
+      if (r && fs.existsSync(path.join(root, r))) out.add(r)
+    }
   }
   return Array.from(out)
 }
