@@ -28,7 +28,7 @@ export const defs: ToolDef[] = [
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
+  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
   async function configureLogin(a: Record<string, unknown>) {
     const config = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
     configureCredentials(config.credentialsPath)
@@ -68,7 +68,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_create(a) { return handlers.room_join({ ...a, create: true }) },
     async room_join(a) {
       const cur = ctx.getSession()
-      if (cur) return [`already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`, claudeWakeNote(cur)].filter(Boolean).join('\n')
+      if (cur) return [`already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`, hasCompany(cur).company ? claudeWakeNote(cur) : ''].filter(Boolean).join('\n')
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : ctx.cwd
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
@@ -106,6 +106,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       evictStale(s)
       await loadAreas(s)
       const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
+      const company = hasCompany(s)
+      if (!company.company) {
+        out.push(shareLine(s))
+        out.push('alone here; the room stays quiet until someone joins')
+        out.push(`browser view: ${await refreshBrowserUrl(s)}`)
+        return out.join('\n')
+      }
       // Never print a shared token: the chosen server may carry one as ?token=…
       out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone)' : choice.rule === 'env' ? 'ROOM_SERVER' : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
       if (!s.local && (choice.rule === 'argument' || choice.rule === 'remembered')) {

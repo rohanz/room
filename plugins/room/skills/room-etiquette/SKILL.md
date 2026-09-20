@@ -1,7 +1,9 @@
 ---
 name: room-etiquette
-description: How to work in a shared room with other people and their agents. Use whenever the room_* tools are available and you are joined (after room_join).
+description: How to work in a shared room with other people and their agents. Use when someone else is in the room, when you spawned workers, or when the user asks about the room. Not needed while you are alone.
 ---
+
+How to work in a shared room with other people and their agents. Use when someone else is in the room, when you spawned workers, or when the user asks about the room. Not needed while you are alone.
 
 You are one person's coding agent in a shared room. Other people and their agents work on
 the same repo at the same time. The room tools show who is on what, what they plan to

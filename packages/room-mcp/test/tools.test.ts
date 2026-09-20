@@ -107,6 +107,9 @@ describe('session gating', () => {
     expect(t.joined).toEqual([dir])
     expect(out).toContain("joined r as Rohan's agent")
     expect(out).toContain('browser view: http://x')
+    expect(out).toContain('alone here; the room stays quiet until someone joins')
+    expect(out).not.toContain('next: room_scope')
+    expect(out.split('\n')).toHaveLength(4)
     expect(await t.tools.call('room_join', {})).toMatch(/^already in r/)
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'x' })
     expect(await t.tools.call('room_leave', {})).toBe('left r; released 1 claim(s)')
@@ -122,6 +125,14 @@ describe('session gating', () => {
     await t.tools.call('room_leave', {})
     await t.tools.call('room_join', {})
     expect(t.created).toEqual([true, false])
+  })
+
+  it('keeps the join reply quiet when only a foreign overlay is present', async () => {
+    const t = setup({ joined: false })
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    const out = await t.tools.call('room_join', {})
+    expect(out).toContain('alone here; the room stays quiet until someone joins')
+    expect(out).not.toContain('next: room_scope')
   })
 
   it('a fresh join clears stale claims and scope left under my name; shutdown leaves cleanly', async () => {
@@ -185,14 +196,14 @@ describe('session gating', () => {
     } finally { vi.unstubAllEnvs() }
   })
 
-  it.each(['claude', 'codex', undefined])('adds wake-up guidance only for a Claude session (%s)', async host => {
+  it.each(['claude', 'codex', undefined])('keeps quiet joins free of wake-up guidance (%s)', async host => {
     const file = join(dir, '.git', 'room-session.json')
     writeFileSync(file, JSON.stringify({ session_id: 'test-session', at: Date.now(), cwd: dir, host }))
     try {
       const t = setup({ joined: false })
       for (const tool of ['room_join', 'room_create']) {
         const reply = await t.tools.call(tool, { where: 'local' })
-        expect(reply.endsWith('Wake-ups on Claude Code need the session started with claude-room (or the channels flag).')).toBe(host === 'claude')
+        expect(reply.includes('Wake-ups on Claude Code')).toBe(false)
         const again = await t.tools.call(tool, {})
         expect(again.includes('Wake-ups on Claude Code')).toBe(false)
         const done = await t.tools.call('room_done', { summary: 'tested' })

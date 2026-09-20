@@ -14,6 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { formatMsg, formatPlans, shouldWakeOnMsg, type Msg, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
+import { hasCompany, type CompanyState } from './company.js'
 
 function gitStatePath(root: string, name: string): string {
   const dotgit = path.join(root, '.git')
@@ -31,6 +32,8 @@ export interface HooksBridgeOptions {
   forMe: (m: Msg) => boolean
   /** Ids already shown through a tool reply. */
   isSeen: (id: string) => boolean
+  /** The authoritative company state, including workers held by the registry. */
+  company?: () => CompanyState
   log?: (line: string) => void
   /** Injectable for tests. */
   queue?: (threadId: string, text: string) => Promise<void>
@@ -62,8 +65,10 @@ export class HooksBridge {
 
   start(): void {
     const kick = () => this.scheduleWrite()
-    this.s.room.bus.observe(kick); this.s.room.claims.observe(kick)
-    this.unobserve.push(() => { this.s.room.bus.unobserve(kick); this.s.room.claims.unobserve(kick) })
+    if (this.o.writeState !== false) {
+      this.s.room.doc.on('update', kick); this.s.awareness.on('change', kick)
+      this.unobserve.push(() => { this.s.room.doc.off('update', kick); this.s.awareness.off('change', kick) })
+    }
     // A local transaction is usually my own post, which never wakes me. It can also be a message this
     // process wrote on someone else's behalf (a worker's synthetic done on exit): that one must.
     const onBus = (ev: { changes: { delta: { insert?: unknown }[] }; transaction: { local: boolean } }) => {
@@ -101,7 +106,8 @@ export class HooksBridge {
     const me = this.s.me.name
     const unread = this.s.room.messages().filter(m => !this.o.isSeen(m.id) && this.o.forMe(m)).map(m => ({ id: m.id, priority: m.priority, line: formatMsg(m) }))
     const claims = this.s.room.openClaims().filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
-    try { fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + '\n') }
+    const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now())
+    try { fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), company: company.company, others: company.others, unread, claims }, null, 1) + '\n') }
     catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`) }
   }
 

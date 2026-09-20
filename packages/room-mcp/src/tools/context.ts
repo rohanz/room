@@ -12,6 +12,7 @@ import { Rooms, type Attachment, type Role } from '../registry.js'
 import { authFor, closeRoom, DEFAULT_SERVER, joinSession, leaveSession, LOCAL, parseServer, resolveServer, type JoinOptions, type Session } from '../session.js'
 import { pidIsOurWorker, signalWorker, type ProcessInfo, type Spawner } from '../workers.js'
 import type { ResolvedConfig } from '../config.js'
+import { hasCompany, type CompanyState } from '../company.js'
 
 export interface ToolDef {
   name: string
@@ -73,6 +74,7 @@ export interface HandlerState {
   ensureWorkersRoom: (lead: Session) => Promise<Session>
   closeWorkersRoom: () => Promise<void>
   runningWorkers: (s: Session) => { s: Session; w: Worker }[]
+  hasCompany: (s: Session) => CompanyState
   dismissWorker: (s: Session, w: Worker, why: string) => string
   gitignored: (dir: string) => boolean
   others: (s: Session) => string[]
@@ -173,7 +175,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
    * file is the team room's), the host's channel push, and the bridge to the lead's team room.
    */
   const attach = (s: Session, role: Role, lead?: Session): Attachment => {
-    const hooks = new HooksBridge(s, { forMe: m => runtime.forMe(s, m), isSeen: id => seen.has(id), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}) })
+    const hooks = new HooksBridge(s, { forMe: m => runtime.forMe(s, m), isSeen: id => seen.has(id), company: () => runtime.hasCompany(s), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}) })
     hooks.start()
     if (role === 'primary') primaryHooks = hooks
     let watcher: ConflictWatcher | null = null
@@ -343,7 +345,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   // ---- handlers -------------------------------------------------------------
   runtime = {
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, myWorkers: undefined!, workerAlive: undefined!,
-    ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, dismissWorker: undefined!, gitignored: undefined!, others, presences,
+    ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, gitignored: undefined!, others, presences,
     shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, loadAreas: undefined!, areasOf: undefined!,
     areasFor: undefined!, myAreas: undefined!, inMyAreas: undefined!, areaLines: undefined!, ownerHints: undefined!, msgInMyAreas: undefined!, forMe: undefined!, inbox: undefined!, waitingOn: undefined!, describeUsers: undefined!,
     planChanged: undefined!, followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, upgrade: undefined!, claimLine: undefined!, ledgerLines: undefined!, scopeLine: undefined!, personLine: undefined!,

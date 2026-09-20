@@ -47,6 +47,8 @@ Trust Room's hooks when prompted (or through `/hooks`). They put teammate claims
 unread room messages in front of the model before every edit, and record the session so
 it can be woken.
 
+Room stays silent while you are alone and starts coordinating when someone joins or you spawn workers.
+
 Then start your agent in any clone:
 
 ```sh

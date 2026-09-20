@@ -35,6 +35,7 @@ By default the room sees the full text of files you change. If you'd rather shar
 
 ## What to expect
 
+- Room stays silent while you are alone and starts coordinating when someone joins or you spawn workers.
 - Before every edit the agent is shown teammates' claims on that file and your unread room messages.
 - If it edits inside someone's claim without claiming, it gets an interrupt within seconds. So does the holder.
 - If your file and a teammate's stop merging cleanly, you are told, and told again when they merge cleanly.

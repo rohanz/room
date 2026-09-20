@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0 — 2026-09-21
+
+- Room stays silent while a session is alone and starts coordinating when another participant joins or the session spawns workers.
+
 ## 0.6.9 — 2026-09-16
 
 - License changed from MIT to PolyForm Noncommercial 1.0.0. Releases up to 0.6.8 remain MIT.

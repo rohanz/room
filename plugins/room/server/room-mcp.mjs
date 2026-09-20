@@ -34565,6 +34565,25 @@ import { execFile as execFile3 } from "node:child_process";
 import fs6 from "node:fs";
 import os2 from "node:os";
 import path7 from "node:path";
+
+// packages/room-mcp/src/company.ts
+var PRESENCE_FRESH_MS = 2e4;
+function hasCompany(s, runningWorkers = [], now = Date.now()) {
+  const names = /* @__PURE__ */ new Map();
+  for (const [clientId, value2] of s.awareness.getStates()) {
+    const p = value2;
+    if (!p.user || clientId === s.awareness.clientID || p.user.name === s.me.name) continue;
+    const activeAt = typeof p.lastActive === "number" ? p.lastActive : s.awareness.meta.get(clientId)?.lastUpdated ?? 0;
+    if (now - activeAt > PRESENCE_FRESH_MS) continue;
+    if (p.user.kind === "human" && p.status === "viewing") continue;
+    names.set(p.user.name, displayName(p.user));
+  }
+  for (const worker of runningWorkers) names.set(worker.name, names.get(worker.name) ?? worker.name);
+  const others = Array.from(names.values()).sort((a, b) => a.localeCompare(b));
+  return { company: others.length > 0, others };
+}
+
+// packages/room-mcp/src/hooks-bridge.ts
 function gitStatePath(root, name) {
   const dotgit = path7.join(root, ".git");
   try {
@@ -34593,12 +34612,14 @@ var HooksBridge = class {
   unobserve = [];
   start() {
     const kick = () => this.scheduleWrite();
-    this.s.room.bus.observe(kick);
-    this.s.room.claims.observe(kick);
-    this.unobserve.push(() => {
-      this.s.room.bus.unobserve(kick);
-      this.s.room.claims.unobserve(kick);
-    });
+    if (this.o.writeState !== false) {
+      this.s.room.doc.on("update", kick);
+      this.s.awareness.on("change", kick);
+      this.unobserve.push(() => {
+        this.s.room.doc.off("update", kick);
+        this.s.awareness.off("change", kick);
+      });
+    }
     const onBus = (ev) => {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
         if (ev.transaction.local && m.from === this.s.me.name) continue;
@@ -34642,8 +34663,9 @@ var HooksBridge = class {
     const me = this.s.me.name;
     const unread = this.s.room.messages().filter((m) => !this.o.isSeen(m.id) && this.o.forMe(m)).map((m) => ({ id: m.id, priority: m.priority, line: formatMsg(m) }));
     const claims = this.s.room.openClaims().filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
+    const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now());
     try {
-      fs6.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), unread, claims }, null, 1) + "\n");
+      fs6.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), company: company.company, others: company.others, unread, claims }, null, 1) + "\n");
     } catch (e) {
       this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`);
     }
@@ -35135,7 +35157,7 @@ function createHandlerState(ctx) {
     return closeRoom(a.server, s.roomName, { session: a.session, token: a.token });
   });
   const attach2 = (s, role, lead) => {
-    const hooks = new HooksBridge(s, { forMe: (m) => runtime.forMe(s, m), isSeen: (id2) => seen.has(id2), log: log2, queue: ctx.queue, ...role === "workers" ? { writeState: false } : {} });
+    const hooks = new HooksBridge(s, { forMe: (m) => runtime.forMe(s, m), isSeen: (id2) => seen.has(id2), company: () => runtime.hasCompany(s), log: log2, queue: ctx.queue, ...role === "workers" ? { writeState: false } : {} });
     hooks.start();
     if (role === "primary") primaryHooks = hooks;
     let watcher = null;
@@ -35224,6 +35246,7 @@ function createHandlerState(ctx) {
     ensureWorkersRoom: void 0,
     closeWorkersRoom: void 0,
     runningWorkers: void 0,
+    hasCompany: (s) => hasCompany(s, runtime.runningWorkers(s).map((r) => r.w), now()),
     dismissWorker: void 0,
     gitignored: void 0,
     others,
@@ -35317,15 +35340,15 @@ function claudeWakeNote(session) {
   wakeNoted.add(session);
   return "Wake-ups on Claude Code need the session started with claude-room (or the channels flag).";
 }
-var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
+var AGENT_INSTRUCTIONS = (name) => `You are ${name ? `${name}'s` : "one person's"} coding agent in a room. Room tools coordinate shared work but never touch your disk.
 
 Rules:
-1. You are joined automatically. Only change local/team-room choice when your human asks; use room_join/room_leave and follow any login instructions.
-2. Call room_scope(area, summary, paths) before editing and read the ledger it returns.
-3. Call room_read, then room_claim before editing. Never edit another person's claim; declare public-symbol plans (they reach consumers before the edit; changed definition lines are also detected from diffs, later).
-4. Answer addressed questions promptly. When unsure, ask the relevant agent with room_send and wait for the answer.
-5. Before finishing, release claims, announce dependent changes, preview-merge teammates' current work, then call room_done.
-6. Tell your human whenever room information, an interrupt, or a conflict changes your plan.
+1. While you are alone in the room, ignore the room tools and work normally; do not scope, claim, release or call room_done. The room tells you when someone joins. Follow the rules below only when someone else is in the room, you spawned workers, or your human mentions the room.
+2. You join automatically. Change local/team-room choice only when your human asks; follow login instructions.
+3. Before editing, call room_scope, then room_read and room_claim. Never edit another person's claim; declare public-symbol plans before changing them.
+4. Answer addressed questions promptly; ask the relevant agent and wait when unsure.
+5. Before finishing, release claims, announce dependent changes, preview-merge current teammate work, then call room_done.
+6. Tell your human when room information, an interrupt, or a conflict changes your plan.
 
 Load the room-etiquette skill for detailed coordination, inbox, conflict, waiting, merge, and safety rules.`;
 
@@ -35375,7 +35398,7 @@ var defs = [
   }
 ];
 function handlers(state) {
-  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log: log2, evictStale, loadAreas, shareLine, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
+  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log: log2, evictStale, loadAreas, shareLine, hasCompany: hasCompany2, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
   async function configureLogin(a) {
     const config2 = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
     configureCredentials(config2.credentialsPath);
@@ -35423,7 +35446,7 @@ function handlers(state) {
     },
     async room_join(a) {
       const cur = ctx.getSession();
-      if (cur) return [`already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`, claudeWakeNote(cur)].filter(Boolean).join("\n");
+      if (cur) return [`already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`, hasCompany2(cur).company ? claudeWakeNote(cur) : ""].filter(Boolean).join("\n");
       const dir = typeof a.dir === "string" && a.dir ? a.dir : ctx.cwd;
       const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
@@ -35467,6 +35490,13 @@ function handlers(state) {
       evictStale(s);
       await loadAreas(s);
       const out = [`${a.create && !s.local ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
+      const company = hasCompany2(s);
+      if (!company.company) {
+        out.push(shareLine(s));
+        out.push("alone here; the room stays quiet until someone joins");
+        out.push(`browser view: ${await refreshBrowserUrl(s)}`);
+        return out.join("\n");
+      }
       out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone)" : choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
       if (!s.local && (choice.rule === "argument" || choice.rule === "remembered")) {
         const fresh = await markWarned(dir, s.dir).catch(() => true);

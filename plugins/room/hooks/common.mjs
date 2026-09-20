@@ -34,6 +34,17 @@ export function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
 }
 
+/** Hook-local delivery state. Versions before 0.7.0 stored only the seen-id array. */
+export function readHookSeen(file) {
+  const value = readJson(file, { seen: [], companyTold: false })
+  if (Array.isArray(value)) return { seen: value, companyTold: false }
+  return { seen: Array.isArray(value?.seen) ? value.seen : [], companyTold: value?.companyTold === true }
+}
+
+export function writeHookSeen(file, value) {
+  try { fs.writeFileSync(file, JSON.stringify({ seen: value.seen.slice(-2000), companyTold: value.companyTold === true })) } catch { /* best effort */ }
+}
+
 /** Repo-relative paths an edit tool call touches. Scans every string in the input: patch
  *  file markers (apply_patch) and any value that resolves to a file inside the clone. */
 export function pathsOf(toolName, input, root) {

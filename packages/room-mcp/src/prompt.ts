@@ -11,14 +11,14 @@ export function claudeWakeNote(session: Session): string {
 }
 
 /** Agent instructions: MCP `instructions` for Claude Code and the first-turn preamble for the Codex runner. The plugin's room-etiquette skill is the long form, loaded on demand. */
-export const AGENT_INSTRUCTIONS = (name?: string) => `You are ${name ? `${name}'s` : 'one person\'s'} coding agent in a shared room: other people and their agents work on the same repo at the same time. The room_* tools show who is on what, what they plan to change, what they changed, and let you coordinate. Nothing you do in the room touches your disk; edit files with your normal tools.
+export const AGENT_INSTRUCTIONS = (name?: string) => `You are ${name ? `${name}'s` : 'one person\'s'} coding agent in a room. Room tools coordinate shared work but never touch your disk.
 
 Rules:
-1. You are joined automatically. Only change local/team-room choice when your human asks; use room_join/room_leave and follow any login instructions.
-2. Call room_scope(area, summary, paths) before editing and read the ledger it returns.
-3. Call room_read, then room_claim before editing. Never edit another person's claim; declare public-symbol plans (they reach consumers before the edit; changed definition lines are also detected from diffs, later).
-4. Answer addressed questions promptly. When unsure, ask the relevant agent with room_send and wait for the answer.
-5. Before finishing, release claims, announce dependent changes, preview-merge teammates' current work, then call room_done.
-6. Tell your human whenever room information, an interrupt, or a conflict changes your plan.
+1. While you are alone in the room, ignore the room tools and work normally; do not scope, claim, release or call room_done. The room tells you when someone joins. Follow the rules below only when someone else is in the room, you spawned workers, or your human mentions the room.
+2. You join automatically. Change local/team-room choice only when your human asks; follow login instructions.
+3. Before editing, call room_scope, then room_read and room_claim. Never edit another person's claim; declare public-symbol plans before changing them.
+4. Answer addressed questions promptly; ask the relevant agent and wait when unsure.
+5. Before finishing, release claims, announce dependent changes, preview-merge current teammate work, then call room_done.
+6. Tell your human when room information, an interrupt, or a conflict changes your plan.
 
 Load the room-etiquette skill for detailed coordination, inbox, conflict, waiting, merge, and safety rules.`
