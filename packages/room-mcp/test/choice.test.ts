@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, existsSync } from 'node:fs'
+import { mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync, mkdirSync, symlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { chooseServer, choiceFile, clearChoice, normaliseWhere, readChoice, writeChoice, describeWhere, markWarned } from '../src/choice.js'
+import { chooseServer, choiceFile, clearChoice, normaliseWhere, readChoice, writeChoice, describeWhere, markWarned, rememberTag, worktreePath } from '../src/choice.js'
 import { DEFAULT_SERVER, LOCAL } from '../src/session.js'
 
 let dir: string
@@ -11,6 +11,8 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'room-choice-'))
   execFileSync('git', ['-C', dir, 'init', '-q', '-b', 'main'], { stdio: 'pipe' })
 })
+
+afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('room choice', () => {
   it('normalises the words people use', () => {
@@ -51,5 +53,41 @@ describe('visibility warning per worktree', () => {
     await writeChoice(dir, 'local') // a new choice starts over
     expect((await readChoice(dir))?.warned).toBeUndefined()
     await clearChoice(dir)
+  })
+})
+
+
+describe('tags per worktree', () => {
+  it('migrates the legacy tag only to the main worktree and drops it on every next write', async () => {
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'init'], { cwd: dir })
+    const worktree = join(dir, 'worktree')
+    execFileSync('git', ['worktree', 'add', '-qb', 'worker', worktree], { cwd: dir })
+    const mainKey = await worktreePath(dir), workerKey = await worktreePath(worktree)
+    const file = await choiceFile(dir)
+    expect(realpathSync(join(await choiceFile(worktree), '..'))).toBe(realpathSync(join(file, '..')))
+    for (const write of [() => rememberTag(worktree, 'codex'), () => writeChoice(worktree, 'team'), () => markWarned(worktree, worktree)]) {
+      writeFileSync(file, JSON.stringify({ where: 'team', at: 1, tag: '', warned: [mainKey] }))
+      expect((await readChoice(worktree))?.tags).toEqual({ [mainKey]: '' })
+      expect((await readChoice(worktree))?.tags?.[workerKey]).toBeUndefined()
+      await write()
+      const stored = JSON.parse(readFileSync(file, 'utf8'))
+      expect(stored).not.toHaveProperty('tag')
+      expect(stored.tags[mainKey]).toBe('')
+      expect(stored.warned).toContain(mainKey)
+    }
+    await rememberTag(worktree, 'codex')
+    await rememberTag(dir, 'claude')
+    expect((await readChoice(worktree))?.tags).toEqual({ [mainKey]: 'claude', [workerKey]: 'codex' })
+    // An existing map entry wins over a legacy value when both are present.
+    writeFileSync(file, JSON.stringify({ where: 'local', at: 1, tag: 'old', tags: { [mainKey]: 'claude' } }))
+    expect((await readChoice(worktree))?.tags).toEqual({ [mainKey]: 'claude' })
+    const subdir = join(worktree, 'nested'), alias = join(dir, 'alias')
+    mkdirSync(subdir)
+    symlinkSync(worktree, alias)
+    await rememberTag(join(alias, 'nested'), 'codex')
+    expect(await worktreePath(subdir)).toBe(workerKey)
+    expect((await readChoice(dir))?.tags).toEqual({ [mainKey]: 'claude', [workerKey]: 'codex' })
+    expect(await clearChoice(worktree)).toBe(true)
+    expect(await readChoice(dir)).toBeUndefined()
   })
 })

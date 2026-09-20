@@ -34049,6 +34049,13 @@ function removeCredential(server) {
   return true;
 }
 
+// packages/room-mcp/src/presence.ts
+var AWARENESS_FRESH_MS = 3e4;
+function isFresh(awareness, clientId, now) {
+  const lastUpdated = awareness.meta.get(clientId)?.lastUpdated;
+  return lastUpdated !== void 0 && now - lastUpdated <= AWARENESS_FRESH_MS;
+}
+
 // packages/room-mcp/src/choice.ts
 import fs5 from "node:fs";
 import path6 from "node:path";
@@ -34056,10 +34063,20 @@ var CHOICE_FILE = "room-choice.json";
 async function choiceFile(dir) {
   return path6.join(await gitCommonDir(dir), CHOICE_FILE);
 }
+async function worktreePath(dir) {
+  return fs5.realpathSync((await git(dir, ["rev-parse", "--show-toplevel"])).trim());
+}
 async function readChoice(dir) {
   try {
-    const c = JSON.parse(fs5.readFileSync(await choiceFile(dir), "utf8"));
-    return c && typeof c.where === "string" ? c : void 0;
+    const file = await choiceFile(dir);
+    const c = JSON.parse(fs5.readFileSync(file, "utf8"));
+    if (!c || typeof c.where !== "string") return void 0;
+    const { tag, ...choice } = c;
+    if (typeof tag === "string") {
+      const main2 = fs5.realpathSync(path6.dirname(path6.dirname(file)));
+      choice.tags = { [main2]: tag, ...choice.tags };
+    }
+    return choice;
   } catch {
     return void 0;
   }
@@ -34067,7 +34084,7 @@ async function readChoice(dir) {
 async function writeChoice(dir, where, by) {
   where = where.replace(/\?.*$/, "");
   const prev = await readChoice(dir);
-  const c = { where, at: Date.now(), ...by ? { by } : {}, ...prev?.tag !== void 0 ? { tag: prev.tag } : {}, ...prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {} };
+  const c = { where, at: Date.now(), ...by ? { by } : {}, ...prev?.tags ? { tags: prev.tags } : {}, ...prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {} };
   const file = await choiceFile(dir);
   fs5.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
   try {
@@ -34078,7 +34095,8 @@ async function writeChoice(dir, where, by) {
 }
 async function rememberTag(dir, tag) {
   const prev = await readChoice(dir);
-  const c = prev ? { ...prev, tag } : { where: LOCAL, at: Date.now(), tag };
+  const key = await worktreePath(dir);
+  const c = { ...prev ?? { where: LOCAL, at: Date.now() }, tags: { ...prev?.tags, [key]: tag } };
   const file = await choiceFile(dir);
   fs5.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
   try {
@@ -34307,7 +34325,7 @@ function decodeRoom(encoded) {
 async function startAutoTaggedRoomd(options, explicitTag) {
   let name = options.name, label = options.label;
   let autoTagNote;
-  const rememberedTag = explicitTag === void 0 ? (await readChoice(options.dir))?.tag : void 0;
+  const rememberedTag = explicitTag === void 0 ? (await readChoice(options.dir))?.tags?.[await worktreePath(options.dir)] : void 0;
   if (explicitTag === void 0) {
     const doc = new Doc2();
     const url = new URL(options.room);
@@ -34333,7 +34351,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
         provider.on("sync", onSync);
       });
       const now = Date.now();
-      const names = new Set([...provider.awareness.getStates()].filter(([id2, state]) => id2 !== provider.awareness.clientID && now - (typeof state.lastActive === "number" ? state.lastActive : provider.awareness.meta.get(id2)?.lastUpdated ?? 0) <= 2e4).map(([, state]) => state.user?.name));
+      const names = new Set([...provider.awareness.getStates()].filter(([id2]) => id2 !== provider.awareness.clientID && isFresh(provider.awareness, id2, now)).map(([, state]) => state.user?.name));
       const roomDoc = new RoomDoc(doc);
       const holdsWork = (candidate) => roomDoc.changedPaths(candidate).length > 0 || (roomDoc.deleted.get(candidate)?.size ?? 0) > 0;
       const rememberedName = rememberedTag === void 0 ? void 0 : rememberedTag ? `${options.name}+${rememberedTag}` : options.name;
@@ -34567,14 +34585,12 @@ import os2 from "node:os";
 import path7 from "node:path";
 
 // packages/room-mcp/src/company.ts
-var AWARENESS_FRESH_MS = 3e4;
 function hasCompany(s, runningWorkers = [], now = Date.now()) {
   const names = /* @__PURE__ */ new Map();
   for (const [clientId, value2] of s.awareness.getStates()) {
     const p = value2;
     if (!p.user || clientId === s.awareness.clientID || p.user.name === s.me.name) continue;
-    const lastUpdated = s.awareness.meta.get(clientId)?.lastUpdated;
-    if (lastUpdated === void 0 || now - lastUpdated > AWARENESS_FRESH_MS) continue;
+    if (!isFresh(s.awareness, clientId, now)) continue;
     if (p.user.kind === "human" && p.status === "viewing") continue;
     names.set(p.user.name, displayName(p.user));
   }

@@ -8,12 +8,13 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { git } from '@room/roomd/git'
 import { gitCommonDir } from '@room/roomd/local'
 import { DEFAULT_SERVER, LOCAL, normaliseWhere, resolveConfig } from './config.js'
 
 export const CHOICE_FILE = 'room-choice.json'
 
-export interface RoomChoice { where: string; at: number; by?: string; /** Auto-selected identity label for this clone; empty means the bare login. */ tag?: string; /** worktree paths already told that their work is visible to the team */ warned?: string[] }
+export interface RoomChoice { where: string; at: number; by?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree paths already told that their work is visible to the team */ warned?: string[] }
 
 export type ChoiceRule = 'argument' | 'env' | 'remembered' | 'default'
 
@@ -33,17 +34,29 @@ export async function choiceFile(dir: string): Promise<string> {
   return path.join(await gitCommonDir(dir), CHOICE_FILE)
 }
 
+/** Canonical top-level directory, even when called from a subdirectory or symlink. */
+export async function worktreePath(dir: string): Promise<string> {
+  return fs.realpathSync((await git(dir, ['rev-parse', '--show-toplevel'])).trim())
+}
+
 export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
   try {
-    const c = JSON.parse(fs.readFileSync(await choiceFile(dir), 'utf8')) as RoomChoice
-    return c && typeof c.where === 'string' ? c : undefined
+    const file = await choiceFile(dir)
+    const c = JSON.parse(fs.readFileSync(file, 'utf8')) as RoomChoice & { tag?: string }
+    if (!c || typeof c.where !== 'string') return undefined
+    const { tag, ...choice } = c
+    if (typeof tag === 'string') {
+      const main = fs.realpathSync(path.dirname(path.dirname(file)))
+      choice.tags = { [main]: tag, ...choice.tags }
+    }
+    return choice
   } catch { return undefined }
 }
 
 export async function writeChoice(dir: string, where: string, by?: string): Promise<RoomChoice> {
   where = where.replace(/\?.*$/, '') // never remember a token; it comes from ROOM_SERVER/ROOM_TOKEN at join time
   const prev = await readChoice(dir)
-  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(prev?.tag !== undefined ? { tag: prev.tag } : {}), ...(prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {}) }
+  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(prev?.tags ? { tags: prev.tags } : {}), ...(prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {}) }
   const file = await choiceFile(dir)
   fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
   try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }
@@ -53,7 +66,8 @@ export async function writeChoice(dir: string, where: string, by?: string): Prom
 /** Remember an automatically assigned identity without changing this clone's room choice. */
 export async function rememberTag(dir: string, tag: string): Promise<RoomChoice> {
   const prev = await readChoice(dir)
-  const c: RoomChoice = prev ? { ...prev, tag } : { where: LOCAL, at: Date.now(), tag }
+  const key = await worktreePath(dir)
+  const c: RoomChoice = { ...(prev ?? { where: LOCAL, at: Date.now() }), tags: { ...prev?.tags, [key]: tag } }
   const file = await choiceFile(dir)
   fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
   try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }

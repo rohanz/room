@@ -18,7 +18,8 @@ import { RoomDoc, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
 import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveServer, resolveSessionHost } from './config.js'
-import { readChoice, rememberTag } from './choice.js'
+import { isFresh } from './presence.js'
+import { readChoice, rememberTag, worktreePath } from './choice.js'
 
 /** The hosted room server. Override with ROOM_SERVER (e.g. ws://localhost:1234 for local dev). */
 /** The hosted server, used when ROOM_SERVER=hosted (or an explicit URL). Without ROOM_SERVER a session is LOCAL: no server at all. */
@@ -275,7 +276,7 @@ export function decodeRoom(encoded: string): string { try { return decodeURIComp
 export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string }> {
   let name = options.name, label = options.label
   let autoTagNote: string | undefined
-  const rememberedTag = explicitTag === undefined ? (await readChoice(options.dir))?.tag : undefined
+  const rememberedTag = explicitTag === undefined ? (await readChoice(options.dir))?.tags?.[await worktreePath(options.dir)] : undefined
   if (explicitTag === undefined) {
     const doc = new Y.Doc()
     const url = new URL(options.room)
@@ -298,7 +299,7 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
       })
       const now = Date.now()
       const names = new Set([...provider.awareness.getStates()]
-        .filter(([id, state]) => id !== provider.awareness.clientID && now - (typeof state.lastActive === 'number' ? state.lastActive : provider.awareness.meta.get(id)?.lastUpdated ?? 0) <= 20_000)
+        .filter(([id]) => id !== provider.awareness.clientID && isFresh(provider.awareness, id, now))
         .map(([, state]) => state.user?.name))
       const roomDoc = new RoomDoc(doc)
       const holdsWork = (candidate: string) => roomDoc.changedPaths(candidate).length > 0 || (roomDoc.deleted.get(candidate)?.size ?? 0) > 0
