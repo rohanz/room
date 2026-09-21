@@ -11,7 +11,7 @@ import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
-  description: 'Collect all done workers (or tag) as unstaged edits, never commits. Any conflict writes nothing. Skips running/failed workers. copy takes named artifacts; discard dismisses one worker. Cleans up fully collected exited workers.',
+  description: 'Collect all done workers (or tag) as unstaged edits, never commits. Any conflict writes nothing. Skips running/failed workers. copy takes named artifacts; discard dismisses one worker. Keeps worktrees with uncopied ignored artifacts.',
   inputSchema: { ...{ additionalProperties: false }, type: 'object', properties: {
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },
@@ -224,6 +224,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         releaseClaimsOnDone(s, () => false, w.name, false)
         if (state.workerAlive(s, w) || w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); continue }
         try {
+          const ignored = await ignoredWorkerArtifacts(w)
+          if (ignored.length) {
+            out.push('kept ' + w.tag + ': uncopied ignored artifacts')
+            out.push(...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`))
+            out.push(`retained worktree: ${w.dir}`)
+            continue
+          }
           if (await cleanupWorker(s.dir, w, true)) {
             const retiredAt = Date.now()
             const files = result.paths.filter(p => result.owners.get(p)?.includes(w.name))

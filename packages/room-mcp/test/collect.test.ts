@@ -248,6 +248,20 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(false); expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
     expect(fs.existsSync(path.join(lead, '.room'))).toBe(false)
   })
+  it('applies ordinary changes but retains uncopied ignored artifacts and their worktree', async () => {
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'new.txt', 'new'); put(worker, 'artifact.bin', 'diagnostic output')
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('Changes from test: new.txt')
+    expect(result).toContain(`kept artifact.bin at ${path.join(worker, 'artifact.bin')}`)
+    expect(result).toContain(`retained worktree: ${worker}`)
+    expect(result).not.toContain('cleaned up test')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('new')
+    expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('diagnostic output')
+    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(await t.call({ tag: 'test', force: true })).toContain(`retained worktree: ${worker}`)
+    expect(fs.existsSync(worker)).toBe(true)
+  })
 
   it('waits for a done worker to exit without requiring force', async () => {
     const t = setup()
