@@ -13,6 +13,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { formatMsg, formatPlans, shouldWakeOnMsg, type Msg, isAgentic } from '@room/shared'
+import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
 import { hasCompany, type CompanyState } from './company.js'
 
@@ -48,7 +49,7 @@ export interface HooksBridgeOptions {
   pendingMaxMs?: number
 }
 
-/** Written by the plugins' SessionStart hooks. `host` says which CLI owns the thread (missing = codex). */
+/** Written by the plugins' SessionStart hooks. Host hints can be stale; process configuration determines wake routing. */
 interface SessionFile { session_id?: string; at?: number; cwd?: string; host?: 'codex' | 'claude' }
 
 const SESSION_FRESH_MS = 10 * 60 * 1000
@@ -136,7 +137,7 @@ export class HooksBridge {
     if (file?.session_id) {
       const fresh = typeof file.at !== 'number' || file.at >= this.startedAt - SESSION_FRESH_MS
       const here = !file.cwd || sameDir(file.cwd, this.s.dir)
-      if (fresh && here) return { id: file.session_id, host: file.host === 'claude' ? 'claude' : 'codex' }
+      if (fresh && here) return { id: file.session_id, host: resolveSessionHost(this.s.dir) === 'claude' ? 'claude' : 'codex' }
       this.o.log?.(`ignoring ${fresh ? 'foreign' : 'stale'} session file ${this.sessionFile()}`)
     }
     const id = findThreadForDir(this.s.dir, this.startedAt)

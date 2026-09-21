@@ -2,6 +2,9 @@
 
 ## 0.7.0 — 2026-09-21
 
+- Fix idle Codex wake-ups: unflagged SessionStart hooks identify as Codex, and wake routing prefers the MCP process host over stale session hints.
+- Detect Claude models from the last 64 KB of the transcript on tool calls, caching transcript mtime and size to skip unchanged files; live presence refreshes automatically.
+
 - People, Board and room_state show verified session models and explicit worker effort, refresh hook metadata on session changes, and retain worker metadata offline.
 
 - Browser view batches room-driven updates: one render per animation frame (a one-second timer when the tab is hidden), and the code pane recomputes its merge only when the open file's inputs change. With a 1,400-line file open, a burst of 200 unrelated updates went from 258 long tasks and about 24 s of blocked main thread to none, worst frame 39 ms. Clicks still render immediately. The large-file threshold drops from 3,000 to 1,500 lines.

@@ -38,11 +38,11 @@ export function readJson(file, fallback) {
 export function readHookSeen(file) {
   const value = readJson(file, { seen: [], companyTold: false })
   if (Array.isArray(value)) return { seen: value, companyTold: false }
-  return { seen: Array.isArray(value?.seen) ? value.seen : [], companyTold: value?.companyTold === true }
+  return { seen: Array.isArray(value?.seen) ? value.seen : [], companyTold: value?.companyTold === true, ...(value?.transcript && typeof value.transcript === 'object' ? { transcript: value.transcript } : {}) }
 }
 
 export function writeHookSeen(file, value) {
-  try { fs.writeFileSync(file, JSON.stringify({ seen: value.seen.slice(-2000), companyTold: value.companyTold === true })) } catch { /* best effort */ }
+  try { fs.writeFileSync(file, JSON.stringify({ seen: value.seen.slice(-2000), companyTold: value.companyTold === true, ...(value.transcript ? { transcript: value.transcript } : {}) })) } catch { /* best effort */ }
 }
 
 // Both hook manifests include shell tools. Bash is Codex's documented canonical name;

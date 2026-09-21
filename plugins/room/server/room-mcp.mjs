@@ -34767,7 +34767,7 @@ var HooksBridge = class {
     if (file?.session_id) {
       const fresh = typeof file.at !== "number" || file.at >= this.startedAt - SESSION_FRESH_MS;
       const here = !file.cwd || sameDir(file.cwd, this.s.dir);
-      if (fresh && here) return { id: file.session_id, host: file.host === "claude" ? "claude" : "codex" };
+      if (fresh && here) return { id: file.session_id, host: resolveSessionHost(this.s.dir) === "claude" ? "claude" : "codex" };
       this.o.log?.(`ignoring ${fresh ? "foreign" : "stale"} session file ${this.sessionFile()}`);
     }
     const id2 = findThreadForDir(this.s.dir, this.startedAt);

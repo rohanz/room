@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { execFileSync, execFile } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,6 +11,12 @@ import type { Session } from '../src/session.js'
 import { hasCompany } from '../src/company.js'
 import type { Worker } from '@room/shared'
 
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return { ...actual, execFile: vi.fn(actual.execFile) }
+})
+afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks() })
+
 const HOOKS = resolve(__dirname, '../../../plugins/room/hooks')
 let dir: string
 beforeAll(() => {
@@ -22,13 +28,16 @@ beforeAll(() => {
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
+  vi.stubEnv('ROOM_HOST', '')
+  vi.stubEnv('ROOM_WORKER_HOST', '')
+  rmSync(join(dir, '.git/room-session.json'), { force: true })
   rmSync(join(dir, '.git/room-state.json'), { force: true })
   rmSync(join(dir, '.git/room-hook-seen.json'), { force: true })
 })
 
-function runHook(script: string, input: object): Promise<string> {
+function runHook(script: string, input: object, args: string[] = [], nodeArgs: string[] = []): Promise<string> {
   return new Promise((res, rej) => {
-    const p = execFile('node', [join(HOOKS, script)], { cwd: HOOKS }, (err, out) => err ? rej(err) : res(out))
+    const p = execFile('node', [...nodeArgs, join(HOOKS, script), ...args], { cwd: HOOKS }, (err, out) => err ? rej(err) : res(out))
     p.stdin!.end(JSON.stringify(input))
   })
 }
@@ -395,4 +404,87 @@ it.each([[' gpt-6-astra ', 'gpt-6-astra'], ['x'.repeat(100), 'x'.repeat(80)], [u
   const hint = JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8'))
   expect(hint.model).toBe(expected)
   expect(Object.hasOwn(hint, 'model')).toBe(expected !== undefined)
+})
+
+
+it.each([['codex', []], ['claude', ['--host', 'claude']]])('SessionStart chooses %s from the hook definition despite shared stdin fields', async (host, args) => {
+  await runHook('session-start.mjs', { session_id: 'shared-fields', cwd: dir, hook_event_name: 'SessionStart', transcript_path: '/tmp/transcript.jsonl' }, args as string[])
+  expect(JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8')).host).toBe(host)
+})
+
+it.each([['codex', 'claude'], ['claude', 'codex']])('ROOM_HOST=%s overrides a stale %s session hint when waking', async (host, stale) => {
+  vi.stubEnv('ROOM_HOST', host)
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'correct-thread', at: Date.now(), cwd: dir, host: stale }))
+  const spawner = vi.mocked(execFile)
+  spawner.mockClear()
+  if (host === 'codex') spawner.mockImplementationOnce(((_cmd: unknown, _args: unknown, _opts: unknown, callback: Function) => { callback(null, '', ''); return {} }) as typeof execFile)
+  const room = new RoomDoc()
+  const s = session(room)
+  const logs: string[] = []
+  const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false, log: l => logs.push(l), retryDelaysMs: [] })
+  try {
+    const msg = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'wake up' })
+    await b.maybeWake(msg)
+    if (host === 'codex') expect(spawner).toHaveBeenCalledWith('codex', ['queue', '--thread', 'correct-thread', '--message', expect.any(String)], { timeout: 10_000 }, expect.any(Function))
+    else {
+      expect(spawner).not.toHaveBeenCalled()
+      expect(logs.some(l => l.includes('via channel'))).toBe(true)
+    }
+  } finally { b.stop(); s.awareness.destroy(); room.doc.destroy() }
+})
+
+const modelLine = (model: unknown) => JSON.stringify({ type: 'assistant', message: { model } }) + '\n'
+function transcriptSession(host = 'claude', model?: string) {
+  const file = join(dir, '.git/room-session.json')
+  const hint = { session_id: 'claude-thread', host, at: 123, cwd: dir, extra: 'preserved', ...(model ? { model } : {}) }
+  writeFileSync(file, JSON.stringify(hint))
+  const transcript = join(dir, 'transcript.jsonl')
+  return { file, hint, transcript, input: { cwd: dir, tool_name: 'Read', transcript_path: transcript } }
+}
+
+it.each([undefined, 'claude-old'])('refreshes missing or changed Claude model (%s) from the newest valid transcript line', async old => {
+  const { file, hint, transcript, input } = transcriptSession('claude', old)
+  writeFileSync(transcript, modelLine('claude-older') + modelLine('claude-new') + modelLine('<synthetic>') + modelLine(42) + '{partial')
+  await runHook('before-edit.mjs', input)
+  expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ ...hint, model: 'claude-new' })
+})
+
+it('ignores synthetic models and never reads Claude models into Codex sessions', async () => {
+  for (const [host, content] of [['claude', modelLine('<synthetic>')], ['codex', modelLine('claude-wrong')]]) {
+    const { file, hint, transcript, input } = transcriptSession(host, 'keep-model')
+    writeFileSync(transcript, content)
+    await runHook('before-edit.mjs', input)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(hint)
+  }
+})
+
+it('skips opening an unchanged transcript across hook processes and preserves the cache on inbox delivery', async () => {
+  const { file, transcript, input } = transcriptSession()
+  const marker = join(dir, 'transcript-opens')
+  rmSync(marker, { force: true })
+  const preload = join(dir, 'trace-transcript.mjs')
+  writeFileSync(preload, "import fs from 'node:fs'; const open = fs.openSync; fs.openSync = function(p, ...args) { if (p === " + JSON.stringify(transcript) + ") fs.appendFileSync(" + JSON.stringify(marker) + ", 'open\\n'); return open.call(this, p, ...args) }")
+  writeFileSync(transcript, modelLine('claude-first'))
+  await runHook('before-edit.mjs', input, [], ['--import', preload])
+  const seenFile = join(dir, '.git/room-hook-seen.json')
+  const cached = JSON.parse(readFileSync(seenFile, 'utf8')).transcript
+  writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true, others: ['Ada'], unread: [{ id: 'new', priority: 'notify', line: 'hello' }] }))
+  await runHook('before-edit.mjs', input, [], ['--import', preload])
+  expect(readFileSync(marker, 'utf8')).toBe('open\n')
+  expect(JSON.parse(readFileSync(seenFile, 'utf8'))).toEqual({ seen: ['new'], companyTold: true, transcript: cached })
+  writeFileSync(transcript, modelLine('claude-first') + modelLine('claude-second'))
+  await runHook('before-edit.mjs', input, [], ['--import', preload])
+  expect(readFileSync(marker, 'utf8')).toBe('open\nopen\n')
+  expect(JSON.parse(readFileSync(file, 'utf8')).model).toBe('claude-second')
+})
+
+it('limits transcript model lookup to the last 64 KiB of a 5 MiB file', async () => {
+  const { file, hint, transcript, input } = transcriptSession()
+  const first = modelLine('claude-outside-tail')
+  writeFileSync(transcript, first + ' '.repeat(5 * 1024 * 1024 - first.length))
+  await runHook('before-edit.mjs', input)
+  expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(hint)
+  writeFileSync(transcript, first + ' '.repeat(5 * 1024 * 1024) + '\n' + modelLine('claude-in-tail'))
+  await runHook('before-edit.mjs', input)
+  expect(JSON.parse(readFileSync(file, 'utf8')).model).toBe('claude-in-tail')
 })

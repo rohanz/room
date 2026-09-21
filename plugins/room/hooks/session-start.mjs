@@ -2,8 +2,8 @@
 // an interrupt or a question for this agent arrives. Under Codex that is `codex queue
 // --thread <id>`; under Claude Code the MCP channel delivers wake-ups, so the bridge only
 // needs to know which host it is. The host comes from `--host <name>` on the command line
-// (hooks/claude.json passes `--host claude`; the Codex hooks.json passes nothing), with the
-// Claude-only stdin fields (hook_event_name, transcript_path) as a fallback.
+// (hooks/claude.json passes `--host claude`; the Codex hooks.json passes nothing).
+// No flag means Codex: both hosts now send hook_event_name and transcript_path.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,7 +13,7 @@ const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
 const id = ev.session_id ?? ev.thread_id ?? ev.sessionId
 const flag = process.argv.indexOf('--host')
-const host = flag >= 0 && process.argv[flag + 1] ? process.argv[flag + 1] : (ev.hook_event_name || ev.transcript_path ? 'claude' : 'codex')
+const host = flag >= 0 && process.argv[flag + 1] ? process.argv[flag + 1] : 'codex'
 if (root && id) {
   try { fs.writeFileSync(gitStatePath(root, 'room-session.json'), JSON.stringify({ session_id: id, at: Date.now(), cwd: ev.cwd, host, ...(typeof ev.model === 'string' && ev.model.trim() ? { model: ev.model.trim().slice(0, 80) } : {}) }) + '\n') } catch { /* best effort */ }
 } else {
