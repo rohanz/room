@@ -49,11 +49,15 @@ Secrets (`flyctl secrets list -a room-rohanz`):
 
 Environment in `deploy/fly.toml`: `PORT=8080`, `YPERSISTENCE=/data` (volume `room_data`, 1 GB).
 Optional tuning, all with defaults in `.env.example`: `ROOM_IDLE_DAYS`, `ROOM_DOC_MAX_MB`,
-`ROOM_MAX_MESSAGE_MB`, `ROOM_SHARE_MAX`, `ROOM_ADMINS`, OIDC variables.
+`ROOM_MAX_MESSAGE_MB`, `ROOM_SHARE_MAX`, `ROOM_ADMINS`, OIDC variables. The member identity guard
+is observe-only unless `ROOM_IDENTITY_GUARD` is literally `enforce`: objected updates are applied
+unchanged and their logs and `identity_violation` audits are limited to once per login per minute.
+`enforce` is experimental because rejecting a causal update can desynchronise that client.
+Read-only viewer document and awareness writes remain blocked in either mode.
 
 Machine: 1 shared CPU, **512 MB** (`flyctl scale memory 512`). 256 MB was OOM-killed under a
 large room. `auto_stop_machines = "stop"`, `min_machines_running = 0`: the machine stops when
-idle and the next request or websocket starts it in about 2 seconds. Set `min_machines_running = 1` in
+idle and the next request or websocket wakes it. Set `min_machines_running = 1` in
 `deploy/fly.toml` and redeploy for always-on.
 
 ## Rooms and repos

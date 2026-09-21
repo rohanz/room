@@ -94,6 +94,19 @@ the server, not redesigning Room.
 
 ## Sharing rules (smaller, can ship before the structural work)
 
+Deferred from the 2026-09-22 readiness review:
+
+- **Preserve finished `declared` output across completion and restart.** Persist the published-path
+  boundary per worktree independently of the active scope, and use that boundary consistently for
+  publishing, reads and previews. Remove its entries on deliberate withdrawal, clean integration
+  or collection.
+- **Do not cache an unavailable server sharing ceiling as `full`.** Distinguish a failed ceiling
+  fetch from a legacy server with no ceiling field and refresh it on reconnect. The server ceiling
+  will not change during the first trial, so this is deferred.
+- **Revalidate claims after HEAD moves.** Release or redeclare unanchored claims after a base change
+  rather than leaving their line ranges attached to different code. This is too risky to change
+  immediately before the first trial.
+
 Layered, in order of authority, never silent:
 1. `.gitignore`: never shared (already true).
 2. `.roomignore`: never shared (already true).

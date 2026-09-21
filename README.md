@@ -54,8 +54,9 @@ an area only for the person who changed that file.
 **Sharing levels.** By default the room sees the full text of files you change (`full`).
 `ROOM_SHARE=declared` shares text only under the paths you declared in your scope, `intent`
 shares plans and claims with no file text; `room_share` changes it live and a server can set
-a ceiling. Teams should start at `declared`. Reading someone who shares less degrades to a
-one-line answer rather than an error. An unrecognised sharing level falls back to `intent`
+a ceiling. For a first trial, keep the default `full`: finished uncommitted output at `declared`
+becomes unreadable after `room_done` and is withdrawn on restart. Reading someone who shares less
+degrades to a one-line answer rather than an error. An unrecognised sharing level falls back to `intent`
 and reports the invalid setting; it never widens sharing to full text.
 
 **What reaches an agent.** Routine events (scopes, releases, change notes) stay in the feed;

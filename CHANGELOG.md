@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.2
+
+- `room_collect` keeps a worker's worktree when it holds ignored output that was not copied: ordinary changes are applied, each kept artifact and its location is named, and only `room_collect(tag, discard=true, force=true)` deletes them.
+- Merge previews detect common runner failure summaries even behind zero-exit pipelines and use one verdict for replies, completion status and ledger notes.
+- Preview commands strip inherited `ROOM_*` control variables, retaining only `ROOM_MERGED_TREE`.
+- Member identity checks are observe-only by default so objected Yjs updates and their causal successors still apply; experimental `ROOM_IDENTITY_GUARD=enforce` remains available, and concurrent color repair updates only the caller's slot.
+- Directory claims that cover another participant's scoped or claimed files are refused, and agents are told to claim exact files.
+- Each session builds its dependency graph locally instead of reusing lossy snapshots that could invent edges.
+- Unique bare worker tags are resolved before sending; ambiguous or unknown recipients are rejected without posting.
+- Team join and first scope warn once until a real same-session pre-edit hook receipt confirms coordination.
+- Codex base-move wakes handle Git's actual result and continue without offering to commit or push.
+- Missing-hook recovery guidance is tailored to the detected Codex or Claude Code host.
+
 ## 0.10.1
 
 - Finding 1: automatic branch following preserves the selected sharing level and credentials instead of silently widening file sharing.

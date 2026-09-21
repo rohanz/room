@@ -5,8 +5,10 @@ messages, and event push. Agents edit files on disk with their normal tools; `ro
 syncs them. Collection and export write files only when requested.
 
 Configuration comes from one resolver (`src/config.ts`) with a fixed precedence: tool
-argument, then `ROOM_SERVER`, legacy `ROOM_URL`, the choice remembered in the clone (`where`
-only), then the default. The settings: `ROOM_SERVER` (`local` by default, `hosted`, or a `ws(s)://` URL),
+argument, then `ROOM_SERVER`, legacy `ROOM_URL`, the choice remembered in the clone
+(destination and who chose it, selected sharing level, per-worktree automatic tags and disclosure
+state), then the default. The
+settings: `ROOM_SERVER` (`local` by default, `hosted`, or a `ws(s)://` URL),
 `ROOM_NAME` / `ROOM_OWNER` / `ROOM_TAG` / `ROOM_KIND` (identity), `ROOM_SHARE` (sharing level),
 `ROOM_CREDENTIALS`, `ROOM_TOKEN`, `ROOM_LOG_FILE`, `ROOM_MAX_WORKERS`, `ROOM_STALE_DAYS`,
 `ROOM_ROOM` (explicit room name, how workers get the lead's room), `ROOM_WEB`, and, for a
@@ -111,7 +113,8 @@ in the Git common directory; live file text, bases, graphs, and claims are rebui
 clients. The room
 is named `local/<repo basename>/<branch of the main worktree>`, so worktrees on other
 branches still share it. Identity is `git config user.name` (plus `ROOM_TAG`), there is no
-login; `room_create` and `room_login` explain that they need a server, while `room_close`
+login; bare `room_create` targets the hosted team server (and `room_login` explains that it
+needs a server), while `room_close`
 forgets local history after explicit confirmation.
 
 `ROOM_SERVER=hosted` selects the hosted server; any `ws://` or `wss://` URL selects another.

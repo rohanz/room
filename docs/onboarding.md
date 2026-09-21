@@ -44,15 +44,20 @@ trial must work on one shared branch.** Removing that boundary is planned next.
 The destination choice is remembered for the clone and its worktrees. Later sessions reuse it;
 **“work locally”** switches back. Explicit environment settings can override the choice.
 
-By default, eligible changed-file text is shared. `ROOM_SHARE=declared` limits text to your
-agent’s declared paths; `ROOM_SHARE=intent` shares plans without file text. Ask to change the
+By default, eligible changed-file text is shared. Keep that default `full` level for a first
+trial: finished uncommitted output at `declared` becomes unreadable after `room_done` and is
+withdrawn on restart. `ROOM_SHARE=declared` limits text to your agent’s declared paths;
+`ROOM_SHARE=intent` shares plans without file text. Ask to change the
 sharing level at any time. Invalid levels fall back to plans only and report the invalid value.
 
 ## When something needs attention
 
 Your agent coordinates when another participant’s task, claim or changed file overlaps its work.
-It receives actionable conflicts and addressed questions. If hooks are not running, a session
-cannot be woken, or changed files exceed sharing limits, Room reports the missing coverage.
+It receives actionable conflicts and addressed questions. In a team room, until Room sees a real
+same-session pre-edit receipt, Codex gets one actionable hook-approval line on join and first scope;
+Claude Code gets the equivalent plugin reinstall/re-enable guidance. Session-start evidence alone
+does not satisfy this check, and later calls stay quiet. Room also reports when a session cannot be
+woken or changed files exceed sharing limits.
 A missing file in the room is not proof that nobody changed it.
 
 After a plugin update, [start a new session](../README.md#updating-the-plugin): a running session

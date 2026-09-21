@@ -1,6 +1,6 @@
 # First trial with real users: plan
 
-Status 2026-09-22: repo and tasks chosen, fork not created yet, date not set. Build under test: 0.10.1.
+Status 2026-09-22: repo and tasks chosen, fork not created yet, date not set. Build under test: 0.10.2.
 Rule: nothing big merges within 48 hours of the trial.
 
 ## What it tests
@@ -56,7 +56,7 @@ Keep the room's exported ledger and each person's notes.
 - [ ] Rohan confirms the repo choice and creates the fork (public, under rohanz); `trial` branch at
       the base; three issues filed; Kieran and Hrishi added as collaborators (Room admits by push access).
 - [ ] Dress rehearsal on the hosted server: one Claude and one Codex agent, two clones, cards A and
-      C at the same time. Never yet exercised together: 0.10.1 on the hosted server under a real
+      C at the same time. Never yet exercised together: 0.10.2 on the hosted server under a real
       GitHub login, the identity guard with the real flow, Codex and Claude in one team room, Fly
       waking from idle mid-session.
 - [ ] Fix only what the rehearsal or the readiness review finds, then the 48-hour quiet period.

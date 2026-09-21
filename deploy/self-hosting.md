@@ -42,6 +42,7 @@ server is open (fine on a laptop, not on the internet).
 | `ROOM_ADMINS` | Comma list of logins allowed to read `GET /audit`. | nobody |
 | `ROOM_TOKEN` | Shared secret: `?token=<value>` admits non-GitHub rooms (`local/...`, `git/...`). It never admits a `github.com/...` room. | — |
 | `ROOM_SHARE_MAX` | Ceiling on what clients may share into a room: `intent`, `declared` or `full`. | `full` |
+| `ROOM_IDENTITY_GUARD` | Member identity-guard mode. Only literal `enforce` blocks objected document packets; every other value observes them, rate-limits logs and `identity_violation` audits to once per login per minute, and applies the packet unchanged. `enforce` is experimental and can desynchronise a client's causal stream. Read-only viewer document and awareness writes remain blocked in either mode. | observe-only |
 | `ROOM_IDLE_DAYS` | Repos nobody connected to for this many days are closed and their shared work deleted. `0` disables. | `30` |
 | `ROOM_STATIC` | Directory with the built browser view. | `./public` |
 
