@@ -1,3 +1,4 @@
+import { renderScheduler } from './scheduler.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RoomDoc, colorFor, roomNameParts, type Claim, type Presence, type Scope } from '@room/shared'
 import { parseRoomUrl, type Conn } from './conn.ts'
@@ -148,7 +149,9 @@ class MergeElement extends HeaderElement {
 describe('merged pane participant choices', () => {
   afterEach(() => vi.unstubAllGlobals())
   const setup = (online: string[]) => {
-    vi.stubGlobal('document', { createElement: () => new MergeElement() })
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    vi.stubGlobal('document', { createElement: () => new MergeElement(), addEventListener: vi.fn(), removeEventListener: vi.fn() })
     const room = new RoomDoc()
     for (const person of ['Ada', 'Ben', 'Cy']) {
       room.setBaseOf(person, 'base')
@@ -163,6 +166,7 @@ describe('merged pane participant choices', () => {
       states.clear()
       names.forEach((name, i) => states.set(i, { user: { name, kind: 'agent' } }))
       listeners.get('change')?.()
+      renderScheduler.flushNow()
     }
     presence(online)
     const conn = { room, provider: { awareness: { getStates: () => states, on: (event: string, fn: () => void) => listeners.set(event, fn) } } } as unknown as Conn

@@ -2,6 +2,7 @@
 
 ## 0.7.0 — 2026-09-21
 
+- Browser view batches room-driven updates: one render per animation frame (a one-second timer when the tab is hidden), and the code pane recomputes its merge only when the open file's inputs change. With a 1,400-line file open, a burst of 200 unrelated updates went from 258 long tasks and about 24 s of blocked main thread to none, worst frame 39 ms. Clicks still render immediately. The large-file threshold drops from 3,000 to 1,500 lines.
 - Spawned Claude and Codex workers receive deterministic math-library thread caps and an informational memory budget; explicit environment settings are preserved, with per-worker `threads` and lead-wide `ROOM_WORKER_THREADS` overrides.
 - Log an unpushed HEAD warning once per distinct HEAD/base pair instead of repeating it every base poll.
 

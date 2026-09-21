@@ -1,3 +1,4 @@
+import { subscribeRender } from './scheduler.ts'
 import { bindTooltip, showTooltip, hideTooltip } from './tooltip.ts'
 import type { GraphSnapshot } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
@@ -230,9 +231,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     expand.setAttribute('aria-pressed', String(expanded))
   }
   new ResizeObserver(sizeDrawing).observe(canvas)
-  conn.room.graphs.observe(render); conn.room.overlays.observeDeep(render); conn.room.deleted.observeDeep(render)
-  conn.room.claims.observe(render); conn.room.scopes.observe(render); conn.room.metaMap.observe(render)
-  conn.provider.awareness.on('change', render)
+  subscribeRender(conn, render)
   render()
   return root
 }

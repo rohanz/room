@@ -1,3 +1,4 @@
+import { renderScheduler } from './scheduler.ts'
 import { afterEach, expect, it, vi } from 'vitest'
 import { RoomDoc } from '@room/shared'
 import type { Conn } from './conn.ts'
@@ -19,7 +20,9 @@ class Element {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 it('renders live Code presence without treating missing activity as disconnected, and refreshes reconnects', () => {
   vi.useFakeTimers(); vi.setSystemTime(100_000)
-  vi.stubGlobal('document', { createElement: () => new Element(), activeElement: null })
+  vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+  vi.stubGlobal('cancelAnimationFrame', vi.fn())
+  vi.stubGlobal('document', { createElement: () => new Element(), activeElement: null, addEventListener: vi.fn(), removeEventListener: vi.fn() })
   const room = new RoomDoc()
   room.scopes.set('Ada', { by: 'Ada', byKind: 'agent', area: 'web', summary: 'UI', paths: [], at: 1 })
   const states = new Map<number, unknown>([[1, { user: { name: 'Ada', kind: 'agent' } }]])
@@ -29,7 +32,7 @@ it('renders live Code presence without treating missing activity as disconnected
   expect(rail.find('participant')?.className).not.toContain('offline')
   expect(rail.textContent).toContain('Online · activity unknown')
   expect(rail.textContent).not.toContain('not connected')
-  states.clear(); listeners.get('change')!()
+  states.clear(); listeners.get('change')!(); renderScheduler.flushNow()
   expect(rail.find('participant')?.className).toContain('offline')
   states.set(1, { user: { name: 'Ada', kind: 'agent' }, lastActive: 83_000 })
   vi.advanceTimersByTime(15_000)

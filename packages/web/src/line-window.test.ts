@@ -3,7 +3,7 @@ import { planWindows } from './line-window.ts'
 import type { MergedLine } from './merged.ts'
 const fixture = (n: number, changed = true): MergedLine[] => Array.from({ length: n }, () => ({ text: 'x', side: 'common', changedBy: changed ? ['Ada'] : [], conflict: false }))
 it('leaves small files untouched', () => {
-  expect(planWindows(fixture(3000))).toEqual([{ kind: 'lines', from: 0, to: 3000 }])
+  expect(planWindows(fixture(1500))).toEqual([{ kind: 'lines', from: 0, to: 1500 }])
 })
 it('pages a large all-changed file', () => {
   expect(planWindows(fixture(32000))).toEqual([{ kind: 'lines', from: 0, to: 500 }, { kind: 'gap', from: 500, to: 32000, reason: 'more' }])

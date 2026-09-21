@@ -1,3 +1,4 @@
+import { subscribeRender } from './scheduler.ts'
 import { formatCount, areaMembershipSummary, deriveParticipants, participantClaimLine, personLine, workerLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
 import type { Conn } from './conn.ts'
 import { h as element, conflictCard, messageBody, participantInput, relativeTime } from './panels.ts'
@@ -90,8 +91,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     if (!visible.length) feed.append(h('p', { class: 'muted' }, 'No events yet — room activity will appear here.'))
   }
   hide.onclick = () => { hideOffline = !hideOffline; try { localStorage.setItem('room.hideOffline', String(hideOffline)) } catch { /* optional preference */ }; render() }
-  conn.room.doc.on('update', render)
-  conn.provider.awareness.on('change', render)
+  subscribeRender(conn, render)
   // Refresh relative ages while leaving a focused control undisturbed.
   setInterval(() => { if (!element.hidden && !element.contains(document.activeElement)) render() }, 15_000)
   render()

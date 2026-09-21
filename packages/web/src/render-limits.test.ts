@@ -1,3 +1,4 @@
+import { renderScheduler } from './scheduler.ts'
 import { afterEach, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
 import { RoomDoc } from '@room/shared'
@@ -60,6 +61,7 @@ it('caps 5,000 grouped files, retains a selected path beyond the cap, and keeps 
       room.scopes.set('A', { by: 'A', byKind: 'agent', area: 'alpha', summary: '', paths: ['a/'], at: 1 })
       room.scopes.set('B', { by: 'B', byKind: 'agent', area: 'beta', summary: '', paths: ['b/'], at: 1 })
     })
+    renderScheduler.flushNow()
     expect(panel.querySelectorAll('.file-item')).toHaveLength(301)
     expect(panel.querySelector('.file-item.active')!.getAttribute('title')).toBe('z/selected.ts')
     expect(Array.from(panel.querySelectorAll('.file-area'), e => e.textContent)).toEqual(['alpha', 'beta', 'other'])

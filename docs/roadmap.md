@@ -66,10 +66,8 @@ Measured 2026-09-21 on a live room (8 participants, 88 changed files): heap 9 to
 4,700 DOM nodes, idle when the room is idle, median file open 17 ms. Memory is fine. CPU under
 activity is not: every panel re-renders in full on every document update with no coalescing, and
 the code pane re-runs the merge for the open file each time (542 ms for a 2,523-line file).
-- One render scheduler: collect updates, render at most once per animation frame, slower when
-  the tab is hidden.
-- Memoise the merge by a hash of its input texts; recompute only when the open file changed.
-- Lower the large-file threshold from 3,000 to about 1,500 lines.
+- Done in 0.7.0: one render scheduler, a memoised merge keyed by its input texts, and the
+  large-file threshold lowered to 1,500 lines (258 long tasks down to none under a 200-update burst).
 - A lead has no notion of how heavy its workers are beyond the thread budget (0.7.0); consider
   surfacing machine load in `room_state` for leads.
 

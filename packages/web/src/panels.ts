@@ -1,3 +1,4 @@
+import { subscribeRender } from './scheduler.ts'
 import { LARGE_LINES, PAGE, planWindows, type WindowOptions } from './line-window.ts'
 import { inlineDetails } from './inline-detail.ts'
 import { deriveConflictSpans } from './conflicts.ts'
@@ -185,8 +186,7 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
     }))
     if (!participants.length) list.append(h('div', { class: 'empty-note muted' }, 'Waiting for participants…'))
   }
-  conn.provider.awareness.on('change', render)
-  conn.room.doc.on('update', render)
+  subscribeRender(conn, render)
   // Match Board's refresh: awareness can recover while this rail is hidden.
   const refresh = setInterval(() => { if (!element.contains(document.activeElement)) render() }, 15_000)
   conn.room.doc.on('destroy', () => clearInterval(refresh))
@@ -479,6 +479,14 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
   host.replaceChildren(pane)
 }
 
+/** Length plus FNV-1a: linear in text size, without retaining extra copies of inputs. */
+function textIdentity(text: string | undefined): string {
+  if (text === undefined) return 'missing'
+  let hash = 2166136261
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619)
+  return text.length + ':' + (hash >>> 0)
+}
+
 export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   const fileList = h('div', { class: 'file-list scroll' })
   const pathLabel = h('span', { class: 'selected-path mono muted' }, 'no file selected')
@@ -499,6 +507,8 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   const editor = new Editor(host, conn.room)
   let windowState: CodeWindowState = {}
   let windowKey = ''
+  let cached: { key: string; lines: MergedLine[] } | undefined
+  let paintedKey = ''
   const tabs = ['Merged', 'Diff', 'File'] as const
   type Tab = typeof tabs[number]
   let tab: Tab = 'Merged'
@@ -518,6 +528,12 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       chips, chipHint, legend,
       host))
 
+  const empty = (message: string) => {
+    const key = JSON.stringify(['empty', selectedPath, selectedPerson, tab, message])
+    cached = undefined
+    if (paintedKey === key) return
+    editor.empty(message); paintedKey = key
+  }
   const showViewer = (rows: FileRow[]) => {
     chipHint.hidden = true
     chipHint.textContent = ''
@@ -525,7 +541,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     chips.hidden = tab !== 'Merged'
     const selected = rows.find(candidate => candidate.path === selectedPath)
     if (!selected) {
-      editor.empty(rows.length ? 'Select a changed file' : 'Waiting for changed files…')
+      empty(rows.length ? 'Select a changed file' : 'Waiting for changed files…')
       pathLabel.textContent = 'no file selected'
       personSelect.hidden = true
       compareLabel.hidden = true
@@ -544,21 +560,30 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     compareLabel.hidden = tab !== 'Diff'
 
     const conflicts = deriveConflictSpans(conn.room.messages(), conn.room.openClaims(), conn.room.meta.base).filter(s => s.path === selected.path)
+    // Text computations and annotations have separate invalidation: new claims must
+    // repaint gutters, but cannot make us repeat an unchanged merge or diff.
+    const paint = (names: string[], texts: (string | undefined)[], compute: () => MergedLine[], merged: boolean, spans = conflicts) => {
+      const inputKey = JSON.stringify([selected.path, tab, names, texts.map(textIdentity), names.map(name => conn.room.deleted.get(name)?.has(selected.path) ?? false)])
+      if (cached?.key !== inputKey) cached = { key: inputKey, lines: compute() }
+      const claims = conn.room.claimsFor(selected.path)
+      const domKey = JSON.stringify([inputKey, windowKey, claims, spans, names.map(name => colorFor(name, conn.room))])
+      if (paintedKey === domKey) return
+      const claimsAt: ClaimsAt = (owner, n) => claims.filter(c => c.by === owner && n >= c.from && n <= c.to)
+      renderCodeLines(host, cached.lines, names, claimsAt, spans, merged, conn.room, windowState)
+      paintedKey = domKey
+    }
     if (tab === 'File') {
       legend.replaceChildren()
       compareLabel.textContent = ''
       const person = selectedPerson!
-      if (conn.room.deleted.get(person)?.has(selected.path)) return editor.empty(`deleted by ${person}`)
+      if (conn.room.deleted.get(person)?.has(selected.path)) return empty(`deleted by ${person}`)
       const text = conn.room.text(selected.path, person)
-      if (text === undefined) return editor.empty(`No overlay available for ${person}`)
-      editor.empty()
+      if (text === undefined) return empty(`No overlay available for ${person}`)
       const sha = conn.room.baseOf(person)
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
-      const lines = classifyNWay(base ?? '', [{ name: person, text }]).map(line => ({ ...line, aLine: line.lineNumbers[person] }))
-      renderCodeLines(host, lines, [person], (owner, n) => conn.room.claimsFor(selected.path).filter(c => c.by === owner && n >= c.from && n <= c.to), conflicts, false, conn.room, windowState)
+      paint([person], [base, text], () => classifyNWay(base ?? '', [{ name: person, text }]).map(line => ({ ...line, aLine: line.lineNumbers[person] })), false)
       return
     }
-    editor.empty()
     if (tab === 'Merged') {
       const active = included(selected.path, people)
       chips.replaceChildren(...people.map(person => {
@@ -580,8 +605,8 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const sha = conn.room.baseOf(people[0])
       const base = sha ? conn.room.baseText(sha, selected.path) : undefined
       if (base === undefined) legend.append(h('span', { class: 'muted' }, 'Base unavailable; showing changes against an empty file'))
-      const claimsAt: ClaimsAt = (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to)
-      renderCodeLines(host, classifyNWay(base ?? '', active.map(name => ({ name, text: conn.room.text(selected.path, name) ?? '' }))), active, claimsAt, conflicts.filter(s => s.people.every(p => active.includes(p))), true, conn.room, windowState)
+      const versions = active.map(name => ({ name, text: conn.room.text(selected.path, name) ?? '' }))
+      paint(active, [base, ...versions.map(v => v.text)], () => classifyNWay(base ?? '', versions), true, conflicts.filter(s => s.people.every(p => active.includes(p))))
       return
     }
 
@@ -589,7 +614,8 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person) ?? person
     compareLabel.textContent = `vs ${other}`
     legend.replaceChildren(h('span', {}, dot(other, other, conn.room), ` removed from ${other}`), h('span', {}, dot(person, person, conn.room), ` added by ${person}`))
-    renderCodeLines(host, unifiedDiffLines(conn.room.text(selected.path, other) ?? '', conn.room.text(selected.path, person) ?? ''), [other, person], (person, line) => conn.room.claimsFor(selected.path).filter(c => c.by === person && line >= c.from && line <= c.to), conflicts, false, conn.room, windowState)
+    const before = conn.room.text(selected.path, other), after = conn.room.text(selected.path, person)
+    paint([other, person], [before, after], () => unifiedDiffLines(before ?? '', after ?? ''), false)
   }
 
   render = () => {
@@ -629,14 +655,8 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     if (!rows.length) fileList.append(h('div', { class: 'empty-note muted' }, 'No changed files'))
     showViewer(rows)
   }
-  conn.provider.awareness.on('change', render)
   personSelect.onchange = () => { selectedPerson = personSelect.value; render() }
-  conn.room.metaMap.observe(render)
-  conn.room.overlays.observeDeep(render)
-  conn.room.deleted.observeDeep(render)
-  conn.room.claims.observe(render)
-  conn.room.scopes.observe(render)
-  conn.room.doc.on('update', render)
+  subscribeRender(conn, render)
   focus.subscribe(render)
   render()
   return element
@@ -732,7 +752,7 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
     if (!visible.length && !cards.length) list.append(h('div', { class: 'empty-note muted' }, 'No matching episodes'))
     if (shouldFollow) requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight })
   }
-  conn.room.doc.on('update', render)
+  subscribeRender(conn, render, false)
   focus.subscribe(render)
   render()
   return element
@@ -799,9 +819,7 @@ export function activityGraphPanel(conn: Conn, focus: FocusState): HTMLElement {
     }
     content.replaceChildren(svg)
   }
-  conn.room.overlays.observeDeep(render)
-  conn.room.claims.observe(render)
-  conn.room.scopes.observe(render)
+  subscribeRender(conn, render, false)
   focus.subscribe(render)
   render()
   return element
@@ -822,10 +840,7 @@ export function header(conn: Conn): HTMLElement {
     const total = deriveParticipants(participantInput(conn)).length
     count.textContent = `${total} participant${total === 1 ? '' : 's'}`
   }
-  conn.room.metaMap.observe(render)
-  conn.room.scopes.observe(render)
-  conn.room.overlays.observeDeep(render)
-  conn.provider.awareness.on('change', render)
+  subscribeRender(conn, render)
   conn.onStatus(connected => {
     connection.textContent = connected ? 'connected' : 'disconnected'
     connection.classList.toggle('online', connected)
