@@ -211,6 +211,52 @@ export function compactChips(items: { key: string; node: HTMLElement }[], promin
 }
 
 export const TIMELINE_WINDOW = 30
+export const TIMELINE_PRIORITIES = ['interrupt', 'notify', 'fyi'] as const
+export type TimelinePriority = typeof TIMELINE_PRIORITIES[number]
+
+interface PriorityTimelineEntry { message: Pick<Msg, 'priority'>; conflict?: ConflictSpan }
+
+/** Count priorities and filter them before taking the visible timeline window. */
+export function filterPriorityTimeline<T extends PriorityTimelineEntry>(entries: readonly T[], selected: ReadonlySet<TimelinePriority>, windowSize = TIMELINE_WINDOW): { counts: Record<TimelinePriority, number>; matching: T[]; window: T[] } {
+  const counts = { interrupt: 0, notify: 0, fyi: 0 }
+  const matching: T[] = []
+  for (const entry of entries) {
+    counts[entry.message.priority]++
+    if (entry.conflict || selected.has(entry.message.priority)) matching.push(entry)
+  }
+  return { counts, matching, window: matching.slice(-windowSize) }
+}
+
+/** A reply may pull its hidden parent into view; any retained item keeps its episode. */
+export function clipTimelineEpisodes(episodes: readonly Episode[], ids: ReadonlySet<string>): Episode[] {
+  const clipItems = (items: readonly TimelineItem[]): TimelineItem[] => items.flatMap(item => {
+    const replies = clipItems(item.replies)
+    return ids.has(item.message.id) || replies.length ? [{ ...item, replies }] : []
+  })
+  return episodes.flatMap(episode => {
+    const items = clipItems(episode.items)
+    return ids.has(episode.id) || items.length ? [{ ...episode, items }] : []
+  })
+}
+
+export function toggleTimelinePriority(selected: ReadonlySet<TimelinePriority>, priority: TimelinePriority): Set<TimelinePriority> {
+  const next = new Set(selected)
+  if (next.has(priority)) next.delete(priority); else next.add(priority)
+  return next.size ? next : new Set(TIMELINE_PRIORITIES)
+}
+
+export function readTimelinePriorities(storage?: Pick<Storage, 'getItem'>): Set<TimelinePriority> {
+  try {
+    const value: unknown = JSON.parse((storage ?? localStorage).getItem('room.timeline.priorities') ?? 'null')
+    if (Array.isArray(value) && value.length && value.every(item => TIMELINE_PRIORITIES.includes(item as TimelinePriority))) return new Set(value)
+  } catch { /* Storage is an optional preference. */ }
+  return new Set(TIMELINE_PRIORITIES)
+}
+
+function writeTimelinePriorities(selected: ReadonlySet<TimelinePriority>, storage?: Pick<Storage, 'setItem'>): void {
+  try { (storage ?? localStorage).setItem('room.timeline.priorities', JSON.stringify(TIMELINE_PRIORITIES.filter(priority => selected.has(priority)))) } catch { /* Keep the in-page choice. */ }
+}
+
 export function timelinePeople(messages: readonly Msg[]): string[] {
   return [...new Set(messages.flatMap(m => [m.from, ...('to' in m && typeof m.to === 'string' ? [m.to] : []), ...('people' in m && Array.isArray(m.people) ? m.people : [])]))].filter(name => name !== 'room')
 }
@@ -792,10 +838,12 @@ function episodeCard(episode: Episode, seen?: Set<string>, room?: RoomDoc): HTML
 
 export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
   const filters = h('div', { class: 'filter-chips' })
+  const priorityFilters = h('div', { class: 'priority-filters', role: 'group', ariaLabel: 'Filter by priority' })
   const list = h('div', { class: 'timeline-list' })
   const scroll = h('div', { class: 'timeline-scroll scroll' }, list)
-  const element = h('aside', { class: 'timeline' }, h('div', { class: 'timeline-head' }, h('div', { class: 'panel-title' }, 'Timeline'), filters), scroll)
+  const element = h('aside', { class: 'timeline' }, h('div', { class: 'timeline-head' }, h('div', { class: 'panel-title' }, 'Timeline'), filters, priorityFilters), scroll)
   let areaFilter: string | null = null
+  let selectedPriorities = readTimelinePriorities()
   let moreFilters = false, windowSize = TIMELINE_WINDOW
   let followNewest = true
   const seen = new Set<string>()
@@ -805,29 +853,24 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
 
   const render = () => {
     const shouldFollow = followNewest
-    const entries = collapseConflictTimeline(conn.room.messages(), conn.room.openClaims(), conn.room.meta.base)
+    const messages = conn.room.messages()
+    const entries = collapseConflictTimeline(messages, conn.room.openClaims(), conn.room.meta.base)
     const allEpisodes = groupEpisodes(entries.filter(e => !e.conflict).map(e => e.message))
-    const matching = entries.filter(e => focus.person
+    const areaPersonMatching = entries.filter(e => focus.person
       ? e.message.from === focus.person || e.conflict?.people.includes(focus.person) || ('to' in e.message && e.message.to === focus.person)
       : !areaFilter || ('area' in e.message && e.message.area === areaFilter) || conn.room.scopes.get(e.message.from)?.area === areaFilter || allEpisodes.some(ep => ep.area === areaFilter && ep.items.some(it => it.message.id === e.message.id)))
-    const window = matching.slice(-windowSize)
+    const filtered = filterPriorityTimeline(areaPersonMatching, selectedPriorities, windowSize)
+    const window = filtered.window
     const conflicts = window.flatMap(e => e.conflict ? [e.conflict] : [])
     const ids = new Set(window.map(e => e.message.id))
-    const clipItems = (items: TimelineItem[]): TimelineItem[] => items.flatMap(item => {
-      const replies = clipItems(item.replies)
-      return ids.has(item.message.id) || replies.length ? [{ ...item, replies }] : []
-    })
-    const episodes = allEpisodes.flatMap(episode => {
-      const items = clipItems(episode.items)
-      return ids.has(episode.id) || items.length ? [{ ...episode, items }] : []
-    })
+    const episodes = clipTimelineEpisodes(allEpisodes, ids)
     const groups = participantGroups(conn)
     const prominentPeople = new Set([...groups.active.map(p => p.name), ...episodes.map(e => e.person), ...timelinePeople(window.flatMap(e => e.conflict ? e.conflict.events : [e.message])), ...(focus.person ? [focus.person] : [])])
     const prominentAreas = new Set([...groups.active.flatMap(p => p.scope ? [p.scope.area, ...(p.scope.areas ?? [])] : []), ...episodes.map(e => e.area), ...(areaFilter ? [areaFilter] : [])])
     // Everything present at first paint is "old"; only later arrivals animate in.
     if (!primed) { for (const e of episodes) { seen.add(`ep:${e.id}`); for (const it of e.items) seen.add(it.message.id) }; primed = true }
     const areas = Array.from(new Set([...allEpisodes.map(episode => episode.area), ...prominentAreas])).sort()
-    const people = Array.from(new Set([...allEpisodes.map(episode => episode.person), ...groups.offlineTeammates.map(p => p.name), ...groups.retiredWorkers.map(w => w.name), ...timelinePeople(conn.room.messages()), ...prominentPeople])).sort()
+    const people = Array.from(new Set([...allEpisodes.map(episode => episode.person), ...groups.offlineTeammates.map(p => p.name), ...groups.retiredWorkers.map(w => w.name), ...timelinePeople(messages), ...prominentPeople])).sort()
     const chip = (label: string, active: boolean, action: () => void) => {
       const button = h('button', { class: `filter-chip${active ? ' active' : ''}` }, label)
       button.onclick = action
@@ -840,12 +883,27 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
         ...people.map(person => ({ key: person, node: chip(person, focus.person === person, () => { areaFilter = null; windowSize = TIMELINE_WINDOW; focus.set(focus.person === person ? null : person) }) })),
       ], new Set([...prominentPeople, ...[...prominentAreas].map(a => 'area:' + a)]), moreFilters, open => { moreFilters = open }),
     )
+    priorityFilters.replaceChildren(...TIMELINE_PRIORITIES.map(priority => {
+      const active = selectedPriorities.has(priority)
+      const button = h('button', { class: `priority-filter-chip priority-${priority}${active ? '' : ' greyed'}`, type: 'button', ariaPressed: String(active) },
+        h('span', { class: 'priority-filter-dot', ariaHidden: 'true' }), `${priority} ${filtered.counts[priority]}`)
+      button.onclick = () => {
+        selectedPriorities = toggleTimelinePriority(selectedPriorities, priority)
+        writeTimelinePriorities(selectedPriorities)
+        windowSize = TIMELINE_WINDOW
+        render()
+      }
+      return button
+    }))
     const visible = episodes
     const cards = conflicts.filter(s => (!focus.person || s.people.includes(focus.person)) && (!areaFilter || s.people.some(p => conn.room.scopes.get(p)?.area === areaFilter)))
     list.replaceChildren(...[...visible.map(e => ({ at: e.at, el: episodeCard(e, seen, conn.room) })), ...cards.map(s => ({ at: s.at, el: conflictCard(s, expandedConflicts) }))].sort((a, b) => a.at - b.at).map(x => x.el))
-    if (matching.length > window.length) list.prepend(h('button', { class: 'timeline-more', onclick: () => { windowSize += TIMELINE_WINDOW; render() } }, 'Show older events'))
+    if (filtered.matching.length > window.length) list.prepend(h('button', { class: 'timeline-more', onclick: () => { windowSize += TIMELINE_WINDOW; render() } }, 'Show older events'))
     focus.setTimelinePeople([...prominentPeople].sort())
-    if (!visible.length && !cards.length) list.append(h('div', { class: 'empty-note muted' }, 'No matching episodes'))
+    if (!visible.length && !cards.length) {
+      const hidden = TIMELINE_PRIORITIES.filter(priority => !selectedPriorities.has(priority))
+      list.append(h('div', { class: 'empty-note muted' }, h('div', {}, 'No matching episodes'), areaPersonMatching.length && !filtered.matching.length && hidden.length ? h('div', {}, `Hidden priorities: ${hidden.join(', ')}`) : null))
+    }
     if (shouldFollow) requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight })
   }
   subscribeRender(conn, render)

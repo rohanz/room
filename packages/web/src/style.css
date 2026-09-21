@@ -362,6 +362,13 @@ h2, p { margin: 0; }
 /* Never stretch: an open "More" is the tallest item on its line and would inflate its neighbours into circles. */
 .filter-chips { flex-wrap: wrap; align-items: flex-start; gap: 8px; overflow: visible; }
 .filter-chip { font-size: 12px; padding: 4px 10px; }
+.priority-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.priority-filter-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 3px 9px; border-radius: 999px; color: var(--ink); background: var(--line-soft); font-size: 12px; }
+.priority-filter-chip.greyed { opacity: .75; background: transparent; }
+.priority-filter-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--muted); }
+.priority-filter-chip.priority-interrupt .priority-filter-dot { background: var(--danger); }
+.priority-filter-chip.priority-notify .priority-filter-dot { background: var(--accent-text); }
+.priority-filter-chip.priority-fyi .priority-filter-dot { background: var(--muted); }
 .timeline-item, .episode-summary, .item-copy .mono, .base-divider { font-size: 12px; color: var(--ink); }
 .item-main { grid-template-columns: 40px minmax(0, 1fr); }
 .item-main > .priority { grid-column: 2; justify-self: start; }
