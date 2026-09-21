@@ -25687,7 +25687,7 @@ function newHookHealth(now) {
 }
 function missingPreEditGuidance(s) {
   const host = resolveSessionHost(s.dir);
-  if (host === "claude") return "Pre-edit coordination is not confirmed yet; if your next edit shows no [room] context, the Room plugin's hooks are not running: reinstall or re-enable the plugin.";
+  if (host === "claude") return "Room has not seen its before-edit hook run in this session although its tools are in use: the plugin's hooks may not be running; reinstall or re-enable the plugin.";
   if (host === "codex") return "Pre-edit coordination is not confirmed yet; if the Room hooks were never approved, approve them once in an interactive Codex session.";
   return "Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.";
 }
@@ -25704,11 +25704,12 @@ function hookHealthNote(s, expected, now = Date.now(), tool, team = !s.local) {
   } catch {
   }
   if (!expected || health.observed || health.noted) return "";
-  if (team && tool === "room_join" && !health.joinNoted && !health.scopeNoted) {
+  const upFront = team && resolveSessionHost(s.dir) === "codex";
+  if (upFront && tool === "room_join" && !health.joinNoted && !health.scopeNoted) {
     health.joinNoted = true;
     return missingPreEditGuidance(s);
   }
-  if (team && tool === "room_scope" && !health.scopeNoted) {
+  if (upFront && tool === "room_scope" && !health.scopeNoted) {
     health.scopeNoted = true;
     return missingPreEditGuidance(s);
   }

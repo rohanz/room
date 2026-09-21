@@ -385,7 +385,7 @@ function newHookHealth(now: number): HookHealth {
 
 function missingPreEditGuidance(s: Session): string {
   const host = resolveSessionHost(s.dir)
-  if (host === 'claude') return "Pre-edit coordination is not confirmed yet; if your next edit shows no [room] context, the Room plugin's hooks are not running: reinstall or re-enable the plugin."
+  if (host === 'claude') return "Room has not seen its before-edit hook run in this session although its tools are in use: the plugin's hooks may not be running; reinstall or re-enable the plugin."
   if (host === 'codex') return 'Pre-edit coordination is not confirmed yet; if the Room hooks were never approved, approve them once in an interactive Codex session.'
   return 'Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.'
 }
@@ -400,11 +400,14 @@ export function hookHealthNote(s: Session, expected: boolean, now = Date.now(), 
     if (activity.event === 'PreToolUse' && typeof activity.at === 'number' && activity.at <= now && activity.session_id === session.session_id) health.observed = true
   } catch { /* no evidence yet */ }
   if (!expected || health.observed || health.noted) return ''
-  if (team && tool === 'room_join' && !health.joinNoted && !health.scopeNoted) {
+  // Only Codex can skip an unapproved hook silently, so only Codex is told up front. Elsewhere the hook is silent
+  // while the agent is alone, which an agent cannot tell from a missing hook: wait for the evidence below instead.
+  const upFront = team && resolveSessionHost(s.dir) === 'codex'
+  if (upFront && tool === 'room_join' && !health.joinNoted && !health.scopeNoted) {
     health.joinNoted = true
     return missingPreEditGuidance(s)
   }
-  if (team && tool === 'room_scope' && !health.scopeNoted) {
+  if (upFront && tool === 'room_scope' && !health.scopeNoted) {
     health.scopeNoted = true
     return missingPreEditGuidance(s)
   }
