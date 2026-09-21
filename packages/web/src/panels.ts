@@ -198,10 +198,14 @@ export function groupedPeople(groups: ParticipantGroups, card: (person: Particip
   return { active, offline }
 }
 
+export const CHIP_ROW_LIMIT = 10
 /** Keep historical controls available without filling the primary chip row: the rest expand inline, in the same row. */
-export function compactChips(items: { key: string; node: HTMLElement }[], prominent: ReadonlySet<string>, open: boolean, toggle: (open: boolean) => void): HTMLElement[] {
-  const shown = items.filter(item => prominent.has(item.key)).map(item => item.node)
-  const hidden = items.filter(item => !prominent.has(item.key)).map(item => item.node)
+export function compactChips(items: { key: string; node: HTMLElement; selected?: boolean }[], prominent: ReadonlySet<string>, open: boolean, toggle: (open: boolean) => void): HTMLElement[] {
+  // Prominence has no ceiling (a busy room makes everyone prominent), so the row does: the rest wait behind "Show all".
+  const wanted = items.filter(item => prominent.has(item.key))
+  const kept = new Set([...wanted.filter(item => item.selected), ...wanted].slice(0, CHIP_ROW_LIMIT))
+  const shown = items.filter(item => kept.has(item)).map(item => item.node)
+  const hidden = items.filter(item => !kept.has(item)).map(item => item.node)
   if (!hidden.length) return shown
   const more = h('button', { class: 'more-chips', type: 'button' })
   const apply = () => {
@@ -261,8 +265,10 @@ function writeTimelinePriorities(selected: ReadonlySet<TimelinePriority>, storag
   try { (storage ?? localStorage).setItem('room.timeline.priorities', JSON.stringify(TIMELINE_PRIORITIES.filter(priority => selected.has(priority)))) } catch { /* Keep the in-page choice. */ }
 }
 
-export function timelinePeople(messages: readonly Msg[]): string[] {
-  return [...new Set(messages.flatMap(m => [m.from, ...('to' in m && typeof m.to === 'string' ? [m.to] : []), ...('people' in m && Array.isArray(m.people) ? m.people : [])]))].filter(name => name !== 'room')
+/** People worth a chip. An addressee only counts if it names a real sender or participant: a message sent to a bare tag is not a person. */
+export function timelinePeople(messages: readonly Msg[], known: Iterable<string> = []): string[] {
+  const real = new Set([...known, ...messages.map(m => m.from)])
+  return [...new Set(messages.flatMap(m => [m.from, ...('to' in m && typeof m.to === 'string' ? [m.to] : []), ...('people' in m && Array.isArray(m.people) ? m.people : [])]))].filter(name => name !== 'room' && real.has(name))
 }
 
 function displayPlans(plans: NonNullable<Claim['plans']>): string {
@@ -873,11 +879,12 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
     const chipEpisodes = clipTimelineEpisodes(allEpisodes, new Set(chipWindow.map(e => e.message.id)))
     const groups = participantGroups(conn)
     const prominentPeople = new Set([...groups.active.map(p => p.name), ...chipEpisodes.map(e => e.person), ...timelinePeople(chipWindow.flatMap(e => e.conflict ? e.conflict.events : [e.message])), ...(focus.person ? [focus.person] : [])])
-    const prominentAreas = new Set([...groups.active.flatMap(p => p.scope ? [p.scope.area, ...(p.scope.areas ?? [])] : []), ...chipEpisodes.map(e => e.area), ...(areaFilter ? [areaFilter] : [])])
+    // Named areas are what people filter by; directory areas derived from paths wait behind "Show all".
+    const prominentAreas = new Set([...[...groups.active.flatMap(p => p.scope ? [p.scope.area] : []), ...chipEpisodes.map(e => e.area)].filter(area => !area.endsWith('/')), ...(areaFilter ? [areaFilter] : [])])
     // Everything present at first paint is "old"; only later arrivals animate in.
     if (!primed) { for (const e of episodes) { seen.add(`ep:${e.id}`); for (const it of e.items) seen.add(it.message.id) }; primed = true }
     const areas = Array.from(new Set([...allEpisodes.map(episode => episode.area), ...prominentAreas])).sort()
-    const people = Array.from(new Set([...allEpisodes.map(episode => episode.person), ...groups.offlineTeammates.map(p => p.name), ...groups.retiredWorkers.map(w => w.name), ...timelinePeople(messages), ...prominentPeople])).sort()
+    const people = Array.from(new Set([...allEpisodes.map(episode => episode.person), ...groups.offlineTeammates.map(p => p.name), ...groups.retiredWorkers.map(w => w.name), ...timelinePeople(messages, [...groups.active, ...groups.offlineTeammates].map(p => p.name)), ...prominentPeople])).sort()
     const chip = (label: string, active: boolean, action: () => void) => {
       const button = h('button', { class: `filter-chip${active ? ' active' : ''}` }, label)
       button.onclick = action
@@ -886,8 +893,8 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
     filters.replaceChildren(
       chip('All', !areaFilter && !focus.person, () => { areaFilter = null; windowSize = TIMELINE_WINDOW; focus.set(null); render() }),
       ...compactChips([
-        ...areas.map(area => ({ key: 'area:' + area, node: chip(area, areaFilter === area && !focus.person, () => { areaFilter = area; windowSize = TIMELINE_WINDOW; focus.set(null); render() }) })),
-        ...people.map(person => ({ key: person, node: chip(person, focus.person === person, () => { areaFilter = null; windowSize = TIMELINE_WINDOW; focus.set(focus.person === person ? null : person) }) })),
+        ...areas.map(area => ({ key: 'area:' + area, selected: areaFilter === area && !focus.person, node: chip(area, areaFilter === area && !focus.person, () => { areaFilter = area; windowSize = TIMELINE_WINDOW; focus.set(null); render() }) })),
+        ...people.map(person => ({ key: person, selected: focus.person === person, node: chip(person, focus.person === person, () => { areaFilter = null; windowSize = TIMELINE_WINDOW; focus.set(focus.person === person ? null : person) }) })),
       ], new Set([...prominentPeople, ...[...prominentAreas].map(a => 'area:' + a)]), moreFilters, open => { moreFilters = open }),
     )
     priorityFilters.replaceChildren(...TIMELINE_PRIORITIES.map(priority => {

@@ -70,13 +70,13 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     const matching = events.filter(({ message: m, conflict }) => (!personFilter || m.from === personFilter || conflict?.people.includes(personFilter)) && (!areaFilter || areaOf(m) === areaFilter))
     const visible = matching.slice(0, windowSize)
     const prominent = new Set([...groups.active.map(p => p.name), ...timelinePeople(visible.flatMap(e => e.conflict ? e.conflict.events : [e.message]))])
-    const prominentAreas = new Set([...groups.active.flatMap(p => p.scope ? [p.scope.area, ...(p.scope.areas ?? [])] : []), ...visible.map(e => areaOf(e.message))])
-    const names = [...new Set([...groups.active.map(p => p.name), ...groups.offlineTeammates.map(p => p.name), ...groups.retiredWorkers.map(w => w.name), ...timelinePeople(messages)])].sort()
+    const prominentAreas = new Set([...groups.active.flatMap(p => p.scope ? [p.scope.area] : []), ...visible.map(e => areaOf(e.message))].filter(area => !area.endsWith('/')))
+    const names = [...new Set([...groups.active.map(p => p.name), ...groups.offlineTeammates.map(p => p.name), ...groups.retiredWorkers.map(w => w.name), ...timelinePeople(messages, [...groups.active, ...groups.offlineTeammates].map(p => p.name))])].sort()
     const areas = [...new Set([...events.map(e => areaOf(e.message)), ...prominentAreas])].sort()
     filters.replaceChildren(chip('All', !personFilter && !areaFilter, () => { personFilter = areaFilter = null; windowSize = TIMELINE_WINDOW; render() }),
       ...compactChips([
-        ...names.map(name => ({ key: name, node: chip(name, personFilter === name, () => { personFilter = personFilter === name ? null : name; windowSize = TIMELINE_WINDOW; render() }) })),
-        ...areas.map(area => ({ key: 'area:' + area, node: chip(`Area: ${area}`, areaFilter === area, () => { areaFilter = areaFilter === area ? null : area; windowSize = TIMELINE_WINDOW; render() }) })),
+        ...names.map(name => ({ key: name, selected: personFilter === name, node: chip(name, personFilter === name, () => { personFilter = personFilter === name ? null : name; windowSize = TIMELINE_WINDOW; render() }) })),
+        ...areas.map(area => ({ key: 'area:' + area, selected: areaFilter === area, node: chip(`Area: ${area}`, areaFilter === area, () => { areaFilter = areaFilter === area ? null : area; windowSize = TIMELINE_WINDOW; render() }) })),
       ], new Set([...prominent, ...[...prominentAreas].map(a => 'area:' + a), ...(personFilter ? [personFilter] : []), ...(areaFilter ? ['area:' + areaFilter] : [])]), showMoreFilters, open => { showMoreFilters = open }))
     feed.replaceChildren(...visible.map(({ message: m, conflict }) => {
       if (conflict) return conflictCard(conflict, expandedConflicts)

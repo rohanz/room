@@ -3,6 +3,7 @@ import { JSDOM } from 'jsdom'
 import { RoomDoc, type ConflictSpan, type Msg } from '@room/shared'
 import type { Conn } from './conn.ts'
 import {
+  CHIP_ROW_LIMIT,
   TIMELINE_PRIORITIES,
   clipTimelineEpisodes,
   createFocusState,
@@ -26,7 +27,7 @@ function memoryStorage(initial?: string) {
   }
 }
 
-function setup(messages: Msg[], stored?: string, storage: Pick<Storage, 'getItem' | 'setItem'> = memoryStorage(stored)) {
+function setup(messages: Msg[], stored?: string, storage: Pick<Storage, 'getItem' | 'setItem'> = memoryStorage(stored), online: string[] = []) {
   const dom = new JSDOM('<body></body>')
   vi.stubGlobal('document', dom.window.document)
   vi.stubGlobal('window', dom.window)
@@ -35,7 +36,8 @@ function setup(messages: Msg[], stored?: string, storage: Pick<Storage, 'getItem
   vi.stubGlobal('cancelAnimationFrame', vi.fn())
   const room = new RoomDoc()
   room.bus.push(messages)
-  const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
+  const states = new Map(online.map((name, i) => [i + 1, { user: { name, kind: 'agent' } }]))
+  const conn = { room, provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
   const panel = timelinePanel(conn, createFocusState())
   document.body.append(panel)
   cleanups.push(() => { room.doc.destroy(); dom.window.close() })
@@ -94,6 +96,26 @@ describe('timeline priority chips', () => {
     const expanded = row()
     s.priority('notify').click()
     expect(row()).toEqual(expanded)          // and an expanded row stays expanded
+  })
+
+  it('caps a busy row behind "Show all", keeps the selected chip, hides directory areas, and ignores addressees that are not people', () => {
+    const workers = Array.from({ length: 14 }, (_, i) => `lead+w${String(i).padStart(2, '0')}`)
+    const s = setup([
+      ...workers.map((name, i) => scope(`s-${i}`, name, `area${String(i).padStart(2, '0')}`, i + 1)),
+      scope('s-dir', 'lead+w00', 'packages/shared/', 20),
+      { ...note('to-tag', 'lead+w00', 21, 'notify'), to: 'graph' } as Msg,
+    ], undefined, undefined, workers) // all fourteen are online, so all fourteen are "prominent"
+    const row = () => [...s.panel.querySelectorAll<HTMLElement>('.timeline-head > .filter-chips > .filter-chip')]
+    const visible = () => row().filter(chip => !chip.hidden).map(chip => chip.textContent)
+    expect(visible()).toHaveLength(CHIP_ROW_LIMIT + 1) // "All" plus the capped row
+    expect(s.panel.querySelector('.more-chips')?.textContent).toMatch(/^Show all \(\d+ more\)$/)
+    expect(row().map(chip => chip.textContent)).not.toContain('graph') // a bare tag in "to" is not a person
+    expect(visible()).not.toContain('packages/shared/')
+    const last = row().find(chip => chip.textContent === 'lead+w13')!
+    expect(last.hidden).toBe(true)
+    last.click()
+    expect(visible()).toContain('lead+w13') // the selected chip is never hidden by the cap
+    expect(visible()).toHaveLength(CHIP_ROW_LIMIT + 1)
   })
 
   it('filters before windowing so the last 30 selected entries are shown', () => {
