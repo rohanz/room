@@ -67,6 +67,12 @@ describe('Rust tree-sitter spec', () => {
     expect(contract).not.toBe(original)
   })
 
+  it('references path calls, grouped use names and macros; finds functions inside mod blocks', () => {
+    const result = parsed('x.rs', 'use crate::cfg::{load, Config as C};\nmod inner { pub fn helper() {} }\nfn main() { crate::messages::set_messages(true); Config::new(); my_macro!(1); }')
+    expect(result.refs).toEqual(expect.arrayContaining(['set_messages', 'new', 'load', 'my_macro']))
+    expect(definition(result, 'helper', 'inner')).toMatchObject({ from: 2, to: 2 })
+  })
+
   it('recovers definitions before a syntax error', () => {
     expect(definition(parsed('broken.rs', 'fn intact() {}\nfn broken( {'), 'intact')).toMatchObject({ from: 1, to: 1 })
   })
@@ -215,6 +221,10 @@ describe('C++ tree-sitter spec', () => {
     const contract = definition(parsed('x.cpp', 'long work(int x, int y) { return x + y; }'), 'work').signature
     expect(body).toBe(original)
     expect(contract).not.toBe(original)
+  })
+
+  it('references namespace-qualified calls', () => {
+    expect(parsed('x.cpp', 'int main() { return util::compute(1); }').refs).toContain('compute')
   })
 
   it('recovers definitions before a syntax error', () => {

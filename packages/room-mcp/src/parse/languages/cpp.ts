@@ -57,6 +57,7 @@ export const spec: LanguageSpec = {
     (preproc_function_def name: (identifier) @def.name) @def
 
     (call_expression function: (identifier) @ref)
+    (call_expression function: (qualified_identifier name: (identifier) @ref))
     (call_expression function: (field_expression field: (field_identifier) @ref))
     (field_expression field: (field_identifier) @ref)
     (type_identifier) @ref

@@ -27,7 +27,14 @@ export const spec: LanguageSpec = {
     (static_item name: (identifier) @def.name) @def
     (macro_definition name: (identifier) @def.name) @def
 
+    (mod_item name: (identifier) @def.container
+      body: (declaration_list (function_item name: (identifier) @def.name) @def))
+
     (call_expression function: (identifier) @ref)
+    (scoped_identifier name: (identifier) @ref)
+    (use_list (identifier) @ref)
+    (use_as_clause path: (identifier) @ref)
+    (macro_invocation macro: (identifier) @ref)
     (call_expression function: (field_expression field: (field_identifier) @ref))
     (field_expression field: (field_identifier) @ref)
     (type_identifier) @ref
