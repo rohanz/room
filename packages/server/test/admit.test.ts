@@ -59,6 +59,12 @@ describe('admission: github.com rooms', () => {
     expect(await admitted(GH, {})).toMatchObject({ ok: false, status: 401, why: expect.stringContaining('room_login') })
   })
 
+  it('a github.com room named without a branch is still held to the GitHub rules, never the shared-token ones', async () => {
+    const admitted = makeAdmitted({ auth: new Auth({}), token: 'shared', canPush: async () => true })
+    expect(await admitted('github.com/o/r', { token: 'shared' })).toMatchObject({ ok: false, status: 401 })
+    expect(await admitted('github.com/o/r/main', { token: 'shared' })).toMatchObject({ ok: false, status: 401 })
+  })
+
   it('the fake issuer admits every fake login to every github.com room (tests and demo only)', async () => {
     const auth = new Auth({ clientId: 'fake', production: false })
     const admitted = makeAdmitted({ auth, canPush: async () => false })

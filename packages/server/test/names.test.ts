@@ -13,5 +13,7 @@ describe('room names', () => {
     expect(repoOf('github.com/a/b/feature/x')).toBe('github.com/a/b')
     expect(repoOf('local/dir/main')).toBe('local/dir')
     expect(githubRepoOf('/github.com%2Fa%2Fb%2Fmain')).toBe('a/b')
+    expect(githubRepoOf('github.com/a/b')).toBe('a/b') // no branch: still that GitHub repo
+    expect(githubRepoOf('github.community/a/b/main')).toBeUndefined()
   })
 })

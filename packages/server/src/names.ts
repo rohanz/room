@@ -12,10 +12,11 @@ export function roomNameOf(roomPath: string): string {
   }
   return name
 }
-/** "github.com%2Fowner%2Frepo%2Fbranch" (or decoded) -> "owner/repo" */
+/** "github.com%2Fowner%2Frepo%2Fbranch" (or decoded) -> "owner/repo". A name with no branch is still that GitHub repo:
+ *  it must never fall through to the rules for non-GitHub rooms, which do not check push access. */
 export function githubRepoOf(roomPath: string): string | undefined {
   const name = roomNameOf(roomPath)
-  const m = name.match(/^github\.com\/([^/]+)\/([^/]+)\//)
+  const m = name.match(/^github\.com\/([^/]+)\/([^/]+)(?:\/|$)/)
   return m ? `${m[1]}/${m[2]}` : undefined
 }
 
