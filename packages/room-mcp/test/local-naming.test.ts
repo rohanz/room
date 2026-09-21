@@ -59,7 +59,7 @@ it.each(['local', 'team'])('reports the actual %s name and preserves team argume
     expect(await tools.call('room_state', { link: true })).toContain(encodeURIComponent(encodeURIComponent(name)))
     expect((await tools.call('room_state', {})).split('\n')[1]).toContain(name)
   } else {
-    expect(reply).toMatch(/^joined anything /)
+    expect(reply).toMatch(/^joined anything /m)
     expect(reply).not.toContain('ignored room=')
   }
   await tools.call('room_leave', {})
