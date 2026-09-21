@@ -101,6 +101,11 @@ carries the room's key from `.git/room-local.json`, which is what lets the page 
 Anyone who can run something on this machine and holds the link can read the room; the
 key stops other users of a shared machine from guessing their way in.
 
+The view link needs a running session. Room history, worker records, scopes and colours
+are kept privately in the clone’s git common directory (`room-local/*.ydoc`), never shared.
+Live file text and claims are rebuilt by connected sessions. `room_close confirm=true`
+exports the ledger and forgets the local room’s saved memory; `room_leave` preserves it.
+
 ### Dispatching workers
 
 Room caps math-library threads per worker; include the spawn reply’s budget in compute-heavy tasks, use `threads` (or `ROOM_WORKER_THREADS` on the lead) to override it, and stagger heavy jobs.

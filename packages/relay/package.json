@@ -8,6 +8,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@room/shared": "*",
     "lib0": "^0.2.117",
     "ws": "^8.21.0",
     "y-protocols": "^1.0.6",

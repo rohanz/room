@@ -7,7 +7,7 @@ import { describeClaim, withLineNumbers, type NoteMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
-import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_read', annotations: RO, description: 'A file as a person sees it right now: base commit + their uncommitted edits (default: you). With line numbers, claims in the file, and the file ledger (recent changes by others, open plans).',
@@ -30,10 +30,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = rooms.holding(person, S()) // a local worker's overlay lives in the workers room, not the team room
       const held = withheld(s, person, p)
       if (held) return held
+      const note = diskWorker(s, person) ? ` ${WORKTREE_NOTE}` : ''
       const t = await liveText(s, p, person)
-      if (t === null) return `${p}: deleted by ${person} (uncommitted)`
-      if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes`
-      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== undefined ? ', uncommitted edits' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})`]
+      if (t === null) return `${p}: deleted by ${person} (uncommitted)${note}`
+      if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`
+      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== undefined ? ', uncommitted edits' : diskWorker(s, person) ? ', worktree file' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`]
       const who = s.room.whoChanged(p).filter(x => x !== person)
       if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(', ')} — room_read with person= to see theirs`)
       for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
@@ -44,20 +45,26 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_diff(a) {
       const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
       const s = rooms.holding(person, S())
+      const worker = diskWorker(s, person)
+      const label = (text: string) => worker ? `${WORKTREE_NOTE}\n${text}` : text
       const one = async (p: string) => {
-        const b = (await baseText(s, p)) ?? ''
         const l = await liveText(s, p, person)
+        const b = (await baseText(s, p, worker ? person : undefined)) ?? ''
         const live = l === null ? '' : l ?? b
         return live === b ? '' : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, 'base', person, { context: 3 })
       }
       const held = withheld(s, person, typeof a.path === 'string' && a.path ? a.path : undefined)
       if (held) return held
-      if (typeof a.path === 'string' && a.path) return (await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`
+      if (typeof a.path === 'string' && a.path) return label((await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`)
       const parts: string[] = []
-      for (const p of s.room.changedPaths(person)) { const d = await one(p); if (d) parts.push(d) }
+      const paths = worker ? new Set([
+        ...(await git(worker.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
+        ...(await git(worker.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
+      ].filter(Boolean)) : s.room.changedPaths(person)
+      for (const p of paths) { const d = await one(p); if (d) parts.push(d) }
       const level = shareOf(s, person)
       if (level === 'declared') parts.push(`(${person} shares declared paths only: changes outside their scope are not shared)`)
-      return parts.length ? parts.join('\n') : `${person} has no uncommitted changes`
+      return label(parts.length ? parts.join('\n') : `${person} has no uncommitted changes`)
     },
     async room_impact(a) {
       const s = S()

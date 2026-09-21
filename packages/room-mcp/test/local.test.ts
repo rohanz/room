@@ -73,9 +73,10 @@ describe('local mode (no server)', () => {
     const tools = createTools({ getSession: () => s, setSession: x => { s = x }, cwd: dir, join: async () => a, leave: async () => {} })
     const joined = await tools.call('room_join', {})
     expect(joined).toContain('local room (no server)')
-    expect(await tools.call('room_close', { confirm: true })).toContain('local room')
     expect(await tools.call('room_login', {})).toContain('local rooms need no login')
     const st = await tools.call('room_state', { all: true })
     expect(st).toContain('Ada+codex')
+    // Closing a local room forgets its saved history and leaves, so it comes last.
+    expect(await tools.call('room_close', { confirm: true })).toContain('local room')
   })
 })

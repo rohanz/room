@@ -152,6 +152,31 @@ export const SHARE = { type: 'string', enum: ['intent', 'declared', 'full'], des
 export class NotJoined extends Error {}
 export class NeedFetch extends Error { constructor(public person: string, public sha: string, public detail: string) { super(detail) } }
 
+/** Only disconnected local workers may expose their worktree to the lead. */
+export function diskWorker(s: Session, person: string): Worker | undefined {
+  if (!s.local || s.room.overlays.get(person)?.size) return undefined
+  if ([...s.awareness.getStates().values()].some(p => p.user?.name === person)) return undefined
+  const worker = s.room.workerOf(person)
+  return worker?.dir && fs.existsSync(worker.dir) ? worker : undefined
+}
+export const WORKTREE_NOTE = "(read from the worker's worktree on disk; the worker is not connected)"
+
+/** Resolve both lexical and symlink paths before reading anything outside git. */
+function workerText(dir: string, rel: string): string | null {
+  if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) throw new Error('unsafe worker path: ' + rel)
+  const root = fs.realpathSync(dir)
+  const candidate = path.resolve(root, rel)
+  if (!candidate.startsWith(root + path.sep)) throw new Error('unsafe worker path: ' + rel)
+  try {
+    const real = fs.realpathSync(candidate)
+    if (!real.startsWith(root + path.sep)) throw new Error('unsafe worker symlink: ' + rel)
+    return fs.readFileSync(real, 'utf8')
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw e
+  }
+}
+
 export function createHandlerState(ctx: ToolCtx): HandlerState {
   const now = ctx.now ?? (() => Date.now())
   const log = ctx.log ?? ((l: string) => process.stderr.write(`room-mcp: ${l}\n`))
@@ -273,11 +298,16 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   }
   const base = (s: Session) => s.room.meta.base ?? 'HEAD'
   /** The commit a person's overlay is a delta from (their own HEAD), falling back to the room base. */
-  const baseFor = (s: Session, person: string) => s.room.baseOf(person) ?? base(s)
-  const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(s.dir, baseFor(s, person), path)
+  const baseFor = (s: Session, person: string) => {
+    const worker = diskWorker(s, person)
+    return worker ? worker.base ?? base(s) : s.room.baseOf(person) ?? base(s)
+  }
+  const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(diskWorker(s, person)?.dir ?? s.dir, baseFor(s, person), path)
   /** A person's HEAD + their overlay; undefined if the file exists nowhere; null if they deleted it.
    *  Throws NeedFetch when their HEAD is not in this clone. */
   const liveText = async (s: Session, path: string, person: string): Promise<string | undefined | null> => {
+    const worker = diskWorker(s, person)
+    if (worker) return workerText(worker.dir, path)
     if (s.room.deleted.get(person)?.has(path)) return null
     const ov = s.room.text(path, person)
     if (ov !== undefined) return ov

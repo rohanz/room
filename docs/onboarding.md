@@ -13,7 +13,7 @@ Two ways in. Pick the one that matches you.
 2. Start your agent in any clone (`claude` or `codex`, interactively). It is already in a local room; nothing leaves your machine. The first time Claude Code loads the plugin it asks you to trust its hooks; say yes.
 3. Ask in your own words: "use a couple of subagents for this" or "split this up". The agent handles the Room moves; no tool names needed. For example:
    > Split this up: add the endpoint in api.ts and its tests in api.test.ts.
-4. Ask **"show room state"** at any point. Workers appear with their status, claims and last message. The browser link it prints works while a session is open. When a worker reports done, its work sits uncommitted on branch `room/<tag>`; the lead previews, commits in the worker worktree, and merges it unless you asked it not to. It also prints a browser link for the room; open it in a tab while your session is running. The local room lives only as long as a session is open, so the link from a one-shot `claude -p` run is gone once that run ends.
+4. Ask **"show room state"** at any point. Workers appear with their status, claims and last message. The browser link it prints works while a session is open. When a worker reports done, its work sits uncommitted on branch `room/<tag>`; the lead previews, commits in the worker worktree, and merges it unless you asked it not to. It also prints a browser link for the room; open it in a tab while your session is running. The view link needs a running session, so a one-shot `claude -p` link stops working when it ends. The room’s history is kept privately in the clone’s git common directory and is never shared.
 
 Room tools do not merge branches themselves: the lead follows the room-workers skill to preview and merge `room/<tag>` with Git, without pushing. Worktrees land in `.room/workers/<tag>`. Add `.room/` to your `.gitignore`.
 
@@ -52,4 +52,4 @@ After a plugin update that changes a hook definition, Codex asks you to trust th
 - Claude Code wake-ups need the channels flag (`claude-room` adds it). Without it, an idle Claude session does not react to questions or interrupts until your next message. Codex does not have this limitation. This is a Claude Code research-preview restriction, not a Room design choice; it goes away when Room is on the channel allowlist or channels leave preview.
 
 - Codex occasionally hangs at startup before its MCP servers come up (seen twice in testing, never twice in a row). If `codex` shows nothing for a minute, quit and start it again.
-- The local browser link is only reachable while a session is open; the relay stops with the last agent.
+- The local browser link needs a running session; history and worker records survive in the clone’s git common directory (`room-local/*.ydoc`) and are never shared. Live text and claims are rebuilt on reconnect. `room_close confirm=true` exports the ledger and forgets saved memory; `room_leave` keeps it.

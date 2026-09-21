@@ -2,6 +2,7 @@
 
 ## 0.7.0 — 2026-09-21
 
+- Local rooms remember. The relay saves the room's memory (timeline and its archive, finished-worker records, worker records, scopes, colours) to `<git dir>/room-local/` and loads it on start; it never saves file text, base texts, graphs or claims, which present agents rebuild. Reading a file from a finished worker that is no longer connected falls back to its worktree on disk, labelled as such. `room_close` on a local room forgets it.
 - Add Node 22 GitHub Actions CI for typechecking, identity-isolated tests, web/plugin builds and committed plugin asset freshness, with a README status badge.
 
 - Retirement rule corrected after review: a finished worker retires only when its worktree is clean and its branch has nothing the lead lacks. Workers leave changes uncommitted for the lead, so "branch is merged" was trivially true at exit and would have removed their work from the room before the lead saw it. Dismissing a dirty worker records how many uncommitted files stay on disk.

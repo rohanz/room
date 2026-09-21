@@ -127,3 +127,52 @@ describe('local relay hardening', () => {
     await a.stop()
   })
 })
+
+it('restores memory in a new relay, excludes live state, and forgets through an authenticated request', async () => {
+  const commonDir = await makeCommonDir(), room = 'local/restart/main'
+  const { memoryFile, loadMemory } = await import('../src/memory.js')
+  let relay: Awaited<ReturnType<typeof startRelay>> | undefined
+  let provider: WebsocketProvider | undefined
+  const docs: Y.Doc[] = []
+  const connect = async () => {
+    const doc = new Y.Doc(); docs.push(doc)
+    provider = new WebsocketProvider(`ws://127.0.0.1:${relay!.port}`, encodeURIComponent(room), doc, {
+      WebSocketPolyfill: WebSocket as never, params: { key: 'test-key' }, disableBc: true,
+    })
+    await until(() => provider!.synced)
+    return doc
+  }
+  try {
+    relay = await startRelay(0, { commonDir, key: 'test-key' })
+    const first = await connect()
+    for (const type of ['bus', 'retiredWorkers']) first.getArray(type).push([{ id: type }])
+    for (const type of ['workers', 'scopes', 'colors', 'meta', 'ledger']) first.getMap(type).set('key', { value: type })
+    for (const type of ['overlays', 'deleted', 'basetext', 'graphs', 'claims']) first.getMap(type).set('stale', 'text')
+    await until(() => {
+      if (!fs.existsSync(memoryFile(commonDir, room))) return false
+      const snapshot = loadMemory(commonDir, room)
+      try { return snapshot.getArray('bus').length === 1 } finally { snapshot.destroy() }
+    })
+    // Last client leaving and the relay shutting down must both preserve the snapshot.
+    provider!.destroy(); provider = undefined
+    await relay.close()
+    relay = await startRelay(0, { commonDir, key: 'test-key' })
+    const second = await connect()
+    expect(second.getArray('bus').toArray()).toEqual([{ id: 'bus' }])
+    expect(second.getArray('retiredWorkers').toArray()).toEqual([{ id: 'retiredWorkers' }])
+    expect(second.getMap('workers').get('key')).toEqual({ value: 'workers' })
+    expect(second.getMap('scopes').get('key')).toEqual({ value: 'scopes' })
+    for (const type of ['overlays', 'deleted', 'basetext', 'graphs', 'claims']) expect(second.share.has(type)).toBe(false)
+    const url = `http://127.0.0.1:${relay.port}/memory?room=${encodeURIComponent(room)}`
+    expect((await fetch(url, { method: 'DELETE' })).status).toBe(403)
+    expect(fs.existsSync(memoryFile(commonDir, room))).toBe(true)
+    expect((await fetch(url, { method: 'DELETE', headers: { authorization: 'Bearer test-key' } })).status).toBe(204)
+    provider!.destroy(); provider = undefined
+    await relay.close(); relay = undefined
+    expect(fs.existsSync(memoryFile(commonDir, room))).toBe(false)
+  } finally {
+    provider?.destroy(); await relay?.close()
+    for (const doc of docs) doc.destroy()
+    fs.rmSync(commonDir, { recursive: true, force: true })
+  }
+})

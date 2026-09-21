@@ -24,7 +24,7 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { where: str('local | team | ws(s)://server'), room: str('optional override for team/server rooms (required without an origin); for local joins omit unless the user asks for a separate named room, normalized to local/<name>'), name: str('override your name'), server: str('alias of where for a server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
   { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.',
     inputSchema: { type: 'object', properties: { forget: { type: 'boolean', description: 'also forget the remembered choice (local/team) for this clone' }, force: { type: 'boolean', description: 'dismiss running workers first instead of refusing' } } } },
-  { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user\'s explicit request; room_create reopens later.',
+  { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'DESTRUCTIVE: in a local room, export the ledger, remove this room\'s saved memory and leave (memory saving resumes when the relay restarts). On a team server, close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user\'s explicit request; room_create reopens later.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'must be true' } }, required: ['confirm'] } },
   { name: 'room_export', annotations: RO, description: 'Export the current room story, including compacted bus history, to a local markdown ledger without changing the room.',
     inputSchema: { type: 'object', properties: { path: str('optional output path, relative to the clone unless absolute; default .room/ledger/<room>-<timestamp>.md') } } }
@@ -179,9 +179,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_close(a) {
       const s = S()
       if (s.local) {
-        if (a.confirm !== true) return 'this is a local room (no server): there is nothing to close. room_leave ends your session; the relay stops with the last session.'
+        if (a.confirm !== true) return 'error: this is a local room (no server): room_close forgets its saved history (timeline, finished-worker records) on this machine; call with confirm=true only on the user\'s explicit request'
+        if (runningWorkers(s).length) return 'error: dismiss running workers before closing the local room'
         const ledger = exportRoomLedger(s, { now: now() })
-        return `this is a local room (no server): there is nothing to close. Exported its ledger to ${ledger.path} (${ledger.lines} lines); room_leave ends your session.`
+        if (!s.local.forget) throw new Error('local relay does not support forgetting memory; restart the session')
+        await s.local.forget()
+        await closeWorkersRoom()
+        cleanupMine(s, 'closing the local room')
+        rooms.remove(s)
+        await doLeave(s)
+        return `local room (no server): forgot the saved history of ${s.roomName} on this machine; exported its ledger to ${ledger.path} (${ledger.lines} lines) first; left the room`
       }
       if (a.confirm !== true) return 'error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user\'s explicit request'
       const ledger = exportRoomLedger(s, { now: now() })
