@@ -77,23 +77,31 @@ but never called `room_wait`, never previewed a merge and integrated by copying 
 - **No lead summary.** `room_state` lists everything; a lead wants "3 done, 2 waiting on you,
   1 quiet" as the first lines, with the questions addressed to it.
 
-## Found by the lifecycle batch lead (2026-09-21), next small batch
+## Found by batch leads using Room to build Room (2026-09-21)
 
-A Claude lead ran three Codex workers through a local room to build worker retirement. Seven
-questions and six answers settled a shared record shape and a shared helper's signature; the
-merge was clean. What got in the lead's way:
-- A question to a worker that has already exited just times out. Tell the asker at once that
-  the recipient has finished.
-- `room_preview_merge` with `run` returns log lines but not the test runner's pass/fail summary.
-- "Run only the files you touch" let intended behaviour changes break suites nobody owned. The
-  preview could suggest tests that mention strings a worker changed.
-- A finishing worker's full summary is repeated in every release line and in plan-cancelled
-  interrupts. Say it once.
-- A hook line described the lead as one of its own workers: the hook state file is confused when
-  worktrees share a clone.
-- "Idle" is wrong: it tracks file changes, not activity. Bump activity on every tool call (the
-  before-edit hook and every room tool call), show "working" or "last action Nm ago", and let a
-  lead flag a running worker with no action for several minutes.
+Two batches ran as a Claude lead with three Codex workers in a local room. Both merged cleanly;
+the workers settled shared record shapes and helper signatures through questions and plan lines.
+
+**Fixed in 0.7.0 by the second batch:** a question to someone who has finished, been retired or
+never existed is answered at once instead of timing out; a finishing worker's summary is said
+once; hook state is resolved by session, not by working directory, so a lead is no longer
+described as one of its workers; "idle" is gone (activity follows tool calls: "working",
+"last action 4m ago", and for a lead's workers "running" / "running · quiet 6m"); merge previews
+report the test runner's verdict; workers start at lower scheduling priority; read markers are
+saved with a local room's memory.
+
+**Still open, reported by the second lead:**
+- `room_wait` timing out says "Tell your human" even while the lead's workers are plainly busy.
+  With running workers it should say "3 workers still running; nothing needs you yet".
+- `room_state`'s recent-bus section is dominated by claim and release lines; the lead had to run
+  `room_export` to find the questions and answers. Rank questions, answers, notices and done
+  messages above claim traffic, at least for a lead.
+- After the lead committed, `room_state` still listed `plugins/room/web` files as uncommitted.
+  Needs investigation: daemon staleness after a commit in the same clone, or an ignore rule.
+- The company line reads "rohanz's agent (notices) is in this room", which can be misread as
+  describing the reader. Use the participant name: "rohanz+notices is in this room".
+- "Run only the files you touch" let intended behaviour changes break suites nobody owned (first
+  batch). The preview could suggest tests that mention strings a worker changed.
 
 ## Less ritual
 
