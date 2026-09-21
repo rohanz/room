@@ -36,6 +36,15 @@ export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 export const WORKERS_DIR = path.join('.room', 'workers')
 export const DEFAULT_MAX_WORKERS = 8
 
+/** Reserve for at least four intended workers (bounded by maxWorkers), even on the first spawn.
+ * Also cap by actual concurrency when it exceeds that reservation; one thread is the floor.
+ */
+export function workerBudget({ cores, memBytes, maxWorkers, running }: { cores: number; memBytes: number; maxWorkers: number; running: number }): { threads: number; memGb: number } {
+  const workers = running + 1
+  const divisor = Math.max(1, Math.min(maxWorkers, Math.max(workers, 4)), workers)
+  return { threads: Math.max(1, Math.floor(cores / divisor)), memGb: Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3)) }
+}
+
 export function validTag(tag: unknown): string | undefined {
   if (typeof tag !== 'string') return undefined
   const t = tag.trim()

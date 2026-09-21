@@ -328,6 +328,29 @@ describe('roomd v2 push-only overlays', () => {
     expect(read(dir, '.git/info/exclude').split('\n').filter(line => line === '.room.json')).toHaveLength(1)
   })
 
+  it('logs an unpushed HEAD/base pair once across repeated polls, and logs new pairs', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' }) // deliberately no remote
+    const logs: string[] = []
+    const daemon = await start({ room: room(), dir, name: 'Alice', basePollMs: 60_000, log: line => logs.push(line) })
+    const base = daemon.roomDoc.meta.base!
+    // Invoke the actual poll deterministically, without wall-clock timer races.
+    const poll = () => (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+    const warnings = () => logs.filter(line => line.includes('but not pushed; base stays'))
+    sh(dir, ['commit', '--allow-empty', '-qm', 'first'])
+    const first = sh(dir, ['rev-parse', 'HEAD'])
+    for (let i = 0; i < 4; i++) await poll()
+    expect(warnings()).toHaveLength(1)
+    sh(dir, ['commit', '--allow-empty', '-qm', 'second'])
+    for (let i = 0; i < 4; i++) await poll()
+    expect(warnings()).toHaveLength(2)
+    daemon.roomDoc.setMeta({ base: first })
+    for (let i = 0; i < 4; i++) await poll()
+    expect(warnings()).toHaveLength(3)
+    daemon.roomDoc.setMeta({ base })
+    for (let i = 0; i < 4; i++) await poll()
+    expect(warnings()).toHaveLength(3) // returning to an already-seen pair stays quiet
+  })
+
   it('a pushed commit by a member advances the room base and posts a base entry; an unpushed one does not', async () => {
     const origin = await makeRepo({ 'app.py': 'base\n' })
     const source = await cloneRepo(origin)

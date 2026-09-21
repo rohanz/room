@@ -479,10 +479,19 @@ class Daemon implements Roomd {
     await this.refreshBaseStatus()
   }
 
+  private readonly unpushedPairs = new Set<string>()
+
   /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
   private async maybeAdvance(from: string, to: string): Promise<void> {
     if (await gitIsOnRemote(this.dir, to)) await this.advanceBase(from, to)
-    else { this.setStatus('ahead of base (unpushed): git push'); this.log(`HEAD ${to.slice(0, 10)} is ahead of the room base but not pushed; base stays at ${from.slice(0, 10)}`) }
+    else {
+      this.setStatus('ahead of base (unpushed): git push')
+      const pair = `${to}:${from}`
+      if (!this.unpushedPairs.has(pair)) {
+        this.unpushedPairs.add(pair)
+        this.log(`HEAD ${to.slice(0, 10)} is ahead of the room base but not pushed; base stays at ${from.slice(0, 10)}`)
+      }
+    }
   }
 
   private async advanceBase(from: string, to: string): Promise<void> {

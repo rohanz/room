@@ -1,13 +1,14 @@
 import { Bridge } from '../bridge.js'
 import { pidIsOurWorker, signalWorker } from '../workers.js'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { workerId, workerIdBase } from '../registry.js'
 import { LOCAL, type Session } from '../session.js'
-import { DEFAULT_MAX_WORKERS, defaultSpawner, prepareWorktree, validTag, workerCommand, workerPrompt, type SpawnedProcess, type WorkerHost } from '../workers.js'
+import { workerBudget, DEFAULT_MAX_WORKERS, defaultSpawner, prepareWorktree, validTag, workerCommand, workerPrompt, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
@@ -15,8 +16,8 @@ import { resolveConfig } from '../config.js'
 export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. Call after your final room_preview_merge, before reporting to your human. Stay in the room for questions.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'also post the branch ledger as a comment on the open PR whose head is this branch (room_pr_note), if there is one' } }, required: ['summary'] } },
-  { name: 'room_spawn', annotations: RW, description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Max running workers per lead: ROOM_MAX_WORKERS (8). Prefer this over built-in subagents for parallel edits: handing part of an editing task to another agent, including "get codex to do X" (host=codex), means a room worker, so it gets its own worktree and identity.',
-    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims).' } }, required: ['tag', 'task'] } },
+  { name: 'room_spawn', annotations: RW, description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Math-library threads are capped per worker (override with threads). Max running workers per lead: ROOM_MAX_WORKERS (8). Prefer this over built-in subagents for parallel edits: handing part of an editing task to another agent, including "get codex to do X" (host=codex), means a room worker, so it gets its own worktree and identity.',
+    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims).' } }, required: ['tag', 'task'] } },
   { name: 'room_dismiss', annotations: RW, description: 'Stop a worker you spawned (SIGTERM to its process). Its worktree and branch are kept so you can inspect or merge what it did.',
     inputSchema: { type: 'object', properties: { tag: str('the worker tag') }, required: ['tag'] } }
 ]
@@ -61,6 +62,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_spawn(a) {
       const lead = S()
+      if (a.threads !== undefined && (typeof a.threads !== 'number' || !Number.isSafeInteger(a.threads) || a.threads < 1)) return 'error: threads must be an integer >= 1'
       if (a.where !== undefined && a.where !== 'here' && a.where !== 'local') return 'error: where must be here or local'
       let s = lead
       if (a.where === 'local' && !lead.local) {
@@ -109,7 +111,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // (ROOM_URL/ROOM_NAME/ROOM_DIR from a runner would otherwise send it into the lead's room as the lead).
         // The server URL is passed without its query: a shared token travels only as ROOM_TOKEN.
         const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
+        // Recount after async worktree preparation: another spawn may have completed meanwhile.
+        const count = runningWorkers(lead).length
+        if (count >= max) return `error: ${count} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`
+        const cores = Math.max(1, os.availableParallelism?.() ?? os.cpus().length)
+        const memBytes = os.totalmem()
+        const budget = workerBudget({ cores, memBytes, maxWorkers: max, running: count })
+        const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS)
+        const threads = typeof a.threads === 'number' ? a.threads
+          : Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? inheritedThreads : budget.threads
+        const caps: Record<string, string> = {}
+        for (const key of ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS', 'LOKY_MAX_CPU_COUNT', 'RAYON_NUM_THREADS']) {
+          caps[key] = process.env[key] ?? String(threads)
+        }
         const env: Record<string, string> = {
+          ...caps, ROOM_WORKER_THREADS: String(threads), ROOM_WORKER_MEM_GB: process.env.ROOM_WORKER_MEM_GB ?? String(budget.memGb),
           ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_DIR: dir, PWD: dir, ROOM_TAG: tag, ROOM_LEAD: s.me.name, ROOM_OWNER: owner,
           ROOM_SHARE: share ?? s.daemon.share ?? 'full', ROOM_GEN: String(gen), ROOM_WORKER_ID: id,
           ...(s.token && !s.local ? { ROOM_TOKEN: s.token } : {}),
@@ -144,6 +160,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         })
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
+        out.push(`budget: ${threads} threads, ~${budget.memGb} GB (machine: ${cores} cores, ${Math.floor(memBytes / 1024 ** 3)} GB; ${count + 1} workers running). Put this in the task for compute-heavy work and stagger heavy jobs.`)
         out.push(`log: ${logFile}`)
         out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`)
         if (created && !gitignored(s.dir)) out.push('tip: add .room/ to .gitignore (the room already ignores it; git status will not).')

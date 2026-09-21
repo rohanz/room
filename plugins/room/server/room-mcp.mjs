@@ -33002,12 +33002,17 @@ var Daemon = class {
     await this.seedLocalOverlay();
     await this.refreshBaseStatus();
   }
+  unpushedPairs = /* @__PURE__ */ new Set();
   /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
   async maybeAdvance(from2, to2) {
     if (await gitIsOnRemote(this.dir, to2)) await this.advanceBase(from2, to2);
     else {
       this.setStatus("ahead of base (unpushed): git push");
-      this.log(`HEAD ${to2.slice(0, 10)} is ahead of the room base but not pushed; base stays at ${from2.slice(0, 10)}`);
+      const pair = `${to2}:${from2}`;
+      if (!this.unpushedPairs.has(pair)) {
+        this.unpushedPairs.add(pair);
+        this.log(`HEAD ${to2.slice(0, 10)} is ahead of the room base but not pushed; base stays at ${from2.slice(0, 10)}`);
+      }
     }
   }
   async advanceBase(from2, to2) {
@@ -35382,6 +35387,11 @@ import { execFileSync as execFileSync2, spawn } from "node:child_process";
 import fs8 from "node:fs";
 import path9 from "node:path";
 var WORKERS_DIR = path9.join(".room", "workers");
+function workerBudget({ cores, memBytes, maxWorkers, running }) {
+  const workers = running + 1;
+  const divisor = Math.max(1, Math.min(maxWorkers, Math.max(workers, 4)), workers);
+  return { threads: Math.max(1, Math.floor(cores / divisor)), memGb: Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3)) };
+}
 function validTag(tag) {
   if (typeof tag !== "string") return void 0;
   const t = tag.trim();
@@ -38068,6 +38078,7 @@ var Bridge = class {
 
 // packages/room-mcp/src/tools/workers.ts
 import fs11 from "node:fs";
+import os5 from "node:os";
 import path12 from "node:path";
 var defs6 = [
   {
@@ -38079,8 +38090,8 @@ var defs6 = [
   {
     name: "room_spawn",
     annotations: RW,
-    description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Max running workers per lead: ROOM_MAX_WORKERS (8). Prefer this over built-in subagents for parallel edits: handing part of an editing task to another agent, including "get codex to do X" (host=codex), means a room worker, so it gets its own worktree and identity.',
-    inputSchema: { type: "object", properties: { tag: str("short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>"), task: str("what the worker should do, self-contained"), host: { type: "string", enum: ["claude", "codex"], description: "which agent runs it (default claude)" }, model: str("model override for that host (optional)"), share: SHARE, allowOutside: { type: "boolean", description: "permit dir outside this repo (no worktree bookkeeping)" }, dir: str("use this existing directory instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims)." } }, required: ["tag", "task"] }
+    description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Math-library threads are capped per worker (override with threads). Max running workers per lead: ROOM_MAX_WORKERS (8). Prefer this over built-in subagents for parallel edits: handing part of an editing task to another agent, including "get codex to do X" (host=codex), means a room worker, so it gets its own worktree and identity.',
+    inputSchema: { type: "object", properties: { tag: str("short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>"), task: str("what the worker should do, self-contained"), host: { type: "string", enum: ["claude", "codex"], description: "which agent runs it (default claude)" }, model: str("model override for that host (optional)"), threads: { type: "integer", minimum: 1, description: "math-library thread budget for this worker (optional)" }, share: SHARE, allowOutside: { type: "boolean", description: "permit dir outside this repo (no worktree bookkeeping)" }, dir: str("use this existing directory instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims)." } }, required: ["tag", "task"] }
   },
   {
     name: "room_dismiss",
@@ -38132,6 +38143,7 @@ function handlers6(state) {
     },
     async room_spawn(a) {
       const lead = S();
+      if (a.threads !== void 0 && (typeof a.threads !== "number" || !Number.isSafeInteger(a.threads) || a.threads < 1)) return "error: threads must be an integer >= 1";
       if (a.where !== void 0 && a.where !== "here" && a.where !== "local") return "error: where must be here or local";
       let s = lead;
       if (a.where === "local" && !lead.local) {
@@ -38185,7 +38197,21 @@ function handlers6(state) {
         const prompt = workerPrompt(s.me.name, tag, task);
         const { cmd, args: args2 } = workerCommand(host, model, prompt, config2.claudeChannel);
         const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
+        const count = runningWorkers(lead).length;
+        if (count >= max2) return `error: ${count} workers already running (max ${max2}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`;
+        const cores = Math.max(1, os5.availableParallelism?.() ?? os5.cpus().length);
+        const memBytes = os5.totalmem();
+        const budget = workerBudget({ cores, memBytes, maxWorkers: max2, running: count });
+        const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS);
+        const threads = typeof a.threads === "number" ? a.threads : Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? inheritedThreads : budget.threads;
+        const caps = {};
+        for (const key of ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "LOKY_MAX_CPU_COUNT", "RAYON_NUM_THREADS"]) {
+          caps[key] = process.env[key] ?? String(threads);
+        }
         const env = {
+          ...caps,
+          ROOM_WORKER_THREADS: String(threads),
+          ROOM_WORKER_MEM_GB: process.env.ROOM_WORKER_MEM_GB ?? String(budget.memGb),
           ROOM_SERVER: server,
           ROOM_ROOM: s.roomName,
           ROOM_DIR: dir,
@@ -38231,6 +38257,7 @@ function handlers6(state) {
         });
         s.room.post(s.me, { type: "note", text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ""}) as ${name}: ${task.slice(0, 100)}` });
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ""}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? " (new worktree)" : ""}`];
+        out.push(`budget: ${threads} threads, ~${budget.memGb} GB (machine: ${cores} cores, ${Math.floor(memBytes / 1024 ** 3)} GB; ${count + 1} workers running). Put this in the task for compute-heavy work and stagger heavy jobs.`);
         out.push(`log: ${logFile}`);
         out.push(`it joins ${s === lead ? "this room" : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`);
         if (created && !gitignored(s.dir)) out.push("tip: add .room/ to .gitignore (the room already ignores it; git status will not).");

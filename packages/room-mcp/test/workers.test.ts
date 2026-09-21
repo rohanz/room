@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
@@ -11,7 +11,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
+import { workerBudget, prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
 
 let dir: string
 let base: string
@@ -24,6 +24,7 @@ beforeEach(() => {
   for (const key of Object.keys(roomEnv)) delete process.env[key]
 })
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllEnvs()
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
   Object.assign(process.env, roomEnv)
@@ -514,7 +515,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 't' })
     const env = t.specs[0].env
-    expect(Object.keys(env).filter(k => k.startsWith('ROOM_')).sort()).toEqual(['ROOM_DIR', 'ROOM_GEN', 'ROOM_LEAD', 'ROOM_LOG_FILE', 'ROOM_OWNER', 'ROOM_ROOM', 'ROOM_SERVER', 'ROOM_SHARE', 'ROOM_TAG', 'ROOM_WORKER_ID'])
+    expect(Object.keys(env).filter(k => k.startsWith('ROOM_')).sort()).toEqual(['ROOM_DIR', 'ROOM_GEN', 'ROOM_LEAD', 'ROOM_LOG_FILE', 'ROOM_OWNER', 'ROOM_ROOM', 'ROOM_SERVER', 'ROOM_SHARE', 'ROOM_TAG', 'ROOM_WORKER_ID', 'ROOM_WORKER_MEM_GB', 'ROOM_WORKER_THREADS'])
     expect(env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_TAG: 'money', ROOM_LEAD: 'rohanz', ROOM_OWNER: 'rohanz', ROOM_GEN: '1', ROOM_SHARE: 'full' })
     expect(env.ROOM_DIR).toBe(join(dir, '.room', 'workers', 'money'))
     expect(env.ROOM_LOG_FILE).toBe(join(dir, '.room', 'workers', 'money.mcp.log'))
@@ -635,5 +636,67 @@ describe('review round 3', () => {
     t.a.setWorker({ tag: 'money', name: 'kieran+money', host: 'claude', task: 'theirs', dir: '/x', branch: 'room/money', pid: 4242, startedAt: Date.now(), status: 'running', lead: 'kieran', gen: 1 })
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'mine' })).toContain("in use by kieran's worker")
     expect(t.a.workers.get('money')).toMatchObject({ lead: 'kieran', status: 'running' })
+  })
+})
+
+
+describe('worker compute budgets', () => {
+  it('recounts concurrent spawns before budgeting and enforces capacity', async () => {
+    vi.spyOn(os, 'availableParallelism').mockReturnValue(12)
+    vi.spyOn(os, 'totalmem').mockReturnValue(24 * 1024 ** 3)
+    const t = setupLead() // maxWorkers = 2, so reserve six threads each
+    const replies = await Promise.all(['a', 'b', 'c'].map(tag => t.leadTools.call('room_spawn', { tag, task: 'train' })))
+    expect(t.specs).toHaveLength(2)
+    expect(t.specs.map(s => s.env.ROOM_WORKER_THREADS)).toEqual(['6', '6'])
+    expect(t.specs.map(s => s.env.ROOM_WORKER_MEM_GB)).toEqual(['12', '12'])
+    expect(replies.filter(r => r.includes('budget:'))).toHaveLength(2)
+    expect(replies.some(r => r.includes('2 workers running)'))).toBe(true)
+    expect(replies.some(r => r.includes('2 workers already running'))).toBe(true)
+    await t.leadTools.shutdown()
+  })
+
+  it.each([
+    [12, 8, 0, 3], [12, 8, 1, 3], [12, 8, 3, 3], [12, 8, 4, 2],
+    [12, 8, 7, 1], [12, 2, 0, 6], [12, 1, 0, 12], [12, 2, 5, 2],
+    [2, 8, 0, 1], [1, 8, 4, 1],
+  ])('%i cores, max %i, running %i -> %i threads', (cores, maxWorkers, running, threads) => {
+    expect(workerBudget({ cores, maxWorkers, running, memBytes: 17.9 * 1024 ** 3 })).toEqual({
+      // Memory uses the same reservation as threads: at least four intended workers, bounded by maxWorkers.
+      threads, memGb: Math.max(1, Math.floor(17.9 / Math.max(1, Math.min(maxWorkers, Math.max(running + 1, 4)), running + 1))),
+    })
+    expect(threads).toBeLessThanOrEqual(cores)
+    if (running + 1 <= cores) expect(threads * (running + 1)).toBeLessThanOrEqual(cores)
+  })
+
+  it('floors memory to one GB on a small machine', () => {
+    expect(workerBudget({ cores: 1, maxWorkers: 8, running: 12, memBytes: 512 * 1024 ** 2 }).memGb).toBe(1)
+  })
+
+  it.each(['claude', 'codex'])('passes caps through the %s path while preserving explicit library settings', async host => {
+    vi.stubEnv('OMP_NUM_THREADS', '7')
+    vi.stubEnv('ROOM_WORKER_THREADS', '5')
+    vi.stubEnv('ROOM_WORKER_MEM_GB', '9')
+    for (const key of ['OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS', 'LOKY_MAX_CPU_COUNT', 'RAYON_NUM_THREADS']) vi.stubEnv(key, undefined)
+    const t = setupLead()
+    const reply = await t.leadTools.call('room_spawn', { tag: 'budget', task: 'train', host, threads: 2 })
+    const spec = t.specs[0]
+    expect(spec.cmd).toBe(host)
+    const env = workerEnv(process.env, spec.env)
+    expect(env).toMatchObject({ OMP_NUM_THREADS: '7', ROOM_WORKER_THREADS: '2', ROOM_WORKER_MEM_GB: '9',
+      OPENBLAS_NUM_THREADS: '2', MKL_NUM_THREADS: '2', VECLIB_MAXIMUM_THREADS: '2', NUMEXPR_NUM_THREADS: '2', LOKY_MAX_CPU_COUNT: '2', RAYON_NUM_THREADS: '2' })
+    const cores = os.availableParallelism?.() ?? os.cpus().length
+    const totalGb = Math.floor(os.totalmem() / 1024 ** 3)
+    expect(reply).toContain(`budget: 2 threads, ~${Math.max(1, Math.floor(os.totalmem() / 2 / 1024 ** 3))} GB (machine: ${cores} cores, ${totalGb} GB; 1 workers running). Put this in the task for compute-heavy work and stagger heavy jobs.`)
+    expect(process.env.ROOM_WORKER_THREADS).toBe('5')
+    expect(process.env.OPENBLAS_NUM_THREADS).toBeUndefined()
+    await t.leadTools.call('room_spawn', { tag: 'inherited', task: 'train', host })
+    expect(t.specs[1].env.ROOM_WORKER_THREADS).toBe('5')
+    await t.leadTools.shutdown()
+  })
+
+  it.each([0, -1, 1.5, '2', null])('rejects invalid threads %s before spawning', async threads => {
+    const t = setupLead()
+    expect(await t.leadTools.call('room_spawn', { tag: 'bad', task: 'train', threads })).toContain('error: threads must be an integer >= 1')
+    expect(t.specs).toHaveLength(0)
   })
 })

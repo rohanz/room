@@ -101,6 +101,8 @@ key stops other users of a shared machine from guessing their way in.
 
 ### Dispatching workers
 
+Room caps math-library threads per worker; include the spawn reply’s budget in compute-heavy tasks, use `threads` (or `ROOM_WORKER_THREADS` on the lead) to override it, and stagger heavy jobs.
+
 Ask in your own words: "use a couple of subagents for this" or "split this up".
 The agent loads the room-workers skill and handles dispatch, questions, preview and merge.
 You do not need to know any tool names. For example:

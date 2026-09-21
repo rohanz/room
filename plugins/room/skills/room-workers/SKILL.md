@@ -31,3 +31,5 @@ never join it just to dispatch workers. "Locally" / "in a local room" means pass
 `where="local"` to `room_spawn`: the workers room stays on this machine. A lead already
 in the team room still mirrors workers' scope and claims there. Otherwise omit `where`
 to use your current room.
+
+**Compute-heavy work:** Room caps math-library threads per worker through the environment; state the budget from the spawn reply in the task, tell the worker to pass the same number to explicit parameters (`n_jobs`, `num_threads`, `num_workers`), and stagger heavy jobs rather than starting them all at once.

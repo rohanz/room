@@ -2,6 +2,9 @@
 
 ## 0.7.0 — 2026-09-21
 
+- Spawned Claude and Codex workers receive deterministic math-library thread caps and an informational memory budget; explicit environment settings are preserved, with per-worker `threads` and lead-wide `ROOM_WORKER_THREADS` overrides.
+- Log an unpushed HEAD warning once per distinct HEAD/base pair instead of repeating it every base poll.
+
 - Local joins accept separate named rooms as `local/<name>` and show the current room and browser link. Re-joining the same room preserves the session; moves explain that old links no longer show it and are refused while its workers run. Worker/bridge room routing is preserved.
 - Reset `companyTold` at every session start while preserving seen inbox ids, so a new session hears about teammates already present in the clone.
 - Hook re-trust note: this release widened the before-edit hook matcher. Start Codex interactively and trust the Room hooks again; until then, `codex exec` silently skips the changed hook.
