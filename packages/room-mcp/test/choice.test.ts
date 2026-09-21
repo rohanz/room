@@ -91,3 +91,12 @@ describe('tags per worktree', () => {
     expect(await readChoice(dir)).toBeUndefined()
   })
 })
+
+it('remembers disclosure per destination without opting an environment-only clone into a server', async () => {
+  await clearChoice(dir)
+  expect(await markWarned(dir, dir, 'wss://one')).toBe(true)
+  expect(await markWarned(dir, dir, 'wss://one')).toBe(false)
+  expect(await markWarned(dir, dir, 'wss://two')).toBe(true)
+  expect((await chooseServer(dir)).server).toBe(LOCAL)
+  await clearChoice(dir)
+})

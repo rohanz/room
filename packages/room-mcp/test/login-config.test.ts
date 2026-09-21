@@ -25,6 +25,6 @@ it('login before join honors the credentials argument for pending login, auth an
   expect(fs.existsSync(envFile)).toBe(false)
   expect(await t.call('room_login', { server, wait: 5 })).toContain('as octo')
   expect(await resolveAuth(server, 'github.com/x/y/main')).toMatchObject({ session: 'session', login: 'octo' })
-  expect(await t.call('room_logout', { server, credentials: file })).toContain('logged out')
+  expect(await t.call('room_login', { action: 'logout',  server, credentials: file })).toContain('logged out')
   expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({})
 })

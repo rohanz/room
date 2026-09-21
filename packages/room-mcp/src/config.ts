@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { gitCommonDir } from '@room/roomd/local'
-import type { ShareLevel } from '@room/roomd'
+import { parseShare, type ShareLevel } from '@room/roomd'
 
 export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
 export const LOCAL = 'local'
@@ -24,8 +24,8 @@ export interface ConfigArgs {
   claudeChannel?: string; maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
 }
 export interface ResolvedConfig {
-  dir: string; server: string; where: string; whereRule: ConfigRule
-  name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel
+  dir: string; server: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
+  name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareWarning?: string
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
   claudeChannel: string; workerId?: string; gen?: string
@@ -45,6 +45,18 @@ export function resolveServer(raw?: string): string {
   return w === 'team' ? DEFAULT_SERVER : w
 }
 
+/** Plain wording shared by join, state and sharing controls. */
+export function sharingDescription(level: ShareLevel): string {
+  return level === 'full' ? 'the full text of files you change' : level === 'declared' ? 'only the files in your declared area' : 'only your plans, no file text'
+}
+
+/** Missing means the default; an invalid supplied value can never widen sharing. */
+export function resolveShare(raw: unknown, source = 'share'): { level: ShareLevel; warning?: string } {
+  if (raw === undefined) return { level: 'full' }
+  const level = parseShare(typeof raw === 'string' ? raw.trim() : raw)
+  return level ? { level } : { level: 'intent', warning: `${source}='${String(raw)}' is not a level; sharing plans only` }
+}
+
 async function rememberedWhere(dir: string): Promise<string | undefined> {
   try {
     const file = path.join(await gitCommonDir(dir), 'room-choice.json')
@@ -61,29 +73,32 @@ export function resolveCredentialsPath(args: ConfigArgs = {}, e: NodeJS.ProcessE
 export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.ProcessEnv | Record<string, string | undefined>; args?: ConfigArgs; dir: string }): Promise<ResolvedConfig> {
   const e = env ?? process.env
   const argWhere = normaliseWhere(args.where ?? args.server)
-  const envWhere = normaliseWhere(e.ROOM_SERVER)
-  const remembered = !argWhere && !envWhere ? normaliseWhere(await rememberedWhere(dir)) : undefined
-  const where = argWhere ?? envWhere ?? remembered ?? LOCAL
-  const whereRule: ConfigRule = argWhere ? 'argument' : envWhere ? 'env' : remembered ? 'remembered' : 'default'
-  // A full runner URL is a fallback destination, not an override of a selected server.
-  // Explicit roomUrl wins; an argument/server environment/remembered choice suppresses legacy ROOM_URL.
-  const roomUrl = value(args.roomUrl) ?? (!argWhere && !envWhere && !remembered ? value(e.ROOM_URL) : undefined)
+  const argUrl = !argWhere ? value(args.roomUrl) : undefined
+  const envServer = normaliseWhere(e.ROOM_SERVER)
+  const roomUrl = argUrl ?? (!argWhere && !envServer ? value(e.ROOM_URL) : undefined)
+  const url = roomUrl ? new URL(roomUrl) : undefined
+  if (url && !['ws:', 'wss:'].includes(url.protocol)) throw new Error('ROOM_URL must use ws:// or wss://')
+  const urlServer = url ? `${url.protocol}//${url.host}${url.search}` : undefined
+  const envWhere = envServer ?? (!argUrl ? urlServer : undefined)
+  const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(await rememberedWhere(dir)) : undefined
+  const where = argWhere ?? (argUrl ? urlServer : undefined) ?? envWhere ?? remembered ?? LOCAL
+  const whereRule: ConfigRule = argWhere || argUrl ? 'argument' : envWhere ? 'env' : remembered ? 'remembered' : 'default'
+  const whereEnv = whereRule === 'env' ? envServer ? 'ROOM_SERVER' : 'ROOM_URL' : undefined
   const rawKind = value(args.kind) ?? value(e.ROOM_KIND) ?? 'agent'
   const kind = rawKind === 'bot' || rawKind === 'ci' ? rawKind : 'agent'
-  const rawShare = value(args.share) ?? value(e.ROOM_SHARE) ?? 'full'
-  const share: ShareLevel = rawShare === 'intent' || rawShare === 'declared' ? rawShare : 'full'
+  const sharing = resolveShare(args.share ?? e.ROOM_SHARE, args.share !== undefined ? 'share' : 'ROOM_SHARE')
   const credentialsPath = resolveCredentialsPath(args, e)
   return {
     // Empty explicitly disables development channels; do not discard it with value().
     claudeChannel: (args.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
     workerId: value(e.ROOM_WORKER_ID), gen: value(e.ROOM_GEN),
-    roomUrl, dir: path.resolve(dir), server: resolveServer(where), where, whereRule,
+    roomUrl, dir: path.resolve(dir), server: resolveServer(where), where, whereRule, whereEnv,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
-    tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share, credentialsPath,
+    tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareWarning: sharing.warning, credentialsPath,
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),
     maxWorkers: positive(args.maxWorkers ?? e.ROOM_MAX_WORKERS, DEFAULT_MAX_WORKERS),
     staleDays: positive(args.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),
-    room: value(args.room) ?? value(e.ROOM_ROOM), web: value(args.web) ?? value(e.ROOM_WEB),
+    room: value(args.room) ?? value(e.ROOM_ROOM) ?? (url ? decodeURIComponent(url.pathname.replace(/^\/+/, '')) || undefined : undefined), web: value(args.web) ?? value(e.ROOM_WEB),
   }
 }
 

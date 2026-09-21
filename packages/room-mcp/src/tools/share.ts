@@ -1,10 +1,11 @@
 import { type NoteMsg } from '@room/shared'
-import { clampShare, parseShare } from '@room/roomd'
+import { clampShare } from '@room/roomd'
+import { resolveShare, sharingDescription } from '../config.js'
 import type { Session } from '../session.js'
-import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { SHARE, RW, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_share', annotations: RW, description: 'Change how much of your clone the room sees, live. Lowering the level withdraws file text the new level no longer allows (intent: all of it; declared: everything outside your scope paths); raising it republishes what your disk holds. Never above the server\'s ceiling. Without `level`, reports the current level and what is withheld.',
+  { name: 'room_share', annotations: RW, description: 'Report or change sharing live; narrower levels withdraw file text. The server ceiling always applies.',
     inputSchema: { type: 'object', properties: { level: SHARE } } }
 ]
 
@@ -15,12 +16,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = S()
       const before = s.daemon.share
       if (a.level === undefined) return shareLine(s)
-      const asked = parseShare(a.level)
-      if (!asked) return `error: level must be intent, declared or full (got ${String(a.level)})`
+      const resolved = resolveShare(a.level, 'level')
+      const asked = resolved.level
+      s.shareWarning = resolved.warning
       const level = clampShare(asked, s.shareMax)
       s.shareRequested = asked
       await s.daemon.setShare(level) // keep following the declared scope
-      if (level !== before) s.room.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${level}${level === 'intent' ? ' (withdrew all file text)' : level === 'declared' ? ' (file text only under declared scope paths)' : ' (all changed files)'}`, priority: 'fyi' })
+      if (level !== before) s.room.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${sharingDescription(level)}`, priority: 'fyi' })
       const out = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`]
       if (level === 'declared' && !s.room.scope(s.me.name)) out.push('no scope declared yet, so nothing is shared until room_scope(area, summary, paths)')
       return out.join('\n')
@@ -31,12 +33,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 
 
 export function install(state: HandlerState): void {
-  const {  } = state
   const shareLine = (s: Session): string => {
-      const level = s.daemon.share ?? 'full'
+      const level = s.daemon.share ?? s.shareRequested ?? 'intent'
       const clamped = s.shareRequested && s.shareRequested !== level ? ` (asked for ${s.shareRequested}; the server caps sharing at ${s.shareMax}, ROOM_SHARE_MAX)` : ''
       const held = s.daemon.skipped?.().share ?? []
-      return `sharing: ${level}${clamped}${held.length ? `; withheld ${held.length} changed file(s): ${held.join(', ')}` : ''}`
+      return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${sharingDescription(level)}${clamped}${held.length ? `; withheld ${held.length} changed file(s): ${held.join(', ')}` : ''}`
     }
   Object.assign(state, { shareLine })
 }
