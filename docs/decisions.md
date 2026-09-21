@@ -117,6 +117,15 @@ answers our coordination questions: who breaks if I rename this, and what am I w
 **Cut:** call graphs, types, cross-language resolution, persistence, graph edges in the
 browser view. Names are enough for coordination; revisit if false positives bite.
 
+**Updated in 0.10.0:** the MCP indexer now uses tree-sitter instead of the Python subprocess
+and JS/TS regex extractor. It records imports and uses them to narrow edges for a name defined
+in more than a handful of files (currently 5, held in a named constant), but remains name-based:
+it has no type resolution and matches method calls by method name.
+The browser keeps its regex path so tree-sitter and its grammars do not enter the web bundle.
+Supported languages are Rust, Go, C, C++, Java, Kotlin, C#, Swift, Scala, Python, JavaScript,
+TypeScript, TSX, Ruby and PHP. Shipping the prebuilt grammars adds about 27 MB to the plugin;
+the MCP process loads only the grammars needed by files present in the repository.
+
 ## 2026-09-12 — Dependency network browser view
 **Decision:** Add a Network tab with participant selection, current-change and transitive
 upstream highlighting, provider-to-consumer arrows, file details, search and zoom. Local
@@ -126,7 +135,7 @@ viewer remains available. Browser URLs preselect the joining participant.
 the upstream work their edits depend on. Overlay reverts and edits during extraction now
 trigger fresh indexing; snapshots expose base and readiness rather than implying exactness.
 **Limits:** Name-based inference and the indexer's existing mixed-overlay selection remain.
-No parser migration, automatic conflict resolution, or guaranteed message interruption.
+There is no type resolution, automatic conflict resolution, or guaranteed message interruption.
 **Validation:** Model and indexer regression tests plus a live two-clone browser preview.
 
 ## 2026-09-13 — Result
@@ -280,8 +289,9 @@ as the earlier signal and the etiquette still asks for them. Colours: hashing na
 colours could give two people in one room the same colour; the doc now holds a `colors` map
 assigned by join order with a deterministic repair for concurrent joins.
 
-**Not done:** body-only changes are ignored by design; the detector is regex-based, so
-decorators and multi-line signatures beyond the header line are compared as one line.
+**Not done:** body-only changes are ignored by design. In 0.10.0 the tree-sitter indexer
+compares each definition's signature (the text before its body), and qualifies methods with
+their container; the browser still uses its older regex extraction path.
 
 ## 2026-09-16 — Run 3: three agents, cross-dependent signature changes, change of mind
 

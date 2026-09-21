@@ -16,7 +16,7 @@ For Claude Code, launch with `claude --dangerously-load-development-channels plu
 ## Getting started
 
 You need Git, Node.js 24 LTS, and Codex or Claude Code with plugin support. Trust Room’s hooks
-when prompted or through `/hooks`. Python indexing needs Python 3; the demo uses `uv`.
+when prompted or through `/hooks`. The demo uses `uv`.
 Start in your repository and ask for your feature as usual. Room stays silent while you work alone.
 [Walk through a first session](docs/onboarding.md).
 
@@ -293,9 +293,13 @@ Developer A’s clone                                  Developer B’s clone
 2. **Share coordination state.** One Yjs document holds overlays, per-person bases,
    scopes, line claims, declared plans, messages, and graph snapshots. Area and file
    ledgers give agents the relevant history.
-3. **Find relevant consumers.** Each MCP process indexes definitions and references over
-   the base plus overlays: Python via AST, JS/TS via regex. It uses the index to route
-   relevant plans and changes, answer impact queries, and publish the browser graph.
+3. **Find relevant consumers.** Each MCP process uses tree-sitter to index definitions,
+   references, imports and definition signatures over the base plus overlays. It uses the
+   index to route relevant plans and changes, answer impact queries, and publish the browser
+   graph. It supports Rust, Go, C, C++, Java, Kotlin, C#, Swift, Scala, Python, JavaScript,
+   TypeScript, TSX, Ruby and PHP. The plugin carries about 27 MB of grammars, but loads only
+   those for languages present in the repository. The browser keeps a smaller regex extractor
+   rather than loading tree-sitter.
 4. **Deliver context.** Room tool replies surface the agent’s inbox. Pre-edit hooks show
    unread messages and teammate claims. The session bridge queues interrupts and
    addressed questions into Codex; an optional on-duty runner also handles room events.

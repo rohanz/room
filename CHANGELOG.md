@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.0
+
+- The MCP symbol indexer now uses tree-sitter for Rust, Go, C, C++, Java, Kotlin, C#, Swift,
+  Scala, Python, JavaScript, TypeScript, TSX, Ruby and PHP. This replaces the Python 3
+  subprocess and the JS/TS regex extractor; the browser keeps its existing regex path.
+- Contract changes compare a definition's signature (the text before its body), so body-only
+  edits do not warn. Methods are qualified with their container.
+- A name defined in more than a handful of files (currently 5, set by a named constant in
+  `packages/shared/src/graph.ts`) creates edges only when the consumer imports the defining
+  module. The graph remains name-based, has no type resolution, matches method calls by name
+  and keeps the 3,000-file cap.
+- The plugin carries about 27 MB of prebuilt grammars in `server/grammars/`; only grammars for
+  languages present in the repository are loaded.
+
 ## 0.9.0
 
 - Last-worker cleanup removes empty `.room/workers` and `.room` directories after collection or discard.

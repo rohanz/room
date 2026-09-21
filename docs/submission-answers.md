@@ -32,7 +32,7 @@ Two people, two laptops, one repo, each running their own OpenAI Codex. Today th
 
 **User control.** Nothing commits or pushes without the human saying yes; the agent reports what landed, the test count and the merge preview result, then asks. Claims are advisory and visible; humans can watch every negotiation in the browser and step in.
 
-**Technical execution.** TypeScript monorepo (npm workspaces, vitest, 98 tests). OpenAI Codex CLI 0.154 as the agent runtime: Codex plugin (skills, MCP server, hooks), Codex SDK for an optional "on duty" runner, `codex queue` for wake-ups. Model Context Protocol server with tool annotations. Yjs CRDT over a stock y-websocket server with LevelDB persistence, GitHub-verified access (the server checks the user's token can read the repo) and room-scoped view links for the browser. Python AST plus regex symbol extraction, node-diff3 for three-way merges, chokidar file watching, Vite and CodeMirror for the view, Fly.io hosting.
+**Technical execution.** TypeScript monorepo (npm workspaces, vitest, 98 tests). OpenAI Codex CLI 0.154 as the agent runtime: Codex plugin (skills, MCP server, hooks), Codex SDK for an optional "on duty" runner, `codex queue` for wake-ups. Model Context Protocol server with tool annotations. Yjs CRDT over a stock y-websocket server with LevelDB persistence, GitHub-verified access (the server checks the user's token can read the repo) and room-scoped view links for the browser. At submission time the symbol extractor used Python AST plus regex; 0.10.0 replaces the MCP indexer with tree-sitter. node-diff3 handles three-way merges, chokidar watches files, and Vite and CodeMirror power the view; the service is hosted on Fly.io.
 
 ---
 

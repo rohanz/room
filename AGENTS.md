@@ -67,7 +67,8 @@ docs/submission.md       deliverables checklist + demo script
 docs/superpowers/        design specs (v2: 2026-09-12-room-v2-design.md) + plans
 packages/shared/         one Y.Doc schema: overlays, scopes, claims (with plans), rolling bus + ledger archive,
                          workers; messages.ts (every message kind: format/audience/wake/priority), views.ts
-                         (participant/claim/area/worker lines shared by web and tools), areas.ts, identity
+                         (participant/claim/area/worker lines shared by web and tools), areas.ts, identity;
+                         src/parsed.ts holds parser output shared by the indexer and consumers
 packages/server/         y-websocket server: GitHub device login + OIDC (auth.ts), admission (admit.ts),
                          open/close/list repos, GitHub PR proxy, read-only view keys, doc/message caps,
                          audit, LevelDB docs + File/Pg store (store.ts)
@@ -77,10 +78,12 @@ packages/roomd/          push-only daemon: clone -> my overlay; base tracking; s
 packages/room-mcp/       src/tools/* (one module per concern: join, scope, claims, messaging, files,
                          workers, share, prs; index.ts assembles DEFS), registry.ts (a process holds several
                          rooms), config.ts (arg > env > remembered > default), session.ts, workers.ts,
-                         bridge.ts (lead in two rooms), conflicts.ts, hooks-bridge.ts, prs.ts, graph-index.ts
+                         bridge.ts (lead in two rooms), conflicts.ts, hooks-bridge.ts, prs.ts, graph-index.ts;
+                         src/parse/ (engine.ts, spec.ts, index.ts, languages/*) is the tree-sitter indexer
 packages/agent/          roomagent: on-duty Codex thread fed by chat + interrupts/addressed notifies
 packages/web/            read-only room view: participants, overlays with claim gutters, feed, network
-plugins/room/            Codex AND Claude Code plugin (both manifests): skills, hooks, bundled MCP server + web/
+plugins/room/            Codex AND Claude Code plugin (both manifests): skills, hooks, bundled MCP server + web/;
+                         server/grammars/ contains the shipped tree-sitter grammars
 examples/demo-repo/      tiny Python service used in the demo (uv)
 scripts/demo.sh          server + shared origin + two clones on one machine
 scripts/say.mts          post a message into a person's agent chat and watch the room
@@ -99,7 +102,8 @@ Hook definitions (`plugins/room/hooks.json`, `plugins/room/hooks/claude.json` â€
 - `env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test` runs every package's vitest suite
   (some suites listen on loopback; inherited ROOM_* variables change identity-sensitive tests).
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web
-  (the bundle and `plugins/room/web` are committed). Installed plugins copy the bundle: reinstall
+  (the bundle, `plugins/room/web` and tree-sitter grammars are committed; the build copies the
+  grammars into `plugins/room/server/grammars`). Installed plugins copy the bundle: reinstall
   `room@room` on both hosts after a rebuild. `node scripts/build-plugin.mjs --skip-web` rebuilds
   only the server bundle (for sandboxes that cannot build the web view); never commit from it.
 - Tool descriptions are how a human's plain words reach the right tool. Keep the routing words

@@ -32,7 +32,8 @@ frontier (the graph cap and watcher cost stop mattering); path-only sharing is t
 tier two; per-directory access control becomes possible because text is exchanged by scope, not
 broadcast; the browser loads the facts tier instantly and fetches text per opened file.
 
-**Does not solve:** name-based symbol matching (needs import resolution) and the enterprise
+**Does not solve:** name-based symbol matching (now narrowed by imports for common names, but
+still without type resolution) and the enterprise
 list. **Build order:** patches against a base, then a room per repository, then scope-driven
 watching and indexing.
 
@@ -84,10 +85,12 @@ the server, not redesigning Room.
    and browser tab downloads and keeps all of it. Fix: a small index document everyone syncs
    (presence, scopes, claims, messages, file list with hashes and sizes) and file contents
    fetched on demand. This also enables path-only sharing and per-directory access control.
-3. **The symbol graph is name-based and capped at 3,000 files.** A use of `total` links to every
-   file defining a `total`; in a large codebase that makes contract notices noisy. Fix: resolve
-   imports (tree-sitter or a language server), or read an existing index (SCIP), and scope the
-   index to the declared area instead of the whole repo.
+3. ~~**The symbol graph only understands Python and JS/TS.**~~ **Done in 0.10.0:** the MCP
+   indexer uses tree-sitter across the supported language set. A name defined in more than a
+   handful of files (currently 5, held in a named constant) is narrowed with imports. The graph
+   is still name-based and capped at 3,000 files: there is no type resolution, and method calls
+   are matched by method name. A large repository can still need an existing index such as SCIP
+   and an index scoped to the declared area rather than the whole repo.
 
 ## Sharing rules (smaller, can ship before the structural work)
 
