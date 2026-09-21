@@ -126,7 +126,7 @@ describe('automatic conflict notices', () => {
       const watcher = watcherFor(room, { coLocated: () => colocated, writeIntent: () => undefined })
       room.setOverlay(me.name, 'a.txt', 'mine\n'); await watcher.flush()
       expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(colocated ? 0 : 2)
-      expect(room.messages().filter(m => m.type === 'note')).toHaveLength(colocated ? 0 : 1)
+      expect(room.messages().filter(m => m.type === 'merge-conflict')).toHaveLength(colocated ? 0 : 1)
       watcher.stop()
     }
   })
@@ -192,6 +192,7 @@ describe('automatic conflict notices', () => {
   it('an edit I have claimed myself is not a conflict', async () => {
     const t = setup()
     t.other.addClaim({ path: 'app.py', from: 1, to: 2, by: 'Kieran', byKind: 'agent', intent: 'validate' })
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'app', summary: 'near app', paths: ['app.py'] })
     await t.tools.call('room_claim', { path: 'app.py', from: 4, to: 5, intent: 'b' })
     t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
     await t.tools.flushConflicts()
@@ -205,9 +206,10 @@ describe('automatic conflict notices', () => {
     await t.tools.flushConflicts()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 33'))
     await t.tools.flushConflicts()
-    const notes = () => t.room.messages().filter(m => m.type === 'note' && m.from === 'room')
+    const notes = () => t.room.messages().filter(m => (m.type === 'note' || m.type === 'merge-conflict') && m.from === 'room')
     expect(notes()).toHaveLength(1)
-    expect(notes()[0].type === 'note' && notes()[0].text).toContain("your app.py and Kieran's now conflict around line 5; room_preview_merge(Kieran)")
+    expect(shouldWakeOnMsg(me, notes()[0])).toMatchObject({ wake: true, mustAnswer: true })
+    expect(notes()[0].type === 'merge-conflict' && notes()[0].text).toContain("your app.py and Kieran's now conflict around line 5; room_preview_merge(Kieran)")
     // a further change while still conflicting says nothing new
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 34'))
     await t.tools.flushConflicts()
@@ -243,7 +245,7 @@ describe('automatic conflict notices', () => {
     room.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 35'))
     await watcher.flush()
     expect(mergeReads).toBe(1)
-    expect(room.messages().some(m => m.type === 'note' && m.text.includes('now conflict'))).toBe(true)
+    expect(room.messages().some(m => m.type === 'merge-conflict' && m.text.includes('now conflict'))).toBe(true)
     watcher.stop()
   })
 

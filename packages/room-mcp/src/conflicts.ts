@@ -10,7 +10,7 @@ import { bareSymbol, claimsOverlap, displayName } from '@room/shared'
  */
 import { structuredPatch } from 'diff'
 import { createHash } from 'node:crypto'
-import type { Claim, ConflictMsg, ContractMsg, GraphSnapshot, Identity, NoteMsg, RoomDoc } from '@room/shared'
+import type { Claim, ConflictMsg, MergeConflictMsg, ContractMsg, GraphSnapshot, Identity, NoteMsg, RoomDoc } from '@room/shared'
 import { gitMergeFile } from './merge.js'
 
 export const ROOM: Identity = { name: 'room', kind: 'agent' }
@@ -286,7 +286,7 @@ export class ConflictWatcher {
     const was = this.conflicting.has(key)
     if (res.status === 'conflict' && !was) {
       this.conflicting.add(key)
-      this.d.room.post<NoteMsg>(ROOM, { type: 'note', to: this.d.me.name, priority: 'notify',
+      this.d.room.post<MergeConflictMsg>(ROOM, { type: 'merge-conflict', path: p, to: this.d.me.name,
         text: `your ${p} and ${person}'s now conflict around line${res.lines.length === 1 ? '' : 's'} ${res.lines.join(', ')}; room_preview_merge(${person}) for detail` })
       this.d.log?.(`preview: ${p} conflicts with ${person}'s at ${res.lines.join(', ')}`)
     } else if (res.status !== 'conflict' && was) {

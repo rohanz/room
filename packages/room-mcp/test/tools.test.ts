@@ -156,7 +156,7 @@ describe('session gating', () => {
     session.provider.wsconnected = false
     expect(await tools.call('room_state', {})).not.toContain('OFFLINE')
     clock += 2001
-    expect(await tools.call('room_state', {})).toMatch(/^OFFLINE: not connected to ws:\/\/x since .*; showing the last known state in r\nroom:/)
+    expect(await tools.call('room_state', {})).toMatch(/OFFLINE: not connected to ws:\/\/x since .*; showing the last known state in r\nroom:/)
     expect(await tools.call('room_send', { type: 'note', text: 'queued' })).toContain('offline: queued/not delivered')
     expect(await tools.call('room_wait', { timeoutMs: 100 })).toContain('offline: queued/not delivered')
   })
@@ -169,8 +169,8 @@ describe('session gating', () => {
     expect(out).toContain('browser view: http://x')
     expect(out).toContain('alone here; the room stays quiet until someone joins')
     expect(out).not.toContain('next: room_scope')
-    expect(out.split('\n')).toHaveLength(4)
-    expect(await t.tools.call('room_join', {})).toMatch(/^room: r /)
+    expect(await t.tools.call('room_join', {})).toContain('room: r —')
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'x' })
     expect(await t.tools.call('room_leave', {})).toBe('left r; released 1 claim(s)')
     expect(t.room.openClaims()).toEqual([])
@@ -204,6 +204,7 @@ describe('session gating', () => {
     expect(t.room.openClaims()).toEqual([])
     expect(t.room.messages().filter(m => m.type === 'note')).toMatchObject([{ priority: 'fyi', text: 'Rohan released 1 claim(s)' }])
     await t.tools.call('room_scope', { area: 'x', summary: 'y', paths: ['app.py'] })
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'z' })
     await t.tools.shutdown()
     expect(t.session).toBeNull()
@@ -214,6 +215,7 @@ describe('session gating', () => {
   it('room_done releases, clears scope, posts a done note, keeps the session', async () => {
     const t = setup()
     await t.tools.call('room_scope', { area: 'api', summary: 's', paths: ['app.py'] })
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'x' })
     const out = await t.tools.call('room_done', { summary: 'validation added, 4 tests pass' })
     expect(out).toContain('marked done (api); released 1 claim(s)')
@@ -274,8 +276,8 @@ describe('session gating', () => {
     } finally { rmSync(file, { force: true }) }
   })
 
-  it('lists the twenty-three tools', () => {
-    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss', 'room_collect'])
+  it('lists the twenty advertised tools', () => {
+    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect'])
   })
 })
 
@@ -330,12 +332,12 @@ describe('reading', () => {
     expect(await t.tools.call('room_read', { path: 'nope.py' })).toMatch(/^error:/)
   })
 
-  it('room_diff is against base, per person', async () => {
+  it('room_read(diff) is against base, per person', async () => {
     const t = setup()
-    const d = await t.tools.call('room_diff', { path: 'app.py' })
+    const d = await t.tools.call('room_read', { diff: true, path: 'app.py' })
     expect(d).toContain('-    return 2\n')
     expect(d).toContain('+    return 22')
-    expect(await t.tools.call('room_diff', { person: 'Kieran' })).toBe('Kieran has no uncommitted changes')
+    expect(await t.tools.call('room_read', { diff: true, person: 'Kieran' })).toBe('Kieran has no uncommitted changes')
   })
 })
 
@@ -354,6 +356,7 @@ describe('scope, claims, plans, ledger', () => {
   it('a claim with plans notifies whoever uses the symbol; release reports unfulfilled plans', async () => {
     const t = setup()
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'rename validate', plans: [{ kind: 'rename', symbol: 'validate', detail: 'verify' }] })
     expect(out).toMatch(/claimed c_/)
     expect(out).toContain("notified Kieran's agent (session.py uses validate)")
@@ -368,6 +371,7 @@ describe('scope, claims, plans, ledger', () => {
   it('overlapping claim posts a conflict addressed to the other party, which shows in their inbox logic', async () => {
     const t = setup()
     t.other.addClaim({ path: 'app.py', from: 4, to: 5, by: 'Kieran', byKind: 'agent', intent: 'fix b' })
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     const out = await t.tools.call('room_claim', { path: 'app.py', from: 5, to: 5, intent: 'also b' })
     expect(out).toContain('CONFLICT: overlaps')
     const c = t.room.messages().find(m => m.type === 'conflict')
@@ -392,6 +396,7 @@ describe('graph', () => {
     expect(sym).toContain('used in 1 file(s): session.py (Kieran)')
     const byPath = await t.tools.call('room_impact', { path: 'session.py' })
     expect(byPath).toContain('validate from app.py')
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     const claim = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate', detail: 'verify' }] })
     expect(claim).toContain('impact: validate is used in 1 file(s): session.py (Kieran)')
     // Kieran's view: he is waiting on Rohan's rename because session.py uses validate.
@@ -410,6 +415,7 @@ describe('concurrency', () => {
     const t = setup()
     await t.tools.call('room_state', {}) // attaches the claims observer
     // Kieran's claim arrives from the other doc after Rohan's was made (neither saw the other pre-insert).
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 3, intent: 'mine' })
     await new Promise(r => setTimeout(r, 5)) // ids are time-ordered; the earlier (smaller) id is the one that reports
     t.other.addClaim({ path: 'app.py', from: 2, to: 2, by: 'Kieran', byKind: 'agent', intent: 'theirs' })
@@ -439,8 +445,10 @@ describe('concurrency', () => {
 describe('claim by symbol and read receipts', () => {
   it('claims a function by name, resolving its range from my live text', async () => {
     const t = setup()
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     const out = await t.tools.call('room_claim', { path: 'app.py', symbol: 'b', intent: 'fix' })
     expect(out).toMatch(/app\.py:4-5 · b: fix/)
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     expect(await t.tools.call('room_claim', { path: 'app.py', symbol: 'zzz', intent: 'x' })).toMatch(/could not find a definition of zzz/)
   })
   it('records which messages an agent was shown, and marks copies with copyOf', async () => {
@@ -460,11 +468,13 @@ describe('plan changes', () => {
   it('a released-undone plan is cancelled and routed to whoever was shown it; a re-declared plan is superseded', async () => {
     const t = setup()
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 's', paths: ['session.py'] })
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     await t.tools.call('room_claim', { path: 'app.py', symbol: 'validate', intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate', detail: 'verify' }] })
     const claim = t.room.openClaims()[0]
     expect(claim.msgId).toBeTruthy()
-    expect(t.room.dependentsOf(claim.msgId!)).toEqual(['Kieran']) // routed copy
+    expect(t.room.dependentsOf(claim.msgId!)).toEqual(['Kieran', 'Nearby']) // routed copies
     // Rohan changes his mind: a new claim with a different plan on the same symbol supersedes the old one.
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'rename differently', plans: [{ kind: 'rename', symbol: 'validate', detail: 'check' }] })
     expect(out).not.toContain('plan superseded:')
     const sup = t.room.messages().filter(m => m.type === 'plan' && m.status === 'superseded')
@@ -505,8 +515,8 @@ describe('inbox', () => {
     t.other.post(k, { type: 'question', text: 'are you changing b?', to: 'Rohan' } as never)
     t.other.post(k, { type: 'note', text: 'urgent', to: 'Rohan', priority: 'interrupt' } as never)
     const out = await t.tools.call('room_state', {})
-    expect(out.startsWith('[inbox 2]\n  interrupt')).toBe(true)
-    const block = out.split('\n\n')[0]
+    expect(out).toMatch(/\[inbox 2\]\n  \[.*?\] \[interrupt\]/)
+    const block = out.slice(out.indexOf('[inbox 2]')).split('\n\n')[0]
     expect(block).toContain('are you changing b?')
     expect(block).not.toContain('broadcast fyi')
     expect((await t.tools.call('room_state', {})).startsWith('[inbox')).toBe(false)
@@ -546,7 +556,7 @@ describe('wait', () => {
       const p3 = t.tools.call('room_wait', { timeoutMs: 2000 })
       await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe('waiting'))
       t.other.post(k, { type: 'note', text: 'stop', to: 'Rohan', priority: 'interrupt' } as never)
-      expect(await p3).toContain('interrupt:')
+      expect(await p3).toContain('[interrupt]')
 
       expect(await t.tools.call('room_wait', { timeoutMs: 30 })).toContain('timeout after 30ms')
     } finally { peer.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
@@ -665,14 +675,16 @@ describe('merge preview scratch tree', () => {
 })
 
  describe('quiet room state and directory claims', () => {
-   it('claims a whole directory without a range and reports overlap in room_who', async () => {
+   it('claims a whole directory without a range and reports overlap in room_state(path)', async () => {
      const t = setup()
      try {
+       t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
        const out = await t.tools.call('room_claim', { path: 'src/', intent: 'own source' })
        expect(out).toContain('claimed')
        expect(out).not.toContain('error:')
-       expect(await t.tools.call('room_who', { path: 'src/a.ts' })).toContain('own source')
+       expect(await t.tools.call('room_state', { path: 'src/a.ts' })).toContain('own source')
        t.other.addClaim({ by: 'Ada', byKind: 'agent', path: 'src/nested/b.ts', from: 10, to: 20, intent: 'other work' })
+       t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
        expect(await t.tools.call('room_claim', { path: 'src/', intent: 'overlap' })).toContain('CONFLICT')
      } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
    })
@@ -689,7 +701,7 @@ describe('merge preview scratch tree', () => {
        expect(compact).toContain('overlapping unique claim')
        expect(compact).toContain('Other: 100 claim(s) · unrelated/')
        expect(compact).not.toContain('unrelated claim detail long')
-       expect(compact).toContain('room_who')
+       expect(compact).toContain('room_state path=')
        expect(compact.length).toBeLessThan(8100)
        for (let i = 0; i < 10; i++) t.room.post<NoteMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'note', text: 'long history '.repeat(200) })
        const bounded = await t.tools.call('room_state', {})
@@ -712,3 +724,55 @@ describe('merge preview scratch tree', () => {
      expect(state.startsWith('[inbox')).toBe(false)
    } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
  })
+
+it('does not record a claim for a path nobody else is near', async () => {
+  const t = setup()
+  try {
+    const before = t.room.messages().length
+    expect(await t.tools.call('room_claim', { path: 'alone.py', intent: 'edit', from: 1, to: 1 })).toBe('alone.py: no claim needed; nobody else is near this path')
+    expect(t.room.openClaims()).toHaveLength(0)
+    expect(t.room.messages()).toHaveLength(before)
+  } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+})
+
+it('states local sharing first and exposes the browser link only on request', async () => {
+  const t = setup()
+  const s = t.session!
+  s.local = {} as Session['local']
+  try {
+    expect(await t.tools.call('room_state', {})).toMatch(/^local: nothing leaves this machine\n/)
+    expect(await t.tools.call('room_state', {})).not.toContain('browser view:')
+    expect(await t.tools.call('room_state', { path: 'app.py', link: true })).toContain('browser view:')
+  } finally { delete s.local; await t.tools.shutdown(); s.awareness.destroy() }
+})
+
+it('returns a wait-ending answer once and marks it read', async () => {
+  const t = setup()
+  try {
+    const question = t.room.post({ name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'Kieran', text: 'ready?' })
+    const answer = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', to: 'Rohan', inReplyTo: question.id, text: 'uniquely ready' })
+    const out = await t.tools.call('room_wait', { questionId: question.id })
+    expect(out.match(/uniquely ready/g)).toHaveLength(1)
+    expect(out.match(/\[notify\]/g)).toHaveLength(1)
+    expect(out).not.toContain('call room_state')
+    expect(t.room.seen('Rohan').has(answer.id)).toBe(true)
+  } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+})
+
+it('omits caches and Room files from preview omissions but keeps requested-artifact candidates', async () => {
+  const t = setup()
+  const ignored = ['.venv', '__pycache__', '.room']
+  try {
+    writeFileSync(join(dir, '.gitignore'), '.venv/\n__pycache__/\n.room/\n.room.json\nartifact.bin\n')
+    for (const name of ignored) { mkdirSync(join(dir, name), { recursive: true }); writeFileSync(join(dir, name, 'cache'), 'cached') }
+    writeFileSync(join(dir, '.room.json'), '{}')
+    writeFileSync(join(dir, 'artifact.bin'), 'artifact')
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED)
+    const result = await t.tools.call('room_preview_merge', { person: 'Kieran' })
+    expect(result).toContain('NOT previewed (gitignored, Rohan): artifact.bin')
+    for (const name of [...ignored, '.room.json']) expect(result).not.toContain(name)
+  } finally {
+    for (const name of [...ignored, '.room.json', 'artifact.bin', '.gitignore']) rmSync(join(dir, name), { recursive: true, force: true })
+    await t.tools.shutdown(); t.session?.awareness.destroy()
+  }
+})

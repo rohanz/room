@@ -8,18 +8,18 @@ const WAIT_DEFAULT = 30_000
 const WAIT_MAX = 120_000
 
 export const defs: ToolDef[] = [
-  { name: 'room_send', annotations: RW, description: 'Post to the bus. changed: paths + summary (+ symbols renamed/changed, which notifies whoever uses them). question: to a person\'s agent. answer: inReplyTo a question id. note: broadcast fyi.',
+  { name: 'room_send', annotations: RW, description: 'Ask an agent (to), answer (inReplyTo), or post a note. Changes are detected automatically.',
     inputSchema: { type: 'object', properties: {
       type: { type: 'string', enum: ['changed', 'question', 'answer', 'note'] },
-      to: str('recipient person name (their agent); empty = broadcast'),
+      to: str('recipient; omit to broadcast'),
       text: str('message text / change summary'),
       paths: strs('paths touched (changed)'),
-      symbols: strs('symbols renamed or whose signature changed (changed)'),
+      symbols: strs('changed symbols'),
       inReplyTo: str('question id (answer)'),
-      priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'override; defaults are usually right' },
+      priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'urgency override' },
     }, required: ['type', 'text'] } },
-  { name: 'room_wait', annotations: RO, description: 'Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). Returns what happened. Then call room_state.',
-    inputSchema: { type: 'object', properties: { claimId: str('wait for this claim to be released'), questionId: str('wait for an answer to this question'), timeoutMs: int('default 30000, max 120000') } } }
+  { name: 'room_wait', annotations: RO, description: 'Wait for an answer, claim release, worker completion or interrupt; returns the event or timeout.',
+    inputSchema: { type: 'object', properties: { claimId: str('claim id'), questionId: str('question id'), timeoutMs: int('default 30000, max 120000') } } }
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -43,6 +43,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const verb = retired || exited ? 'finished' : `reported ${worker!.status}`
       return { text: `${name} ${verb}${ago} and will not answer; its summary: ${summary}`, terminal: true }
     }
+    if (presences(s).some(p => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken; it will see this at its next turn`, terminal: false }
     if (present || worker) return undefined
     const known = new Set([
       s.me.name, ...presences(s).map(p => p.user.name), ...s.room.colors.keys(), ...s.room.scopes.keys(), ...s.room.overlays.keys(), ...s.room.deleted.keys(),
@@ -119,22 +120,25 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`
       const qRoom = (questionId && rooms.holdingQuestion(questionId, s)) || s
       const answered = (id: string) => qRoom.room.messages().find(m => messageEndsWait(m, { questionId: id, me: qRoom.me.name, answersOnly: true }))
-      if (questionId) { const an = answered(questionId); if (an) return `answered: ${formatMsg(an)}` }
+      const received = (x: Session, m: Msg) => { seen.add(m.id); x.room.markSeen(x.me.name, [m.id]); state.scheduleInboxWrite() }
+      if (questionId) { const an = answered(questionId); if (an) { received(qRoom, an); return `answered: ${formatMsg(an)}` } }
       if (questionId) { const notice = unavailableQuestion(qRoom, questionId); if (notice) return notice }
       const waitResult = (x: Session, m: Msg, workersRoom = false): string | undefined => {
         if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
+          received(x, m)
           if (m.type === 'answer') return `answered: ${formatMsg(m)}`
           if (m.type === 'done') return `worker done: ${formatMsg(m)}`
+          if (m.type === 'merge-conflict') return formatMsg(m)
           return `${workersRoom ? 'question from a worker' : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`
         }
-        if (m.priority === 'interrupt' && forMe(x, m)) return `interrupt${workersRoom ? ' (workers room)' : ''}: ${formatMsg(m)}`
+        if (m.priority === 'interrupt' && forMe(x, m)) { received(x, m); return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}` }
       }
       for (const x of [s, ...rooms.all().filter(x => x !== s)]) {
         const workersRoom = x !== s
         for (const m of x.room.messages()) {
           if (seen.has(m.id) || x.room.seen(x.me.name).has(m.id)) continue
           const ended = waitResult(x, m, workersRoom)
-          if (ended) return `${ended}\ncall room_state before continuing.`
+          if (ended) return ended
         }
       }
       if (offline(s)) return 'offline: queued/not delivered; room_wait cannot observe new messages until reconnected'
@@ -152,28 +156,26 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
             const ended = waitResult(ws, m, true)
             if (ended) return finish(ended)
-            if (m.priority === 'interrupt' && forMe(ws, m)) return finish(`interrupt (workers room): ${formatMsg(m)}`)
           }
         }
         const timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap(room => myWorkers(room)).filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
           finish(running.length
             ? `nothing yet; ${running.length} worker${running.length === 1 ? '' : 's'} still running (${running.map(w => w.tag).join(', ')}); nothing needs you`
-            : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Tell your human; proceed only where you do not depend on it.`)
+            : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Continue independent work or wait again.`)
         }, timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
             const ended = waitResult(s, m)
             if (ended) return finish(ended)
-            if (m.priority === 'interrupt' && forMe(s, m)) return finish(`interrupt: ${formatMsg(m)}`)
           }
         }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)
         if (questionId) { qRoom.room.doc.on('update', onRecipient); onRecipient() }
       })
       setPresence(s, { status: 'idle' })
-      return `${result}\ncall room_state before continuing.`
+      return result
     }
   }
   return handlers
@@ -203,9 +205,9 @@ export function install(state: HandlerState): void {
       if (!fresh.length) return ''
       const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
       fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at)
-      for (const m of fresh) log(`inbox → ${s.me.name}: [${m.priority}] ${formatMsg(m)}`)
+      for (const m of fresh) log(`inbox → ${s.me.name}: ${formatMsg(m)}`)
       scheduleInboxWrite()
-      return `[inbox ${fresh.length}]\n${fresh.map(m => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
+      return `[inbox ${fresh.length}]\n${fresh.map(m => `  [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
     }
   const affected = async (s: Session, paths: string[], symbols: string[]): Promise<Map<string, string>> => {
       const out = new Map<string, string>()

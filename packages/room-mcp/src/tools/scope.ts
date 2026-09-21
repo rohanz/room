@@ -1,3 +1,4 @@
+import { sharingDescription } from '../config.js'
 import { offlineSince } from '../connection.js'
 import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
@@ -10,16 +11,34 @@ import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef }
 
 
 export const defs: ToolDef[] = [
-  { name: 'room_scope', annotations: RW, description: 'Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. Do this before editing. Replaces your previous scope. The reply ends with the area ledger: what others changed there and their open plans.',
+  { name: 'room_scope', annotations: RW, description: 'Declare your task and paths once when working with others.',
     inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('files or directories you expect to touch') }, required: ['area', 'summary', 'paths'] } },
-  { name: 'room_state', annotations: RO, description: 'Room overview: who is here and on what, per-area activity, open claims with plans, files changed by whom, recent bus. Filtered to the areas you are in (your scope paths + changed paths; areas come from CODEOWNERS or top-level dirs) with one summary line for the rest; all=true shows everything. Call before editing and after any wait.',
-    inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'show every area, not just yours' } } } },
-  { name: 'room_who', annotations: RO, description: 'Who holds claims in a region of a file, whose scope covers it, and who has changed the file.',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), from: int('first line, default 1'), to: int('last line, default EOF') }, required: ['path'] } }
+  { name: 'room_state', annotations: RO, description: 'Show sharing, participants and overlapping work. Use path for file ownership, link for the browser URL.',
+    inputSchema: { type: 'object', properties: { all: { type: 'boolean' }, path: str('file ownership'), from: int('first line'), to: int('last line'), link: { type: 'boolean' } } } },
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines } = state
+  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines, shareOf } = state
+  const pathState: Handler = async a => {
+      const s = S()
+      if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
+      const p = a.path
+      const t = await liveText(s, p, s.me.name)
+      const n = t ? lines(t) : 1
+      const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n)
+      const out: string[] = []
+      // Workers in the local workers room hold their own claims and scopes there: show both rooms.
+      const inRooms = [s, ...rooms.all().filter(x => x !== s)]
+      const tagged = (x: Session, line: string) => x === s ? line : `${line} (workers room)`
+      const who = new Set<string>()
+      for (const x of inRooms) {
+        for (const c of x.room.openClaims()) if (claimsOverlap(c, { path: p, ...r })) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`))
+        for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
+        for (const n of x.room.whoChanged(p)) if (n !== s.me.name) who.add(n)
+      }
+      if (who.size) out.push(`uncommitted changes by: ${Array.from(who).sort().join(', ')}`)
+      return out.length ? `${p}:${r.from}-${r.to}\n${out.join('\n')}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`
+  }
   const handlers: Record<string, Handler> = {
     async room_scope(a) {
       const s = S()
@@ -43,7 +62,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = S()
       await loadAreas(s)
       const m = s.room.meta
-      const out: string[] = []
+      const out: string[] = [s.local ? 'local: nothing leaves this machine' : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${new Set(presences(s).filter(p => p.user.name !== s.me.name && !isPrName(p.user.name)).map(p => p.user.owner ?? p.user.name)).size} people`]
+      if (typeof a.path === 'string' && a.path) { out.push(await pathState(a)); if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`); return out.join('\n') }
       const wsRoom = rooms.workers()
       const since = offlineSince(s, now)
       if (since !== undefined) {
@@ -89,7 +109,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`  - ${who}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)}${areaSummary ? ` · ${areaSummary}` : ''} · ${ago}`)
       }
       if (hidden.length) out.push(`  ${hidden.length} others: ${hidden.join(', ')} (all:true for detail)`)
-      out.push(`browser view: ${await refreshBrowserUrl(s)}`)
+      if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       const areaScopes = all ? s.room.allScopes() : s.room.allScopes().filter(sc => inView(sc.by))
       const summary = s.room.areaSummary().filter(l => areaScopes.some(sc => l.startsWith(`${sc.area} (`)))
       if (summary.length) { out.push('activity by scope area:'); for (const l of summary) out.push(`  - ${l}`) }
@@ -115,6 +135,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`uncommitted changes${all ? '' : ' in your areas'}${hiddenChanged ? ` (${hiddenChanged} file${hiddenChanged === 1 ? '' : 's'} elsewhere)` : ''}:`)
       if (!changed.size) out.push('  (none)')
       for (const [person, ps2] of changed) out.push(`  - ${person}: ${ps2.join(', ')}`)
+      const skipped = s.daemon.skipped?.() ?? { size: [], budget: [] }
+      if (skipped.size.length) out.push(`  ${skipped.size.length} of your changed files are not shared: too large`)
+      if (skipped.budget.length) out.push(`  ${skipped.budget.length} of your changed files are not shared: sharing budget exceeded`)
       const waits = await waitingOn(s)
       if (waits.length) { out.push('waiting on (others\' planned changes to symbols you use):'); out.push(...waits) }
       const msgs = s.room.lastMessages(all ? 10 : 30)
@@ -132,26 +155,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       return a.all === true ? out.join('\n') : compactState(out, summarizedClaims)
     },
-    async room_who(a) {
-      const s = S()
-      if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
-      const p = a.path
-      const t = await liveText(s, p, s.me.name)
-      const n = t ? lines(t) : 1
-      const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n)
-      const out: string[] = []
-      // Workers in the local workers room hold their own claims and scopes there: show both rooms.
-      const inRooms = [s, ...rooms.all().filter(x => x !== s)]
-      const tagged = (x: Session, line: string) => x === s ? line : `${line} (workers room)`
-      const who = new Set<string>()
-      for (const x of inRooms) {
-        for (const c of x.room.openClaims()) if (claimsOverlap(c, { path: p, ...r })) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`))
-        for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
-        for (const n of x.room.whoChanged(p)) if (n !== s.me.name) who.add(n)
-      }
-      if (who.size) out.push(`uncommitted changes by: ${Array.from(who).sort().join(', ')}`)
-      return out.length ? `${p}:${r.from}-${r.to}\n${out.join('\n')}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`
-    }
+
   }
   return handlers
 }
@@ -248,6 +252,6 @@ function compactState(lines: string[], summarizedClaims: number): string {
     if (length + line.length + 1 > max) { omitted++; continue }
     kept.push(line); length += line.length + 1
   }
-  if (omitted || summarizedClaims) kept.push(`omitted: ${summarizedClaims} unrelated claim details, ${omitted} state lines; room_state all=true for everything, room_who path=... for a path.`)
+  if (omitted || summarizedClaims) kept.push(`omitted: ${summarizedClaims} unrelated claim details, ${omitted} state lines; room_state all=true for everything, room_state path=... for a path.`)
   return kept.join('\n')
 }

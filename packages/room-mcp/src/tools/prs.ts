@@ -5,8 +5,8 @@ import type { Session } from '../session.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_pr_note', annotations: { ...RW, openWorldHint: true }, description: 'Post (or update) ONE comment on a GitHub pull request with the branch\'s room story: who declared what, claims with plans and whether they were fulfilled, questions and answers, merge previews that passed, in bus order. Default PR: the open one whose head is this branch. The comment is authored by the logged-in user via the server; the GitHub token never leaves the server.',
-    inputSchema: { type: 'object', properties: { number: int('PR number (default: the open PR whose head is this branch)') } } }
+  { name: 'room_pr_note', annotations: { ...RW, openWorldHint: true }, description: 'Post or update the room ledger on a GitHub PR; defaults to this branch’s open PR.',
+    inputSchema: { type: 'object', properties: { number: int('PR number') } } }
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {

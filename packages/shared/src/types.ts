@@ -68,7 +68,7 @@ export interface Scope {
 }
 
 export type Priority = 'fyi' | 'notify' | 'interrupt'
-export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'contract' | 'note' | 'scope' | 'base' | 'plan' | 'done'
+export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'merge-conflict' | 'contract' | 'note' | 'scope' | 'base' | 'plan' | 'done'
 export type MsgType = keyof MessageMap & string
 
 export interface MsgBase {
@@ -90,6 +90,7 @@ export interface QuestionMsg extends MsgBase { type: 'question'; text: string }
 export interface AnswerMsg extends MsgBase { type: 'answer'; inReplyTo: string; text: string }
 export interface ConflictMsg extends MsgBase { type: 'conflict'; claimId: string; otherClaimId: string; path: string; text: string }
 /** An observed foreign contract edit that a file in the recipient's work references. */
+export interface MergeConflictMsg extends MsgBase { type: 'merge-conflict'; path: string; text: string }
 export interface ContractMsg extends MsgBase { type: 'contract'; path: string; symbol: string; text: string }
 export interface NoteMsg extends MsgBase { type: 'note'; text: string }
 export interface ScopeMsg extends MsgBase { type: 'scope'; area: string; summary: string; paths: string[] }
@@ -107,6 +108,7 @@ export interface MessageMap {
   question: QuestionMsg
   answer: AnswerMsg
   conflict: ConflictMsg
+  'merge-conflict': MergeConflictMsg
   contract: ContractMsg
   note: NoteMsg
   scope: ScopeMsg
@@ -183,6 +185,8 @@ export interface Cursor {
 
 /** Awareness state published by every client. */
 export interface Presence {
+  /** Session cannot receive an idle wake; messages remain for its next turn. */
+  wakeUnavailable?: boolean
   /** SHA256 of the watched directory realpath; never the path itself. */
   watchedDirectory?: string
   /** Co-located participant publishing this directory; this participant publishes no files. */

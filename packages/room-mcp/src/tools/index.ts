@@ -1,7 +1,9 @@
+import { hookHealthNote } from '../hooks-bridge.js'
+import { hasCompany } from '../company.js'
 import { connectedBefore, trackConnection } from '../connection.js'
 import { NotLoggedIn, type Session } from '../session.js'
 import { createHandlerState, NeedFetch, NotJoined, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
-import { defs as joinDefs, handlers as joinHandlers, install as installJoin } from './join.js'
+import { defs as joinDefs, handlers as joinHandlers, install as installJoin, teamSharingNote } from './join.js'
 import { defs as scopeDefs, handlers as scopeHandlers, install as installScope } from './scope.js'
 import { defs as claimDefs, handlers as claimHandlers, install as installClaims } from './claims.js'
 import { defs as messagingDefs, handlers as messagingHandlers, install as installMessaging } from './messaging.js'
@@ -27,7 +29,7 @@ export interface Tools {
 }
 
 const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...collectDefs, ...prDefs, ...shareDefs]
-const DEF_ORDER = ['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss', 'room_collect']
+const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect']
 export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name === name)!)
 
 export function createTools(ctx: ToolCtx): Tools {
@@ -69,9 +71,11 @@ export function createTools(ctx: ToolCtx): Tools {
         const s2 = ctx.getSession()
         const prefix = moved ? `${moved}\n\n` : ''
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) : ''
+        const sharing = s2 ? await teamSharingNote(s2) : ''
+        const health = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now()) : ''
         const autoTag = s2?.autoTagNote
         if (s2) delete s2.autoTagNote
-        return prefix + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
+        return prefix + (sharing ? sharing + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
       } catch (e) {
         if (e instanceof NotJoined) return 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
         if (e instanceof NotLoggedIn) return `error: ${e.message}`

@@ -12,39 +12,17 @@ import { workerOwnedPaths } from '../workers.js'
 import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_read', annotations: RO, description: 'A file as a person sees it right now: base commit + their uncommitted edits (default: you). With line numbers, claims in the file, and the file ledger (recent changes by others, open plans).',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), person: str('whose live version (default you)') }, required: ['path'] } },
-  { name: 'room_diff', annotations: RO, description: 'Unified diff from the base commit to a person\'s live version, for one path or all their changed paths.',
-    inputSchema: { type: 'object', properties: { path: str('optional path'), person: str('default you') } } },
-  { name: 'room_impact', annotations: RO, description: 'Dependency graph query. symbol: who defines it and which files use it, with who owns those files (scope, claims, uncommitted changes). path: what the file depends on (symbols defined elsewhere) and what depends on it. Use before renaming or changing a signature, and to see what you are waiting on.',
+  { name: 'room_read', annotations: RO, description: 'Read a live file with claims and history. diff=true compares to base; omit path for all diffs.',
+    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), person: str('default you'), diff: { type: 'boolean' } } } },
+  { name: 'room_impact', annotations: RO, description: 'Find symbol consumers or file dependencies before changing an interface.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
-  { name: 'room_preview_merge', annotations: RO, description: 'Would your uncommitted changes and other people\'s combine cleanly? A lead can preview all its workers at once. Merges each listed person\'s live tree in order, three-way against the common base; nothing in any clone is written. Reports per-step clean paths and conflicting hunks with the people involved, then the final combined tree. `person` is a one-person alias for `people`. With `run`, materialises the fully combined tree in a scratch directory and runs that command there (e.g. the tests).',
-    inputSchema: { type: 'object', properties: { people: strs('people to merge in order; omitted means all present participants'), person: str('one-person alias for people'), includeOffline: { type: 'boolean', description: 'with no person/people, also merge offline participants that still have overlays' }, run: str('optional shell command to run in the fully combined tree, e.g. "uv run pytest -q"'), resolve: { type: 'boolean', description: 'when a conflicting region on one side contains the other side\'s lines in order, take the larger side and return the resolved file text so you can write it to your own clone' } } } }
+  { name: 'room_preview_merge', annotations: RO, description: 'Preview combined live changes without editing clones. Optionally run tests in the combined scratch tree.',
+    inputSchema: { type: 'object', properties: { people: strs('participants in merge order; default all'), person: str('one participant'), includeOffline: { type: 'boolean', description: 'include offline overlays' }, run: str('test command'), resolve: { type: 'boolean', description: 'resolve superset conflicts' } } } }
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, rooms, others, presences, withheld, liveText, lines, baseFor, ledgerLines, baseText, shareOf, describeUsers } = state
-  const handlers: Record<string, Handler> = {
-    async room_read(a) {
-      if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
-      const p = a.path
-      const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
-      const s = rooms.holding(person, S()) // a local worker's overlay lives in the workers room, not the team room
-      const held = withheld(s, person, p)
-      if (held) return held
-      const note = diskWorker(s, person) ? ` ${WORKTREE_NOTE}` : ''
-      const t = await liveText(s, p, person)
-      if (t === null) return `${p}: deleted by ${person} (uncommitted)${note}`
-      if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`
-      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== undefined ? ', uncommitted edits' : diskWorker(s, person) ? ', worktree file' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`]
-      const who = s.room.whoChanged(p).filter(x => x !== person)
-      if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(', ')} — room_read with person= to see theirs`)
-      for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
-      out.push(withLineNumbers(t))
-      out.push(...ledgerLines(s, { path: p, limit: 10 }, p))
-      return out.join('\n')
-    },
-    async room_diff(a) {
+  const readDiff: Handler = async a => {
       const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
       const s = rooms.holding(person, S())
       const worker = diskWorker(s, person)
@@ -67,7 +45,29 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const level = shareOf(s, person)
       if (level === 'declared') parts.push(`(${person} shares declared paths only: changes outside their scope are not shared)`)
       return label(parts.length ? parts.join('\n') : `${person} has no uncommitted changes`)
+  }
+  const handlers: Record<string, Handler> = {
+    async room_read(a) {
+      if (a.diff === true) return readDiff(a)
+      if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
+      const p = a.path
+      const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
+      const s = rooms.holding(person, S()) // a local worker's overlay lives in the workers room, not the team room
+      const held = withheld(s, person, p)
+      if (held) return held
+      const note = diskWorker(s, person) ? ` ${WORKTREE_NOTE}` : ''
+      const t = await liveText(s, p, person)
+      if (t === null) return `${p}: deleted by ${person} (uncommitted)${note}`
+      if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`
+      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== undefined ? ', uncommitted edits' : diskWorker(s, person) ? ', worktree file' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`]
+      const who = s.room.whoChanged(p).filter(x => x !== person)
+      if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(', ')} — room_read with person= to see theirs`)
+      for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
+      out.push(withLineNumbers(t))
+      out.push(...ledgerLines(s, { path: p, limit: 10 }, p))
+      return out.join('\n')
     },
+
     async room_impact(a) {
       const s = S()
       if (!s.graph) return 'error: no symbol graph in this session'
@@ -149,7 +149,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const worker = previewWorker(item.session, item.person)
         const dir = worker?.dir ?? (item.person === caller.me.name ? caller.dir : undefined)
         const ignored = dir ? (await git(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
-        if (ignored.length) ignoredNotes.push('NOT previewed (gitignored, ' + item.person + '): ' + ignored.join(', '))
+        const visibleIgnored = ignored.filter(p => !/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/.test(p))
+        if (visibleIgnored.length) ignoredNotes.push('NOT previewed (gitignored, ' + item.person + '): ' + visibleIgnored.join(', '))
         for (const p of item.session.room.changedPaths(item.person)) if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) pathSet.add(p)
         if (dir) {
           for (const p of (await git(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) pathSet.add(p)
