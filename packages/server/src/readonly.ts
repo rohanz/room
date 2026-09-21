@@ -1,11 +1,12 @@
 /**
  * Read-only websocket connections (browser view keys). The y-websocket protocol carries two
  * message types: 0 = sync (sub-types 0 step1 = "send me your state", 1 step2 and 2 update =
- * writes) and 1 = awareness. A viewer may request state and announce presence; anything
- * that would change the document is dropped before the shared-doc handler sees it.
+ * writes) and 1 = awareness. A viewer may request state; document and awareness writes are
+ * dropped before the shared-doc handler sees them.
  */
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
+import * as Y from 'yjs'
 
 const MESSAGE_SYNC = 0
 const SYNC_STEP2 = 1
@@ -22,6 +23,10 @@ export function isWriteMessage(buf: Uint8Array): boolean {
   }
 }
 
+function isAwarenessMessage(buf: Uint8Array): boolean {
+  try { return decoding.readVarUint(decoding.createDecoder(buf)) === MESSAGE_AWARENESS } catch { return true }
+}
+
 function toBytes(data: unknown): Uint8Array {
   if (data instanceof Uint8Array) return data
   if (data instanceof ArrayBuffer) return new Uint8Array(data)
@@ -29,13 +34,19 @@ function toBytes(data: unknown): Uint8Array {
   return new Uint8Array()
 }
 
-interface EmitterLike { emit(event: string | symbol, ...args: unknown[]): boolean }
+interface EmitterLike {
+  emit(event: string | symbol, ...args: unknown[]): boolean
+  once?(event: string | symbol, listener: (...args: unknown[]) => void): unknown
+}
 
-/** Wrap a ws connection so inbound write messages never reach its 'message' listeners. */
+/** Wrap a view connection so inbound document or presence writes never reach its listeners. */
 export function makeReadOnly(conn: EmitterLike, onDrop: () => void): void {
   const emit = conn.emit.bind(conn)
   conn.emit = ((event: string | symbol, ...args: unknown[]) => {
-    if (event === 'message' && isWriteMessage(toBytes(args[0]))) { onDrop(); return false }
+    if (event === 'message') {
+      const buf = toBytes(args[0])
+      if (isWriteMessage(buf) || isAwarenessMessage(buf)) { onDrop(); return false }
+    }
     return emit(event, ...args)
   }) as EmitterLike['emit']
 }
@@ -48,7 +59,7 @@ export function ownsName(name: string, login: string): boolean {
 }
 
 /** Keep owned presence and null (leaving) entries, preserving their IDs, clocks and JSON. */
-export function filterAwareness(buf: Uint8Array, login: string): { buf: Uint8Array | null; stripped: string[] } {
+export function filterAwareness(buf: Uint8Array, login: string, ownedClientIds?: Set<number>, clientOwners?: Map<number, string>): { buf: Uint8Array | null; stripped: string[] } {
   const stripped: string[] = []
   try {
     const d = decoding.createDecoder(buf)
@@ -62,6 +73,14 @@ export function filterAwareness(buf: Uint8Array, login: string): { buf: Uint8Arr
       const raw = decoding.readVarString(inner)
       const state = JSON.parse(raw) as { user?: { name?: unknown; owner?: unknown }; host?: unknown; model?: unknown; effort?: unknown } | null
       const name = state?.user?.name, owner = state?.user?.owner
+      if (state === null && ownedClientIds && !ownedClientIds.has(clientID)) {
+        stripped.push(`(client ${clientID})`)
+        continue
+      }
+      if (state !== null && clientOwners?.has(clientID) && clientOwners.get(clientID) !== login) {
+        stripped.push(`(client ${clientID})`)
+        continue
+      }
       if (state !== null && (typeof name !== 'string' || !ownsName(name, login) || (owner !== undefined && owner !== login))) {
         stripped.push(typeof name === 'string' ? name : '(unnamed)')
         continue
@@ -75,6 +94,10 @@ export function filterAwareness(buf: Uint8Array, login: string): { buf: Uint8Arr
         else delete state[key]
       }
       encoding.writeVarString(entries, JSON.stringify(state))
+      if (ownedClientIds) {
+        if (state === null) { ownedClientIds.delete(clientID); if (clientOwners?.get(clientID) === login) clientOwners.delete(clientID) }
+        else { ownedClientIds.add(clientID); clientOwners?.set(clientID, login) }
+      }
       kept++
     }
     if (!kept) return { buf: null, stripped }
@@ -95,17 +118,180 @@ export function isForeignIdentity(buf: Uint8Array, login: string): boolean {
   return result.buf === null || result.stripped.length > 0
 }
 
-/** Filter inbound presence; the caller rate-limits dropped foreign presence by login. */
-export function bindIdentity(conn: EmitterLike, login: string, onDrop: (login: string, name: string) => void): void {
+/** Filter inbound presence only; this is not document authorship verification. */
+export function bindIdentity(conn: EmitterLike, login: string, onDrop: (login: string, name: string) => void, clientOwners = new Map<number, string>()): void {
   const emit = conn.emit.bind(conn)
+  const ownedClientIds = new Set<number>()
   conn.emit = ((event: string | symbol, ...args: unknown[]) => {
     if (event === 'message') {
-      const result = filterAwareness(toBytes(args[0]), login)
+      const result = filterAwareness(toBytes(args[0]), login, ownedClientIds, clientOwners)
       if (result.buf === null) {
         if (result.stripped.length) onDrop(login, result.stripped[0])
         return false
       }
       args[0] = result.buf
+    }
+    return emit(event, ...args)
+  }) as EmitterLike['emit']
+  conn.once?.('close', () => { for (const id of ownedClientIds) if (clientOwners.get(id) === login) clientOwners.delete(id) })
+}
+
+const PARTICIPANT_MAPS = ['overlays', 'deleted', 'overlayAt', 'scopes', 'graphs', 'colors', 'bases'] as const
+/**
+ * Narrow exceptions for records the current Room clients synthesize: Room-authored notices and
+ * `pr#<n>` scope/metadata records. They are client-authored and are not authorship proof: any
+ * authenticated member can forge them, so ordinary participant speech never belongs here.
+ */
+export const TRUSTED_ROOM_MESSAGE_TYPES = new Set(['conflict', 'merge-conflict', 'contract', 'note'])
+export const TRUSTED_PR_NAME = /^pr#[1-9]\d*$/
+
+function syncUpdate(buf: Uint8Array): Uint8Array | undefined {
+  try {
+    const d = decoding.createDecoder(buf)
+    if (decoding.readVarUint(d) !== MESSAGE_SYNC) return undefined
+    const subtype = decoding.readVarUint(d)
+    if (subtype !== SYNC_STEP2 && subtype !== SYNC_UPDATE) return undefined
+    return decoding.readVarUint8Array(d)
+  } catch { return undefined }
+}
+
+function onlyMapDeletes(event: Y.YEvent<Y.AbstractType<unknown>>): boolean {
+  const keys = event.changes.keys
+  return event.target instanceof Y.Map && keys.size > 0 && [...keys.values()].every(change => change.action === 'delete')
+}
+
+/** One shadow document per room: accepted packets advance it; rejected packets rebuild it from the real doc. */
+export class DocumentIdentityGuard {
+  private source?: Y.Doc
+  private shadow?: Y.Doc
+  private sourceUpdate?: (update: Uint8Array) => void
+  private login?: string
+  private violations: string[] = []
+
+  constructor(private readonly current: () => Y.Doc | undefined) {}
+
+  accept(message: Uint8Array, login: string): { ok: true } | { ok: false; reason: string } {
+    const update = syncUpdate(message)
+    if (!update) return isWriteMessage(message) ? { ok: false, reason: 'malformed Yjs update' } : { ok: true }
+    const source = this.current()
+    if (!source) return { ok: false, reason: 'room document is not ready' }
+    this.prepare(source)
+    const shadow = this.shadow!
+    this.login = login; this.violations = []
+    try { Y.applyUpdate(shadow, update, this) }
+    catch { this.violations.push('malformed Yjs update') }
+    finally { this.login = undefined }
+    if (!this.violations.length) return { ok: true }
+    const reason = this.violations[0]
+    this.reset(source)
+    return { ok: false, reason }
+  }
+
+  private prepare(source: Y.Doc): void {
+    if (this.source === source && this.shadow) return
+    this.reset(source)
+  }
+
+  private reset(source: Y.Doc): void {
+    if (this.source && this.sourceUpdate) this.source.off('update', this.sourceUpdate)
+    this.shadow?.destroy()
+    this.source = source
+    const shadow = this.shadow = new Y.Doc()
+    for (const name of PARTICIPANT_MAPS) {
+      const root = shadow.getMap(name)
+      root.observeDeep(events => this.checkParticipantMap(name, root, events))
+    }
+    const claims = shadow.getMap<Record<string, unknown>>('claims')
+    claims.observe(event => this.checkRecordMap('claim', claims, event, ['by']))
+    const workers = shadow.getMap<Record<string, unknown>>('workers')
+    workers.observe(event => this.checkRecordMap('worker', workers, event, ['name', 'lead']))
+    shadow.getArray<Record<string, unknown>>('bus').observe(event => this.checkMessages(event))
+    shadow.getArray<Record<string, unknown>>('retiredWorkers').observe(event => this.checkRetired(event))
+    shadow.on('afterTransaction', transaction => this.checkDynamicRoots(transaction))
+    Y.applyUpdate(shadow, Y.encodeStateAsUpdate(source))
+    this.sourceUpdate = update => Y.applyUpdate(shadow, update)
+    source.on('update', this.sourceUpdate)
+  }
+
+  private reject(reason: string): void { if (this.login && !this.violations.length) this.violations.push(reason) }
+
+  private checkParticipantMap(name: string, root: Y.Map<unknown>, events: Y.YEvent<Y.AbstractType<unknown>>[]): void {
+    const login = this.login
+    if (!login) return
+    for (const event of events) {
+      if (event.path.length) {
+        const participant = String(event.path[0])
+        if (!ownsName(participant, login) && !onlyMapDeletes(event)) this.reject(`${name} mutation for ${participant}`)
+        continue
+      }
+      for (const [participant, change] of event.changes.keys) {
+        if (change.action === 'delete') continue
+        const trustedPr = name === 'scopes' && TRUSTED_PR_NAME.test(participant)
+        if (!ownsName(participant, login) && !trustedPr) { this.reject(`${name} mutation for ${participant}`); continue }
+        if (name === 'scopes') {
+          const value = root.get(participant) as { by?: unknown } | undefined
+          if (!value || typeof value.by !== 'string' || !(ownsName(value.by, login) || trustedPr && value.by === participant)) this.reject(`scope author ${String(value?.by)}`)
+        }
+      }
+    }
+  }
+
+  private checkRecordMap(kind: string, root: Y.Map<Record<string, unknown>>, event: Y.YMapEvent<Record<string, unknown>>, fields: string[]): void {
+    const login = this.login
+    if (!login) return
+    for (const [id, change] of event.changes.keys) {
+      if (change.action === 'delete') continue
+      const before = change.oldValue as Record<string, unknown> | undefined
+      const after = root.get(id)
+      for (const record of [before, after]) if (record) for (const field of fields) {
+        const identity = record?.[field]
+        if (typeof identity !== 'string' || !ownsName(identity, login)) this.reject(`${kind} ${id} has foreign ${field} ${String(identity)}`)
+      }
+    }
+  }
+
+  private checkMessages(event: Y.YArrayEvent<Record<string, unknown>>): void {
+    const login = this.login
+    if (!login) return
+    for (const part of event.changes.delta) for (const message of part.insert ?? []) {
+      const from = message.from, type = message.type
+      if (typeof from === 'string' && ownsName(from, login)) continue
+      if (from === 'room' && typeof type === 'string' && TRUSTED_ROOM_MESSAGE_TYPES.has(type)) continue
+      this.reject(`message type ${String(type)} has foreign author ${String(from)}`)
+    }
+  }
+
+  private checkRetired(event: Y.YArrayEvent<Record<string, unknown>>): void {
+    const login = this.login
+    if (!login) return
+    for (const part of event.changes.delta) for (const record of part.insert ?? []) {
+      for (const field of ['name', 'lead']) {
+        const identity = record[field]
+        if (typeof identity !== 'string' || !ownsName(identity, login)) this.reject(`retired worker has foreign ${field} ${String(identity)}`)
+      }
+    }
+  }
+
+  private checkDynamicRoots(transaction: Y.Transaction): void {
+    const login = this.login, shadow = this.shadow
+    if (!login || !shadow) return
+    for (const [type, events] of transaction.changedParentTypes) {
+      const root = [...shadow.share.entries()].find(([, value]) => value === type)?.[0]
+      if (!root?.startsWith('seen:')) continue
+      const participant = decodeURIComponent(root.slice(5))
+      if (ownsName(participant, login)) continue
+      if (!(events as Y.YEvent<Y.AbstractType<unknown>>[]).every(onlyMapDeletes)) this.reject(`read receipt mutation for ${participant}`)
+    }
+  }
+}
+
+/** Reject a whole sync update when it adds or changes identity-bearing records outside `login`. */
+export function bindDocumentIdentity(conn: EmitterLike, login: string, guard: DocumentIdentityGuard, onDrop: (login: string, reason: string) => void): void {
+  const emit = conn.emit.bind(conn)
+  conn.emit = ((event: string | symbol, ...args: unknown[]) => {
+    if (event === 'message') {
+      const result = guard.accept(toBytes(args[0]), login)
+      if (!result.ok) { onDrop(login, result.reason); return false }
     }
     return emit(event, ...args)
   }) as EmitterLike['emit']

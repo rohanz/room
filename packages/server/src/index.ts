@@ -25,7 +25,7 @@
  *    rooms; a websocket to a repo nobody opened is refused with 404. Joining a branch of an
  *    opened repo needs no further step. GET /rooms lists the caller's open repos; DELETE /rooms
  *    closes one: live connections are dropped and persisted branch docs deleted.
- *  - Browser view keys (?view=) are read-only: inbound document writes are discarded.
+ *  - Browser view keys (?view=) are read-only: inbound document and awareness writes are discarded.
  * All coordination state lives inside the Y.Doc; room name = URL path.
  */
 import http from 'node:http'
@@ -34,7 +34,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, docs, getPersistence } from '@y/websocket-server/utils'
-import { makeReadOnly, bindIdentity, capDocSize, DocSizeMeter } from './readonly.js'
+import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, DocSizeMeter, DocumentIdentityGuard } from './readonly.js'
 import { docNameOf, roomNameOf, githubRepoOf, repoOf } from './names.js'
 import * as Y from 'yjs'
 import { Auth, FAKE_CLIENT_ID } from './auth.js'
@@ -134,6 +134,7 @@ async function closeRepo(repo: string): Promise<string[]> {
     const doc = docs.get(name)
     if (doc) for (const conn of Array.from(doc.conns.keys()) as { close(code?: number, reason?: string): void }[]) conn.close(4001, 'room closed')
     docs.delete(name)
+    documentGuards.delete(name); awarenessOwners.delete(name)
     try { await ((getPersistence() as { provider?: { clearDocument?(n: string): Promise<void> } } | null)?.provider)?.clearDocument?.(name) } catch (e) { console.log(`close ${name}: could not clear persisted doc: ${e instanceof Error ? e.message : e}`) }
   }
   console.log(`room closed: ${repo} (${names.size} branch room(s))`)
@@ -349,24 +350,43 @@ const refuse = (socket: import('node:stream').Duplex, code: number, why: string,
   socket.destroy()
 }
 const identityLog = new Map<string, number>()
+const documentGuards = new Map<string, DocumentIdentityGuard>()
+const awarenessOwners = new Map<string, Map<number, string>>()
+function documentGuard(roomName: string): DocumentIdentityGuard {
+  let guard = documentGuards.get(roomName)
+  if (!guard) { guard = new DocumentIdentityGuard(() => docs.get(roomName)); documentGuards.set(roomName, guard) }
+  return guard
+}
+function awarenessOwnerMap(roomName: string): Map<number, string> {
+  let owners = awarenessOwners.get(roomName)
+  if (!owners) { owners = new Map(); awarenessOwners.set(roomName, owners) }
+  return owners
+}
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const roomName = roomNameOf(url.pathname)
   const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider } = {}) => rooms.has(repoOf(roomName))
     ? wss.handleUpgrade(req, socket, head, ws => {
       noteBranch(roomName)
+      audit({ event: 'join', room: roomName, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
+      if (opts.readOnly) makeReadOnly(ws, droppedWrite(roomName))
+      if (opts.login) {
+        bindIdentity(ws, opts.login, (login, name) => {
+          const now = Date.now()
+          if ((identityLog.get(login) ?? 0) > now - 60_000) return
+          identityLog.set(login, now)
+          console.log(`dropped presence under ${JSON.stringify(name)} from ${login} (room ${roomName})`)
+        }, awarenessOwnerMap(roomName))
+        bindDocumentIdentity(ws, opts.login, documentGuard(roomName), (login, reason) => {
+          console.log(`dropped identity-bearing update from ${login} (room ${roomName}): ${reason}`)
+          audit({ event: 'refused', room: roomName, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update rejected: ${reason}` })
+        })
+      }
+      // The cap is the outermost wrapper: a packet it refuses never advances the identity shadow.
       const meter = docMeter(roomName)
       capDocSize(ws, bytes => meter.size(bytes), DOC_MAX_BYTES, size => {
         const now = Date.now()
         if ((capLogged.get(roomName) ?? 0) < now - 60_000) { capLogged.set(roomName, now); console.log(`refusing writes: room ${roomName} is ${(size / 1048576).toFixed(1)} MB (cap ${(DOC_MAX_BYTES / 1048576).toFixed(0)} MB); close and reopen the repo, or raise ROOM_DOC_MAX_MB`) }
-      })
-      audit({ event: 'join', room: roomName, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
-      if (opts.readOnly) makeReadOnly(ws, droppedWrite(roomName))
-      if (opts.login) bindIdentity(ws, opts.login, (login, name) => {
-        const now = Date.now()
-        if ((identityLog.get(login) ?? 0) > now - 60_000) return
-        identityLog.set(login, now)
-        console.log(`dropped presence under ${JSON.stringify(name)} from ${login} (room ${roomName})`)
       })
       wss.emit('connection', ws, req)
     })

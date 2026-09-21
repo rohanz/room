@@ -5,7 +5,8 @@ import * as decoding from 'lib0/decoding'
 import * as Y from 'yjs'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
-import { isWriteMessage, makeReadOnly, ownsName, capDocSize, filterAwareness, bindIdentity } from '../src/readonly.js'
+import { RoomDoc } from '@room/shared'
+import { bindDocumentIdentity, DocumentIdentityGuard, isWriteMessage, makeReadOnly, ownsName, capDocSize, filterAwareness, bindIdentity } from '../src/readonly.js'
 
 const doc = new Y.Doc()
 doc.getText('t').insert(0, 'hello')
@@ -37,7 +38,7 @@ describe('read-only view connections', () => {
     expect(isWriteMessage(new Uint8Array())).toBe(true)
   })
 
-  it('drops writes before message listeners and counts them', () => {
+  it('drops document and awareness writes before a view listener sees them', () => {
     const conn = new EventEmitter()
     const seen: Uint8Array[] = []
     let dropped = 0
@@ -47,8 +48,9 @@ describe('read-only view connections', () => {
     conn.emit('message', Buffer.from(update))
     conn.emit('message', Buffer.from(step2))
     conn.emit('message', Buffer.from(awareness))
-    expect(seen).toHaveLength(2)
-    expect(dropped).toBe(2)
+    expect(seen).toHaveLength(1)
+    expect([...seen[0]]).toEqual([...step1])
+    expect(dropped).toBe(3)
   })
 })
 
@@ -111,15 +113,38 @@ describe('identity-bound connections', () => {
     expect(dropped).toEqual([['octo', 'kieran']])
   })
 
-  it('keeps null leaving entries for foreign clients', () => {
+  it('drops null leaving entries for client ids this connection does not own', () => {
     const conn = new EventEmitter(), seen: Uint8Array[] = [], dropped: string[] = []
     const leaving = { ...foreign, state: null }
     conn.on('message', buf => seen.push(buf))
     bindIdentity(conn, 'octo', (_login, name) => dropped.push(name))
-    conn.emit('message', pack([foreign, leaving]))
-    expect(seen).toHaveLength(1)
-    expect(unpack(seen[0])).toEqual([leaving])
+    conn.emit('message', pack([leaving]))
+    expect(seen).toEqual([])
+    expect(dropped).toEqual(['(client 456)'])
+  })
+
+  it('accepts a leaving entry after the same connection announced that client id', () => {
+    const conn = new EventEmitter(), seen: Uint8Array[] = [], dropped: string[] = []
+    conn.on('message', buf => seen.push(buf))
+    bindIdentity(conn, 'octo', (_login, name) => dropped.push(name))
+    conn.emit('message', pack([own]))
+    conn.emit('message', pack([{ ...own, clock: own.clock + 1, state: null }]))
+    expect(seen).toHaveLength(2)
     expect(dropped).toEqual([])
+  })
+
+  it('does not let another login take over an awareness client id', () => {
+    const owners = new Map<number, string>()
+    const victim = new EventEmitter(), attacker = new EventEmitter()
+    const victimSeen: Uint8Array[] = [], attackerSeen: Uint8Array[] = [], dropped: string[] = []
+    victim.on('message', buf => victimSeen.push(buf)); attacker.on('message', buf => attackerSeen.push(buf))
+    bindIdentity(victim, 'victim', () => {}, owners)
+    bindIdentity(attacker, 'octo', (_login, name) => dropped.push(name), owners)
+    victim.emit('message', pack([{ clientID: 99, clock: 1, state: { user: { name: 'victim' } } }]))
+    attacker.emit('message', pack([{ clientID: 99, clock: 2, state: { user: { name: 'octo' } } }]))
+    expect(victimSeen).toHaveLength(1)
+    expect(attackerSeen).toEqual([])
+    expect(dropped).toEqual(['(client 99)'])
   })
 
   it('still drops sync writes when combined with the read-only wrapper', () => {
@@ -129,10 +154,9 @@ describe('identity-bound connections', () => {
     makeReadOnly(conn, () => writes++)
     bindIdentity(conn, 'octo', () => {})
     for (const buf of [step1, step2, update, pack([own, foreign])]) conn.emit('message', buf)
-    expect(writes).toBe(2)
-    expect(seen).toHaveLength(2)
+    expect(writes).toBe(3)
+    expect(seen).toHaveLength(1)
     expect(seen[0]).toEqual(step1)
-    expect(unpack(seen[1])).toEqual([own])
   })
 
   it('rejects malformed updates and strips unnamed or mismatched-owner states', () => {
@@ -175,6 +199,109 @@ describe('identity-bound connections', () => {
     conn.emit('message', Buffer.from(update))
     expect(seen).toHaveLength(2)
     expect(dropped).toEqual(['octo'])
+  })
+})
+
+describe('document identity binding', () => {
+  const packet = (server: Y.Doc, change: (client: Y.Doc) => void) => {
+    const client = new Y.Doc()
+    Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+    const before = Y.encodeStateVector(client)
+    change(client)
+    const message = sync(enc => syncProtocol.writeUpdate(enc, Y.encodeStateAsUpdate(client, before)))
+    client.destroy()
+    return message
+  }
+  const applyPacket = (server: Y.Doc, message: Uint8Array) => {
+    const decoder = decoding.createDecoder(message)
+    expect(decoding.readVarUint(decoder)).toBe(0)
+    expect([1, 2]).toContain(decoding.readVarUint(decoder))
+    Y.applyUpdate(server, decoding.readVarUint8Array(decoder))
+  }
+  const fixture = () => {
+    const server = new Y.Doc(), room = new RoomDoc(server)
+    room.setScope({ by: 'victim', byKind: 'agent', area: 'api', summary: 'real', paths: ['api.ts'] })
+    const claim = room.addClaim({ by: 'victim', byKind: 'agent', path: 'api.ts', from: 1, to: 2, intent: 'real' })
+    room.post({ name: 'victim', kind: 'agent' }, { type: 'note', text: 'real' })
+    const conn = new EventEmitter(), dropped: string[] = []
+    conn.on('message', message => applyPacket(server, message))
+    bindDocumentIdentity(conn, 'octo', new DocumentIdentityGuard(() => server), (_login, reason) => dropped.push(reason))
+    return { server, room, claim, conn, dropped }
+  }
+
+  it('rejects victim scope, claim, and message forgeries as whole protocol packets', () => {
+    const { server, room, claim, conn, dropped } = fixture()
+    const attempts = [
+      packet(server, doc => doc.getMap('scopes').set('victim', { by: 'victim', byKind: 'agent', area: 'pwn', summary: 'forged', paths: [] })),
+      packet(server, doc => doc.getMap('claims').set(claim.id, { ...doc.getMap('claims').get(claim.id) as object, intent: 'forged' })),
+      packet(server, doc => doc.getArray('bus').push([{ id: 'fake', at: 1, type: 'question', priority: 'notify', from: 'victim', fromKind: 'agent', to: 'octo', text: 'forged' }])),
+    ]
+    for (const attempt of attempts) expect(conn.emit('message', attempt)).toBe(false)
+    expect(room.scope('victim')?.summary).toBe('real')
+    expect(room.claims.get(claim.id)?.intent).toBe('real')
+    expect(room.messages().some(message => message.id === 'fake')).toBe(false)
+    expect(dropped).toHaveLength(3)
+    server.destroy()
+  })
+
+  it('allows maintenance deletion of another participant record but not delete-then-readd forgery', () => {
+    const { server, room, conn, dropped } = fixture()
+    expect(conn.emit('message', packet(server, doc => doc.getMap('scopes').delete('victim')))).toBe(true)
+    expect(room.scope('victim')).toBeUndefined()
+    room.setScope({ by: 'victim', byKind: 'agent', area: 'api', summary: 'restored', paths: ['api.ts'] })
+    expect(conn.emit('message', packet(server, doc => {
+      doc.getMap('scopes').delete('victim')
+      doc.getMap('scopes').set('victim', { by: 'victim', byKind: 'agent', area: 'pwn', summary: 'forged', paths: [] })
+    }))).toBe(false)
+    expect(room.scope('victim')?.summary).toBe('restored')
+    expect(dropped).toHaveLength(1)
+    server.destroy()
+  })
+
+  it('accepts worker and lead bridge identities in the login namespace', () => {
+    const { server, room, conn, dropped } = fixture()
+    expect(conn.emit('message', packet(server, doc => {
+      doc.getMap('scopes').set('octo+worker', { by: 'octo+worker', byKind: 'agent', area: 'tests', summary: 'worker', paths: ['a.ts'], at: 1 })
+      doc.getMap('claims').set('bridge', { id: 'bridge', by: 'octo', byKind: 'agent', path: 'a.ts', from: 1, to: 1, intent: '[worker] test', at: 1, mirrorOf: 'worker' })
+    }))).toBe(true)
+    expect(room.scope('octo+worker')?.summary).toBe('worker')
+    expect(room.claims.get('bridge')?.mirrorOf).toBe('worker')
+    expect(dropped).toEqual([])
+    server.destroy()
+  })
+
+  it('accepts only the enumerated room notice types, not ordinary speech from room', () => {
+    const { server, room, conn, dropped } = fixture()
+    expect(conn.emit('message', packet(server, doc => doc.getArray('bus').push([
+      { id: 'notice', at: 1, type: 'contract', priority: 'notify', from: 'room', fromKind: 'agent', to: 'octo', path: 'a.ts', symbol: 'f', text: 'changed' },
+    ])))).toBe(true)
+    expect(conn.emit('message', packet(server, doc => doc.getArray('bus').push([
+      { id: 'speech', at: 2, type: 'question', priority: 'notify', from: 'room', fromKind: 'agent', to: 'octo', text: 'forged' },
+    ])))).toBe(false)
+    expect(room.messages().some(message => message.id === 'notice')).toBe(true)
+    expect(room.messages().some(message => message.id === 'speech')).toBe(false)
+    expect(dropped).toHaveLength(1)
+    server.destroy()
+  })
+
+  it('accepts numbered synthetic PR scopes from members, rejects lookalikes, and viewers cannot write them', () => {
+    const { server, room, conn, dropped } = fixture()
+    const prScope = (name: string) => ({ by: name, byKind: 'bot', area: 'api', summary: 'PR', paths: ['a.ts'], at: 1 })
+    expect(conn.emit('message', packet(server, doc => {
+      doc.getMap('prs').set('pr#12', { number: 12, title: 'PR', author: 'alice', head: 'feature', files: ['a.ts'], updatedAt: '2026-01-01', url: 'https://example.test/pr/12' })
+      doc.getMap('scopes').set('pr#12', prScope('pr#12'))
+    }))).toBe(true)
+    for (const name of ['pr#x', 'pr#0']) expect(conn.emit('message', packet(server, doc => doc.getMap('scopes').set(name, prScope(name))))).toBe(false)
+    expect(room.scope('pr#12')?.summary).toBe('PR')
+    expect(room.scope('pr#x')).toBeUndefined(); expect(room.scope('pr#0')).toBeUndefined()
+    expect(dropped).toHaveLength(2)
+
+    const viewer = new EventEmitter()
+    viewer.on('message', message => applyPacket(server, message))
+    makeReadOnly(viewer, () => {})
+    expect(viewer.emit('message', packet(server, doc => doc.getMap('scopes').set('pr#13', prScope('pr#13'))))).toBe(false)
+    expect(room.scope('pr#13')).toBeUndefined()
+    server.destroy()
   })
 })
 

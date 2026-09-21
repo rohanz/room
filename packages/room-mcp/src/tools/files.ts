@@ -1,6 +1,6 @@
 import { git } from '@room/roomd/git'
 import { createTwoFilesPatch } from 'diff'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -189,10 +189,7 @@ export function testVerdict(output: string, code: number | null): string {
 async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string): Promise<string> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-'))
   try {
-    await new Promise<void>((resolve, reject) => {
-      const p = execFile('sh', ['-c', `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 60_000 }, err => err ? reject(err) : resolve())
-      p.unref?.()
-    })
+    await materializeGitTree(s.dir, ancestor, dir)
     for (const [rel, text] of merged) {
       const abs = path.resolve(dir, rel)
       if (!abs.startsWith(dir)) continue
@@ -214,4 +211,36 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+}
+
+/** Extract one verified commit without placing a clone path or ref in a shell program. */
+async function materializeGitTree(cloneDir: string, ref: string, destination: string): Promise<void> {
+  if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`)
+  await git(cloneDir, ['cat-file', '-e', `${ref}^{commit}`])
+  await new Promise<void>((resolve, reject) => {
+    const archive = spawn('git', ['-C', cloneDir, 'archive', '--format=tar', ref], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const extract = spawn('tar', ['-x', '-C', destination], { stdio: ['pipe', 'ignore', 'pipe'] })
+    let archiveError = '', extractError = '', archiveCode: number | null | undefined, extractCode: number | null | undefined
+    let settled = false
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true; clearTimeout(timer)
+      archive.kill(); extract.kill()
+      reject(error)
+    }
+    const finish = () => {
+      if (settled || archiveCode === undefined || extractCode === undefined) return
+      settled = true; clearTimeout(timer)
+      if (archiveCode === 0 && extractCode === 0) resolve()
+      else reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? 'signal'}${archiveError.trim() ? `: ${archiveError.trim()}` : ''}; tar ${extractCode ?? 'signal'}${extractError.trim() ? `: ${extractError.trim()}` : ''})`))
+    }
+    const timer = setTimeout(() => fail(new Error('git archive/tar extraction timed out after 60000ms')), 60_000)
+    timer.unref?.()
+    archive.stderr.setEncoding('utf8'); archive.stderr.on('data', chunk => { archiveError += String(chunk).slice(0, 4096) })
+    extract.stderr.setEncoding('utf8'); extract.stderr.on('data', chunk => { extractError += String(chunk).slice(0, 4096) })
+    archive.on('error', fail); extract.on('error', fail)
+    archive.on('close', code => { archiveCode = code; finish() })
+    extract.on('close', code => { extractCode = code; finish() })
+    archive.stdout.pipe(extract.stdin)
+  })
 }

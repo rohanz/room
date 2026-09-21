@@ -129,6 +129,37 @@ describe('Runner', () => {
     await s.runner.idle()
     expect(s.statuses.at(-1)).toBe('idle')
   })
+
+  it('stop aborts an active turn, drops queued work, ignores late callbacks, and returns within its deadline', async () => {
+    let signal: AbortSignal | undefined
+    let emitItem: ((item: Parameters<Parameters<typeof s.backend.run>[1]>[0]) => void) | undefined
+    let emitStatus: ((status: string) => void) | undefined
+    let release: (() => void) | undefined
+    let calls = 0
+    s.backend.run = async (_input, onItem, onStatus, activeSignal) => {
+      calls++
+      signal = activeSignal; emitItem = onItem; emitStatus = onStatus
+      await new Promise<void>(resolve => { release = resolve }) // deliberately ignore abort
+      return { finalResponse: '' }
+    }
+    s.room.say('Rohan', { role: 'human', text: 'active' })
+    await tick()
+    s.room.say('Rohan', { role: 'human', text: 'queued' })
+
+    const before = Date.now()
+    await s.runner.stop(20)
+    const elapsed = Date.now() - before
+    expect(signal?.aborted).toBe(true)
+    expect(elapsed).toBeLessThan(200)
+    emitStatus?.('late status')
+    emitItem?.({ id: 'late', type: 'agent_message', text: 'late answer' })
+    release?.()
+    await s.runner.idle()
+
+    expect(calls).toBe(1)
+    expect(s.room.chat('Rohan').toArray().some(item => item.text === 'late answer')).toBe(false)
+    expect(s.statuses.at(-1)).toBe('offline')
+  })
 })
 
 describe('wake rules: priorities', () => {

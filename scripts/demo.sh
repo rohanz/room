@@ -32,11 +32,18 @@ for _ in $(seq 1 50); do
   if (echo > "/dev/tcp/127.0.0.1/$PORT") >/dev/null 2>&1; then break; fi
   sleep 0.1
 done
-# Log in as "demo" through the fake issuer, then open the repo: rooms are opened per repo before anyone can join.
-DEVICE="$(curl -sf -X POST "http://localhost:$PORT/auth/device" | sed -n 's/.*"device":"\([0-9a-f]*\)".*/\1/p')"
-SESSION="$(curl -sf -X POST "http://localhost:$PORT/auth/poll" -H 'content-type: application/json' -d "{\"device\":\"$DEVICE\",\"fakeLogin\":\"demo\"}" | sed -n 's/.*"session":"\([0-9a-f]*\)".*/\1/p')"
-[ -n "$SESSION" ] || { echo "[demo] fake login failed on :$PORT (see $WORK/server.log)" >&2; exit 1; }
-curl -sf -X POST "http://localhost:$PORT/rooms" -H 'content-type: application/json' -d "{\"room\":\"local/origin/main\",\"session\":\"$SESSION\"}" >/dev/null \
+# Give each on-duty agent its own authenticated identity. The session values are demo-only and die
+# with this in-memory server; printing them is what makes the copy/paste commands actually connect.
+fake_session() {
+  local login="$1" device session
+  device="$(curl -sf -X POST "http://localhost:$PORT/auth/device" | sed -n 's/.*"device":"\([0-9a-f]*\)".*/\1/p')"
+  session="$(curl -sf -X POST "http://localhost:$PORT/auth/poll" -H 'content-type: application/json' -d "{\"device\":\"$device\",\"fakeLogin\":\"$login\"}" | sed -n 's/.*"session":"\([0-9a-f]*\)".*/\1/p')"
+  [ -n "$session" ] || { echo "[demo] fake login for $login failed on :$PORT (see $WORK/server.log)" >&2; exit 1; }
+  printf '%s' "$session"
+}
+ROHAN_SESSION="$(fake_session Rohan)"
+KIERAN_SESSION="$(fake_session Kieran)"
+curl -sf -X POST "http://localhost:$PORT/rooms" -H 'content-type: application/json' -d "{\"room\":\"local/origin/main\",\"session\":\"$ROHAN_SESSION\"}" >/dev/null \
   || { echo "[demo] could not open the room on :$PORT" >&2; exit 1; }
 
 cat <<MSG
@@ -52,8 +59,8 @@ Join with plain Codex (plugin installed via: codex plugin marketplace add $ROOT 
   cd $B && ROOM_SERVER=ws://localhost:$PORT codex     # then: \$room-join
 
 Or leave an agent on duty (reacts to interrupts and questions unattended):
-  ROOM_SERVER=ws://localhost:$PORT npx tsx $ROOT/packages/agent/src/cli.ts --dir $A
-  ROOM_SERVER=ws://localhost:$PORT npx tsx $ROOT/packages/agent/src/cli.ts --dir $B
+  ROOM_SERVER=ws://localhost:$PORT ROOM_SESSION=$ROHAN_SESSION npx tsx $ROOT/packages/agent/src/cli.ts --dir $A --name Rohan
+  ROOM_SERVER=ws://localhost:$PORT ROOM_SESSION=$KIERAN_SESSION npx tsx $ROOT/packages/agent/src/cli.ts --dir $B --name Kieran
 
 Browser view:  npm run web   then open the URL room_join prints.
 

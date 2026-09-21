@@ -80,11 +80,26 @@ export class Runner {
     claims.observe(onClaims); this.unobserve.push(() => claims.unobserve(onClaims))
   }
 
-  stop(): void {
+  async stop(waitMs = 1000): Promise<void> {
     this.stopped = true
+    this.queue.length = 0
     for (const u of this.unobserve) u()
     this.unobserve = []
+    if (this.abort) {
+      this.abortReason = 'stop'
+      this.abort.abort()
+      this.log('runner shutdown aborted the active turn')
+    }
     this.setStatus('offline')
+    if (this.running) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        this.idle(),
+        new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, waitMs)); timer.unref?.() }),
+      ])
+      if (timer) clearTimeout(timer)
+      this.setStatus('offline')
+    }
   }
 
   /** Resolves once the queue is empty and no turn is running. */
@@ -198,23 +213,28 @@ export class Runner {
     if (this.firstTurn) { input = `${this.opts.preamble ?? preamble(this.me.name)}\n\n---\n\n${body}`; this.firstTurn = false }
 
     this.setStatus('thinking')
-    this.abort = new AbortController()
-    const { signal } = this.abort
+    const controller = new AbortController()
+    this.abort = controller
+    const { signal } = controller
     try {
       await this.opts.backend.run(input, item => {
+        if (this.stopped || this.abort !== controller) return
         const c = itemToChat(item)
         if (c) say(c)
-      }, s => this.setStatus(s), signal)
+      }, s => { if (!this.stopped && this.abort === controller) this.setStatus(s) }, signal)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (signal.aborted && this.abortReason === 'conflict') { say({ role: 'status', text: 'turn interrupted by conflict' }) }
+      if (this.stopped) { /* lifecycle shutdown is silent */ }
+      else if (signal.aborted && this.abortReason === 'conflict') { say({ role: 'status', text: 'turn interrupted by conflict' }) }
       else if (signal.aborted && this.abortReason === 'stop') { /* stopTurn already posted the status */ }
       else if (signal.aborted) { say({ role: 'status', text: 'turn aborted' }) }
       else { this.log(`turn failed: ${msg}`); say({ role: 'status', text: `turn failed: ${msg}` }) }
     } finally {
-      this.abort = null
-      this.abortReason = null
-      this.setStatus(this.paused ? 'paused' : 'idle')
+      if (this.abort === controller) {
+        this.abort = null
+        this.abortReason = null
+      }
+      if (!this.stopped) this.setStatus(this.paused ? 'paused' : 'idle')
     }
   }
 
