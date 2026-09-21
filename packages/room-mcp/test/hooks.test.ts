@@ -517,7 +517,9 @@ it.each([[' gpt-6-astra ', 'gpt-6-astra'], ['x'.repeat(100), 'x'.repeat(80)], [u
 
 it.each([['codex', []], ['claude', ['--host', 'claude']]])('SessionStart chooses %s from the hook definition despite shared stdin fields', async (host, args) => {
   await runHook('session-start.mjs', { session_id: 'shared-fields', cwd: dir, hook_event_name: 'SessionStart', transcript_path: '/tmp/transcript.jsonl' }, args as string[])
-  expect(JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8')).host).toBe(host)
+  const state = JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8'))
+  expect(state.host).toBe(host)
+  expect(state.transcript_path).toBe(host === 'claude' ? '/tmp/transcript.jsonl' : undefined)
 })
 
 it.each([['codex', 'claude'], ['claude', 'codex']])('ROOM_HOST=%s overrides a stale %s session hint when waking', async (host, stale) => {

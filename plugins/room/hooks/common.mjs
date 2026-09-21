@@ -46,6 +46,18 @@ export function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
 }
 
+/** Newest real assistant model in a bounded JSONL transcript tail. */
+export function newestModelInTranscriptTail(tail, startsMidLine = false) {
+  const lines = tail.split('\n')
+  if (startsMidLine) lines.shift()
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let entry
+    try { entry = JSON.parse(lines[i]) } catch { continue }
+    const model = typeof entry?.message?.model === 'string' ? entry.message.model.trim() : ''
+    if (model && !model.startsWith('<')) return model
+  }
+}
+
 /** Hook-local delivery state. Versions before 0.7.0 stored only the seen-id array. */
 export function readHookSeen(file) {
   const value = readJson(file, { seen: [], companyTold: false })

@@ -25090,6 +25090,27 @@ var init_src3 = __esm({
   }
 });
 
+// plugins/room/hooks/common.mjs
+function newestModelInTranscriptTail(tail, startsMidLine = false) {
+  const lines = tail.split("\n");
+  if (startsMidLine) lines.shift();
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let entry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    const model = typeof entry?.message?.model === "string" ? entry.message.model.trim() : "";
+    if (model && !model.startsWith("<")) return model;
+  }
+}
+var init_common = __esm({
+  "plugins/room/hooks/common.mjs"() {
+    "use strict";
+  }
+});
+
 // packages/room-mcp/src/config.ts
 import os from "node:os";
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -25197,6 +25218,47 @@ function sessionMetadataPath(dir) {
   }
   return path6.join(gitDir, "room-session.json");
 }
+function createClaudeTranscriptModelRefresh(io = fs5) {
+  const checked = /* @__PURE__ */ new Map();
+  return (dir) => {
+    const sessionFile = sessionMetadataPath(dir);
+    let session;
+    try {
+      session = JSON.parse(io.readFileSync(sessionFile, "utf8"));
+    } catch {
+      return void 0;
+    }
+    if (session.host !== "claude" || typeof session.transcript_path !== "string" || !session.transcript_path) return void 0;
+    let fd;
+    try {
+      const stat4 = io.statSync(session.transcript_path);
+      const prior = checked.get(sessionFile);
+      if (prior?.path === session.transcript_path && prior.mtimeMs === stat4.mtimeMs && prior.size === stat4.size) return prior.model;
+      fd = io.openSync(session.transcript_path, "r");
+      const start = Math.max(0, stat4.size - 64 * 1024);
+      const tail = Buffer.alloc(Math.min(stat4.size, 64 * 1024));
+      const count = io.readSync(fd, tail, 0, tail.length, start);
+      const model = newestModelInTranscriptTail(tail.subarray(0, count).toString("utf8"), start > 0);
+      checked.set(sessionFile, { path: session.transcript_path, mtimeMs: stat4.mtimeMs, size: stat4.size, ...model ? { model } : {} });
+      if (model && session.model !== model) {
+        try {
+          io.writeFileSync(sessionFile, JSON.stringify({ ...session, model }) + "\n");
+        } catch {
+        }
+      }
+      return model;
+    } catch {
+      return void 0;
+    } finally {
+      if (fd !== void 0) {
+        try {
+          io.closeSync(fd);
+        } catch {
+        }
+      }
+    }
+  };
+}
 function resolveSessionRuntime(dir, env = process.env) {
   const clean = (v) => typeof v === "string" ? v.replace(/[^\x20-\x7e]/g, "").trim().slice(0, 80) || void 0 : void 0;
   let model;
@@ -25212,6 +25274,7 @@ var init_config = __esm({
     "use strict";
     init_local();
     init_src3();
+    init_common();
     DEFAULT_SERVER = "wss://room-rohanz.fly.dev";
     LOCAL = "local";
     DEFAULT_CLAUDE_CHANNEL = "plugin:room@room";
@@ -26392,13 +26455,16 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   }
   const daemon = await startRoomd({ ...options, name, label, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) });
   const file = sessionMetadataPath(options.dir);
-  const refresh = () => {
+  const refreshTranscriptModel = createClaudeTranscriptModelRefresh();
+  const publishRuntime = (transcriptModel) => {
     const current = daemon.provider.awareness.getLocalState();
     const runtime = resolveSessionRuntime(options.dir);
+    runtime.model = transcriptModel ?? runtime.model;
     if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(options.dir), ...runtime });
     const worker = daemon.roomDoc.workerOf(name);
     if (worker && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID) && runtime.model && worker.model !== runtime.model) daemon.roomDoc.updateWorker(worker.tag, { model: runtime.model }, worker.id);
   };
+  const refresh = () => publishRuntime(refreshTranscriptModel(options.dir));
   const activityFile = resolve3(dirname3(file), "room-hook-activity.json");
   let lastActivity = Date.now();
   const refreshActivity = () => {
@@ -26413,14 +26479,14 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   };
   watchFile2(file, { interval: 500, persistent: false }, refresh);
   watchFile2(activityFile, { interval: 500, persistent: false }, refreshActivity);
-  refresh();
+  publishRuntime();
   const stop = daemon.stop.bind(daemon);
   daemon.stop = async () => {
     unwatchFile2(file, refresh);
     unwatchFile2(activityFile, refreshActivity);
     await stop();
   };
-  return { daemon, me: { name, kind: options.kind ?? "agent", owner: options.owner, ...label ? { label } : {} }, autoTagNote };
+  return { daemon, me: { name, kind: options.kind ?? "agent", owner: options.owner, ...label ? { label } : {} }, autoTagNote, refreshRuntime: refresh };
 }
 async function joinSession(opts) {
   const dir = resolve3(opts.dir);
@@ -26467,7 +26533,7 @@ async function joinSession(opts) {
   const shareMax = await serverShareMax(server);
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
-  const { daemon, me, autoTagNote } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config2.tag);
+  const { daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config2.tag);
   const view = await viewToken(server, roomName, creds);
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log, {
@@ -26482,6 +26548,7 @@ async function joinSession(opts) {
     daemon,
     me,
     autoTagNote,
+    refreshRuntime,
     dir,
     roomUrl,
     roomName,
@@ -26514,10 +26581,10 @@ async function joinLocal(dir, opts) {
   const local = await ensureLocalRelay(common, roomName, { log: opts.log });
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`;
   const share = requestedShare(opts.share);
-  let daemon, me, autoTagNote;
+  let daemon, me, autoTagNote, refreshRuntime;
   try {
     ;
-    ({ daemon, me, autoTagNote } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag));
+    ({ daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag));
   } catch (e) {
     await local.stop();
     throw e;
@@ -26536,6 +26603,7 @@ async function joinLocal(dir, opts) {
     daemon,
     me,
     autoTagNote,
+    refreshRuntime,
     dir,
     roomUrl,
     roomName,
@@ -40942,6 +41010,7 @@ function createTools(ctx) {
       }
       const moved = await state.followBranch();
       const s = ctx.getSession();
+      s?.refreshRuntime?.();
       if (s && !s.provider.synced && name !== "room_leave" && !(offlineTool && (s.closed || connectedBefore(s)))) return "error: room not synced yet, retry";
       if (s) {
         trackConnection(s, state.now);
@@ -40951,6 +41020,7 @@ function createTools(ctx) {
         const body = await h(args2 ?? {});
         if (name === "room_preview_merge" || name.startsWith("room_pr_")) await state.rooms.retireWorkers();
         const s2 = ctx.getSession();
+        if (s2 && s2 !== s) s2.refreshRuntime?.();
         const prefix = moved ? `${moved}
 
 ` : "";

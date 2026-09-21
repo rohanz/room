@@ -17,7 +17,7 @@ import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
-import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
+import { createClaudeTranscriptModelRefresh, DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
 import { isFresh } from './presence.js'
 import { readChoice, rememberTag, worktreePath } from './choice.js'
 
@@ -56,6 +56,8 @@ export interface Session {
   autoTagNote?: string
   /** Latest preview started by this MCP session; never reconstructed from shared room history. */
   lastPreview?: { clean: boolean; testsPassed?: boolean }
+  /** Refresh hook/session runtime metadata before a Room tool is dispatched. */
+  refreshRuntime?: () => void
 }
 
 export interface JoinOptions {
@@ -269,7 +271,7 @@ export function encodeRoom(roomName: string): string { return encodeURIComponent
 export function decodeRoom(encoded: string): string { try { return decodeURIComponent(encoded) } catch { return encoded } }
 
 /** Resolve identity before roomd can publish any overlays under it. The probe never publishes a user. */
-export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string }> {
+export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string; refreshRuntime: () => void }> {
   let name = options.name, label = options.label
   let autoTagNote: string | undefined
   const rememberedTag = explicitTag === undefined ? (await readChoice(options.dir))?.tags?.[await worktreePath(options.dir)] : undefined
@@ -324,13 +326,16 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
   }
   const daemon = await startRoomd({ ...options, name, label, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) })
   const file = sessionMetadataPath(options.dir)
-  const refresh = () => {
+  const refreshTranscriptModel = createClaudeTranscriptModelRefresh()
+  const publishRuntime = (transcriptModel?: string) => {
     const current = daemon.provider.awareness.getLocalState()
     const runtime = resolveSessionRuntime(options.dir)
+    runtime.model = transcriptModel ?? runtime.model
     if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(options.dir), ...runtime })
     const worker = daemon.roomDoc.workerOf(name)
     if (worker && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID) && runtime.model && worker.model !== runtime.model) daemon.roomDoc.updateWorker(worker.tag, { model: runtime.model }, worker.id)
   }
+  const refresh = () => publishRuntime(refreshTranscriptModel(options.dir))
   const activityFile = resolve(dirname(file), 'room-hook-activity.json')
   let lastActivity = Date.now() // do not replay activity left by an earlier session
   const refreshActivity = () => {
@@ -344,10 +349,10 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
   }
   watchFile(file, { interval: 500, persistent: false }, refresh)
   watchFile(activityFile, { interval: 500, persistent: false }, refreshActivity)
-  refresh() // cover a rewrite during initial connection
+  publishRuntime() // cover a metadata rewrite during initial connection without reading the transcript on startup
   const stop = daemon.stop.bind(daemon)
   daemon.stop = async () => { unwatchFile(file, refresh); unwatchFile(activityFile, refreshActivity); await stop() }
-  return { daemon, me: { name, kind: options.kind ?? 'agent', owner: options.owner, ...(label ? { label } : {}) }, autoTagNote }
+  return { daemon, me: { name, kind: options.kind ?? 'agent', owner: options.owner, ...(label ? { label } : {}) }, autoTagNote, refreshRuntime: refresh }
 }
 
 export async function joinSession(opts: JoinOptions): Promise<Session> {
@@ -399,7 +404,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await serverShareMax(server)
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const { daemon, me, autoTagNote } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag)
+  const { daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag)
   const view = await viewToken(server, roomName, creds)
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log, {
@@ -412,7 +417,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
     daemon,
-    me, autoTagNote,
+    me, autoTagNote, refreshRuntime,
     dir,
     roomUrl,
     roomName,
@@ -450,9 +455,9 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const local = await ensureLocalRelay(common, roomName, { log: opts.log })
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
-  let daemon: Roomd, me: Identity, autoTagNote: string | undefined
+  let daemon: Roomd, me: Identity, autoTagNote: string | undefined, refreshRuntime: () => void
   try {
-    ;({ daemon, me, autoTagNote } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag))
+    ;({ daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, '')
@@ -468,7 +473,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
     daemon,
-    me, autoTagNote,
+    me, autoTagNote, refreshRuntime,
     dir,
     roomUrl,
     roomName,

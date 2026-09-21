@@ -4,7 +4,7 @@
 // Reads .git/room-state.json, which the room MCP server keeps current.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath } from './common.mjs'
+import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, newestModelInTranscriptTail } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -39,16 +39,8 @@ if (session?.host === 'claude' && typeof ev.transcript_path === 'string') {
       const start = Math.max(0, stat.size - 64 * 1024)
       const tail = Buffer.alloc(Math.min(stat.size, 64 * 1024))
       const count = fs.readSync(fd, tail, 0, tail.length, start)
-      const lines = tail.subarray(0, count).toString('utf8').split('\n')
-      if (start > 0) lines.shift() // the first line may start outside the tail
-      for (let i = lines.length - 1; i >= 0; i--) {
-        let entry
-        try { entry = JSON.parse(lines[i]) } catch { continue }
-        const model = typeof entry?.message?.model === 'string' ? entry.message.model.trim() : ''
-        if (!model || model.startsWith('<')) continue
-        if (session.model !== model) fs.writeFileSync(sessionFile, JSON.stringify({ ...session, model }) + '\n')
-        break
-      }
+      const model = newestModelInTranscriptTail(tail.subarray(0, count).toString('utf8'), start > 0)
+      if (model && session.model !== model) fs.writeFileSync(sessionFile, JSON.stringify({ ...session, model }) + '\n')
       hookSeen.transcript = { path: ev.transcript_path, mtimeMs: stat.mtimeMs, size: stat.size }
       transcriptChecked = true
     }

@@ -10,6 +10,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { gitCommonDir } from '@room/roomd/local'
 import { parseShare, type ShareLevel } from '@room/roomd'
+import { newestModelInTranscriptTail } from '../../../plugins/room/hooks/common.mjs'
 
 export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
 export const LOCAL = 'local'
@@ -127,6 +128,36 @@ export function sessionMetadataPath(dir: string): string {
     }
   } catch { /* the hook may not have run yet */ }
   return path.join(gitDir, 'room-session.json')
+}
+
+type TranscriptFs = Pick<typeof fs, 'readFileSync' | 'writeFileSync' | 'statSync' | 'openSync' | 'readSync' | 'closeSync'>
+
+/** Per-session bounded reader; successful reads are repeated only after the transcript changes. */
+export function createClaudeTranscriptModelRefresh(io: TranscriptFs = fs): (dir: string) => string | undefined {
+  const checked = new Map<string, { path: string; mtimeMs: number; size: number; model?: string }>()
+  return dir => {
+    const sessionFile = sessionMetadataPath(dir)
+    let session: Record<string, unknown>
+    try { session = JSON.parse(io.readFileSync(sessionFile, 'utf8')) as Record<string, unknown> } catch { return undefined }
+    if (session.host !== 'claude' || typeof session.transcript_path !== 'string' || !session.transcript_path) return undefined
+    let fd: number | undefined
+    try {
+      const stat = io.statSync(session.transcript_path)
+      const prior = checked.get(sessionFile)
+      if (prior?.path === session.transcript_path && prior.mtimeMs === stat.mtimeMs && prior.size === stat.size) return prior.model
+      fd = io.openSync(session.transcript_path, 'r')
+      const start = Math.max(0, stat.size - 64 * 1024)
+      const tail = Buffer.alloc(Math.min(stat.size, 64 * 1024))
+      const count = io.readSync(fd, tail, 0, tail.length, start)
+      const model = newestModelInTranscriptTail(tail.subarray(0, count).toString('utf8'), start > 0)
+      checked.set(sessionFile, { path: session.transcript_path, mtimeMs: stat.mtimeMs, size: stat.size, ...(model ? { model } : {}) })
+      if (model && session.model !== model) {
+        try { io.writeFileSync(sessionFile, JSON.stringify({ ...session, model }) + '\n') } catch { /* best effort */ }
+      }
+      return model
+    } catch { return undefined }
+    finally { if (fd !== undefined) { try { io.closeSync(fd) } catch { /* best effort */ } } }
+  }
 }
 
 /** Never infer model/effort from ambient host configuration or inherited host-specific variables. */

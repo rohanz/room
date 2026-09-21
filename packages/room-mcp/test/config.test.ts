@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs, { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveSessionRuntime, sessionMetadataPath, resolveConfig, DEFAULT_SERVER, LOCAL } from '../src/config.js'
+import { createClaudeTranscriptModelRefresh, resolveSessionRuntime, sessionMetadataPath, resolveConfig, DEFAULT_SERVER, LOCAL } from '../src/config.js'
 import { writeChoice } from '../src/choice.js'
 
 const repo = () => { const dir = mkdtempSync(join(tmpdir(), 'room-config-')); execFileSync('git', ['-C', dir, 'init', '-q']); return dir }
@@ -73,6 +73,44 @@ it('resolves hook metadata from the worktree gitdir, not the main clone', () => 
   expect(resolveSessionRuntime(worktree, {})).toEqual({ model: 'worker-model', effort: undefined })
   fs.rmSync(main, { recursive: true, force: true })
   fs.rmSync(worktree, { recursive: true, force: true })
+})
+
+const modelLine = (model: unknown) => JSON.stringify({ type: 'assistant', message: { model } }) + '\n'
+
+it('reads changed Claude transcript tails once, skips placeholders, and picks up model switches', () => {
+  const dir = repo(), transcript = join(dir, 'transcript.jsonl'), file = sessionMetadataPath(dir)
+  fs.writeFileSync(file, JSON.stringify({ host: 'claude', transcript_path: transcript }))
+  fs.writeFileSync(transcript, modelLine('claude-old') + modelLine('<synthetic>') + modelLine(42) + '{partial')
+  const io = { ...fs, statSync: vi.fn(fs.statSync), openSync: vi.fn(fs.openSync), readSync: vi.fn(fs.readSync) }
+  const refresh = createClaudeTranscriptModelRefresh(io)
+  expect(refresh(dir)).toBe('claude-old')
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).model).toBe('claude-old')
+  expect(io.openSync).toHaveBeenCalledTimes(1)
+  expect(io.readSync.mock.calls[0][3]).toBeLessThanOrEqual(64 * 1024)
+  expect(refresh(dir)).toBe('claude-old')
+  expect(io.openSync).toHaveBeenCalledTimes(1)
+  fs.appendFileSync(transcript, '\n' + modelLine('claude-new'))
+  expect(refresh(dir)).toBe('claude-new')
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).model).toBe('claude-new')
+  expect(io.openSync).toHaveBeenCalledTimes(2)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+it('silently ignores missing or unreadable transcripts and never opens one for Codex', () => {
+  const dir = repo(), transcript = join(dir, 'transcript.jsonl'), file = sessionMetadataPath(dir)
+  const openSync = vi.fn(fs.openSync)
+  const refresh = createClaudeTranscriptModelRefresh({ ...fs, openSync })
+  fs.writeFileSync(file, JSON.stringify({ host: 'claude', transcript_path: transcript }))
+  expect(refresh(dir)).toBeUndefined()
+  fs.writeFileSync(transcript, modelLine('claude-wrong'))
+  fs.writeFileSync(file, JSON.stringify({ host: 'codex', transcript_path: transcript }))
+  expect(refresh(dir)).toBeUndefined()
+  expect(openSync).not.toHaveBeenCalled()
+  fs.writeFileSync(file, JSON.stringify({ host: 'claude', transcript_path: transcript }))
+  const unreadable = createClaudeTranscriptModelRefresh({ ...fs, openSync: (() => { throw new Error('denied') }) as typeof fs.openSync })
+  expect(unreadable(dir)).toBeUndefined()
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).model).toBeUndefined()
+  fs.rmSync(dir, { recursive: true, force: true })
 })
 
 it.each(['decalred', '', 'ful'])('never widens invalid sharing %j from arguments or environment', async raw => {

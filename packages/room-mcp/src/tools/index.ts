@@ -63,12 +63,14 @@ export function createTools(ctx: ToolCtx): Tools {
       if (closed && name !== 'room_leave' && !offlineTool) { const rn = current!.roomName; return `error: the room for ${rn.slice(0, rn.lastIndexOf('/'))} was closed (${closed.reason}); room_leave, then room_create to reopen` }
       const moved = await state.followBranch()
       const s = ctx.getSession()
+      s?.refreshRuntime?.()
       if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && (s.closed || connectedBefore(s)))) return 'error: room not synced yet, retry'
       if (s) { trackConnection(s, state.now); state.rooms.track(s) }
       try {
         const body = await h(args ?? {})
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
         const s2 = ctx.getSession()
+        if (s2 && s2 !== s) s2.refreshRuntime?.()
         const prefix = moved ? `${moved}\n\n` : ''
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) : ''
         const sharing = s2 ? await teamSharingNote(s2) : ''

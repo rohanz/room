@@ -7,6 +7,8 @@ import { RoomDoc } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import { startAutoTaggedRoomd } from '../src/session.js'
 import { sessionMetadataPath } from '../src/config.js'
+import { createTools } from '../src/tools.js'
+import type { Session } from '../src/session.js'
 
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -85,6 +87,38 @@ it('touches for new matching-session hook activity and unregisters both polling 
     expect(unwatched).toHaveBeenCalledWith(file, expect.any(Function))
   } finally {
     await daemon.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+it('publishes a Claude transcript model to participant and worker records on room tool calls', async () => {
+  vi.stubEnv('ROOM_WORKER_ID', '')
+  vi.stubEnv('ROOM_HOST', 'claude')
+  vi.stubEnv('ROOM_WORKER_MODEL', '')
+  vi.stubEnv('ROOM_WORKER_EFFORT', '')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-runtime-claude-'))
+  execFileSync('git', ['init', '-q', dir])
+  const transcript = path.join(dir, 'transcript.jsonl')
+  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { model: 'claude-first' } }) + '\n')
+  fs.writeFileSync(sessionMetadataPath(dir), JSON.stringify({ session_id: 'claude-session', host: 'claude', transcript_path: transcript }))
+  const { daemon, me, refreshRuntime } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room' }, 'worker')
+  daemon.roomDoc.setWorker({ tag: 'worker', name: 'Ada+worker', host: 'claude', task: '', dir, branch: 'main', pid: 1, lead: 'Ada', status: 'running', startedAt: 1 })
+  const session = {
+    room: daemon.roomDoc, provider: { ...daemon.provider, synced: true }, awareness: daemon.provider.awareness, daemon, me,
+    dir, roomUrl: 'ws://unused/room', roomName: 'room', browserUrl: '', shareMax: 'full', shareRequested: 'full', pinnedRoom: true, refreshRuntime,
+  } as unknown as Session
+  const tools = createTools({ cwd: dir, getSession: () => session, setSession: () => {} })
+  try {
+    expect(daemon.provider.awareness.getLocalState()?.model).toBeUndefined()
+    await tools.call('room_state', {})
+    expect(daemon.provider.awareness.getLocalState()?.model).toBe('claude-first')
+    expect(daemon.roomDoc.workerOf('Ada+worker')?.model).toBe('claude-first')
+    fs.appendFileSync(transcript, JSON.stringify({ type: 'assistant', message: { model: 'claude-second' } }) + '\n')
+    await tools.call('room_state', {})
+    expect(daemon.provider.awareness.getLocalState()?.model).toBe('claude-second')
+    expect(daemon.roomDoc.workerOf('Ada+worker')?.model).toBe('claude-second')
+  } finally {
+    await tools.shutdown()
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
