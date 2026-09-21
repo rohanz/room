@@ -2991,7 +2991,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve4.call(this, root, ref);
+      let _sch = resolve5.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3018,7 +3018,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve4(root, ref) {
+    function resolve5(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3848,7 +3848,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve4(baseURI, relativeURI, options) {
+    function resolve5(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -4216,7 +4216,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize: normalize2,
-      resolve: resolve4,
+      resolve: resolve5,
       resolveComponent,
       equal,
       serialize,
@@ -19938,7 +19938,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
+        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -19955,7 +19955,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -20033,7 +20033,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve4(parseResult.data);
+            resolve5(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -20294,12 +20294,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve4, interval);
+      const timeoutId = setTimeout(resolve5, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -21175,12 +21175,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve4) => {
+    return new Promise((resolve5) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve4();
+        resolve5();
       } else {
-        this._stdout.once("drain", resolve4);
+        this._stdout.once("drain", resolve5);
       }
     });
   }
@@ -22761,17 +22761,17 @@ var Doc2 = class _Doc extends ObservableV2 {
     this.isLoaded = false;
     this.isSynced = false;
     this.isDestroyed = false;
-    this.whenLoaded = create4((resolve4) => {
+    this.whenLoaded = create4((resolve5) => {
       this.on("load", () => {
         this.isLoaded = true;
-        resolve4(this);
+        resolve5(this);
       });
     });
-    const provideSyncedPromise = () => create4((resolve4) => {
+    const provideSyncedPromise = () => create4((resolve5) => {
       const eventHandler = (isSynced) => {
         if (isSynced === void 0 || isSynced === true) {
           this.off("sync", eventHandler);
-          resolve4();
+          resolve5();
         }
       };
       this.on("sync", eventHandler);
@@ -31663,7 +31663,7 @@ var NodeFsHandler = class {
         this._addToNodeFs(path13, initialAdd, wh, depth + 1);
       }
     }).on(EV.ERROR, this._boundHandleError);
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       if (!stream)
         return reject();
       stream.once(STR_END, () => {
@@ -31672,7 +31672,7 @@ var NodeFsHandler = class {
           return;
         }
         const wasThrottled = throttler ? throttler.clear() : false;
-        resolve4(void 0);
+        resolve5(void 0);
         previous.getChildren().filter((item) => {
           return item !== directory && !current.has(item);
         }).forEach((item) => {
@@ -32545,13 +32545,13 @@ function timeoutMs(configured) {
 }
 function git(dir, args2, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     execFile("git", args2, { cwd: dir, maxBuffer: 64 * 1024 * 1024, timeout }, (err, stdout, stderr) => {
       if (err) {
         const stopped = err;
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr || err.message).trim();
         reject(new Error(`git ${args2.join(" ")} failed: ${detail}`));
-      } else resolve4(stdout);
+      } else resolve5(stdout);
     });
   });
 }
@@ -32604,11 +32604,11 @@ async function gitTracked(dir) {
 }
 async function gitIgnored(dir, rel, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     execFile("git", ["check-ignore", "-q", "--", rel], { cwd: dir, timeout }, (err) => {
       const stopped = err;
       if (stopped?.killed || stopped?.signal) reject(new Error(`git check-ignore timed out after ${timeout}ms`));
-      else resolve4(!err);
+      else resolve5(!err);
     });
   });
 }
@@ -32895,7 +32895,7 @@ var Daemon = class {
     const socket = this.provider.ws;
     if (socket) {
       const deadline = Date.now() + 1e3;
-      while (socket.bufferedAmount > 0 && Date.now() < deadline) await new Promise((resolve4) => setTimeout(resolve4, 5));
+      while (socket.bufferedAmount > 0 && Date.now() < deadline) await new Promise((resolve5) => setTimeout(resolve5, 5));
     }
     this.provider.destroy();
     this.roomDoc.doc.destroy();
@@ -32931,7 +32931,7 @@ var Daemon = class {
   }
   waitForSync() {
     if (this.provider.synced) return Promise.resolve();
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const timer = setTimeout(() => {
         this.provider.off("sync", onSync);
         reject(new RoomdError(`could not sync with ${this.roomUrl} within ${this.connectTimeoutMs}ms`, 1));
@@ -32940,7 +32940,7 @@ var Daemon = class {
         if (!synced) return;
         clearTimeout(timer);
         this.provider.off("sync", onSync);
-        resolve4();
+        resolve5();
       };
       this.provider.on("sync", onSync);
     });
@@ -33203,7 +33203,7 @@ var Daemon = class {
       this.scheduleDisk(relpath, event === "add");
     });
     watcher.on("error", (error2) => this.log(`watcher error: ${errMsg(error2)}`));
-    await new Promise((resolve4) => watcher.on("ready", () => resolve4()));
+    await new Promise((resolve5) => watcher.on("ready", () => resolve5()));
     for (const [dir, names] of Object.entries(watcher.getWatched())) for (const name of names) {
       const absolute = path.join(dir, name);
       try {
@@ -33232,7 +33232,7 @@ var Daemon = class {
   /** Does not synthesize events: callers must first observe the change they are waiting for. */
   async settle() {
     while (this.debounce.size || this.diskWork.size) {
-      await Promise.all([...this.diskWork, new Promise((resolve4) => setTimeout(resolve4, this.debounceMs))]);
+      await Promise.all([...this.diskWork, new Promise((resolve5) => setTimeout(resolve5, this.debounceMs))]);
     }
   }
   scheduleDisk(relpath, isNew) {
@@ -33398,7 +33398,7 @@ function deterministicPort(commonDir) {
   return 4e4 + h.readUInt32BE(0) % 2e4;
 }
 function relayAnswers(port, timeoutMs2 = 800) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     const req = http.get({ host: "127.0.0.1", port, path: "/health", timeout: timeoutMs2 }, (res) => {
       let body = "";
       res.on("data", (c) => {
@@ -33406,17 +33406,17 @@ function relayAnswers(port, timeoutMs2 = 800) {
       });
       res.on("end", () => {
         try {
-          resolve4(res.statusCode === 200 && JSON.parse(body).local === true);
+          resolve5(res.statusCode === 200 && JSON.parse(body).local === true);
         } catch {
-          resolve4(false);
+          resolve5(false);
         }
       });
     });
     req.on("timeout", () => {
       req.destroy();
-      resolve4(false);
+      resolve5(false);
     });
-    req.on("error", () => resolve4(false));
+    req.on("error", () => resolve5(false));
   });
 }
 var MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
@@ -33438,7 +33438,7 @@ function isLoopback(addr) {
   return !!addr && LOOPBACK.has(addr);
 }
 function startRelay(port, opts = {}) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const staticDir = opts.staticDir ? path2.resolve(opts.staticDir) : findWebDist();
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://x");
@@ -33482,7 +33482,7 @@ Connection: close\r
     server.listen(port, "127.0.0.1", () => {
       const addr = server.address();
       const bound = typeof addr === "object" && addr ? addr.port : port;
-      resolve4({
+      resolve5({
         port: bound,
         close: () => new Promise((done) => {
           for (const c of wss.clients) c.terminate();
@@ -33644,17 +33644,17 @@ print(json.dumps({"defs": sorted(defs), "refs": sorted(refs - defs)}))
 var pythonOk;
 async function runPython(text) {
   if (pythonOk === false) return void 0;
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     const p = execFile2("python3", ["-c", SCRIPT], { timeout: 5e3, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
       if (err) {
         if (err.code === "ENOENT") pythonOk = false;
-        return resolve4(void 0);
+        return resolve5(void 0);
       }
       pythonOk = true;
       try {
-        resolve4(JSON.parse(stdout));
+        resolve5(JSON.parse(stdout));
       } catch {
-        resolve4(void 0);
+        resolve5(void 0);
       }
     });
     p.stdin?.end(text);
@@ -34336,12 +34336,12 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       params: { ...options.token ? { token: options.token } : {}, ...options.session ? { session: options.session } : {}, ...options.localKey ? { key: options.localKey } : {} }
     });
     try {
-      if (!provider.synced) await new Promise((resolve4, reject) => {
+      if (!provider.synced) await new Promise((resolve5, reject) => {
         const onSync = (synced) => {
           if (synced) {
             clearTimeout(timer);
             provider.off("sync", onSync);
-            resolve4();
+            resolve5();
           }
         };
         const timer = setTimeout(() => {
@@ -34447,8 +34447,14 @@ async function joinSession(opts) {
   watchClosed(session, opts.log);
   return session;
 }
+function normalizeLocalRoomName(room) {
+  if (room.startsWith("local/")) return room;
+  const name = room.trim().replace(/[^A-Za-z0-9_./-]/g, "");
+  if (!name) throw new RoomdError("local room name must not be empty", 2);
+  return `local/${name}`;
+}
 async function joinLocal(dir, opts) {
-  const roomName = opts.room ?? await localRoomName(dir, opts.localBranch);
+  const roomName = opts.room !== void 0 ? normalizeLocalRoomName(opts.room) : await localRoomName(dir, opts.localBranch);
   const owner = opts.name ?? await defaultName(dir);
   if (!owner) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
   const label = opts.tag?.trim().replace(/[^A-Za-z0-9_-]/g, "") || void 0;
@@ -34788,8 +34794,8 @@ var sleep = (ms) => new Promise((r) => {
   t.unref?.();
 });
 function defaultQueue(threadId, text) {
-  return new Promise((resolve4, reject) => {
-    execFile3("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve4());
+  return new Promise((resolve5, reject) => {
+    execFile3("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve5());
   });
 }
 function findThreadForDir(dir, since) {
@@ -35369,287 +35375,7 @@ Rules:
 Load the room-etiquette skill for detailed coordination, inbox, conflict, waiting, merge, and safety rules.`;
 
 // packages/room-mcp/src/tools/join.ts
-var defs = [
-  {
-    name: "room_login",
-    annotations: RW,
-    description: "Log in to the room server. GitHub (device flow): the first call returns a one-time code and URL. OIDC (self-hosted servers with a company identity provider): the first call returns a URL to open. Show them to the user VERBATIM. Call again to wait for the login to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your login (GitHub login or email).",
-    inputSchema: { type: "object", properties: { provider: { type: "string", enum: ["github", "oidc"], description: "login provider (default: the server's first; github.com rooms need github)" }, wait: int2("seconds to wait for confirmation on a follow-up call (default 90, max 600)"), server: str("override ws server URL"), credentials: str("override credentials file path") } }
-  },
-  {
-    name: "room_logout",
-    annotations: RW,
-    description: "Forget the GitHub login for the room server on this machine (and revoke the session on the server).",
-    inputSchema: { type: "object", properties: { server: str("override ws server URL"), credentials: str("override credentials file path") } }
-  },
-  {
-    name: "room_create",
-    annotations: RW,
-    description: "Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Ask the user before opening and pass confirm=true only after they agree. Idempotent: on an already-open repo it just joins without confirmation.",
-    inputSchema: { type: "object", properties: { confirm: { type: "boolean", description: "true only after the user agrees to open the repo for everyone with push access; unnecessary if already open" }, where: str("team | ws(s)://server"), room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
-  },
-  {
-    name: "room_join",
-    annotations: RW,
-    description: "Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo's room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: ask the user whether to open one, and call room_create with confirm=true only after they agree.",
-    inputSchema: { type: "object", properties: { where: str("local | team | ws(s)://server"), room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("alias of where for a server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
-  },
-  {
-    name: "room_leave",
-    annotations: RW,
-    description: "Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.",
-    inputSchema: { type: "object", properties: { forget: { type: "boolean", description: "also forget the remembered choice (local/team) for this clone" }, force: { type: "boolean", description: "dismiss running workers first instead of refusing" } } }
-  },
-  {
-    name: "room_close",
-    annotations: { ...RW, destructiveHint: true, idempotentHint: false },
-    description: "DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user's explicit request; room_create reopens later.",
-    inputSchema: { type: "object", properties: { confirm: { type: "boolean", description: "must be true" } }, required: ["confirm"] }
-  },
-  {
-    name: "room_export",
-    annotations: RO,
-    description: "Export the current room story, including compacted bus history, to a local markdown ledger without changing the room.",
-    inputSchema: { type: "object", properties: { path: str("optional output path, relative to the clone unless absolute; default .room/ledger/<room>-<timestamp>.md") } }
-  }
-];
-function handlers(state) {
-  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log: log2, evictStale, loadAreas, shareLine, hasCompany: hasCompany2, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
-  async function configureLogin(a) {
-    const config2 = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
-    configureCredentials(config2.credentialsPath);
-    ctx.config = { ...config2, ...ctx.config, credentialsPath: config2.credentialsPath };
-  }
-  const handlers9 = {
-    async room_login(a) {
-      await configureLogin(a);
-      const server = serverOf(a);
-      if (server === LOCAL) return LOCAL_LOGIN;
-      const cfg = await serverAuthConfig(server);
-      if (!cfg.providers.length) return `${server} has no login provider: non-GitHub rooms are admitted by its shared token (or open), and github.com rooms cannot be joined there; nothing to log in to`;
-      const provider = a.provider === "github" || a.provider === "oidc" ? a.provider : void 0;
-      if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(", ")})`;
-      const cred = getCredential(server);
-      const pending = getPending(server);
-      if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`;
-      if (pending && (!provider || provider === pending.provider)) {
-        const wait = Math.min(600, Math.max(5, typeof a.wait === "number" ? a.wait : 90));
-        const r = await pollLogin(server, pending, { maxMs: wait * 1e3 });
-        if ("login" in r) {
-          setPending(server, void 0);
-          return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? "" : "Next: room_join (or room_create if nobody has opened this repo)."}`.trim();
-        }
-        if ("error" in r) {
-          setPending(server, void 0);
-          return `login failed: ${r.error}. Call room_login to start again.`;
-        }
-        return `still waiting: ${codeLine(pending)}`;
-      }
-      const p = await startLogin(server, provider);
-      setPending(server, { ...p, startedAt: Date.now() });
-      return `${p.provider === "oidc" ? "Single sign-on" : "GitHub"} login for ${server}. Tell the user exactly this: ${codeLine(p)}`;
-    },
-    async room_logout(a) {
-      await configureLogin(a);
-      const server = serverOf(a);
-      if (server === LOCAL) return LOCAL_LOGIN;
-      setPending(server, void 0);
-      const r = await logout(server);
-      return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ""}${ctx.getSession() ? "; the current session stays connected until room_leave" : ""}` : `no login stored for ${server}`;
-    },
-    async room_create(a) {
-      return handlers9.room_join({ ...a, create: true });
-    },
-    async room_join(a) {
-      const cur = ctx.getSession();
-      if (cur) return [`already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`, hasCompany2(cur).company ? claudeWakeNote(cur) : ""].filter(Boolean).join("\n");
-      const dir = typeof a.dir === "string" && a.dir ? a.dir : ctx.cwd;
-      const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
-      const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
-      const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule };
-      if (typeof a.name === "string" && a.name.trim() && choice.server !== LOCAL) {
-        const server = parseServer(choice.server).server;
-        const cfg = await serverAuthConfig(server);
-        const login = cfg.mode === "device" ? getCredential(server)?.login : void 0;
-        if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`;
-      }
-      if (a.create === true && choice.server === LOCAL && choice.rule !== "argument") {
-        return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.';
-      }
-      let s;
-      try {
-        s = await doJoin({
-          dir,
-          credentialsPath: resolved.credentialsPath,
-          name: resolved.name,
-          room: resolved.room,
-          server: choice.server,
-          create: a.create === true,
-          confirm: a.confirm === true,
-          share: resolved.share
-        });
-      } catch (e) {
-        if (!(e instanceof NoRoom)) throw e;
-        const repo = e.roomName.startsWith("github.com/") ? e.roomName.split("/").slice(1, 3).join("/") : e.roomName.slice(0, e.roomName.lastIndexOf("/"));
-        return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`;
-      }
-      if (choice.rule === "argument") {
-        try {
-          await writeChoice(dir, choice.where, s.me.name);
-        } catch {
-        }
-      }
-      for (const m of s.room.messages()) seen.add(m.id);
-      rooms.add(s, "primary");
-      const stale = cleanupMine(s, "stale from an earlier session");
-      if (stale || s.room.scope(s.me.name)) log2(`cleared ${stale} stale claim(s) and scope from an earlier session`);
-      evictStale(s);
-      await loadAreas(s);
-      const out = [`${a.create && !s.local ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
-      const company = hasCompany2(s);
-      if (!company.company) {
-        out.push(shareLine(s));
-        out.push("alone here; the room stays quiet until someone joins");
-        out.push(`browser view: ${await refreshBrowserUrl(s)}`);
-        return out.join("\n");
-      }
-      out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone)" : choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
-      if (!s.local && (choice.rule === "argument" || choice.rule === "remembered")) {
-        const fresh = await markWarned(dir, s.dir).catch(() => true);
-        if (fresh || choice.rule === "argument") out.push(`note for your human: uncommitted work in this clone${choice.rule === "remembered" ? " (joined on the choice remembered for this repo)" : ""} is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf("/"))}'s room.`);
-      }
-      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`);
-      out.push(shareLine(s));
-      const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
-      const mineA = myAreas(s);
-      setPresence(s, { areas: mineA });
-      out.push(...areaLines(s, mineA));
-      out.push(here.length ? `here now: ${here.join(", ")}` : "nobody else is here yet");
-      for (const n of here) out.push(`  ${n}: ${personLine2(s, n)}`);
-      const away = others(s).filter((n) => !here.includes(n) && s.room.changedPaths(n).length);
-      for (const n of away) out.push(`  ${n} (offline): ${personLine2(s, n)}`);
-      if (s.autoTagNote) {
-        out.push(s.autoTagNote);
-        delete s.autoTagNote;
-      }
-      const cs = s.room.openClaims();
-      if (cs.length) {
-        out.push(`open claims (${cs.length}):`);
-        for (const c of cs) out.push(claimLine2(s, c));
-      }
-      out.push(`browser view: ${await refreshBrowserUrl(s)}`);
-      out.push("next: room_scope(area, summary, paths) before you edit.");
-      const wakeNote = claudeWakeNote(s);
-      if (wakeNote) out.push(wakeNote);
-      return out.join("\n");
-    },
-    async room_leave(a) {
-      const s = S();
-      const running = runningWorkers(s);
-      if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map((r) => r.w.tag).join(", ")}. Wait for them (room_wait), room_dismiss them, or room_leave force=true to dismiss them all and leave.`;
-      for (const r of running) dismissWorker(r.s, r.w, "the lead left the room");
-      await closeWorkersRoom();
-      const released = cleanupMine(s, "left the room");
-      rooms.remove(s);
-      await doLeave(s);
-      let forgot = "";
-      if (a.forget === true) {
-        const had = await clearChoice(s.dir).catch(() => false);
-        forgot = had ? "; forgot the remembered room choice for this clone (next session starts local)" : "; nothing was remembered for this clone";
-      }
-      return `left ${s.roomName}; released ${released} claim(s)${forgot}`;
-    },
-    async room_close(a) {
-      const s = S();
-      if (s.local) {
-        if (a.confirm !== true) return "this is a local room (no server): there is nothing to close. room_leave ends your session; the relay stops with the last session.";
-        const ledger3 = exportRoomLedger(s, { now: now() });
-        return `this is a local room (no server): there is nothing to close. Exported its ledger to ${ledger3.path} (${ledger3.lines} lines); room_leave ends your session.`;
-      }
-      if (a.confirm !== true) return "error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user's explicit request";
-      const ledger2 = exportRoomLedger(s, { now: now() });
-      const repo = s.roomName.slice(0, s.roomName.lastIndexOf("/"));
-      await closeWorkersRoom();
-      cleanupMine(s, "closing the room");
-      s.room.post(s.me, { type: "note", text: `closing the room for ${repo}: every branch room and all shared work is being removed`, priority: "interrupt" });
-      rooms.remove(s);
-      const closed = await doClose(s);
-      await doLeave(s);
-      return `closed ${repo} for everyone: removed ${closed.length ? closed.join(", ") : "its rooms"}; exported the ledger to ${ledger2.path} (${ledger2.lines} lines); room_create reopens it`;
-    },
-    async room_export(a) {
-      const s = S();
-      const ledger2 = exportRoomLedger(s, { path: typeof a.path === "string" && a.path ? a.path : void 0, now: now() });
-      return `exported room ledger to ${ledger2.path} (${ledger2.lines} lines)`;
-    }
-  };
-  return handlers9;
-}
-function install(state) {
-  const { ctx, log: log2, doJoin, doLeave, seen, rooms, now, presences, mine, planChanged } = state;
-  const followBranch = async () => {
-    const s = ctx.getSession();
-    if (!s || !s.roomName.includes("/") || s.pinnedRoom) return "";
-    let branch = "";
-    try {
-      branch = (await git(s.dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-    } catch {
-      return "";
-    }
-    if (!branch || branch === "HEAD") return "";
-    const current = s.roomName.slice(s.roomName.lastIndexOf("/") + 1);
-    if (branch === current) return "";
-    const repo = s.roomName.slice(0, s.roomName.lastIndexOf("/"));
-    const target = `${repo}/${branch}`;
-    log2(`branch changed ${current} -> ${branch}; moving room`);
-    cleanupMine(s, `switched branch to ${branch}`);
-    rooms.remove(s);
-    await doLeave(s);
-    try {
-      const n = await doJoin({ dir: s.dir, name: s.me.name, room: target, server: s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")) });
-      for (const m of n.room.messages()) seen.add(m.id);
-      rooms.add(n, "primary");
-      cleanupMine(n, "stale from an earlier session");
-      return `[room] your clone switched to branch ${branch}: left ${current}, joined ${target}. Scope and claims were reset; declare a scope before editing.`;
-    } catch (e) {
-      return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`;
-    }
-  };
-  const envStaleDays = Number(process.env.ROOM_STALE_DAYS);
-  const STALE_MS = (ctx.config?.staleDays ?? (Number.isFinite(envStaleDays) && envStaleDays > 0 ? envStaleDays : 7)) * 24 * 60 * 60 * 1e3;
-  const evictStale = (s) => {
-    const here = new Set(presences(s).map((p) => p.user.name));
-    const gone = [];
-    for (const person of Array.from(s.room.overlays.keys())) {
-      if (person === s.me.name || here.has(person)) continue;
-      const age = s.room.overlayAge(person, now());
-      if (age === void 0 || age < STALE_MS) continue;
-      const n = s.room.clearOverlays(person);
-      const days = Math.round(age / 864e5);
-      s.room.post(s.me, { type: "note", text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? "" : "s"}; last seen ${days} day${days === 1 ? "" : "s"} ago)`, priority: "fyi" });
-      log2(`evicted ${person}'s ${n} stale overlay file(s), ${days} days old`);
-      gone.push(person);
-    }
-    return gone;
-  };
-  const cleanupMine = (s, why, keep) => {
-    const released = keep ? mine(s).filter((c) => !keep(c)) : mine(s);
-    for (const c of released) {
-      s.room.removeClaim(c.id);
-      s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, summary: why, ...c.plans?.length ? { unfulfilled: c.plans } : {} });
-      for (const pl2 of c.plans ?? []) planChanged(s, c, pl2, "cancelled", why);
-    }
-    s.room.clearScope(s.me.name);
-    return released.length;
-  };
-  const serverOf = (a) => {
-    const r = resolveServer(typeof a.server === "string" && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER);
-    return r === LOCAL ? LOCAL : parseServer(r).server;
-  };
-  const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`;
-  const codeLine = (p) => p.provider === "oidc" || p.url ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.` : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`;
-  Object.assign(state, { followBranch, evictStale, cleanupMine, serverOf, LOCAL_LOGIN, codeLine });
-}
+import { resolve as resolve4 } from "node:path";
 
 // packages/room-mcp/src/workers.ts
 import { execFileSync as execFileSync2, spawn } from "node:child_process";
@@ -35771,7 +35497,7 @@ function pidIsOurWorker(pid, w, probe = probeProcess) {
 }
 
 // packages/room-mcp/src/tools/scope.ts
-var defs2 = [
+var defs = [
   {
     name: "room_scope",
     annotations: RW,
@@ -35791,7 +35517,7 @@ var defs2 = [
     inputSchema: { type: "object", properties: { path: str("repo-relative path"), from: int2("first line, default 1"), to: int2("last line, default EOF") }, required: ["path"] }
   }
 ];
-function handlers2(state) {
+function handlers(state) {
   const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine: scopeLine2, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine: personLine2, claimLine: claimLine2, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines } = state;
   const handlers9 = {
     async room_scope(a) {
@@ -35821,9 +35547,9 @@ function handlers2(state) {
       const since = offlineSince(s, now);
       if (since !== void 0) {
         const server = s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server;
-        out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state`);
+        out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state in ${s.roomName}`);
       }
-      out.push(`room: ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ""}`);
+      out.push(`room: ${s.roomName} \u2014 ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ""}`);
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? "?").slice(0, 10)})`);
       const mineA = myAreas(s);
       const all2 = a.all === true || !mineA.length;
@@ -35920,7 +35646,7 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
   };
   return handlers9;
 }
-function install2(state) {
+function install(state) {
   const { ctx, log: log2, base, presences, others, shareOf, now, isMe } = state;
   const STALE_MS = (ctx.config?.staleDays ?? 7) * 24 * 60 * 60 * 1e3;
   const areaIndex = /* @__PURE__ */ new WeakMap();
@@ -36001,6 +35727,308 @@ function install2(state) {
     });
   };
   Object.assign(state, { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine: claimLine2, ledgerLines, scopeLine: scopeLine2, personLine: personLine2 });
+}
+
+// packages/room-mcp/src/tools/join.ts
+var defs2 = [
+  {
+    name: "room_login",
+    annotations: RW,
+    description: "Log in to the room server. GitHub (device flow): the first call returns a one-time code and URL. OIDC (self-hosted servers with a company identity provider): the first call returns a URL to open. Show them to the user VERBATIM. Call again to wait for the login to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your login (GitHub login or email).",
+    inputSchema: { type: "object", properties: { provider: { type: "string", enum: ["github", "oidc"], description: "login provider (default: the server's first; github.com rooms need github)" }, wait: int2("seconds to wait for confirmation on a follow-up call (default 90, max 600)"), server: str("override ws server URL"), credentials: str("override credentials file path") } }
+  },
+  {
+    name: "room_logout",
+    annotations: RW,
+    description: "Forget the GitHub login for the room server on this machine (and revoke the session on the server).",
+    inputSchema: { type: "object", properties: { server: str("override ws server URL"), credentials: str("override credentials file path") } }
+  },
+  {
+    name: "room_create",
+    annotations: RW,
+    description: "Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Ask the user before opening and pass confirm=true only after they agree. Idempotent: on an already-open repo it just joins without confirmation.",
+    inputSchema: { type: "object", properties: { confirm: { type: "boolean", description: "true only after the user agrees to open the repo for everyone with push access; unnecessary if already open" }, where: str("team | ws(s)://server"), room: str("override room name (default: <host/owner/repo>/<branch>)"), name: str("override your name"), server: str("override ws server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
+  },
+  {
+    name: "room_join",
+    annotations: RW,
+    description: "Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo's room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: ask the user whether to open one, and call room_create with confirm=true only after they agree.",
+    inputSchema: { type: "object", properties: { where: str("local | team | ws(s)://server"), room: str("optional override for team/server rooms (required without an origin); for local joins omit unless the user asks for a separate named room, normalized to local/<name>"), name: str("override your name"), server: str("alias of where for a server URL"), dir: str("clone directory (default: cwd)"), share: SHARE } }
+  },
+  {
+    name: "room_leave",
+    annotations: RW,
+    description: "Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.",
+    inputSchema: { type: "object", properties: { forget: { type: "boolean", description: "also forget the remembered choice (local/team) for this clone" }, force: { type: "boolean", description: "dismiss running workers first instead of refusing" } } }
+  },
+  {
+    name: "room_close",
+    annotations: { ...RW, destructiveHint: true, idempotentHint: false },
+    description: "DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user's explicit request; room_create reopens later.",
+    inputSchema: { type: "object", properties: { confirm: { type: "boolean", description: "must be true" } }, required: ["confirm"] }
+  },
+  {
+    name: "room_export",
+    annotations: RO,
+    description: "Export the current room story, including compacted bus history, to a local markdown ledger without changing the room.",
+    inputSchema: { type: "object", properties: { path: str("optional output path, relative to the clone unless absolute; default .room/ledger/<room>-<timestamp>.md") } }
+  }
+];
+function handlers2(state) {
+  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log: log2, evictStale, loadAreas, shareLine, hasCompany: hasCompany2, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
+  async function configureLogin(a) {
+    const config2 = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
+    configureCredentials(config2.credentialsPath);
+    ctx.config = { ...config2, ...ctx.config, credentialsPath: config2.credentialsPath };
+  }
+  const handlers9 = {
+    async room_login(a) {
+      await configureLogin(a);
+      const server = serverOf(a);
+      if (server === LOCAL) return LOCAL_LOGIN;
+      const cfg = await serverAuthConfig(server);
+      if (!cfg.providers.length) return `${server} has no login provider: non-GitHub rooms are admitted by its shared token (or open), and github.com rooms cannot be joined there; nothing to log in to`;
+      const provider = a.provider === "github" || a.provider === "oidc" ? a.provider : void 0;
+      if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(", ")})`;
+      const cred = getCredential(server);
+      const pending = getPending(server);
+      if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`;
+      if (pending && (!provider || provider === pending.provider)) {
+        const wait = Math.min(600, Math.max(5, typeof a.wait === "number" ? a.wait : 90));
+        const r = await pollLogin(server, pending, { maxMs: wait * 1e3 });
+        if ("login" in r) {
+          setPending(server, void 0);
+          return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? "" : "Next: room_join (or room_create if nobody has opened this repo)."}`.trim();
+        }
+        if ("error" in r) {
+          setPending(server, void 0);
+          return `login failed: ${r.error}. Call room_login to start again.`;
+        }
+        return `still waiting: ${codeLine(pending)}`;
+      }
+      const p = await startLogin(server, provider);
+      setPending(server, { ...p, startedAt: Date.now() });
+      return `${p.provider === "oidc" ? "Single sign-on" : "GitHub"} login for ${server}. Tell the user exactly this: ${codeLine(p)}`;
+    },
+    async room_logout(a) {
+      await configureLogin(a);
+      const server = serverOf(a);
+      if (server === LOCAL) return LOCAL_LOGIN;
+      setPending(server, void 0);
+      const r = await logout(server);
+      return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ""}${ctx.getSession() ? "; the current session stays connected until room_leave" : ""}` : `no login stored for ${server}`;
+    },
+    async room_create(a) {
+      return handlers9.room_join({ ...a, create: true });
+    },
+    async room_join(a) {
+      const cur = ctx.getSession();
+      if (cur && a.where === void 0 && a.server === void 0 && a.room === void 0 && a.dir === void 0) {
+        return handlers(state).room_state({});
+      }
+      const dir = typeof a.dir === "string" && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd();
+      const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
+      const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
+      const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule };
+      const requestedRoom = typeof a.room === "string" ? a.room : resolved.room;
+      const targetRoom = choice.server === LOCAL ? requestedRoom !== void 0 ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir) : resolved.room ?? (await deriveRoomName(dir)).roomName;
+      if (cur) {
+        const sameServer = choice.server === LOCAL ? !!cur.local : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf("/"))).server;
+        if (sameServer && targetRoom === cur.roomName && resolve4(dir) === cur.dir) {
+          return handlers(state).room_state({});
+        }
+        const running = runningWorkers(cur);
+        if (running.length) return `error: ${running.length} worker(s) are running in ${cur.roomName}; they would be left behind. Wait for them, room_dismiss them, or stay in this room.`;
+      }
+      if (typeof a.name === "string" && a.name.trim() && choice.server !== LOCAL) {
+        const server = parseServer(choice.server).server;
+        const cfg = await serverAuthConfig(server);
+        const login = cfg.mode === "device" ? getCredential(server)?.login : void 0;
+        if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`;
+      }
+      if (a.create === true && choice.server === LOCAL && choice.rule !== "argument") {
+        return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.';
+      }
+      if (cur) {
+        await closeWorkersRoom();
+        cleanupMine(cur, "moved to another room");
+        rooms.remove(cur);
+        await doLeave(cur);
+      }
+      let s;
+      try {
+        s = await doJoin({
+          dir,
+          credentialsPath: resolved.credentialsPath,
+          name: resolved.name,
+          room: choice.server === LOCAL ? targetRoom : resolved.room,
+          server: choice.server,
+          create: a.create === true,
+          confirm: a.confirm === true,
+          share: resolved.share
+        });
+      } catch (e) {
+        if (!(e instanceof NoRoom)) throw e;
+        const repo = e.roomName.startsWith("github.com/") ? e.roomName.split("/").slice(1, 3).join("/") : e.roomName.slice(0, e.roomName.lastIndexOf("/"));
+        return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`;
+      }
+      if (choice.rule === "argument") {
+        try {
+          await writeChoice(dir, choice.where, s.me.name);
+        } catch {
+        }
+      }
+      for (const m of s.room.messages()) seen.add(m.id);
+      rooms.add(s, "primary");
+      const stale = cleanupMine(s, "stale from an earlier session");
+      if (stale || s.room.scope(s.me.name)) log2(`cleared ${stale} stale claim(s) and scope from an earlier session`);
+      evictStale(s);
+      await loadAreas(s);
+      const out = [`${a.create && !s.local ? "opened and joined" : "joined"} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? "?").slice(0, 10)}, clone ${s.dir})`];
+      if (cur) out.unshift(`moved from ${cur.roomName} to ${s.roomName}; links to the old room no longer show this session.`);
+      const company = hasCompany2(s);
+      if (!company.company) {
+        out.push(shareLine(s));
+        out.push("alone here; the room stays quiet until someone joins");
+        out.push(`browser view: ${await refreshBrowserUrl(s)}`);
+        return out.join("\n");
+      }
+      out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone)" : choice.rule === "env" ? "ROOM_SERVER" : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
+      if (!s.local && (choice.rule === "argument" || choice.rule === "remembered")) {
+        const fresh = await markWarned(dir, s.dir).catch(() => true);
+        if (fresh || choice.rule === "argument") out.push(`note for your human: uncommitted work in this clone${choice.rule === "remembered" ? " (joined on the choice remembered for this repo)" : ""} is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf("/"))}'s room.`);
+      }
+      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`);
+      out.push(shareLine(s));
+      const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
+      const mineA = myAreas(s);
+      setPresence(s, { areas: mineA });
+      out.push(...areaLines(s, mineA));
+      out.push(here.length ? `here now: ${here.join(", ")}` : "nobody else is here yet");
+      for (const n of here) out.push(`  ${n}: ${personLine2(s, n)}`);
+      const away = others(s).filter((n) => !here.includes(n) && s.room.changedPaths(n).length);
+      for (const n of away) out.push(`  ${n} (offline): ${personLine2(s, n)}`);
+      if (s.autoTagNote) {
+        out.push(s.autoTagNote);
+        delete s.autoTagNote;
+      }
+      const cs = s.room.openClaims();
+      if (cs.length) {
+        out.push(`open claims (${cs.length}):`);
+        for (const c of cs) out.push(claimLine2(s, c));
+      }
+      out.push(`browser view: ${await refreshBrowserUrl(s)}`);
+      out.push("next: room_scope(area, summary, paths) before you edit.");
+      const wakeNote = claudeWakeNote(s);
+      if (wakeNote) out.push(wakeNote);
+      return out.join("\n");
+    },
+    async room_leave(a) {
+      const s = S();
+      const running = runningWorkers(s);
+      if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map((r) => r.w.tag).join(", ")}. Wait for them (room_wait), room_dismiss them, or room_leave force=true to dismiss them all and leave.`;
+      for (const r of running) dismissWorker(r.s, r.w, "the lead left the room");
+      await closeWorkersRoom();
+      const released = cleanupMine(s, "left the room");
+      rooms.remove(s);
+      await doLeave(s);
+      let forgot = "";
+      if (a.forget === true) {
+        const had = await clearChoice(s.dir).catch(() => false);
+        forgot = had ? "; forgot the remembered room choice for this clone (next session starts local)" : "; nothing was remembered for this clone";
+      }
+      return `left ${s.roomName}; released ${released} claim(s)${forgot}`;
+    },
+    async room_close(a) {
+      const s = S();
+      if (s.local) {
+        if (a.confirm !== true) return "this is a local room (no server): there is nothing to close. room_leave ends your session; the relay stops with the last session.";
+        const ledger3 = exportRoomLedger(s, { now: now() });
+        return `this is a local room (no server): there is nothing to close. Exported its ledger to ${ledger3.path} (${ledger3.lines} lines); room_leave ends your session.`;
+      }
+      if (a.confirm !== true) return "error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user's explicit request";
+      const ledger2 = exportRoomLedger(s, { now: now() });
+      const repo = s.roomName.slice(0, s.roomName.lastIndexOf("/"));
+      await closeWorkersRoom();
+      cleanupMine(s, "closing the room");
+      s.room.post(s.me, { type: "note", text: `closing the room for ${repo}: every branch room and all shared work is being removed`, priority: "interrupt" });
+      rooms.remove(s);
+      const closed = await doClose(s);
+      await doLeave(s);
+      return `closed ${repo} for everyone: removed ${closed.length ? closed.join(", ") : "its rooms"}; exported the ledger to ${ledger2.path} (${ledger2.lines} lines); room_create reopens it`;
+    },
+    async room_export(a) {
+      const s = S();
+      const ledger2 = exportRoomLedger(s, { path: typeof a.path === "string" && a.path ? a.path : void 0, now: now() });
+      return `exported room ledger to ${ledger2.path} (${ledger2.lines} lines)`;
+    }
+  };
+  return handlers9;
+}
+function install2(state) {
+  const { ctx, log: log2, doJoin, doLeave, seen, rooms, now, presences, mine, planChanged } = state;
+  const followBranch = async () => {
+    const s = ctx.getSession();
+    if (!s || !s.roomName.includes("/") || s.pinnedRoom) return "";
+    let branch = "";
+    try {
+      branch = (await git(s.dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    } catch {
+      return "";
+    }
+    if (!branch || branch === "HEAD") return "";
+    const current = s.roomName.slice(s.roomName.lastIndexOf("/") + 1);
+    if (branch === current) return "";
+    const repo = s.roomName.slice(0, s.roomName.lastIndexOf("/"));
+    const target = `${repo}/${branch}`;
+    log2(`branch changed ${current} -> ${branch}; moving room`);
+    cleanupMine(s, `switched branch to ${branch}`);
+    rooms.remove(s);
+    await doLeave(s);
+    try {
+      const n = await doJoin({ dir: s.dir, name: s.me.name, room: target, server: s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")) });
+      for (const m of n.room.messages()) seen.add(m.id);
+      rooms.add(n, "primary");
+      cleanupMine(n, "stale from an earlier session");
+      return `[room] your clone switched to branch ${branch}: left ${current}, joined ${target}. Scope and claims were reset; declare a scope before editing.`;
+    } catch (e) {
+      return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`;
+    }
+  };
+  const envStaleDays = Number(process.env.ROOM_STALE_DAYS);
+  const STALE_MS = (ctx.config?.staleDays ?? (Number.isFinite(envStaleDays) && envStaleDays > 0 ? envStaleDays : 7)) * 24 * 60 * 60 * 1e3;
+  const evictStale = (s) => {
+    const here = new Set(presences(s).map((p) => p.user.name));
+    const gone = [];
+    for (const person of Array.from(s.room.overlays.keys())) {
+      if (person === s.me.name || here.has(person)) continue;
+      const age = s.room.overlayAge(person, now());
+      if (age === void 0 || age < STALE_MS) continue;
+      const n = s.room.clearOverlays(person);
+      const days = Math.round(age / 864e5);
+      s.room.post(s.me, { type: "note", text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? "" : "s"}; last seen ${days} day${days === 1 ? "" : "s"} ago)`, priority: "fyi" });
+      log2(`evicted ${person}'s ${n} stale overlay file(s), ${days} days old`);
+      gone.push(person);
+    }
+    return gone;
+  };
+  const cleanupMine = (s, why, keep) => {
+    const released = keep ? mine(s).filter((c) => !keep(c)) : mine(s);
+    for (const c of released) {
+      s.room.removeClaim(c.id);
+      s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, summary: why, ...c.plans?.length ? { unfulfilled: c.plans } : {} });
+      for (const pl2 of c.plans ?? []) planChanged(s, c, pl2, "cancelled", why);
+    }
+    s.room.clearScope(s.me.name);
+    return released.length;
+  };
+  const serverOf = (a) => {
+    const r = resolveServer(typeof a.server === "string" && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER);
+    return r === LOCAL ? LOCAL : parseServer(r).server;
+  };
+  const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`;
+  const codeLine = (p) => p.provider === "oidc" || p.url ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.` : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`;
+  Object.assign(state, { followBranch, evictStale, cleanupMine, serverOf, LOCAL_LOGIN, codeLine });
 }
 
 // node_modules/diff/libesm/diff/base.js
@@ -36664,14 +36692,14 @@ async function gitMergeFile(base, ours, theirs, labels) {
     fs9.writeFileSync(oursPath, ours);
     fs9.writeFileSync(basePath, base);
     fs9.writeFileSync(theirsPath, theirs);
-    const result = await new Promise((resolve4) => {
+    const result = await new Promise((resolve5) => {
       execFile4(
         "git",
         ["merge-file", "-p", "--diff3", "-L", labels.ours, "-L", labels.base, "-L", labels.theirs, oursPath, basePath, theirsPath],
         { maxBuffer: 16 * 1024 * 1024 },
         (error2, stdout) => {
           const raw = error2 && error2.code;
-          resolve4({
+          resolve5({
             code: typeof raw === "number" ? raw : error2 ? -1 : 0,
             stdout,
             unavailable: raw === "ENOENT",
@@ -37282,14 +37310,14 @@ call room_state before continuing.`;
       }
       if (offline(s)) return "offline: queued/not delivered; room_wait cannot observe new messages until reconnected";
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
-      const result = await new Promise((resolve4) => {
+      const result = await new Promise((resolve5) => {
         const ws = rooms.all().find((x) => x !== s) ?? null;
         const finish = (r) => {
           clearTimeout(timer);
           s.room.claims.unobserve(onClaims);
           s.room.bus.unobserve(onBus);
           ws?.room.bus.unobserve(onWorkersBus);
-          resolve4(r);
+          resolve5(r);
         };
         const onWorkersBus = (ev) => {
           if (!ws) return;
@@ -37743,8 +37771,8 @@ function mirrorLinks(cloneDir, scratchDir, src, dst) {
 async function runInMergedTree(s, ancestor, merged, cmd) {
   const dir = fs10.mkdtempSync(path11.join(os4.tmpdir(), "room-merge-"));
   try {
-    await new Promise((resolve4, reject) => {
-      const p = execFile5("sh", ["-c", `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 6e4 }, (err) => err ? reject(err) : resolve4());
+    await new Promise((resolve5, reject) => {
+      const p = execFile5("sh", ["-c", `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 6e4 }, (err) => err ? reject(err) : resolve5());
       p.unref?.();
     });
     for (const [rel, text] of merged) {
@@ -37758,10 +37786,10 @@ async function runInMergedTree(s, ancestor, merged, cmd) {
       fs10.writeFileSync(abs2, text);
     }
     linkSharedDirs(s.dir, dir);
-    const result = await new Promise((resolve4) => {
+    const result = await new Promise((resolve5) => {
       execFile5("sh", ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ROOM_MERGED_TREE: dir } }, (err, stdout, stderr) => {
         const raw = err ? err.code : 0;
-        resolve4({ code: typeof raw === "number" ? raw : err ? 1 : 0, out: `${stdout}${stderr}` });
+        resolve5({ code: typeof raw === "number" ? raw : err ? 1 : 0, out: `${stdout}${stderr}` });
       });
     });
     const tail = result.out.trim().split("\n").slice(-25).join("\n");
@@ -38431,21 +38459,21 @@ function install7(state) {
 }
 
 // packages/room-mcp/src/tools/index.ts
-var ALL_DEFS = [...defs, ...defs2, ...defs5, ...defs3, ...defs4, ...defs6, ...defs8, ...defs7];
+var ALL_DEFS = [...defs2, ...defs, ...defs5, ...defs3, ...defs4, ...defs6, ...defs8, ...defs7];
 var DEF_ORDER = ["room_login", "room_logout", "room_create", "room_join", "room_leave", "room_close", "room_export", "room_scope", "room_state", "room_read", "room_diff", "room_who", "room_claim", "room_release", "room_send", "room_wait", "room_done", "room_pr_note", "room_impact", "room_preview_merge", "room_share", "room_spawn", "room_dismiss"];
 var DEFS = DEF_ORDER.map((name) => ALL_DEFS.find((d) => d.name === name));
 function createTools(ctx) {
   const state = createHandlerState(ctx);
   const initial = ctx.getSession();
   if (initial) trackConnection(initial, state.now);
-  install2(state);
+  install(state);
   install3(state);
   install4(state);
   install7(state);
-  install(state);
+  install2(state);
   install5(state);
   install6(state);
-  const handlers9 = Object.assign({}, handlers(state), handlers2(state), handlers5(state), handlers3(state), handlers4(state), handlers6(state), handlers8(state), handlers7(state));
+  const handlers9 = Object.assign({}, handlers2(state), handlers(state), handlers5(state), handlers3(state), handlers4(state), handlers6(state), handlers8(state), handlers7(state));
   return {
     list: () => DEFS,
     attachHooks: state.attachHooks,

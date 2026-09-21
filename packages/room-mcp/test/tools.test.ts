@@ -96,7 +96,7 @@ describe('session gating', () => {
     session.provider.wsconnected = false
     expect(await tools.call('room_state', {})).not.toContain('OFFLINE')
     clock += 2001
-    expect(await tools.call('room_state', {})).toMatch(/^OFFLINE: not connected to ws:\/\/x since .*; showing the last known state\nroom:/)
+    expect(await tools.call('room_state', {})).toMatch(/^OFFLINE: not connected to ws:\/\/x since .*; showing the last known state in r\nroom:/)
     expect(await tools.call('room_send', { type: 'note', text: 'queued' })).toContain('offline: queued/not delivered')
     expect(await tools.call('room_wait', { timeoutMs: 100 })).toContain('offline: queued/not delivered')
   })
@@ -110,7 +110,7 @@ describe('session gating', () => {
     expect(out).toContain('alone here; the room stays quiet until someone joins')
     expect(out).not.toContain('next: room_scope')
     expect(out.split('\n')).toHaveLength(4)
-    expect(await t.tools.call('room_join', {})).toMatch(/^already in r/)
+    expect(await t.tools.call('room_join', {})).toMatch(/^room: r /)
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'x' })
     expect(await t.tools.call('room_leave', {})).toBe('left r; released 1 claim(s)')
     expect(t.room.openClaims()).toEqual([])

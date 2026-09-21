@@ -401,9 +401,17 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   return session
 }
 
+/** Normalize an explicit local room while preserving worker/bridge destinations. */
+export function normalizeLocalRoomName(room: string): string {
+  if (room.startsWith('local/')) return room
+  const name = room.trim().replace(/[^A-Za-z0-9_./-]/g, '')
+  if (!name) throw new RoomdError('local room name must not be empty', 2)
+  return `local/${name}`
+}
+
 /** Local mode: no server, no login. The clone's shared git dir hosts a relay; every worktree of the clone shares the room. */
 async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
-  const roomName = opts.room ?? await localRoomName(dir, opts.localBranch)
+  const roomName = opts.room !== undefined ? normalizeLocalRoomName(opts.room) : await localRoomName(dir, opts.localBranch)
   // A dispatched worker is named after its lead's verified owner (ROOM_OWNER), not this clone's git config.
   const owner = opts.name ?? await defaultName(dir)
   if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)

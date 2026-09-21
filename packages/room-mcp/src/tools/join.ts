@@ -1,7 +1,10 @@
 import { claudeWakeNote } from '../prompt.js'
 import { formatPlans, type Claim, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { resolve } from 'node:path'
+import { localRoomName } from '@room/roomd/local'
+import { handlers as scopeHandlers } from './scope.js'
 import { git } from '@room/roomd/git'
-import { DEFAULT_SERVER, NoRoom, resolveServer, type Session } from '../session.js'
+import { DEFAULT_SERVER, NoRoom, deriveRoomName, normalizeLocalRoomName, resolveServer, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { clearChoice, chooseServer, describeWhere, markWarned, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
@@ -18,7 +21,7 @@ export const defs: ToolDef[] = [
   { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Ask the user before opening and pass confirm=true only after they agree. Idempotent: on an already-open repo it just joins without confirmation.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'true only after the user agrees to open the repo for everyone with push access; unnecessary if already open' }, where: str('team | ws(s)://server'), room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
   { name: 'room_join', annotations: RW, description: 'Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo\'s room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: ask the user whether to open one, and call room_create with confirm=true only after they agree.',
-    inputSchema: { type: 'object', properties: { where: str('local | team | ws(s)://server'), room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('alias of where for a server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
+    inputSchema: { type: 'object', properties: { where: str('local | team | ws(s)://server'), room: str('optional override for team/server rooms (required without an origin); for local joins omit unless the user asks for a separate named room, normalized to local/<name>'), name: str('override your name'), server: str('alias of where for a server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
   { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.',
     inputSchema: { type: 'object', properties: { forget: { type: 'boolean', description: 'also forget the remembered choice (local/team) for this clone' }, force: { type: 'boolean', description: 'dismiss running workers first instead of refusing' } } } },
   { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'DESTRUCTIVE: close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user\'s explicit request; room_create reopens later.',
@@ -68,11 +71,26 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_create(a) { return handlers.room_join({ ...a, create: true }) },
     async room_join(a) {
       const cur = ctx.getSession()
-      if (cur) return [`already in ${cur.roomName} as ${displayName(cur.me)}; room_leave first to switch`, hasCompany(cur).company ? claudeWakeNote(cur) : ''].filter(Boolean).join('\n')
-      const dir = typeof a.dir === 'string' && a.dir ? a.dir : ctx.cwd
+      if (cur && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined) {
+        return scopeHandlers(state).room_state({})
+      }
+      const dir = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
       const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule }
+      const requestedRoom = typeof a.room === 'string' ? a.room : resolved.room
+      const targetRoom = choice.server === LOCAL
+        ? requestedRoom !== undefined ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir)
+        : resolved.room ?? (await deriveRoomName(dir)).roomName
+      if (cur) {
+        const sameServer = choice.server === LOCAL ? !!cur.local
+          : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf('/'))).server
+        if (sameServer && targetRoom === cur.roomName && resolve(dir) === cur.dir) {
+          return scopeHandlers(state).room_state({})
+        }
+        const running = runningWorkers(cur)
+        if (running.length) return `error: ${running.length} worker(s) are running in ${cur.roomName}; they would be left behind. Wait for them, room_dismiss them, or stay in this room.`
+      }
       if (typeof a.name === 'string' && a.name.trim() && choice.server !== LOCAL) {
         const server = parseServer(choice.server).server
         const cfg = await serverAuthConfig(server)
@@ -83,12 +101,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // room_create with nothing chosen: opening a repo needs a server, and that is the team room.
         return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.'
       }
+      if (cur) {
+        await closeWorkersRoom()
+        cleanupMine(cur, 'moved to another room')
+        rooms.remove(cur)
+        await doLeave(cur)
+      }
       let s: Session
       try { s = await doJoin({
         dir,
         credentialsPath: resolved.credentialsPath,
         name: resolved.name,
-        room: resolved.room,
+        room: choice.server === LOCAL ? targetRoom : resolved.room,
         server: choice.server,
         create: a.create === true,
         confirm: a.confirm === true,
@@ -106,6 +130,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       evictStale(s)
       await loadAreas(s)
       const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
+      if (cur) out.unshift(`moved from ${cur.roomName} to ${s.roomName}; links to the old room no longer show this session.`)
       const company = hasCompany(s)
       if (!company.company) {
         out.push(shareLine(s))

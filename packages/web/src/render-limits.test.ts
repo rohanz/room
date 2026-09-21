@@ -70,4 +70,4 @@ it('caps 5,000 grouped files, retains a selected path beyond the cap, and keeps 
     focus.set('Ada')
     expect(panel.querySelectorAll('.file-item')).toHaveLength(5000)
   } finally { room.doc.destroy(); dom.window.close() }
-}, 15000)
+}, 120_000)

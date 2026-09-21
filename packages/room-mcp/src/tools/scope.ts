@@ -47,9 +47,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const since = offlineSince(s, now)
       if (since !== undefined) {
         const server = s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
-        out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state`)
+        out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state in ${s.roomName}`)
       }
-      out.push(`room: ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ''}`)
+      out.push(`room: ${s.roomName} — ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ''}`)
       out.push(`you: ${displayName(s.me)} in ${s.roomName} (base ${(m.base ?? '?').slice(0, 10)})`)
       // Folder-scoped view: only people, claims and changes in my areas, unless all=true (or I am in none yet).
       const mineA = myAreas(s)

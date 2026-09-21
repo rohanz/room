@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -21,8 +21,10 @@ beforeAll(() => {
   writeFileSync(join(dir, 'app.py'), 'x = 1\n')
   git('add', '.'); git('commit', '-qm', 'init')
 })
-afterAll(async () => {
-  for (const s of sessions) { try { await leaveSession(s) } catch { /* ignore */ } }
+afterEach(async () => {
+  for (const s of sessions.splice(0)) { try { await leaveSession(s) } catch { /* ignore */ } }
+})
+afterAll(() => {
   clearRoomEnv()
   Object.assign(process.env, prevRoomEnv)
 })
@@ -33,6 +35,26 @@ describe('local mode (no server)', () => {
     expect(resolveServer('local')).toBe('local')
     expect(resolveServer('hosted')).toBe(DEFAULT_SERVER)
     expect(resolveServer('ws://localhost:1234')).toBe('ws://localhost:1234')
+  })
+
+  it('accepts a custom name and reports the actual room in the reply, browser and state', async () => {
+    let session: Session | null = null
+    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir,
+      join: async opts => { const s = await joinSession(opts); sessions.push(s); return s },
+    })
+    const reply = await tools.call('room_join', { where: 'local', room: 'anything' })
+    const name = 'local/anything'
+    expect(reply.split('\n')[0]).toMatch(/^joined local\/anything /)
+    expect(session!.roomName).toBe(name)
+    expect(reply).toContain(encodeURIComponent(encodeURIComponent(name)))
+    expect((await tools.call('room_state', {})).split('\n')[0]).toContain(name)
+  })
+
+  it('preserves an explicit local worker room across branch overrides', async () => {
+    const name = `local/${basename(dir)}/main`
+    const s = await joinSession({ dir, server: 'local', room: name, localBranch: 'worker', tag: 'worker', log: () => {} })
+    sessions.push(s)
+    expect(s.roomName).toBe(name)
   })
 
   it('joins a local room without any server, names it after the clone, and a tagged second session shares it', async () => {

@@ -21,7 +21,12 @@ Never join the team room on your own initiative.
 `room_join` derives the room from the git origin and branch (local rooms: from the clone
 and its main branch), takes your name from your login or `git config user.name`, starts the
 push-only sync daemon, and returns who is here, their scopes, open claims, and the browser
-view URL. Nothing is written to disk by the room.
+view URL. A local room needs no name and no origin remote. Pass `room` for a local join
+only when the user asks for a separate, named room; it becomes `local/<name>`.
+Re-joining the same room prints its current state and browser link. Moving rooms is refused
+while your workers are running; wait for them or dismiss them first. After a move, give the
+human the new browser link: the old link no longer shows this session.
+Nothing is written to disk by the room.
 
 If it fails:
 - "not logged in": the server uses GitHub login. Call `room_login`, show the user the code
@@ -31,7 +36,7 @@ If it fails:
   whether to open one; joining is not permission to open it. Only after they say yes, call
   `room_create(where="team", confirm=true)`. Once per repo; every branch then has a room and
   teammates join automatically.
-- "no origin remote": ask the user for a room name and call `room_join` with `room`.
+- "no origin remote" when joining a team/server room: ask the user for a room name and call `room_join` with `room`. A local room needs no name and no origin; its name is derived from the clone.
 - "room base is X; local HEAD is Y": tell the user to `git pull` (or check out the shared
   commit) and try again. Do not work in the room on a different base.
 - "could not sync with wss://...": the server is not reachable. Tell the user, and say the
