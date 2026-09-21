@@ -428,7 +428,7 @@ npm run build:plugin  # regenerate after MCP or daemon changes
 | `examples/demo-repo` | Small Python demo service. |
 
 [Original v2 design (historical)](docs/superpowers/specs/2026-09-12-room-v2-design.md) · [Changelog](CHANGELOG.md) ·
-[Decisions and build history](docs/decisions.md) · [Prior art](docs/prior-art.md)
+[Roadmap](docs/roadmap.md) · [Decisions and build history](docs/decisions.md) · [Prior art](docs/prior-art.md)
 
 ## License
 
