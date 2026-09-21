@@ -152,6 +152,9 @@ export interface Impact {
   usedIn: string[]
 }
 
+/** Symbols defined in more files than this are treated as noise for parsed inputs. */
+export const COMMON_SYMBOL_FILE_THRESHOLD = 5
+
 export class SymbolGraph {
   private files = new Map<string, FileSymbols>()
   private definers = new Map<string, Set<string>>()
@@ -185,7 +188,10 @@ export class SymbolGraph {
   /** Files that reference a symbol defined elsewhere (a definer that also references itself is excluded). */
   usersOf(symbol: string): string[] {
     const defs = this.definers.get(symbol) ?? new Set()
-    return Array.from(this.users.get(symbol) ?? []).filter(p => !defs.has(p)).sort()
+    // A name nobody defines yet (a rename in flight) still reports its users, as before.
+    return Array.from(this.users.get(symbol) ?? [])
+      .filter(path => !defs.has(path) && (defs.size === 0 || this.resolvedDefiners(symbol, path).length > 0))
+      .sort()
   }
   /** Symbols a file uses that some other file defines. */
   dependenciesOf(path: string): Impact[] {
@@ -193,7 +199,7 @@ export class SymbolGraph {
     if (!syms) return []
     const out: Impact[] = []
     for (const r of syms.refs) {
-      const definedIn = this.definersOf(r).filter(p => p !== path)
+      const definedIn = this.resolvedDefiners(r, path)
       if (definedIn.length) out.push({ symbol: r, definedIn, usedIn: [path] })
     }
     return out.sort((a, b) => a.symbol.localeCompare(b.symbol))
@@ -204,12 +210,39 @@ export class SymbolGraph {
     if (!syms) return []
     const out: Impact[] = []
     for (const d of syms.defs) {
-      const usedIn = this.usersOf(d)
+      const usedIn = Array.from(this.users.get(d) ?? [])
+        .filter(consumer => consumer !== path && this.resolvedDefiners(d, consumer).includes(path))
+        .sort()
       if (usedIn.length) out.push({ symbol: d, definedIn: [path], usedIn })
     }
     return out.sort((a, b) => b.usedIn.length - a.usedIn.length || a.symbol.localeCompare(b.symbol))
   }
   impact(symbol: string): Impact { return { symbol, definedIn: this.definersOf(symbol), usedIn: this.usersOf(symbol) } }
+
+  private resolvedDefiners(symbol: string, consumer: string): string[] {
+    const candidates = this.definersOf(symbol).filter(path => path !== consumer)
+    const imports = importsOf(this.files.get(consumer))
+    // Regex-extracted inputs have no import facts, so retain the legacy name-only graph.
+    if (imports === undefined) return candidates
+
+    const imported = candidates.filter(path => imports.some(value => importMentions(value, path)))
+    if (imported.length) return imported
+    return (this.definers.get(symbol)?.size ?? 0) > COMMON_SYMBOL_FILE_THRESHOLD ? [] : candidates
+  }
+}
+
+const importsOf = (symbols: FileSymbols | undefined): string[] | undefined =>
+  (symbols as (FileSymbols & { imports?: string[] }) | undefined)?.imports
+
+function importMentions(value: string, definingPath: string): boolean {
+  const path = definingPath.replace(/\\/g, '/').toLowerCase()
+  const parts = path.split('/').filter(Boolean)
+  const filename = parts.at(-1) ?? ''
+  const stem = filename.replace(/\.[^.]+$/, '')
+  const parent = parts.at(-2)
+  const moduleNames = new Set([stem, parent].filter((name): name is string => Boolean(name)))
+  const importParts = value.toLowerCase().match(/[a-z0-9_$-]+/g) ?? []
+  return importParts.some(part => moduleNames.has(part))
 }
 
 function add(m: Map<string, Set<string>>, k: string, v: string) { let s = m.get(k); if (!s) { s = new Set(); m.set(k, s) } s.add(v) }
