@@ -198,16 +198,20 @@ export function groupedPeople(groups: ParticipantGroups, card: (person: Particip
   return { active, offline }
 }
 
-/** Keep historical controls available without filling the primary chip row. */
+/** Keep historical controls available without filling the primary chip row: the rest expand inline, in the same row. */
 export function compactChips(items: { key: string; node: HTMLElement }[], prominent: ReadonlySet<string>, open: boolean, toggle: (open: boolean) => void): HTMLElement[] {
   const shown = items.filter(item => prominent.has(item.key)).map(item => item.node)
   const hidden = items.filter(item => !prominent.has(item.key)).map(item => item.node)
-  if (hidden.length) {
-    const more = h('details', { class: 'more-chips', open }, h('summary', {}, `More (${hidden.length})`), h('div', { class: 'filter-chips' }, ...hidden))
-    more.ontoggle = () => { if (more.isConnected) toggle(more.open) }
-    shown.push(more)
+  if (!hidden.length) return shown
+  const more = h('button', { class: 'more-chips', type: 'button' })
+  const apply = () => {
+    for (const node of hidden) node.hidden = !open
+    more.textContent = open ? 'Show less' : `Show all (${hidden.length} more)`
+    more.ariaExpanded = String(open)
   }
-  return shown
+  more.onclick = () => { open = !open; apply(); toggle(open) }
+  apply()
+  return [...shown, ...hidden, more]
 }
 
 export const TIMELINE_WINDOW = 30

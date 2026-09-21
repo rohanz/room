@@ -359,7 +359,7 @@ h2, p { margin: 0; }
 .empty { min-height: 180px; font-size: 14px; }
 .timeline-head { padding: 16px; }
 .timeline-list { padding: 16px; gap: 16px; }
-/* Never stretch: an open "More" is the tallest item on its line and would inflate its neighbours into circles. */
+/* Never stretch: a taller item on a line would inflate its pill-shaped neighbours into circles. */
 .filter-chips { flex-wrap: wrap; align-items: flex-start; gap: 8px; overflow: visible; }
 .filter-chip { font-size: 12px; padding: 4px 10px; }
 .priority-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -776,10 +776,11 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .worker-group-heading, .finished-workers > summary { padding: 10px; font-size: 12px; }
 .worker-children { margin-left: 12px; border-left: 1px solid var(--line); }
 .worker-group .participant { width: 100%; }
-.finished-workers > summary, .more-chips > summary { cursor: pointer; color: var(--muted); }
+.finished-workers > summary { cursor: pointer; color: var(--muted); }
 .archive-worker { padding: 10px; border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
 .archive-worker p { margin: 6px 0; }
-.more-chips { font-size: 12px; line-height: 24px; }
-.more-chips > .filter-chips { padding: 8px 0; }
+.more-chips { padding: 4px 6px; border: 0; background: none; color: var(--accent-text); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.more-chips:hover { text-decoration: underline; }
+.filter-chip[hidden], .merge-chip[hidden] { display: none; }
 .timeline-more { margin: 8px; color: var(--muted); }
 .state-pill.failed { background: var(--danger-bg); color: var(--danger-ink); }

@@ -69,14 +69,20 @@ it('bounds timeline and merge controls while retaining older filters and scope c
   expect(timeline.textContent).toContain('Current task') // scope predates the window
   expect(timeline.querySelector('.timeline-list')!.textContent).not.toContain('Old task')
   for (const panel of [timeline, board]) {
-    const more = panel.querySelector<HTMLDetailsElement>('.more-chips')!
-    expect(more.open).toBe(false)
-    expect(more.textContent).toContain('Old')
-    expect(more.textContent).toContain('Lead+archived')
-    expect(more.textContent).toContain('old-area')
+    const more = panel.querySelector<HTMLButtonElement>('.more-chips')!
+    const extra = () => [...panel.querySelectorAll<HTMLElement>('.filter-chips > .filter-chip')].filter(chip => /Old|Lead\+archived|old-area/.test(chip.textContent ?? ''))
+    expect(more.ariaExpanded).toBe('false')
+    expect(more.textContent).toMatch(/^Show all \(\d+ more\)$/)
+    expect(extra().length).toBeGreaterThanOrEqual(3)
+    expect(extra().every(chip => chip.hidden)).toBe(true)
+    more.click() // expands inline, in the same row
+    expect(more.textContent).toBe('Show less')
+    expect(extra().every(chip => !chip.hidden && chip.parentElement === more.parentElement)).toBe(true)
+    more.click()
+    expect(extra().every(chip => chip.hidden)).toBe(true)
   }
-  expect(center.querySelector('.more-chips')!.textContent).toContain('Old')
-  expect([...center.querySelectorAll('.merge-chips > .merge-chip')].map(node => node.textContent)).toEqual(['Lead', 'Recent'])
+  expect([...center.querySelectorAll<HTMLElement>('.merge-chips > .merge-chip')].filter(chip => chip.hidden).map(chip => chip.textContent)).toContain('Old')
+  expect([...center.querySelectorAll<HTMLElement>('.merge-chips > .merge-chip')].filter(chip => !chip.hidden).map(node => node.textContent)).toEqual(['Lead', 'Recent'])
   timeline.querySelector<HTMLButtonElement>('.timeline-more')!.click()
   expect(timeline.querySelector('.timeline-list')!.textContent).toContain('Old task')
   expect(center.querySelector('.more-chips')).toBeNull()
@@ -89,7 +95,7 @@ it('shows dismissed uncommitted files in the archive row', () => {
   expect(participantsPanel(conn, createFocusState()).textContent).toContain('dismissed with 2 uncommitted files left in its worktree')
 })
 
-it('chip rows never stretch their chips to the height of an open "More"', async () => {
+it('chip rows never stretch their chips to the height of a taller neighbour', async () => {
   const { readFileSync } = await import('node:fs')
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
   const rule = [...css.matchAll(/^\.filter-chips \{([^}]*)\}/gm)].map(m => m[1]).join(' ')
