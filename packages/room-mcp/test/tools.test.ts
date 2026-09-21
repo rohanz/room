@@ -489,23 +489,29 @@ describe('wait', () => {
 
   it('resolves on release, on answer, on interrupt, and on timeout', async () => {
     const t = setup()
-    const k = { name: 'Kieran', kind: 'agent' as const }
-    const c = t.other.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'x' })
-    const p1 = t.tools.call('room_wait', { claimId: c.id, timeoutMs: 2000 })
-    setTimeout(() => t.other.removeClaim(c.id), 20)
-    expect(await p1).toContain(`released: ${c.id}`)
+    const peer = addPresence(t.session!.awareness, 'Kieran')
+    try {
+      const k = { name: 'Kieran', kind: 'agent' as const }
+      const c = t.other.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'x' })
+      const p1 = t.tools.call('room_wait', { claimId: c.id, timeoutMs: 2000 })
+      await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe(`waiting for ${c.id}`))
+      t.other.removeClaim(c.id)
+      expect(await p1).toContain(`released: ${c.id}`)
 
-    const q = await t.tools.call('room_send', { type: 'question', to: 'Kieran', text: 'ok?' })
-    const qid = q.match(/\[(m_[^\]]+)\]/)![1]
-    const p2 = t.tools.call('room_wait', { questionId: qid, timeoutMs: 2000 })
-    setTimeout(() => t.other.post(k, { type: 'answer', inReplyTo: qid, to: 'Rohan', text: 'yes' } as never), 20)
-    expect(await p2).toContain('answered:')
+      const q = await t.tools.call('room_send', { type: 'question', to: 'Kieran', text: 'ok?' })
+      const qid = q.match(/\[(m_[^\]]+)\]/)![1]
+      const p2 = t.tools.call('room_wait', { questionId: qid, timeoutMs: 2000 })
+      await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe(`waiting for answer to ${qid}`))
+      t.other.post(k, { type: 'answer', inReplyTo: qid, to: 'Rohan', text: 'yes' } as never)
+      expect(await p2).toContain('answered:')
 
-    const p3 = t.tools.call('room_wait', { timeoutMs: 2000 })
-    setTimeout(() => t.other.post(k, { type: 'note', text: 'stop', to: 'Rohan', priority: 'interrupt' } as never), 20)
-    expect(await p3).toContain('interrupt:')
+      const p3 = t.tools.call('room_wait', { timeoutMs: 2000 })
+      await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe('waiting'))
+      t.other.post(k, { type: 'note', text: 'stop', to: 'Rohan', priority: 'interrupt' } as never)
+      expect(await p3).toContain('interrupt:')
 
-    expect(await t.tools.call('room_wait', { timeoutMs: 30 })).toContain('timeout after 30ms')
+      expect(await t.tools.call('room_wait', { timeoutMs: 30 })).toContain('timeout after 30ms')
+    } finally { peer.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
   })
 })
 

@@ -102,6 +102,28 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   return handlers
 }
 
+/** Finish only this task's claims; the task summary belongs solely in the done message. */
+export function releaseClaimsOnDone(s: Session, keep?: (claim: Claim) => boolean): number {
+  const released = s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === s.me.kind && !keep?.(c))
+  s.room.doc.transact(() => {
+    for (const c of released) {
+      s.room.removeClaim(c.id)
+      s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: 'released on done', ...(c.plans?.length ? { unfulfilled: c.plans } : {}) })
+      for (const plan of c.plans ?? []) postPlanChange(s, c, plan, 'cancelled', '', undefined, 'fyi')
+    }
+    s.room.clearScope(s.me.name)
+  }, s.me)
+  return released.length
+}
+
+function postPlanChange(s: Session, c: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan, priority?: PlanMsg['priority']): string[] {
+  const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter(p => p !== s.me.name)
+  const base = { type: 'plan' as const, status, claimId: c.id, path: c.path, plan, text, ...(replacedBy ? { replacedBy } : {}), ...(priority ? { priority } : {}) }
+  const orig = s.room.post<PlanMsg>(s.me, base)
+  for (const p of deps) s.room.post<PlanMsg>(s.me, { ...base, to: p, copyOf: orig.id })
+  return deps.length ? [`plan ${status}: ${formatPlans([plan])} — told ${deps.map(d => `${d}'s agent`).join(', ')} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} — nobody had been shown it`]
+}
+
 
 function parsePlans(v: unknown): Plan[] | string {
   if (v === undefined || v === null) return []
@@ -138,13 +160,7 @@ export function install(state: HandlerState): void {
         }
       })
     }
-  const planChanged = (s: Session, c: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan): string[] => {
-      const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter(p => p !== s.me.name)
-      const base: Omit<PlanMsg, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> = { type: 'plan', status, claimId: c.id, path: c.path, plan, text, ...(replacedBy ? { replacedBy } : {}) }
-      const orig = s.room.post<PlanMsg>(s.me, base)
-      for (const p of deps) s.room.post<PlanMsg>(s.me, { ...base, to: p, copyOf: orig.id })
-      return deps.length ? [`plan ${status}: ${formatPlans([plan])} — told ${deps.map(d => `${d}'s agent`).join(', ')} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} — nobody had been shown it`]
-    }
+  const planChanged = postPlanChange
 
   const startConflictWatcher = (s: import('../session.js').Session): ConflictWatcher => {
     const watcher = new ConflictWatcher({

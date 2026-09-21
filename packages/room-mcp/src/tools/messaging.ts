@@ -22,8 +22,43 @@ export const defs: ToolDef[] = [
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, rooms, myWorkers, upgrade, setPresence, forMe, seen } = state
+  const { S, rooms, myWorkers, workerAlive, presences, now, upgrade, setPresence, forMe, seen } = state
   const offline = (s: Session) => !!s.closed || !s.provider.synced || (s.provider as { wsconnected?: boolean }).wsconnected === false
+  const unavailableQuestions = new Map<string, string>()
+  const recipientNotice = (s: Session, name: string): { text: string; terminal: boolean } | undefined => {
+    const present = presences(s).some(p => p.user.name === name)
+    const worker = s.room.workerOf(name)
+    // A live generation supersedes any archive under the same participant name.
+    const retired = !worker && s.room.retiredWorkers().filter(w => w.name === name).sort((a, b) => b.retiredAt - a.retiredAt)[0]
+    const exited = worker && (worker.exitCode !== undefined || (s.local ? !workerAlive(s, worker) : worker.status !== 'running' && !present))
+    if (retired || exited) {
+      const record = retired || worker!
+      const finished = record.finishedAt
+      const ago = finished === undefined ? '' : ` ${Math.max(0, Math.floor((now() - finished) / 60_000))}m ago`
+      const summary = record.summary?.replace(/\s+/g, ' ').trim() || 'no summary recorded'
+      return { text: `${name} finished${ago} and will not answer; its summary: ${summary}`, terminal: true }
+    }
+    if (present || worker) return undefined
+    const known = new Set([
+      s.me.name, ...presences(s).map(p => p.user.name), ...s.room.colors.keys(), ...s.room.scopes.keys(), ...s.room.overlays.keys(), ...s.room.deleted.keys(),
+      ...s.room.openClaims().map(c => c.by), ...Array.from(s.room.workers.values(), w => w.name),
+      ...s.room.messages().map(m => m.from),
+    ].filter(n => !isPrName(n)))
+    if (known.has(name)) return { text: `${name} is offline; it will see this when it returns`, terminal: false }
+    if (offline(s)) return undefined // A disconnected room cannot establish that a name is unknown.
+    return { text: `nobody called ${name} is or was in this room; participants: ${[...known].sort().join(', ')}`, terminal: true }
+  }
+  const unavailableQuestion = (s: Session, questionId: string): string | undefined => {
+    const cached = unavailableQuestions.get(questionId)
+    if (cached) return cached
+    const question = s.room.messages().find(m => m.id === questionId && m.type === 'question')
+    if (!question?.to) return undefined
+    const notice = recipientNotice(s, question.to)
+    if (!notice?.terminal) return undefined
+    unavailableQuestions.set(questionId, notice.text)
+    if (unavailableQuestions.size > 256) unavailableQuestions.delete(unavailableQuestions.keys().next().value!)
+    return notice.text
+  }
   const handlers: Record<string, Handler> = {
     async room_send(a) {
       const lead = S()
@@ -31,7 +66,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
       const wsr = rooms.workers()
       const byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
-      const s = byQuestion ?? (wsr && wsr !== lead && to && myWorkers(wsr).some(w => w.name === to) ? wsr : lead)
+      const s = byQuestion ?? (wsr && wsr !== lead && to && (myWorkers(wsr).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : lead)
       const text = typeof a.text === 'string' ? a.text : ''
       if (!text) return 'error: text is required'
       if (to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
@@ -51,7 +86,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         case 'question':
           if (!to) return 'error: question requires to (whose agent)'
           msg = s.room.post<QuestionMsg>(s.me, withPr({ type: 'question', text, to }))
-          notes.push(`room_wait questionId=${msg.id} to block for the answer`)
           break
         case 'answer': {
           if (typeof a.inReplyTo !== 'string' || !a.inReplyTo) return 'error: answer requires inReplyTo'
@@ -66,6 +100,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           break
         default: return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       }
+      const notice = msg.to ? recipientNotice(s, msg.to) : undefined
+      if (notice) notes.push(msg.type === 'question' && notice.terminal ? unavailableQuestion(s, msg.id)! : notice.text)
+      if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
       s.daemon.touch()
       return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes, ...(offline(s) ? ['offline: queued/not delivered'] : [])].join('\n')
     },
@@ -78,6 +115,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const qRoom = (questionId && rooms.holdingQuestion(questionId, s)) || s
       const answered = (id: string) => qRoom.room.messages().find(m => messageEndsWait(m, { questionId: id, me: qRoom.me.name, answersOnly: true }))
       if (questionId) { const an = answered(questionId); if (an) return `answered: ${formatMsg(an)}` }
+      if (questionId) { const notice = unavailableQuestion(qRoom, questionId); if (notice) return notice }
       const waitResult = (x: Session, m: Msg, workersRoom = false): string | undefined => {
         if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
           if (m.type === 'answer') return `answered: ${formatMsg(m)}`
@@ -98,7 +136,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
       const result = await new Promise<string>(resolve => {
         const ws = rooms.all().find(x => x !== s) ?? null
-        const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); ws?.room.bus.unobserve(onWorkersBus); resolve(r) }
+        const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); ws?.room.bus.unobserve(onWorkersBus); qRoom.room.doc.off('update', onRecipient); resolve(r) }
+        const onRecipient = () => {
+          if (!questionId) return
+          const notice = unavailableQuestion(qRoom, questionId)
+          if (notice) finish(notice)
+        }
         const onWorkersBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           if (!ws) return
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
@@ -117,6 +160,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
         }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)
+        if (questionId) { qRoom.room.doc.on('update', onRecipient); onRecipient() }
       })
       setPresence(s, { status: 'idle' })
       return `${result}\ncall room_state before continuing.`
