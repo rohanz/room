@@ -20,9 +20,13 @@ export function formatCount(count: number, singular: string, plural = singular +
   return count + ' ' + (count === 1 ? singular : plural)
 }
 
+const STOPPED_WITH_SESSION = 'stopped when your last session ended; its partial work is in its worktree'
+/** A running worker whose process is gone had no live lead to witness its exit: the lead's session ended first. */
+const stoppedWithSession = (w: Pick<Worker, 'status' | 'stopReason'>, processGone = false): boolean => w.stopReason === 'lead-session-ended' || (w.status === 'running' && processGone)
+
 /** Wording for action recency; connectivity and process liveness are separate facts. */
-export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; worker?: Pick<Worker, 'status' | 'finishedAt' | 'stopReason'> } = {}): string {
-  if (options.worker?.stopReason === 'lead-session-ended') return 'stopped when your last session ended; its partial work is in its worktree'
+export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; processGone?: boolean; worker?: Pick<Worker, 'status' | 'finishedAt' | 'stopReason'> } = {}): string {
+  if (options.worker && stoppedWithSession(options.worker, options.processGone)) return STOPPED_WITH_SESSION
   const finished = options.worker !== undefined && options.worker.status !== 'running'
   const running = options.worker ? options.worker.status === 'running' : options.running
   if (finished) lastActive = options.worker!.finishedAt ?? lastActive
@@ -219,9 +223,10 @@ export interface WorkerLineInput {
 /** The two canonical room_state lines for one dispatched worker. */
 export function workerLine({ worker: w, processGone = false, lastActive, changedCount, last, now = Date.now() }: WorkerLineInput): [string, string] {
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
-  const alive = w.stopReason === 'lead-session-ended' ? '; stopped when your last session ended; its partial work is in its worktree' : w.status === 'running' && processGone ? ' (process gone)' : ''
+  const state = stoppedWithSession(w, processGone) ? STOPPED_WITH_SESSION
+    : w.status === 'running' ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status
   return [
-    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${w.status === 'running' && !processGone ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
+    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${w.summary ? ` · ${w.summary.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
   ]
 }

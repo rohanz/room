@@ -5,7 +5,6 @@ import { gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
-import { pidAlive } from '../workers.js'
 import { isPrName } from '../prs.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -102,7 +101,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const n of names) {
         const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
         const worker = s.room.workerOf(n)
-        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker }) : 'offline'
+        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: worker !== undefined && !state.workerAlive(s, worker) }) : 'offline'
         const who = participantIdentityLine(ps, n, worker)
         const theirs = areasFor(s, n)
         const areaSummary = areaMembershipSummary(theirs)
@@ -147,11 +146,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
-      out.push(...formatWorkerLines(myWorkers(s).map(worker => ({ worker, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
+      out.push(...formatWorkerLines(myWorkers(s).map(worker => ({ worker, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone: worker.status === 'running' && !state.workerAlive(s, worker), changedCount: s.room.changedPaths(worker.name).length, last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)
-        out.push(...formatWorkerLines(myWorkers(ws).map(worker => ({ worker, processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: ws.room.changedPaths(worker.name).length, last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
+        out.push(...formatWorkerLines(myWorkers(ws).map(worker => ({ worker, processGone: worker.status === 'running' && !state.workerAlive(ws, worker), changedCount: ws.room.changedPaths(worker.name).length, last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
       }
       return a.all === true ? out.join('\n') : compactState(out, summarizedClaims)
     },

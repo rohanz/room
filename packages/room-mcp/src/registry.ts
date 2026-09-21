@@ -39,14 +39,18 @@ export function workerId(lead: string, tag: string, gen: number): string { retur
 export function workerIdBase(roomName: string, lead: string, tag: string): string { return `${roomName}|${lead}/${tag}` }
 
 /** A confirmed exit is recorded once, including when discovered after the lead restarts. */
-export async function finishWorkerProcess(s: Session, w: Worker, code: number | null, at = Date.now(), error?: string): Promise<void> {
+/** `unwitnessed`: a later lead found a running worker's process gone. A lead that was alive would have seen the
+ * exit, so the lead's session ended first (hosts kill the MCP process before its shutdown can record that). */
+export async function finishWorkerProcess(s: Session, w: Worker, code: number | null, at = Date.now(), error?: string, unwitnessed = false): Promise<void> {
   const current = s.room.workers.get(w.tag)
   if (current !== w || w.exitCode !== undefined) return
   const done = w.status === 'done'
   const exitCode = code ?? -1
   s.room.updateWorker(w.tag, {
     exitCode, finishedAt: w.finishedAt ?? at,
-    ...(w.status === 'running' ? { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' } : {}),
+    ...(w.status !== 'running' ? {}
+      : unwitnessed ? { status: 'dismissed' as const, stopReason: 'lead-session-ended' as const }
+      : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
   }, w.id)
   if (!done) {
     // tools/context constructs Rooms: defer this dependency until all tool definitions are loaded.
@@ -55,7 +59,7 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
     if (!current || current.id !== w.id || current.gen !== w.gen || current.startedAt !== w.startedAt) return
     releaseClaimsOnDone(s, undefined, w.name)
   }
-  if (!w.stopReason && w.dismissedAt === undefined && (exitCode !== 0 || !done)) {
+  if (!unwitnessed && !w.stopReason && w.dismissedAt === undefined && (exitCode !== 0 || !done)) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1000))
     const elapsed = seconds < 90 ? `${seconds} s after start` : `after ${Math.floor(seconds / 60)}m`
     const tail = workerLogTail(path.join(s.dir, '.room', 'workers', `${w.tag}.log`))
@@ -152,7 +156,7 @@ export class Rooms {
       const exited = w.exitCode !== undefined || !pidAlive(w.pid)
       if (!exited) continue
       if (w.status === 'running') {
-        await finishWorkerProcess(s, w, null)
+        await finishWorkerProcess(s, w, null, Date.now(), undefined, true)
         continue
       }
       const facts = { exited, done: w.status === 'done', dismissed: w.dismissedAt !== undefined || w.status === 'dismissed', merged: false, clean: false, ahead: undefined as number | undefined, uncommitted: undefined as number | undefined }

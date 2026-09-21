@@ -17143,7 +17143,7 @@ function formatCount(count, singular, plural = singular + "s") {
   return count + " " + (count === 1 ? singular : plural);
 }
 function activityLabel(lastActive, now = Date.now(), options = {}) {
-  if (options.worker?.stopReason === "lead-session-ended") return "stopped when your last session ended; its partial work is in its worktree";
+  if (options.worker && stoppedWithSession(options.worker, options.processGone)) return STOPPED_WITH_SESSION;
   const finished = options.worker !== void 0 && options.worker.status !== "running";
   const running = options.worker ? options.worker.status === "running" : options.running;
   if (finished) lastActive = options.worker.finishedAt ?? lastActive;
@@ -17241,9 +17241,9 @@ function areaMembershipSummary(areas) {
 }
 function workerLine({ worker: w, processGone = false, lastActive, changedCount, last: last2, now = Date.now() }) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
-  const alive = w.stopReason === "lead-session-ended" ? "; stopped when your last session ended; its partial work is in its worktree" : w.status === "running" && processGone ? " (process gone)" : "";
+  const state = stoppedWithSession(w, processGone) ? STOPPED_WITH_SESSION : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status;
   return [
-    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${w.status === "running" && !processGone ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
+    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.summary ? ` \xB7 ${w.summary.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
   ];
 }
@@ -17260,12 +17260,14 @@ function workerLines(inputs, options = {}) {
   } else if (finished) out.push(`  finished: ${finished} (all=true lists them)`);
   return out;
 }
-var scopeLine;
+var STOPPED_WITH_SESSION, stoppedWithSession, scopeLine;
 var init_views = __esm({
   "packages/shared/src/views.ts"() {
     "use strict";
     init_claims();
     init_identity();
+    STOPPED_WITH_SESSION = "stopped when your last session ended; its partial work is in its worktree";
+    stoppedWithSession = (w, processGone = false) => w.stopReason === "lead-session-ended" || w.status === "running" && processGone;
     scopeLine = (scope) => `${scope.area}: ${scope.summary} (${scope.paths.join(", ")})`;
   }
 });
@@ -28473,7 +28475,7 @@ function workerId(lead, tag, gen) {
 function workerIdBase(roomName, lead, tag) {
   return `${roomName}|${lead}/${tag}`;
 }
-async function finishWorkerProcess(s, w, code, at = Date.now(), error2) {
+async function finishWorkerProcess(s, w, code, at = Date.now(), error2, unwitnessed = false) {
   const current = s.room.workers.get(w.tag);
   if (current !== w || w.exitCode !== void 0) return;
   const done = w.status === "done";
@@ -28481,7 +28483,7 @@ async function finishWorkerProcess(s, w, code, at = Date.now(), error2) {
   s.room.updateWorker(w.tag, {
     exitCode,
     finishedAt: w.finishedAt ?? at,
-    ...w.status === "running" ? { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" } : {}
+    ...w.status !== "running" ? {} : unwitnessed ? { status: "dismissed", stopReason: "lead-session-ended" } : { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" }
   }, w.id);
   if (!done) {
     const { releaseClaimsOnDone: releaseClaimsOnDone2 } = await Promise.resolve().then(() => (init_claims2(), claims_exports));
@@ -28489,7 +28491,7 @@ async function finishWorkerProcess(s, w, code, at = Date.now(), error2) {
     if (!current2 || current2.id !== w.id || current2.gen !== w.gen || current2.startedAt !== w.startedAt) return;
     releaseClaimsOnDone2(s, void 0, w.name);
   }
-  if (!w.stopReason && w.dismissedAt === void 0 && (exitCode !== 0 || !done)) {
+  if (!unwitnessed && !w.stopReason && w.dismissedAt === void 0 && (exitCode !== 0 || !done)) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1e3));
     const elapsed = seconds < 90 ? `${seconds} s after start` : `after ${Math.floor(seconds / 60)}m`;
     const tail = workerLogTail(path13.join(s.dir, ".room", "workers", `${w.tag}.log`));
@@ -28610,7 +28612,7 @@ var init_registry = __esm({
           const exited = w.exitCode !== void 0 || !pidAlive2(w.pid);
           if (!exited) continue;
           if (w.status === "running") {
-            await finishWorkerProcess(s, w, null);
+            await finishWorkerProcess(s, w, null, Date.now(), void 0, true);
             continue;
           }
           const facts = { exited, done: w.status === "done", dismissed: w.dismissedAt !== void 0 || w.status === "dismissed", merged: false, clean: false, ahead: void 0, uncommitted: void 0 };
@@ -38543,7 +38545,6 @@ init_git();
 init_choice();
 init_session();
 init_session();
-init_workers();
 init_prs();
 init_context();
 var defs2 = [
@@ -38653,7 +38654,7 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
         const worker = s.room.workerOf(n);
-        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker }) : "offline";
+        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: worker !== void 0 && !state.workerAlive(s, worker) }) : "offline";
         const who2 = participantIdentityLine(ps, n, worker);
         const theirs = areasFor(s, n);
         const areaSummary2 = areaMembershipSummary(theirs);
@@ -38705,14 +38706,14 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       out.push(`recent bus${all2 ? "" : " in your areas"} (${msgs.length}):`);
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`);
       out.push(...prLines(s));
-      out.push(...workerLines(myWorkers(s).map((worker) => ({ worker, lastActive: presences(s).filter((p) => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone: worker.status === "running" && !pidAlive2(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => {
+      out.push(...workerLines(myWorkers(s).map((worker) => ({ worker, lastActive: presences(s).filter((p) => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone: worker.status === "running" && !state.workerAlive(s, worker), changedCount: s.room.changedPaths(worker.name).length, last: (() => {
         const message = s.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
         return message ? formatMsg(message) : void 0;
       })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter((w) => w.lead === s.me.name) }));
       const ws = wsRoom;
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`);
-        out.push(...workerLines(myWorkers(ws).map((worker) => ({ worker, processGone: worker.status === "running" && !pidAlive2(worker.pid), changedCount: ws.room.changedPaths(worker.name).length, last: (() => {
+        out.push(...workerLines(myWorkers(ws).map((worker) => ({ worker, processGone: worker.status === "running" && !state.workerAlive(ws, worker), changedCount: ws.room.changedPaths(worker.name).length, last: (() => {
           const message = ws.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
           return message ? formatMsg(message) : void 0;
         })(), now: now() })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter((w) => w.lead === ws.me.name) }));

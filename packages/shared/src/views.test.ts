@@ -44,7 +44,7 @@ describe('shared room views', () => {
   it('formats worker details without process inspection', () => {
     const worker: Worker = { tag: 'views', name: 'Rohan+views', host: 'codex', task: 'share browser formatting', dir: '/tmp/views', branch: 'room/views', pid: 1, startedAt: 0, status: 'running', lead: 'Rohan' }
     expect(workerLine({ worker, processGone: true, changedCount: 2, now: 60_000 })).toEqual([
-      '  - views (codex, running (process gone), 1m): share browser formatting',
+      '  - views (codex, stopped when your last session ended; its partial work is in its worktree, 1m): share browser formatting',
       '      2 changed files · branch room/views',
     ])
   })
@@ -120,7 +120,7 @@ it('uses consistent activity wording at the action and worker thresholds', async
   const worker: Worker = { tag: 'test', name: 'Ada+test', lead: 'Ada', host: 'codex', dir: '/tmp/test', branch: 'test', task: 'test', pid: 1, startedAt: 0, status: 'running' }
   expect(workerLine({ worker, changedCount: 0, now: 360_000 })[0]).toContain('running · quiet 6m')
   expect(workerLine({ worker, changedCount: 0, now: 360_000, lastActive: 350_000 })[0]).not.toContain('quiet')
-  expect(workerLine({ worker, changedCount: 0, now: 360_000, processGone: true })[0]).toContain('running (process gone)')
+  expect(workerLine({ worker, changedCount: 0, now: 360_000, processGone: true })[0]).toContain('stopped when your last session ended')
 })
 
  it.each(['done', 'failed', 'dismissed'] as const)('uses completion time for %s worker activity', async status => {
