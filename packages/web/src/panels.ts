@@ -167,7 +167,7 @@ export function participantGroups(conn: Conn): ParticipantGroups {
 function archiveCard(worker: RetiredWorker): HTMLElement {
   return h('article', { class: 'archive-worker' },
     h('strong', { class: 'mono' }, worker.tag),
-    h('div', { class: 'muted' }, [worker.model ?? worker.host, worker.outcome].join(' · ')),
+    h('div', { class: 'muted' }, [worker.model ?? worker.host, worker.outcome + (worker.uncommitted ? ` with ${worker.uncommitted} uncommitted files left in its worktree` : '')].join(' · ')),
     h('p', {}, worker.summary || worker.task),
     h('div', { class: 'muted', title: worker.files.join(', ') }, `${worker.fileCount} files`),
     h('time', { dateTime: new Date(worker.finishedAt).toISOString(), title: absoluteTime(worker.finishedAt) }, relativeTime(worker.finishedAt)))

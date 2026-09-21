@@ -46,7 +46,7 @@ export interface ToolCtx {
   prs?: { fetch?: (s: Session, opts?: { head?: boolean }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
   /** Workers (room_spawn): injectable process starter and worktree maker for tests. */
   spawner?: Spawner
-  worktree?: (repoDir: string, tag: string) => Promise<{ dir: string; branch: string; created: boolean }>
+  worktree?: (repoDir: string, tag: string) => Promise<{ dir: string; branch: string; created: boolean; base?: string }>
   maxWorkers?: number
   /** Client settings resolved once at startup; tests may omit it to use defaults. */
   config?: ResolvedConfig

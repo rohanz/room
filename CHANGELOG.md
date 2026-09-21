@@ -2,6 +2,7 @@
 
 ## 0.7.0 — 2026-09-21
 
+- Retirement rule corrected after review: a finished worker retires only when its worktree is clean and its branch has nothing the lead lacks. Workers leave changes uncommitted for the lead, so "branch is merged" was trivially true at exit and would have removed their work from the room before the lead saw it. Dismissing a dirty worker records how many uncommitted files stay on disk.
 - Fix idle Codex wake-ups: unflagged SessionStart hooks identify as Codex, and wake routing prefers the MCP process host over stale session hints.
 - Detect Claude models from the last 64 KB of the transcript on tool calls, caching transcript mtime and size to skip unchanged files; live presence refreshes automatically.
 

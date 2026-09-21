@@ -30174,7 +30174,7 @@ function workerLines(inputs, options = {}) {
   const out = [`workers (${inputs.length + retired.length}):`, ...[...visible].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
   if (options.all) {
     for (const w of [...retired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
-      out.push(`  - ${w.tag} (${w.outcome}${w.model ? `, ${w.model}` : ""}): ${w.summary} \xB7 ${formatCount(w.fileCount, "file")}`);
+      out.push(`  - ${w.tag} (${w.outcome}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ""}${w.model ? `, ${w.model}` : ""}): ${w.summary} \xB7 ${formatCount(w.fileCount, "file")}`);
     }
   } else if (finished) out.push(`  finished: ${finished} (all=true lists them)`);
   return out;
@@ -35157,30 +35157,26 @@ function shouldRetire(facts) {
   if (!facts.exited) return void 0;
   if (facts.dismissed) return "dismissed";
   if (!facts.done) return void 0;
-  if (facts.merged) return "merged";
-  if (facts.clean && facts.ahead === 0) return "clean";
+  if (facts.clean === true && facts.ahead === 0) return facts.merged ? "merged" : "clean";
   return void 0;
 }
 async function workerGitFacts(leadDir, w) {
   const facts = { merged: false, clean: false, ahead: void 0 };
-  let head;
   try {
-    head = (await git(leadDir, ["rev-parse", "HEAD"])).trim();
-  } catch {
-    return facts;
-  }
-  if (w.branch === `room/${w.tag}`) {
-    try {
-      await git(leadDir, ["merge-base", "--is-ancestor", `refs/heads/${w.branch}`, head]);
-      facts.merged = true;
-    } catch {
+    const status = await git(w.dir, ["status", "--porcelain", "--untracked-files=all"]);
+    facts.uncommitted = status.split("\n").filter(Boolean).length;
+    facts.clean = facts.uncommitted === 0;
+    const head = (await git(leadDir, ["rev-parse", "HEAD"])).trim();
+    const branch = `refs/heads/${w.branch}`;
+    const count = (await git(w.dir, ["rev-list", "--count", `${head}..${branch}`])).trim();
+    const worktreeCount = (await git(w.dir, ["rev-list", "--count", `${head}..HEAD`])).trim();
+    if (/^\d+$/.test(count) && /^\d+$/.test(worktreeCount)) facts.ahead = Math.max(Number(count), Number(worktreeCount));
+    if (w.base && facts.ahead === 0) {
+      const own2 = (await git(w.dir, ["rev-list", "--count", `${w.base}..${branch}`])).trim();
+      facts.merged = /^\d+$/.test(own2) && Number(own2) > 0;
     }
-  }
-  try {
-    facts.clean = !(await git(w.dir, ["status", "--porcelain", "--untracked-files=all"])).trim();
-    const count = (await git(w.dir, ["rev-list", "--count", `${head}..HEAD`])).trim();
-    if (/^\d+$/.test(count)) facts.ahead = Number(count);
   } catch {
+    facts.ahead = void 0;
   }
   return facts;
 }
@@ -35224,8 +35220,9 @@ async function prepareWorktree(repoDir, tag) {
     hasBranch = true;
   } catch {
   }
-  await git(repoDir, hasBranch ? ["worktree", "add", "-q", dir, branch] : ["worktree", "add", "-q", "-b", branch, dir, "HEAD"]);
-  return { dir, branch, created: true };
+  const base = hasBranch ? void 0 : (await git(repoDir, ["rev-parse", "HEAD"])).trim();
+  await git(repoDir, hasBranch ? ["worktree", "add", "-q", dir, branch] : ["worktree", "add", "-q", "-b", branch, dir, base]);
+  return { dir, branch, created: true, ...base ? { base } : {} };
 }
 var LEAD_ONLY_ENV = ["ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_GEN", "ROOM_WORKER_ID", "ROOM_WORKER_HOST", "ROOM_WORKER_MODEL", "ROOM_WORKER_EFFORT", "ROOM_LOG_FILE", "ROOM_KIND"];
 function workerEnv(base, extra) {
@@ -35416,9 +35413,9 @@ var Rooms = class _Rooms {
         s.room.updateWorker(w.tag, { status: "failed", finishedAt: Date.now(), summary: w.summary ?? "process exited without room_done" }, w.id);
         continue;
       }
-      const facts = { exited, done: w.status === "done", dismissed: w.dismissedAt !== void 0 || w.status === "dismissed", merged: false, clean: false, ahead: void 0 };
+      const facts = { exited, done: w.status === "done", dismissed: w.dismissedAt !== void 0 || w.status === "dismissed", merged: false, clean: false, ahead: void 0, uncommitted: void 0 };
       if (!facts.done && !facts.dismissed) continue;
-      if (!facts.dismissed) Object.assign(facts, await workerGitFacts(s.dir, w));
+      Object.assign(facts, await workerGitFacts(s.dir, w));
       const outcome = shouldRetire(facts);
       if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue;
       const done = s.room.messages().filter((m) => m.type === "done" && m.from === w.name && m.at >= w.startedAt).at(-1);
@@ -35437,7 +35434,8 @@ var Rooms = class _Rooms {
         startedAt: w.startedAt,
         finishedAt: w.finishedAt ?? done?.at ?? retiredAt,
         retiredAt,
-        outcome
+        outcome,
+        ...outcome === "dismissed" && facts.uncommitted !== void 0 ? { uncommitted: facts.uncommitted } : {}
       });
     }
   }
@@ -38436,7 +38434,7 @@ function handlers6(state) {
       if (typeof a.share === "string" && a.share && !share) return "error: share must be intent, declared or full";
       if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`;
       try {
-        let dir, branch, created = false, outside = false;
+        let dir, branch, base, created = false, outside = false;
         if (typeof a.dir === "string" && a.dir) {
           dir = path12.resolve(a.dir);
           if (!fs11.existsSync(dir)) return `error: ${dir} does not exist`;
@@ -38450,7 +38448,7 @@ function handlers6(state) {
           }
         } else {
           try {
-            ({ dir, branch, created } = await (ctx.worktree ?? prepareWorktree)(s.dir, tag));
+            ({ dir, branch, base, created } = await (ctx.worktree ?? prepareWorktree)(s.dir, tag));
           } catch (e) {
             return `error: could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}`;
           }
@@ -38499,7 +38497,7 @@ function handlers6(state) {
           return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`;
         }
         rooms.setHandle(s, id2, proc);
-        const w = { id: id2, tag, name, host, ...model ? { model } : {}, ...effort ? { effort } : {}, task, dir, branch, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name, gen };
+        const w = { id: id2, tag, name, host, ...model ? { model } : {}, ...effort ? { effort } : {}, task, dir, branch, ...base ? { base } : {}, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name, gen };
         s.room.setWorker(w);
         proc.onError?.((err) => {
           rooms.dropHandle(s, id2, proc);

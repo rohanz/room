@@ -81,3 +81,10 @@ it('bounds timeline and merge controls while retaining older filters and scope c
   expect(timeline.querySelector('.timeline-list')!.textContent).toContain('Old task')
   expect(center.querySelector('.more-chips')).toBeNull()
 })
+
+
+it('shows dismissed uncommitted files in the archive row', () => {
+  const { room, conn } = setup()
+  room.retireParticipant('Lead+dirty', { ...retired('dirty'), outcome: 'dismissed', uncommitted: 2 })
+  expect(participantsPanel(conn, createFocusState()).textContent).toContain('dismissed with 2 uncommitted files left in its worktree')
+})

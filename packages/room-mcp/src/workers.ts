@@ -21,6 +21,7 @@ export interface RetirementFacts {
   merged: boolean
   clean: boolean
   ahead: number | undefined
+  uncommitted?: number
 }
 
 /** Explicit dismissal also retires failures, but never a process that is still running. */
@@ -28,25 +29,28 @@ export function shouldRetire(facts: RetirementFacts): RetiredWorker['outcome'] |
   if (!facts.exited) return undefined
   if (facts.dismissed) return 'dismissed'
   if (!facts.done) return undefined
-  // The agreed rule intentionally allows merged branches with a dirty worktree.
-  if (facts.merged) return 'merged'
-  if (facts.clean && facts.ahead === 0) return 'clean'
+  if (facts.clean === true && facts.ahead === 0) return facts.merged ? 'merged' : 'clean'
   return undefined
 }
 
 /** Unknown git state must never be mistaken for clean work. */
-export async function workerGitFacts(leadDir: string, w: Worker): Promise<Pick<RetirementFacts, 'merged' | 'clean' | 'ahead'>> {
-  const facts: Pick<RetirementFacts, 'merged' | 'clean' | 'ahead'> = { merged: false, clean: false, ahead: undefined }
-  let head: string
-  try { head = (await git(leadDir, ['rev-parse', 'HEAD'])).trim() } catch { return facts }
-  if (w.branch === `room/${w.tag}`) {
-    try { await git(leadDir, ['merge-base', '--is-ancestor', `refs/heads/${w.branch}`, head]); facts.merged = true } catch { /* unmerged or unknown */ }
-  }
+export async function workerGitFacts(leadDir: string, w: Worker): Promise<Pick<RetirementFacts, 'merged' | 'clean' | 'ahead' | 'uncommitted'>> {
+  const facts: Pick<RetirementFacts, 'merged' | 'clean' | 'ahead' | 'uncommitted'> = { merged: false, clean: false, ahead: undefined }
   try {
-    facts.clean = !(await git(w.dir, ['status', '--porcelain', '--untracked-files=all'])).trim()
-    const count = (await git(w.dir, ['rev-list', '--count', `${head}..HEAD`])).trim()
-    if (/^\d+$/.test(count)) facts.ahead = Number(count)
-  } catch { /* missing worktree, commit or git: retain the worker */ }
+    const status = await git(w.dir, ['status', '--porcelain', '--untracked-files=all'])
+    facts.uncommitted = status.split('\n').filter(Boolean).length
+    facts.clean = facts.uncommitted === 0
+    const head = (await git(leadDir, ['rev-parse', 'HEAD'])).trim()
+    const branch = `refs/heads/${w.branch}`
+    const count = (await git(w.dir, ['rev-list', '--count', `${head}..${branch}`])).trim()
+    // Also retain detached worktree commits that are not on the recorded branch.
+    const worktreeCount = (await git(w.dir, ['rev-list', '--count', `${head}..HEAD`])).trim()
+    if (/^\d+$/.test(count) && /^\d+$/.test(worktreeCount)) facts.ahead = Math.max(Number(count), Number(worktreeCount))
+    if (w.base && facts.ahead === 0) {
+      const own = (await git(w.dir, ['rev-list', '--count', `${w.base}..${branch}`])).trim()
+      facts.merged = /^\d+$/.test(own) && Number(own) > 0
+    }
+  } catch { facts.ahead = undefined /* missing worktree, commit or git: retain the worker */ }
   return facts
 }
 
@@ -109,7 +113,7 @@ export function workerCommand(host: WorkerHost, model: string | undefined, promp
 }
 
 /** A worktree for the worker, created from the lead's HEAD on branch room/<tag>; reused if it already exists. */
-export async function prepareWorktree(repoDir: string, tag: string): Promise<{ dir: string; branch: string; created: boolean }> {
+export async function prepareWorktree(repoDir: string, tag: string): Promise<{ dir: string; branch: string; created: boolean; base?: string }> {
   const dir = path.join(repoDir, WORKERS_DIR, tag)
   const branch = `room/${tag}`
   if (fs.existsSync(path.join(dir, '.git'))) return { dir, branch, created: false }
@@ -119,8 +123,9 @@ export async function prepareWorktree(repoDir: string, tag: string): Promise<{ d
   await git(repoDir, ['worktree', 'prune'])
   let hasBranch = false
   try { await git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); hasBranch = true } catch { /* new branch */ }
-  await git(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, 'HEAD'])
-  return { dir, branch, created: true }
+  const base = hasBranch ? undefined : (await git(repoDir, ['rev-parse', 'HEAD'])).trim()
+  await git(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, base!])
+  return { dir, branch, created: true, ...(base ? { base } : {}) }
 }
 
 /**

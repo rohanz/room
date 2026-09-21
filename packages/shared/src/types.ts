@@ -130,6 +130,8 @@ export interface Worker {
   task: string
   dir: string
   branch: string
+  /** Commit the worker branch was created from; absent for reused/legacy worktrees. */
+  base?: string
   pid: number
   startedAt: number
   status: WorkerStatus
@@ -158,6 +160,8 @@ export interface RetiredWorker {
   finishedAt: number
   retiredAt: number
   outcome: 'merged' | 'dismissed' | 'clean'
+  /** Uncommitted/untracked files left on disk when explicitly dismissed. */
+  uncommitted?: number
 }
 
 export interface Meta {

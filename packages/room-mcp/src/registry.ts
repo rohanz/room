@@ -123,9 +123,9 @@ export class Rooms {
         s.room.updateWorker(w.tag, { status: 'failed', finishedAt: Date.now(), summary: w.summary ?? 'process exited without room_done' }, w.id)
         continue
       }
-      const facts = { exited, done: w.status === 'done', dismissed: w.dismissedAt !== undefined || w.status === 'dismissed', merged: false, clean: false, ahead: undefined as number | undefined }
+      const facts = { exited, done: w.status === 'done', dismissed: w.dismissedAt !== undefined || w.status === 'dismissed', merged: false, clean: false, ahead: undefined as number | undefined, uncommitted: undefined as number | undefined }
       if (!facts.done && !facts.dismissed) continue
-      if (!facts.dismissed) Object.assign(facts, await workerGitFacts(s.dir, w))
+      Object.assign(facts, await workerGitFacts(s.dir, w))
       const outcome = shouldRetire(facts)
       // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
       if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
@@ -136,6 +136,7 @@ export class Rooms {
         name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
         task: w.task, summary: w.summary ?? '', files, fileCount: files.length, startedAt: w.startedAt,
         finishedAt: w.finishedAt ?? done?.at ?? retiredAt, retiredAt, outcome,
+        ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
       })
     }
   }

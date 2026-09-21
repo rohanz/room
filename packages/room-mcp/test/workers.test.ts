@@ -79,7 +79,7 @@ describe('worker plumbing', () => {
 
   it('creates a worktree on branch room/<tag> and reuses it', async () => {
     const w1 = await prepareWorktree(dir, 'money')
-    expect(w1.created).toBe(true); expect(w1.branch).toBe('room/money'); expect(existsSync(join(w1.dir, 'app.py'))).toBe(true)
+    expect(w1.base).toBe(base); expect(w1.created).toBe(true); expect(w1.branch).toBe('room/money'); expect(existsSync(join(w1.dir, 'app.py'))).toBe(true)
     const w2 = await prepareWorktree(dir, 'money')
     expect(w2.created).toBe(false); expect(w2.dir).toBe(w1.dir)
   })
@@ -104,7 +104,7 @@ describe('room_spawn / room_done / room_dismiss', () => {
     const leadTools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2,
       spawner: spec => { specs.push(spec); return { pid: 4242 + specs.length, onExit: cb => { exits.push(cb) }, kill: () => { killed.push(1); return true } } },
-      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true, base }),
     })
     let ws: Session | null = fakeSession(b, workerId)
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
@@ -132,7 +132,7 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(t.specs[0].env).toMatchObject({ ROOM_WORKER_HOST: 'codex', ROOM_WORKER_MODEL: 'gpt-5.6', ROOM_WORKER_EFFORT: 'medium', ROOM_TAG: 'money', ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
     expect(t.specs[0].cwd).toBe(join(dir, '.room', 'workers', 'money'))
     const w = t.a.workers.get('money')
-    expect(w).toMatchObject({ name: 'rohanz+money', status: 'running', lead: 'rohanz', branch: 'room/money', host: 'codex', model: 'gpt-5.6', effort: 'medium' })
+    expect(w).toMatchObject({ name: 'rohanz+money', status: 'running', lead: 'rohanz', branch: 'room/money', base, host: 'codex', model: 'gpt-5.6', effort: 'medium' })
     const st = await t.leadTools.call('room_state', { all: true })
     expect(st).toContain('workers (1):')
     expect(st).toContain('money (codex gpt-5.6 · medium, running')
@@ -733,13 +733,20 @@ describe('retirement integration', () => {
     await t.leadTools.shutdown()
   })
 
-  it('a merge preview retires a merged done worker even with a dirty worktree', async () => {
+  it('a merge preview retains a done worker with uncommitted work and zero commits', async () => {
     const t = setupLead()
     execFileSync('git', ['-C', dir, 'branch', 'room/finished'])
     writeFileSync(join(dir, 'uncommitted-retirement-check'), 'dirty')
     t.a.setWorker({ tag: 'finished', name: 'rohanz+finished', host: 'codex', task: 'x', dir, branch: 'room/finished', pid: -1, startedAt: 1, status: 'done', lead: 'rohanz', exitCode: 0 })
     await t.leadTools.call('room_preview_merge', {})
-    expect(t.a.retiredWorkers()).toMatchObject([{ tag: 'finished', outcome: 'merged' }])
+    expect(t.a.retiredWorkers()).toEqual([])
+    expect(t.a.workers.has('finished')).toBe(true)
+    await t.leadTools.call('room_dismiss', { tag: 'finished' })
+    const retired = t.a.retiredWorkers()[0]
+    expect(retired).toMatchObject({ tag: 'finished', outcome: 'dismissed' })
+    expect(retired.uncommitted).toBeGreaterThan(0)
+    expect(await t.leadTools.call('room_state', { all: true })).toContain(`dismissed with ${retired.uncommitted} uncommitted files left in its worktree`)
+    expect(existsSync(join(dir, 'uncommitted-retirement-check'))).toBe(true)
     await t.leadTools.shutdown()
   })
 })

@@ -95,7 +95,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // preparation below awaits git, and a second room_spawn for the same tag must not slip in meanwhile.
       if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
       try {
-        let dir: string, branch: string, created = false, outside = false
+        let dir: string, branch: string, base: string | undefined, created = false, outside = false
         if (typeof a.dir === 'string' && a.dir) {
           dir = path.resolve(a.dir)
           if (!fs.existsSync(dir)) return `error: ${dir} does not exist`
@@ -104,7 +104,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
           try { branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { branch = '?' }
         } else {
-          try { ({ dir, branch, created } = await (ctx.worktree ?? prepareWorktree)(s.dir, tag)) }
+          try { ({ dir, branch, base, created } = await (ctx.worktree ?? prepareWorktree)(s.dir, tag)) }
           catch (e) { return `error: could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}` }
         }
         const owner = s.me.owner ?? s.me.name
@@ -141,7 +141,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try { proc = (ctx.spawner ?? defaultSpawner)({ cmd, args, cwd: dir, env, logFile }) }
         catch (e) { return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}` }
         rooms.setHandle(s, id, proc)
-        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), task, dir, branch, pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
+        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), task, dir, branch, ...(base ? { base } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
         s.room.setWorker(w)
         // Callbacks resolve the record by this spawn's id: a reused tag has a new id, so an older process
         // (or another lead's record under the same tag) is simply not found and touches nothing.

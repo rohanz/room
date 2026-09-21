@@ -221,7 +221,7 @@ export function workerLines(inputs: readonly WorkerLineInput[], options: { all?:
     .flatMap(workerLine)]
   if (options.all) {
     for (const w of [...retired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
-      out.push(`  - ${w.tag} (${w.outcome}${w.model ? `, ${w.model}` : ''}): ${w.summary} · ${formatCount(w.fileCount, 'file')}`)
+      out.push(`  - ${w.tag} (${w.outcome}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ''}${w.model ? `, ${w.model}` : ''}): ${w.summary} · ${formatCount(w.fileCount, 'file')}`)
     }
   } else if (finished) out.push(`  finished: ${finished} (all=true lists them)`)
   return out
