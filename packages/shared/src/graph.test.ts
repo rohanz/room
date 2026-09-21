@@ -70,6 +70,32 @@ describe('observedContractChanges', () => {
       symbol: 'Foo.new', kind: 'signature', detail: 'was `fn new(value: i32)` now `fn new(value: i64)`',
     }])
   })
+
+  it('compares the complete overload signature set for a qualified name', () => {
+    const parser: FileParser = (_path, text) => parsed(text === 'before' ? [
+      { name: 'run', container: 'A', kind: 'method', from: 2, to: 2, signature: 'run(x: number): void' },
+      { name: 'run', container: 'A', kind: 'method', from: 3, to: 3, signature: 'run(x: string): void' },
+    ] : [
+      { name: 'run', container: 'A', kind: 'method', from: 2, to: 2, signature: 'run(x: number): void' },
+      { name: 'run', container: 'A', kind: 'method', from: 3, to: 3, signature: 'run(x: boolean): void' },
+    ])
+
+    expect(observedContractChanges('before', 'after', 'a.ts', parser)).toEqual([{
+      symbol: 'A.run', kind: 'signature',
+      detail: 'was `run(x: number): void | run(x: string): void` now `run(x: boolean): void | run(x: number): void`',
+    }])
+  })
+
+  it('preserves whitespace inside string literals when comparing signatures', () => {
+    const parser: FileParser = (_path, text) => parsed([{
+      name: 'f', kind: 'function', from: 1, to: 1,
+      signature: text === 'before' ? 'function f(x = "a b")' : 'function f(x = "ab")',
+    }])
+
+    expect(observedContractChanges('before', 'after', 'a.ts', parser)).toEqual([{
+      symbol: 'f', kind: 'signature', detail: 'was `function f(x = "a b")` now `function f(x = "ab")`',
+    }])
+  })
 })
 
 describe('symbolRange', () => {

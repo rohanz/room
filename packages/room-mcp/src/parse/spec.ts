@@ -4,7 +4,10 @@ export interface LanguageSpec {
   grammar: string
   /** Lowercase extensions, including the leading dot. */
   extensions: string[]
-  /** Query captures are limited to @def, @def.name, optional @def.container, @ref, and @import. */
+  /**
+   * Query captures use @def with @def.name (or @def.name.bare), optional
+   * @def.container and @def.body, @ref (or @ref.external), and @import.
+   */
   query: string
   /** Identifiers to omit from references after query collection. */
   keywords?: string[]

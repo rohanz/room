@@ -5,6 +5,7 @@ export const spec: LanguageSpec = {
   extensions: ['.tsx'],
   query: String.raw`
     (function_declaration name: (identifier) @def.name) @def
+    (function_signature name: (identifier) @def.name) @def
     (generator_function_declaration name: (identifier) @def.name) @def
     (class_declaration name: (type_identifier) @def.name) @def
     (abstract_class_declaration name: (type_identifier) @def.name) @def

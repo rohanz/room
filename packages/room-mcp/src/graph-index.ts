@@ -76,12 +76,13 @@ export class GraphIndex {
 
   private reuse(snapshot: GraphSnapshot): void {
     this.cache.clear()
-    for (const p of snapshot.paths) this.cache.set(p, { defs: [], refs: [] })
+    for (const p of snapshot.paths) this.cache.set(p, { defs: [], refs: [], imports: [] })
     for (const edge of snapshot.edges) {
-      if (!this.cache.has(edge.source)) this.cache.set(edge.source, { defs: [], refs: [] })
-      if (!this.cache.has(edge.target)) this.cache.set(edge.target, { defs: [], refs: [] })
+      if (!this.cache.has(edge.source)) this.cache.set(edge.source, { defs: [], refs: [], imports: [] })
+      if (!this.cache.has(edge.target)) this.cache.set(edge.target, { defs: [], refs: [], imports: [] })
       this.cache.get(edge.source)!.defs.push(...edge.symbols)
       this.cache.get(edge.target)!.refs.push(...edge.symbols)
+      this.cache.get(edge.target)!.imports!.push(edge.source)
     }
     for (const p of this.cache.keys()) this.graph.set(p, '')
     this.truncated = snapshot.truncated
@@ -132,7 +133,7 @@ export class GraphIndex {
   private refreshChanged(): void {
     if (!this.base) return
     const changed = new Set<string>()
-    for (const person of (this.reused ? [this.me] : new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()]))) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) changed.add(p)
+    for (const person of new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) changed.add(p)
     for (const p of new Set([...changed, ...this.previousChanged])) void this.refresh(p)
     this.previousChanged = changed
   }
@@ -155,8 +156,8 @@ export class GraphIndex {
       while (!this.stopped) {
         const revision = this.revisions.get(path), generation = this.generation
         await ensureLanguages([path])
-        const text = this.reused ? undefined : await this.textFor(path)
-        const parsed = this.reused || text === undefined || text.length > MAX_BYTES ? undefined : parseFile(path, text)
+        const text = await this.textFor(path)
+        const parsed = text === undefined || text.length > MAX_BYTES ? undefined : parseFile(path, text)
         const symbols: FileSymbols | undefined = parsed ? {
           defs: parsed.defs.map(definition => definition.name),
           refs: parsed.refs,
@@ -167,10 +168,9 @@ export class GraphIndex {
         const baseText = mine !== undefined || mineDeleted ? await gitShow(this.dir, this.base, path) : undefined
         if (this.stopped) return
         if (generation !== this.generation || revision !== this.revisions.get(path)) continue
-        if (!this.reused) {
-          if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
-          else { this.cache.set(path, symbols); this.graph.set(path, text) }
-        }
+        this.reused = undefined
+        if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
+        else { this.cache.set(path, symbols); this.graph.set(path, text) }
         if (mine !== undefined || mineDeleted) {
           const changes = observedContractChanges(baseText ?? '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
           if (changes.length) this.observedByPath.set(path, changes)

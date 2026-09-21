@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { ensureLanguages, languageLoadAttemptsForTest, parseFile } from '../src/parse/engine.js'
 import { languageSpecs } from '../src/parse/index.js'
+import { observedContractChanges, SymbolGraph, type FileSymbols } from '@room/shared'
 
 const execFile = promisify(execFileCallback)
 const require = createRequire(import.meta.url)
@@ -55,6 +56,51 @@ describe('tree-sitter parser engine', () => {
     const tax = parsed?.defs.find(definition => definition.name === 'tax')
     expect(tax?.signature).toContain('=>')
     expect(tax?.signature).not.toContain('price * .1')
+  })
+
+  it.each(['props.ts', 'props.tsx'])('retains structural type and interface contracts in %s', async path => {
+    await ensureLanguages([path])
+    const base = 'export type Props = { label: string };\nexport interface View { title: string }\n'
+    const parsed = parseFile(path, base)
+    expect(parsed?.defs.find(definition => definition.name === 'Props')?.signature).toContain('label: string')
+    expect(parsed?.defs.find(definition => definition.name === 'View')?.signature).toContain('title: string')
+    expect(observedContractChanges(base, base.replace('label: string', 'label: number'), path, parseFile)).toEqual([{
+      symbol: 'Props', kind: 'signature',
+      detail: 'was `type Props = { label: string };` now `type Props = { label: number };`',
+    }])
+  })
+
+  it('keeps same-line TypeScript overload declarations as separate definitions', async () => {
+    await ensureLanguages(['overloads.ts'])
+    const source = 'export function f(x: string): string; export function f(x: number): number; export function f(x: any): any { return x }\n'
+    expect(parseFile('overloads.ts', source)?.defs.filter(definition => definition.name === 'f').map(definition => definition.signature)).toEqual([
+      'function f(x: string): string;',
+      'function f(x: number): number;',
+      'function f(x: any): any',
+    ])
+  })
+
+  it('keeps JavaScript dependencies through a re-export barrel', async () => {
+    await ensureLanguages(['thing.js', 'barrel.js', 'consumer.js'])
+    const source = new Map([
+      ['thing.js', 'export function thing() { return 1 }\n'],
+      ['barrel.js', 'export { thing } from "./thing.js";\n'],
+      ['consumer.js', 'import { thing } from "./barrel.js"; thing();\n'],
+    ])
+    const facts = new Map<string, FileSymbols>()
+    for (const [path, text] of source) {
+      const parsed = parseFile(path, text)!
+      facts.set(path, { defs: parsed.defs.map(definition => definition.name), refs: parsed.refs, imports: parsed.imports })
+    }
+    const graph = new SymbolGraph(path => facts.get(path))
+    for (const [path, text] of source) graph.set(path, text)
+
+    expect(graph.dependenciesOf('barrel.js')).toEqual([
+      { symbol: 'thing', definedIn: ['thing.js'], usedIn: ['barrel.js'] },
+    ])
+    expect(graph.dependenciesOf('consumer.js')).toEqual([
+      { symbol: 'thing', definedIn: ['barrel.js'], usedIn: ['consumer.js'] },
+    ])
   })
 
   it('parses a 20,000-line file within a generous bound', async () => {

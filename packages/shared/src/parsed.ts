@@ -13,6 +13,7 @@ export interface ParsedDef {
 
 /** Language-neutral facts recovered from one source file. */
 export interface ParsedFile {
+  /** Ordered source definitions; overloads are repeated entries, one per syntax node. */
   defs: ParsedDef[]
   /** Identifiers used by the file, excluding its own definitions. */
   refs: string[]

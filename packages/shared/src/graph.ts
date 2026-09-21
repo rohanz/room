@@ -58,8 +58,28 @@ export const bareSymbol = (symbol: string): string => symbol.trim().split(/[.:]+
 
 interface DefinitionLine { display: string; canonical: string }
 
-const normalized = (line: string) => line.trim().replace(/\s+/g, ' ')
-const comparable = (line: string) => line.replace(/\s+/g, '')
+function whitespaceOutsideLiterals(text: string, separator: string): string {
+  let out = '', quote = '', escaped = false, pending = false
+  for (const ch of text.trim()) {
+    if (quote) {
+      out += ch
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === quote) quote = ''
+    } else if (ch === '"' || ch === "'" || ch === '`') {
+      if (pending && out) out += separator
+      pending = false; quote = ch; out += ch
+    } else if (/\s/.test(ch)) pending = true
+    else {
+      if (pending && out) out += separator
+      pending = false; out += ch
+    }
+  }
+  return out
+}
+
+const normalized = (line: string) => whitespaceOutsideLiterals(line, ' ')
+const comparable = (line: string) => whitespaceOutsideLiterals(line, '')
 const lineContaining = (text: string, index: number) => {
   const from = text.lastIndexOf('\n', index - 1) + 1
   const to = text.indexOf('\n', index)
@@ -86,22 +106,28 @@ function pythonHeader(line: string): string {
 
 const definitionName = (definition: ParsedDef): string => definition.container ? `${definition.container}.${definition.name}` : definition.name
 
-function definitionLines(path: string, text: string, parse?: FileParser): Map<string, DefinitionLine> | undefined {
+function definitionLines(path: string, text: string, parse?: FileParser): Map<string, DefinitionLine[]> | undefined {
   const parsed = parse?.(path, text)
   if (parsed) {
-    const out = new Map<string, DefinitionLine>()
+    const out = new Map<string, DefinitionLine[]>()
     for (const definition of parsed.defs) {
       const name = definitionName(definition)
       const display = normalized(definition.signature)
-      if (!out.has(name)) out.set(name, { display, canonical: comparable(display) })
+      const lines = out.get(name) ?? []
+      const line = { display, canonical: comparable(display) }
+      if (!lines.some(existing => existing.canonical === line.canonical)) lines.push(line)
+      out.set(name, lines)
     }
     return out
   }
   const ext = path.slice(path.lastIndexOf('.') + 1)
-  const out = new Map<string, DefinitionLine>()
+  const out = new Map<string, DefinitionLine[]>()
   const add = (name: string, raw: string, signature = raw) => {
     const display = normalized(raw)
-    if (!out.has(name)) out.set(name, { display, canonical: comparable(normalized(signature)) })
+    const lines = out.get(name) ?? []
+    const line = { display, canonical: comparable(normalized(signature)) }
+    if (!lines.some(existing => existing.canonical === line.canonical)) lines.push(line)
+    out.set(name, lines)
   }
   if (ext === 'py') {
     for (const match of text.matchAll(PY_DEF)) {
@@ -137,12 +163,14 @@ export function observedContractChanges(baseText: string, overlayText: string, p
   const before = definitionLines(path, baseText, parse), after = definitionLines(path, overlayText, parse)
   if (!before || !after) return []
   const changes: Omit<ObservedContractChange, 'path'>[] = []
-  for (const [symbol, oldLine] of before) {
-    const newLine = after.get(symbol)
-    if (!newLine) changes.push({ symbol, kind: 'delete', detail: `was \`${oldLine.display}\`` })
-    else if (oldLine.canonical !== newLine.canonical) changes.push({ symbol, kind: 'signature', detail: `was \`${oldLine.display}\` now \`${newLine.display}\`` })
+  const signatureSet = (lines: DefinitionLine[]) => lines.map(line => line.canonical).sort().join('\0')
+  const displaySet = (lines: DefinitionLine[]) => lines.map(line => line.display).sort().join(' | ')
+  for (const [symbol, oldLines] of before) {
+    const newLines = after.get(symbol)
+    if (!newLines) changes.push({ symbol, kind: 'delete', detail: `was \`${displaySet(oldLines)}\`` })
+    else if (signatureSet(oldLines) !== signatureSet(newLines)) changes.push({ symbol, kind: 'signature', detail: `was \`${displaySet(oldLines)}\` now \`${displaySet(newLines)}\`` })
   }
-  for (const [symbol, newLine] of after) if (!before.has(symbol)) changes.push({ symbol, kind: 'add', detail: `now \`${newLine.display}\`` })
+  for (const [symbol, newLines] of after) if (!before.has(symbol)) changes.push({ symbol, kind: 'add', detail: `now \`${displaySet(newLines)}\`` })
   return changes.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.kind.localeCompare(b.kind))
 }
 
@@ -225,8 +253,9 @@ export class SymbolGraph {
     // Regex-extracted inputs have no import facts, so retain the legacy name-only graph.
     if (imports === undefined) return candidates
 
-    const imported = candidates.filter(path => imports.some(value => importMentions(value, path)))
-    if (imported.length) return imported
+    const scored = candidates.map(path => ({ path, score: Math.max(0, ...imports.map(value => importMatchScore(value, path, consumer, symbol))) }))
+    const best = Math.max(0, ...scored.map(candidate => candidate.score))
+    if (best) return scored.filter(candidate => candidate.score === best).map(candidate => candidate.path)
     return (this.definers.get(symbol)?.size ?? 0) > COMMON_SYMBOL_FILE_THRESHOLD ? [] : candidates
   }
 }
@@ -234,15 +263,51 @@ export class SymbolGraph {
 const importsOf = (symbols: FileSymbols | undefined): string[] | undefined =>
   (symbols as (FileSymbols & { imports?: string[] }) | undefined)?.imports
 
-function importMentions(value: string, definingPath: string): boolean {
-  const path = definingPath.replace(/\\/g, '/').toLowerCase()
-  const parts = path.split('/').filter(Boolean)
-  const filename = parts.at(-1) ?? ''
-  const stem = filename.replace(/\.[^.]+$/, '')
-  const parent = parts.at(-2)
-  const moduleNames = new Set([stem, parent].filter((name): name is string => Boolean(name)))
-  const importParts = value.toLowerCase().match(/[a-z0-9_$-]+/g) ?? []
-  return importParts.some(part => moduleNames.has(part))
+function normalizedPath(value: string): string {
+  const parts: string[] = []
+  for (const part of value.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..') parts.pop()
+    else parts.push(part)
+  }
+  return parts.join('/').toLowerCase()
+}
+
+const withoutExtension = (value: string): string => value.replace(/\.[a-z0-9]+$/i, '')
+const directoryOf = (value: string): string => value.includes('/') ? value.slice(0, value.lastIndexOf('/')) : ''
+const basenameOf = (value: string): string => value.slice(value.lastIndexOf('/') + 1)
+
+function importMatchScore(value: string, definingPath: string, consumerPath: string, symbol: string): number {
+  const provider = normalizedPath(definingPath)
+  const providerModule = withoutExtension(provider)
+  const providerDir = directoryOf(provider)
+  const providerStem = basenameOf(providerModule)
+  const modulePaths = new Set([providerModule, providerDir].filter(Boolean))
+  if (providerStem === 'mod' || providerStem === 'index') modulePaths.delete(providerModule)
+
+  const raw = value.trim().replace(/^['"]|['"]$/g, '').toLowerCase()
+  const python = raw.match(/\bfrom\s+([.a-z0-9_$\-/]+)\s+import\b/)?.[1]
+  let imported = python ?? raw.replace(/^use\s+/, '').replace(/;$/, '').replace(/::/g, '/')
+  const symbolSuffix = `/${symbol.toLowerCase()}`
+  if (imported.endsWith(symbolSuffix)) imported = imported.slice(0, -symbolSuffix.length)
+  imported = imported.replace(/^(?:crate|self)\//, '')
+
+  if (imported.startsWith('.')) {
+    const relative = imported.startsWith('./') || imported.startsWith('../')
+      ? imported
+      : imported.replace(/^(\.+)/, dots => `${'../'.repeat(Math.max(0, dots.length - 1))}./`)
+    const resolved = withoutExtension(normalizedPath(`${directoryOf(normalizedPath(consumerPath))}/${relative}`))
+    return modulePaths.has(resolved) ? 3 : 0
+  }
+
+  const direct = withoutExtension(normalizedPath(imported))
+  // Source paths are stronger evidence than separately captured imported names.
+  const pathSpecific = /[\\/]/.test(imported) || /\.[a-z0-9]+$/i.test(imported)
+  if (modulePaths.has(direct)) return pathSpecific ? 3 : 1
+  if ([...modulePaths].some(modulePath => direct.endsWith(`/${modulePath}`))) return 2
+  if (provider.endsWith('.go') && basenameOf(direct) === basenameOf(providerDir)) return 1
+  const moduleBasenames = new Set([...modulePaths].map(basenameOf))
+  return !direct.includes('/') && moduleBasenames.has(direct) ? 1 : 0
 }
 
 function add(m: Map<string, Set<string>>, k: string, v: string) { let s = m.get(k); if (!s) { s = new Set(); m.set(k, s) } s.add(v) }

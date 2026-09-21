@@ -79,4 +79,17 @@ describe('SymbolGraph noise controls', () => {
 
     expect(graph.dependenciesOf('consumer.ts')[0].definedIn).toHaveLength(6)
   })
+
+  it('does not treat a shared parent directory as an import match', () => {
+    const files: NoiseFixtureFile[] = [
+      ...['a', 'b', 'c', 'd', 'e', 'f'].map(name => ({
+        path: `src/${name}.ts`, symbols: { defs: ['Config'], refs: [], imports: [] },
+      })),
+      { path: 'consumer.ts', symbols: { defs: [], refs: ['Config'], imports: ['./src/a'] } },
+    ]
+
+    expect(buildGraph(files).dependenciesOf('consumer.ts')).toEqual([
+      { symbol: 'Config', definedIn: ['src/a.ts'], usedIn: ['consumer.ts'] },
+    ])
+  })
 })

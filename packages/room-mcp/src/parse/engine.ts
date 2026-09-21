@@ -116,6 +116,8 @@ const contains = (outer: TreeSitter.SyntaxNode, inner: TreeSitter.SyntaxNode): b
 
 const normalise = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
+const STRUCTURAL_DEFINITIONS = new Set(['interface_declaration', 'type_alias_declaration'])
+
 function nestedBody(node: TreeSitter.SyntaxNode): TreeSitter.SyntaxNode | undefined {
   const direct = node.childForFieldName('body')
   if (direct) return direct
@@ -127,10 +129,12 @@ function nestedBody(node: TreeSitter.SyntaxNode): TreeSitter.SyntaxNode | undefi
   return earliest
 }
 
-function signatureOf(node: TreeSitter.SyntaxNode): string {
+function signatureOf(node: TreeSitter.SyntaxNode, match: TreeSitter.QueryMatch): string {
   // Arrow definitions are commonly captured at their containing declaration so that
   // @def contains @def.name; their body field therefore lives on a descendant.
-  const body = nestedBody(node)
+  const markedBody = match.captures.find(candidate => candidate.name === 'def.body' && contains(node, candidate.node))?.node
+  const body = markedBody ?? (STRUCTURAL_DEFINITIONS.has(node.type) ? undefined : nestedBody(node))
+  if (!body && STRUCTURAL_DEFINITIONS.has(node.type)) return normalise(node.text)
   let end = body ? Math.max(0, body.startIndex - node.startIndex) : node.text.indexOf('{')
   if (end < 0) {
     const newline = node.text.indexOf('\n')
@@ -144,8 +148,10 @@ function inclusiveEndLine(node: TreeSitter.SyntaxNode): number {
 }
 
 function parsedDefinition(match: TreeSitter.QueryMatch, capture: TreeSitter.QueryCapture): ParsedDef | undefined {
-  const names = match.captures.filter(candidate => candidate.name === 'def.name' && contains(capture.node, candidate.node))
-  const name = names.sort((a, b) => a.node.startIndex - b.node.startIndex)[0]?.node.text.trim()
+  const names = match.captures.filter(candidate => candidate.name.startsWith('def.name') && contains(capture.node, candidate.node))
+  const nameCapture = names.sort((a, b) => a.node.startIndex - b.node.startIndex)[0]
+  let name = nameCapture?.node.text.trim()
+  if (nameCapture?.name === 'def.name.bare') name = name?.replace(/^:/, '')
   if (!name) return undefined
   const container = match.captures.find(candidate => candidate.name === 'def.container')?.node.text.trim()
   return {
@@ -154,7 +160,7 @@ function parsedDefinition(match: TreeSitter.QueryMatch, capture: TreeSitter.Quer
     kind: capture.node.type,
     from: capture.node.startPosition.row + 1,
     to: inclusiveEndLine(capture.node),
-    signature: signatureOf(capture.node),
+    signature: signatureOf(capture.node, match),
   }
 }
 
@@ -169,17 +175,21 @@ export const parseFile: FileParser = (path, text) => {
     const defs: ParsedDef[] = []
     const refs = new Set<string>()
     const imports = new Set<string>()
+    const externalRefs = new Set<string>()
     const seenDefs = new Set<string>()
     for (const match of matches) {
       for (const capture of match.captures) {
         if (capture.name === 'def') {
           const definition = parsedDefinition(match, capture)
           if (!definition) continue
-          const key = `${definition.from}:${definition.to}:${definition.container ?? ''}:${definition.name}`
+          const key = `${capture.node.startIndex}:${capture.node.endIndex}`
           if (!seenDefs.has(key)) { seenDefs.add(key); defs.push(definition) }
-        } else if (capture.name === 'ref') {
+        } else if (capture.name === 'ref' || capture.name === 'ref.external') {
           const reference = capture.node.text.trim()
-          if (reference) refs.add(reference)
+          if (reference) {
+            refs.add(reference)
+            if (capture.name === 'ref.external') externalRefs.add(reference)
+          }
         } else if (capture.name === 'import') {
           const imported = capture.node.text.trim()
           if (imported) imports.add(imported)
@@ -188,7 +198,7 @@ export const parseFile: FileParser = (path, text) => {
     }
     const own = new Set(defs.map(definition => definition.name))
     const keywords = new Set(loaded.spec.keywords ?? [])
-    for (const value of [...refs]) if (own.has(value) || keywords.has(value)) refs.delete(value)
+    for (const value of [...refs]) if ((own.has(value) && !externalRefs.has(value)) || keywords.has(value)) refs.delete(value)
     defs.sort((a, b) => a.from - b.from || a.to - b.to || a.name.localeCompare(b.name))
     return { defs, refs: [...refs].sort(), imports: [...imports].sort() } satisfies ParsedFile
   } catch (error) {

@@ -191,6 +191,37 @@ describe('shared graph startup', () => {
     } finally { gi.stop(); room.doc.destroy() }
   })
 
+  it('preserves narrowed snapshot edges and refreshes another participant\'s import change', async () => {
+    const room = new RoomDoc(); room.setMeta({ base })
+    room.graphs.set('Peer', {
+      version: 1, base, at: Date.now(), status: 'ready', truncated: false,
+      paths: ['a.py', 'b.py', 'use-a.py', 'use-b.py'],
+      edges: [
+        { source: 'a.py', target: 'use-a.py', symbols: ['Config'] },
+        { source: 'b.py', target: 'use-b.py', symbols: ['Config'] },
+      ],
+    })
+    const gi = new GraphIndex(room, 'New', dir, undefined, { random: () => 0, minPublishMs: 0, present: () => ['Peer'] })
+    try {
+      gi.start(); await gi.whenIdle()
+      expect(gi.graph.dependenciesOf('use-a.py')).toEqual([
+        { symbol: 'Config', definedIn: ['a.py'], usedIn: ['use-a.py'] },
+      ])
+      expect(gi.graph.dependenciesOf('use-b.py')).toEqual([
+        { symbol: 'Config', definedIn: ['b.py'], usedIn: ['use-b.py'] },
+      ])
+      room.setOverlay('Other', 'use-a.py', 'class Local:\n    pass\n')
+      await gi.whenIdle()
+      expect(gi.graph.dependenciesOf('use-a.py')).toEqual([])
+      expect(gi.graph.dependenciesOf('use-b.py')).toEqual([
+        { symbol: 'Config', definedIn: ['b.py'], usedIn: ['use-b.py'] },
+      ])
+      await eventually(() => room.graphs.get('New')?.edges.length === 1)
+      expect(room.graphs.get('New')?.edges).not.toContainEqual({ source: 'b.py', target: 'use-a.py', symbols: ['Config'] })
+      expect(room.graphs.get('New')?.edges).not.toContainEqual({ source: 'a.py', target: 'use-a.py', symbols: ['Config'] })
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
   it.each(['offline', 'stale', 'wrong base', 'indexing'])('does not reuse a %s snapshot', async reason => {
     const room = new RoomDoc(); room.setMeta({ base })
     room.graphs.set('Peer', {
