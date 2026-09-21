@@ -4,6 +4,9 @@ Written 2026-09-21. Room today fits a small team on a shared branch. These are t
 between that and a fifty-engineer production repo, in priority order. Nothing here is started.
 Decide the order after the trial with real users; see "What decides the order" at the end.
 
+**Start here:** [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
+use broke and proposes the order of work.
+
 ## The design the gaps point at: cost scales with overlap
 
 The gap list below says what breaks. This is the one idea that fixes most of it. Multiplayer
