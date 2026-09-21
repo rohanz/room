@@ -107,3 +107,18 @@ it('keeps running and failed worker details while compacting finished history', 
   expect(expanded).not.toContain('all=true')
   expect(workerLines([], { retiredWorkers: [retired] })).toEqual(['workers (1):', '  finished: 1 (all=true lists them)'])
 })
+
+it('uses consistent activity wording at the action and worker thresholds', async () => {
+  const { activityLabel } = await import('./views.js')
+  expect(activityLabel(0, 89_999)).toBe('working')
+  expect(activityLabel(0, 90_000)).toBe('last action 1m ago')
+  expect(activityLabel(0, 240_000)).toBe('last action 4m ago')
+  expect(activityLabel(undefined, 240_000)).toBe('activity unknown')
+  expect(activityLabel(500_000, 240_000)).toBe('working')
+  expect(activityLabel(0, 300_000, { running: true })).toBe('running')
+  expect(activityLabel(0, 360_000, { running: true })).toBe('running · quiet 6m')
+  const worker: Worker = { tag: 'test', name: 'Ada+test', lead: 'Ada', host: 'codex', dir: '/tmp/test', branch: 'test', task: 'test', pid: 1, startedAt: 0, status: 'running' }
+  expect(workerLine({ worker, changedCount: 0, now: 360_000 })[0]).toContain('running · quiet 6m')
+  expect(workerLine({ worker, changedCount: 0, now: 360_000, lastActive: 350_000 })[0]).not.toContain('quiet')
+  expect(workerLine({ worker, changedCount: 0, now: 360_000, processGone: true })[0]).toContain('running (process gone)')
+})

@@ -20,6 +20,15 @@ export function formatCount(count: number, singular: string, plural = singular +
   return count + ' ' + (count === 1 ? singular : plural)
 }
 
+/** Wording for action recency; connectivity and process liveness are separate facts. */
+export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean } = {}): string {
+  if (lastActive === undefined || !Number.isFinite(lastActive)) return options.running ? 'running' : 'activity unknown'
+  const seconds = Math.max(0, Math.floor((now - lastActive) / 1000))
+  const duration = seconds < 60 ? seconds + 's' : seconds < 3600 ? Math.floor(seconds / 60) + 'm' : seconds < 86400 ? Math.floor(seconds / 3600) + 'h' : Math.floor(seconds / 86400) + 'd'
+  if (options.running) return now - lastActive > 300_000 ? 'running · quiet ' + duration : 'running'
+  return seconds < 90 ? 'working' : 'last action ' + duration + ' ago'
+}
+
 /** Keep candidate names that have a current awareness entry, preserving candidate order. */
 export function presentPeople(people: readonly string[], current: readonly Pick<Presence, 'user'>[]): string[] {
   const present = new Set(current.map(p => p.user.name))
@@ -167,7 +176,7 @@ export function personLine(input: PersonLineInput): string {
   if (input.scope) what = `working on ${scopeLine(input.scope)}`
   else if (p?.status?.startsWith('done')) what = p.status
   else if (lastDone && (!p || p.status === 'idle' || p.status === 'synced')) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`
-  else what = p ? `${p.status ?? 'idle'}, no task declared` : 'offline'
+  else what = p ? `${p.status && !['idle', 'synced'].includes(p.status) ? p.status : activityLabel(p.lastActive)}, no task declared` : 'offline'
   const share = input.share === 'full' ? '' : `; shares ${input.share}${input.share === 'intent' ? ' (no file text)' : ' (file text only under their scope paths)'}`
   return `${what}${share}${input.changedPaths.length ? `; uncommitted, not yet pushed: ${input.changedPaths.join(', ')}` : ''}`
 }
@@ -196,17 +205,18 @@ export function otherAreasLine(hiddenCount: number, areas: readonly string[]): s
 export interface WorkerLineInput {
   worker: Worker
   processGone?: boolean
+  lastActive?: number
   changedCount: number
   last?: string
   now?: number
 }
 
 /** The two canonical room_state lines for one dispatched worker. */
-export function workerLine({ worker: w, processGone = false, changedCount, last, now = Date.now() }: WorkerLineInput): [string, string] {
+export function workerLine({ worker: w, processGone = false, lastActive, changedCount, last, now = Date.now() }: WorkerLineInput): [string, string] {
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
   const alive = w.status === 'running' && processGone ? ' (process gone)' : ''
   return [
-    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
+    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${w.status === 'running' && !processGone ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${w.summary ? ` · ${w.summary.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
   ]
 }

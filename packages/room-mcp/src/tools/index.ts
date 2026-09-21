@@ -54,6 +54,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (!h) return `error: unknown tool ${name}`
       if (state.pendingJoin) { await state.pendingJoin; state.pendingJoin = null }
       const current = ctx.getSession()
+      current?.daemon.touch()
       const closed = current?.closed
       const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait'
       if (closed && name !== 'room_leave' && !offlineTool) { const rn = current!.roomName; return `error: the room for ${rn.slice(0, rn.lastIndexOf('/'))} was closed (${closed.reason}); room_leave, then room_create to reopen` }
@@ -65,7 +66,6 @@ export function createTools(ctx: ToolCtx): Tools {
         const body = await h(args ?? {})
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
         const s2 = ctx.getSession()
-        if (s2 && name !== 'room_join' && name !== 'room_create') s2.daemon.touch()
         const prefix = moved ? `${moved}\n\n` : ''
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) : ''
         const autoTag = s2?.autoTagNote

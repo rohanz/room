@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import fs from 'node:fs'
+import fs, { watchFile, unwatchFile } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -8,17 +8,23 @@ import { Awareness } from 'y-protocols/awareness'
 import { startAutoTaggedRoomd } from '../src/session.js'
 import { sessionMetadataPath } from '../src/config.js'
 
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return { ...actual, watchFile: vi.fn(actual.watchFile), unwatchFile: vi.fn(actual.unwatchFile) }
+})
+
 vi.mock('@room/roomd', async importOriginal => ({
   ...await importOriginal<typeof import('@room/roomd')>(),
   startRoomd: vi.fn(async (options) => {
     const roomDoc = new RoomDoc()
     const awareness = new Awareness(roomDoc.doc)
     awareness.setLocalState({ user: { name: options.name, kind: 'agent' }, host: options.host, model: options.model, effort: options.effort })
-    return { roomDoc, provider: { awareness }, stop: async () => { awareness.destroy(); roomDoc.doc.destroy() } }
+    return { touch: vi.fn(), roomDoc, provider: { awareness }, stop: async () => { awareness.destroy(); roomDoc.doc.destroy() } }
   }),
 }))
-afterEach(() => vi.unstubAllEnvs())
+afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks() })
 it('refreshes runtime metadata after hook rewrites, clears missing model, and stops watching on leave', async () => {
+  vi.stubEnv('ROOM_WORKER_ID', '')
   vi.stubEnv('ROOM_HOST', 'codex')
   vi.stubEnv('ROOM_WORKER_MODEL', '')
   vi.stubEnv('ROOM_WORKER_EFFORT', '')
@@ -42,8 +48,43 @@ it('refreshes runtime metadata after hook rewrites, clears missing model, and st
     await daemon.stop()
     publish.mockClear()
     fs.writeFileSync(file, JSON.stringify({ model: 'after-leave' }))
-    await new Promise(resolve => setTimeout(resolve, 650))
     expect(publish).not.toHaveBeenCalled()
     publish.mockRestore()
   } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+it('touches for new matching-session hook activity and unregisters both polling callbacks', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-activity-'))
+  execFileSync('git', ['init', '-q', dir])
+  const file = sessionMetadataPath(dir)
+  const activity = path.join(path.dirname(file), 'room-hook-activity.json')
+  fs.writeFileSync(file, JSON.stringify({ session_id: 'current' }))
+  fs.writeFileSync(activity, JSON.stringify({ session_id: 'current', at: 1 }))
+  const watched = vi.mocked(watchFile)
+  const unwatched = vi.mocked(unwatchFile)
+  const { daemon } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room' }, 'worker')
+  try {
+    const refresh = watched.mock.calls.find(([name]) => name === activity)![2] as () => void
+    expect(daemon.touch).not.toHaveBeenCalled()
+    fs.writeFileSync(activity, JSON.stringify({ session_id: 'other', at: Date.now() + 1 }))
+    refresh()
+    expect(daemon.touch).not.toHaveBeenCalled()
+    fs.writeFileSync(activity, '{partial')
+    refresh()
+    expect(daemon.touch).not.toHaveBeenCalled()
+    // Wait for the observable hook write to be consumed, not an arbitrary timer delay.
+    await vi.waitFor(() => {
+      fs.writeFileSync(activity, JSON.stringify({ session_id: 'current', at: Date.now() }))
+      refresh()
+      expect(daemon.touch).toHaveBeenCalledTimes(1)
+    })
+    refresh()
+    expect(daemon.touch).toHaveBeenCalledTimes(1)
+    await daemon.stop()
+    expect(unwatched).toHaveBeenCalledWith(activity, refresh)
+    expect(unwatched).toHaveBeenCalledWith(file, expect.any(Function))
+  } finally {
+    await daemon.stop()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

@@ -73,6 +73,21 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('session gating', () => {
+  it('touches before dispatch, including failed calls, and reports recent actions', async () => {
+    const t = setup()
+    const touch = vi.spyOn(t.session!.daemon, 'touch')
+    try {
+      const call = t.tools.call('room_scope', {})
+      expect(touch).toHaveBeenCalledTimes(1)
+      expect(await call).toContain('error:')
+      t.session!.awareness.setLocalState({ user: me, status: 'idle', lastActive: Date.now() - 240_000 })
+      const out = await t.tools.call('room_state', {})
+      expect(out).toContain('last action 4m ago')
+      expect(out).not.toContain('idle')
+      expect(touch).toHaveBeenCalledTimes(2)
+    } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+  })
+
   it('keeps worker history compact until all=true and excludes retired participants', async () => {
     const t = setup()
     t.room.clearOverlays('Rohan') // No scope or edits: default area view expands, history still stays compact.

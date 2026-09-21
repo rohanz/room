@@ -488,3 +488,45 @@ it('limits transcript model lookup to the last 64 KiB of a 5 MiB file', async ()
   await runHook('before-edit.mjs', input)
   expect(JSON.parse(readFileSync(file, 'utf8')).model).toBe('claude-in-tail')
 })
+
+it.each(['lead', 'worker'])('resolves %s hook identity by session while cwd is in the other worktree', async who => {
+  const workerRoot = join(dir, 'worker')
+  const mainGit = join(dir, '.git')
+  const workerGit = join(mainGit, 'worktrees', 'identity-worker')
+  mkdirSync(workerRoot, { recursive: true })
+  mkdirSync(workerGit, { recursive: true })
+  writeFileSync(join(workerRoot, '.git'), `gitdir: ${workerGit}\n`)
+  writeFileSync(join(workerGit, 'commondir'), '../..\n')
+  try {
+    for (const [name, git, cwd] of [['lead', mainGit, dir], ['worker', workerGit, workerRoot]]) {
+      writeFileSync(join(git, 'room-session.json'), JSON.stringify({ session_id: name, cwd }))
+      writeFileSync(join(git, 'room-state.json'), JSON.stringify({ company: true, others: [name + '-peer'], unread: [] }))
+    }
+    const target = who === 'lead' ? mainGit : workerGit
+    const other = who === 'lead' ? workerGit : mainGit
+    rmSync(join(mainGit, 'room-hook-activity.json'), { force: true })
+    const out = JSON.parse(await runHook('before-edit.mjs', { session_id: who, cwd: who === 'lead' ? workerRoot : dir, tool_name: 'Read' })).hookSpecificOutput.additionalContext
+    expect(out).toContain(who + '-peer')
+    expect(JSON.parse(readFileSync(join(target, 'room-hook-activity.json'), 'utf8')).session_id).toBe(who)
+    expect(existsSync(join(other, 'room-hook-activity.json'))).toBe(false)
+    expect(existsSync(join(target, 'room-hook-seen.json'))).toBe(true)
+    expect(existsSync(join(other, 'room-hook-seen.json'))).toBe(false)
+  } finally {
+    rmSync(workerRoot, { recursive: true, force: true })
+    rmSync(workerGit, { recursive: true, force: true })
+  }
+})
+
+it('records read and shell activity without room state, throttles writes, and falls back for unknown sessions', async () => {
+  const file = join(dir, '.git/room-hook-activity.json')
+  const input = { session_id: 'unknown-session', cwd: dir, tool_name: 'Read' }
+  rmSync(file, { force: true })
+  await runHook('before-edit.mjs', input)
+  const first = readFileSync(file, 'utf8')
+  expect(JSON.parse(first)).toMatchObject({ session_id: 'unknown-session', at: expect.any(Number) })
+  await runHook('before-edit.mjs', { ...input, tool_name: 'Bash', tool_input: { command: 'npm test' } })
+  expect(readFileSync(file, 'utf8')).toBe(first)
+  writeFileSync(file, JSON.stringify({ session_id: input.session_id, at: Date.now() - 6000 }))
+  await runHook('before-edit.mjs', input)
+  expect(JSON.parse(readFileSync(file, 'utf8')).at).toBeGreaterThan(JSON.parse(first).at)
+})

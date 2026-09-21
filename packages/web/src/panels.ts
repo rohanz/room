@@ -4,6 +4,7 @@ import { inlineDetails } from './inline-detail.ts'
 import { deriveConflictSpans } from './conflicts.ts'
 import {
   RoomDoc,
+  activityLabel,
   type ConflictSpan,
   areaMembershipSummary,
   colorFor,
@@ -101,7 +102,7 @@ export function shortPill(state: string, max = 26): string {
 }
 
 /** Derives the single prominent state shown on a person card. */
-export function deriveStatePill(person: Pick<Participant, 'online' | 'behindBase' | 'statuses' | 'claims'>): string {
+export function deriveStatePill(person: Pick<Participant, 'online' | 'behindBase' | 'statuses' | 'claims' | 'latestActive'>): string {
   if (!person.online) return 'offline'
   const statuses = person.statuses.map(item => item.status.trim()).filter(Boolean)
   const waiting = statuses.find(status => status.toLowerCase().startsWith('waiting'))
@@ -113,8 +114,7 @@ export function deriveStatePill(person: Pick<Participant, 'online' | 'behindBase
   const claim = person.claims[0]
   if (claim) return `editing ${claim.plans?.[0]?.symbol ?? claim.path}`
   if (statuses.some(status => status.toLowerCase().startsWith('done'))) return 'done'
-  if (statuses.some(status => status.toLowerCase().startsWith('on '))) return 'working'
-  return 'idle'
+  return activityLabel(person.latestActive)
 }
 
 export interface FileRow { path: string; people: string[]; area: string; claimCount: number }
@@ -249,7 +249,7 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
         : h('div', { class: 'micro muted' }, 'no active claims'),
       h('div', { class: 'files-summary' }, h('span', { class: 'micro-label' }, 'FILES'),
         h('span', { class: `mono ${participant.files.length ? '' : 'muted'}` }, participant.files.join(', ') || 'none')),
-      h('div', { class: 'card-foot muted', title: participant.online ? 'Online' : 'Offline' }, participant.online ? participant.latestActive !== undefined ? `Online · idle ${Math.max(0, Math.floor((Date.now() - participant.latestActive) / 1000))}s` : 'Online · activity unknown' : 'Offline'))
+      h('div', { class: 'card-foot muted', title: participant.online ? 'Online' : 'Offline' }, participant.online ? `Online · ${activityLabel(participant.latestActive)}` : 'Offline'))
       card.onclick = () => focus.set(focus.person === participant.name ? null : participant.name)
       return card
     }, expanded)
