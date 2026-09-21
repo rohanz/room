@@ -2,14 +2,14 @@ import { createWriteIntentReader } from '../hooks-bridge.js'
 import { ConflictWatcher } from '../conflicts.js'
 import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
-import { claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_claim', annotations: RW, description: 'Claim a directory once with a trailing / (no line range), or claim what you are about to edit: either a symbol (function/class name; the room resolves its line range) or a line range. Declare renames/signature changes in `plans` so anyone who uses those symbols is told now. Reports overlaps (posting a conflict). Returns claimId.',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), symbol: str('function/class to claim (preferred over from/to)'), from: int('first line (if no symbol)'), to: int('last line (if no symbol)'), intent: str('what you are about to do'), plans: PLANS }, required: ['path', 'intent'] } },
-  { name: 'room_release', annotations: RW, description: 'Release a claim with a summary of what you did. Plans whose symbol is not mentioned in the summary (or in `done`) are reported as not done.',
-    inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('what changed, one line'), done: strs('symbols from your plans that you completed') }, required: ['claimId'] } }
+  { name: 'room_claim', annotations: RW, description: 'Claim only where another participant is near. Use a directory ending /, symbol, or lines. Declare public API plans.',
+    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), symbol: str('definition name'), from: int('first line'), to: int('last line'), intent: str('intent'), plans: PLANS }, required: ['path', 'intent'] } },
+  { name: 'room_release', annotations: RW, description: 'Release early; room_done releases remaining claims. List completed plan symbols in done.',
+    inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('what changed, one line'), done: strs('completed symbols') }, required: ['claimId'] } }
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -20,6 +20,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
       if (typeof a.intent !== 'string' || !a.intent) return 'error: intent is required'
       const p = a.path, intent = a.intent
+      const nearby = [
+        ...s.room.allScopes().flatMap(sc => sc.paths.map(path => ({ by: sc.by, path, reason: 'scope' as const }))),
+        ...s.room.openClaims().map(c => ({ by: c.by, path: c.path, reason: 'claim' as const })),
+        ...[...new Set([...s.room.overlays.keys(), ...s.room.deleted.keys()])].flatMap(by => s.room.changedPaths(by).map(path => ({ by, path, reason: 'changed' as const }))),
+      ]
+      if (!nearPath(p, nearby.filter(entry => entry.by !== s.me.name)).length) return `${p}: no claim needed; nobody else is near this path`
       const plans = parsePlans(a.plans)
       if (typeof plans === 'string') return plans
       const directory = p.endsWith('/')
@@ -127,7 +133,7 @@ export function releaseClaimsOnDone(s: Session, keep?: (claim: Claim) => boolean
 function postPlanChange(s: Session, c: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan, priority?: PlanMsg['priority']): string[] {
   const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter(p => p !== s.me.name)
   const base = { type: 'plan' as const, status, claimId: c.id, path: c.path, plan, text, ...(replacedBy ? { replacedBy } : {}), priority: priority ?? 'interrupt' }
-  const orig = s.room.post<PlanMsg>(s.me, base)
+  const orig = s.room.post<PlanMsg>(s.me, { ...base, priority: 'fyi' })
   for (const p of deps) s.room.post<PlanMsg>(s.me, { ...base, to: p, copyOf: orig.id })
   return deps.length ? [`plan ${status}: ${formatPlans([plan])} — told ${deps.map(d => `${d}'s agent`).join(', ')} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} — nobody had been shown it`]
 }

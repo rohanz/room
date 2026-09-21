@@ -750,6 +750,7 @@ export function messageBody(message: Msg): (Node | string | null)[] {
     case 'claim': return [h('strong', {}, 'claimed '), h('span', { class: 'mono' }, `${message.path}:${message.from_line}-${message.to_line}`), ` · ${message.intent}${message.plans?.length ? ` ${displayPlans(message.plans)}` : ''}`]
     case 'release': return [h('strong', {}, 'released '), h('span', { class: 'mono' }, message.path), message.summary ? ` · ${message.summary}` : '', message.unfulfilled?.length ? h('span', { class: 'unfulfilled' }, ` not done: ${formatPlans(message.unfulfilled)}`) : null]
     case 'changed': return [h('strong', {}, 'changed '), h('span', { class: 'mono' }, message.paths.join(', ')), ` · ${message.summary}`, message.symbols?.length ? h('span', { class: 'symbol-list' }, message.symbols.join(', ')) : null]
+    case 'merge-conflict':
     case 'conflict': return [h('strong', {}, 'conflict '), h('span', { class: 'mono' }, message.path), ` · ${message.text}`]
     case 'contract': return [h('strong', {}, 'contract change '), h('span', { class: 'mono' }, message.path), ` · ${message.text}`]
     case 'note': return [message.text]

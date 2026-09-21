@@ -16,6 +16,7 @@ export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = [], ha
   if (m.from === me.name && isAgentic(m.fromKind)) return { wake: false, mustAnswer: false, reason: 'own message' }
   const addressed = m.to === me.name
   const kind = messageKind(m)
+  if (kind.wakes === 'never') return { wake: false, mustAnswer: false, reason: 'feed-only event' }
   if ((!m.to || addressed) && typeof kind.wakes === 'function' && kind.wakes(m, { me, hasUncommitted, myClaims })) {
     return { wake: true, mustAnswer: addressed, reason: 'message wake rule' }
   }
@@ -27,7 +28,7 @@ export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = [], ha
     return { wake: true, mustAnswer: addressed, reason: addressed ? 'interrupt addressed to me' : 'broadcast interrupt' }
   }
   if (m.to && !addressed) return { wake: false, mustAnswer: false, reason: `addressed to ${m.to}` }
-  if ((kind.wakes === 'never' || typeof kind.wakes === 'function')) return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` }
+  if ((kind.wakes === 'interrupt' || typeof kind.wakes === 'function')) return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` }
   if (kind.wakes === 'addressed' && !addressed) return { wake: false, mustAnswer: false, reason: 'not addressed to me' }
   if (kind.audience === 'claim-holders' && !addressed && !(m.from === me.name && m.fromKind === 'human')) {
     const path = 'path' in m && typeof m.path === 'string' ? m.path : ''

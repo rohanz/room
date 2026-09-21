@@ -1,37 +1,28 @@
 ---
 name: room-workers
-description: How to run parallel work through room workers. Use when the user asks to parallelise work that edits files, in any words (subagents, split this up, fan this out, get codex to do part of it), or when you are about to call room_spawn.
+description: Dispatch independent editing tasks through Room workers; use before room_spawn.
 ---
 
-Route parallel work that EDITS files through `room_spawn`, whether or not the user said
-"room". Use the host's built-in subagents for read-only or research fan-out. If unsure
-whether the parts edit files, treat them as edits.
+1. Split substantial work into independent parts with disjoint files where possible.
+   For a few lines, do it yourself. Use built-in subagents for read-only research.
+2. Call `room_spawn(tag, task, host?, model?)`. Host defaults to your own host; override
+   only when requested. Give each worker a self-contained task, owned files and test command.
+   Pass a model only when specified.
+3. Briefly state what you dispatched. Answer workers' questions with
+   `room_send(type="answer", inReplyTo=...)`; ask your human only for a decision that
+   blocks the work. `room_wait` returns the event; read state only when more context is needed.
+4. Preview current worker output together using full participant names:
+   `room_preview_merge(people=[...], run="<tests>")`. Repeat after the last worker finishes
+   and resolve conflicts or failing tests before collecting.
+5. `room_collect(tag)` brings output into your clone uncommitted. Use `commit=true` only
+   when commits are explicitly authorized. `discard=true` stops and discards a worker
+   instead of collecting. Successful collection/discard cleans up its worktree and branch;
+   inspect errors before retrying. For named artifacts, use `mode="copy", paths=[...]`.
+6. Report the work and validation result. Never push unless asked.
 
-1. Split the task into independent parts with disjoint files where possible. Give each a short tag.
-2. Call `room_spawn(tag, task, host, model?)` for each part. Explicitly set `host` to your
-   own host (`codex` or `claude`) unless the user names another: "get codex to…" means
-   `host="codex"`. The tool itself defaults to Claude. Pass `model` only when specified.
-   Give each worker a self-contained task, the files it owns, and the test command.
-3. Tell the user in one line what you dispatched and the browser link from `room_state`.
-4. Loop on `room_wait`, then check `room_state`. Answer workers' questions promptly with
-   `room_send(type="answer", inReplyTo="<question id>", text="…")`; relay decisions needing
-   the human to your user and send their answer back. Check failures instead of waiting forever.
-5. As workers report done, call `room_preview_merge(people=[...], run="<test command>")`
-   with all workers together, using their full participant names returned by spawn.
-   Repeat after the last finishes; resolve conflicts and failing tests before merging.
-6. After the preview passes, stop any worker process still running with `room_dismiss(tag)`,
-   then call `room_collect(tag)`: it commits the worker's non-ignored changes as the lead
-   and merges its branch, releasing its claims first. For named artifacts (including ignored
-   files the preview explicitly excludes), use `room_collect(tag, mode="copy", paths=[...])`.
-   Inspect the result; merge conflicts are aborted and listed. Never push. Respect explicit
-   restrictions on commits or merges; if prohibited, leave changes uncommitted.
-7. Report what landed, the test result, conflicts, and that nothing is pushed.
+Respect `ROOM_MAX_WORKERS`. Do not join a team room just to dispatch workers.
+`where="local"` keeps workers local; a lead already in a team room still mirrors their
+scope and claims there. Otherwise omit `where` to use the current room.
 
-Respect `ROOM_MAX_WORKERS` (default 8); wait for capacity. Do not spawn for a task that
-is one file or a few lines. Never spawn into the team room unless you, the lead, are in it;
-never join it just to dispatch workers. "Locally" / "in a local room" means pass
-`where="local"` to `room_spawn`: the workers room stays on this machine. A lead already
-in the team room still mirrors workers' scope and claims there. Otherwise omit `where`
-to use your current room.
-
-**Compute-heavy work:** Room caps math-library threads per worker through the environment; state the budget from the spawn reply in the task, tell the worker to pass the same number to explicit parameters (`n_jobs`, `num_threads`, `num_workers`), and stagger heavy jobs rather than starting them all at once.
+Room caps math-library threads. Pass the spawn reply's budget to explicit parameters
+such as `n_jobs`, `num_threads` and `num_workers`; stagger heavy jobs.

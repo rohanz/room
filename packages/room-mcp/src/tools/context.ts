@@ -78,7 +78,6 @@ export interface HandlerState {
   runningWorkers: (s: Session) => { s: Session; w: Worker }[]
   hasCompany: (s: Session) => CompanyState
   dismissWorker: (s: Session, w: Worker, why: string) => string
-  gitignored: (dir: string) => boolean
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]
   shareOf: (s: Session, person: string) => ShareLevel
@@ -142,14 +141,14 @@ export const int = (d: string) => ({ type: 'integer', description: d })
 export const strs = (d: string) => ({ type: 'array', items: { type: 'string' }, description: d })
 export const PLANS = {
   type: 'array',
-  description: 'Changes you intend to make that others may depend on. Declare BEFORE editing.',
+  description: 'Public API changes planned before editing.',
   items: { type: 'object', properties: {
     kind: { type: 'string', enum: ['rename', 'signature', 'delete', 'add'] },
-    symbol: str('function/class/variable name as it is now'),
-    detail: str('new name, new signature, or why'),
+    symbol: str('current symbol'),
+    detail: str('new name/signature or reason'),
   }, required: ['kind', 'symbol'] },
 }
-export const SHARE = { type: 'string', enum: ['intent', 'declared', 'full'], description: 'sharing level: intent (presence, scope, claims, plans, bus; no file text), declared (file text only under your declared scope paths), full (every changed file). Default ROOM_SHARE, then full; the server may cap it (ROOM_SHARE_MAX).' }
+export const SHARE = { type: 'string', enum: ['intent', 'declared', 'full'], description: 'intent: plans only; declared: scoped files; full: all changed files' }
 
 export class NotJoined extends Error {}
 export class NeedFetch extends Error { constructor(public person: string, public sha: string, public detail: string) { super(detail) } }
@@ -378,7 +377,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   // ---- handlers -------------------------------------------------------------
   runtime = {
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, myWorkers: undefined!, workerAlive: undefined!,
-    ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, gitignored: undefined!, others, presences,
+    ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, others, presences,
     shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, loadAreas: undefined!, areasOf: undefined!,
     areasFor: undefined!, myAreas: undefined!, inMyAreas: undefined!, areaLines: undefined!, ownerHints: undefined!, msgInMyAreas: undefined!, forMe: undefined!, inbox: undefined!, waitingOn: undefined!, describeUsers: undefined!,
     planChanged: undefined!, followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, upgrade: undefined!, claimLine: undefined!, ledgerLines: undefined!, scopeLine: undefined!, personLine: undefined!,

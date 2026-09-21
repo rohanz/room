@@ -81,3 +81,24 @@ describe('MessageKinds', () => {
    expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m).wake).toBe(false)
    room.doc.destroy()
  })
+
+it.each(['scope', 'release', 'changed', 'claim'] as const)('%s stays feed-only and never wakes, even with an urgency override', type => {
+  for (const priority of ['fyi', 'notify', 'interrupt'] as const) {
+    const m = { id: 'routine', type, priority, from: 'Kieran', fromKind: 'agent', at: 1 } as import('./types.js').Msg
+    expect(MessageKinds[type].wakes).toBe('never')
+    expect(MessageKinds[type].inbox).toBe(false)
+    expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m).wake).toBe(false)
+    expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, { ...m, to: 'Rohan' }).wake).toBe(false)
+  }
+})
+
+it('addresses merge conflicts to the affected participant as a waking notification', () => {
+  const room = new RoomDoc()
+  const m = room.post<import('./types.js').MergeConflictMsg>({ name: 'room', kind: 'bot' }, { type: 'merge-conflict', to: 'Rohan', path: 'api.ts', text: 'your file and Kieran’s now conflict' })
+  expect(m.priority).toBe('notify')
+  expect(messageForMe({ name: 'Rohan' }, m)).toBe(true)
+  expect(messageForMe({ name: 'Ada' }, m)).toBe(false)
+  expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m)).toMatchObject({ wake: true, mustAnswer: true })
+  expect(shouldWakeOnMsg({ name: 'Ada', kind: 'agent' }, m).wake).toBe(false)
+  room.doc.destroy()
+})
