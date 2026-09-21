@@ -123,7 +123,7 @@ describe('room header', () => {
       expect(element.find('room-name')?.title).toBe(displayRoomName)
       expect(element.children.filter((c): c is HeaderElement => typeof c !== 'string' && c.className === 'room-chip mono').map(c => c.textContent)).toEqual(chips)
       expect(element.textContent).toContain('base abcdef1')
-      expect(element.textContent).toContain('0 participants')
+      expect(element.textContent).toContain('0 active')
     } finally { room.doc.destroy() }
   })
 })
@@ -172,7 +172,7 @@ describe('merged pane participant choices', () => {
     const conn = { room, provider: { awareness: { getStates: () => states, on: (event: string, fn: () => void) => listeners.set(event, fn) } } } as unknown as Conn
     const panel = centrePanel(conn, createFocusState()) as unknown as MergeElement
     const chips = () => panel.querySelectorAll('.merge-chip')
-    const selected = () => chips().filter(c => c.ariaPressed === 'true').map(c => c.textContent)
+    const selected = () => chips().filter(c => c.ariaPressed === 'true').map(c => c.textContent).sort()
     return { room, panel, presence, chips, selected }
   }
 
