@@ -2,7 +2,7 @@
  * A lead's tools with a bridged workers room: room_done keeps the mirrors of running workers (B2),
  * and a worker exiting without room_done still wakes the lead's host (B3).
  */
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -122,7 +122,7 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
     s.room.post(s.me, { type: 'note', to: 'rohanz+money', text: 'mine', priority: 'interrupt' } as never)
     expect(pushed).toEqual([])
     t.exits[0](1)
-    expect(pushed).toEqual(['done'])
+    await vi.waitFor(() => expect(pushed).toEqual(['note']))
     await t.leadTools.call('room_leave', { force: true })
   })
 })

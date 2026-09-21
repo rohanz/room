@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.8.0 — 2026-09-21
+
+Fixes from the audit of the longest real use of Room (`docs/audit-2026-09-21-qube.md`).
+
+- A1. Integration is not a conflict: an edit inside someone's claim that is byte-identical to the holder's own current text raises nothing; one fyi per holder ("rohanz integrated 4 files of rohanz+volkeys").
+- A2. Writes are attributed to the session, not the folder: the before-tool hook records per-session write intents (newest 200, 10 minutes); a change my session did not intend in the last 2 minutes is someone else's, at most one fyi per path per 10 minutes. Without hook evidence the old behaviour stays.
+- A3. Two agents in one folder: overlap checks between co-located participants are skipped, and the second one's join reply says its changes are published under the first participant's name.
+- A4. Each message is delivered once: a successful channel delivery (Claude hosts) marks ids seen in the document, and ids the hook showed are picked up from `room-hook-seen.json`, only for the participant they were shown to.
+- B1. A worker process that exits without `room_done` has its claims released and plans ended quietly (`releaseClaimsOnDone`).
+- B2. The lead gets one interrupt when a worker dies (non-zero exit, exit within 90 s, or exit without done) with the last 5 log lines, ANSI stripped, at most 600 characters.
+- B3. `room_spawn` `effort` is validated and passed to Codex as `-c model_reasoning_effort=<value>`; shown only for Claude.
+- B4. Compute budget, priority and effort are in the worker's prompt; the spawn reply is shorter.
+- B5. `room_spawn` `link` (default: `.roomlinks`) symlinks repo-relative inputs from the lead's clone into the worktree, validated, recorded on the worker (`Worker.link`) and named in the prompt as read-only.
+- B6. When the lead's session cannot be confirmed wakeable (`claudeWakeUnavailable`, shared with `claudeWakeNote`), the spawn reply starts by saying so and telling it to loop on `room_wait`.
+- C1. `room_preview_merge` handles files absent at the base, present on one side only, or added on both sides (empty base), never surfaces a raw git exit code, and names changed paths it did not preview because git ignores them.
+- C2. New lead tool `room_collect(tag, mode?, paths?, force?)`: "merge" commits the worker's worktree as the lead and merges `room/<tag>` (aborting and listing files on conflict); "copy" copies named paths, including untracked or ignored artifacts, path-safe, refusing to overwrite modified files without `force`. Releases the worker's claims on those paths first and triggers retirement.
+- C3. The room-workers skill finishes with `room_preview_merge`, then `room_collect`, then the report; README tools table updated.
+- D1. The daemon never descends into a symlinked directory, never publishes a path whose real path leaves the worktree, and treats paths git cannot classify beyond a symlink as ignored.
+- D2. Default ignores by name without reading the file (`.DS_Store`, `*.npy`, `*.npz`, `*.parquet`, `*.pkl`, `*.pt`, `*.bin`, `*.sqlite`, `*.zip`, `*.gz`, `*.tmp`, `*~`, dot-prefixed atomic-write temps); a skip is logged once per path.
+- D3. A path published more than 5 times in 2 minutes is then published at most once every 30 s, trailing edge.
+- D4. HEAD is checked before publishing; if it moved the overlay is rebased on the new HEAD. Changes within 300 ms are batched; a burst of more than 20 paths in a second waits 2 s.
+- D5. Presence carries `watchedDirectory` (sha256 of the real path, never the path) and `publishUnder` for a second, non-publishing daemon on the same directory.
+- D6. The symbol graph index starts with 0 to 4 s jitter and reuses a present participant's ready snapshot for the same base from the last 60 s, computing only its own observed contract changes.
+- D7. The daemon logs one line with the reason when it stops.
+- E1. Plans ended because their owner finished, left or died, or superseded by the same owner, are fyi, never enter an inbox, never wake anyone, and are coalesced to one line per owner per event.
+- E2. `room_state` shows my claims and those overlapping my scope or changes in full, everyone else as one line per person; the default reply is capped near 8,000 characters with a final line saying what was omitted; `all=true` is complete, grouped by person.
+- E3. Directory claims: `room_claim` on a path ending in "/" covers everything under it and needs no line range (`claimsOverlap`, `RoomDoc.claimsFor`).
+- E4. A lead whose workers are running is told "nothing yet; 3 workers still running (a, b, c); nothing needs you" when `room_wait` times out, never "Tell your human".
+- E5. A participant's own messages never enter its own inbox.
+- E6. The MCP server logs why it stops (stdin closed, SIGTERM, SIGINT) and writes uncaught exceptions and unhandled rejections to its log file and stderr before exiting.
+
 ## 0.7.0 — 2026-09-21
 
 - Treat reported-done, failed and dismissed workers as unable to answer even before process exit; question waits return immediately. Participant lines show recency once, and shared web/room_state activity labels use finished-worker timestamps instead of recent tool activity.

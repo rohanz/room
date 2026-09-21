@@ -80,6 +80,18 @@ edits; workers get thread caps and lower scheduling priority; a question to a wo
 is answered at once; a finishing worker's summary is said once; "idle" is gone; local rooms keep
 their history; finished workers retire into an archive.
 
+## Fixed in 0.8.0 (branch `audit-fixes`)
+
+Items 1 (all three mechanisms, and claims released on exit), 2 (`room_collect`, preview on files absent
+at the base), 3 (spawn says when the lead cannot be confirmed wakeable), 4 (shutdown reason, fatal-error
+handlers, death interrupt with log tail), 5 (plan notices, single delivery, own messages, compact
+`room_state`, directory claims), 6 (symlinks, name ignores, hot files, HEAD settling), 7 (`link` /
+`.roomlinks`), 8 (effort, budget in the prompt) and 9 (jitter, shared snapshot). See CHANGELOG 0.8.0.
+
+Still open: 10 (sandbox `uv` cache); the unknown cause of "Transport closed" (now it will be logged);
+hook snapshot files (`room-state.json`, `room-hook-seen.json`) are still per folder, not per session, so
+two sessions in one folder can overwrite each other's snapshots (receipts are recipient-checked).
+
 ## Proposed order
 
 1. Trust: false alarms (1), plan noise and duplicate delivery (5), claims released on exit (1b),
