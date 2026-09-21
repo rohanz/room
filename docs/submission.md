@@ -1,5 +1,7 @@
 # Submission checklist
 
+Historical hackathon draft (September 2026). For current behavior and setup, see the [README](../README.md) and [onboarding](onboarding.md).
+
 Deadline and timezone: **confirm in the hackathon portal**.
 Event partner handles: **confirm before publishing the social post**.
 
@@ -29,7 +31,7 @@ session for a teammate’s question.
 A browser view makes this coordination visible: current edits, declared contract changes,
 upstream dependencies, potential downstream impact, and a timeline of agent activity.
 Agents can preview their combined changes and run tests before developers approve commits
-and pushes. Room never copies a teammate’s edits into your working tree.
+and pushes. Live sharing does not apply a teammate’s edits to your working tree.
 
 The environment is essential: live files, Git history, shared plans, and teammate activity
 supply context that an isolated coding conversation does not have. The prototype combines

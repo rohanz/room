@@ -1,10 +1,198 @@
-# Room — coding agents that coordinate before merge time
+# Room
 
-[![CI](https://github.com/rohanz/room/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rohanz/room/actions/workflows/ci.yml)
+Room lets your coding agent see what teammates’ agents are changing and coordinate while you work.
 
-**Your coding agent, aware of your teammates’ agents.**
+```sh
+codex plugin marketplace add rohanz/room && codex plugin add room@room       # Codex
+claude plugin marketplace add rohanz/room && claude plugin install room@room # Claude Code
+```
+
+Start your agent as usual; by default nothing leaves your machine. Say **“join the room”**
+to work with teammates. **Team rooms are currently per branch: teammates must use the same branch.**
+
+For Claude Code, launch with `claude --dangerously-load-development-channels plugin:room@room`
+(or set up the `claude-room` launcher). [Why this flag is needed](#claude-code).
+
+## Getting started
+
+You need Git, Node.js 24 LTS, and Codex or Claude Code with plugin support. Trust Room’s hooks
+when prompted or through `/hooks`. Python indexing needs Python 3; the demo uses `uv`.
+Start in your repository and ask for your feature as usual. Room stays silent while you work alone.
+[Walk through a first session](docs/onboarding.md).
+
+**With no server configured or team choice remembered, the session is in a local room:**
+no account, no login, nothing leaves your machine. The first session in a clone starts a
+tiny relay next to the clone's `.git`; any other session started in the same clone, or in
+a worktree of it, joins the same room. The room is named `local/<repo>/<branch>` after the
+main worktree's branch.
+
+Ask **"Show room state"** to see who is in the room. Then ask for your feature as usual.
+
+**“Join the room”** moves the session to the team room for this repo. **“Work locally”**
+brings it back. The choice is remembered in the clone’s common Git directory and applies to
+its worktrees; `room_leave(forget=true)` clears it. Later sessions reuse that choice.
+Explicit destination arguments take precedence over `ROOM_SERVER`, then legacy `ROOM_URL`,
+then the remembered choice, then local. Environment overrides are not saved as your choice.
+An agent never switches to a team room on its own initiative.
+
+On the first join to each server from a worktree, the agent relays one disclosure, including
+when you are alone or the destination came from an environment variable:
+
+> This clone now shares {sharing level} with members of {repo} on {server}; use room_share level=intent for plans only or level=declared to limit files to your declared area.
+
+The sharing level is stated plainly: “the full text of files you change”, “only the files in
+your declared area”, or “only your plans, no file text”.
+
+When a second agent is tagged automatically (for example, `rohanz+claude`), that tag sticks
+to the clone across sessions so an offline overlay cannot be mistaken for another clone's work.
+
+Areas come from `CODEOWNERS` at the room's base commit, not from the working tree. When
+there is no matching `CODEOWNERS` area, an uncommitted file makes its top-level directory
+an area only for the person who changed that file.
+
+**Sharing levels.** By default the room sees the full text of files you change (`full`).
+`ROOM_SHARE=declared` shares text only under the paths you declared in your scope, `intent`
+shares plans and claims with no file text; `room_share` changes it live and a server can set
+a ceiling. Teams should start at `declared`. Reading someone who shares less degrades to a
+one-line answer rather than an error. An unrecognised sharing level falls back to `intent`
+and reports the invalid setting; it never widens sharing to full text.
+
+**What reaches an agent.** Routine events (scopes, releases, change notes) stay in the feed;
+an agent's inbox only gets what is addressed to it, conflicts on its claims, and interrupts,
+and `room_state` shows the people and claims near its own work in full with one line for
+everyone else. The bus keeps a rolling window and folds older history into a ledger archive.
+
+### Watching a local room
+
+Ask for the browser link when you want to inspect participants, tasks and activity. A local
+view is served by the relay at `http://127.0.0.1:<port>/?room=…&key=…`; it only accepts
+loopback connections. The link carries the key from the Git directory’s `room-local.json`.
+Anyone on this machine who holds the link can read the room.
+
+The view link needs a running session. Room history, worker records, scopes and colours
+are kept privately in the clone’s git common directory (`room-local/*.ydoc`), never shared.
+Live file text and claims are rebuilt by connected sessions. `room_close confirm=true`
+exports the ledger and forgets the local room’s saved memory; `room_leave` preserves it.
+
+### Dispatching workers
+
+Room caps math-library threads per worker; include the spawn reply’s budget in compute-heavy tasks, use `threads` (or `ROOM_WORKER_THREADS` on the lead) to override it, and stagger heavy jobs.
+
+Ask in your own words: "use a couple of subagents for this" or "split this up".
+The agent loads the room-workers skill and handles dispatch, questions, preview and merge.
+You do not need to know any tool names. For example:
+
+> Use a couple of subagents for this: add the endpoint in api.ts and its tests in api.test.ts.
+
+`room_spawn` creates a Git worktree at `.room/workers/<tag>` on branch `room/<tag>`.
+It uses the caller’s agent host unless you choose another. The worker joins as `<you>+<tag>`,
+declares its task, coordinates where work overlaps, previews the combined changes, and finishes
+with a one-line summary. Up to eight workers run at once (`ROOM_MAX_WORKERS`).
+
+The lead collects finished work with `room_collect(tag)`: changes arrive in its working tree
+**uncommitted and unstaged**, preserving the lead’s own edits. Conflicts leave its files untouched
+and name the paths to resolve. `commit: true` requests commits and a merge. `mode: "copy"`
+with `paths` collects named artifacts, including ignored files. Full successful collection of
+an exited worker removes its worktree and branch, and removes logs after a successful exit.
+Failed or partial collection preserves recoverable work.
+
+`discard: true` stops a worker without collecting output; it cleans up a clean worktree but
+keeps a dirty one and reports its location. Room excludes `.room/` through Git’s private
+exclude file automatically.
+
+Workers of one lead see each other, so two of them touching the same function get the
+same claims and conflict notices as two teammates would.
+
+### What Room writes
+
+Live sharing does not apply another participant’s edits to your working tree. In your repository,
+Room’s bookkeeping lives only inside the Git directory and `.room/`. Bringing in a worker’s
+output changes project files when requested; exports write the room’s story to `.room/ledger/`.
+
+- The worktree’s Git directory holds `room.json` (migrated from the old root `.room.json`)
+  and hook/session state.
+- The common Git directory holds `room-choice.json` (the remembered destination),
+  `room-local.json` and `room-local/*.ydoc` (local relay discovery and history).
+- `.room/workers/` holds worker worktrees and logs until successful collection or clean-worktree dismissal cleans them up.
+  Room adds `.room/` to Git’s private `info/exclude`; no tracked ignore-file edit is needed.
+
+Outside the repository, login sessions are saved in `~/.config/room/credentials.json`
+(`XDG_CONFIG_HOME` or `ROOM_CREDENTIALS` can override it). Merge previews use temporary
+`room-merge-*` and `room-merge-file-*` directories under the operating system’s temp directory.
+
+## Team rooms
+
+To work with teammates on other machines, point the plugin at a server:
+
+```sh
+ROOM_SERVER=hosted codex          # team server, wss://room-rohanz.fly.dev
+ROOM_SERVER=wss://room.example.com codex   # your own (see deploy/self-hosting.md)
+```
+
+The first person on a repo opens it once: ask **"Open a room for this repo"** (the agent
+calls `room_create`). From then on every branch of that repo has a room, and each session
+started in a clone joins the room for its current branch automatically:
+`github.com/<owner>/<repo>/<branch>`. Nothing about your clone leaves your machine until
+that join happens, and no session joins a repo nobody has opened. Teammates must currently
+use the same branch; removing this boundary is the next planned change.
+
+The first time you use a server, the agent runs `room_login`: open the GitHub device
+page it prints, enter the code, and approve Room. The server holds the resulting token
+(revocable under GitHub → Authorized OAuth Apps); your `gh` token is never sent anywhere.
+Your participant name is your GitHub login. To open or join a repo you need push access
+to it, so public repos are not open rooms. A browser link requested with `room_state(link=true)` contains a
+room-scoped view key valid for 7 days, rather than your GitHub token. Treat that link as
+access to the room's shared code and activity.
+
+Everything from the local workflow applies unchanged: the same tools, etiquette, and
+workers. A lead's workers join the team room when the lead is in one, unless you ask for
+them locally.
+
+**Workers stay local.** Say "spawn the workers locally" (or `room_spawn` with
+`where=local`) while you are in the team room: the lead opens a local workers room on
+your machine, dispatches into it, and bridges the two. Workers never touch the server. The
+team room sees the lead's scope as the union of its workers' paths, sees their claims under
+the lead's name (`[tag] intent`), and any team message that touches a worker's files is
+relayed to that worker as an interrupt. Questions from workers and their done messages
+stay on your machine; `room_state` shows both rooms.
+
+## Claude Code
+
+Claude Code 2.1 or later uses the same plugin as Codex. For a local checkout, install the
+marketplace with `claude plugin marketplace add /path/to/room`.
+
+Room wakes an idle Claude Code session through an MCP channel when a teammate asks a question,
+an interrupt arrives, or a worker finishes. Channels are a research preview: Room is not on
+Anthropic’s channel allowlist, so `--dangerously-load-development-channels plugin:room@room`
+admits this one plugin entry. Your organisation’s channel policy still applies. Channels need
+an Anthropic login and are unavailable on Bedrock, Vertex or Foundry. Without the flag, an idle
+session sees messages when you next talk to it; trusted hooks still show them before an edit.
+A dim “Channels (experimental)” line under the banner confirms registration. Codex uses
+`codex queue` and needs no extra launch flag.
+
+The plugin includes `bin/claude-room`. Add its installed directory
+(`~/.claude/plugins/cache/room/room/<version>/bin`) to your PATH, or put this alias in your shell profile:
+
+```sh
+alias claude-room='claude --dangerously-load-development-channels plugin:room@room'
+```
+
+### Updating the plugin
+
+Update the marketplace and reinstall the plugin using your host’s plugin commands. For Claude Code:
+
+```sh
+claude plugin marketplace update room
+claude plugin install room@room
+```
+
+An update applies to **new sessions**. Start a new session after reinstalling; a session already
+running keeps its original tools and instructions. If a hook definition changes, trust it again
+when your host asks. `claude plugin validate plugins/room` checks a local manifest.
 
 ## Status
+
+[![CI](https://github.com/rohanz/room/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rohanz/room/actions/workflows/ci.yml)
 
 Room has been tested live with a small team on GitHub-hosted repositories and in solo mode on macOS.
 That coverage includes local rooms, Claude Code and Codex workers, and teams using mixed agent hosts.
@@ -22,7 +210,7 @@ rework. Room aims to prevent avoidable conflicts and incompatible assumptions be
 they become implementation problems, reducing rework and speeding up iteration.
 
 Room is a coordination layer for developers and small teams using coding agents
-in parallel on a shared repository. It connects the agents inside their existing Git
+in parallel on the same repository and branch. It connects the agents inside their existing Git
 clones and Codex sessions. They share
 live edits, declare intended contract changes, identify affected teammates, and ask each
 other questions before the work is merged. Developers keep their own editors, agents,
@@ -30,177 +218,6 @@ and Git workflow.
 
 Built for the **“Agents leaving the chatbox”** hackathon.
 [Read the brief and judging criteria](RULES.md).
-
-## Quick start
-
-Short version for people trying it: [docs/onboarding.md](docs/onboarding.md).
-
-Prerequisites: Git, Node.js 24 LTS, and Codex CLI or Claude Code with plugin support.
-Python indexing needs Python 3; the Python demo uses `uv`.
-
-Install the plugin once per machine:
-
-```sh
-codex plugin marketplace add rohanz/room && codex plugin add room@room      # Codex
-claude plugin marketplace add rohanz/room && claude plugin install room@room # Claude Code
-```
-
-Trust Room's hooks when prompted (or through `/hooks`). They put teammate claims and your
-unread room messages in front of the model before every edit, including edits made through the shell, and record the session so
-it can be woken.
-
-Room stays silent while you are alone and starts coordinating when someone joins or you spawn workers.
-
-Then start your agent in any clone:
-
-```sh
-cd /path/to/your/repo
-codex          # Codex needs nothing extra
-claude-room    # = claude --dangerously-load-development-channels plugin:room@room  (see "Why Claude Code needs a flag")
-```
-
-That is the whole setup. **With no server configured, the session is in a local room:**
-no account, no login, nothing leaves your machine. The first session in a clone starts a
-tiny relay next to the clone's `.git`; any other session started in the same clone, or in
-a worktree of it, joins the same room. The room is named `local/<repo>/<branch>` after the
-main worktree's branch.
-
-Ask **"Show room state"** to see who is in the room. Then ask for your feature as usual.
-
-**"Join the room"** moves the session to the team server for this repo.
-"Join the team room", "join the web room", and "join the shared room" also work.
-The agent tells you that uncommitted work in this clone is now visible to the repo's room members.
-**"Work locally"** brings it back. The choice is remembered per clone, so the next session
-in that clone starts where you left it; `room_leave(forget=true)` clears it. An agent never
-joins the team room on its own initiative. `ROOM_SERVER` still overrides everything, for
-scripts and workers.
-When a second agent is tagged automatically (for example, `rohanz+claude`), that tag sticks
-to the clone across sessions so an offline overlay cannot be mistaken for another clone's work.
-
-Areas come from `CODEOWNERS` at the room's base commit, not from the working tree. When
-there is no matching `CODEOWNERS` area, an uncommitted file makes its top-level directory
-an area only for the person who changed that file.
-
-**Sharing levels.** By default the room sees the full text of files you change (`full`).
-`ROOM_SHARE=declared` shares text only under the paths you declared in your scope, `intent`
-shares plans and claims with no file text; `room_share` changes it live and a server can set
-a ceiling. Teams should start at `declared`. Reading someone who shares less degrades to a
-one-line answer rather than an error.
-
-**What reaches an agent.** Routine events (scopes, releases, change notes) stay in the feed;
-an agent's inbox only gets what is addressed to it, conflicts on its claims, and interrupts,
-and `room_state` shows the people and claims near its own work in full with one line for
-everyone else. The bus keeps a rolling window and folds older history into a ledger archive.
-
-### Watching a local room
-
-A local session prints a `browser view:` link like a hosted one, served by the relay itself:
-`http://127.0.0.1:<port>/?room=…&key=…`. Open it to see the participants, their claims and
-the feed. The link is machine-local (the relay only accepts loopback connections) and it
-carries the room's key from `.git/room-local.json`, which is what lets the page connect.
-Anyone who can run something on this machine and holds the link can read the room; the
-key stops other users of a shared machine from guessing their way in.
-
-The view link needs a running session. Room history, worker records, scopes and colours
-are kept privately in the clone’s git common directory (`room-local/*.ydoc`), never shared.
-Live file text and claims are rebuilt by connected sessions. `room_close confirm=true`
-exports the ledger and forgets the local room’s saved memory; `room_leave` preserves it.
-
-### Dispatching workers
-
-Room caps math-library threads per worker; include the spawn reply’s budget in compute-heavy tasks, use `threads` (or `ROOM_WORKER_THREADS` on the lead) to override it, and stagger heavy jobs.
-
-Ask in your own words: "use a couple of subagents for this" or "split this up".
-The agent loads the room-workers skill and handles dispatch, questions, preview and merge.
-You do not need to know any tool names. For example:
-
-> Use a couple of subagents for this: add the endpoint in api.ts and its tests in api.test.ts.
-
-`room_spawn` creates a git worktree at `.room/workers/<tag>` on branch `room/<tag>`,
-starts a Claude Code or Codex agent there (`host` and `model` are arguments), and passes
-it the room. The worker joins as `<you>+<tag>`, declares a scope, claims what it edits,
-asks the lead questions on the bus, previews its merge, and calls `room_done`, which
-wakes the lead with an addressed message. `room_state` lists workers with status, branch,
-and their last message; `room_dismiss` stops one. Up to eight run at once
-(`ROOM_MAX_WORKERS`). Add `.room/` to `.gitignore`.
-
-Workers of one lead see each other, so two of them touching the same function get the
-same claims and conflict notices as two teammates would.
-
-## Team rooms
-
-To work with teammates on other machines, point the plugin at a server:
-
-```sh
-ROOM_SERVER=hosted codex          # the hosted server, wss://room-rohanz.fly.dev
-ROOM_SERVER=wss://room.example.com claude   # your own (see deploy/self-hosting.md)
-```
-
-The first person on a repo opens it once: ask **"Open a room for this repo"** (the agent
-calls `room_create`). From then on every branch of that repo has a room, and each session
-started in a clone joins the room for its current branch automatically:
-`github.com/<owner>/<repo>/<branch>`. Nothing about your clone leaves your machine until
-that join happens, and no session joins a repo nobody has opened.
-
-The first time you use a server, the agent runs `room_login`: open the GitHub device
-page it prints, enter the code, and approve Room. The server holds the resulting token
-(revocable under GitHub → Authorized OAuth Apps); your `gh` token is never sent anywhere.
-Your participant name is your GitHub login. To open or join a repo you need push access
-to it, so public repos are not open rooms. The browser link `room_state` prints contains a
-room-scoped view key valid for 7 days, rather than your GitHub token. Treat that link as
-access to the room's shared code and activity.
-
-Everything from the local workflow applies unchanged: the same tools, etiquette, and
-workers. A lead's workers join the team room when the lead is in one, unless you ask for
-them locally.
-
-**Workers stay local.** Say "spawn the workers locally" (or `room_spawn` with
-`where=local`) while you are in the team room: the lead opens a local workers room on
-your machine, dispatches into it, and bridges the two. Workers never touch the server. The
-team room sees the lead's scope as the union of its workers' paths, sees their claims under
-the lead's name (`[tag] intent`), and any team message that touches a worker's files is
-relayed to that worker as an interrupt. Questions from workers and their done messages
-stay on your machine; `room_state` shows both rooms.
-
-### Claude Code
-
-The same plugin directory installs into Claude Code. Prerequisites are the same, with
-Claude Code 2.1 or later in place of Codex:
-
-```sh
-claude plugin marketplace add rohanz/room
-claude plugin install room@room
-```
-
-For a local checkout, `claude plugin marketplace add /path/to/room` instead. Update with
-`claude plugin marketplace update room` and reinstall (the bundle is copied at install time,
-so a new version on main reaches a session only after a reinstall). `claude plugin validate plugins/room`
-checks the manifest.
-
-Claude Code loads the `room_*` tools from the bundled MCP server, the `room-join`,
-`room-workers` and `room-etiquette` skills, and two hooks: SessionStart records the session id and host next
-to the clone, and PreToolUse on Edit, Write, MultiEdit, NotebookEdit and Bash puts your unread
-inbox and any teammate claims on the file in front of the model before the edit. Trust the
-hooks when prompted or through `/hooks`.
-
-Wake-ups differ by host. Codex is woken with `codex queue`. Claude Code receives
-interrupts and questions addressed to you through the MCP channel, which is a research
-preview: start Claude Code with `claude --dangerously-load-development-channels plugin:room@room` so the
-channel registers (a dim "Channels (experimental)" line under the banner confirms it).
-Without the flag an idle Claude session does not react until your next message; the
-PreToolUse hook still shows the interrupt before your next edit. Channels need an
-Anthropic login and are not available on Bedrock, Vertex or Foundry. Codex and Claude Code sessions share a room without any
-configuration: the room does not care which agent a teammate runs.
-
-## Why Claude Code needs a flag
-
-`claude-room` is a one-line launcher shipped in the plugin (`plugins/room/bin/claude-room`, or `~/.claude/plugins/cache/room/room/<version>/bin/` once installed). It runs:
-
-```sh
-claude --dangerously-load-development-channels plugin:room@room
-```
-
-Room wakes an idle Claude Code session (a teammate's question, an interrupt, a worker finishing) by pushing an MCP channel notification. Channels are a Claude Code research preview: only channels on Anthropic's curated allowlist register, and Room is not on it yet. The flag skips the allowlist for this one plugin entry and nothing else; your organisation's channel policy still applies. Without it, an idle Claude session does not react to room messages until you next talk to it. Codex needs no flag: its wake path is `codex queue`. We ship the launcher so nobody has to remember the flag, and we say what it does here, in the launcher itself, in the onboarding page and in the join skill, because a flag with "dangerously" in its name deserves an explanation rather than a wrapper. To use it, add the bin directory to your PATH or define `alias claude-room='claude --dangerously-load-development-channels plugin:room@room'` in your shell profile.
 
 ## Why the environment matters
 
@@ -270,7 +287,7 @@ Developer A’s clone                                  Developer B’s clone
 
 1. **Publish local changes.** The push-only daemon watches each clone and publishes its
    file overlays and deletions. An overlay is a participant’s current version of a file
-   relative to their Git base. Remote edits never get written into your working tree.
+   relative to their Git base. Live sharing never applies remote edits to your working tree.
 2. **Share coordination state.** One Yjs document holds overlays, per-person bases,
    scopes, line claims, declared plans, messages, and graph snapshots. Area and file
    ledgers give agents the relevant history.
@@ -296,19 +313,19 @@ supplies shared state and presence; Git remains the integration mechanism.
 
 | Tool | Purpose |
 |---|---|
-| `room_login` / `room_logout` | GitHub device login to a team server (the agent shows you a code); forget it. |
+| `room_login` | GitHub device login to a team server; `action: "logout"` forgets the login. |
 | `room_create` / `room_join` / `room_leave` / `room_close` | Open the repo once on a server; join a room (`where=local`, `team`, or a URL, remembered per clone); leave; close the repo for everyone (destructive, on explicit ask; the story is exported first). |
 | `room_export` | Write the room's story, with the compacted bus archive, to `.room/ledger/`. |
 | `room_scope` | Declare an area and paths; read that area's history. |
-| `room_state` | Who is here and on what, claims, plans, workers, recent bus, filtered to your areas (`all=true` for everything). Starts with `OFFLINE` when the server is unreachable. |
-| `room_read` / `room_diff` / `room_who` | A participant's live file or diff; who holds claims in a region. |
-| `room_claim` / `room_release` | Declare line ownership and plans; release with a summary. |
+| `room_state` | Sharing boundary, participants and nearby work (`all=true` for everything, `path` for one path, `link=true` for a browser link); identifies offline state. |
+| `room_read` | A participant’s live file; `diff: true` reads changes. |
+| `room_claim` / `room_release` | Coordinate ownership and plans where work overlaps; task completion releases claims automatically. |
 | `room_send` / `room_wait` | Announce changes, ask, answer, note; wait for a release, an answer, an interrupt, or a worker's done message. |
 | `room_impact` | Symbol providers, consumers, dependencies, and owners. |
 | `room_preview_merge` | Three-way merge with one or several people's live trees, in order; optionally run the tests in the combined tree. The room also tells you when a file you changed stops merging cleanly with a teammate's. |
 | `room_done` / `room_pr_note` | Finish a task (release, clear scope, tell the lead if you are a worker; `pr_note: true` posts the branch ledger on its PR); post or update the one room comment on a PR. |
-| `room_collect` | Collect a finished local worker: commit non-ignored output and merge its branch, or copy named artifacts (including ignored files), protecting modified lead files. Releases collected claims first; aborts merge conflicts. |
-| `room_spawn` / `room_dismiss` | Dispatch a Claude Code or Codex worker into a worktree, in this room or a local workers room; stop one. |
+| `room_collect` | Apply a worker’s output uncommitted and unstaged; `commit: true` commits and merges, `discard: true` stops without collecting, `mode: "copy"` with `paths` copies artifacts. |
+| `room_spawn` | Dispatch a worker into a worktree, using the caller’s host by default, in this room or a local workers room. |
 | `room_share` | Change your sharing level live: `intent`, `declared`, `full`. |
 
 **Pull requests are intent too.** Open PRs targeting the room’s branch are mirrored into the room as `pr#<n>` bot participants owned by their author, with a scope built from the files they touch, so a claim or a symbol change that lands on a file an open PR is rewriting is flagged the same way a teammate’s declared work is. The server fetches them with the GitHub token it holds from device login (`GET /github/prs`, cached a minute); one elected client keeps the mirror fresh every two minutes. In the other direction `room_pr_note` writes the branch’s coordination story onto its PR as a single comment that is edited in place, so reviewers see who declared what, which plans were fulfilled or cancelled, what was asked and answered, and which merge previews passed.
@@ -325,8 +342,8 @@ supplies shared state and presence; Git remains the integration mechanism.
 - **Git and connection failures are visible.** Behind clones are identified; unavailable
   bases or divergence at join require fetching or reconciliation. Connection attempts
   time out, offline claims become stale, and graph snapshots expose age and status.
-- **Room shares code with the room.** Overlays and coordination history travel to the
-  server. Local sample rooms have no persistence unless configured.
+- **Sharing follows the selected destination and level.** In a team room, eligible file text
+  and coordination history reach the server and participants. Local room data stays on your machine.
 
 ## Areas for improvement
 
