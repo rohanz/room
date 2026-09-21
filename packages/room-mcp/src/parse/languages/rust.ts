@@ -12,6 +12,8 @@ export const spec: LanguageSpec = {
       body: (declaration_list (function_item name: (identifier) @def.name) @def))
     (impl_item type: (scoped_type_identifier name: (type_identifier) @def.container)
       body: (declaration_list (function_item name: (identifier) @def.name) @def))
+    (impl_item type: (reference_type) @def.container
+      body: (declaration_list (function_item name: (identifier) @def.name) @def))
 
     (trait_item name: (type_identifier) @def.container
       body: (declaration_list (function_signature_item name: (identifier) @def.name) @def))

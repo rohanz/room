@@ -7,13 +7,13 @@ export const spec: LanguageSpec = {
     (class_definition name: (identifier) @def.name) @def
 
     (module (function_definition name: (identifier) @def.name) @def)
-    (module (decorated_definition definition: (function_definition name: (identifier) @def.name) @def))
+    (module (decorated_definition definition: (function_definition name: (identifier) @def.name)) @def)
     (class_definition
       name: (identifier) @def.container
       body: (block (function_definition name: (identifier) @def.name) @def))
     (class_definition
       name: (identifier) @def.container
-      body: (block (decorated_definition definition: (function_definition name: (identifier) @def.name) @def)))
+      body: (block (decorated_definition definition: (function_definition name: (identifier) @def.name)) @def))
 
     ((module
       (expression_statement

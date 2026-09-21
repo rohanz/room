@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import type { ParsedDef, ParsedFile } from '@room/shared'
+import { observedContractChanges, type ParsedDef, type ParsedFile } from '@room/shared'
 import { ensureLanguages, parseFile } from '../src/parse/engine.js'
 
 const paths = ['sample.rs', 'sample.go', 'sample.c', 'sample.cpp']
@@ -76,6 +76,13 @@ describe('Rust tree-sitter spec', () => {
   it('recovers definitions before a syntax error', () => {
     expect(definition(parsed('broken.rs', 'fn intact() {}\nfn broken( {'), 'intact')).toMatchObject({ from: 1, to: 1 })
   })
+
+  it('indexes trait implementations for reference types and reports their contract changes', () => {
+    const source = 'trait Local { fn run(&self); }\nimpl Local for &str { fn run(&self) {} }'
+    expect(definition(parsed('x.rs', source), 'run', '&str')).toBeDefined()
+    expect(observedContractChanges(source, source.replace('fn run(&self) {}', 'fn run(&self, n: usize) {}'), 'x.rs', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: '&str.run', kind: 'signature' }))
+  })
 })
 
 describe('Go tree-sitter spec', () => {
@@ -121,6 +128,13 @@ describe('Go tree-sitter spec', () => {
 
   it('recovers definitions before a syntax error', () => {
     expect(definition(parsed('broken.go', 'package p\nfunc Intact() {}\nfunc Broken( {'), 'Intact')).toMatchObject({ from: 2, to: 2 })
+  })
+
+  it('indexes methods on generic pointer receivers and reports their contract changes', () => {
+    const source = 'package p\ntype Box[T any] struct { Value T }\nfunc (b *Box[T]) Get() T { return b.Value }'
+    expect(definition(parsed('x.go', source), 'Get', 'Box')).toBeDefined()
+    expect(observedContractChanges(source, source.replace('Get() T', 'Get(n int) T'), 'x.go', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'Box.Get', kind: 'signature' }))
   })
 })
 
@@ -169,6 +183,13 @@ describe('C tree-sitter spec', () => {
 
   it('recovers definitions before a syntax error', () => {
     expect(definition(parsed('broken.c', 'int intact(void) {}\nint broken( {'), 'intact')).toMatchObject({ from: 1, to: 1 })
+  })
+
+  it('indexes functions returning pointer-to-pointer and reports their contract changes', () => {
+    const source = 'int **alloc(int n) { return 0; }'
+    expect(definition(parsed('x.c', source), 'alloc')).toBeDefined()
+    expect(observedContractChanges(source, source.replace('int n', 'long n'), 'x.c', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'alloc', kind: 'signature' }))
   })
 })
 
@@ -229,5 +250,16 @@ describe('C++ tree-sitter spec', () => {
 
   it('recovers definitions before a syntax error', () => {
     expect(definition(parsed('broken.cpp', 'int intact() {}\nclass Broken {'), 'intact')).toMatchObject({ from: 1, to: 1 })
+  })
+
+  it('indexes function templates and pointer-returning out-of-line methods', () => {
+    const source = 'template <typename T> T identity(T x) { return x; }\nclass Foo { public: int *get(); };\nint *Foo::get() { return nullptr; }'
+    const result = parsed('x.cpp', source)
+    expect(definition(result, 'identity')).toBeDefined()
+    expect(definition(result, 'get', 'Foo')).toBeDefined()
+    expect(observedContractChanges(source, source.replace('identity(T x)', 'identity(T x, int n)'), 'x.cpp', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'identity', kind: 'signature' }))
+    expect(observedContractChanges(source, source.replace('Foo::get()', 'Foo::get(int n)'), 'x.cpp', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'Foo.get', kind: 'signature' }))
   })
 })

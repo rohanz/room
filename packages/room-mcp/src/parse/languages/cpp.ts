@@ -6,6 +6,8 @@ export const spec: LanguageSpec = {
   query: `
     (translation_unit (function_definition
       declarator: (function_declarator declarator: (identifier) @def.name)) @def)
+    (template_declaration (function_definition
+      declarator: (function_declarator declarator: (identifier) @def.name)) @def)
 
     (namespace_definition name: (namespace_identifier) @def.container
       body: (declaration_list (function_definition
@@ -22,6 +24,11 @@ export const spec: LanguageSpec = {
       declarator: (qualified_identifier
         scope: (namespace_identifier) @def.container
         name: (identifier) @def.name))) @def
+    (function_definition declarator: (pointer_declarator
+      declarator: (function_declarator
+        declarator: (qualified_identifier
+          scope: (namespace_identifier) @def.container
+          name: (identifier) @def.name)))) @def
     (function_definition declarator: (function_declarator
       declarator: (qualified_identifier
         name: (qualified_identifier

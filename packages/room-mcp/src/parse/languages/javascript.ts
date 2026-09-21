@@ -7,6 +7,7 @@ export const spec: LanguageSpec = {
     (function_declaration name: (identifier) @def.name) @def
     (generator_function_declaration name: (identifier) @def.name) @def
     (class_declaration name: (identifier) @def.name) @def
+    (export_statement "default" @def.name value: (function_expression)) @def
 
     (class_declaration
       name: (identifier) @def.container
@@ -21,6 +22,14 @@ export const spec: LanguageSpec = {
     (import_statement (import_clause (identifier) @import))
     (import_specifier name: (identifier) @import)
     (import_specifier alias: (identifier) @import)
+    (export_statement
+      (export_clause (export_specifier name: (identifier) @def.name @ref.external .))
+      source: (string (string_fragment) @import)) @def
+    (export_statement
+      (export_clause (export_specifier
+        name: (identifier) @ref.external
+        alias: (identifier) @def.name))
+      source: (string (string_fragment) @import)) @def
     (call_expression
       function: (identifier) @_require
       arguments: (arguments (string (string_fragment) @import))

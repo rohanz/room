@@ -8,15 +8,30 @@ export const spec: LanguageSpec = {
     (object_declaration (type_identifier) @def.name) @def
     (type_alias (type_identifier) @def.name) @def
 
-    (source_file (function_declaration (simple_identifier) @def.name) @def)
+    (source_file (function_declaration
+      (simple_identifier) @def.name
+      (function_body)? @def.body) @def)
     (class_declaration (type_identifier) @def.container
-      (class_body (function_declaration (simple_identifier) @def.name) @def))
+      (class_body (function_declaration
+        (simple_identifier) @def.name
+        (function_body)? @def.body) @def))
     (class_declaration (type_identifier) @def.container
-      (enum_class_body (function_declaration (simple_identifier) @def.name) @def))
+      (enum_class_body (function_declaration
+        (simple_identifier) @def.name
+        (function_body)? @def.body) @def))
     (object_declaration (type_identifier) @def.container
-      (class_body (function_declaration (simple_identifier) @def.name) @def))
+      (class_body (function_declaration
+        (simple_identifier) @def.name
+        (function_body)? @def.body) @def))
     (companion_object (type_identifier) @def.container
-      (class_body (function_declaration (simple_identifier) @def.name) @def))
+      (class_body (function_declaration
+        (simple_identifier) @def.name
+        (function_body)? @def.body) @def))
+    (class_declaration (type_identifier) @def.container
+      (class_body (companion_object .
+        (class_body (function_declaration
+          (simple_identifier) @def.name
+          (function_body)? @def.body) @def))))
 
     (class_declaration (type_identifier) @def.container
       (class_body (secondary_constructor "constructor" @def.name) @def))

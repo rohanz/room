@@ -21,6 +21,17 @@ export const spec: LanguageSpec = {
     (class
       name: (constant) @def.container
       body: (body_statement (singleton_method name: (identifier) @def.name) @def))
+    (class
+      name: (constant) @def.container
+      body: (body_statement (singleton_class value: (self)
+        body: (body_statement (method name: (identifier) @def.name) @def))))
+
+    ((class
+      name: (constant) @def.container
+      body: (body_statement (call
+        method: (identifier) @_accessor
+        arguments: (argument_list (simple_symbol) @def.name.bare)) @def))
+      (#match? @_accessor "^attr_(reader|writer|accessor)$"))
 
     (program (assignment left: (constant) @def.name) @def)
     (module

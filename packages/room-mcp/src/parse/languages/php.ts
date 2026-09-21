@@ -4,7 +4,10 @@ export const spec: LanguageSpec = {
   grammar: 'php',
   extensions: ['.php'],
   query: String.raw`
-    (function_definition name: (name) @def.name) @def
+    (program (function_definition name: (name) @def.name) @def)
+    (namespace_definition
+      name: (namespace_name (name) @def.container)
+      body: (compound_statement (function_definition name: (name) @def.name) @def))
     (class_declaration name: (name) @def.name) @def
     (interface_declaration name: (name) @def.name) @def
     (trait_declaration name: (name) @def.name) @def
@@ -22,6 +25,10 @@ export const spec: LanguageSpec = {
     (enum_declaration
       name: (name) @def.container
       body: (enum_declaration_list (method_declaration name: (name) @def.name) @def))
+    (class_declaration
+      name: (name) @def.container
+      body: (declaration_list (use_declaration
+        (use_list (use_as_clause (name) @ref (name) @def.name) @def))))
 
     (program (const_declaration (const_element (name) @def.name) @def))
     (class_declaration
@@ -50,5 +57,6 @@ export const spec: LanguageSpec = {
     (nullsafe_member_access_expression name: (name) @ref)
     (scoped_call_expression name: (name) @ref)
     (named_type (name) @ref)
+    (use_declaration (name) @ref)
   `,
 }

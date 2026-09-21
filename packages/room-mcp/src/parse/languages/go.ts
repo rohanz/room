@@ -12,6 +12,10 @@ export const spec: LanguageSpec = {
     (method_declaration
       receiver: (parameter_list (parameter_declaration type: (pointer_type (type_identifier) @def.container)))
       name: (field_identifier) @def.name) @def
+    (method_declaration
+      receiver: (parameter_list (parameter_declaration
+        type: (pointer_type (generic_type type: (type_identifier) @def.container))))
+      name: (field_identifier) @def.name) @def
 
     (type_spec name: (type_identifier) @def.name) @def
     (type_alias name: (type_identifier) @def.name) @def

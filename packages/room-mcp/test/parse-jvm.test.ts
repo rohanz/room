@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
+import { observedContractChanges } from '@room/shared'
 import { ensureLanguages, parseFile } from '../src/parse/engine.js'
 
 interface ExpectedDef {
@@ -313,5 +314,17 @@ describe.each(cases)('$language tree-sitter spec', testCase => {
     expect(signature(original)).toBeTruthy()
     expect(signature(bodyEdit)).toBe(signature(original))
     expect(signature(declarationEdit)).not.toBe(signature(original))
+  })
+})
+
+describe('overload contract sets', () => {
+  it.each([
+    ['Java', 'A.java', 'class A {\n  void run(int x) {}\n  void run(String x) {}\n}', 'String x', 'boolean x', 'A.run'],
+    ['C#', 'A.cs', 'class A { public void Run(int x) {} public void Run(string x) {} }', 'string x', 'bool x', 'A.Run'],
+    ['Swift', 'A.swift', 'struct A {\n  func run(_ x: Int) {}\n  func run(_ x: String) {}\n}', 'String', 'Bool', 'A.run'],
+    ['Scala', 'A.scala', 'object A { def run(x: Int): Int = x\n  def run(x: String): String = x }', 'String', 'Boolean', 'A.run'],
+  ])('reports a changed later %s overload', (_language, path, source, before, after, symbol) => {
+    expect(observedContractChanges(source, source.replaceAll(before, after), path, parseFile))
+      .toContainEqual(expect.objectContaining({ symbol, kind: 'signature' }))
   })
 })

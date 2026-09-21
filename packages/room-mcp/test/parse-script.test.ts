@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
+import { observedContractChanges } from '@room/shared'
 import { ensureLanguages, parseFile } from '../src/parse/engine.js'
 
 const cases = [
@@ -16,7 +17,7 @@ class B:
     def same(self, x):
         return helper(x)
 `,
-    expectedDefs: ['MAX:2-2', 'top:4-5', 'A:6-8', 'A.same:7-8', 'B:9-11', 'B.same:10-11'],
+    expectedDefs: ['MAX:2-2', 'top:3-5', 'A:6-8', 'A.same:7-8', 'B:9-11', 'B.same:10-11'],
     refs: ['Thing', 'T', 'helper', 'field', 'run'], imports: ['pkg.mod', 'Thing', 'T', 'helper'],
   },
   {
@@ -117,7 +118,7 @@ const parse = (path: string, source: string) => {
 const defKeys = (path: string, source: string) => parse(path, source).defs.map(definition =>
   `${definition.container ? `${definition.container}.` : ''}${definition.name}:${definition.from}-${definition.to}`)
 
-beforeAll(async () => ensureLanguages(cases.map(testCase => testCase.path)))
+beforeAll(async () => ensureLanguages([...cases.map(testCase => testCase.path), 'x.kt']))
 
 describe.each(cases)('$language tree-sitter spec', testCase => {
   it('finds definitions, exact inclusive ranges, containers, references, and imports', () => {
@@ -171,5 +172,64 @@ describe.each(cases)('$language tree-sitter spec', testCase => {
       PHP: '<?php function before(): void {}\nfunction broken( {\n',
     }
     expect(parse(testCase.path, broken[testCase.language]).defs.map(definition => definition.name)).toContain('before')
+  })
+})
+
+describe('script-language regression coverage', () => {
+  it('includes Python decorators in ranges and contract comparison', () => {
+    const source = 'class A:\n  @staticmethod\n  def run(x: int): return x\n'
+    expect(parse('x.py', source).defs).toContainEqual(expect.objectContaining({ name: 'run', container: 'A', from: 2 }))
+    expect(observedContractChanges(source, source.replace('@staticmethod', '@classmethod'), 'x.py', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'A.run', kind: 'signature' }))
+  })
+
+  it('indexes anonymous JavaScript defaults and re-export sources', () => {
+    const source = 'export default function (x) { return x; }\nexport {thing} from "./thing.js";'
+    const result = parse('x.js', source)
+    expect(result.defs).toContainEqual(expect.objectContaining({ name: 'default', from: 1, to: 1 }))
+    expect(result.defs).toContainEqual(expect.objectContaining({ name: 'thing', from: 2, to: 2 }))
+    expect(result.refs).toContain('thing')
+    expect(result.imports).toContain('./thing.js')
+    expect(observedContractChanges(source, source.replace('(x)', '(x, y)'), 'x.js', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'default', kind: 'signature' }))
+  })
+
+  it('indexes unnamed Kotlin companion methods without expression-body noise', () => {
+    const source = 'class A {\n  companion object {\n    fun create(): A = A()\n  }\n}\nfun String.clean(): String = trim()'
+    expect(parse('x.kt', source).defs).toContainEqual(expect.objectContaining({ name: 'create', container: 'A' }))
+    expect(observedContractChanges(source, source.replace('create()', 'create(value: Int)'), 'x.kt', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'A.create', kind: 'signature' }))
+    expect(observedContractChanges(source, source.replace('trim()', 'trimStart()'), 'x.kt', parseFile)).toEqual([])
+  })
+
+  it('indexes Ruby singleton-class methods and literal accessors', () => {
+    const source = 'class A\n  attr_accessor :name\n  class << self\n    def create(x); new; end\n  end\nend'
+    const result = parse('x.rb', source)
+    expect(result.defs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'name', container: 'A' }),
+      expect.objectContaining({ name: 'create', container: 'A' }),
+    ]))
+    expect(parse('accessors.rb', 'class A\n  attr_reader :read_only\n  attr_writer :write_only\nend').defs)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'read_only', container: 'A' }),
+        expect.objectContaining({ name: 'write_only', container: 'A' }),
+      ]))
+    expect(observedContractChanges(source, source.replace('create(x)', 'create(x, y)'), 'x.rb', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'A.create', kind: 'signature' }))
+    expect(observedContractChanges(source, source.replace('  attr_accessor :name\n', ''), 'x.rb', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'A.name', kind: 'delete' }))
+  })
+
+  it('qualifies PHP namespace functions and indexes trait aliases', () => {
+    const source = '<?php\nnamespace A { function run(int $x) {} }\nnamespace B { function run(string $x) {} }\ntrait T { public function run(int $x) {} } class C { use T { run as execute; } }'
+    const result = parse('x.php', source)
+    expect(result.defs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'run', container: 'A' }),
+      expect.objectContaining({ name: 'run', container: 'B' }),
+      expect.objectContaining({ name: 'execute', container: 'C' }),
+    ]))
+    expect(parse('consumer.php', '<?php class C { use T { run as execute; } }').refs).toContain('T')
+    expect(observedContractChanges(source, source.replace('string $x', 'bool $x'), 'x.php', parseFile))
+      .toContainEqual(expect.objectContaining({ symbol: 'B.run', kind: 'signature' }))
   })
 })

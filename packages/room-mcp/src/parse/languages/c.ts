@@ -9,6 +9,10 @@ export const spec: LanguageSpec = {
     (function_definition
       declarator: (pointer_declarator
         declarator: (function_declarator declarator: (identifier) @def.name))) @def
+    (function_definition
+      declarator: (pointer_declarator
+        declarator: (pointer_declarator
+          declarator: (function_declarator declarator: (identifier) @def.name)))) @def
 
     (struct_specifier name: (type_identifier) @def.name body: (field_declaration_list)) @def
     (enum_specifier name: (type_identifier) @def.name body: (enumerator_list)) @def
