@@ -16273,6 +16273,8 @@ var init_doc = __esm({
     validColorIndex = (value2) => Number.isInteger(value2) && value2 >= 0 && value2 < PALETTE.length;
     RoomDoc = class {
       doc;
+      colorName;
+      colorOrigin;
       get graphs() {
         return this.doc.getMap("graphs");
       }
@@ -16283,11 +16285,13 @@ var init_doc = __esm({
       constructor(doc = new Doc2()) {
         this.doc = doc;
         this.colors.observe(() => {
-          this.reconcileColors();
+          if (this.colorName) this.reconcileColors(this.colorName, this.colorOrigin);
         });
       }
       /** Claim the lowest unused slot, retaining existing slots across reconnects. */
       assignColor(name2, origin) {
+        this.colorName = name2;
+        this.colorOrigin = origin;
         if (!this.colors.has(name2)) {
           const used = new Set(Array.from(this.colors.values()).filter(validColorIndex));
           const free = Array.from({ length: PALETTE.length }, (_, i2) => i2).find((i2) => !used.has(i2));
@@ -16295,29 +16299,20 @@ var init_doc = __esm({
             this.colors.set(name2, free ?? this.colors.size % PALETTE.length);
           }, origin);
         }
-        this.reconcileColors(origin);
+        this.reconcileColors(name2, origin);
         return this.colors.get(name2);
       }
-      /** Lexically first keeps a concurrently claimed slot; later names move to the next free one. */
-      reconcileColors(origin) {
-        const entries = [...this.colors.entries()].sort(([a], [b]) => a.localeCompare(b));
-        const used = /* @__PURE__ */ new Set();
-        const repairs = [];
-        for (const [name2, raw] of entries) {
-          const index = validColorIndex(raw) ? raw : 0;
-          if (!used.has(index)) {
-            used.add(index);
-            if (index !== raw) repairs.push([name2, index]);
-            continue;
-          }
-          const free = Array.from({ length: PALETTE.length }, (_, i2) => i2).find((i2) => !used.has(i2));
-          if (free !== void 0) {
-            used.add(free);
-            repairs.push([name2, free]);
-          }
-        }
-        if (repairs.length) this.doc.transact(() => {
-          for (const [name2, index] of repairs) this.colors.set(name2, index);
+      /** Lexically first keeps a concurrently claimed slot; a later caller moves only its own slot. */
+      reconcileColors(name2, origin) {
+        const current = this.colors.get(name2);
+        if (current === void 0) return;
+        const entries = [...this.colors.entries()];
+        const losesTie = validColorIndex(current) && entries.some(([other, slot]) => other.localeCompare(name2) < 0 && slot === current);
+        if (validColorIndex(current) && !losesTie) return;
+        const used = new Set(entries.flatMap(([other, slot]) => other !== name2 && validColorIndex(slot) ? [slot] : []));
+        const free = Array.from({ length: PALETTE.length }, (_, i2) => i2).find((i2) => !used.has(i2));
+        if (free !== void 0 && free !== current) this.doc.transact(() => {
+          this.colors.set(name2, free);
         }, origin);
       }
       get overlays() {
@@ -16403,7 +16398,6 @@ var init_doc = __esm({
           this.scopes.delete(name2);
           this.graphs.delete(name2);
           this.colors.delete(name2);
-          this.reconcileColors();
           this.bases.delete(name2);
           this.seen(name2).clear();
           const worker = this.workers.get(record2.tag);
@@ -25462,7 +25456,7 @@ var init_prompt = __esm({
     AGENT_INSTRUCTIONS = (name2) => `You are ${name2 ? `${name2}'s` : "one person's"} coding agent in a room. Room never changes your files unless you ask it to bring in a worker's output; explicit exports also write files.
 
 1. While alone, work normally without room tools; the room announces company. Change local/team room only when your human asks.
-2. With company, declare scope once. Claim only where someone else is near the file; prefer one directory claim for an area you own. Respect others' claims and declare public-symbol plans.
+2. With company, declare scope once. Claim only where someone else is near the file; claim the files you will edit. Respect others' claims and declare public-symbol plans.
 3. With company, answer addressed questions promptly; ask the relevant agent and wait when unsure.
 4. With company, preview current overlapping work before finishing, then room_done releases claims. No release or changed-message ritual.
 5. Asked for another agent, agents in parallel, background work, or for codex/claude to take part of an editing task: use room_spawn (load room-workers), not a built-in subagent. For a few lines, just do it yourself.
@@ -25688,27 +25682,42 @@ function findThreadForDir(dir, since) {
   walk(root, 0);
   return best?.id;
 }
-function hookHealthNote(s, expected, now = Date.now()) {
+function newHookHealth(now) {
+  return { since: now, calls: 0, noted: false, observed: false, joinNoted: false, scopeNoted: false };
+}
+function missingPreEditGuidance(s) {
+  const host = resolveSessionHost(s.dir);
+  if (host === "claude") return "Pre-edit coordination is not confirmed yet; if your next edit shows no [room] context, the Room plugin's hooks are not running: reinstall or re-enable the plugin.";
+  if (host === "codex") return "Pre-edit coordination is not confirmed yet; if the Room hooks were never approved, approve them once in an interactive Codex session.";
+  return "Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.";
+}
+function hookHealthNote(s, expected, now = Date.now(), tool, team = !s.local) {
   let health = hookHealth.get(s);
   if (!health) {
-    health = { startedAt: now, since: now, calls: 0, noted: false, observed: false };
+    health = newHookHealth(now);
     hookHealth.set(s, health);
   }
-  if (!expected || health.noted || health.observed) return "";
-  if (!health.calls) health.since = now;
-  health.calls++;
   try {
     const activity = JSON.parse(fs7.readFileSync(gitStatePath(s.dir, "room-hook-activity.json"), "utf8"));
     const session = JSON.parse(fs7.readFileSync(gitStatePath(s.dir, "room-session.json"), "utf8"));
-    if (typeof activity.at === "number" && activity.at >= health.startedAt - 1e3 && activity.at <= now && activity.session_id === session.session_id) {
-      health.observed = true;
-      return "";
-    }
+    if (activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at <= now && activity.session_id === session.session_id) health.observed = true;
   } catch {
   }
+  if (!expected || health.observed || health.noted) return "";
+  if (team && tool === "room_join" && !health.joinNoted && !health.scopeNoted) {
+    health.joinNoted = true;
+    return missingPreEditGuidance(s);
+  }
+  if (team && tool === "room_scope" && !health.scopeNoted) {
+    health.scopeNoted = true;
+    return missingPreEditGuidance(s);
+  }
+  if (health.joinNoted || health.scopeNoted) return "";
+  if (!health.calls) health.since = now;
+  health.calls++;
   if (health.calls < 2 || now - health.since < 3e4) return "";
   health.noted = true;
-  return "hooks are not running here; you will not be shown teammates' claims before edits. In Codex, approve them once in an interactive session";
+  return missingPreEditGuidance(s);
 }
 var SESSION_FRESH_MS, HooksBridge, sleep, hookHealth;
 var init_hooks_bridge = __esm({
@@ -25723,7 +25732,7 @@ var init_hooks_bridge = __esm({
       constructor(s, o) {
         this.s = s;
         this.o = o;
-        hookHealth.set(s, { startedAt: this.now(), since: this.now(), calls: 0, noted: false, observed: false });
+        hookHealth.set(s, newHookHealth(this.now()));
       }
       s;
       o;
@@ -25872,7 +25881,7 @@ var init_hooks_bridge = __esm({
           return;
         }
         const text = m.type === "base" ? `[room] ${formatMsg(m)}
-You have uncommitted work. Run git pull --ff-only, re-run room_preview_merge with the test command against anyone who changed the same files, then report and offer to commit and push.` : `[room] ${formatMsg(m)}
+You have uncommitted work. Run git pull --ff-only, handle Git's actual result, re-run room_preview_merge with the test command against anyone who changed the same files, then continue.` : `[room] ${formatMsg(m)}
 Call room_state, then react per the room-etiquette skill.`;
         const delays = this.o.retryDelaysMs ?? [1e3, 3e3, 8e3];
         for (let attempt = 0; ; attempt++) {
@@ -29980,7 +29989,6 @@ var init_graph_index = __esm({
       phase = "indexing";
       base = "";
       stopped = false;
-      reused;
       initialStarted = false;
       jitterTimer;
       endJitter;
@@ -30023,24 +30031,6 @@ var init_graph_index = __esm({
         this.initialStarted = true;
         if (!this.stopped) await this.rebuild();
       }
-      reusableSnapshot() {
-        const now = Date.now(), present = new Set(this.opts.present?.() ?? []);
-        return [...this.room.graphs.entries()].filter(([person, snapshot]) => person !== this.me && present.has(person) && snapshot.status === "ready" && snapshot.base === this.base && now >= snapshot.at && now - snapshot.at < 6e4).sort((a, b) => b[1].at - a[1].at)[0]?.[1];
-      }
-      reuse(snapshot) {
-        this.cache.clear();
-        for (const p of snapshot.paths) this.cache.set(p, { defs: [], refs: [], imports: [] });
-        for (const edge of snapshot.edges) {
-          if (!this.cache.has(edge.source)) this.cache.set(edge.source, { defs: [], refs: [], imports: [] });
-          if (!this.cache.has(edge.target)) this.cache.set(edge.target, { defs: [], refs: [], imports: [] });
-          this.cache.get(edge.source).defs.push(...edge.symbols);
-          this.cache.get(edge.target).refs.push(...edge.symbols);
-          this.cache.get(edge.target).imports.push(edge.source);
-        }
-        for (const p of this.cache.keys()) this.graph.set(p, "");
-        this.truncated = snapshot.truncated;
-        this.reused = snapshot;
-      }
       async rebuild() {
         const generation = ++this.generation;
         this.phase = "indexing";
@@ -30048,19 +30038,8 @@ var init_graph_index = __esm({
         this.observedByPath.clear();
         for (const p of this.cache.keys()) this.graph.remove(p);
         this.cache.clear();
-        this.reused = void 0;
         if (!this.base) return;
         this.publish("indexing");
-        const shared = this.reusableSnapshot();
-        if (shared) {
-          this.reuse(shared);
-          await Promise.all(this.room.changedPaths(this.me).filter(isSourcePath).map((p) => this.refresh(p)));
-          if (generation !== this.generation || this.stopped) return;
-          this.phase = "ready";
-          this.publish("ready");
-          this.log(`graph: reused ready snapshot (${shared.paths.length} files)`);
-          return;
-        }
         let paths = [];
         try {
           paths = (await git(this.dir, ["ls-tree", "-r", "--name-only", this.base])).split("\n").filter(isSourcePath);
@@ -30136,7 +30115,6 @@ var init_graph_index = __esm({
             const baseText = mine !== void 0 || mineDeleted ? await gitShow(this.dir, this.base, path19) : void 0;
             if (this.stopped) return;
             if (generation !== this.generation || revision !== this.revisions.get(path19)) continue;
-            this.reused = void 0;
             if (!symbols || text === void 0) {
               this.cache.delete(path19);
               this.graph.remove(path19);
@@ -30182,7 +30160,7 @@ var init_graph_index = __esm({
           }
           edges.get(key2).symbols.push(dep.symbol);
         }
-        let edgeList = this.reused?.edges ?? [...edges.values()];
+        let edgeList = [...edges.values()];
         const allObserved = [...this.observedByPath.values()].flat().sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol));
         let observedTruncated = allObserved.length > MAX_OBSERVED;
         const observed = allObserved.slice(0, MAX_OBSERVED);
@@ -32499,6 +32477,12 @@ function handlers(state) {
       if (typeof plans === "string") return plans;
       const directory = p.endsWith("/");
       if (directory && a.symbol) return "error: directory claims do not take a symbol";
+      if (directory) {
+        const scopeHits = s.room.allScopes().flatMap((sc) => sc.by === s.me.name ? [] : sc.paths.filter((path19) => coversPath(p, path19)).map((path19) => `${sc.by}'s scope includes ${path19}`));
+        const claimHits = s.room.openClaims().flatMap((c) => isMe(s, { name: c.by, kind: c.byKind }) || !coversPath(p, c.path) ? [] : [`${c.by}'s claim includes ${c.path}`]);
+        const hits = [...scopeHits, ...claimHits];
+        if (hits.length) return `cannot claim ${p}: it would cover another participant's declared work (${hits.join("; ")}). Claim narrower files instead.`;
+      }
       const t = directory ? void 0 : await liveText(s, p, s.me.name);
       const isNew = t === void 0 || t === null;
       const n = isNew ? 1 : lines(t);
@@ -43489,6 +43473,18 @@ function handlers5(state) {
   const { S, rooms, myWorkers, workerAlive, presences, now, upgrade, setPresence, forMe, seen } = state;
   const offline = (s) => !!s.closed || !s.provider.synced || s.provider.wsconnected === false;
   const unavailableQuestions = /* @__PURE__ */ new Map();
+  const knownNames = (s) => new Set([
+    s.me.name,
+    ...presences(s).map((p) => p.user.name),
+    ...s.room.colors.keys(),
+    ...s.room.scopes.keys(),
+    ...s.room.overlays.keys(),
+    ...s.room.deleted.keys(),
+    ...s.room.openClaims().map((c) => c.by),
+    ...Array.from(s.room.workers.values(), (w) => w.name),
+    ...s.room.retiredWorkers().map((w) => w.name),
+    ...s.room.messages().map((m) => m.from)
+  ].filter((n) => !isPrName(n)));
   const recipientNotice = (s, name2) => {
     const present = presences(s).some((p) => p.user.name === name2);
     const worker = s.room.workerOf(name2);
@@ -43506,17 +43502,7 @@ function handlers5(state) {
     }
     if (presences(s).some((p) => p.user.name === name2 && p.wakeUnavailable === true)) return { text: `${name2} cannot be woken; it will see this at its next turn`, terminal: false };
     if (present || worker) return void 0;
-    const known = new Set([
-      s.me.name,
-      ...presences(s).map((p) => p.user.name),
-      ...s.room.colors.keys(),
-      ...s.room.scopes.keys(),
-      ...s.room.overlays.keys(),
-      ...s.room.deleted.keys(),
-      ...s.room.openClaims().map((c) => c.by),
-      ...Array.from(s.room.workers.values(), (w) => w.name),
-      ...s.room.messages().map((m) => m.from)
-    ].filter((n) => !isPrName(n)));
+    const known = knownNames(s);
     if (known.has(name2)) return { text: `${name2} is offline; it will see this when it returns`, terminal: false };
     if (offline(s)) return void 0;
     return { text: `nobody called ${name2} is or was in this room; participants: ${[...known].sort().join(", ")}`, terminal: true };
@@ -43535,13 +43521,25 @@ function handlers5(state) {
   const handlers10 = {
     async room_send(a) {
       const lead = S();
-      const to2 = typeof a.to === "string" && a.to ? a.to : void 0;
+      const requestedTo = typeof a.to === "string" && a.to ? a.to : void 0;
       const wsr = rooms.workers();
       const byQuestion = typeof a.inReplyTo === "string" && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : void 0;
-      const s = byQuestion ?? (wsr && wsr !== lead && to2 && (myWorkers(wsr).some((w) => w.name === to2) || wsr.room.retiredWorkers().some((w) => w.name === to2)) ? wsr : lead);
+      const workerMatches = requestedTo ? rooms.all().flatMap((room) => myWorkers(room).filter((w) => w.tag === requestedTo).map((worker) => ({ room, worker }))) : [];
+      if (workerMatches.length > 1) {
+        const names = [...new Set(workerMatches.map((x) => x.worker.name))].sort();
+        return `error: worker tag ${requestedTo} is ambiguous; use a full name: ${names.join(", ")}`;
+      }
+      const resolvedWorker = workerMatches[0];
+      const to2 = resolvedWorker?.worker.name ?? requestedTo;
+      const exactWorkerRoom = to2 && wsr && wsr !== lead && (myWorkers(wsr).some((w) => w.name === to2) || wsr.room.retiredWorkers().some((w) => w.name === to2)) ? wsr : void 0;
+      const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead;
       const text = typeof a.text === "string" ? a.text : "";
       if (!text) return "error: text is required";
       if (to2 === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
+      if (to2 && !rooms.all().some((room) => knownNames(room).has(to2))) {
+        const valid = [...new Set(rooms.all().flatMap((room) => [...knownNames(room)]))].sort();
+        return `error: nobody called ${to2} is or was in this room; participants: ${valid.join(", ")}`;
+      }
       const pr = typeof a.priority === "string" && ["fyi", "notify", "interrupt"].includes(a.priority) ? a.priority : void 0;
       const withPr = (o) => pr ? { ...o, priority: pr } : o;
       let msg;
@@ -44037,7 +44035,7 @@ init_context();
 var defs6 = [{
   name: "room_collect",
   annotations: { ...RW, destructiveHint: true },
-  description: "Collect all done workers (or tag) as unstaged edits, never commits. Any conflict writes nothing. Skips running/failed workers. copy takes named artifacts; discard dismisses one worker. Cleans up fully collected exited workers.",
+  description: "Collect all done workers (or tag) as unstaged edits, never commits. Any conflict writes nothing. Skips running/failed workers. copy takes named artifacts; discard dismisses one worker. Keeps worktrees with uncopied ignored artifacts.",
   inputSchema: { ...{ additionalProperties: false }, type: "object", properties: {
     tag: str("worker tag"),
     mode: { type: "string", enum: ["apply", "copy"] },
@@ -44289,6 +44287,13 @@ function handlers6(state) {
           continue;
         }
         try {
+          const ignored = await ignoredWorkerArtifacts(w);
+          if (ignored.length) {
+            out2.push("kept " + w.tag + ": uncopied ignored artifacts");
+            out2.push(...ignored.map((p) => `kept ${p} at ${path16.join(w.dir, p)}`));
+            out2.push(`retained worktree: ${w.dir}`);
+            continue;
+          }
           if (await cleanupWorker(s.dir, w, true)) {
             const retiredAt = Date.now();
             const files = result.paths.filter((p) => result.owners.get(p)?.includes(w.name));
@@ -44460,9 +44465,9 @@ ${text}--- end ${p} ---`);
       if (run2) {
         if (hardCount) out2.push(`not running "${run2}": ${hardCount} conflict(s) need a human first`);
         else {
-          const r = await runInMergedTree(caller, ancestor, merged, run2);
-          out2.push(r);
-          ranOk = /: exit 0\n/.test(r);
+          const result2 = await runInMergedTree(caller, ancestor, merged, run2);
+          out2.push(result2.text);
+          ranOk = result2.passed;
         }
       }
       caller.lastPreview = { clean: hardCount === 0, ...run2 ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run2 } : {} };
@@ -44505,8 +44510,12 @@ function mirrorLinks(cloneDir, scratchDir, src, dst) {
 }
 function testVerdict(output, code) {
   const lines = stripVTControlCharacters2(output).split(/\r?\n/).map((line) => line.trim());
-  const summaries = lines.filter((line) => /^(?:Test Files\s+|Tests(?:\s+|:))/.test(line) || /^=+ .*(?:passed|failed|error|skipped|deselected|no tests ran).* =+$/i.test(line));
-  return [...summaries.slice(-5), `tests: ${code === 0 ? "PASSED" : "FAILED"} (exit ${code ?? "unknown"})`].join("\n");
+  const summaries = lines.filter((line) => /^(?:Test Files\s+|Tests(?:\s+|:)|FAIL\b|ok\s|test result:|FAILED\s*\(|OK(?:\s*\(|$))/.test(line) || /^=+ .*(?:passed|failed|error|skipped|deselected|no tests ran).* =+$/i.test(line));
+  const failed = lines.some((line) => /\b[1-9]\d*\s+(?:failed|errors?)\b/i.test(line) || /^FAIL(?:\s|\t|$)/.test(line) || /^test result:\s*FAILED\b/i.test(line) || /^FAILED\s*\(/.test(line));
+  const passedSummary = lines.some((line) => /\b[1-9]\d*\s+passed\b/i.test(line) || /^ok\s+\S+/.test(line) || /^test result:\s*ok\b/i.test(line) || /^OK(?:\s*\(|$)/.test(line));
+  const passed = code === 0 && passedSummary && !failed;
+  const verdict = code !== 0 || failed ? `tests: FAILED (exit ${code ?? "unknown"})` : passed ? "tests: PASSED (exit 0)" : "tests: exit 0 (no test summary recognised)";
+  return { passed, text: [...summaries.slice(-5), verdict].join("\n") };
 }
 async function runInMergedTree(s, ancestor, merged, cmd) {
   const dir = fs16.mkdtempSync(path17.join(os5.tmpdir(), "room-merge-"));
@@ -44523,18 +44532,22 @@ async function runInMergedTree(s, ancestor, merged, cmd) {
       fs16.writeFileSync(abs2, text);
     }
     linkSharedDirs(s.dir, dir);
+    const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs16.existsSync(candidate));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ROOM_")));
+    env.ROOM_MERGED_TREE = dir;
     const result = await new Promise((resolve5) => {
-      execFile5("sh", ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ROOM_MERGED_TREE: dir } }, (err2, stdout, stderr2) => {
+      execFile5(bash ?? "sh", bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
         const raw = err2 ? err2.code : 0;
         resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
       });
     });
     const tail = stripVTControlCharacters2(result.out).trim().split("\n").slice(-25).join("\n");
-    return `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}
+    const verdict = testVerdict(result.out, result.code);
+    return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}
 ${tail}
-${testVerdict(result.out, result.code)}`;
+${verdict.text}` };
   } catch (e) {
-    return `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}`;
+    return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` };
   } finally {
     fs16.rmSync(dir, { recursive: true, force: true });
   }
@@ -45279,7 +45292,7 @@ function createTools(ctx) {
 ` : "";
         const unread = s2 && name2 !== "room_join" && name2 !== "room_create" ? state.inbox(s2) : "";
         const sharing = s2 ? await teamSharingNote(s2) : "";
-        const health = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now()) : "";
+        const health = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name2, !s2.local) : "";
         const autoTag = s2?.autoTagNote;
         if (s2) delete s2.autoTagNote;
         return prefix + (sharing ? sharing + "\n\n" : "") + (health ? health + "\n\n" : "") + (autoTag ? autoTag + "\n\n" : "") + (unread ? unread + body2 : body2);
