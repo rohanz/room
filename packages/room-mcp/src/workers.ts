@@ -15,6 +15,15 @@ import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 
 export type WorkerHost = 'claude' | 'codex'
 
+/** Inputs Room installed itself, rather than worker output. */
+export function workerOwnedPaths(w?: Pick<Worker, 'link'>) {
+  const paths = w?.link ?? []
+  return {
+    includes: (p: string) => paths.some(l => p === l || p.startsWith(l + '/')),
+    exclusions: paths.map(l => ':(exclude,literal)' + l),
+  }
+}
+
 export interface RetirementFacts {
   exited: boolean
   done: boolean
@@ -38,7 +47,7 @@ export function shouldRetire(facts: RetirementFacts): RetiredWorker['outcome'] |
 export async function workerGitFacts(leadDir: string, w: Worker): Promise<Pick<RetirementFacts, 'merged' | 'clean' | 'ahead' | 'uncommitted'>> {
   const facts: Pick<RetirementFacts, 'merged' | 'clean' | 'ahead' | 'uncommitted'> = { merged: false, clean: false, ahead: undefined }
   try {
-    const status = await git(w.dir, ['status', '--porcelain', '--untracked-files=all'])
+    const status = await git(w.dir, ['status', '--porcelain', '--untracked-files=all', '--', '.', ...workerOwnedPaths(w).exclusions])
     facts.uncommitted = status.split('\n').filter(Boolean).length
     facts.clean = facts.uncommitted === 0
     const head = (await git(leadDir, ['rev-parse', 'HEAD'])).trim()

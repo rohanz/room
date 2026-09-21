@@ -10,7 +10,8 @@ import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
 import { syncHookSeen } from './hooks-bridge.js'
-import { resolveConfig, resolveSessionHost } from './config.js'
+import { resolveConfig } from './config.js'
+import { pushChannelNotification } from './channel.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
@@ -56,22 +57,13 @@ async function main() {
 
   // Claude Code channel: push interrupts and addressed notifies as they arrive.
   const attachChannel = (s: Session) => {
-    const push = (m: Msg, w: { content: string; meta: Record<string, string> } | null) => {
-      if (!w || resolveSessionHost(s.dir) !== 'claude' || startup.claudeChannel === '') return
-      // A channel send is a hint, never proof of delivery: the write to stdio succeeds even when the
-      // client ignores the notification (session not started with the channels flag) or queues it
-      // until the current turn ends. Marking the message seen here made room_wait, the inbox prefix and
-      // the hook skip it, so an interrupt could vanish. Only deliveries the model provably received
-      // (tool replies and hook context) mark a message seen.
-      mcp.notification({ method: 'notifications/claude/channel', params: { content: w.content, meta: w.meta } }).catch(() => { /* no channel attached */ })
-    }
     const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
     s.room.bus.observe(ev => {
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
         // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
         syncHookSeen(s)
         if (m.from === s.me.name || s.room.seen(s.me.name).has(m.id)) continue
-        push(m, shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0))
+        void pushChannelNotification(s, shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0), notification => mcp.notification(notification), startup.claudeChannel)
       }
     })
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)

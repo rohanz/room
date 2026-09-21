@@ -55,12 +55,13 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
     if (!current || current.id !== w.id || current.gen !== w.gen || current.startedAt !== w.startedAt) return
     releaseClaimsOnDone(s, undefined, w.name)
   }
-  if (exitCode !== 0 || at - w.startedAt < 90_000 || !done) {
+  if (exitCode !== 0 || !done) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1000))
+    const elapsed = seconds < 90 ? `${seconds} s after start` : `after ${Math.floor(seconds / 60)}m`
     const tail = workerLogTail(path.join(s.dir, '.room', 'workers', `${w.tag}.log`))
     s.room.post<NoteMsg>({ name: 'room', kind: 'bot' }, {
       type: 'note', to: w.lead, priority: 'interrupt',
-      text: `worker ${w.tag} died ${seconds} s after start (exit ${code ?? 'unknown'})${!done ? '; exited without room_done' : ''}${error ? `; ${error}` : ''}; last lines of its log: ${tail || '(empty log)'}`,
+      text: `worker ${w.tag} died ${elapsed} (exit ${code ?? 'unknown'})${!done ? '; exited without room_done' : ''}${error ? `; ${error}` : ''}; last lines of its log: ${tail || '(empty log)'}`,
     })
   }
 }

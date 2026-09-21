@@ -8,6 +8,7 @@ import { describeClaim, withLineNumbers, type NoteMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
+import { workerOwnedPaths } from '../workers.js'
 import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -161,6 +162,27 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // ls-files represents nested repositories/submodules as directory entries.
       // They are not file text and cannot participate in a file merge preview.
       for (const p of pathSet) {
+        let excluded = false
+        for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
+          const worker = previewWorker(session, person)
+          const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined)
+          let reason = workerOwnedPaths(session.room.workerOf(person)).includes(p) ? 'linked input' : undefined
+          if (!reason && dir) {
+            const root = fs.realpathSync(dir)
+            try {
+              const target = fs.realpathSync(path.join(root, p))
+              if (target !== root && !target.startsWith(root + path.sep)) reason = 'symlink leaving the worktree'
+            } catch (e) {
+              if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+              try { if (fs.lstatSync(path.join(root, p)).isSymbolicLink()) reason = 'dangling symlink' } catch { /* absent path */ }
+            }
+          }
+          if (reason) {
+            ignoredNotes.push(`NOT previewed (${reason}, ${person}): ${p}`)
+            excluded = true
+          }
+        }
+        if (excluded) { pathSet.delete(p); continue }
         const dirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir): dir is string => !!dir)]
         if (dirs.some(dir => { try { return fs.lstatSync(path.join(dir, p)).isDirectory() } catch { return false } })) {
           pathSet.delete(p)

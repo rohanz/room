@@ -2,15 +2,20 @@
 
 ## 0.8.0 — 2026-09-21
 
+- Linked inputs and symlinks leaving a worktree are listed under "NOT previewed" on both worker and lead previews.
+- Collection waits up to 15 seconds for a worker that reported done to exit; force remains available when it does not exit.
+- A fast successful exit after `room_done` is completion, not a death interrupt; failed or unreported exits retain diagnostics and log tails.
+- Collection and retirement share linked-input exclusions, so a merged worker retires even when Git lists its input symlink as untracked.
+- Extracted Claude channel notification logic and added regressions proving a successful send leaves messages unseen for `room_wait` and inbox delivery.
 - Fixed before release use: a Claude wake-up no longer marks a message as seen. Sending a wake-up is not proof the agent received it (a session without the channels flag ignores it; a busy session queues it), and marking it seen made `room_wait`, the inbox and the hook skip the message, so an interrupt could vanish. Only tool replies and hook context count as delivered.
 Fixes from the audit of the longest real use of Room (`docs/audit-2026-09-21-qube.md`).
 
 - A1. Integration is not a conflict: an edit inside someone's claim that is byte-identical to the holder's own current text raises nothing; one fyi per holder ("rohanz integrated 4 files of rohanz+volkeys").
 - A2. Writes are attributed to the session, not the folder: the before-tool hook records per-session write intents (newest 200, 10 minutes); a change my session did not intend in the last 2 minutes is someone else's, at most one fyi per path per 10 minutes. Without hook evidence the old behaviour stays.
 - A3. Two agents in one folder: overlap checks between co-located participants are skipped, and the second one's join reply says its changes are published under the first participant's name.
-- A4. Each message is delivered once: a successful channel delivery (Claude hosts) marks ids seen in the document, and ids the hook showed are picked up from `room-hook-seen.json`, only for the participant they were shown to.
+- A4. Tool replies and hook context mark messages seen; ids the hook showed are picked up from `room-hook-seen.json`, only for the participant they were shown to. Channel sends do not mark delivery.
 - B1. A worker process that exits without `room_done` has its claims released and plans ended quietly (`releaseClaimsOnDone`).
-- B2. The lead gets one interrupt when a worker dies (non-zero exit, exit within 90 s, or exit without done) with the last 5 log lines, ANSI stripped, at most 600 characters.
+- B2. The lead gets one interrupt when a worker dies (non-zero exit or exit without done) with the last 5 log lines, ANSI stripped, at most 600 characters. Exits within 90 s use an early-exit duration in the wording.
 - B3. `room_spawn` `effort` is validated and passed to Codex as `-c model_reasoning_effort=<value>`; shown only for Claude.
 - B4. Compute budget, priority and effort are in the worker's prompt; the spawn reply is shorter.
 - B5. `room_spawn` `link` (default: `.roomlinks`) symlinks repo-relative inputs from the lead's clone into the worktree, validated, recorded on the worker (`Worker.link`) and named in the prompt as read-only.

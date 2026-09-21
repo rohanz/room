@@ -210,7 +210,8 @@ describe('worker process exits', () => {
 
   it.each([
     ['running', 0, 120_000, true], ['done', 1, 120_000, true],
-    ['done', 0, 89_999, true], ['done', 0, 90_000, false],
+    ['done', 0, 56_000, false], ['done', 0, 90_000, false],
+    ['running', 1, 5_000, true], ['running', 0, 5_000, true], ['done', 1, 720_000, true],
   ] as const)('status %s exit %i after %i ms: interrupt=%s', async (status, code, elapsed, warn) => {
     const s = fakeSession(pair().a, lead)
     s.room.setWorker({ id: 'exit#1', tag: 'exit', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/exit', pid: -1, startedAt: 1000, status, lead: lead.name, ...(status === 'done' ? { summary: 'finished' } : {}) })
@@ -218,6 +219,11 @@ describe('worker process exits', () => {
     // Process error + exit callbacks and repeated discovery must not duplicate the report.
     await finishWorkerProcess(s, s.room.workers.get('exit')!, code, 1000 + elapsed)
     expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(warn ? 1 : 0)
+    if (warn) {
+      const text = (s.room.messages().find(m => m.priority === 'interrupt') as { text: string }).text
+      expect(text).toContain('last lines of its log:')
+      expect(text).toContain(elapsed < 90_000 ? `${Math.floor(elapsed / 1000)} s after start` : `after ${Math.floor(elapsed / 60_000)}m`)
+    }
     expect(s.room.workers.get('exit')).toMatchObject({ status: status === 'done' ? 'done' : 'failed', exitCode: code })
     if (status === 'done') expect(s.room.workers.get('exit')?.summary).toBe('finished')
   })

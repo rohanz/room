@@ -36,6 +36,8 @@ export interface ToolCtx {
   /** Debounce for the automatic conflict checks; default 2s. */
   conflictDebounceMs?: number
   now?: () => number
+  /** Collection exit grace period; injectable for tests. */
+  sleep?: (ms: number) => Promise<void>
   /** Injectable wake for tests (default: `codex queue`). */
   queue?: (threadId: string, text: string) => Promise<void>
   /** Diagnostics (inbox deliveries etc.); default stderr. */

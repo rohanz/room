@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, type Worker } from '@room/shared'
@@ -47,6 +47,26 @@ describe('shouldRetire', () => {
 })
 
 describe('git facts and lead evaluation', () => {
+  it('retires a merged worker whose only untracked path is a Room-linked input', async () => {
+    const { dir, git } = repo(), r = registry(dir)
+    writeFileSync(join(dir, '.gitignore'), '.room/\ndata/\n')
+    git('add', '.gitignore'); git('commit', '-qm', 'ignore inputs')
+    const prepared = await prepareWorktree(dir, 'w')
+    const w = { ...worker(prepared.dir), base: prepared.base, link: ['data'] }
+    mkdirSync(join(dir, 'data')); writeFileSync(join(dir, 'data', 'input'), 'input')
+    symlinkSync(join(dir, 'data'), join(w.dir, 'data'))
+    writeFileSync(join(w.dir, 'a'), 'worker output')
+    execFileSync('git', ['-C', w.dir, 'commit', '-qam', 'output'])
+    git('merge', '--ff-only', w.branch)
+    expect(execFileSync('git', ['-C', w.dir, 'status', '--porcelain']).toString()).toBe('?? data\n')
+    r.room.setWorker(w)
+    r.room.setOverlay(w.name, 'a', 'worker output')
+    await r.rooms.retireWorkers()
+    expect(r.room.workers.has(w.tag)).toBe(false)
+    expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'merged' }])
+    expect(r.room.changedPaths(w.name)).toEqual([])
+    r.close()
+  })
   it('distinguishes merged, dirty, ahead, clean and missing worktrees', async () => {
     const { dir, git } = repo(), work = join(dir, 'work')
     git('worktree', 'add', '-qb', 'room/w', work)

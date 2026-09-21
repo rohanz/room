@@ -11,6 +11,8 @@ import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, type Session } from '../src/session.js'
 import { resolveConfig, type ResolvedConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
+import { pushChannelNotification } from '../src/channel.js'
+import { shouldWake } from '../src/wake.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -60,6 +62,27 @@ function addPresence(target: Awareness, name: string): Awareness {
   applyAwarenessUpdate(target, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
   return peer
 }
+
+it.each(['room_wait', 'room_state'])('a successful Claude push leaves the message for %s delivery', async tool => {
+  const t = setup()
+  const s = t.session!
+  const peer = addPresence(s.awareness, 'Kieran')
+  try {
+    const msg = t.other.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'channel delivery regression' })
+    const notify = vi.fn(async () => {})
+    await pushChannelNotification(s, shouldWake(me, { kind: 'msg', msg }, [], false), notify, undefined, 'claude')
+    expect(notify).toHaveBeenCalledOnce()
+    expect(s.room.seen(me.name).has(msg.id)).toBe(false)
+    const result = await t.tools.call(tool, { timeoutMs: 1 })
+    expect(result).toContain('channel delivery regression')
+    if (tool === 'room_state') expect(result).toContain('[inbox')
+    expect(s.room.seen(me.name).has(msg.id)).toBe(true)
+  } finally {
+    peer.destroy(); peer.doc.destroy()
+    await t.tools.shutdown()
+    s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
+  }
+})
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'room-mcp-'))

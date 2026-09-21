@@ -26668,6 +26668,13 @@ import { execFileSync as execFileSync2, spawn } from "node:child_process";
 import fs9 from "node:fs";
 import path10 from "node:path";
 import { stripVTControlCharacters } from "node:util";
+function workerOwnedPaths(w) {
+  const paths = w?.link ?? [];
+  return {
+    includes: (p) => paths.some((l) => p === l || p.startsWith(l + "/")),
+    exclusions: paths.map((l) => ":(exclude,literal)" + l)
+  };
+}
 function shouldRetire(facts) {
   if (!facts.exited) return void 0;
   if (facts.dismissed) return "dismissed";
@@ -26678,7 +26685,7 @@ function shouldRetire(facts) {
 async function workerGitFacts(leadDir, w) {
   const facts = { merged: false, clean: false, ahead: void 0 };
   try {
-    const status = await git(w.dir, ["status", "--porcelain", "--untracked-files=all"]);
+    const status = await git(w.dir, ["status", "--porcelain", "--untracked-files=all", "--", ".", ...workerOwnedPaths(w).exclusions]);
     facts.uncommitted = status.split("\n").filter(Boolean).length;
     facts.clean = facts.uncommitted === 0;
     const head = (await git(leadDir, ["rev-parse", "HEAD"])).trim();
@@ -28256,14 +28263,15 @@ async function finishWorkerProcess(s, w, code, at = Date.now(), error2) {
     if (!current2 || current2.id !== w.id || current2.gen !== w.gen || current2.startedAt !== w.startedAt) return;
     releaseClaimsOnDone2(s, void 0, w.name);
   }
-  if (exitCode !== 0 || at - w.startedAt < 9e4 || !done) {
+  if (exitCode !== 0 || !done) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1e3));
+    const elapsed = seconds < 90 ? `${seconds} s after start` : `after ${Math.floor(seconds / 60)}m`;
     const tail = workerLogTail(path12.join(s.dir, ".room", "workers", `${w.tag}.log`));
     s.room.post({ name: "room", kind: "bot" }, {
       type: "note",
       to: w.lead,
       priority: "interrupt",
-      text: `worker ${w.tag} died ${seconds} s after start (exit ${code ?? "unknown"})${!done ? "; exited without room_done" : ""}${error2 ? `; ${error2}` : ""}; last lines of its log: ${tail || "(empty log)"}`
+      text: `worker ${w.tag} died ${elapsed} (exit ${code ?? "unknown"})${!done ? "; exited without room_done" : ""}${error2 ? `; ${error2}` : ""}; last lines of its log: ${tail || "(empty log)"}`
     });
   }
 }
@@ -39274,6 +39282,7 @@ ${fresh.map((m) => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join("
 // packages/room-mcp/src/tools/collect.ts
 init_src();
 init_git();
+init_workers();
 init_claims2();
 init_context();
 import fs12 from "node:fs";
@@ -39331,7 +39340,19 @@ function handlers5(state) {
     const s = rooms.holdingWorker(a.tag, lead), w = s.room.workers.get(a.tag);
     if (!w || w.lead !== s.me.name) return "error: no worker " + a.tag + " owned by you";
     if (!s.local) return "error: room_collect requires a local worker";
-    if ((w.status === "running" || state.workerAlive(s, w)) && a.force !== true) return "error: worker " + w.tag + " is still running; stop it or pass force=true";
+    if (a.force !== true) {
+      if (w.status === "running") return "error: worker " + w.tag + " is still running; stop it or pass force=true";
+      const now = state.now ?? Date.now;
+      const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
+      const deadline = now() + 15e3;
+      while (state.workerAlive(s, w)) {
+        const remaining = deadline - now();
+        if (remaining <= 0) return `error: worker ${w.tag} reported ${w.status} but its process has not exited after 15 s; force=true overrides`;
+        await sleep2(Math.min(250, remaining));
+      }
+      const current = s.room.workers.get(w.tag);
+      if (current && (current.id !== w.id || current.startedAt !== w.startedAt || current.status === "running")) return "error: worker changed while waiting; retry collection";
+    }
     if (fs12.realpathSync(w.dir) === fs12.realpathSync(lead.dir)) return "error: worker must have a separate worktree";
     const lock = "collect:" + fs12.realpathSync(lead.dir);
     if (!rooms.reserve(lock)) return "error: another collection is in progress";
@@ -39367,14 +39388,13 @@ function handlers5(state) {
         if (await common(lead.dir) !== await common(w.dir)) return "error: worker is not a worktree of this repository";
         if (w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) return "error: worker must be on branch room/" + w.tag;
         if ((await git(lead.dir, ["diff", "--name-only", "HEAD", "--"])).trim()) return "error: commit or stash the lead tracked changes before merging";
-        const links = w.link ?? [];
-        const excluded = (p) => links.some((l) => p === l || p.startsWith(l + "/"));
+        const owned = workerOwnedPaths(w);
         const staged = split(await git(w.dir, ["diff", "--cached", "--name-only", "-z"]));
-        if (staged.some(excluded)) return "error: linked inputs are staged; unstage them before collecting";
+        if (staged.some(owned.includes)) return "error: linked inputs are staged; unstage them before collecting";
         const name = (await git(lead.dir, ["config", "user.name"])).trim();
         const email2 = (await git(lead.dir, ["config", "user.email"])).trim();
         const identity = ["-c", "user.name=" + name, "-c", "user.email=" + email2];
-        await git(w.dir, ["add", "-A", "--", ".", ...links.map((l) => ":(exclude,literal)" + l)]);
+        await git(w.dir, ["add", "-A", "--", ".", ...owned.exclusions]);
         const committed = split(await git(w.dir, ["diff", "--cached", "--name-only", "-z"]));
         const landed = split(await git(w.dir, ["diff", "--name-only", "-z", "HEAD", (await git(lead.dir, ["rev-parse", "HEAD"])).trim(), "--"]));
         releasePaths([.../* @__PURE__ */ new Set([...committed, ...landed])]);
@@ -39412,6 +39432,7 @@ init_libesm();
 init_src();
 init_git();
 init_merge();
+init_workers();
 init_context();
 import { execFile as execFile5 } from "node:child_process";
 import fs13 from "node:fs";
@@ -39584,6 +39605,33 @@ ${text}` : text;
         }
       }
       for (const p of pathSet) {
+        let excluded = false;
+        for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
+          const worker = previewWorker(session, person);
+          const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : void 0);
+          let reason = workerOwnedPaths(session.room.workerOf(person)).includes(p) ? "linked input" : void 0;
+          if (!reason && dir) {
+            const root = fs13.realpathSync(dir);
+            try {
+              const target = fs13.realpathSync(path15.join(root, p));
+              if (target !== root && !target.startsWith(root + path15.sep)) reason = "symlink leaving the worktree";
+            } catch (e) {
+              if (e.code !== "ENOENT") throw e;
+              try {
+                if (fs13.lstatSync(path15.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
+              } catch {
+              }
+            }
+          }
+          if (reason) {
+            ignoredNotes.push(`NOT previewed (${reason}, ${person}): ${p}`);
+            excluded = true;
+          }
+        }
+        if (excluded) {
+          pathSet.delete(p);
+          continue;
+        }
         const dirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir) => !!dir)];
         if (dirs.some((dir) => {
           try {
@@ -40613,6 +40661,18 @@ ${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
 init_session();
 init_hooks_bridge();
 init_config();
+
+// packages/room-mcp/src/channel.ts
+init_config();
+async function pushChannelNotification(s, wake, notify, channel, host) {
+  if (!wake || (host ?? resolveSessionHost(s.dir)) !== "claude" || channel === "") return;
+  try {
+    await notify({ method: "notifications/claude/channel", params: { content: wake.content, meta: wake.meta } });
+  } catch {
+  }
+}
+
+// packages/room-mcp/src/index.ts
 init_session();
 init_credentials();
 init_config();
@@ -40660,17 +40720,12 @@ async function main() {
     content: [{ type: "text", text: await tools.call(req.params.name, req.params.arguments ?? {}) }]
   }));
   const attachChannel = (s) => {
-    const push = (m, w) => {
-      if (!w || resolveSessionHost(s.dir) !== "claude" || startup.claudeChannel === "") return;
-      mcp.notification({ method: "notifications/claude/channel", params: { content: w.content, meta: w.meta } }).catch(() => {
-      });
-    };
     const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
     s.room.bus.observe((ev) => {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
         syncHookSeen(s);
         if (m.from === s.me.name || s.room.seen(s.me.name).has(m.id)) continue;
-        push(m, shouldWake(s.me, { kind: "msg", msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0));
+        void pushChannelNotification(s, shouldWake(s.me, { kind: "msg", msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0), (notification) => mcp.notification(notification), startup.claudeChannel);
       }
     });
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);

@@ -8,6 +8,7 @@ import { handlers as fileHandlers } from '../src/tools/files.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { RoomDoc } from '@room/shared'
 import * as Y from 'yjs'
+import { workerGitFacts, shouldRetire, workerOwnedPaths } from '../src/workers.js'
 
 const release = vi.hoisted(() => vi.fn())
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: release }))
@@ -38,6 +39,51 @@ function setup(status = 'done') {
 }
 
 describe('room_collect', () => {
+  it('waits for a done worker to exit without requiring force', async () => {
+    const t = setup()
+    let at = 0
+    const sleep = vi.fn(async (ms: number) => { at += ms })
+    t.state.now = () => at
+    t.state.ctx = { sleep } as HandlerState['ctx']
+    t.state.workerAlive = () => at < 10_000
+    put(worker, 'new.txt', 'new')
+    expect(await t.call({ tag: 'test' })).toContain('merged room/test')
+    expect(sleep).toHaveBeenCalledTimes(40)
+    expect(sleep).toHaveBeenCalledWith(250)
+  })
+  it('bounds the exit wait at 15 seconds and allows an explicit force override', async () => {
+    const t = setup()
+    let at = 0
+    t.state.now = () => at
+    t.state.ctx = { sleep: async (ms: number) => { at += ms } } as HandlerState['ctx']
+    t.state.workerAlive = () => true
+    expect(await t.call({ tag: 'test' })).toContain('reported done but its process has not exited after 15 s; force=true overrides')
+    expect(at).toBe(15_000)
+    expect(git(worker, 'rev-parse', 'HEAD')).toBe(base)
+    expect(await t.call({ tag: 'test', force: true })).toContain('merged room/test')
+    expect(at).toBe(15_000)
+  })
+  it('collects and retires merged work despite an untracked linked input', async () => {
+    put(lead, '.gitignore', 'artifact.bin\ndata/\n')
+    git(lead, 'commit', '-qam', 'ignore data'); git(worker, 'merge', '--ff-only', git(lead, 'rev-parse', 'HEAD'))
+    put(worker, '.gitignore', 'artifact.bin\ndata/\n')
+    put(lead, 'data/input', 'private input')
+    fs.symlinkSync(path.join(lead, 'data'), path.join(worker, 'data'))
+    put(worker, 'new.txt', 'output')
+    const t = setup()
+    const w = { ...t.s.room.workers.get('test')!, link: ['data'] }
+    t.s.room.workers.set('test', w)
+    expect(git(worker, 'status', '--porcelain', '--untracked-files=all')).toContain('?? data')
+    expect(await t.call({ tag: 'test' })).toContain('merged room/test')
+    expect(git(worker, 'ls-files', 'data')).toBe('')
+    const facts = await workerGitFacts(lead, w)
+    expect(facts).toMatchObject({ clean: true, merged: true, ahead: 0, uncommitted: 0 })
+    expect(shouldRetire({ ...facts, exited: true, done: true, dismissed: false })).toBe('merged')
+    expect(workerOwnedPaths(w).includes('data/input')).toBe(true)
+    expect(workerOwnedPaths(w).includes('database')).toBe(false)
+    put(worker, 'database', 'real output')
+    expect(await workerGitFacts(lead, w)).toMatchObject({ clean: false, uncommitted: 1 })
+  })
   it('commits tracked and untracked output as the lead, excludes ignored artifacts, then merges', async () => {
     put(worker, 'file.txt', 'worker\n'); put(worker, 'new.txt', 'new\n'); put(worker, 'artifact.bin', 'ignored')
     const t = setup()
@@ -99,6 +145,28 @@ describe('room_collect', () => {
 })
 
 describe('worker preview', () => {
+  it.each([true, false])('skips linked and escaping symlinks from both sides (record=%s)', async recorded => {
+    put(lead, 'data/input', 'private input')
+    put(worker, '.gitignore', 'artifact.bin\ndata/\n')
+    fs.symlinkSync(path.join(lead, 'data'), path.join(worker, 'data'))
+    put(worker, 'new.txt', 'output')
+    const t = setup()
+    if (recorded) t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, link: ['data'] })
+    const ws = { ...t.s, dir: worker, me: { name: 'lead+test', kind: 'agent' } }
+    Object.assign(t.state, {
+      rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
+      others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
+      baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,
+    })
+    const reason = recorded ? 'linked input' : 'symlink leaving the worktree'
+    const leadResult = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
+    expect(leadResult).toContain(`NOT previewed (${reason}, lead+test): data`)
+    expect(leadResult).toContain('new.txt (lead+test only)')
+    t.state.S = () => ws as unknown as ReturnType<HandlerState['S']>
+    const workerResult = await fileHandlers(t.state).room_preview_merge({ person: 'lead' })
+    expect(workerResult).toContain(`NOT previewed (${reason}, lead+test): data`)
+    expect(workerResult).toContain('no conflicts')
+  })
   it('discovers untracked worker paths and explicitly excludes ignored output', async () => {
     put(worker, 'new.txt', 'new\n'); put(worker, 'empty.txt', ''); put(worker, 'artifact.bin', 'artifact')
     const nested = path.join(lead, 'nested'); fs.mkdirSync(nested); git(nested, 'init', '-q')

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { claimsOverlap } from '@room/shared'
 import { git } from '@room/roomd/git'
+import { workerOwnedPaths } from '../workers.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -59,7 +60,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const s = rooms.holdingWorker(a.tag, lead), w = s.room.workers.get(a.tag)
     if (!w || w.lead !== s.me.name) return 'error: no worker ' + a.tag + ' owned by you'
     if (!s.local) return 'error: room_collect requires a local worker'
-    if ((w.status === 'running' || state.workerAlive(s, w)) && a.force !== true) return 'error: worker ' + w.tag + ' is still running; stop it or pass force=true'
+    if (a.force !== true) {
+      if (w.status === 'running') return 'error: worker ' + w.tag + ' is still running; stop it or pass force=true'
+      const now = state.now ?? Date.now
+      const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+      const deadline = now() + 15_000
+      while (state.workerAlive(s, w)) {
+        const remaining = deadline - now()
+        if (remaining <= 0) return `error: worker ${w.tag} reported ${w.status} but its process has not exited after 15 s; force=true overrides`
+        await sleep(Math.min(250, remaining))
+      }
+      // A new spawn must not be collected using the old record after the wait.
+      const current = s.room.workers.get(w.tag)
+      if (current && (current.id !== w.id || current.startedAt !== w.startedAt || current.status === 'running')) return 'error: worker changed while waiting; retry collection'
+    }
     if (fs.realpathSync(w.dir) === fs.realpathSync(lead.dir)) return 'error: worker must have a separate worktree'
     const lock = 'collect:' + fs.realpathSync(lead.dir)
     if (!rooms.reserve(lock)) return 'error: another collection is in progress'
@@ -95,14 +109,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (await common(lead.dir) !== await common(w.dir)) return 'error: worker is not a worktree of this repository'
         if (w.branch !== 'room/' + w.tag || (await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) return 'error: worker must be on branch room/' + w.tag
         if ((await git(lead.dir, ['diff', '--name-only', 'HEAD', '--'])).trim()) return 'error: commit or stash the lead tracked changes before merging'
-        const links = (w as typeof w & { link?: string[] }).link ?? []
-        const excluded = (p: string) => links.some(l => p === l || p.startsWith(l + '/'))
+        const owned = workerOwnedPaths(w)
         const staged = split(await git(w.dir, ['diff', '--cached', '--name-only', '-z']))
-        if (staged.some(excluded)) return 'error: linked inputs are staged; unstage them before collecting'
+        if (staged.some(owned.includes)) return 'error: linked inputs are staged; unstage them before collecting'
         const name = (await git(lead.dir, ['config', 'user.name'])).trim()
         const email = (await git(lead.dir, ['config', 'user.email'])).trim()
         const identity = ['-c', 'user.name=' + name, '-c', 'user.email=' + email]
-        await git(w.dir, ['add', '-A', '--', '.', ...links.map(l => ':(exclude,literal)' + l)])
+        await git(w.dir, ['add', '-A', '--', '.', ...owned.exclusions])
         const committed = split(await git(w.dir, ['diff', '--cached', '--name-only', '-z']))
         const landed = split(await git(w.dir, ['diff', '--name-only', '-z', 'HEAD', (await git(lead.dir, ['rev-parse', 'HEAD'])).trim(), '--']))
         releasePaths([...new Set([...committed, ...landed])])
