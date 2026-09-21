@@ -58,7 +58,12 @@ async function main() {
   const attachChannel = (s: Session) => {
     const push = (m: Msg, w: { content: string; meta: Record<string, string> } | null) => {
       if (!w || resolveSessionHost(s.dir) !== 'claude' || startup.claudeChannel === '') return
-      mcp.notification({ method: 'notifications/claude/channel', params: { content: w.content, meta: w.meta } }).then(() => s.room.markSeen(s.me.name, [m.id])).catch(() => { /* no channel attached */ })
+      // A channel send is a hint, never proof of delivery: the write to stdio succeeds even when the
+      // client ignores the notification (session not started with the channels flag) or queues it
+      // until the current turn ends. Marking the message seen here made room_wait, the inbox prefix and
+      // the hook skip it, so an interrupt could vanish. Only deliveries the model provably received
+      // (tool replies and hook context) mark a message seen.
+      mcp.notification({ method: 'notifications/claude/channel', params: { content: w.content, meta: w.meta } }).catch(() => { /* no channel attached */ })
     }
     const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
     s.room.bus.observe(ev => {

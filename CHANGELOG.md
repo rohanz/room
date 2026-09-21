@@ -2,6 +2,7 @@
 
 ## 0.8.0 — 2026-09-21
 
+- Fixed before release use: a Claude wake-up no longer marks a message as seen. Sending a wake-up is not proof the agent received it (a session without the channels flag ignores it; a busy session queues it), and marking it seen made `room_wait`, the inbox and the hook skip the message, so an interrupt could vanish. Only tool replies and hook context count as delivered.
 Fixes from the audit of the longest real use of Room (`docs/audit-2026-09-21-qube.md`).
 
 - A1. Integration is not a conflict: an edit inside someone's claim that is byte-identical to the holder's own current text raises nothing; one fyi per holder ("rohanz integrated 4 files of rohanz+volkeys").

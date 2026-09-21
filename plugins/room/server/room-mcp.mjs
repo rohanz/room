@@ -40662,7 +40662,7 @@ async function main() {
   const attachChannel = (s) => {
     const push = (m, w) => {
       if (!w || resolveSessionHost(s.dir) !== "claude" || startup.claudeChannel === "") return;
-      mcp.notification({ method: "notifications/claude/channel", params: { content: w.content, meta: w.meta } }).then(() => s.room.markSeen(s.me.name, [m.id])).catch(() => {
+      mcp.notification({ method: "notifications/claude/channel", params: { content: w.content, meta: w.meta } }).catch(() => {
       });
     };
     const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
