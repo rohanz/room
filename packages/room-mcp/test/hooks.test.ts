@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
-import { HooksBridge } from '../src/hooks-bridge.js'
+import { createWriteIntentReader, HooksBridge, syncHookSeen } from '../src/hooks-bridge.js'
 import type { Session } from '../src/session.js'
 import { hasCompany } from '../src/company.js'
 import type { Worker } from '@room/shared'
@@ -118,6 +118,44 @@ describe('shell edit hooks', () => {
   const claim = { by: 'Kieran', path: 'api/tax.py', from: 1, to: 1, intent: 'tax rules' }
   const state = (extra = {}) => writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ claims: [claim], ...extra }))
 
+  it('records session-specific write intents before room state exists, including new edit files', async () => {
+    await runHook('session-start.mjs', { session_id: 'intent-lead', cwd: dir })
+    const lead = createWriteIntentReader(dir)
+    expect(lead('app.py')).toBeUndefined()
+    await runHook('before-edit.mjs', { session_id: 'intent-lead', cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'cat app.py' } })
+    expect(lead('app.py')).toBe(false)
+    await runHook('session-start.mjs', { session_id: 'intent-peer', cwd: dir })
+    const peer = createWriteIntentReader(dir)
+    await runHook('before-edit.mjs', { session_id: 'intent-peer', cwd: dir, tool_name: 'Write', tool_input: { file_path: join(dir, 'new.py') } })
+    expect(peer('new.py')).toBe(true)
+    expect(lead('new.py')).toBe(false)
+    await runHook('before-edit.mjs', { session_id: 'intent-lead', cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'echo x > app.py' } })
+    expect(lead('app.py')).toBe(true)
+    expect(peer('app.py')).toBe(false)
+  })
+
+  it('bounds intents to 200 entries, expires at two minutes, and drops ten-minute history', async () => {
+    const { recordWriteIntents } = await import(join(HOOKS, 'common.mjs'))
+    let clock = 1_000_000
+    await runHook('session-start.mjs', { session_id: 'intent-bounds', cwd: dir })
+    const read = createWriteIntentReader(dir, () => clock)
+    recordWriteIntents(join(dir, '.git'), 'intent-bounds', dir, Array.from({ length: 201 }, (_, i) => `f${i}`), clock)
+    expect(read('f0')).toBe(false)
+    expect(read('f200')).toBe(true)
+    clock += 120_000
+    expect(read('f200')).toBe(false)
+    clock += 600_000
+    recordWriteIntents(join(dir, '.git'), 'intent-bounds', dir, ['fresh'], clock)
+    expect(read('fresh')).toBe(true)
+    expect(read('f200')).toBe(false)
+  })
+
+  it('shows directory claims for descendant writes only', async () => {
+    state({ claims: [{ ...claim, path: 'api/' }] })
+    expect(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Edit', tool_input: { file_path: 'api/tax.py' } })).toContain("holds api/")
+    expect(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Edit', tool_input: { file_path: 'api-other/tax.py' } })).toBe('')
+  })
+
   it.each(shellNames)('%s matches Codex hooks and announces company only once', async tool_name => {
     const manifest = JSON.parse(readFileSync(join(HOOKS, '../hooks.json'), 'utf8'))
     expect(new RegExp(manifest.hooks.PreToolUse[0].matcher).test(tool_name)).toBe(true)
@@ -185,6 +223,70 @@ describe('shell edit hooks', () => {
 })
 
 describe('hooks bridge + plugin hook scripts', () => {
+  it('never imports another participant\'s hook receipts, including broadcast ids', () => {
+    const s = session(new RoomDoc())
+    const other = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Other', text: 'private' })
+    const mine = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'mine' })
+    const broadcast = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'broadcast', priority: 'notify' })
+    const file = join(dir, '.git/room-hook-seen.json')
+    writeFileSync(file, JSON.stringify({ seen: [other.id, mine.id, broadcast.id], shown: { [broadcast.id]: 'Other' } }))
+    syncHookSeen(s)
+    expect(s.room.seen(s.me.name).has(other.id)).toBe(false)
+    expect(s.room.seen(s.me.name).has(broadcast.id)).toBe(false)
+    expect(s.room.seen(s.me.name).has(mine.id)).toBe(true)
+    writeFileSync(file, JSON.stringify({ seen: [broadcast.id], shown: { [broadcast.id]: s.me.name } }))
+    syncHookSeen(s)
+    expect(s.room.seen(s.me.name).has(broadcast.id)).toBe(true)
+    s.awareness.destroy()
+  })
+
+  it('imports hook receipts into the document before any later wake', async () => {
+    await runHook('session-start.mjs', { session_id: 'receipt-thread', cwd: dir })
+    const s = session(new RoomDoc()), queue = vi.fn(async () => {})
+    const b = new HooksBridge(s, { forMe: m => m.to === s.me.name, isSeen: () => false, queue })
+    const msg = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'hook first?' })
+    b.write()
+    const out = await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'git status' } })
+    expect(out).toContain('hook first?')
+    syncHookSeen(s)
+    expect(s.room.seen(s.me.name).has(msg.id)).toBe(true)
+    await b.maybeWake(msg)
+    expect(queue).not.toHaveBeenCalled()
+    b.write()
+    expect(JSON.parse(readFileSync(b.stateFile(), 'utf8')).unread).toEqual([])
+    b.stop(); s.awareness.destroy()
+  })
+
+  it('successful wake marks document receipts and prevents hook replay; failure stays unread', async () => {
+    await runHook('session-start.mjs', { session_id: 'queue-first', cwd: dir })
+    const s = session(new RoomDoc())
+    let fail = false
+    const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false, retryDelaysMs: [], queue: async () => { if (fail) throw Error('down') } })
+    const msg = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'queue first?' })
+    b.write()
+    await b.maybeWake(msg)
+    expect(s.room.seen(s.me.name).has(msg.id)).toBe(true)
+    expect(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'git status' } })).toBe('')
+    fail = true
+    const pending = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'retry later?' })
+    await b.maybeWake(pending)
+    expect(s.room.seen(s.me.name).has(pending.id)).toBe(false)
+    b.write()
+    expect(JSON.parse(readFileSync(b.stateFile(), 'utf8')).unread.map((m: { id: string }) => m.id)).toEqual([pending.id])
+    b.stop(); s.awareness.destroy()
+  })
+
+  it('document receipts remove stale hook snapshots synchronously', () => {
+    const s = session(new RoomDoc())
+    const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false })
+    const msg = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: s.me.name, text: 'channel first', priority: 'fyi' })
+    b.start(); b.write()
+    expect(JSON.parse(readFileSync(b.stateFile(), 'utf8')).unread).toHaveLength(1)
+    s.room.markSeen(s.me.name, [msg.id])
+    expect(JSON.parse(readFileSync(b.stateFile(), 'utf8')).unread).toEqual([])
+    b.stop(); s.awareness.destroy()
+  })
+
   it('SessionStart is silent without company and prints one line with company', async () => {
     expect(await runHook('session-start.mjs', { session_id: 'quiet', cwd: dir })).toBe('')
     writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: false, others: [] }))

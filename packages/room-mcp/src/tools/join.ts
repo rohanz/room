@@ -146,6 +146,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)
       out.push(shareLine(s))
+      const publisher = s.awareness.getLocalState()?.publishUnder
+      if (typeof publisher === 'string' && publisher !== s.me.name) out.push(`Your file changes are published under ${publisher}'s name because both sessions watch this folder; claims say which lines are whose.`)
       const here = others(s).filter(n => presences(s).some(p => p.user.name === n))
       const mineA = myAreas(s)
       setPresence(s, { areas: mineA })

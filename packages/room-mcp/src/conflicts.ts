@@ -1,4 +1,4 @@
-import { bareSymbol, displayName } from '@room/shared'
+import { bareSymbol, claimsOverlap, displayName } from '@room/shared'
 /**
  * Conflicts the agents did not declare. Two watchers on the room doc:
  *  - overlap: my own edits landing inside someone else's open claim (I hold no claim there)
@@ -34,6 +34,10 @@ export interface ConflictDeps {
   now?: () => number
   /** Whether this participant currently has a live awareness entry. */
   isPresent?: (person: string) => boolean
+  /** Undefined means hooks have never supplied evidence for this session. */
+  writeIntent?: (path: string) => boolean | undefined
+  /** Participants watching the same physical directory share file changes. */
+  coLocated?: (person: string) => boolean
 }
 
 export interface Range { from: number; to: number }
@@ -48,8 +52,8 @@ export function changedRanges(base: string, live: string): Range[] {
   return out
 }
 
-const overlaps = (a: Range, b: Range) => a.from <= b.to && b.from <= a.to
-const covers = (c: Claim, r: Range) => c.from <= r.from && c.to >= r.to
+const covers = (c: Claim, p: string, r: Range) => claimsOverlap(c, { path: p, ...r }) &&
+  (c.path.endsWith('/') || (c.from <= r.from && c.to >= r.to))
 
 export interface MergeResult { status: 'clean' | 'one-side' | 'conflict' | 'unknown'; lines: number[] }
 
@@ -85,6 +89,10 @@ export class ConflictWatcher {
   private mergeHashes = new Map<string, string>()
   private observedReported = new Set<string>()
   private observedChecks = new Set<Promise<void>>()
+  private integrated = new Map<string, Set<string>>()
+  private integrationReported = new Set<string>()
+  private integrationTimer: NodeJS.Timeout | null = null
+  private externalReported = new Map<string, number>()
   constructor(private d: ConflictDeps) {}
 
   start(): void {
@@ -126,6 +134,8 @@ export class ConflictWatcher {
     if (this.mergeTimer) clearTimeout(this.mergeTimer)
     this.mergeTimer = null
     this.mergeQueue.clear()
+    if (this.integrationTimer) clearTimeout(this.integrationTimer)
+    this.integrationTimer = null
   }
 
   /** Debounced per (person, path): a burst of keystrokes becomes one check. */
@@ -146,6 +156,7 @@ export class ConflictWatcher {
     for (const key of keys) { const [person, p] = key.split('|'); await this.check(person, p) }
     await this.drainMerges()
     while (this.observedChecks.size) await Promise.all(this.observedChecks)
+    this.reportIntegrations()
   }
 
   private checkAllObserved(): void {
@@ -192,7 +203,7 @@ export class ConflictWatcher {
       if (person === this.d.me.name) await this.checkOverlap(p)
       // A change by either side to a file both have changed re-runs the preview for every other person on it.
       const me = this.d.me.name
-      const people = (person === me ? this.d.room.whoChanged(p).filter(x => x !== me) : [person]).filter(x => this.d.isPresent?.(x) ?? true)
+      const people = (person === me ? this.d.room.whoChanged(p).filter(x => x !== me) : [person]).filter(x => !this.d.coLocated?.(x) && (this.d.isPresent?.(x) ?? true))
       if (this.d.room.changedPaths(me).includes(p)) for (const other of people) this.mergeQueue.set(`${other}|${p}`, { person: other, path: p })
       await this.drainMerges()
     } catch (e) {
@@ -207,12 +218,36 @@ export class ConflictWatcher {
     const base = (await this.d.baseText(this.d.baseFor(me.name), p)) ?? ''
     const ranges = changedRanges(base, live)
     if (!ranges.length) return
-    const claims = this.d.room.openClaims().filter(c => c.path === p)
+    const claims = this.d.room.openClaims().filter(c => ranges.some(r => claimsOverlap(c, { path: p, ...r })))
     const mine = claims.filter(c => c.by === me.name && c.byKind === me.kind)
     for (const c of claims) {
       if (c.by === me.name && c.byKind === me.kind) continue
-      const hit = ranges.find(r => overlaps(r, { from: c.from, to: c.to }) && !mine.some(m => covers(m, r)))
+      if (this.d.coLocated?.(c.by)) continue
+      const hit = ranges.find(r => claimsOverlap(c, { path: p, ...r }) && !mine.some(m => covers(m, p, r)))
       if (!hit) continue
+      // An overlay is authoritative; the resolver also handles local workers whose
+      // current file has not been published (including ignored artifacts).
+      const theirs = this.d.room.text(p, c.by) ?? await this.d.liveText(p, c.by).catch(() => undefined)
+      if (live === theirs) {
+        if (!this.integrationReported.has(c.by)) {
+          const paths = this.integrated.get(c.by) ?? new Set<string>()
+          paths.add(p); this.integrated.set(c.by, paths)
+          if (!this.integrationTimer) {
+            this.integrationTimer = setTimeout(() => this.reportIntegrations(), this.d.debounceMs ?? 2000)
+            this.integrationTimer.unref?.()
+          }
+        }
+        continue
+      }
+      if (this.d.writeIntent?.(p) === false) {
+        const now = (this.d.now ?? Date.now)()
+        for (const [path, at] of this.externalReported) if (now - at >= 600_000) this.externalReported.delete(path)
+        if (!this.externalReported.has(p)) {
+          this.externalReported.set(p, now)
+          this.d.room.post<NoteMsg>(ROOM, { type: 'note', to: me.name, priority: 'fyi', text: `${p} changed in your folder without a write from your session` })
+        }
+        continue
+      }
       const k = `${p}|${c.id}`
       if (this.reported.has(k)) continue
       this.reported.add(k)
@@ -225,7 +260,19 @@ export class ConflictWatcher {
     }
   }
 
+  private reportIntegrations(): void {
+    if (this.integrationTimer) clearTimeout(this.integrationTimer)
+    this.integrationTimer = null
+    for (const [holder, paths] of this.integrated) {
+      this.integrationReported.add(holder)
+      this.d.room.post<NoteMsg>(ROOM, { type: 'note', to: this.d.me.name, priority: 'fyi',
+        text: `${this.d.me.name} integrated ${paths.size} file${paths.size === 1 ? '' : 's'} of ${holder}` })
+    }
+    this.integrated.clear()
+  }
+
   private async checkMerge(person: string, p: string): Promise<void> {
+    if (this.d.coLocated?.(person)) return
     if (this.d.isPresent && !this.d.isPresent(person)) return
     if (!this.d.room.changedPaths(person).includes(p)) return
     const key = `${person}|${p}`

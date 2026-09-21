@@ -12,6 +12,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { formatMsg, formatPlans, shouldWakeOnMsg, type Msg, isAgentic } from '@room/shared'
 import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
@@ -26,6 +27,40 @@ function gitStatePath(root: string, name: string): string {
     }
   } catch { /* fall through */ }
   return path.join(dotgit, name)
+}
+
+/** Pin the host session before another session can replace the clone's hint. */
+export function createWriteIntentReader(dir: string, now: () => number = Date.now): (p: string) => boolean | undefined {
+  const sessionId = () => {
+    try { const id = JSON.parse(fs.readFileSync(gitStatePath(dir, 'room-session.json'), 'utf8')).session_id; return typeof id === 'string' && id ? id : undefined } catch { return undefined }
+  }
+  let id = sessionId()
+  return p => {
+    id ??= sessionId()
+    if (!id) return undefined
+    try {
+      const file = gitStatePath(dir, `room-write-intents-${createHash('sha256').update(id).digest('hex')}.json`)
+      const evidence = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (evidence.session_id !== id || !Array.isArray(evidence.writes)) return undefined
+      const at = now(), target = path.resolve(dir, p)
+      return evidence.writes.some((w: { path?: unknown; at?: unknown }) => typeof w.path === 'string' &&
+        typeof w.at === 'number' && Number.isFinite(w.at) && w.at <= at && at - w.at < 120_000 && path.resolve(w.path) === target)
+    } catch { return undefined }
+  }
+}
+
+/** Reconcile the hook's durable receipt before another delivery path reads its inbox. */
+export function syncHookSeen(s: Session): void {
+  try {
+    const value = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-hook-seen.json'), 'utf8'))
+    const ids = Array.isArray(value) ? value : value?.seen
+    if (!Array.isArray(ids)) return
+    // New hooks record whose inbox was displayed. Legacy receipts have no such
+    // proof: accept only messages explicitly addressed to this participant.
+    const known = new Set(s.room.messages().filter(m => typeof value?.shown?.[m.id] === 'string'
+      ? value.shown[m.id] === s.me.name : m.to === s.me.name).map(m => m.id))
+    s.room.markSeen(s.me.name, ids.filter((id): id is string => typeof id === 'string' && known.has(id) && !s.room.seen(s.me.name).has(id)))
+  } catch { /* Hooks are optional, and files may be in the middle of a write. */ }
 }
 
 export interface HooksBridgeOptions {
@@ -62,6 +97,7 @@ export class HooksBridge {
   private pendingTimer: NodeJS.Timeout | null = null
   private startedAt = Date.now()
   private unobserve: (() => void)[] = []
+  private delivering = new Set<string>()
   constructor(private s: Session, private o: HooksBridgeOptions) {}
 
   start(): void {
@@ -69,6 +105,12 @@ export class HooksBridge {
     if (this.o.writeState !== false) {
       this.s.room.doc.on('update', kick); this.s.awareness.on('change', kick)
       this.unobserve.push(() => { this.s.room.doc.off('update', kick); this.s.awareness.off('change', kick) })
+      // Receipts must remove delivered ids from the hook snapshot immediately,
+      // before the next tool's hook can replay a stale inbox.
+      const receipts = this.s.room.seen(this.s.me.name)
+      const onSeen = () => this.write()
+      receipts.observe(onSeen)
+      this.unobserve.push(() => receipts.unobserve(onSeen))
     }
     // A local transaction is usually my own post, which never wakes me. It can also be a message this
     // process wrote on someone else's behalf (a worker's synthetic done on exit): that one must.
@@ -104,8 +146,9 @@ export class HooksBridge {
   }
 
   write(): void {
+    syncHookSeen(this.s)
     const me = this.s.me.name
-    const unread = this.s.room.messages().filter(m => !this.o.isSeen(m.id) && this.o.forMe(m)).map(m => ({ id: m.id, priority: m.priority, line: formatMsg(m) }))
+    const unread = this.s.room.messages().filter(m => !this.isSeen(m.id) && this.o.forMe(m)).map(m => ({ id: m.id, priority: m.priority, line: formatMsg(m) }))
     const claims = this.s.room.openClaims().filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
     const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now())
     try { fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), company: company.company, others: company.others, unread, claims }, null, 1) + '\n') }
@@ -114,10 +157,12 @@ export class HooksBridge {
 
   /** Interrupts, questions addressed to me, and a base move while I have uncommitted work wake the idle Codex thread, once per message. */
   async maybeWake(m: Msg): Promise<void> {
+    syncHookSeen(this.s)
+    if (this.isSeen(m.id)) return
     if (!this.o.forMe(m)) return
     const myClaims = this.s.room.openClaims().filter(c => c.by === this.s.me.name)
     const wake = shouldWakeOnMsg(this.s.me, m, myClaims, this.s.room.changedPaths(this.s.me.name).length > 0).wake
-    if (!wake || this.woken.has(m.id) || this.pending.has(m.id)) return
+    if (!wake || this.woken.has(m.id) || this.pending.has(m.id) || this.delivering.has(m.id)) return
     const session = this.freshSession()
     if (!session) {
       // Nothing to wake yet (hook not run, or a stale file from an earlier thread). Keep the
@@ -127,7 +172,8 @@ export class HooksBridge {
       this.schedulePending()
       return
     }
-    await this.deliver(m, session)
+    this.delivering.add(m.id)
+    try { await this.deliver(m, session) } finally { this.delivering.delete(m.id) }
   }
 
   /** The thread recorded by the SessionStart hook, if it is recent and for this clone; else a rollout scan. */
@@ -148,7 +194,7 @@ export class HooksBridge {
     if (session.host === 'claude') {
       // The MCP channel notification (index.ts attachChannel) reaches a live Claude Code session.
       this.woken.add(m.id)
-      this.o.log?.(`claude host: ${m.type} ${m.id} delivered via channel`)
+      this.o.log?.(`claude host: ${m.type} ${m.id} handled via channel`)
       return
     }
     const text = m.type === 'base'
@@ -156,9 +202,13 @@ export class HooksBridge {
       : `[room] ${formatMsg(m)}\nCall room_state, then react per the room-etiquette skill.`
     const delays = this.o.retryDelaysMs ?? [1000, 3000, 8000]
     for (let attempt = 0; ; attempt++) {
+      syncHookSeen(this.s)
+      if (this.isSeen(m.id)) return
       try {
         await (this.o.queue ?? defaultQueue)(session.id, text)
         this.woken.add(m.id)
+        this.s.room.markSeen(this.s.me.name, [m.id])
+        if (this.o.writeState !== false) this.write()
         this.o.log?.(`woke session ${session.id.slice(0, 8)} for ${m.type} ${m.id}${attempt ? ` (attempt ${attempt + 1})` : ''}`)
         return
       } catch (e) {
@@ -181,15 +231,18 @@ export class HooksBridge {
     const maxAge = this.o.pendingMaxMs ?? 10 * 60 * 1000
     const session = this.freshSession()
     for (const [id, p] of Array.from(this.pending)) {
+      syncHookSeen(this.s)
+      if (this.isSeen(id)) { this.pending.delete(id); continue }
       if (this.now() - p.since > maxAge) { this.pending.delete(id); this.o.log?.(`gave up waking for ${p.msg.type} ${id}: no session for ${Math.round(maxAge / 60000)} min`); continue }
       if (!session) continue
       this.pending.delete(id)
-      await this.deliver(p.msg, session)
+      await this.maybeWake(p.msg)
     }
     this.schedulePending()
   }
 
   private now(): number { return this.o.now?.() ?? Date.now() }
+  private isSeen(id: string): boolean { return this.o.isSeen(id) || this.s.room.seen(this.s.me.name).has(id) }
 }
 
 function sameDir(a: string, b: string): boolean {

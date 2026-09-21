@@ -8,7 +8,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import { RoomDoc, shouldWakeOnMsg } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
-import { changedRanges, ConflictWatcher } from '../src/conflicts.js'
+import { changedRanges, ConflictWatcher, type ConflictDeps } from '../src/conflicts.js'
 import type { Session } from '../src/session.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
@@ -71,6 +71,79 @@ describe('changedRanges', () => {
 })
 
 describe('automatic conflict notices', () => {
+  function watcherFor(room: RoomDoc, extra: Partial<ConflictDeps> = {}) {
+    const watcher = new ConflictWatcher({ room, me, debounceMs: 10_000,
+      liveText: async (p, person) => room.text(p, person), baseText: async () => 'base\n',
+      baseFor: () => base, mergeBase: async () => base, ...extra })
+    watcher.start()
+    return watcher
+  }
+
+  it.each([false, true])('groups byte-identical integration into one fyi per holder (local resolver: %s)', async local => {
+    const room = new RoomDoc()
+    const paths = ['a.txt', 'b.txt', 'c.txt', 'd.txt']
+    for (const path of paths) {
+      room.addClaim({ path, from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'implement' })
+      if (!local) room.setOverlay('Kieran', path, `worker ${path}\n`)
+    }
+    const watcher = watcherFor(room, { liveText: async (p, person) => person === 'Kieran' ? `worker ${p}\n` : room.text(p, person) })
+    for (const path of paths) room.setOverlay(me.name, path, `worker ${path}\n`)
+    await watcher.flush()
+    expect(room.messages().filter(m => m.type === 'conflict')).toEqual([])
+    expect(room.messages().filter(m => m.type === 'note')).toMatchObject([{ priority: 'fyi', text: 'Rohan integrated 4 files of Kieran' }])
+    room.setOverlay(me.name, paths[0], 'temporary\n')
+    room.setOverlay(me.name, paths[0], `worker ${paths[0]}\n`)
+    await watcher.flush()
+    expect(room.messages().filter(m => m.type === 'note')).toHaveLength(1)
+    // An actual divergence still alarms after an earlier integration.
+    room.setOverlay(me.name, paths[0], 'independent edit\n')
+    await watcher.flush()
+    expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
+    watcher.stop()
+  })
+
+  it('reports external writes only as a throttled fyi, then alarms on a session-intended write', async () => {
+    const room = new RoomDoc()
+    let now = 1000, intended = false
+    room.addClaim({ path: 'a.txt', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'implement' })
+    const watcher = watcherFor(room, { writeIntent: () => intended, now: () => now })
+    for (const text of ['external 1\n', 'external 2\n']) { room.setOverlay(me.name, 'a.txt', text); await watcher.flush() }
+    expect(room.messages()).toMatchObject([{ type: 'note', priority: 'fyi' }])
+    now += 600_000
+    room.setOverlay(me.name, 'a.txt', 'external 3\n'); await watcher.flush()
+    expect(room.messages()).toHaveLength(2)
+    intended = true
+    room.setOverlay(me.name, 'a.txt', 'mine\n'); await watcher.flush()
+    expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
+    watcher.stop()
+  })
+
+  it('keeps alarms without hook evidence and skips colocated claim/merge checks', async () => {
+    for (const colocated of [false, true]) {
+      const room = new RoomDoc()
+      room.addClaim({ path: 'a.txt', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'implement' })
+      room.setOverlay('Kieran', 'a.txt', 'theirs\n')
+      const watcher = watcherFor(room, { coLocated: () => colocated, writeIntent: () => undefined })
+      room.setOverlay(me.name, 'a.txt', 'mine\n'); await watcher.flush()
+      expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(colocated ? 0 : 2)
+      expect(room.messages().filter(m => m.type === 'note')).toHaveLength(colocated ? 0 : 1)
+      watcher.stop()
+    }
+  })
+
+  it('uses directory claim semantics for foreign claims and my covering claim', async () => {
+    const room = new RoomDoc()
+    room.addClaim({ path: 'src/', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'implement' })
+    const watcher = watcherFor(room)
+    room.setOverlay(me.name, 'src/a.txt', 'mine\n'); await watcher.flush()
+    expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
+    room.addClaim({ path: 'src/owned/', from: 1, to: 1, by: me.name, byKind: 'agent', intent: 'mine' })
+    room.setOverlay(me.name, 'src/owned/b.txt', 'mine\n'); await watcher.flush()
+    room.setOverlay(me.name, 'src-other/c.txt', 'mine\n'); await watcher.flush()
+    expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
+    watcher.stop()
+  })
+
   it('notifies once when a foreign observed contract change reaches my referenced work', async () => {
     const room = new RoomDoc()
     room.setOverlay('Rohan', 'api/handlers.py', 'from api.pricing import total\n')
@@ -208,6 +281,19 @@ describe('automatic conflict notices', () => {
 })
 
 describe('room lifecycle', () => {
+  it('explains whose overlay publishes a colocated session when it joins', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ repo: 'r', branch: 'main', base })
+    const joined = fakeSession(room)
+    joined.awareness.setLocalStateField('publishUnder', 'Kieran')
+    const peer = addPresence(joined.awareness, 'Kieran')
+    let current: Session | null = null
+    const tools = createTools({ getSession: () => current, setSession: s => { current = s }, cwd: dir, join: async () => joined, log: () => {} })
+    const reply = await tools.call('room_join', {})
+    expect(reply).toContain("Your file changes are published under Kieran's name because both sessions watch this folder; claims say which lines are whose.")
+    peer.destroy()
+  })
+
   it('room_close needs confirm=true, then closes for everyone and leaves', async () => {
     const clock = Date.UTC(2026, 8, 15, 8, 30)
     const t = setup({ now: () => clock })

@@ -4,7 +4,7 @@
 // Reads .git/room-state.json, which the room MCP server keeps current.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, pathsOf, isShellTool, shellLooksLikeWrite } from './common.mjs'
+import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -12,6 +12,9 @@ if (!root) process.exit(0)
 const stateDir = sessionStateDir(root, ev.session_id)
 const activityFile = path.join(stateDir, 'room-hook-activity.json')
 const now = Date.now()
+const paths = (isShellTool(ev.tool_name) ? shellLooksLikeWrite(ev.tool_input) : /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
+  ? pathsOf(ev.tool_name, ev.tool_input, root) : []
+recordWriteIntents(stateDir, ev.session_id, root, paths, now)
 const previous = readJson(activityFile, null)
 if (previous?.session_id !== ev.session_id || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
   try { fs.writeFileSync(activityFile, JSON.stringify({ at: now, session_id: ev.session_id })) } catch { /* best effort */ }
@@ -57,9 +60,10 @@ if (!state) {
 const companyWasTold = hookSeen.companyTold
 const seen = new Set(hookSeen.seen)
 const fresh = (state.unread ?? []).filter(m => !seen.has(m.id))
-const paths = !isShellTool(ev.tool_name) || shellLooksLikeWrite(ev.tool_input)
-  ? pathsOf(ev.tool_name, ev.tool_input, root) : []
-const claims = (state.claims ?? []).filter(c => paths.includes(c.path))
+if (typeof state.name === 'string' && fresh.length) {
+  hookSeen.shown = { ...hookSeen.shown, ...Object.fromEntries(fresh.map(m => [m.id, state.name])) }
+}
+const claims = (state.claims ?? []).filter(c => paths.some(p => c.path.endsWith('/') ? p.startsWith(c.path) : p === c.path))
 
 const lines = []
 if (state.company === true && !hookSeen.companyTold) {

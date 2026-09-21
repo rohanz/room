@@ -1,6 +1,7 @@
 // Shared helpers for the room hooks. No dependencies: hooks run from the plugin cache.
 import fs from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 
 export function readStdinJson() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8') || '{}') } catch { return {} }
@@ -49,11 +50,24 @@ export function readJson(file, fallback) {
 export function readHookSeen(file) {
   const value = readJson(file, { seen: [], companyTold: false })
   if (Array.isArray(value)) return { seen: value, companyTold: false }
-  return { seen: Array.isArray(value?.seen) ? value.seen : [], companyTold: value?.companyTold === true, ...(value?.transcript && typeof value.transcript === 'object' ? { transcript: value.transcript } : {}) }
+  return { seen: Array.isArray(value?.seen) ? value.seen : [], companyTold: value?.companyTold === true, ...(value?.transcript && typeof value.transcript === 'object' ? { transcript: value.transcript } : {}), ...(value?.shown && typeof value.shown === 'object' ? { shown: value.shown } : {}) }
 }
 
 export function writeHookSeen(file, value) {
-  try { fs.writeFileSync(file, JSON.stringify({ seen: value.seen.slice(-2000), companyTold: value.companyTold === true, ...(value.transcript ? { transcript: value.transcript } : {}) })) } catch { /* best effort */ }
+  const seen = value.seen.slice(-2000)
+  const shown = value.shown ? Object.fromEntries(seen.filter(id => typeof value.shown[id] === 'string').map(id => [id, value.shown[id]])) : undefined
+  try { fs.writeFileSync(file, JSON.stringify({ seen, companyTold: value.companyTold === true, ...(value.transcript ? { transcript: value.transcript } : {}), ...(shown ? { shown } : {}) })) } catch { /* best effort */ }
+}
+
+/** Keep evidence separate for two agent sessions using the same worktree. */
+export function recordWriteIntents(stateDir, sessionId, root, paths, now = Date.now()) {
+  if (typeof sessionId !== 'string' || !sessionId) return
+  const file = path.join(stateDir, `room-write-intents-${createHash('sha256').update(sessionId).digest('hex')}.json`)
+  const prior = readJson(file, null)
+  const writes = (Array.isArray(prior?.writes) ? prior.writes : []).filter(w =>
+    typeof w?.path === 'string' && Number.isFinite(w.at) && w.at <= now && now - w.at < 600_000)
+  for (const p of paths) writes.push({ path: path.resolve(root, p), at: now })
+  try { fs.writeFileSync(file, JSON.stringify({ session_id: sessionId, at: now, writes: writes.slice(-200) })) } catch { /* best effort */ }
 }
 
 // Both hook manifests include shell tools. Bash is Codex's documented canonical name;
@@ -87,6 +101,11 @@ export function pathsOf(toolName, input, root) {
   const shell = isShellTool(toolName)
   let candidates = 0
   const rel = p => { const abs = path.isAbsolute(p) ? p : path.resolve(root, p); const r = path.relative(root, abs); return r && r !== '..' && !r.startsWith('..' + path.sep) ? r.split(path.sep).join('/') : undefined }
+  if (!shell && input && typeof input === 'object') {
+    for (const key of ['file_path', 'path', 'filePath']) if (typeof input[key] === 'string') {
+      const r = rel(input[key]); if (r) out.add(r)
+    }
+  }
   for (const text of inputStrings(input)) {
     if (shell && text.length > 20_000) continue
     if (!shell) {
@@ -99,7 +118,7 @@ export function pathsOf(toolName, input, root) {
       if (shell && candidates++ >= 200) return Array.from(out)
       if (!token || token.length >= 400 || token.includes('\n')) continue
       const r = rel(token)
-      if (r && fs.existsSync(path.join(root, r))) out.add(r)
+      if (r && (fs.existsSync(path.join(root, r)) || (shell && !token.startsWith('-') && /[/\\.]\w/.test(token)))) out.add(r)
     }
   }
   return Array.from(out)
