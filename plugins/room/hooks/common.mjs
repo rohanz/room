@@ -30,6 +30,17 @@ export function gitStatePath(root, name) {
   return path.join(dotgit, name)
 }
 
+/** Resolve hook state by session identity when a shell has moved to another worktree. */
+export function sessionStateDir(root, sessionId) {
+  const initial = path.dirname(gitStatePath(root, 'room-session.json'))
+  if (!sessionId || readJson(path.join(initial, 'room-session.json'), null)?.session_id === sessionId) return initial
+  let common = initial
+  try { common = path.resolve(initial, fs.readFileSync(path.join(initial, 'commondir'), 'utf8').trim()) } catch { /* main worktree */ }
+  const candidates = [common]
+  try { for (const entry of fs.readdirSync(path.join(common, 'worktrees'))) candidates.push(path.join(common, 'worktrees', entry)) } catch { /* no linked worktrees */ }
+  return candidates.find(dir => readJson(path.join(dir, 'room-session.json'), null)?.session_id === sessionId) ?? initial
+}
+
 export function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
 }

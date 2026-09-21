@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
-import { MEMORY_TYPES, memorySnapshot } from '@room/shared'
+import { memoryTypes, memorySnapshot } from '@room/shared'
 
 export const MAX_MEMORY_BYTES = 5 * 1024 * 1024
 const stderr = (line: string): void => { process.stderr.write(`${line}\n`) }
@@ -97,8 +97,7 @@ export class RoomMemory {
     // Propagate deletions to connected replicas too, so a surviving relay owner cannot
     // restore the forgotten story from its old in-memory copy after taking over.
     this.doc.transact(() => {
-      for (const [name, kind] of Object.entries(MEMORY_TYPES)) {
-        if (!this.doc.share.has(name)) continue
+      for (const [name, kind] of memoryTypes(this.doc)) {
         if (kind === 'map') this.doc.getMap(name).clear()
         else { const array = this.doc.getArray(name); array.delete(0, array.length) }
       }

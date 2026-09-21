@@ -16,7 +16,7 @@ describe('shortPill', () => {
 
 describe('state pill: done and working', () => {
   it('shows done after room_done and working while scoped', () => {
-    const base = { online: true, behindBase: false, claims: [] as never[] }
+    const base = { online: true, latestActive: Date.now(), behindBase: false, claims: [] as never[] }
     expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'done: coupons landed' }] })).toBe('done')
     expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'on orders: coupons' }] })).toBe('working')
   })
@@ -65,7 +65,7 @@ describe('participant cards', () => {
     expect(deriveStatePill({ ...base, behindBase: true })).toBe('behind base')
     expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'ahead by 1' }] })).toBe('ahead (unpushed)')
     expect(deriveStatePill({ ...base, claims: [claim] })).toBe('editing parse')
-    expect(deriveStatePill(base)).toBe('idle')
+    expect(deriveStatePill(base)).toBe('activity unknown')
   })
 })
 

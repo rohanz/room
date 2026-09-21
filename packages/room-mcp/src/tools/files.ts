@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { stripVTControlCharacters } from 'node:util'
 import { describeClaim, withLineNumbers, type NoteMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
@@ -285,6 +286,14 @@ function mirrorLinks(cloneDir: string, scratchDir: string, src: string, dst: str
   }
 }
 
+/** Runner summaries plus an authoritative exit verdict; at most six lines total. */
+export function testVerdict(output: string, code: number | null): string {
+  const lines = stripVTControlCharacters(output).split(/\r?\n/).map(line => line.trim())
+  const summaries = lines.filter(line => /^(?:Test Files\s+|Tests(?:\s+|:))/.test(line)
+    || /^=+ .*(?:passed|failed|error|skipped|deselected|no tests ran).* =+$/i.test(line))
+  return [...summaries.slice(-5), `tests: ${code === 0 ? 'PASSED' : 'FAILED'} (exit ${code ?? 'unknown'})`].join('\n')
+}
+
 /** Materialise ancestor + merged files in a scratch dir (sharing .venv/node_modules from my clone) and run a command there. */
 async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string): Promise<string> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-'))
@@ -307,8 +316,8 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
         resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
       })
     })
-    const tail = result.out.trim().split('\n').slice(-25).join('\n')
-    return `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}`
+    const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
+    return `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${testVerdict(result.out, result.code)}`
   } catch (e) {
     return `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}`
   } finally {

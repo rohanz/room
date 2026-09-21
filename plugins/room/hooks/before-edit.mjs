@@ -3,17 +3,25 @@
 // for other versions. Deliver inbox/company on all calls; claims only on likely writes.
 // Reads .git/room-state.json, which the room MCP server keeps current.
 import fs from 'node:fs'
-import { readStdinJson, gitRoot, gitStatePath, readJson, readHookSeen, writeHookSeen, pathsOf, isShellTool, shellLooksLikeWrite } from './common.mjs'
+import path from 'node:path'
+import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, pathsOf, isShellTool, shellLooksLikeWrite } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
 if (!root) process.exit(0)
-const seenFile = gitStatePath(root, 'room-hook-seen.json')
+const stateDir = sessionStateDir(root, ev.session_id)
+const activityFile = path.join(stateDir, 'room-hook-activity.json')
+const now = Date.now()
+const previous = readJson(activityFile, null)
+if (previous?.session_id !== ev.session_id || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
+  try { fs.writeFileSync(activityFile, JSON.stringify({ at: now, session_id: ev.session_id })) } catch { /* best effort */ }
+}
+const seenFile = path.join(stateDir, 'room-hook-seen.json')
 const hookSeen = readHookSeen(seenFile)
 // Claude SessionStart omits model; assistant transcript entries report the active model.
 // Persist the stat cache across hook processes, and never read more than the last 64 KiB.
 let transcriptChecked = false
-const sessionFile = gitStatePath(root, 'room-session.json')
+const sessionFile = path.join(stateDir, 'room-session.json')
 const session = readJson(sessionFile, null)
 if (session?.host === 'claude' && typeof ev.transcript_path === 'string') {
   let fd
@@ -41,7 +49,7 @@ if (session?.host === 'claude' && typeof ev.transcript_path === 'string') {
   } catch { /* transcript absent, unreadable or being rotated: retry next hook */ }
   finally { if (fd !== undefined) { try { fs.closeSync(fd) } catch { /* best effort */ } } }
 }
-const state = readJson(gitStatePath(root, 'room-state.json'), null)
+const state = readJson(path.join(stateDir, 'room-state.json'), null)
 if (!state) {
   if (transcriptChecked) writeHookSeen(seenFile, hookSeen)
   process.exit(0)

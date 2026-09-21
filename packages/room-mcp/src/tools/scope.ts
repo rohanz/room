@@ -1,5 +1,5 @@
 import { offlineSince } from '../connection.js'
-import { Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
@@ -81,7 +81,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`participants${all ? '' : ' overlapping your work'} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? '' : 's'}` : ''}):`)
       for (const n of names) {
         const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
-        const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1000))}s ago` : 'offline'
+        const ago = p ? activityLabel(p.lastActive, now()) : 'offline'
         const who = participantIdentityLine(ps, n, s.room.workerOf(n))
         const theirs = areasFor(s, n)
         const areaSummary = areaMembershipSummary(theirs)
@@ -115,7 +115,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
-      out.push(...formatWorkerLines(myWorkers(s).map(worker => ({ worker, processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
+      out.push(...formatWorkerLines(myWorkers(s).map(worker => ({ worker, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)

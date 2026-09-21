@@ -335,10 +335,22 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
     const worker = daemon.roomDoc.workerOf(name)
     if (worker && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID) && runtime.model && worker.model !== runtime.model) daemon.roomDoc.updateWorker(worker.tag, { model: runtime.model }, worker.id)
   }
+  const activityFile = resolve(dirname(file), 'room-hook-activity.json')
+  let lastActivity = Date.now() // do not replay activity left by an earlier session
+  const refreshActivity = () => {
+    try {
+      const activity = JSON.parse(readFileSync(activityFile, 'utf8'))
+      const session = JSON.parse(readFileSync(file, 'utf8'))
+      if (activity.session_id !== session.session_id || typeof activity.at !== 'number' || !Number.isFinite(activity.at) || activity.at <= lastActivity || activity.at > Date.now()) return
+      lastActivity = activity.at
+      daemon.touch()
+    } catch { /* absent or partially written hook state; retry on next change */ }
+  }
   watchFile(file, { interval: 500, persistent: false }, refresh)
+  watchFile(activityFile, { interval: 500, persistent: false }, refreshActivity)
   refresh() // cover a rewrite during initial connection
   const stop = daemon.stop.bind(daemon)
-  daemon.stop = async () => { unwatchFile(file, refresh); await stop() }
+  daemon.stop = async () => { unwatchFile(file, refresh); unwatchFile(activityFile, refreshActivity); await stop() }
   return { daemon, me: { name, kind: options.kind ?? 'agent', owner: options.owner, ...(label ? { label } : {}) }, autoTagNote }
 }
 
