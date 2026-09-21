@@ -16774,6 +16774,28 @@ var init_wake = __esm({
 });
 
 // packages/shared/src/graph.ts
+function whitespaceOutsideLiterals(text, separator) {
+  let out2 = "", quote = "", escaped = false, pending = false;
+  for (const ch of text.trim()) {
+    if (quote) {
+      out2 += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === quote) quote = "";
+    } else if (ch === '"' || ch === "'" || ch === "`") {
+      if (pending && out2) out2 += separator;
+      pending = false;
+      quote = ch;
+      out2 += ch;
+    } else if (/\s/.test(ch)) pending = true;
+    else {
+      if (pending && out2) out2 += separator;
+      pending = false;
+      out2 += ch;
+    }
+  }
+  return out2;
+}
 function pythonHeader(line) {
   let depth = 0, quote = "", escaped = false;
   for (let i2 = 0; i2 < line.length; i2++) {
@@ -16801,7 +16823,10 @@ function definitionLines(path19, text, parse3) {
     for (const definition of parsed.defs) {
       const name2 = definitionName(definition);
       const display = normalized(definition.signature);
-      if (!out3.has(name2)) out3.set(name2, { display, canonical: comparable(display) });
+      const lines = out3.get(name2) ?? [];
+      const line = { display, canonical: comparable(display) };
+      if (!lines.some((existing) => existing.canonical === line.canonical)) lines.push(line);
+      out3.set(name2, lines);
     }
     return out3;
   }
@@ -16809,7 +16834,10 @@ function definitionLines(path19, text, parse3) {
   const out2 = /* @__PURE__ */ new Map();
   const add2 = (name2, raw, signature = raw) => {
     const display = normalized(raw);
-    if (!out2.has(name2)) out2.set(name2, { display, canonical: comparable(normalized(signature)) });
+    const lines = out2.get(name2) ?? [];
+    const line = { display, canonical: comparable(normalized(signature)) };
+    if (!lines.some((existing) => existing.canonical === line.canonical)) lines.push(line);
+    out2.set(name2, lines);
   };
   if (ext === "py") {
     for (const match of text.matchAll(PY_DEF)) {
@@ -16843,23 +16871,50 @@ function observedContractChanges(baseText, overlayText, path19, parse3) {
   const before = definitionLines(path19, baseText, parse3), after = definitionLines(path19, overlayText, parse3);
   if (!before || !after) return [];
   const changes = [];
-  for (const [symbol, oldLine] of before) {
-    const newLine = after.get(symbol);
-    if (!newLine) changes.push({ symbol, kind: "delete", detail: `was \`${oldLine.display}\`` });
-    else if (oldLine.canonical !== newLine.canonical) changes.push({ symbol, kind: "signature", detail: `was \`${oldLine.display}\` now \`${newLine.display}\`` });
+  const signatureSet = (lines) => lines.map((line) => line.canonical).sort().join("\0");
+  const displaySet = (lines) => lines.map((line) => line.display).sort().join(" | ");
+  for (const [symbol, oldLines] of before) {
+    const newLines = after.get(symbol);
+    if (!newLines) changes.push({ symbol, kind: "delete", detail: `was \`${displaySet(oldLines)}\`` });
+    else if (signatureSet(oldLines) !== signatureSet(newLines)) changes.push({ symbol, kind: "signature", detail: `was \`${displaySet(oldLines)}\` now \`${displaySet(newLines)}\`` });
   }
-  for (const [symbol, newLine] of after) if (!before.has(symbol)) changes.push({ symbol, kind: "add", detail: `now \`${newLine.display}\`` });
+  for (const [symbol, newLines] of after) if (!before.has(symbol)) changes.push({ symbol, kind: "add", detail: `now \`${displaySet(newLines)}\`` });
   return changes.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.kind.localeCompare(b.kind));
 }
-function importMentions(value2, definingPath) {
-  const path19 = definingPath.replace(/\\/g, "/").toLowerCase();
-  const parts2 = path19.split("/").filter(Boolean);
-  const filename = parts2.at(-1) ?? "";
-  const stem = filename.replace(/\.[^.]+$/, "");
-  const parent = parts2.at(-2);
-  const moduleNames = new Set([stem, parent].filter((name2) => Boolean(name2)));
-  const importParts = value2.toLowerCase().match(/[a-z0-9_$-]+/g) ?? [];
-  return importParts.some((part) => moduleNames.has(part));
+function normalizedPath(value2) {
+  const parts2 = [];
+  for (const part of value2.replace(/\\/g, "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts2.pop();
+    else parts2.push(part);
+  }
+  return parts2.join("/").toLowerCase();
+}
+function importMatchScore(value2, definingPath, consumerPath, symbol) {
+  const provider = normalizedPath(definingPath);
+  const providerModule = withoutExtension(provider);
+  const providerDir = directoryOf(provider);
+  const providerStem = basenameOf(providerModule);
+  const modulePaths = new Set([providerModule, providerDir].filter(Boolean));
+  if (providerStem === "mod" || providerStem === "index") modulePaths.delete(providerModule);
+  const raw = value2.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+  const python = raw.match(/\bfrom\s+([.a-z0-9_$\-/]+)\s+import\b/)?.[1];
+  let imported = python ?? raw.replace(/^use\s+/, "").replace(/;$/, "").replace(/::/g, "/");
+  const symbolSuffix = `/${symbol.toLowerCase()}`;
+  if (imported.endsWith(symbolSuffix)) imported = imported.slice(0, -symbolSuffix.length);
+  imported = imported.replace(/^(?:crate|self)\//, "");
+  if (imported.startsWith(".")) {
+    const relative3 = imported.startsWith("./") || imported.startsWith("../") ? imported : imported.replace(/^(\.+)/, (dots) => `${"../".repeat(Math.max(0, dots.length - 1))}./`);
+    const resolved = withoutExtension(normalizedPath(`${directoryOf(normalizedPath(consumerPath))}/${relative3}`));
+    return modulePaths.has(resolved) ? 3 : 0;
+  }
+  const direct = withoutExtension(normalizedPath(imported));
+  const pathSpecific = /[\\/]/.test(imported) || /\.[a-z0-9]+$/i.test(imported);
+  if (modulePaths.has(direct)) return pathSpecific ? 3 : 1;
+  if ([...modulePaths].some((modulePath) => direct.endsWith(`/${modulePath}`))) return 2;
+  if (provider.endsWith(".go") && basenameOf(direct) === basenameOf(providerDir)) return 1;
+  const moduleBasenames = new Set([...modulePaths].map(basenameOf));
+  return !direct.includes("/") && moduleBasenames.has(direct) ? 1 : 0;
 }
 function add(m, k, v) {
   let s = m.get(k);
@@ -16922,7 +16977,7 @@ function symbolRange(path19, text, symbol, parse3) {
   }
   return void 0;
 }
-var WORD, PY_DEF, PY_ASSIGN, JS_DEF, KEYWORDS, regexExtractor, bareSymbol, normalized, comparable, lineContaining, definitionName, COMMON_SYMBOL_FILE_THRESHOLD, SymbolGraph, importsOf;
+var WORD, PY_DEF, PY_ASSIGN, JS_DEF, KEYWORDS, regexExtractor, bareSymbol, normalized, comparable, lineContaining, definitionName, COMMON_SYMBOL_FILE_THRESHOLD, SymbolGraph, importsOf, withoutExtension, directoryOf, basenameOf;
 var init_graph = __esm({
   "packages/shared/src/graph.ts"() {
     "use strict";
@@ -16949,8 +17004,8 @@ var init_graph = __esm({
       return { defs: Array.from(defs10), refs: Array.from(refs) };
     };
     bareSymbol = (symbol) => symbol.trim().split(/[.:]+/).filter(Boolean).at(-1)?.toLowerCase() ?? "";
-    normalized = (line) => line.trim().replace(/\s+/g, " ");
-    comparable = (line) => line.replace(/\s+/g, "");
+    normalized = (line) => whitespaceOutsideLiterals(line, " ");
+    comparable = (line) => whitespaceOutsideLiterals(line, "");
     lineContaining = (text, index) => {
       const from2 = text.lastIndexOf("\n", index - 1) + 1;
       const to2 = text.indexOf("\n", index);
@@ -17029,12 +17084,16 @@ var init_graph = __esm({
         const candidates = this.definersOf(symbol).filter((path19) => path19 !== consumer);
         const imports = importsOf(this.files.get(consumer));
         if (imports === void 0) return candidates;
-        const imported = candidates.filter((path19) => imports.some((value2) => importMentions(value2, path19)));
-        if (imported.length) return imported;
+        const scored = candidates.map((path19) => ({ path: path19, score: Math.max(0, ...imports.map((value2) => importMatchScore(value2, path19, consumer, symbol))) }));
+        const best = Math.max(0, ...scored.map((candidate) => candidate.score));
+        if (best) return scored.filter((candidate) => candidate.score === best).map((candidate) => candidate.path);
         return (this.definers.get(symbol)?.size ?? 0) > COMMON_SYMBOL_FILE_THRESHOLD ? [] : candidates;
       }
     };
     importsOf = (symbols) => symbols?.imports;
+    withoutExtension = (value2) => value2.replace(/\.[a-z0-9]+$/i, "");
+    directoryOf = (value2) => value2.includes("/") ? value2.slice(0, value2.lastIndexOf("/")) : "";
+    basenameOf = (value2) => value2.slice(value2.lastIndexOf("/") + 1);
   }
 });
 
@@ -17175,11 +17234,23 @@ var init_areas = __esm({
 });
 
 // packages/shared/src/views.ts
+function roomNameParts(roomName) {
+  const parts2 = roomName.split("/");
+  if (parts2[0] === "local" && parts2.length >= 3) {
+    return { repo: parts2[1], branch: parts2.slice(2).join("/"), local: true };
+  }
+  const offset = parts2[0] === "git" ? 1 : 0;
+  if ((parts2[0] === "github.com" || offset === 1) && parts2.length >= offset + 4) {
+    return { host: parts2[offset], owner: parts2[offset + 1], repo: parts2[offset + 2], branch: parts2.slice(offset + 3).join("/"), local: false };
+  }
+  return { repo: roomName, branch: "", local: false };
+}
 function formatCount(count, singular, plural = singular + "s") {
   return count + " " + (count === 1 ? singular : plural);
 }
 function activityLabel(lastActive, now = Date.now(), options = {}) {
-  if (options.worker && stoppedWithSession(options.worker, options.processGone)) return STOPPED_WITH_SESSION;
+  if (options.worker && stoppedWithSession(options.worker)) return STOPPED_WITH_SESSION;
+  if (options.worker?.status === "running" && options.processGone) return STOPPED_UNWITNESSED;
   const finished = options.worker !== void 0 && options.worker.status !== "running";
   const running = options.worker ? options.worker.status === "running" : options.running;
   if (finished) lastActive = options.worker.finishedAt ?? lastActive;
@@ -17277,10 +17348,11 @@ function areaMembershipSummary(areas) {
 }
 function workerLine({ worker: w, processGone = false, lastActive, changedCount, last: last2, now = Date.now() }) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
-  const state = stoppedWithSession(w, processGone) ? STOPPED_WITH_SESSION : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status;
+  const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120);
+  const state = stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.status === "running" && processGone ? STOPPED_UNWITNESSED : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status;
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
-    `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.summary ? ` \xB7 ${w.summary.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
+    `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.status === "running" && processGone && !stoppedWithSession(w) ? ` \xB7 worktree ${w.dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
   ];
 }
 function workerLines(inputs, options = {}) {
@@ -17296,14 +17368,15 @@ function workerLines(inputs, options = {}) {
   } else if (finished) out2.push(`  finished: ${finished} (all=true lists them)`);
   return out2;
 }
-var STOPPED_WITH_SESSION, stoppedWithSession, scopeLine;
+var STOPPED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, scopeLine;
 var init_views = __esm({
   "packages/shared/src/views.ts"() {
     "use strict";
     init_claims();
     init_identity();
     STOPPED_WITH_SESSION = "stopped when your last session ended; its partial work is in its worktree";
-    stoppedWithSession = (w, processGone = false) => w.stopReason === "lead-session-ended" || w.status === "running" && processGone;
+    STOPPED_UNWITNESSED = "stopped while no session of yours was running; reason unknown";
+    stoppedWithSession = (w) => w.stopReason === "lead-session-ended";
     scopeLine = (scope) => `${scope.area}: ${scope.summary} (${scope.paths.join(", ")})`;
   }
 });
@@ -24446,6 +24519,8 @@ var init_src3 = __esm({
       share;
       /** Explicit scope paths (option / setShare); when unset, the person's scope in the room doc decides. */
       explicitScopePaths;
+      /** Exact paths already published while declared; task scope may end before teammates collect them. */
+      retainedDeclaredPaths = /* @__PURE__ */ new Set();
       beforePublishWrite;
       onScanned;
       tracked = /* @__PURE__ */ new Set();
@@ -24573,6 +24648,7 @@ var init_src3 = __esm({
       // ---- sharing level ----------------------------------------------------
       async setShare(level, scopePaths) {
         const before = this.share;
+        if (before !== level) this.retainedDeclaredPaths.clear();
         this.share = level;
         this.explicitScopePaths = scopePaths;
         this.setStatus(this.currentStatus());
@@ -24596,7 +24672,7 @@ var init_src3 = __esm({
       isShared(relpath) {
         if (this.share === "full") return true;
         if (this.share === "intent") return false;
-        return scopeCovers({ paths: this.scopePaths() }, relpath);
+        return this.retainedDeclaredPaths.has(relpath) || scopeCovers({ paths: this.scopePaths() }, relpath);
       }
       /** Re-evaluate every tracked file against the current level: withdraw what is no longer allowed, publish what now is. */
       async resharePaths() {
@@ -24617,8 +24693,23 @@ var init_src3 = __esm({
           }, this);
           this.log(`withdrew ${relpath} overlay (sharing ${this.share})`);
         }
+        this.retainedDeclaredPaths.delete(relpath);
         if (changed) this.skips.share.add(relpath);
         else this.skips.share.delete(relpath);
+      }
+      /** Stop publishing a path that an ignore rule now excludes, including deletion-only overlays. */
+      withdrawIgnored(relpath, reason) {
+        const had = this.roomDoc.overlayText(this.name, relpath) !== void 0 || (this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false);
+        if (had) {
+          this.roomDoc.doc.transact(() => {
+            this.roomDoc.clearOverlay(this.name, relpath, this);
+            this.roomDoc.unmarkDeleted(this.name, relpath, this);
+          }, this);
+          this.log(`withdrew ${relpath} (${reason})`);
+        }
+        this.retainedDeclaredPaths.delete(relpath);
+        this.skips.share.delete(relpath);
+        this.skipIgnored(relpath, reason);
       }
       loadRoomIgnore() {
         let text = "";
@@ -24923,6 +25014,7 @@ var init_src3 = __esm({
         if (!this.isSafeRoomPath(relpath)) {
           this.roomDoc.clearOverlay(this.name, relpath, this);
           this.roomDoc.unmarkDeleted(this.name, relpath, this);
+          this.retainedDeclaredPaths.delete(relpath);
           return;
         }
         if (this.batch.deferHot(relpath)) return;
@@ -24951,6 +25043,7 @@ var init_src3 = __esm({
               this.roomDoc.clearOverlay(this.name, relpath, this);
               this.roomDoc.unmarkDeleted(this.name, relpath, this);
             }, this);
+            this.retainedDeclaredPaths.delete(relpath);
             droppedStale = beforeText !== void 0 || beforeDeleted;
           } else if (!this.isShared(relpath)) {
             this.withhold(relpath, true);
@@ -24974,6 +25067,7 @@ var init_src3 = __esm({
             if (this.skips.size.has(relpath)) await oversizedChanged();
             this.roomDoc.clearOverlay(this.name, relpath, this);
             this.roomDoc.unmarkDeleted(this.name, relpath, this);
+            this.retainedDeclaredPaths.delete(relpath);
             return;
           }
           const base = await gitShow(this.dir, this.base, relpath);
@@ -24993,6 +25087,7 @@ var init_src3 = __esm({
             }
             this.roomDoc.clearOverlay(this.name, relpath, this);
             this.roomDoc.unmarkDeleted(this.name, relpath, this);
+            this.retainedDeclaredPaths.delete(relpath);
             return;
           }
           this.skips.budget.delete(relpath);
@@ -25007,6 +25102,8 @@ var init_src3 = __esm({
         }
         const afterText = this.roomDoc.text(relpath, this.name);
         const afterDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false;
+        if (this.share === "declared" && (afterText !== void 0 || afterDeleted)) this.retainedDeclaredPaths.add(relpath);
+        else if (afterText === void 0 && !afterDeleted) this.retainedDeclaredPaths.delete(relpath);
         if (beforeText !== afterText || beforeDeleted !== afterDeleted) {
           this.batch.published(relpath);
           this.bumpLastActive();
@@ -25083,15 +25180,10 @@ var init_src3 = __esm({
         const before = new Set(this.skips.ignore);
         this.skips.ignore.clear();
         this.loadRoomIgnore();
-        for (const relpath of this.tracked) {
+        for (const relpath of this.pathsToReconcile(before)) {
           const nowIgnored = this.isIgnoredPath(relpath);
-          if (nowIgnored && this.roomDoc.overlayText(this.name, relpath)) {
-            this.roomDoc.doc.transact(() => {
-              this.roomDoc.clearOverlay(this.name, relpath, this);
-              this.roomDoc.unmarkDeleted(this.name, relpath, this);
-            }, this);
-            this.log(`cleared ${relpath} overlay (${ROOMIGNORE})`);
-          } else if (!nowIgnored && before.has(relpath)) this.scheduleDisk(relpath, false);
+          if (nowIgnored) this.withdrawIgnored(relpath, ROOMIGNORE);
+          else if (before.has(relpath)) this.scheduleDisk(relpath, false);
         }
       }
       /** Does not synthesize events: callers must first observe the change they are waiting for. */
@@ -25105,8 +25197,13 @@ var init_src3 = __esm({
       }
       async onDiskChange(relpath, isNew) {
         if (this.stopped) return;
+        if (await gitIgnored(this.dir, relpath)) {
+          this.tracked.delete(relpath);
+          this.withdrawIgnored(relpath, ".gitignore");
+          return;
+        }
         if (!this.tracked.has(relpath) && !this.roomDoc.changedPaths(this.name).includes(relpath)) {
-          if (!isNew || !fs5.existsSync(this.abs(relpath)) || await gitIgnored(this.dir, relpath)) return;
+          if (!isNew || !fs5.existsSync(this.abs(relpath))) return;
           this.tracked.add(relpath);
         }
         await this.publishDiskState(relpath);
@@ -25116,13 +25213,15 @@ var init_src3 = __esm({
         try {
           const next = await gitTracked(this.dir);
           const added = Array.from(next).filter((relpath) => !this.tracked.has(relpath));
-          const removed = Array.from(this.tracked).filter((relpath) => !next.has(relpath));
+          const removed = Array.from(/* @__PURE__ */ new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter((relpath) => !next.has(relpath));
           this.tracked = next;
           for (const relpath of added) {
             if (!this.isIgnoredPath(relpath) && fs5.existsSync(this.abs(relpath))) this.scheduleDisk(relpath, true);
           }
           for (const relpath of removed) {
-            if (this.roomDoc.overlayText(this.name, relpath) && !fs5.existsSync(this.abs(relpath))) {
+            if (fs5.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
+              this.withdrawIgnored(relpath, ".gitignore");
+            } else if (this.roomDoc.overlayText(this.name, relpath) && !fs5.existsSync(this.abs(relpath))) {
               this.scheduleDisk(relpath, false);
             }
           }
@@ -25179,13 +25278,13 @@ function resolveShare(raw, source = "share") {
   const level = parseShare(typeof raw === "string" ? raw.trim() : raw);
   return level ? { level } : { level: "intent", warning: `${source}='${String(raw)}' is not a level; sharing plans only` };
 }
-async function rememberedWhere(dir) {
+async function readRememberedChoice(dir) {
   try {
     const file = path6.join(await gitCommonDir(dir), "room-choice.json");
     const parsed = JSON.parse(fs6.readFileSync(file, "utf8"));
-    return value(parsed.where);
+    return { where: value(parsed.where), share: parseShare(parsed.share) };
   } catch {
-    return void 0;
+    return {};
   }
 }
 function resolveCredentialsPath(args3 = {}, e = process.env) {
@@ -25201,13 +25300,15 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
   if (url && !["ws:", "wss:"].includes(url.protocol)) throw new Error("ROOM_URL must use ws:// or wss://");
   const urlServer = url ? `${url.protocol}//${url.host}${url.search}` : void 0;
   const envWhere = envServer ?? (!argUrl ? urlServer : void 0);
-  const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(await rememberedWhere(dir)) : void 0;
+  const rememberedChoice = await readRememberedChoice(dir);
+  const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(rememberedChoice.where) : void 0;
   const where = argWhere ?? (argUrl ? urlServer : void 0) ?? envWhere ?? remembered ?? LOCAL;
   const whereRule = argWhere || argUrl ? "argument" : envWhere ? "env" : remembered ? "remembered" : "default";
   const whereEnv = whereRule === "env" ? envServer ? "ROOM_SERVER" : "ROOM_URL" : void 0;
   const rawKind = value(args3.kind) ?? value(e.ROOM_KIND) ?? "agent";
   const kind = rawKind === "bot" || rawKind === "ci" ? rawKind : "agent";
-  const sharing = resolveShare(args3.share ?? e.ROOM_SHARE, args3.share !== void 0 ? "share" : "ROOM_SHARE");
+  const rawShare = args3.share ?? e.ROOM_SHARE ?? rememberedChoice.share;
+  const sharing = resolveShare(rawShare, args3.share !== void 0 ? "share" : e.ROOM_SHARE !== void 0 ? "ROOM_SHARE" : "remembered share");
   const credentialsPath2 = resolveCredentialsPath(args3, e);
   return {
     // Empty explicitly disables development channels; do not discard it with value().
@@ -25431,6 +25532,69 @@ function gitStatePath(root, name2) {
   }
   return path7.join(dotgit, name2);
 }
+function readHookState(dir) {
+  try {
+    return JSON.parse(fs7.readFileSync(gitStatePath(dir, "room-state.json"), "utf8"));
+  } catch {
+    return {};
+  }
+}
+function hookSessionId(dir) {
+  try {
+    const id2 = JSON.parse(fs7.readFileSync(gitStatePath(dir, "room-session.json"), "utf8")).session_id;
+    return typeof id2 === "string" && id2 ? id2 : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function writePendingHookContext(dir, field, text, room, now = Date.now()) {
+  const file = gitStatePath(dir, "room-state.json");
+  const previous = readHookState(dir);
+  const delivered = field === "pendingDisclosure" ? "deliveredDisclosure" : "deliveredNotice";
+  const sessionId = hookSessionId(dir);
+  const sameBoundary = !!sessionId && previous.sessionId === sessionId;
+  const state = { ...sameBoundary ? previous : { company: false, others: [], unread: [], claims: [], ownClaims: [], near: [] }, ...room ? { room } : {}, ...sessionId ? { sessionId } : {}, at: now, [field]: text };
+  delete state[delivered];
+  try {
+    fs7.writeFileSync(file, JSON.stringify(state, null, 1) + "\n");
+  } catch {
+  }
+}
+function consumeHookDisclosure(s, sentence) {
+  return consumeHookContext(s.dir, "pendingDisclosure", sentence);
+}
+function consumeHookNotice(dir, sentence) {
+  return consumeHookContext(dir, "pendingNotice", sentence);
+}
+function consumeHookContext(dir, field, sentence) {
+  const file = gitStatePath(dir, "room-state.json");
+  const lock = file + ".notice-lock";
+  let fd;
+  try {
+    fd = fs7.openSync(lock, "wx", 384);
+    const state = readHookState(dir);
+    const delivered = field === "pendingDisclosure" ? "deliveredDisclosure" : "deliveredNotice";
+    if (state[delivered] === sentence) return "hook";
+    if (state[field] !== sentence) return void 0;
+    state[delivered] = sentence;
+    delete state[field];
+    fs7.writeFileSync(file, JSON.stringify(state, null, 1) + "\n");
+    return "tool";
+  } catch (e) {
+    return e.code === "EEXIST" ? "hook" : void 0;
+  } finally {
+    if (fd !== void 0) {
+      try {
+        fs7.closeSync(fd);
+      } catch {
+      }
+      try {
+        fs7.rmSync(lock, { force: true });
+      } catch {
+      }
+    }
+  }
+}
 function createWriteIntentReader(dir, now = Date.now) {
   const sessionId = () => {
     try {
@@ -25629,17 +25793,38 @@ var init_hooks_bridge = __esm({
         syncHookSeen(this.s);
         const me = this.s.me.name;
         const unread = this.s.room.messages().filter((m) => !this.isSeen(m.id) && this.o.forMe(m)).map((m) => ({ id: m.id, priority: m.priority, line: formatMsg(m) }));
-        const claims = this.s.room.openClaims().filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
+        const openClaims = this.s.room.openClaims();
+        const ownClaims = openClaims.filter((c) => c.by === me && isAgentic(c.byKind)).map((c) => ({ path: c.path, from: c.from, to: c.to }));
+        const claims = openClaims.filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
         const near = [
           ...this.s.room.allScopes().filter((sc) => sc.by !== me).flatMap((sc) => sc.paths.map((path19) => ({ by: sc.by, path: path19, reason: "scope" }))),
           ...claims.map((c) => ({ by: c.by, path: c.path, reason: "claim" })),
           ...[.../* @__PURE__ */ new Set([...this.s.room.overlays.keys(), ...this.s.room.deleted.keys()])].filter((by) => by !== me).flatMap((by) => this.s.room.changedPaths(by).map((path19) => ({ by, path: path19, reason: "changed" })))
         ];
         const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now());
+        const sessionId = this.freshSession()?.id;
+        const lock = this.stateFile() + ".notice-lock";
+        let fd;
         try {
-          fs7.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), company: company.company, others: company.others, companyLine: describeCompany(this.s, company), unread, claims, near }, null, 1) + "\n");
+          fd = fs7.openSync(lock, "wx", 384);
+          const previous = readHookState(this.s.dir);
+          const at = this.now();
+          const carry = (!previous.sessionId || !sessionId || previous.sessionId === sessionId) && typeof previous.at === "number" && previous.at <= at && at - previous.at < 6e4 ? Object.fromEntries(["pendingDisclosure", "deliveredDisclosure", "pendingNotice", "deliveredNotice"].filter((key) => typeof previous[key] === "string").map((key) => [key, previous[key]])) : {};
+          fs7.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, ...sessionId ? { sessionId } : {}, at, company: company.company, others: company.others, companyLine: describeCompany(this.s, company), unread, claims, ownClaims, near, ...carry }, null, 1) + "\n");
         } catch (e) {
-          this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`);
+          if (e.code === "EEXIST") this.scheduleWrite();
+          else this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`);
+        } finally {
+          if (fd !== void 0) {
+            try {
+              fs7.closeSync(fd);
+            } catch {
+            }
+            try {
+              fs7.rmSync(lock, { force: true });
+            } catch {
+            }
+          }
         }
       }
       /** Interrupts, questions addressed to me, and a base move while I have uncommitted work wake the idle Codex thread, once per message. */
@@ -25808,6 +25993,8 @@ var init_rust = __esm({
       body: (declaration_list (function_item name: (identifier) @def.name) @def))
     (impl_item type: (scoped_type_identifier name: (type_identifier) @def.container)
       body: (declaration_list (function_item name: (identifier) @def.name) @def))
+    (impl_item type: (reference_type) @def.container
+      body: (declaration_list (function_item name: (identifier) @def.name) @def))
 
     (trait_item name: (type_identifier) @def.container
       body: (declaration_list (function_signature_item name: (identifier) @def.name) @def))
@@ -25858,6 +26045,10 @@ var init_go = __esm({
     (method_declaration
       receiver: (parameter_list (parameter_declaration type: (pointer_type (type_identifier) @def.container)))
       name: (field_identifier) @def.name) @def
+    (method_declaration
+      receiver: (parameter_list (parameter_declaration
+        type: (pointer_type (generic_type type: (type_identifier) @def.container))))
+      name: (field_identifier) @def.name) @def
 
     (type_spec name: (type_identifier) @def.name) @def
     (type_alias name: (type_identifier) @def.name) @def
@@ -25889,6 +26080,10 @@ var init_c = __esm({
     (function_definition
       declarator: (pointer_declarator
         declarator: (function_declarator declarator: (identifier) @def.name))) @def
+    (function_definition
+      declarator: (pointer_declarator
+        declarator: (pointer_declarator
+          declarator: (function_declarator declarator: (identifier) @def.name)))) @def
 
     (struct_specifier name: (type_identifier) @def.name body: (field_declaration_list)) @def
     (enum_specifier name: (type_identifier) @def.name body: (enumerator_list)) @def
@@ -25931,6 +26126,8 @@ var init_cpp = __esm({
       query: `
     (translation_unit (function_definition
       declarator: (function_declarator declarator: (identifier) @def.name)) @def)
+    (template_declaration (function_definition
+      declarator: (function_declarator declarator: (identifier) @def.name)) @def)
 
     (namespace_definition name: (namespace_identifier) @def.container
       body: (declaration_list (function_definition
@@ -25947,6 +26144,11 @@ var init_cpp = __esm({
       declarator: (qualified_identifier
         scope: (namespace_identifier) @def.container
         name: (identifier) @def.name))) @def
+    (function_definition declarator: (pointer_declarator
+      declarator: (function_declarator
+        declarator: (qualified_identifier
+          scope: (namespace_identifier) @def.container
+          name: (identifier) @def.name)))) @def
     (function_definition declarator: (function_declarator
       declarator: (qualified_identifier
         name: (qualified_identifier
@@ -26059,15 +26261,30 @@ var init_kotlin = __esm({
     (object_declaration (type_identifier) @def.name) @def
     (type_alias (type_identifier) @def.name) @def
 
-    (source_file (function_declaration (simple_identifier) @def.name) @def)
+    (source_file (function_declaration
+      (simple_identifier) @def.name
+      (function_body)? @def.body) @def)
     (class_declaration (type_identifier) @def.container
-      (class_body (function_declaration (simple_identifier) @def.name) @def))
+      (class_body (function_declaration
+        (simple_identifier) @def.name
+        (function_body)? @def.body) @def))
     (class_declaration (type_identifier) @def.container
-      (enum_class_body (function_declaration (simple_identifier) @def.name) @def))
+      (enum_class_body (function_declaration
+        (simple_identifier) @def.name
+        (function_body)? @def.body) @def))
     (object_declaration (type_identifier) @def.container
-      (class_body (function_declaration (simple_identifier) @def.name) @def))
+      (class_body (function_declaration
+        (simple_identifier) @def.name
+        (function_body)? @def.body) @def))
     (companion_object (type_identifier) @def.container
-      (class_body (function_declaration (simple_identifier) @def.name) @def))
+      (class_body (function_declaration
+        (simple_identifier) @def.name
+        (function_body)? @def.body) @def))
+    (class_declaration (type_identifier) @def.container
+      (class_body (companion_object .
+        (class_body (function_declaration
+          (simple_identifier) @def.name
+          (function_body)? @def.body) @def))))
 
     (class_declaration (type_identifier) @def.container
       (class_body (secondary_constructor "constructor" @def.name) @def))
@@ -26263,13 +26480,13 @@ var init_python = __esm({
     (class_definition name: (identifier) @def.name) @def
 
     (module (function_definition name: (identifier) @def.name) @def)
-    (module (decorated_definition definition: (function_definition name: (identifier) @def.name) @def))
+    (module (decorated_definition definition: (function_definition name: (identifier) @def.name)) @def)
     (class_definition
       name: (identifier) @def.container
       body: (block (function_definition name: (identifier) @def.name) @def))
     (class_definition
       name: (identifier) @def.container
-      body: (block (decorated_definition definition: (function_definition name: (identifier) @def.name) @def)))
+      body: (block (decorated_definition definition: (function_definition name: (identifier) @def.name)) @def))
 
     ((module
       (expression_statement
@@ -26309,6 +26526,7 @@ var init_javascript = __esm({
     (function_declaration name: (identifier) @def.name) @def
     (generator_function_declaration name: (identifier) @def.name) @def
     (class_declaration name: (identifier) @def.name) @def
+    (export_statement "default" @def.name value: (function_expression)) @def
 
     (class_declaration
       name: (identifier) @def.container
@@ -26323,6 +26541,14 @@ var init_javascript = __esm({
     (import_statement (import_clause (identifier) @import))
     (import_specifier name: (identifier) @import)
     (import_specifier alias: (identifier) @import)
+    (export_statement
+      (export_clause (export_specifier name: (identifier) @def.name @ref.external .))
+      source: (string (string_fragment) @import)) @def
+    (export_statement
+      (export_clause (export_specifier
+        name: (identifier) @ref.external
+        alias: (identifier) @def.name))
+      source: (string (string_fragment) @import)) @def
     (call_expression
       function: (identifier) @_require
       arguments: (arguments (string (string_fragment) @import))
@@ -26352,6 +26578,7 @@ var init_typescript = __esm({
       extensions: [".ts", ".mts", ".cts"],
       query: String.raw`
     (function_declaration name: (identifier) @def.name) @def
+    (function_signature name: (identifier) @def.name) @def
     (generator_function_declaration name: (identifier) @def.name) @def
     (class_declaration name: (type_identifier) @def.name) @def
     (abstract_class_declaration name: (type_identifier) @def.name) @def
@@ -26410,6 +26637,7 @@ var init_tsx = __esm({
       extensions: [".tsx"],
       query: String.raw`
     (function_declaration name: (identifier) @def.name) @def
+    (function_signature name: (identifier) @def.name) @def
     (generator_function_declaration name: (identifier) @def.name) @def
     (class_declaration name: (type_identifier) @def.name) @def
     (abstract_class_declaration name: (type_identifier) @def.name) @def
@@ -26484,6 +26712,17 @@ var init_ruby = __esm({
     (class
       name: (constant) @def.container
       body: (body_statement (singleton_method name: (identifier) @def.name) @def))
+    (class
+      name: (constant) @def.container
+      body: (body_statement (singleton_class value: (self)
+        body: (body_statement (method name: (identifier) @def.name) @def))))
+
+    ((class
+      name: (constant) @def.container
+      body: (body_statement (call
+        method: (identifier) @_accessor
+        arguments: (argument_list (simple_symbol) @def.name.bare)) @def))
+      (#match? @_accessor "^attr_(reader|writer|accessor)$"))
 
     (program (assignment left: (constant) @def.name) @def)
     (module
@@ -26516,7 +26755,10 @@ var init_php = __esm({
       grammar: "php",
       extensions: [".php"],
       query: String.raw`
-    (function_definition name: (name) @def.name) @def
+    (program (function_definition name: (name) @def.name) @def)
+    (namespace_definition
+      name: (namespace_name (name) @def.container)
+      body: (compound_statement (function_definition name: (name) @def.name) @def))
     (class_declaration name: (name) @def.name) @def
     (interface_declaration name: (name) @def.name) @def
     (trait_declaration name: (name) @def.name) @def
@@ -26534,6 +26776,10 @@ var init_php = __esm({
     (enum_declaration
       name: (name) @def.container
       body: (enum_declaration_list (method_declaration name: (name) @def.name) @def))
+    (class_declaration
+      name: (name) @def.container
+      body: (declaration_list (use_declaration
+        (use_list (use_as_clause (name) @ref (name) @def.name) @def))))
 
     (program (const_declaration (const_element (name) @def.name) @def))
     (class_declaration
@@ -26562,6 +26808,7 @@ var init_php = __esm({
     (nullsafe_member_access_expression name: (name) @ref)
     (scoped_call_expression name: (name) @ref)
     (named_type (name) @ref)
+    (use_declaration (name) @ref)
   `
     };
   }
@@ -29586,8 +29833,10 @@ function nestedBody(node2) {
   }
   return earliest;
 }
-function signatureOf(node2) {
-  const body2 = nestedBody(node2);
+function signatureOf(node2, match) {
+  const markedBody = match.captures.find((candidate) => candidate.name === "def.body" && contains(node2, candidate.node))?.node;
+  const body2 = markedBody ?? (STRUCTURAL_DEFINITIONS.has(node2.type) ? void 0 : nestedBody(node2));
+  if (!body2 && STRUCTURAL_DEFINITIONS.has(node2.type)) return normalise(node2.text);
   let end = body2 ? Math.max(0, body2.startIndex - node2.startIndex) : node2.text.indexOf("{");
   if (end < 0) {
     const newline = node2.text.indexOf("\n");
@@ -29599,8 +29848,10 @@ function inclusiveEndLine(node2) {
   return Math.max(node2.startPosition.row + 1, node2.endPosition.row + (node2.endPosition.column > 0 ? 1 : 0));
 }
 function parsedDefinition(match, capture) {
-  const names = match.captures.filter((candidate) => candidate.name === "def.name" && contains(capture.node, candidate.node));
-  const name2 = names.sort((a, b) => a.node.startIndex - b.node.startIndex)[0]?.node.text.trim();
+  const names = match.captures.filter((candidate) => candidate.name.startsWith("def.name") && contains(capture.node, candidate.node));
+  const nameCapture = names.sort((a, b) => a.node.startIndex - b.node.startIndex)[0];
+  let name2 = nameCapture?.node.text.trim();
+  if (nameCapture?.name === "def.name.bare") name2 = name2?.replace(/^:/, "");
   if (!name2) return void 0;
   const container = match.captures.find((candidate) => candidate.name === "def.container")?.node.text.trim();
   return {
@@ -29609,10 +29860,10 @@ function parsedDefinition(match, capture) {
     kind: capture.node.type,
     from: capture.node.startPosition.row + 1,
     to: inclusiveEndLine(capture.node),
-    signature: signatureOf(capture.node)
+    signature: signatureOf(capture.node, match)
   };
 }
-var MAX_BYTES, moduleRequire, moduleDir, bundledGrammarDir, runtimePromise, languages, loadedByExtension, warned, extensionKey, contains, normalise, parseFile;
+var MAX_BYTES, moduleRequire, moduleDir, bundledGrammarDir, runtimePromise, languages, loadedByExtension, warned, extensionKey, contains, normalise, STRUCTURAL_DEFINITIONS, parseFile;
 var init_engine = __esm({
   "packages/room-mcp/src/parse/engine.ts"() {
     "use strict";
@@ -29627,6 +29878,7 @@ var init_engine = __esm({
     extensionKey = (extension2) => extension2.startsWith(".") ? extension2.toLowerCase() : `.${extension2.toLowerCase()}`;
     contains = (outer, inner) => outer.startIndex <= inner.startIndex && outer.endIndex >= inner.endIndex;
     normalise = (text) => text.replace(/\s+/g, " ").trim();
+    STRUCTURAL_DEFINITIONS = /* @__PURE__ */ new Set(["interface_declaration", "type_alias_declaration"]);
     parseFile = (path19, text) => {
       const loaded = loadedForPath(path19);
       if (!loaded || text.length > MAX_BYTES) return void 0;
@@ -29637,20 +29889,24 @@ var init_engine = __esm({
         const defs10 = [];
         const refs = /* @__PURE__ */ new Set();
         const imports = /* @__PURE__ */ new Set();
+        const externalRefs = /* @__PURE__ */ new Set();
         const seenDefs = /* @__PURE__ */ new Set();
         for (const match of matches) {
           for (const capture of match.captures) {
             if (capture.name === "def") {
               const definition = parsedDefinition(match, capture);
               if (!definition) continue;
-              const key = `${definition.from}:${definition.to}:${definition.container ?? ""}:${definition.name}`;
+              const key = `${capture.node.startIndex}:${capture.node.endIndex}`;
               if (!seenDefs.has(key)) {
                 seenDefs.add(key);
                 defs10.push(definition);
               }
-            } else if (capture.name === "ref") {
+            } else if (capture.name === "ref" || capture.name === "ref.external") {
               const reference = capture.node.text.trim();
-              if (reference) refs.add(reference);
+              if (reference) {
+                refs.add(reference);
+                if (capture.name === "ref.external") externalRefs.add(reference);
+              }
             } else if (capture.name === "import") {
               const imported = capture.node.text.trim();
               if (imported) imports.add(imported);
@@ -29659,7 +29915,7 @@ var init_engine = __esm({
         }
         const own2 = new Set(defs10.map((definition) => definition.name));
         const keywords = new Set(loaded.spec.keywords ?? []);
-        for (const value2 of [...refs]) if (own2.has(value2) || keywords.has(value2)) refs.delete(value2);
+        for (const value2 of [...refs]) if (own2.has(value2) && !externalRefs.has(value2) || keywords.has(value2)) refs.delete(value2);
         defs10.sort((a, b) => a.from - b.from || a.to - b.to || a.name.localeCompare(b.name));
         return { defs: defs10, refs: [...refs].sort(), imports: [...imports].sort() };
       } catch (error2) {
@@ -29773,12 +30029,13 @@ var init_graph_index = __esm({
       }
       reuse(snapshot) {
         this.cache.clear();
-        for (const p of snapshot.paths) this.cache.set(p, { defs: [], refs: [] });
+        for (const p of snapshot.paths) this.cache.set(p, { defs: [], refs: [], imports: [] });
         for (const edge of snapshot.edges) {
-          if (!this.cache.has(edge.source)) this.cache.set(edge.source, { defs: [], refs: [] });
-          if (!this.cache.has(edge.target)) this.cache.set(edge.target, { defs: [], refs: [] });
+          if (!this.cache.has(edge.source)) this.cache.set(edge.source, { defs: [], refs: [], imports: [] });
+          if (!this.cache.has(edge.target)) this.cache.set(edge.target, { defs: [], refs: [], imports: [] });
           this.cache.get(edge.source).defs.push(...edge.symbols);
           this.cache.get(edge.target).refs.push(...edge.symbols);
+          this.cache.get(edge.target).imports.push(edge.source);
         }
         for (const p of this.cache.keys()) this.graph.set(p, "");
         this.truncated = snapshot.truncated;
@@ -29842,7 +30099,7 @@ var init_graph_index = __esm({
       refreshChanged() {
         if (!this.base) return;
         const changed = /* @__PURE__ */ new Set();
-        for (const person of this.reused ? [this.me] : /* @__PURE__ */ new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) changed.add(p);
+        for (const person of /* @__PURE__ */ new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) changed.add(p);
         for (const p of /* @__PURE__ */ new Set([...changed, ...this.previousChanged])) void this.refresh(p);
         this.previousChanged = changed;
       }
@@ -29867,8 +30124,8 @@ var init_graph_index = __esm({
           while (!this.stopped) {
             const revision = this.revisions.get(path19), generation = this.generation;
             await ensureLanguages([path19]);
-            const text = this.reused ? void 0 : await this.textFor(path19);
-            const parsed = this.reused || text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path19, text);
+            const text = await this.textFor(path19);
+            const parsed = text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path19, text);
             const symbols = parsed ? {
               defs: parsed.defs.map((definition) => definition.name),
               refs: parsed.refs,
@@ -29879,14 +30136,13 @@ var init_graph_index = __esm({
             const baseText = mine !== void 0 || mineDeleted ? await gitShow(this.dir, this.base, path19) : void 0;
             if (this.stopped) return;
             if (generation !== this.generation || revision !== this.revisions.get(path19)) continue;
-            if (!this.reused) {
-              if (!symbols || text === void 0) {
-                this.cache.delete(path19);
-                this.graph.remove(path19);
-              } else {
-                this.cache.set(path19, symbols);
-                this.graph.set(path19, text);
-              }
+            this.reused = void 0;
+            if (!symbols || text === void 0) {
+              this.cache.delete(path19);
+              this.graph.remove(path19);
+            } else {
+              this.cache.set(path19, symbols);
+              this.graph.set(path19, text);
             }
             if (mine !== void 0 || mineDeleted) {
               const changes = observedContractChanges(baseText ?? "", mineDeleted ? "" : mine ?? "", path19, parseFile).map((change) => ({ path: path19, ...change }));
@@ -30048,10 +30304,23 @@ async function readChoice(dir) {
     return void 0;
   }
 }
-async function writeChoice(dir, where, by) {
+async function writeChoice(dir, where, by, share) {
   where = where.replace(/\?.*$/, "");
   const prev = await readChoice(dir);
-  const c = { where, at: Date.now(), ...by ? { by } : {}, ...prev?.tags ? { tags: prev.tags } : {}, ...prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {} };
+  const same = prev?.where === where;
+  const rememberedShare = share ?? (same ? prev?.share : void 0);
+  const c = { where, at: Date.now(), ...by ? { by } : {}, ...rememberedShare ? { share: rememberedShare } : {}, ...prev?.tags ? { tags: prev.tags } : {}, ...same && prev.warned?.length ? { warned: prev.warned } : {}, ...same && prev.warnedLevels ? { warnedLevels: prev.warnedLevels } : {} };
+  const file = await choiceFile(dir);
+  fs9.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
+  try {
+    fs9.chmodSync(file, 384);
+  } catch {
+  }
+  return c;
+}
+async function rememberShare(dir, share) {
+  const prev = await readChoice(dir) ?? { where: LOCAL, at: Date.now() };
+  const c = { ...prev, share, at: Date.now() };
   const file = await choiceFile(dir);
   fs9.writeFileSync(file, JSON.stringify(c) + "\n", { mode: 384 });
   try {
@@ -30072,18 +30341,22 @@ async function rememberTag(dir, tag) {
   }
   return c;
 }
-async function markWarned(dir, worktree, destination) {
+async function markWarned(dir, worktree, destination, share) {
   const c = await readChoice(dir) ?? { where: LOCAL, at: Date.now() };
   const key = path9.resolve(worktree) + (destination ? "#" + destination : "");
   const warned2 = c.warned ?? [];
-  if (warned2.includes(key)) return false;
+  const previous = c.warnedLevels?.[key];
+  const rank = (level) => level === "intent" ? 0 : level === "declared" ? 1 : 2;
+  const tell = share === void 0 ? !warned2.includes(key) : previous ? rank(share) > rank(previous) : !warned2.includes(key);
+  if (!tell && share === void 0) return false;
+  const next = { ...c, warned: [...warned2.filter((k) => k !== key), key].slice(-50), ...share ? { warnedLevels: { ...c.warnedLevels, [key]: share } } : {} };
   try {
     const file = await choiceFile(dir);
-    fs9.writeFileSync(file, JSON.stringify({ ...c, warned: [...warned2, key].slice(-50) }) + "\n", { mode: 384 });
+    fs9.writeFileSync(file, JSON.stringify(next) + "\n", { mode: 384 });
     fs9.chmodSync(file, 384);
   } catch {
   }
-  return true;
+  return tell;
 }
 async function clearChoice(dir) {
   try {
@@ -30791,6 +31064,10 @@ function workerOwnedPaths(w) {
     exclusions: paths.map((l) => ":(exclude,literal)" + l)
   };
 }
+async function ignoredWorkerArtifacts(w) {
+  const raw = await git(w.dir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", ".", ...workerOwnedPaths(w).exclusions]);
+  return raw.split("\0").filter(Boolean).filter((p) => !p.split("/").some((part) => IGNORED_DEPENDENCY_DIRS.has(part))).sort();
+}
 function shouldRetire(facts) {
   if (!facts.exited) return void 0;
   if (facts.dismissed) return "dismissed";
@@ -31046,12 +31323,13 @@ async function saveDiscardPatch(leadDir, w) {
     fs11.rmSync(scratch, { recursive: true, force: true });
   }
 }
-var WORKERS_DIR, warnedMissingNice, WORKER_EFFORTS, LEAD_ONLY_ENV, defaultSpawner;
+var IGNORED_DEPENDENCY_DIRS, WORKERS_DIR, warnedMissingNice, WORKER_EFFORTS, LEAD_ONLY_ENV, defaultSpawner;
 var init_workers = __esm({
   "packages/room-mcp/src/workers.ts"() {
     "use strict";
     init_git();
     init_config();
+    IGNORED_DEPENDENCY_DIRS = /* @__PURE__ */ new Set(["node_modules", ".venv", "venv", "vendor", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".gradle", "target"]);
     WORKERS_DIR = path11.join(".room", "workers");
     warnedMissingNice = false;
     WORKER_EFFORTS = ["minimal", "low", "medium", "high"];
@@ -32423,10 +32701,11 @@ async function finishWorkerProcess(s, w, code, at = Date.now(), error2, unwitnes
   if (current !== w || w.exitCode !== void 0) return;
   const done = w.status === "done";
   const exitCode = code ?? -1;
+  const tail = workerLogTail(path13.join(s.dir, ".room", "workers", `${w.tag}.log`));
   s.room.updateWorker(w.tag, {
     exitCode,
     finishedAt: w.finishedAt ?? at,
-    ...w.status !== "running" ? {} : unwitnessed ? { status: "dismissed", stopReason: "lead-session-ended" } : { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" }
+    ...w.status !== "running" ? {} : unwitnessed ? { status: "failed", summary: `stopped while no session of yours was running; reason unknown; worktree: ${w.dir}; last lines of its log: ${tail || "(empty log)"}` } : { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" }
   }, w.id);
   if (!done) {
     const { releaseClaimsOnDone: releaseClaimsOnDone2 } = await Promise.resolve().then(() => (init_claims2(), claims_exports));
@@ -32437,7 +32716,6 @@ async function finishWorkerProcess(s, w, code, at = Date.now(), error2, unwitnes
   if (!unwitnessed && !w.stopReason && w.dismissedAt === void 0 && (exitCode !== 0 || !done)) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1e3));
     const elapsed = seconds < 90 ? `${seconds} s after start` : `after ${Math.floor(seconds / 60)}m`;
-    const tail = workerLogTail(path13.join(s.dir, ".room", "workers", `${w.tag}.log`));
     s.room.post({ name: "room", kind: "bot" }, {
       type: "note",
       to: w.lead,
@@ -32552,7 +32830,7 @@ var init_registry = __esm({
           if (w.stopReason === "lead-session-ended") continue;
           if (this.reserving.has("discard:" + s.roomName + ":" + w.name)) continue;
           if (w.lead !== s.me.name || this.hasHandle(s, w)) continue;
-          const exited = w.exitCode !== void 0 || !pidAlive2(w.pid);
+          const exited = w.exitCode !== void 0 || !pidIsOurWorker(w.pid, w);
           if (!exited) continue;
           if (w.status === "running") {
             await finishWorkerProcess(s, w, null, Date.now(), void 0, true);
@@ -42477,6 +42755,7 @@ init_context();
 // packages/room-mcp/src/tools/join.ts
 init_claims2();
 init_prompt();
+init_src();
 init_local();
 import { resolve as resolve4 } from "node:path";
 
@@ -42784,6 +43063,7 @@ init_config();
 // packages/room-mcp/src/tools/share.ts
 init_src3();
 init_config();
+init_choice();
 init_context();
 var defs3 = [
   {
@@ -42806,6 +43086,10 @@ function handlers3(state) {
       const level = clampShare(asked, s.shareMax);
       s.shareRequested = asked;
       await s.daemon.setShare(level);
+      try {
+        await rememberShare(s.dir, asked);
+      } catch {
+      }
       if (level !== before) s.room.post(s.me, { type: "note", text: `now sharing ${sharingDescription(level)}`, priority: "fyi" });
       const out2 = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`];
       if (level === "declared" && !s.room.scope(s.me.name)) out2.push("no scope declared yet, so nothing is shared until room_scope(area, summary, paths)");
@@ -42864,12 +43148,46 @@ var defs4 = [
     inputSchema: { type: "object", properties: { path: str("output; default .room/ledger/<room>-<timestamp>.md") } }
   }
 ];
-async function teamSharingNote(s) {
-  if (s.local) return void 0;
+var disclosures = /* @__PURE__ */ new WeakMap();
+function sharingSentence(s) {
   const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server;
-  if (!await markWarned(s.dir, s.dir, server).catch(() => true)) return void 0;
-  const repo = s.roomName.includes("/") ? s.roomName.slice(0, s.roomName.lastIndexOf("/")) : s.roomName;
+  const parts2 = roomNameParts(s.roomName);
+  const repo = parts2.branch ? s.roomName.slice(0, -(parts2.branch.length + 1)) : s.roomName;
   return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? "intent")} with members of ${repo} on ${server}; use room_share level=intent for plans only or level=declared to limit files to your declared area.`;
+}
+async function prepareTeamSharingDisclosure(s) {
+  let state = disclosures.get(s);
+  if (!state) {
+    state = {};
+    disclosures.set(s, state);
+  }
+  if (state.prepared || state.delivered) return state.prepared;
+  state.prepared = (async () => {
+    if (s.local) {
+      state.delivered = true;
+      return;
+    }
+    const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server;
+    const share = s.daemon.share ?? s.shareRequested ?? "intent";
+    if (await markWarned(s.dir, s.dir, server, share).catch(() => true)) state.pending = sharingSentence(s);
+    else state.delivered = true;
+  })();
+  await state.prepared;
+}
+function pendingTeamSharingDisclosure(s) {
+  return disclosures.get(s)?.pending;
+}
+function markTeamSharingDisclosureDelivered(s) {
+  const state = disclosures.get(s) ?? {};
+  delete state.pending;
+  state.delivered = true;
+  disclosures.set(s, state);
+}
+async function teamSharingNote(s) {
+  await prepareTeamSharingDisclosure(s);
+  const note = pendingTeamSharingDisclosure(s);
+  if (note) markTeamSharingDisclosureDelivered(s);
+  return note;
 }
 function handlers4(state) {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log: log2, evictStale, loadAreas, shareLine, hasCompany: hasCompany2, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
@@ -42913,7 +43231,7 @@ function handlers4(state) {
       return `${p.provider === "oidc" ? "Single sign-on" : "GitHub"} login for ${server}. Tell the user exactly this: ${codeLine(p)}`;
     },
     async room_create(a) {
-      return handlers10.room_join({ ...a, create: true });
+      return handlers10.room_join({ ...a, where: a.where ?? a.server ?? "team", create: true });
     },
     async room_join(a) {
       const cur = ctx.getSession();
@@ -42922,7 +43240,7 @@ function handlers4(state) {
         const note2 = cur ? await teamSharingNote(cur) : void 0;
         return [note2, sharing, await handlers2(state).room_state({ link: cur ? state.hasCompany(cur).company : false })].filter(Boolean).join("\n");
       };
-      if (cur && a.where === void 0 && a.server === void 0 && a.room === void 0 && a.dir === void 0) {
+      if (cur && a.create !== true && a.where === void 0 && a.server === void 0 && a.room === void 0 && a.dir === void 0) {
         return currentReply();
       }
       const dir = typeof a.dir === "string" && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd();
@@ -42945,9 +43263,6 @@ function handlers4(state) {
         const login = cfg.mode === "device" ? getCredential(server)?.login : void 0;
         if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`;
       }
-      if (a.create === true && choice.server === LOCAL && choice.rule !== "argument") {
-        return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.';
-      }
       if (cur) {
         await closeWorkersRoom();
         cleanupMine(cur, "moved to another room");
@@ -42967,13 +43282,14 @@ function handlers4(state) {
           share: resolved.share
         });
       } catch (e) {
+        if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.`;
         if (!(e instanceof NoRoom)) throw e;
         const repo = e.roomName.startsWith("github.com/") ? e.roomName.split("/").slice(1, 3).join("/") : e.roomName.slice(0, e.roomName.lastIndexOf("/"));
         return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`;
       }
       if (choice.rule === "argument") {
         try {
-          await writeChoice(dir, choice.where, s.me.name);
+          await writeChoice(dir, choice.where, s.me.name, s.shareRequested);
         } catch {
         }
       }
@@ -43073,6 +43389,7 @@ function handlers4(state) {
 }
 function install4(state) {
   const { ctx, log: log2, doJoin, doLeave, seen, rooms, now, presences, mine, planChanged } = state;
+  const blockedBranch = /* @__PURE__ */ new WeakMap();
   const followBranch = async () => {
     const s = ctx.getSession();
     if (!s || !s.roomName.includes("/") || s.pinnedRoom) return "";
@@ -43083,16 +43400,24 @@ function install4(state) {
       return "";
     }
     if (!branch || branch === "HEAD") return "";
-    const current = s.roomName.slice(s.roomName.lastIndexOf("/") + 1);
+    const current = roomNameParts(s.roomName).branch;
+    if (!current) return "";
     if (branch === current) return "";
-    const repo = s.roomName.slice(0, s.roomName.lastIndexOf("/"));
+    const running = state.runningWorkers(s);
+    if (running.length) {
+      if (blockedBranch.get(s) === branch) return "";
+      blockedBranch.set(s, branch);
+      return `[room] your clone switched to branch ${branch}, but ${running.length} worker(s) are running and would be left behind; staying in ${s.roomName}. Wait for them or room_collect(discard=true) them before moving.`;
+    }
+    const repo = s.roomName.slice(0, -(current.length + 1));
     const target = `${repo}/${branch}`;
     log2(`branch changed ${current} -> ${branch}; moving room`);
-    cleanupMine(s, `switched branch to ${branch}`);
-    rooms.remove(s);
-    await doLeave(s);
     try {
-      const n = await doJoin({ dir: s.dir, name: s.me.name, room: target, server: s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")) });
+      const n = await doJoin({ dir: s.dir, credentialsPath: ctx.config?.credentialsPath, name: s.me.owner ?? s.me.name, tag: s.me.label, room: target, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")), share: s.shareRequested, token: s.token });
+      delete n.pinnedRoom;
+      cleanupMine(s, `switched branch to ${branch}`);
+      rooms.remove(s);
+      await doLeave(s);
       for (const m of n.room.messages()) seen.add(m.id);
       rooms.add(n, "primary");
       cleanupMine(n, "stale from an earlier session");
@@ -43502,7 +43827,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
   const { rooms, liveText, baseFor, shareOf } = state;
   const people = participants.map((p) => p.person);
   const previewWorker = (s, person) => {
-    const w = s.local ? s.room.workerOf(person) : void 0;
+    const w = s.local || options.diskWorkers?.has(person) ? s.room.workerOf(person) : void 0;
     return w?.lead === s.me.name && fs14.existsSync(w.dir) ? w : diskWorker(s, person);
   };
   const previewText = async (s, p, person) => {
@@ -43718,7 +44043,7 @@ var defs6 = [{
     mode: { type: "string", enum: ["apply", "copy"] },
     discard: { type: "boolean" },
     paths: strs("copy mode: repo-relative files or directories"),
-    force: { type: "boolean", description: "overwrite modified copy destinations" }
+    force: { type: "boolean", description: "overwrite modified copy destinations; discard ignored artifacts too" }
   } }
 }];
 var split = (value2) => value2.split("\0").filter(Boolean);
@@ -43781,6 +44106,15 @@ function handlers6(state) {
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep2(50);
           if (state.workerAlive(s, w)) throw new Error("worker process has not stopped");
         }
+        const ignored = await ignoredWorkerArtifacts(w);
+        if (ignored.length && a.force !== true) {
+          return [
+            `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}`,
+            ...ignored.map((p) => `kept ${p} at ${path16.join(w.dir, p)}`),
+            `retained worktree: ${w.dir}`,
+            'copy what you need (mode="copy", paths=[...]), then repeat with force=true to delete the rest'
+          ].join("\n");
+        }
         const patch = await saveDiscardPatch(s.dir, w);
         if (!await cleanupWorker(s.dir, w, true, true)) throw new Error("worker is not an owned Room worktree");
         releaseClaimsOnDone(s, () => false, w.name, false);
@@ -43799,7 +44133,7 @@ function handlers6(state) {
           retiredAt,
           outcome: "dismissed"
         });
-        return "discarded " + w.tag + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "");
+        return "discarded " + w.tag + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "");
       } catch (e) {
         return "error: " + (e instanceof Error ? e.message : String(e)) + "; retained " + w.dir;
       } finally {
@@ -43821,7 +44155,6 @@ function handlers6(state) {
           out2.push("skipped " + w.tag + ": " + w.status);
           continue;
         }
-        if (!s.local) throw new Error("room_collect requires a local worker");
         const now = state.now ?? Date.now;
         const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
         const deadline = now() + 15e3;
@@ -43884,6 +44217,7 @@ function handlers6(state) {
         selected.map(({ s, w }) => ({ session: s, person: w.name })),
         {
           diskOnly: true,
+          diskWorkers: new Set(selected.map(({ w }) => w.name)),
           encoding: "latin1",
           baseText: async (dir, base, p) => {
             try {
@@ -43992,7 +44326,7 @@ function handlers6(state) {
 init_git();
 init_libesm();
 init_src();
-import { execFile as execFile5 } from "node:child_process";
+import { execFile as execFile5, spawn as spawn2 } from "node:child_process";
 import fs16 from "node:fs";
 import os5 from "node:os";
 import path17 from "node:path";
@@ -44131,7 +44465,7 @@ ${text}--- end ${p} ---`);
           ranOk = /: exit 0\n/.test(r);
         }
       }
-      caller.lastPreview = { clean: hardCount === 0, ...run2 ? { testsPassed: hardCount === 0 && ranOk } : {} };
+      caller.lastPreview = { clean: hardCount === 0, ...run2 ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run2 } : {} };
       if (!hardCount && ranOk) caller.room.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run2 ? `; "${run2}" passed` : ""}`, priority: "fyi" });
       return out2.join("\n");
     }
@@ -44177,10 +44511,7 @@ function testVerdict(output, code) {
 async function runInMergedTree(s, ancestor, merged, cmd) {
   const dir = fs16.mkdtempSync(path17.join(os5.tmpdir(), "room-merge-"));
   try {
-    await new Promise((resolve5, reject) => {
-      const p = execFile5("sh", ["-c", `git -C "${s.dir}" archive ${ancestor} | tar -x -C "${dir}"`], { timeout: 6e4 }, (err2) => err2 ? reject(err2) : resolve5());
-      p.unref?.();
-    });
+    await materializeGitTree(s.dir, ancestor, dir);
     for (const [rel, text] of merged) {
       const abs2 = path17.resolve(dir, rel);
       if (!abs2.startsWith(dir)) continue;
@@ -44207,6 +44538,52 @@ ${testVerdict(result.out, result.code)}`;
   } finally {
     fs16.rmSync(dir, { recursive: true, force: true });
   }
+}
+async function materializeGitTree(cloneDir, ref, destination) {
+  if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`);
+  await git(cloneDir, ["cat-file", "-e", `${ref}^{commit}`]);
+  await new Promise((resolve5, reject) => {
+    const archive = spawn2("git", ["-C", cloneDir, "archive", "--format=tar", ref], { stdio: ["ignore", "pipe", "pipe"] });
+    const extract = spawn2("tar", ["-x", "-C", destination], { stdio: ["pipe", "ignore", "pipe"] });
+    let archiveError = "", extractError = "", archiveCode, extractCode;
+    let settled = false;
+    const fail = (error2) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      archive.kill();
+      extract.kill();
+      reject(error2);
+    };
+    const finish = () => {
+      if (settled || archiveCode === void 0 || extractCode === void 0) return;
+      settled = true;
+      clearTimeout(timer);
+      if (archiveCode === 0 && extractCode === 0) resolve5();
+      else reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? "signal"}${archiveError.trim() ? `: ${archiveError.trim()}` : ""}; tar ${extractCode ?? "signal"}${extractError.trim() ? `: ${extractError.trim()}` : ""})`));
+    };
+    const timer = setTimeout(() => fail(new Error("git archive/tar extraction timed out after 60000ms")), 6e4);
+    timer.unref?.();
+    archive.stderr.setEncoding("utf8");
+    archive.stderr.on("data", (chunk) => {
+      archiveError += String(chunk).slice(0, 4096);
+    });
+    extract.stderr.setEncoding("utf8");
+    extract.stderr.on("data", (chunk) => {
+      extractError += String(chunk).slice(0, 4096);
+    });
+    archive.on("error", fail);
+    extract.on("error", fail);
+    archive.on("close", (code) => {
+      archiveCode = code;
+      finish();
+    });
+    extract.on("close", (code) => {
+      extractCode = code;
+      finish();
+    });
+    archive.stdout.pipe(extract.stdin);
+  });
 }
 
 // packages/room-mcp/src/tools/workers.ts
@@ -44528,10 +44905,11 @@ function handlers8(state) {
       }
       setPresence(s, { cursor: void 0, status: `done: ${summary.slice(0, 60)}` });
       s.daemon.touch();
-      const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; this worker cannot answer further questions.` : "You are still in the room and will be woken for questions."}`];
+      const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; this worker cannot answer further questions.` : "You remain in the room."}`];
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary);
-      if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed !== false) {
-        out2.push("Local failures caused by a teammate's unmerged files are expected until merge; the combined preview passed.");
+      const command = s.lastPreview?.testsCommand;
+      if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed === true && command) {
+        out2.push(`The combined preview passed \`${command}\`.`);
       }
       if (a.pr_note === true) {
         await refreshPrs(s);
@@ -45013,23 +45391,40 @@ async function main() {
     session = s;
     if (s) attachChannel(s);
   }, cwd: dir, config: startup, attachChannel: (s) => attachChannel(s) });
-  const adopt = (s) => {
+  const adopt = async (s) => {
+    await prepareTeamSharingDisclosure(s);
+    const disclosure = pendingTeamSharingDisclosure(s);
+    if (disclosure) writePendingHookContext(s.dir, "pendingDisclosure", disclosure, s.roomName);
     session = s;
     attachChannel(s);
     tools.attachHooks(s);
     const n = tools.clearStale(s);
     if (n) log(`cleared ${n} stale claim(s) from an earlier session`);
   };
+  let autoJoin = Promise.resolve();
   const mcp = new Server(
     { name: "room", version: "0.2.0" },
     { capabilities: { tools: {}, experimental: { "claude/channel": {} } }, instructions: AGENT_INSTRUCTIONS() }
   );
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }));
   mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+    await autoJoin;
+    let disclosure = "";
+    if (session) {
+      const sentence = pendingTeamSharingDisclosure(session);
+      if (sentence) {
+        const delivery2 = consumeHookDisclosure(session, sentence);
+        if (delivery2) {
+          markTeamSharingDisclosureDelivered(session);
+          if (delivery2 === "tool") disclosure = sentence;
+        }
+      }
+    }
     const body2 = await tools.call(req.params.name, req.params.arguments ?? {});
-    const notice = session ? "" : startupNotice;
+    const delivery = startupNotice ? consumeHookNotice(dir, startupNotice) : void 0;
+    const notice = session || delivery === "hook" ? "" : startupNotice;
     startupNotice = "";
-    return { content: [{ type: "text", text: (notice ? notice + "\n\n" : "") + body2 }] };
+    return { content: [{ type: "text", text: (notice ? notice + "\n\n" : "") + (disclosure ? disclosure + "\n\n" : "") + body2 }] };
   });
   const attachChannel = (s) => {
     const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
@@ -45045,20 +45440,20 @@ async function main() {
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
   const prior = findRoomFile(dir);
-  const autoJoin = (async () => {
+  autoJoin = (async () => {
     try {
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
       const chosen = startup.server;
       log(`room: ${startup.where.replace(/\?.*$/, "")} (${startup.whereRule === "env" ? startup.whereEnv ?? "ROOM_SERVER" : startup.whereRule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
       if (chosen === LOCAL) {
-        adopt(await joinSession({ dir, room: startup.room, server: LOCAL, log }));
+        await adopt(await joinSession({ dir, room: startup.room, server: LOCAL, log }));
       } else if (startup.room) {
-        adopt(await joinSession({ dir, room: startup.room, server: chosen, log }));
+        await adopt(await joinSession({ dir, room: startup.room, server: chosen, log }));
       } else if (derived.roomName) {
-        adopt(await joinSession({ dir, server: chosen, log }));
+        await adopt(await joinSession({ dir, server: chosen, log }));
       } else if (prior) {
         const u = new URL(prior.room);
-        adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: chosen, log }));
+        await adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: chosen, log }));
       } else {
         log(`ready; ${dir} has no git origin \u2014 call room_join with a room name`);
         return;
@@ -45069,7 +45464,10 @@ async function main() {
       else {
         const expected = startup.server !== LOCAL || !!startup.room;
         const line = e instanceof NotLoggedIn ? "Room is not connected: not logged in; use room_login." : `Room could not join: ${e instanceof Error ? e.message : String(e)}; use room_join.`;
-        if (expected) startupNotice = line;
+        if (expected) {
+          startupNotice = line;
+          writePendingHookContext(dir, "pendingNotice", line);
+        }
         log(line);
       }
     }
