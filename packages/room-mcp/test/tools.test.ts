@@ -392,6 +392,23 @@ describe('scope, claims, plans, ledger', () => {
     expect(c).toMatchObject({ priority: 'interrupt', to: 'Kieran' })
   })
 
+  it('refuses a directory claim that would cover another participant\'s declared file or claim', async () => {
+    const t = setup()
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'tests', summary: 'test utils', paths: ['tests/test_utils.py'] })
+    let out = await t.tools.call('room_claim', { path: 'tests/', intent: 'neighboring tests' })
+    expect(out).toContain('cannot claim tests/')
+    expect(out).toContain("Kieran's scope includes tests/test_utils.py")
+    expect(out).toContain('Claim narrower files')
+    expect(t.room.openClaims()).toEqual([])
+
+    t.other.clearScope('Kieran')
+    t.other.addClaim({ path: 'tests/test_api.py', from: 1, to: 4, by: 'Kieran', byKind: 'agent', intent: 'API tests' })
+    out = await t.tools.call('room_claim', { path: 'tests/', intent: 'neighboring tests' })
+    expect(out).toContain("Kieran's claim includes tests/test_api.py")
+    expect(t.room.openClaims()).toHaveLength(1)
+    expect(t.room.openClaims()[0].by).toBe('Kieran')
+  })
+
   it('changed with symbols upgrades to scope owners via base grep', async () => {
     const t = setup()
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
@@ -689,17 +706,16 @@ describe('merge preview scratch tree', () => {
 })
 
  describe('quiet room state and directory claims', () => {
-   it('claims a whole directory without a range and reports overlap in room_state(path)', async () => {
+   it('claims a whole directory without a range and refuses one that covers another claim', async () => {
      const t = setup()
      try {
-       t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
+       t.other.setOverlay('Nearby', 'src/a.ts', 'export const a = 1\n')
        const out = await t.tools.call('room_claim', { path: 'src/', intent: 'own source' })
        expect(out).toContain('claimed')
        expect(out).not.toContain('error:')
        expect(await t.tools.call('room_state', { path: 'src/a.ts' })).toContain('own source')
        t.other.addClaim({ by: 'Ada', byKind: 'agent', path: 'src/nested/b.ts', from: 10, to: 20, intent: 'other work' })
-       t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
-       expect(await t.tools.call('room_claim', { path: 'src/', intent: 'overlap' })).toContain('CONFLICT')
+       expect(await t.tools.call('room_claim', { path: 'src/', intent: 'overlap' })).toContain("cannot claim src/: it would cover another participant's declared work (Ada's claim includes src/nested/b.ts)")
      } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
    })
 

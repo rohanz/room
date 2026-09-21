@@ -10,8 +10,8 @@ While alone, work normally. With company:
 
 1. Declare `room_scope(area, summary, paths)` once per task; read the returned overlap information.
 2. Claim only when Room says another participant is near the file through their scope,
-   claims, or changed files. Prefer one directory claim (`path` ending `/`) for an area
-   you own; otherwise use a symbol or line range. Read relevant live work with `room_read`.
+   claims, or changed files. Claim the files you will edit; use a symbol or line range
+   when you need only part of a file. Read relevant live work with `room_read`.
    Never edit another participant's claim. Declare public-symbol changes in `plans`;
    `room_impact` shows consumers before you change an interface.
 3. Answer addressed questions promptly with `room_send(type="answer", inReplyTo=...)`.

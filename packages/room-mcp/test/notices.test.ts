@@ -60,12 +60,33 @@ describe('unavailable addressed recipients', () => {
     expect(await tools.room_wait({ questionId: question.id })).toBe('lead+state finished 3m ago and will not answer; its summary: Archived fix')
   })
 
-  it.each(['question', 'note', 'changed', 'answer'])('reports an unknown addressee for %s without dropping history', async type => {
+  it.each(['question', 'note', 'changed', 'answer'])('rejects an unknown addressee before posting %s', async type => {
     const { s, tools } = fixture()
     const sent = await tools.room_send({ type, to: 'nobody', text: 'hello', paths: ['a.ts'], inReplyTo: 'old' })
     expect(sent).toContain('nobody called nobody is or was in this room; participants: lead')
-    expect(s.room.messages().at(-1)).toMatchObject({ type, to: 'nobody' })
-    if (type === 'question') expect(await tools.room_wait({ questionId: s.room.messages().at(-1)!.id })).toContain('nobody called nobody')
+    expect(s.room.messages()).toEqual([])
+  })
+
+  it('resolves a unique bare tag to the sender\'s worker, including the workers room', async () => {
+    const { s, rooms, makeSession, state, tools } = fixture()
+    const ws = makeSession('workers'); rooms.add(ws, 'workers')
+    ws.room.setWorker(worker({ status: 'running', exitCode: undefined, finishedAt: undefined }))
+    vi.mocked(state.workerAlive).mockReturnValue(true)
+    const sent = await tools.room_send({ type: 'question', to: 'state', text: 'Ready?' })
+    expect(sent).toContain('(in the workers room)')
+    expect(ws.room.messages().at(-1)).toMatchObject({ type: 'question', to: 'lead+state' })
+    expect(s.room.messages()).toEqual([])
+  })
+
+  it('rejects an ambiguous bare worker tag before posting and lists the full name', async () => {
+    const { s, rooms, makeSession, tools } = fixture()
+    const ws = makeSession('workers'); rooms.add(ws, 'workers')
+    s.room.setWorker(worker({ status: 'running', exitCode: undefined, finishedAt: undefined }))
+    ws.room.setWorker(worker({ status: 'running', exitCode: undefined, finishedAt: undefined }))
+    const sent = await tools.room_send({ type: 'note', to: 'state', text: 'Ready?' })
+    expect(sent).toBe('error: worker tag state is ambiguous; use a full name: lead+state')
+    expect(s.room.messages()).toEqual([])
+    expect(ws.room.messages()).toEqual([])
   })
 
   it('preserves the timeout for an offline teammate and infers the recipient of an answer', async () => {

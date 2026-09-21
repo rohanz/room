@@ -26,6 +26,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, rooms, myWorkers, workerAlive, presences, now, upgrade, setPresence, forMe, seen } = state
   const offline = (s: Session) => !!s.closed || !s.provider.synced || (s.provider as { wsconnected?: boolean }).wsconnected === false
   const unavailableQuestions = new Map<string, string>()
+  const knownNames = (s: Session): Set<string> => new Set([
+    s.me.name, ...presences(s).map(p => p.user.name), ...s.room.colors.keys(), ...s.room.scopes.keys(), ...s.room.overlays.keys(), ...s.room.deleted.keys(),
+    ...s.room.openClaims().map(c => c.by), ...Array.from(s.room.workers.values(), w => w.name),
+    ...s.room.retiredWorkers().map(w => w.name), ...s.room.messages().map(m => m.from),
+  ].filter(n => !isPrName(n)))
   const recipientNotice = (s: Session, name: string): { text: string; terminal: boolean } | undefined => {
     const present = presences(s).some(p => p.user.name === name)
     const worker = s.room.workerOf(name)
@@ -45,11 +50,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
     if (presences(s).some(p => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken; it will see this at its next turn`, terminal: false }
     if (present || worker) return undefined
-    const known = new Set([
-      s.me.name, ...presences(s).map(p => p.user.name), ...s.room.colors.keys(), ...s.room.scopes.keys(), ...s.room.overlays.keys(), ...s.room.deleted.keys(),
-      ...s.room.openClaims().map(c => c.by), ...Array.from(s.room.workers.values(), w => w.name),
-      ...s.room.messages().map(m => m.from),
-    ].filter(n => !isPrName(n)))
+    const known = knownNames(s)
     if (known.has(name)) return { text: `${name} is offline; it will see this when it returns`, terminal: false }
     if (offline(s)) return undefined // A disconnected room cannot establish that a name is unknown.
     return { text: `nobody called ${name} is or was in this room; participants: ${[...known].sort().join(', ')}`, terminal: true }
@@ -68,14 +69,27 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const handlers: Record<string, Handler> = {
     async room_send(a) {
       const lead = S()
-      const to = typeof a.to === 'string' && a.to ? a.to : undefined
+      const requestedTo = typeof a.to === 'string' && a.to ? a.to : undefined
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
       const wsr = rooms.workers()
       const byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
-      const s = byQuestion ?? (wsr && wsr !== lead && to && (myWorkers(wsr).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : lead)
+      const workerMatches = requestedTo ? rooms.all().flatMap(room => myWorkers(room)
+        .filter(w => w.tag === requestedTo).map(worker => ({ room, worker }))) : []
+      if (workerMatches.length > 1) {
+        const names = [...new Set(workerMatches.map(x => x.worker.name))].sort()
+        return `error: worker tag ${requestedTo} is ambiguous; use a full name: ${names.join(', ')}`
+      }
+      const resolvedWorker = workerMatches[0]
+      const to = resolvedWorker?.worker.name ?? requestedTo
+      const exactWorkerRoom = to && wsr && wsr !== lead && (myWorkers(wsr).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : undefined
+      const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead
       const text = typeof a.text === 'string' ? a.text : ''
       if (!text) return 'error: text is required'
       if (to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
+      if (to && !rooms.all().some(room => knownNames(room).has(to))) {
+        const valid = [...new Set(rooms.all().flatMap(room => [...knownNames(room)]))].sort()
+        return `error: nobody called ${to} is or was in this room; participants: ${valid.join(', ')}`
+      }
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
       let msg: Msg

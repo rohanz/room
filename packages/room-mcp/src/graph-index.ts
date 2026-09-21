@@ -2,7 +2,7 @@
  * Keeps a SymbolGraph current for one room: base commit + everyone's overlays.
  * For each path the indexed text is: my overlay, else another person's overlay, else base.
  */
-import { observedContractChanges, SymbolGraph, type FileSymbols, type GraphSnapshot, type ObservedContractChange, type RoomDoc } from '@room/shared'
+import { observedContractChanges, SymbolGraph, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { parseFile, ensureLanguages } from './parse/engine.js'
 import { specForPath } from './parse/index.js'
@@ -30,7 +30,6 @@ export class GraphIndex {
   private phase: 'ready' | 'indexing' | 'error' = 'indexing'
   private base = ''
   private stopped = false
-  private reused?: GraphSnapshot
   private initialStarted = false
   private jitterTimer?: ReturnType<typeof setTimeout>
   private endJitter?: () => void
@@ -67,28 +66,6 @@ export class GraphIndex {
     if (!this.stopped) await this.rebuild()
   }
 
-  private reusableSnapshot(): GraphSnapshot | undefined {
-    const now = Date.now(), present = new Set(this.opts.present?.() ?? [])
-    return [...this.room.graphs.entries()].filter(([person, snapshot]) => person !== this.me && present.has(person)
-      && snapshot.status === 'ready' && snapshot.base === this.base && now >= snapshot.at && now - snapshot.at < 60_000)
-      .sort((a, b) => b[1].at - a[1].at)[0]?.[1]
-  }
-
-  private reuse(snapshot: GraphSnapshot): void {
-    this.cache.clear()
-    for (const p of snapshot.paths) this.cache.set(p, { defs: [], refs: [], imports: [] })
-    for (const edge of snapshot.edges) {
-      if (!this.cache.has(edge.source)) this.cache.set(edge.source, { defs: [], refs: [], imports: [] })
-      if (!this.cache.has(edge.target)) this.cache.set(edge.target, { defs: [], refs: [], imports: [] })
-      this.cache.get(edge.source)!.defs.push(...edge.symbols)
-      this.cache.get(edge.target)!.refs.push(...edge.symbols)
-      this.cache.get(edge.target)!.imports!.push(edge.source)
-    }
-    for (const p of this.cache.keys()) this.graph.set(p, '')
-    this.truncated = snapshot.truncated
-    this.reused = snapshot
-  }
-
   private async rebuild(): Promise<void> {
     const generation = ++this.generation
     this.phase = 'indexing'
@@ -96,19 +73,8 @@ export class GraphIndex {
     this.observedByPath.clear()
     for (const p of this.cache.keys()) this.graph.remove(p)
     this.cache.clear()
-    this.reused = undefined
     if (!this.base) return
     this.publish('indexing')
-    const shared = this.reusableSnapshot()
-    if (shared) {
-      this.reuse(shared)
-      await Promise.all(this.room.changedPaths(this.me).filter(isSourcePath).map(p => this.refresh(p)))
-      if (generation !== this.generation || this.stopped) return
-      this.phase = 'ready'
-      this.publish('ready')
-      this.log(`graph: reused ready snapshot (${shared.paths.length} files)`)
-      return
-    }
     let paths: string[] = []
     try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', this.base])).split('\n').filter(isSourcePath) }
     catch (e) { if (generation === this.generation) { this.phase = 'error'; this.publish('error') }; this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`); return }
@@ -168,7 +134,6 @@ export class GraphIndex {
         const baseText = mine !== undefined || mineDeleted ? await gitShow(this.dir, this.base, path) : undefined
         if (this.stopped) return
         if (generation !== this.generation || revision !== this.revisions.get(path)) continue
-        this.reused = undefined
         if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
         else { this.cache.set(path, symbols); this.graph.set(path, text) }
         if (mine !== undefined || mineDeleted) {
@@ -208,7 +173,7 @@ export class GraphIndex {
       }
       edges.get(key)!.symbols.push(dep.symbol)
     }
-    let edgeList = this.reused?.edges ?? [...edges.values()]
+    let edgeList = [...edges.values()]
     const allObserved = [...this.observedByPath.values()].flat().sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
     let observedTruncated = allObserved.length > MAX_OBSERVED
     const observed = allObserved.slice(0, MAX_OBSERVED)

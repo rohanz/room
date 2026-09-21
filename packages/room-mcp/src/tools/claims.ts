@@ -3,7 +3,7 @@ import { ConflictWatcher } from '../conflicts.js'
 import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
-import { nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { coversPath, nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -31,6 +31,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (typeof plans === 'string') return plans
       const directory = p.endsWith('/')
       if (directory && a.symbol) return 'error: directory claims do not take a symbol'
+      if (directory) {
+        const scopeHits = s.room.allScopes().flatMap(sc => sc.by === s.me.name ? [] : sc.paths
+          .filter(path => coversPath(p, path)).map(path => `${sc.by}'s scope includes ${path}`))
+        const claimHits = s.room.openClaims().flatMap(c => isMe(s, { name: c.by, kind: c.byKind }) || !coversPath(p, c.path)
+          ? [] : [`${c.by}'s claim includes ${c.path}`])
+        const hits = [...scopeHits, ...claimHits]
+        if (hits.length) return `cannot claim ${p}: it would cover another participant's declared work (${hits.join('; ')}). Claim narrower files instead.`
+      }
       const t = directory ? undefined : await liveText(s, p, s.me.name)
       const isNew = t === undefined || t === null
       const n = isNew ? 1 : lines(t)
