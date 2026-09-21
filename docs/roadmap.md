@@ -93,7 +93,28 @@ described as one of its workers; "idle" is gone (activity follows tool calls: "w
 report the test runner's verdict; workers start at lower scheduling priority; read markers are
 saved with a local room's memory.
 
-**Still open, reported by the second lead:**
+**Still open after 0.8.0 (third batch lead and the live tests):**
+- Labels compare against the room's base, not the last commit: after a lead commits locally its
+  files still read "uncommitted, not yet pushed" and its branch "ahead of base: git push", even
+  in a repo with no remote. Say "committed locally, not pushed" when the working tree matches
+  HEAD, and drop the push advice when there is no remote.
+- Hook state files (`room-state.json`, `room-hook-seen.json`) are per folder, not per session.
+  Declined as out of scope in the 0.8.0 batch; it matters when two sessions share one folder.
+- An answer reaches only the asker. A lead ruling on a shared signature had to repeat it to the
+  second worker. Let an answer be addressed to several participants, or offer "answer and note".
+- Claim traffic is still high: five workers made 46 claims where five directory claims would do.
+  Directory claims exist now (0.8.0); the etiquette and the worker prompt should lead with them.
+- Shared files (`types.ts`, `join.ts`, `prompt.ts`) had no named owner and cost the lead five
+  rulings. A brief format or a `room_scope` convention for "shared, ask the lead" would help.
+- A contract between two workers can be satisfied by the combined typecheck without either ever
+  confirming it to the other. Fine when it compiles; invisible when it does not.
+- Cosmetic, seen in the 0.8.0 live test: a worker's done notice appears twice in one `room_wait`
+  reply (the inbox block and the wait result); `room_collect` uses the worker's whole one-line
+  summary as the commit subject, which can run to hundreds of characters (cap near 72, put the
+  rest in the body); a lead with nothing running and nothing pending is still told "Tell your
+  human" on a wait timeout.
+
+**Earlier, still open:**
 - `room_wait` timing out says "Tell your human" even while the lead's workers are plainly busy.
   With running workers it should say "3 workers still running; nothing needs you yet".
 - `room_state`'s recent-bus section is dominated by claim and release lines; the lead had to run

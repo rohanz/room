@@ -100,3 +100,17 @@ two sessions in one folder can overwrite each other's snapshots (receipts are re
    effort and budget in the worker prompt (8), linked inputs (7).
 3. Hygiene and cost: symlinks, default ignores, churn debounce, HEAD settling (6), shared graph
    index (9), compact `room_state` and claim granularity (5).
+
+## Verified live after 0.8.0 (2026-09-21)
+
+Two live runs with real Codex workers on a scratch repo with a gitignored, linked data folder.
+The first found a regression and four defects at the seams between features; all were fixed the
+same day and the second run passed every check: a lead waiting on a running worker is told
+"nothing yet; 1 worker still running"; a worker's own merge preview works with a linked input;
+`room_collect` succeeds the instant a worker reports done, commits its new untracked file and
+merges its branch; the worker then retires; a worker with a bad model name is reported dead
+within five seconds with the real error from its log; a fast worker that finished properly is not
+reported dead; no conflict alarm appears; the linked data never enters the room. The regression:
+marking a message seen when a Claude wake-up was sent could make an interrupt vanish, since a
+send is not proof of delivery; removed, extracted and tested.
+
