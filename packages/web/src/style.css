@@ -362,7 +362,7 @@ h2, p { margin: 0; }
 /* Never stretch: a taller item on a line would inflate its pill-shaped neighbours into circles. */
 .filter-chips { flex-wrap: wrap; align-items: flex-start; gap: 8px; overflow: visible; }
 .filter-chip { font-size: 12px; padding: 4px 10px; }
-.priority-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.priority-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
 .priority-filter-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 3px 9px; border-radius: 999px; color: var(--ink); background: var(--line-soft); font-size: 12px; }
 .priority-filter-chip.greyed { opacity: .75; background: transparent; }
 .priority-filter-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--muted); }

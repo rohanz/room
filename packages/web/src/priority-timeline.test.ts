@@ -82,6 +82,20 @@ describe('timeline priority chips', () => {
     expect(s.panel.textContent).not.toContain('Ada api')
   })
 
+  it('never moves, expands or collapses the area/people row above it', () => {
+    const s = setup([scope('s-old', 'Old', 'legacy', 0, 'fyi'), ...Array.from({ length: 5 }, (_, i) => note(`old-${i}`, 'Old', i + 1, 'fyi')), scope('s-ada', 'Ada', 'api', 9), ...Array.from({ length: 35 }, (_, i) => note(`new-${i}`, 'Ada', i + 10, 'notify'))])
+    const row = () => [...s.panel.querySelectorAll<HTMLElement>('.timeline-head > .filter-chips > *')].map(node => `${node.textContent}${node.hidden ? ' (hidden)' : ''}`)
+    const before = row()
+    expect(before).toContain('Old (hidden)') // Old is outside the window, so it sits behind "Show all"
+    s.priority('notify').click()             // only Old's fyi notes are left in the list
+    expect(s.panel.textContent).toContain('old-0')
+    expect(row()).toEqual(before)
+    s.panel.querySelector<HTMLButtonElement>('.more-chips')!.click()
+    const expanded = row()
+    s.priority('notify').click()
+    expect(row()).toEqual(expanded)          // and an expanded row stays expanded
+  })
+
   it('filters before windowing so the last 30 selected entries are shown', () => {
     const messages = [scope('scope', 'Ada', 'api', 0, 'fyi')]
     for (let i = 0; i < 35; i++) messages.push(note(`interrupt-${i}`, 'Ada', i + 1, 'interrupt'))

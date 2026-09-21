@@ -868,9 +868,12 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
     const conflicts = window.flatMap(e => e.conflict ? [e.conflict] : [])
     const ids = new Set(window.map(e => e.message.id))
     const episodes = clipTimelineEpisodes(allEpisodes, ids)
+    // The area/people row is chosen from the window as it would be with every priority on, so a priority chip never moves it.
+    const chipWindow = areaPersonMatching.slice(-windowSize)
+    const chipEpisodes = clipTimelineEpisodes(allEpisodes, new Set(chipWindow.map(e => e.message.id)))
     const groups = participantGroups(conn)
-    const prominentPeople = new Set([...groups.active.map(p => p.name), ...episodes.map(e => e.person), ...timelinePeople(window.flatMap(e => e.conflict ? e.conflict.events : [e.message])), ...(focus.person ? [focus.person] : [])])
-    const prominentAreas = new Set([...groups.active.flatMap(p => p.scope ? [p.scope.area, ...(p.scope.areas ?? [])] : []), ...episodes.map(e => e.area), ...(areaFilter ? [areaFilter] : [])])
+    const prominentPeople = new Set([...groups.active.map(p => p.name), ...chipEpisodes.map(e => e.person), ...timelinePeople(chipWindow.flatMap(e => e.conflict ? e.conflict.events : [e.message])), ...(focus.person ? [focus.person] : [])])
+    const prominentAreas = new Set([...groups.active.flatMap(p => p.scope ? [p.scope.area, ...(p.scope.areas ?? [])] : []), ...chipEpisodes.map(e => e.area), ...(areaFilter ? [areaFilter] : [])])
     // Everything present at first paint is "old"; only later arrivals animate in.
     if (!primed) { for (const e of episodes) { seen.add(`ep:${e.id}`); for (const it of e.items) seen.add(it.message.id) }; primed = true }
     const areas = Array.from(new Set([...allEpisodes.map(episode => episode.area), ...prominentAreas])).sort()
@@ -894,7 +897,6 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
       button.onclick = () => {
         selectedPriorities = toggleTimelinePriority(selectedPriorities, priority)
         writeTimelinePriorities(selectedPriorities)
-        windowSize = TIMELINE_WINDOW
         render()
       }
       return button
