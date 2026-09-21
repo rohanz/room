@@ -240,9 +240,10 @@ describe('session gating', () => {
   it('reports the exact command only when the last clean combined preview tests passed', async () => {
     const t = setup()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
-    expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'true' })).toContain('exit 0')
+    const passing = "printf '=== 1 passed in 0.1s ===\\n'"
+    expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: passing })).toContain('tests: PASSED')
     const out = await t.tools.call('room_done', { summary: 'implementation done; local tests are failing on teammate files' })
-    expect(out).toContain('The combined preview passed `true`.')
+    expect(out).toContain(`The combined preview passed \`${passing}\`.`)
     expect(out).not.toContain('caused by')
 
     const failed = setup()
@@ -687,6 +688,40 @@ describe('preview merge', () => {
     expect(readFileSync(`${dir}/app.py`, 'utf8')).toBe(COMMITTED) // clone untouched
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
     expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'true' })).toContain('need a human first')
+  })
+
+  it('does not certify a zero-exit failure summary and uses the same result for room_done', async () => {
+    const t = setup()
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    const out = await t.tools.call('room_preview_merge', { person: 'Kieran', run: "printf '=== 1 failed, 2 passed in 0.1s ===\\n'" })
+    expect(out).toContain('=== 1 failed, 2 passed in 0.1s ===')
+    expect(out).toContain('tests: FAILED (exit 0)')
+    const done = await t.tools.call('room_done', { summary: 'local tests failed' })
+    expect(done).not.toContain('combined preview passed')
+  })
+
+  it('strips Room control variables but provides the merged-tree marker', async () => {
+    vi.stubEnv('ROOM_PREVIEW_SECRET', 'must-not-leak')
+    try {
+      const t = setup()
+      t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+      const out = await t.tools.call('room_preview_merge', {
+        person: 'Kieran',
+        run: 'test -z "$ROOM_PREVIEW_SECRET" && test -n "$ROOM_MERGED_TREE" && echo environment-clean',
+      })
+      expect(out).toContain('environment-clean')
+      expect(out).toContain('exit 0')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('propagates a failing pipeline stage when bash is available', async () => {
+    const t = setup()
+    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    const out = await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'false | cat' })
+    expect(out).toContain('exit 1')
+    expect(out).toContain('tests: FAILED (exit 1)')
   })
 })
 

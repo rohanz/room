@@ -630,7 +630,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(all).toContain('x = 100')
     expect(all).toContain('tier = "gold"')
     expect(all).toContain('exit 0')
-    expect(all).toMatch(/tests: PASSED \(exit 0\)$/)
+    expect(all).toMatch(/tests: exit 0 \(no test summary recognised\)$/)
     const failed = await leadTools.call('room_preview_merge', { people: ['rohanz+money', 'rohanz+tiers'], run: "printf 'Tests: 1 failed, 1 total\\n'; exit 3" })
     expect(failed).toMatch(/Tests: 1 failed, 1 total\ntests: FAILED \(exit 3\)$/)
     // dismissing the team-room worker signals only the team-room process; the local one is untouched

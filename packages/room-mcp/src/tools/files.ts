@@ -126,7 +126,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       let ranOk = !run
       if (run) {
         if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
-        else { const r = await runInMergedTree(caller, ancestor, merged, run); out.push(r); ranOk = /: exit 0\n/.test(r) }
+        else { const result = await runInMergedTree(caller, ancestor, merged, run); out.push(result.text); ranOk = result.passed }
       }
       caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run } : {}) }
       // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
@@ -177,16 +177,32 @@ function mirrorLinks(cloneDir: string, scratchDir: string, src: string, dst: str
   }
 }
 
-/** Runner summaries plus an authoritative exit verdict; at most six lines total. */
-export function testVerdict(output: string, code: number | null): string {
+export interface TestResult { text: string; passed: boolean }
+
+/** Runner summaries plus an authoritative verdict; at most six lines total. */
+export function testVerdict(output: string, code: number | null): TestResult {
   const lines = stripVTControlCharacters(output).split(/\r?\n/).map(line => line.trim())
-  const summaries = lines.filter(line => /^(?:Test Files\s+|Tests(?:\s+|:))/.test(line)
+  const summaries = lines.filter(line => /^(?:Test Files\s+|Tests(?:\s+|:)|FAIL\b|ok\s|test result:|FAILED\s*\(|OK(?:\s*\(|$))/.test(line)
     || /^=+ .*(?:passed|failed|error|skipped|deselected|no tests ran).* =+$/i.test(line))
-  return [...summaries.slice(-5), `tests: ${code === 0 ? 'PASSED' : 'FAILED'} (exit ${code ?? 'unknown'})`].join('\n')
+  const failed = lines.some(line => /\b[1-9]\d*\s+(?:failed|errors?)\b/i.test(line)
+    || /^FAIL(?:\s|\t|$)/.test(line)
+    || /^test result:\s*FAILED\b/i.test(line)
+    || /^FAILED\s*\(/.test(line))
+  const passedSummary = lines.some(line => /\b[1-9]\d*\s+passed\b/i.test(line)
+    || /^ok\s+\S+/.test(line)
+    || /^test result:\s*ok\b/i.test(line)
+    || /^OK(?:\s*\(|$)/.test(line))
+  const passed = code === 0 && passedSummary && !failed
+  const verdict = code !== 0 || failed
+    ? `tests: FAILED (exit ${code ?? 'unknown'})`
+    : passed
+      ? 'tests: PASSED (exit 0)'
+      : 'tests: exit 0 (no test summary recognised)'
+  return { passed, text: [...summaries.slice(-5), verdict].join('\n') }
 }
 
 /** Materialise ancestor + merged files in a scratch dir (sharing .venv/node_modules from my clone) and run a command there. */
-async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string): Promise<string> {
+async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string): Promise<TestResult> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-'))
   try {
     await materializeGitTree(s.dir, ancestor, dir)
@@ -198,16 +214,20 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
       fs.writeFileSync(abs, text)
     }
     linkSharedDirs(s.dir, dir)
+    const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
+    env.ROOM_MERGED_TREE = dir
     const result = await new Promise<{ code: number | null; out: string }>(resolve => {
-      execFile('sh', ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ROOM_MERGED_TREE: dir } }, (err, stdout, stderr) => {
+      execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
         const raw = err ? (err as { code?: unknown }).code : 0
         resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
       })
     })
     const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
-    return `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${testVerdict(result.out, result.code)}`
+    const verdict = testVerdict(result.out, result.code)
+    return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${verdict.text}` }
   } catch (e) {
-    return `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}`
+    return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
