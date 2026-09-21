@@ -80,14 +80,27 @@ describe('unavailable addressed recipients', () => {
     expect(await tools.room_send({ type: 'answer', inReplyTo: original.id, text: 'because' })).toContain('Ada is offline')
   })
 
-  it('allows follow-ups to a done worker whose process still lives, including a reused archived name', async () => {
+  it('allows questions to a running worker whose process still lives, including a reused archived name', async () => {
     const { s, state, tools } = fixture()
     const old = worker()
     s.room.setWorker(old)
     s.room.retireParticipant(old.name, { ...old, summary: 'old', finishedAt: old.finishedAt!, retiredAt: clock, files: [], fileCount: 0, outcome: 'clean' })
-    s.room.setWorker(worker({ startedAt: clock, exitCode: undefined }))
+    s.room.setWorker(worker({ status: 'running', startedAt: clock, exitCode: undefined }))
     vi.mocked(state.workerAlive).mockReturnValue(true)
     expect(await tools.room_send({ type: 'question', to: old.name, text: 'follow-up' })).toContain('to block for the answer')
+  })
+
+  it.each(['done', 'failed', 'dismissed'] as const)('returns immediately for a %s worker whose process still lives', async status => {
+    vi.useFakeTimers()
+    const { s, state, tools } = fixture()
+    s.room.setWorker(worker({ status, exitCode: undefined, finishedAt: clock }))
+    vi.mocked(state.workerAlive).mockReturnValue(true)
+    const sent = await tools.room_send({ type: 'question', to: 'lead+state', text: 'More?' })
+    const notice = 'lead+state reported ' + status + ' 0m ago and will not answer; its summary: Fixed state. Tests passed.'
+    expect(sent).toContain(notice)
+    expect(sent).not.toContain('to block for the answer')
+    expect(await tools.room_wait({ questionId: s.room.messages().at(-1)!.id })).toBe(notice)
+    expect(state.setPresence).not.toHaveBeenCalled()
   })
 
   it('recognizes offline teammates from retained membership even without current edits or messages', async () => {

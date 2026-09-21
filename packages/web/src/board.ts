@@ -1,5 +1,5 @@
 import { subscribeRender } from './scheduler.ts'
-import { formatCount, areaMembershipSummary, participantClaimLine, personLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
+import { activityLabel, formatCount, areaMembershipSummary, participantClaimLine, personLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
 import type { Conn } from './conn.ts'
 import { h as element, conflictCard, messageBody, participantInput, participantGroups, groupedPeople, compactChips, timelinePeople, TIMELINE_WINDOW, relativeTime } from './panels.ts'
 import { collapseConflictTimeline } from './timeline.ts'
@@ -53,7 +53,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
         h('p', { class: 'participant-line', title: label }, label),
         h('div', { class: 'sharing muted' }, `Sharing: ${share}`),
         h('div', { class: 'person-claims' }, ...(person.claims.length ? person.claims.map(claim => h('div', { class: 'person-claim', title: participantClaimLine(claim), tabIndex: 0 }, participantClaimLine(claim))) : [h('p', { class: 'muted' }, 'No claims yet — agents claim lines before editing')])),
-        h('div', { class: 'board-card-footer' }, h('span', {}, formatCount(person.files.length, 'changed file')), h('span', { class: 'muted', title: person.online ? 'Online' : 'Offline' }, person.latestActive ? `active ${relativeTime(person.latestActive)}` : person.online ? 'Online · activity unknown' : 'Offline')),
+        h('div', { class: 'board-card-footer' }, h('span', {}, formatCount(person.files.length, 'changed file')), h('span', { class: 'muted', title: person.online ? 'Online' : 'Offline' }, person.online || worker ? activityLabel(person.latestActive, Date.now(), { worker }) : 'Offline')),
         h('div', { class: 'last-message' }, last ? h('span', {}, ...messageBody(last)) : h('span', { class: 'muted' }, 'No messages yet')))
       return el
     }

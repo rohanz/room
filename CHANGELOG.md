@@ -2,6 +2,8 @@
 
 ## 0.7.0 — 2026-09-21
 
+- Treat reported-done, failed and dismissed workers as unable to answer even before process exit; question waits return immediately. Participant lines show recency once, and shared web/room_state activity labels use finished-worker timestamps instead of recent tool activity.
+
 - Local rooms remember. The relay saves the room's memory (timeline and its archive, finished-worker records, worker records, scopes, colours) to `<git dir>/room-local/` and loads it on start; it never saves file text, base texts, graphs or claims, which present agents rebuild. Reading a file from a finished worker that is no longer connected falls back to its worktree on disk, labelled as such. `room_close` on a local room forgets it.
 - Add Node 22 GitHub Actions CI for typechecking, identity-isolated tests, web/plugin builds and committed plugin asset freshness, with a README status badge.
 - Asking someone who cannot answer no longer times out: `room_send` to an exited or retired worker replies at once with when it finished and its one-line summary, an unknown name lists the participants, and `room_wait` on that question returns the same line. An offline teammate keeps the old behaviour plus "X is offline; it will see this when it returns".

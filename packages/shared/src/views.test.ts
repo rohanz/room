@@ -122,3 +122,14 @@ it('uses consistent activity wording at the action and worker thresholds', async
   expect(workerLine({ worker, changedCount: 0, now: 360_000, lastActive: 350_000 })[0]).not.toContain('quiet')
   expect(workerLine({ worker, changedCount: 0, now: 360_000, processGone: true })[0]).toContain('running (process gone)')
 })
+
+ it.each(['done', 'failed', 'dismissed'] as const)('uses completion time for %s worker activity', async status => {
+  const { activityLabel } = await import('./views.js')
+  expect(activityLabel(359_000, 360_000, { worker: { status, finishedAt: 0 } })).toBe('finished 6m ago')
+  expect(activityLabel(359_000, 360_000, { worker: { status } })).toBe('finished 1s ago')
+  expect(activityLabel(undefined, 360_000, { worker: { status } })).toBe('finished (time unknown)')
+})
+
+it.each([undefined, 'idle', 'synced'])('omits duplicate recency for status %s', status => {
+  expect(personLine({ name: 'Ada', presences: [{ user: { name: 'Ada', kind: 'agent', color: '#000' }, status, lastActive: Date.now() }], changedPaths: [], messages: [], share: 'full' })).toBe('no task declared')
+})

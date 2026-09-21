@@ -21,11 +21,15 @@ export function formatCount(count: number, singular: string, plural = singular +
 }
 
 /** Wording for action recency; connectivity and process liveness are separate facts. */
-export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean } = {}): string {
-  if (lastActive === undefined || !Number.isFinite(lastActive)) return options.running ? 'running' : 'activity unknown'
+export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; worker?: Pick<Worker, 'status' | 'finishedAt'> } = {}): string {
+  const finished = options.worker !== undefined && options.worker.status !== 'running'
+  const running = options.worker ? options.worker.status === 'running' : options.running
+  if (finished) lastActive = options.worker!.finishedAt ?? lastActive
+  if (lastActive === undefined || !Number.isFinite(lastActive)) return finished ? 'finished (time unknown)' : running ? 'running' : 'activity unknown'
   const seconds = Math.max(0, Math.floor((now - lastActive) / 1000))
   const duration = seconds < 60 ? seconds + 's' : seconds < 3600 ? Math.floor(seconds / 60) + 'm' : seconds < 86400 ? Math.floor(seconds / 3600) + 'h' : Math.floor(seconds / 86400) + 'd'
-  if (options.running) return now - lastActive > 300_000 ? 'running · quiet ' + duration : 'running'
+  if (finished) return 'finished ' + duration + ' ago'
+  if (running) return now - lastActive > 300_000 ? 'running · quiet ' + duration : 'running'
   return seconds < 90 ? 'working' : 'last action ' + duration + ' ago'
 }
 
@@ -176,7 +180,7 @@ export function personLine(input: PersonLineInput): string {
   if (input.scope) what = `working on ${scopeLine(input.scope)}`
   else if (p?.status?.startsWith('done')) what = p.status
   else if (lastDone && (!p || p.status === 'idle' || p.status === 'synced')) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`
-  else what = p ? `${p.status && !['idle', 'synced'].includes(p.status) ? p.status : activityLabel(p.lastActive)}, no task declared` : 'offline'
+  else what = p ? `${p.status && !['idle', 'synced'].includes(p.status) ? p.status + ', ' : ''}no task declared` : 'offline'
   const share = input.share === 'full' ? '' : `; shares ${input.share}${input.share === 'intent' ? ' (no file text)' : ' (file text only under their scope paths)'}`
   return `${what}${share}${input.changedPaths.length ? `; uncommitted, not yet pushed: ${input.changedPaths.join(', ')}` : ''}`
 }

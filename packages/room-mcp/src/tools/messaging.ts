@@ -1,4 +1,4 @@
-import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg } from '@room/shared'
+import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
 import type { Session } from '../session.js'
 import { isPrName } from '../prs.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -31,12 +31,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     // A live generation supersedes any archive under the same participant name.
     const retired = !worker && s.room.retiredWorkers().filter(w => w.name === name).sort((a, b) => b.retiredAt - a.retiredAt)[0]
     const exited = worker && (worker.exitCode !== undefined || (s.local ? !workerAlive(s, worker) : worker.status !== 'running' && !present))
-    if (retired || exited) {
+    // Headless workers never read another message after reporting a terminal status.
+    const terminalStatuses = { running: false, done: true, failed: true, dismissed: true } satisfies Record<WorkerStatus, boolean>
+    const terminal = worker && terminalStatuses[worker.status]
+    if (retired || exited || terminal) {
       const record = retired || worker!
       const finished = record.finishedAt
       const ago = finished === undefined ? '' : ` ${Math.max(0, Math.floor((now() - finished) / 60_000))}m ago`
       const summary = record.summary?.replace(/\s+/g, ' ').trim() || 'no summary recorded'
-      return { text: `${name} finished${ago} and will not answer; its summary: ${summary}`, terminal: true }
+      const verb = retired || exited ? 'finished' : `reported ${worker!.status}`
+      return { text: `${name} ${verb}${ago} and will not answer; its summary: ${summary}`, terminal: true }
     }
     if (present || worker) return undefined
     const known = new Set([

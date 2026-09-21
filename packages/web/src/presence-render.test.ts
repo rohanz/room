@@ -66,3 +66,18 @@ it('renders the shared model line with ellipsis styling and full title/tooltip o
   expect(css).toMatch(/\.participant-identity\s*\{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/)
   room.doc.destroy()
 })
+
+it.each(['done', 'failed', 'dismissed', 'running'] as const)('shares %s worker recency across People and Board', status => {
+  vi.useFakeTimers(); vi.setSystemTime(600_000)
+  vi.stubGlobal('document', { createElement: () => new Element(), activeElement: null, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+  const room = new RoomDoc()
+  room.setWorker({ name: 'Ada+test', tag: 'test', lead: 'Ada', host: 'codex', task: 'test', dir: '/', branch: 'test', pid: 1, startedAt: 0, status, finishedAt: 240_000 })
+  const states = new Map([[1, { user: { name: 'Ada+test', kind: 'agent' }, lastActive: 599_000 }]])
+  const conn = { room, provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
+  const people = participantsPanel(conn, createFocusState()) as unknown as Element
+  const board = boardPanel(conn, vi.fn()) as unknown as Element
+  const label = status === 'running' ? 'running' : 'finished 6m ago'
+  expect(people.find('card-foot')?.textContent).toBe('Online · ' + label)
+  expect(board.find('board-card-footer')?.textContent).toContain(label)
+  room.doc.destroy()
+})

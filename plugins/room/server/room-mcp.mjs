@@ -30073,10 +30073,14 @@ function formatCount(count, singular, plural = singular + "s") {
   return count + " " + (count === 1 ? singular : plural);
 }
 function activityLabel(lastActive, now = Date.now(), options = {}) {
-  if (lastActive === void 0 || !Number.isFinite(lastActive)) return options.running ? "running" : "activity unknown";
+  const finished = options.worker !== void 0 && options.worker.status !== "running";
+  const running = options.worker ? options.worker.status === "running" : options.running;
+  if (finished) lastActive = options.worker.finishedAt ?? lastActive;
+  if (lastActive === void 0 || !Number.isFinite(lastActive)) return finished ? "finished (time unknown)" : running ? "running" : "activity unknown";
   const seconds = Math.max(0, Math.floor((now - lastActive) / 1e3));
   const duration3 = seconds < 60 ? seconds + "s" : seconds < 3600 ? Math.floor(seconds / 60) + "m" : seconds < 86400 ? Math.floor(seconds / 3600) + "h" : Math.floor(seconds / 86400) + "d";
-  if (options.running) return now - lastActive > 3e5 ? "running \xB7 quiet " + duration3 : "running";
+  if (finished) return "finished " + duration3 + " ago";
+  if (running) return now - lastActive > 3e5 ? "running \xB7 quiet " + duration3 : "running";
   return seconds < 90 ? "working" : "last action " + duration3 + " ago";
 }
 function participantIdentityLine(current, name, worker) {
@@ -30155,7 +30159,7 @@ function personLine(input) {
   if (input.scope) what = `working on ${scopeLine(input.scope)}`;
   else if (p?.status?.startsWith("done")) what = p.status;
   else if (lastDone && (!p || p.status === "idle" || p.status === "synced")) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`;
-  else what = p ? `${p.status && !["idle", "synced"].includes(p.status) ? p.status : activityLabel(p.lastActive)}, no task declared` : "offline";
+  else what = p ? `${p.status && !["idle", "synced"].includes(p.status) ? p.status + ", " : ""}no task declared` : "offline";
   const share = input.share === "full" ? "" : `; shares ${input.share}${input.share === "intent" ? " (no file text)" : " (file text only under their scope paths)"}`;
   return `${what}${share}${input.changedPaths.length ? `; uncommitted, not yet pushed: ${input.changedPaths.join(", ")}` : ""}`;
 }
@@ -36122,8 +36126,9 @@ function handlers(state) {
       out.push(`participants${all2 ? "" : " overlapping your work"} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? "" : "s"}` : ""}):`);
       for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
-        const ago = p ? activityLabel(p.lastActive, now()) : "offline";
-        const who2 = participantIdentityLine(ps, n, s.room.workerOf(n));
+        const worker = s.room.workerOf(n);
+        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker }) : "offline";
+        const who2 = participantIdentityLine(ps, n, worker);
         const theirs = areasFor(s, n);
         const areaSummary2 = areaMembershipSummary(theirs);
         out.push(`  - ${who2}${n === s.me.name ? " (you)" : ""}: ${personLine2(s, n)}${areaSummary2 ? ` \xB7 ${areaSummary2}` : ""} \xB7 ${ago}`);
@@ -37810,12 +37815,15 @@ function handlers4(state) {
     const worker = s.room.workerOf(name);
     const retired = !worker && s.room.retiredWorkers().filter((w) => w.name === name).sort((a, b) => b.retiredAt - a.retiredAt)[0];
     const exited = worker && (worker.exitCode !== void 0 || (s.local ? !workerAlive(s, worker) : worker.status !== "running" && !present));
-    if (retired || exited) {
+    const terminalStatuses = { running: false, done: true, failed: true, dismissed: true };
+    const terminal = worker && terminalStatuses[worker.status];
+    if (retired || exited || terminal) {
       const record2 = retired || worker;
       const finished = record2.finishedAt;
       const ago = finished === void 0 ? "" : ` ${Math.max(0, Math.floor((now() - finished) / 6e4))}m ago`;
       const summary = record2.summary?.replace(/\s+/g, " ").trim() || "no summary recorded";
-      return { text: `${name} finished${ago} and will not answer; its summary: ${summary}`, terminal: true };
+      const verb = retired || exited ? "finished" : `reported ${worker.status}`;
+      return { text: `${name} ${verb}${ago} and will not answer; its summary: ${summary}`, terminal: true };
     }
     if (present || worker) return void 0;
     const known = new Set([

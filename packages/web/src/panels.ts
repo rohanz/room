@@ -249,7 +249,7 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
         : h('div', { class: 'micro muted' }, 'no active claims'),
       h('div', { class: 'files-summary' }, h('span', { class: 'micro-label' }, 'FILES'),
         h('span', { class: `mono ${participant.files.length ? '' : 'muted'}` }, participant.files.join(', ') || 'none')),
-      h('div', { class: 'card-foot muted', title: participant.online ? 'Online' : 'Offline' }, participant.online ? `Online · ${activityLabel(participant.latestActive)}` : 'Offline'))
+      h('div', { class: 'card-foot muted', title: participant.online ? 'Online' : 'Offline' }, participant.online || worker ? `${participant.online ? 'Online' : 'Offline'} · ${activityLabel(participant.latestActive, Date.now(), { worker })}` : 'Offline'))
       card.onclick = () => focus.set(focus.person === participant.name ? null : participant.name)
       return card
     }, expanded)

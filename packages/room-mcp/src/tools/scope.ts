@@ -81,8 +81,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`participants${all ? '' : ' overlapping your work'} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? '' : 's'}` : ''}):`)
       for (const n of names) {
         const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
-        const ago = p ? activityLabel(p.lastActive, now()) : 'offline'
-        const who = participantIdentityLine(ps, n, s.room.workerOf(n))
+        const worker = s.room.workerOf(n)
+        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker }) : 'offline'
+        const who = participantIdentityLine(ps, n, worker)
         const theirs = areasFor(s, n)
         const areaSummary = areaMembershipSummary(theirs)
         out.push(`  - ${who}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)}${areaSummary ? ` · ${areaSummary}` : ''} · ${ago}`)
