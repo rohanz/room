@@ -74,7 +74,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const prefix = moved ? `${moved}\n\n` : ''
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) : ''
         const sharing = s2 ? await teamSharingNote(s2) : ''
-        const health = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now()) : ''
+        const health = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name, !s2.local) : ''
         const autoTag = s2?.autoTagNote
         if (s2) delete s2.autoTagNote
         return prefix + (sharing ? sharing + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)

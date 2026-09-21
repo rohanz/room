@@ -9,6 +9,7 @@ import { RoomDoc } from '@room/shared'
 import { consumeHookDisclosure, consumeHookNotice, createWriteIntentReader, HooksBridge, hookHealthNote, syncHookSeen, writePendingHookContext } from '../src/hooks-bridge.js'
 import type { Session } from '../src/session.js'
 import { hasCompany } from '../src/company.js'
+import { AGENT_INSTRUCTIONS } from '../src/prompt.js'
 import type { Worker } from '@room/shared'
 
 vi.mock('node:child_process', async importOriginal => {
@@ -31,6 +32,7 @@ beforeEach(() => {
   vi.stubEnv('ROOM_HOST', '')
   vi.stubEnv('ROOM_WORKER_HOST', '')
   rmSync(join(dir, '.git/room-hook-activity.json'), { force: true })
+  rmSync(join(dir, '.git/room-hook-session-activity.json'), { force: true })
   rmSync(join(dir, '.git/room-session.json'), { force: true })
   rmSync(join(dir, '.git/room-state.json'), { force: true })
   rmSync(join(dir, '.git/room-hook-seen.json'), { force: true })
@@ -410,7 +412,7 @@ describe('hooks bridge + plugin hook scripts', () => {
     const room = new RoomDoc()
     const s = session(room)
     const queued: string[] = []
-    const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan' || m.type === 'conflict' || m.type === 'base', isSeen: () => false, queue: async (id, text) => { queued.push(`${id}: ${text.split('\n')[0]}`) } })
+    const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan' || m.type === 'conflict' || m.type === 'base', isSeen: () => false, queue: async (id, text) => { queued.push(`${id}: ${text}`) } })
     b.start()
     const peer = addPresence(s, 'Kieran')
     addPresence(s, 'Kieran')
@@ -430,6 +432,8 @@ describe('hooks bridge + plugin hook scripts', () => {
     await new Promise(r => setTimeout(r, 50))
     expect(queued.length).toBe(3)
     expect(queued[2]).toContain('moved the base')
+    expect(queued[2]).toContain("handle Git's actual result")
+    expect(queued[2]).not.toContain('offer to commit and push')
     expect(queued[0]).toContain('thread-1: [room] [notify]')
     expect(queued[1]).toContain('stop!')
     b.stop()
@@ -708,20 +712,52 @@ it('does no activity, intent or transcript work without state or company', async
   expect(existsSync(activity)).toBe(false)
 })
 
-it('reports absent hooks once after tool-use grace, never while alone or after current activity', () => {
+it('tracks SessionStart and PreToolUse receipts separately', async () => {
+  await runHook('session-start.mjs', { session_id: 'separate', cwd: dir })
+  expect(JSON.parse(readFileSync(join(dir, '.git/room-hook-session-activity.json'), 'utf8'))).toMatchObject({ session_id: 'separate', event: 'SessionStart' })
+  expect(existsSync(join(dir, '.git/room-hook-activity.json'))).toBe(false)
+  writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ sessionId: 'separate', company: true }))
+  await runHook('before-edit.mjs', { session_id: 'separate', cwd: dir, tool_name: 'Read' })
+  expect(JSON.parse(readFileSync(join(dir, '.git/room-hook-activity.json'), 'utf8'))).toMatchObject({ session_id: 'separate', event: 'PreToolUse' })
+})
+
+it('reports unverified pre-edit coverage on team join and first scope only', () => {
+  vi.stubEnv('ROOM_HOST', 'codex')
   const s = session(new RoomDoc())
   const now = Date.now()
-  expect(hookHealthNote(s, false, now)).toBe('')
-  expect(hookHealthNote(s, true, now + 1)).toBe('')
-  expect(hookHealthNote(s, true, now + 30_001)).toContain('hooks are not running here')
-  expect(hookHealthNote(s, true, now + 60_000)).toBe('')
+  expect(hookHealthNote(s, false, now, 'room_join')).toBe('')
+  expect(hookHealthNote(s, true, now + 1, 'room_join')).toContain('approve them once in an interactive Codex session')
+  expect(hookHealthNote(s, true, now + 2, 'room_join')).toBe('')
+  expect(hookHealthNote(s, true, now + 3, 'room_scope')).toContain('approve them once in an interactive Codex session')
+  expect(hookHealthNote(s, true, now + 4, 'room_scope')).toBe('')
+  expect(hookHealthNote(s, true, now + 60_000, 'room_state')).toBe('')
+
+  const sessionOnly = session(new RoomDoc())
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'session-only' }))
+  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'session-only', event: 'SessionStart', at: now + 1 }))
+  expect(hookHealthNote(sessionOnly, true, now + 2, 'room_join')).toContain('Pre-edit coordination is not confirmed yet')
+
   const healthy = session(new RoomDoc())
-  expect(hookHealthNote(healthy, true, now)).toBe('')
   writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'healthy' }))
-  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'healthy', at: now + 1 }))
-  expect(hookHealthNote(healthy, true, now + 30_000)).toBe('')
-  expect(hookHealthNote(healthy, true, now + 60_000)).toBe('')
-  s.awareness.destroy(); healthy.awareness.destroy()
+  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'healthy', event: 'PreToolUse', at: now - 60_000 }))
+  expect(hookHealthNote(healthy, true, now + 2, 'room_join')).toBe('')
+  expect(hookHealthNote(healthy, true, now + 3, 'room_scope')).toBe('')
+  s.awareness.destroy(); sessionOnly.awareness.destroy(); healthy.awareness.destroy()
+})
+
+it('uses the detected host in missing-hook guidance', () => {
+  vi.stubEnv('ROOM_HOST', 'claude')
+  const s = session(new RoomDoc())
+  const note = hookHealthNote(s, true, Date.now(), 'room_join')
+  expect(note).toContain("plugin's hooks are not running")
+  expect(note).toContain('reinstall or re-enable the plugin')
+  expect(note).not.toContain('Codex')
+  s.awareness.destroy()
+})
+
+it('tells agents to claim the files they will edit, not an overbroad directory', () => {
+  expect(AGENT_INSTRUCTIONS()).toContain('claim the files you will edit')
+  expect(AGENT_INSTRUCTIONS()).not.toContain('prefer one directory claim')
 })
 
 it('company includes who and their scope; nearby claims are needed only for overlapping writes', async () => {

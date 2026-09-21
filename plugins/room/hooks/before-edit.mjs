@@ -27,8 +27,8 @@ const paths = (isShellTool(ev.tool_name) ? shellLooksLikeWrite(ev.tool_input) : 
   ? pathsOf(ev.tool_name, ev.tool_input, root) : []
 recordWriteIntents(stateDir, ev.session_id, root, paths, now)
 const previous = readJson(activityFile, null)
-if (previous?.session_id !== ev.session_id || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
-  try { fs.writeFileSync(activityFile, JSON.stringify({ at: now, session_id: ev.session_id })) } catch { /* best effort */ }
+if (previous?.session_id !== ev.session_id || previous?.event !== 'PreToolUse' || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
+  try { fs.writeFileSync(activityFile, JSON.stringify({ at: now, session_id: ev.session_id, event: 'PreToolUse' })) } catch { /* best effort */ }
 }
 const seenFile = path.join(stateDir, 'room-hook-seen.json')
 const hookSeen = readHookSeen(seenFile)

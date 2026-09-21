@@ -157,7 +157,7 @@ export class HooksBridge {
   private unobserve: (() => void)[] = []
   private delivering = new Set<string>()
   constructor(private s: Session, private o: HooksBridgeOptions) {
-    hookHealth.set(s, { startedAt: this.now(), since: this.now(), calls: 0, noted: false, observed: false })
+    hookHealth.set(s, newHookHealth(this.now()))
   }
 
   start(): void {
@@ -286,7 +286,7 @@ export class HooksBridge {
       return
     }
     const text = m.type === 'base'
-      ? `[room] ${formatMsg(m)}\nYou have uncommitted work. Run git pull --ff-only, re-run room_preview_merge with the test command against anyone who changed the same files, then report and offer to commit and push.`
+      ? `[room] ${formatMsg(m)}\nYou have uncommitted work. Run git pull --ff-only, handle Git's actual result, re-run room_preview_merge with the test command against anyone who changed the same files, then continue.`
       : `[room] ${formatMsg(m)}\nCall room_state, then react per the room-etiquette skill.`
     const delays = this.o.retryDelaysMs ?? [1000, 3000, 8000]
     for (let attempt = 0; ; attempt++) {
@@ -376,21 +376,42 @@ export function findThreadForDir(dir: string, since: number): string | undefined
   return best?.id
 }
 
-const hookHealth = new WeakMap<Session, { startedAt: number; since: number; calls: number; noted: boolean; observed: boolean }>()
+type HookHealth = { since: number; calls: number; noted: boolean; observed: boolean; joinNoted: boolean; scopeNoted: boolean }
+const hookHealth = new WeakMap<Session, HookHealth>()
+
+function newHookHealth(now: number): HookHealth {
+  return { since: now, calls: 0, noted: false, observed: false, joinNoted: false, scopeNoted: false }
+}
+
+function missingPreEditGuidance(s: Session): string {
+  const host = resolveSessionHost(s.dir)
+  if (host === 'claude') return "Pre-edit coordination is not confirmed yet; if your next edit shows no [room] context, the Room plugin's hooks are not running: reinstall or re-enable the plugin."
+  if (host === 'codex') return 'Pre-edit coordination is not confirmed yet; if the Room hooks were never approved, approve them once in an interactive Codex session.'
+  return 'Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.'
+}
 
 /** Tool calls are evidence that hooks should have run; don't diagnose idle or solo sessions. */
-export function hookHealthNote(s: Session, expected: boolean, now = Date.now()): string {
+export function hookHealthNote(s: Session, expected: boolean, now = Date.now(), tool?: string, team = !s.local): string {
   let health = hookHealth.get(s)
-  if (!health) { health = { startedAt: now, since: now, calls: 0, noted: false, observed: false }; hookHealth.set(s, health) }
-  if (!expected || health.noted || health.observed) return ''
-  if (!health.calls) health.since = now
-  health.calls++
+  if (!health) { health = newHookHealth(now); hookHealth.set(s, health) }
   try {
     const activity = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-hook-activity.json'), 'utf8'))
     const session = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-session.json'), 'utf8'))
-    if (typeof activity.at === 'number' && activity.at >= health.startedAt - 1_000 && activity.at <= now && activity.session_id === session.session_id) { health.observed = true; return '' }
+    if (activity.event === 'PreToolUse' && typeof activity.at === 'number' && activity.at <= now && activity.session_id === session.session_id) health.observed = true
   } catch { /* no evidence yet */ }
+  if (!expected || health.observed || health.noted) return ''
+  if (team && tool === 'room_join' && !health.joinNoted && !health.scopeNoted) {
+    health.joinNoted = true
+    return missingPreEditGuidance(s)
+  }
+  if (team && tool === 'room_scope' && !health.scopeNoted) {
+    health.scopeNoted = true
+    return missingPreEditGuidance(s)
+  }
+  if (health.joinNoted || health.scopeNoted) return ''
+  if (!health.calls) health.since = now
+  health.calls++
   if (health.calls < 2 || now - health.since < 30_000) return ''
   health.noted = true
-  return "hooks are not running here; you will not be shown teammates' claims before edits. In Codex, approve them once in an interactive session"
+  return missingPreEditGuidance(s)
 }
