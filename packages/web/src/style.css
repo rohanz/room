@@ -763,3 +763,15 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .file-more { display: block; width: 100%; padding: 8px 10px; text-align: left; }
 
 .participant-identity { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.worker-group { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
+.worker-group-heading, .finished-workers > summary { padding: 10px; font-size: 12px; }
+.worker-children { margin-left: 12px; border-left: 1px solid var(--line); }
+.worker-group .participant { width: 100%; }
+.finished-workers > summary, .more-chips > summary { cursor: pointer; color: var(--muted); }
+.archive-worker { padding: 10px; border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+.archive-worker p { margin: 6px 0; }
+.more-chips { align-self: center; font-size: 12px; }
+.more-chips > .filter-chips { padding: 8px 0; }
+.timeline-more { margin: 8px; color: var(--muted); }
+.state-pill.failed { background: var(--danger-bg); color: var(--danger-ink); }

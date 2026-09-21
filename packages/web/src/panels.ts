@@ -7,7 +7,9 @@ import {
   type ConflictSpan,
   areaMembershipSummary,
   colorFor,
-  deriveParticipants,
+  splitParticipants,
+  type ParticipantGroups,
+  type RetiredWorker,
   describeClaim,
   formatPlans,
   participantClaimLine,
@@ -62,6 +64,8 @@ export function relativeTime(at: number, now = Date.now()): string {
 
 export interface FocusState {
   person: string | null
+  timelinePeople: readonly string[]
+  setTimelinePeople(people: readonly string[]): void
   set(person: string | null): void
   subscribe(listener: () => void): void
 }
@@ -70,6 +74,12 @@ export function createFocusState(): FocusState {
   const listeners = new Set<() => void>()
   return {
     person: null,
+    timelinePeople: [],
+    setTimelinePeople(people) {
+      if (JSON.stringify(this.timelinePeople) === JSON.stringify(people)) return
+      this.timelinePeople = people
+      for (const listener of listeners) listener()
+    },
     set(person) {
       if (this.person === person) return
       this.person = person
@@ -149,6 +159,62 @@ export function participantInput(conn: Conn): ParticipantInput {
   }
 }
 
+/** Both presentations use the shared lifecycle policy. */
+export function participantGroups(conn: Conn): ParticipantGroups {
+  return splitParticipants({ ...participantInput(conn), retiredWorkers: conn.room.retiredWorkers() })
+}
+
+function archiveCard(worker: RetiredWorker): HTMLElement {
+  return h('article', { class: 'archive-worker' },
+    h('strong', { class: 'mono' }, worker.tag),
+    h('div', { class: 'muted' }, [worker.model ?? worker.host, worker.outcome].join(' · ')),
+    h('p', {}, worker.summary || worker.task),
+    h('div', { class: 'muted', title: worker.files.join(', ') }, `${worker.fileCount} files`),
+    h('time', { dateTime: new Date(worker.finishedAt).toISOString(), title: absoluteTime(worker.finishedAt) }, relativeTime(worker.finishedAt)))
+}
+
+/** Nest workers once, even when their lead has disconnected or has no retained presence. */
+export function groupedPeople(groups: ParticipantGroups, card: (person: Participant) => HTMLElement, expanded: Set<string>): { active: HTMLElement[]; offline: HTMLElement[] } {
+  const workerNames = new Set(groups.workerGroups.flatMap(group => group.active.map(p => p.name)))
+  const people = [...groups.active, ...groups.offlineTeammates]
+  const grouped = new Set(groups.workerGroups.map(group => group.lead))
+  const active = groups.active.filter(p => !workerNames.has(p.name) && !grouped.has(p.name)).map(card)
+  const offline = groups.offlineTeammates.filter(p => !grouped.has(p.name)).map(card)
+  for (const group of groups.workerGroups) {
+    const lead = people.find(p => p.name === group.lead)
+    const section = h('section', { class: 'worker-group' },
+      h('div', { class: 'worker-group-heading' }, `${group.lead} · ${group.running} running · ${group.retiredWorkers.length} finished`),
+      lead ? card(lead) : null,
+      h('div', { class: 'worker-children' }, ...group.active.map(card)))
+    if (group.retiredWorkers.length) {
+      const history = h('details', { class: 'finished-workers', open: expanded.has(group.lead) }, h('summary', {}, `${group.retiredWorkers.length} finished`))
+      // Ignore delayed toggle events from nodes replaced by a scheduled render.
+      history.ontoggle = () => { if (!history.isConnected) return; if (history.open) expanded.add(group.lead); else expanded.delete(group.lead) }
+      history.append(...group.retiredWorkers.map(archiveCard))
+      section.append(history)
+    }
+    if (group.active.length || lead?.online) active.push(section); else offline.push(section)
+  }
+  return { active, offline }
+}
+
+/** Keep historical controls available without filling the primary chip row. */
+export function compactChips(items: { key: string; node: HTMLElement }[], prominent: ReadonlySet<string>, open: boolean, toggle: (open: boolean) => void): HTMLElement[] {
+  const shown = items.filter(item => prominent.has(item.key)).map(item => item.node)
+  const hidden = items.filter(item => !prominent.has(item.key)).map(item => item.node)
+  if (hidden.length) {
+    const more = h('details', { class: 'more-chips', open }, h('summary', {}, `More (${hidden.length})`), h('div', { class: 'filter-chips' }, ...hidden))
+    more.ontoggle = () => { if (more.isConnected) toggle(more.open) }
+    shown.push(more)
+  }
+  return shown
+}
+
+export const TIMELINE_WINDOW = 30
+export function timelinePeople(messages: readonly Msg[]): string[] {
+  return [...new Set(messages.flatMap(m => [m.from, ...('to' in m && typeof m.to === 'string' ? [m.to] : []), ...('people' in m && Array.isArray(m.people) ? m.people : [])]))].filter(name => name !== 'room')
+}
+
 function displayPlans(plans: NonNullable<Claim['plans']>): string {
   return plans.map(plan => `→ ${plan.kind} ${plan.symbol}${plan.detail ? ` to ${plan.detail}` : ''}`).join(' · ')
 }
@@ -156,11 +222,13 @@ function displayPlans(plans: NonNullable<Claim['plans']>): string {
 export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
   const list = h('div', { class: 'participant-list' })
   const element = h('aside', { class: 'participants scroll' }, h('div', { class: 'panel-title' }, 'People'), list)
+  const expanded = new Set<string>()
+  const offline = h('details', { class: 'offline-group' })
   const render = () => {
-    const input = participantInput(conn)
-    const participants = deriveParticipants(input).map(p => ({ ...p, online: input.presences.some(entry => entry.user.name === p.name) }))
-    list.replaceChildren(...participants.map(participant => {
-      const state = deriveStatePill(participant)
+    const groups = participantGroups(conn)
+    const cards = groupedPeople(groups, participant => {
+      const worker = [...conn.room.workers.values()].find(w => w.name === participant.name)
+      const state = worker?.status === 'failed' ? 'failed' : deriveStatePill(participant)
       const short = shortPill(state)
       const card = h('button', {
         class: `participant${participant.online ? '' : ' offline'}${focus.person === participant.name ? ' focused' : ''}`,
@@ -184,8 +252,11 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
       h('div', { class: 'card-foot muted', title: participant.online ? 'Online' : 'Offline' }, participant.online ? participant.latestActive !== undefined ? `Online · idle ${Math.max(0, Math.floor((Date.now() - participant.latestActive) / 1000))}s` : 'Online · activity unknown' : 'Offline'))
       card.onclick = () => focus.set(focus.person === participant.name ? null : participant.name)
       return card
-    }))
-    if (!participants.length) list.append(h('div', { class: 'empty-note muted' }, 'Waiting for participants…'))
+    }, expanded)
+    offline.replaceChildren(h('summary', {}, `${groups.offlineTeammates.length} offline · worker history`), ...cards.offline)
+    offline.hidden = !cards.offline.length
+    list.replaceChildren(...cards.active, offline)
+    if (!cards.active.length && !cards.offline.length) list.append(h('div', { class: 'empty-note muted' }, 'Waiting for participants…'))
   }
   subscribeRender(conn, render)
   // Match Board's refresh: awareness can recover while this rail is hidden.
@@ -513,6 +584,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   const tabs = ['Merged', 'Diff', 'File'] as const
   type Tab = typeof tabs[number]
   let tab: Tab = 'Merged'
+  let moreMergeChips = false
   let showAllFiles = false
   let selectedPath: string | null = null
   let selectedPerson: string | null = null
@@ -587,15 +659,16 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     }
     if (tab === 'Merged') {
       const active = included(selected.path, people)
-      chips.replaceChildren(...people.map(person => {
+      const prominent = new Set([...participantGroups(conn).active.map(p => p.name), ...focus.timelinePeople, ...(focus.person ? [focus.person] : [])])
+      chips.replaceChildren(...compactChips(people.map(person => {
         const button = h('button', { class: 'merge-chip', ariaPressed: String(active.includes(person)) }, dot(person, person, conn.room), person)
         button.onclick = () => {
           const off = excluded.get(selected.path) ?? new Set<string>()
           if (off.has(person)) off.delete(person); else off.add(person)
           excluded.set(selected.path, off); render()
         }
-        return button
-      }))
+        return { key: person, node: button }
+      }), prominent, moreMergeChips, open => { moreMergeChips = open }))
       const online = new Set(presentPeople(people, presences(conn.provider, conn.room)))
       const hiddenOffline = people.filter(person => !online.has(person) && !active.includes(person)).length
       chipHint.textContent = hiddenOffline
@@ -722,6 +795,7 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
   const scroll = h('div', { class: 'timeline-scroll scroll' }, list)
   const element = h('aside', { class: 'timeline' }, h('div', { class: 'timeline-head' }, h('div', { class: 'panel-title' }, 'Timeline'), filters), scroll)
   let areaFilter: string | null = null
+  let moreFilters = false, windowSize = TIMELINE_WINDOW
   let followNewest = true
   const seen = new Set<string>()
   let primed = false
@@ -731,29 +805,49 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
   const render = () => {
     const shouldFollow = followNewest
     const entries = collapseConflictTimeline(conn.room.messages(), conn.room.openClaims(), conn.room.meta.base)
-    const conflicts = entries.flatMap(e => e.conflict ? [e.conflict] : [])
-    const episodes = groupEpisodes(entries.filter(e => !e.conflict).map(e => e.message))
+    const allEpisodes = groupEpisodes(entries.filter(e => !e.conflict).map(e => e.message))
+    const matching = entries.filter(e => focus.person
+      ? e.message.from === focus.person || e.conflict?.people.includes(focus.person) || ('to' in e.message && e.message.to === focus.person)
+      : !areaFilter || ('area' in e.message && e.message.area === areaFilter) || conn.room.scopes.get(e.message.from)?.area === areaFilter || allEpisodes.some(ep => ep.area === areaFilter && ep.items.some(it => it.message.id === e.message.id)))
+    const window = matching.slice(-windowSize)
+    const conflicts = window.flatMap(e => e.conflict ? [e.conflict] : [])
+    const ids = new Set(window.map(e => e.message.id))
+    const clipItems = (items: TimelineItem[]): TimelineItem[] => items.flatMap(item => {
+      const replies = clipItems(item.replies)
+      return ids.has(item.message.id) || replies.length ? [{ ...item, replies }] : []
+    })
+    const episodes = allEpisodes.flatMap(episode => {
+      const items = clipItems(episode.items)
+      return ids.has(episode.id) || items.length ? [{ ...episode, items }] : []
+    })
+    const groups = participantGroups(conn)
+    const prominentPeople = new Set([...groups.active.map(p => p.name), ...episodes.map(e => e.person), ...timelinePeople(window.flatMap(e => e.conflict ? e.conflict.events : [e.message])), ...(focus.person ? [focus.person] : [])])
+    const prominentAreas = new Set([...groups.active.flatMap(p => p.scope ? [p.scope.area, ...(p.scope.areas ?? [])] : []), ...episodes.map(e => e.area), ...(areaFilter ? [areaFilter] : [])])
     // Everything present at first paint is "old"; only later arrivals animate in.
     if (!primed) { for (const e of episodes) { seen.add(`ep:${e.id}`); for (const it of e.items) seen.add(it.message.id) }; primed = true }
-    const areas = Array.from(new Set(episodes.map(episode => episode.area))).sort()
-    const people = Array.from(new Set(episodes.map(episode => episode.person))).sort()
+    const areas = Array.from(new Set([...allEpisodes.map(episode => episode.area), ...prominentAreas])).sort()
+    const people = Array.from(new Set([...allEpisodes.map(episode => episode.person), ...groups.offlineTeammates.map(p => p.name), ...groups.retiredWorkers.map(w => w.name), ...timelinePeople(conn.room.messages()), ...prominentPeople])).sort()
     const chip = (label: string, active: boolean, action: () => void) => {
       const button = h('button', { class: `filter-chip${active ? ' active' : ''}` }, label)
       button.onclick = action
       return button
     }
     filters.replaceChildren(
-      chip('All', !areaFilter && !focus.person, () => { areaFilter = null; focus.set(null); render() }),
-      ...areas.map(area => chip(area, areaFilter === area && !focus.person, () => { areaFilter = area; focus.set(null); render() })),
-      ...people.map(person => chip(person, focus.person === person, () => { areaFilter = null; focus.set(focus.person === person ? null : person) })),
+      chip('All', !areaFilter && !focus.person, () => { areaFilter = null; windowSize = TIMELINE_WINDOW; focus.set(null); render() }),
+      ...compactChips([
+        ...areas.map(area => ({ key: 'area:' + area, node: chip(area, areaFilter === area && !focus.person, () => { areaFilter = area; windowSize = TIMELINE_WINDOW; focus.set(null); render() }) })),
+        ...people.map(person => ({ key: person, node: chip(person, focus.person === person, () => { areaFilter = null; windowSize = TIMELINE_WINDOW; focus.set(focus.person === person ? null : person) }) })),
+      ], new Set([...prominentPeople, ...[...prominentAreas].map(a => 'area:' + a)]), moreFilters, open => { moreFilters = open }),
     )
-    const visible = episodes.filter(episode => focus.person ? episode.person === focus.person : !areaFilter || episode.area === areaFilter)
+    const visible = episodes
     const cards = conflicts.filter(s => (!focus.person || s.people.includes(focus.person)) && (!areaFilter || s.people.some(p => conn.room.scopes.get(p)?.area === areaFilter)))
     list.replaceChildren(...[...visible.map(e => ({ at: e.at, el: episodeCard(e, seen, conn.room) })), ...cards.map(s => ({ at: s.at, el: conflictCard(s, expandedConflicts) }))].sort((a, b) => a.at - b.at).map(x => x.el))
+    if (matching.length > window.length) list.prepend(h('button', { class: 'timeline-more', onclick: () => { windowSize += TIMELINE_WINDOW; render() } }, 'Show older events'))
+    focus.setTimelinePeople([...prominentPeople].sort())
     if (!visible.length && !cards.length) list.append(h('div', { class: 'empty-note muted' }, 'No matching episodes'))
     if (shouldFollow) requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight })
   }
-  subscribeRender(conn, render, false)
+  subscribeRender(conn, render)
   focus.subscribe(render)
   render()
   return element
@@ -833,13 +927,13 @@ export function header(conn: Conn): HTMLElement {
   const local = parts.local ? h('span', { class: 'room-chip mono' }, 'local') : null
   const branch = parts.branch ? h('span', { class: 'room-chip mono', title: parts.branch }, h('bdi', { dir: 'ltr' }, parts.branch)) : null
   const base = h('span', { class: 'header-detail mono' }, 'base —')
-  const count = h('span', { class: 'header-detail' }, '0 participants')
+  const count = h('span', { class: 'header-detail' }, '0 active')
   const connection = h('span', { class: 'connection' }, 'disconnected')
   const element = h('header', { class: 'header' }, h('span', { class: 'product-mark' }, h('img', { src: '/logo.png', alt: 'Room', width: 40, height: 40 })), h('span', { class: 'header-divider' }), roomName, local, branch, base, count, h('span', { class: 'sp' }), connection)
   const render = () => {
     base.textContent = `base ${(conn.room.meta.base ?? '').slice(0, 7) || '—'}`
-    const total = deriveParticipants(participantInput(conn)).length
-    count.textContent = `${total} participant${total === 1 ? '' : 's'}`
+    const total = participantGroups(conn).active.length
+    count.textContent = `${total} active`
   }
   subscribeRender(conn, render)
   conn.onStatus(connected => {

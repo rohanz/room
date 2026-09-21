@@ -247,7 +247,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     for (const k of s.room.overlays.keys()) names.add(k)
     for (const p of presences(s)) names.add(p.user.name)
     names.delete(s.me.name)
-    return Array.from(names).filter(n => !isPrName(n)).sort() // PR mirrors are intent, not people: never routed to
+    const retired = new Set(s.room.retiredWorkers().map(w => w.name))
+    return Array.from(names).filter(n => !isPrName(n) && (!retired.has(n) || s.room.workerOf(n))).sort() // PR mirrors and retired workers are not routed to
   }
   const presences = (s: Session): SharePresence[] =>
     Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)
