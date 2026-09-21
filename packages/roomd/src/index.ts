@@ -16,7 +16,7 @@ import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { RoomDoc, colorFor, scopeCovers, type BaseMsg, type Kind, type Presence } from '@room/shared'
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
-import { gitBranch, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitSubject, gitTracked } from './git.js'
+import { git, gitBranch, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitSubject, gitTracked } from './git.js'
 
 /**
  * How much of this clone the daemon publishes.
@@ -666,6 +666,8 @@ class Daemon implements Roomd {
     if (this.stopped) return
     this.choosePublisher()
     if (this.publishUnder) return
+    this.skips.size.delete(relpath)
+    this.skips.budget.delete(relpath)
     if (!this.isSafeRoomPath(relpath)) {
       this.roomDoc.clearOverlay(this.name, relpath, this)
       this.roomDoc.unmarkDeleted(this.name, relpath, this)
@@ -673,6 +675,16 @@ class Daemon implements Roomd {
     }
     if (this.batch.deferHot(relpath)) return
     const publishingBase = this.base
+    const oversizedChanged = async () => {
+      // Hash without loading an oversized file into this process.
+      const [diskHash, baseHash] = await Promise.all([
+        git(this.dir, ['hash-object', '--no-filters', '--', relpath]),
+        git(this.dir, ['rev-parse', `${publishingBase}:${relpath}`]).catch(() => ''),
+      ])
+      const changed = diskHash.trim() !== baseHash.trim()
+      if (!changed) this.skips.size.delete(relpath)
+      return changed
+    }
     const exists = fs.existsSync(this.abs(relpath))
     const beforeText = this.roomDoc.text(relpath, this.name)
     const beforeDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false
@@ -700,13 +712,20 @@ class Daemon implements Roomd {
     } else if (!this.isShared(relpath)) {
       // Withheld by the sharing level: publish nothing, but remember whether it differs from base.
       const disk = this.readText(relpath, true)
-      this.withhold(relpath, disk !== undefined && disk !== await gitShow(this.dir, this.base, relpath))
+      const changed = disk === undefined && this.skips.size.has(relpath)
+        ? await oversizedChanged() : disk !== undefined && disk !== await gitShow(this.dir, this.base, relpath)
+      this.withhold(relpath, changed)
       return
     } else {
       this.skips.share.delete(relpath)
 
       const disk = this.readText(relpath)
-      if (disk === undefined) return
+      if (disk === undefined) {
+        if (this.skips.size.has(relpath)) await oversizedChanged()
+        this.roomDoc.clearOverlay(this.name, relpath, this)
+        this.roomDoc.unmarkDeleted(this.name, relpath, this)
+        return
+      }
       const base = await gitShow(this.dir, this.base, relpath)
       await this.beforePublishWrite?.(relpath)
       if (this.stopped || this.publishUnder || !this.isSafeRoomPath(relpath) || publishingBase !== this.base || await gitHead(this.dir) !== publishingBase) { this.scheduleDisk(relpath, true); return }
@@ -714,6 +733,8 @@ class Daemon implements Roomd {
       if (!this.isShared(relpath)) { this.withhold(relpath, disk !== base); return }
       if (disk !== base && this.sharedBytes(relpath) + disk.length > this.totalBudget) {
         if (!this.skips.budget.has(relpath)) { this.skips.budget.add(relpath); this.log(`skip ${relpath}: sharing it would exceed the ${Math.round(this.totalBudget / 1024)} KB total budget`) }
+        this.roomDoc.clearOverlay(this.name, relpath, this)
+        this.roomDoc.unmarkDeleted(this.name, relpath, this)
         return
       }
       this.skips.budget.delete(relpath)

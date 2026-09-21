@@ -16,7 +16,8 @@ import { createHash } from 'node:crypto'
 import { formatMsg, formatPlans, shouldWakeOnMsg, type Msg, isAgentic } from '@room/shared'
 import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
-import { hasCompany, type CompanyState } from './company.js'
+import { claudeWakeUnavailable } from './prompt.js'
+import { hasCompany, describeCompany, type CompanyState } from './company.js'
 
 function gitStatePath(root: string, name: string): string {
   const dotgit = path.join(root, '.git')
@@ -98,9 +99,12 @@ export class HooksBridge {
   private startedAt = Date.now()
   private unobserve: (() => void)[] = []
   private delivering = new Set<string>()
-  constructor(private s: Session, private o: HooksBridgeOptions) {}
+  constructor(private s: Session, private o: HooksBridgeOptions) {
+    hookHealth.set(s, { startedAt: this.now(), since: this.now(), calls: 0, noted: false, observed: false })
+  }
 
   start(): void {
+    this.s.awareness.setLocalStateField('wakeUnavailable', claudeWakeUnavailable(this.s.dir))
     const kick = () => this.scheduleWrite()
     if (this.o.writeState !== false) {
       this.s.room.doc.on('update', kick); this.s.awareness.on('change', kick)
@@ -150,8 +154,14 @@ export class HooksBridge {
     const me = this.s.me.name
     const unread = this.s.room.messages().filter(m => !this.isSeen(m.id) && this.o.forMe(m)).map(m => ({ id: m.id, priority: m.priority, line: formatMsg(m) }))
     const claims = this.s.room.openClaims().filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
+    const near = [
+      ...this.s.room.allScopes().filter(sc => sc.by !== me).flatMap(sc => sc.paths.map(path => ({ by: sc.by, path, reason: 'scope' }))),
+      ...claims.map(c => ({ by: c.by, path: c.path, reason: 'claim' })),
+      ...[...new Set([...this.s.room.overlays.keys(), ...this.s.room.deleted.keys()])].filter(by => by !== me)
+        .flatMap(by => this.s.room.changedPaths(by).map(path => ({ by, path, reason: 'changed' }))),
+    ]
     const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now())
-    try { fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), company: company.company, others: company.others, unread, claims }, null, 1) + '\n') }
+    try { fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), company: company.company, others: company.others, companyLine: describeCompany(this.s, company), unread, claims, near }, null, 1) + '\n') }
     catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`) }
   }
 
@@ -286,4 +296,23 @@ export function findThreadForDir(dir: string, since: number): string | undefined
   }
   walk(root, 0)
   return best?.id
+}
+
+const hookHealth = new WeakMap<Session, { startedAt: number; since: number; calls: number; noted: boolean; observed: boolean }>()
+
+/** Tool calls are evidence that hooks should have run; don't diagnose idle or solo sessions. */
+export function hookHealthNote(s: Session, expected: boolean, now = Date.now()): string {
+  let health = hookHealth.get(s)
+  if (!health) { health = { startedAt: now, since: now, calls: 0, noted: false, observed: false }; hookHealth.set(s, health) }
+  if (!expected || health.noted || health.observed) return ''
+  if (!health.calls) health.since = now
+  health.calls++
+  try {
+    const activity = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-hook-activity.json'), 'utf8'))
+    const session = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-session.json'), 'utf8'))
+    if (typeof activity.at === 'number' && activity.at >= health.startedAt - 1_000 && activity.at <= now && activity.session_id === session.session_id) { health.observed = true; return '' }
+  } catch { /* no evidence yet */ }
+  if (health.calls < 2 || now - health.since < 30_000) return ''
+  health.noted = true
+  return "hooks are not running here; you will not be shown teammates' claims before edits. In Codex, approve them once in an interactive session"
 }

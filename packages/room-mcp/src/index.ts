@@ -39,6 +39,7 @@ function cwd(): string {
 
 async function main() {
   let session: Session | null = null
+  let startupNotice = ''
   const dir = cwd()
   const startup = await resolveConfig({ dir, env: process.env })
   LOG_FILE = startup.logFile
@@ -51,9 +52,12 @@ async function main() {
     { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: AGENT_INSTRUCTIONS() },
   )
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }))
-  mcp.setRequestHandler(CallToolRequestSchema, async req => ({
-    content: [{ type: 'text', text: await tools.call(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>) }],
-  }))
+  mcp.setRequestHandler(CallToolRequestSchema, async req => {
+    const body = await tools.call(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>)
+    const notice = session ? '' : startupNotice
+    startupNotice = ''
+    return { content: [{ type: 'text', text: (notice ? notice + '\n\n' : '') + body }] }
+  })
 
   // Claude Code channel: push interrupts and addressed notifies as they arrive.
   const attachChannel = (s: Session) => {
@@ -82,12 +86,8 @@ async function main() {
       // prior .room.json only fill in when the clone has no origin.
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
       const chosen = startup.server
-      log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
-      const roomUrl = startup.roomUrl
-      if (roomUrl) {
-        const u = new URL(roomUrl)
-        adopt(await joinSession({ dir: startup.dir, name: startup.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))
-      } else if (chosen === LOCAL) {
+      log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? (startup as typeof startup & { whereEnv?: string }).whereEnv ?? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
+      if (chosen === LOCAL) {
         // No server configured: a local room on this machine (workers get the lead's room via ROOM_ROOM).
         adopt(await joinSession({ dir, room: startup.room, server: LOCAL, log }))
       } else if (startup.room) {
@@ -96,13 +96,19 @@ async function main() {
         adopt(await joinSession({ dir, server: chosen, log }))
       } else if (prior) {
         const u = new URL(prior.room)
-        adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: `${u.protocol}//${u.host}`, log }))
+        adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: chosen, log }))
       } else { log(`ready; ${dir} has no git origin — call room_join with a room name`); return }
       log('ready')
     } catch (e) {
-      if (e instanceof NoRoom) log(`ready; ${e.message}`)
-      else if (e instanceof NotLoggedIn) log(`ready; not logged in: room_login`)
-      else log(`auto-join failed (${e instanceof Error ? e.message : String(e)}); call room_join`)
+      if (e instanceof NoRoom && startup.server === LOCAL && !startup.room) log(`ready; ${e.message}`)
+      else {
+        const expected = startup.server !== LOCAL || !!startup.room
+        const line = e instanceof NotLoggedIn
+          ? 'Room is not connected: not logged in; use room_login.'
+          : `Room could not join: ${e instanceof Error ? e.message : String(e)}; use room_join.`
+        if (expected) startupNotice = line
+        log(line)
+      }
     }
   })()
   tools.setPendingJoin(autoJoin)

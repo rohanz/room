@@ -6,7 +6,7 @@ import { isFresh } from './presence.js'
 
 export interface CompanyState {
   company: boolean
-  /** Display names for the people or workers that make this a shared room. */
+  /** Participant names for the people or workers that make this a shared room. */
   others: string[]
 }
 
@@ -20,9 +20,19 @@ export function hasCompany(s: Session, runningWorkers: readonly Worker[] = [], n
     if (!p.user || clientId === s.awareness.clientID || p.user.name === s.me.name) continue
     if (!isFresh(s.awareness, clientId, now)) continue
     if (p.user.kind === 'human' && p.status === 'viewing') continue
-    names.set(p.user.name, displayName(p.user))
+    names.set(p.user.name, p.user.name)
   }
   for (const worker of runningWorkers) names.set(worker.name, names.get(worker.name) ?? worker.name)
   const others = Array.from(names.values()).sort((a, b) => a.localeCompare(b))
   return { company: others.length > 0, others }
+}
+
+/** One announcement carries the work that makes company relevant. */
+export function describeCompany(s: Session, company: CompanyState): string {
+  const scopes = s.room.allScopes()
+  const entries = company.others.map(name => {
+    const scope = scopes.find(sc => name === sc.by || name === displayName({ name: sc.by, kind: sc.byKind }))
+    return scope ? `${scope.by} is here, on ${scope.area}: ${scope.paths.join(', ')}` : `${name} is here`
+  })
+  return '[room] ' + entries.join('; ') + '.'
 }

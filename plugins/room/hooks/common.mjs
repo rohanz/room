@@ -123,3 +123,25 @@ export function pathsOf(toolName, input, root) {
   }
   return Array.from(out)
 }
+
+/** Identical company wording at session start and before tools. */
+export function companyLine(state) {
+  if (typeof state.companyLine === 'string') return state.companyLine
+  const names = Array.isArray(state.others) && state.others.length ? state.others : ['Someone']
+  return '[room] ' + names.join(', ') + (names.length > 1 ? ' are here.' : ' is here.')
+}
+
+/** Same segment-boundary overlap as shared coversPath; parity-tested. */
+export function coversPath(a, b) {
+  const normalize = p => {
+    const parts = []
+    for (const part of p.replaceAll('\\', '/').split('/')) {
+      if (!part || part === '.') continue
+      if (part === '..' && parts.length && parts.at(-1) !== '..') parts.pop()
+      else parts.push(part)
+    }
+    return parts.join('/') || '.'
+  }
+  const left = normalize(a), right = normalize(b)
+  return left === '.' || right === '.' || left === right || left.startsWith(right + '/') || right.startsWith(left + '/')
+}

@@ -4,12 +4,15 @@
 // Reads .git/room-state.json, which the room MCP server keeps current.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite } from './common.mjs'
+import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
 if (!root) process.exit(0)
 const stateDir = sessionStateDir(root, ev.session_id)
+const state = readJson(path.join(stateDir, 'room-state.json'), null)
+// Only the state lookup is needed while alone; no activity, transcript or write scans.
+if (!state || state.company !== true) process.exit(0)
 const activityFile = path.join(stateDir, 'room-hook-activity.json')
 const now = Date.now()
 const paths = (isShellTool(ev.tool_name) ? shellLooksLikeWrite(ev.tool_input) : /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
@@ -52,11 +55,7 @@ if (session?.host === 'claude' && typeof ev.transcript_path === 'string') {
   } catch { /* transcript absent, unreadable or being rotated: retry next hook */ }
   finally { if (fd !== undefined) { try { fs.closeSync(fd) } catch { /* best effort */ } } }
 }
-const state = readJson(path.join(stateDir, 'room-state.json'), null)
-if (!state) {
-  if (transcriptChecked) writeHookSeen(seenFile, hookSeen)
-  process.exit(0)
-}
+
 const companyWasTold = hookSeen.companyTold
 const seen = new Set(hookSeen.seen)
 const fresh = (state.unread ?? []).filter(m => !seen.has(m.id))
@@ -65,19 +64,18 @@ if (typeof state.name === 'string' && fresh.length) {
 }
 const claims = (state.claims ?? []).filter(c => paths.some(p => c.path.endsWith('/') ? p.startsWith(c.path) : p === c.path))
 
+const nearby = (state.near ?? []).filter(n => paths.some(p => coversPath(p, n.path)))
 const lines = []
 if (state.company === true && !hookSeen.companyTold) {
-  const others = Array.isArray(state.others) ? state.others : []
-  const names = others.length ? others.join(', ') : 'Someone'
-  const verb = others.length > 1 ? 'are' : 'is'
-  lines.push(`[room] ${names} ${verb} in this room: follow the room-etiquette skill (room_scope, then room_claim before editing).`)
+  lines.push(companyLine(state))
   hookSeen.companyTold = true
-} else if (state.company !== true && hookSeen.companyTold) {
-  hookSeen.companyTold = false
 }
 if (fresh.length) {
   lines.push(`[room inbox ${fresh.length}]`)
-  for (const m of fresh) lines.push(`  ${m.priority.padEnd(9)} ${m.line}`)
+  for (const m of fresh) lines.push(`  ${m.line}`)
+}
+if (nearby.length) {
+  lines.push('[room] Claim before editing: ' + [...new Set(nearby.map(n => `${n.by} has ${n.reason} on ${n.path}`))].join('; ') + '.')
 }
 if (claims.length) {
   lines.push(`[room claims on ${paths.join(', ')}]`)
