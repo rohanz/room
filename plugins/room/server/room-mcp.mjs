@@ -29130,6 +29130,17 @@ if (glo[importIdentifier] === true) {
 glo[importIdentifier] = true;
 
 // packages/shared/src/ledger.ts
+var MAX_RETIRED_WORKERS = 200;
+function compactRetiredWorker(record2) {
+  const files = [...new Set(record2.files)];
+  return {
+    ...record2,
+    task: record2.task.slice(0, 200),
+    summary: record2.summary.slice(0, 400),
+    files: files.slice(0, 50),
+    fileCount: Math.max(record2.fileCount, files.length)
+  };
+}
 var LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict", "base", "plan"]);
 function emptyLedgerArchive() {
   return { messages: 0, counts: {}, lastSeen: {}, lastAt: 0, unfulfilled: [] };
@@ -29306,6 +29317,34 @@ var RoomDoc = class {
   workerById(id2) {
     for (const w of this.workers.values()) if (w.id === id2) return w;
     return void 0;
+  }
+  retiredWorkers() {
+    return this.doc.getArray("retiredWorkers").toArray();
+  }
+  /** Atomically replace live worker state with a bounded archive entry. */
+  retireParticipant(name, record2) {
+    if (record2.name !== name) throw new Error("retirement name does not match record");
+    const current = this.workerOf(name);
+    if (current && (current.startedAt !== record2.startedAt || current.lead !== record2.lead)) return;
+    this.doc.transact(() => {
+      const archive = this.doc.getArray("retiredWorkers");
+      if (archive.toArray().some((r) => r.name === name && r.startedAt === record2.startedAt && r.lead === record2.lead)) return;
+      for (const claim2 of this.claims.values()) if (claim2.by === name) {
+        this.claims.delete(claim2.id);
+        this.post({ name, kind: claim2.byKind }, { type: "release", claimId: claim2.id, path: claim2.path, summary: "retired" });
+      }
+      this.clearOverlays(name);
+      this.scopes.delete(name);
+      this.graphs.delete(name);
+      this.colors.delete(name);
+      this.reconcileColors();
+      this.bases.delete(name);
+      this.seen(name).clear();
+      const worker = this.workers.get(record2.tag);
+      if (worker?.name === name && worker.startedAt === record2.startedAt) this.workers.delete(record2.tag);
+      archive.push([compactRetiredWorker(record2)]);
+      if (archive.length > MAX_RETIRED_WORKERS) archive.delete(0, archive.length - MAX_RETIRED_WORKERS);
+    });
   }
   get metaMap() {
     return this.doc.getMap("meta");
@@ -30046,6 +30085,61 @@ function participantIdentityLine(current, name, worker) {
   if (effort) parts.push(effort);
   return parts.join(" \xB7 ");
 }
+function deriveParticipants(input) {
+  const now = input.now ?? Date.now();
+  const names = /* @__PURE__ */ new Set();
+  for (const presence of input.presences) names.add(presence.user.name);
+  for (const worker of input.workers ?? []) names.add(worker.name);
+  for (const [name] of input.scopes) names.add(name);
+  for (const name of input.overlayPeople) names.add(name);
+  return Array.from(names).sort().map((name) => {
+    const current = input.presences.filter((presence) => presence.user.name === name);
+    const latest = /* @__PURE__ */ new Map();
+    for (const presence of current) {
+      const previous = latest.get(presence.user.kind);
+      if (!previous || (presence.lastActive ?? 0) >= (previous.lastActive ?? 0)) latest.set(presence.user.kind, presence);
+    }
+    const scope = input.scopes.find(([scopeName]) => scopeName === name)?.[1];
+    const kinds = new Set(latest.keys());
+    if (scope) kinds.add(scope.byKind);
+    for (const claim2 of input.claims) if (claim2.by === name) kinds.add(claim2.byKind);
+    const latestActive = current.reduce((value2, presence) => {
+      if (presence.lastActive === void 0) return value2;
+      return value2 === void 0 ? presence.lastActive : Math.max(value2, presence.lastActive);
+    }, void 0);
+    const online = current.length > 0;
+    const ownBase = input.basesByPerson?.get(name);
+    return {
+      name,
+      online,
+      behindBase: Boolean(input.roomBase && ownBase && ownBase !== input.roomBase),
+      latestActive,
+      kinds: Array.from(kinds).sort((a, b) => a.localeCompare(b)),
+      identity: participantIdentityLine(current, name, input.workers?.find((w) => w.name === name)).slice(name.length + 3),
+      statuses: Array.from(latest.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([kind, presence]) => ({ kind, status: presence.status ?? "online" })),
+      scope,
+      files: [...input.changesByPerson.get(name) ?? []].sort(),
+      claims: input.claims.filter((claim2) => claim2.by === name).map((claim2) => ({ ...claim2, stale: !online && now - claim2.at > 10 * 6e4 }))
+    };
+  });
+}
+function splitParticipants(input) {
+  const workers = new Map((input.workers ?? []).map((w) => [w.name, w]));
+  const retiredWorkers = [...input.retiredWorkers].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name));
+  const retiredNames = new Set(retiredWorkers.map((w) => w.name));
+  const participants = deriveParticipants(input).filter((p) => !retiredNames.has(p.name) || workers.has(p.name));
+  const active = participants.filter((p) => p.online || workers.has(p.name));
+  const offlineTeammates = participants.filter((p) => !p.online && !workers.has(p.name));
+  const leads = new Set([...workers.values()].map((w) => w.lead));
+  for (const w of retiredWorkers) leads.add(w.lead);
+  const workerGroups = [...leads].sort().map((lead) => ({
+    lead,
+    active: active.filter((p) => workers.get(p.name)?.lead === lead),
+    retiredWorkers: retiredWorkers.filter((w) => w.lead === lead),
+    running: [...workers.values()].filter((w) => w.lead === lead && w.status === "running").length
+  }));
+  return { active, offlineTeammates, retiredWorkers, workerGroups };
+}
 var scopeLine = (scope) => `${scope.area}: ${scope.summary} (${scope.paths.join(", ")})`;
 function personLine(input) {
   const p = input.presences.find((x) => x.user.name === input.name && isAgentic(x.user.kind)) ?? input.presences.find((x) => x.user.name === input.name);
@@ -30072,9 +30166,18 @@ function workerLine({ worker: w, processGone = false, changedCount, last: last2,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.summary ? ` \xB7 ${w.summary.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
   ];
 }
-function workerLines(inputs) {
-  if (!inputs.length) return [];
-  return [`workers (${inputs.length}):`, ...[...inputs].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
+function workerLines(inputs, options = {}) {
+  const retired = options.retiredWorkers ?? [];
+  if (!inputs.length && !retired.length) return [];
+  const visible = inputs.filter((i) => options.all || i.worker.status === "running" || i.worker.status === "failed");
+  const finished = inputs.length - visible.length + retired.length;
+  const out = [`workers (${inputs.length + retired.length}):`, ...[...visible].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
+  if (options.all) {
+    for (const w of [...retired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
+      out.push(`  - ${w.tag} (${w.outcome}${w.model ? `, ${w.model}` : ""}): ${w.summary} \xB7 ${formatCount(w.fileCount, "file")}`);
+    }
+  } else if (finished) out.push(`  finished: ${finished} (all=true lists them)`);
+  return out;
 }
 
 // packages/room-mcp/src/connection.ts
@@ -35046,6 +35149,161 @@ function renderPrNote(room, opts) {
   return out.join("\n") + "\n";
 }
 
+// packages/room-mcp/src/workers.ts
+import { execFileSync as execFileSync2, spawn } from "node:child_process";
+import fs8 from "node:fs";
+import path9 from "node:path";
+function shouldRetire(facts) {
+  if (!facts.exited) return void 0;
+  if (facts.dismissed) return "dismissed";
+  if (!facts.done) return void 0;
+  if (facts.merged) return "merged";
+  if (facts.clean && facts.ahead === 0) return "clean";
+  return void 0;
+}
+async function workerGitFacts(leadDir, w) {
+  const facts = { merged: false, clean: false, ahead: void 0 };
+  let head;
+  try {
+    head = (await git(leadDir, ["rev-parse", "HEAD"])).trim();
+  } catch {
+    return facts;
+  }
+  if (w.branch === `room/${w.tag}`) {
+    try {
+      await git(leadDir, ["merge-base", "--is-ancestor", `refs/heads/${w.branch}`, head]);
+      facts.merged = true;
+    } catch {
+    }
+  }
+  try {
+    facts.clean = !(await git(w.dir, ["status", "--porcelain", "--untracked-files=all"])).trim();
+    const count = (await git(w.dir, ["rev-list", "--count", `${head}..HEAD`])).trim();
+    if (/^\d+$/.test(count)) facts.ahead = Number(count);
+  } catch {
+  }
+  return facts;
+}
+var WORKERS_DIR = path9.join(".room", "workers");
+function workerBudget({ cores, memBytes, maxWorkers, running }) {
+  const workers = running + 1;
+  const divisor = Math.max(1, Math.min(maxWorkers, Math.max(workers, 4)), workers);
+  return { threads: Math.max(1, Math.floor(cores / divisor)), memGb: Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3)) };
+}
+function validTag(tag) {
+  if (typeof tag !== "string") return void 0;
+  const t = tag.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(t) ? t : void 0;
+}
+function workerPrompt(lead, tag, task) {
+  return [
+    `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
+    `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
+    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
+    `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
+    "",
+    `TASK: ${task}`
+  ].join("\n");
+}
+function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort) {
+  if (host === "codex") return { cmd: "codex", args: ["exec", "-s", "workspace-write", ...model ? ["-m", model] : [], prompt] };
+  return {
+    cmd: "claude",
+    args: [...claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : []]
+  };
+}
+async function prepareWorktree(repoDir, tag) {
+  const dir = path9.join(repoDir, WORKERS_DIR, tag);
+  const branch = `room/${tag}`;
+  if (fs8.existsSync(path9.join(dir, ".git"))) return { dir, branch, created: false };
+  fs8.mkdirSync(path9.dirname(dir), { recursive: true });
+  await git(repoDir, ["worktree", "prune"]);
+  let hasBranch = false;
+  try {
+    await git(repoDir, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+    hasBranch = true;
+  } catch {
+  }
+  await git(repoDir, hasBranch ? ["worktree", "add", "-q", dir, branch] : ["worktree", "add", "-q", "-b", branch, dir, "HEAD"]);
+  return { dir, branch, created: true };
+}
+var LEAD_ONLY_ENV = ["ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_GEN", "ROOM_WORKER_ID", "ROOM_WORKER_HOST", "ROOM_WORKER_MODEL", "ROOM_WORKER_EFFORT", "ROOM_LOG_FILE", "ROOM_KIND"];
+function workerEnv(base, extra) {
+  const out = {};
+  for (const [k, v] of Object.entries(base)) if (v !== void 0 && !LEAD_ONLY_ENV.includes(k)) out[k] = v;
+  return { ...out, ...extra };
+}
+function signalWorker(pid) {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(-pid, "SIGTERM");
+    return true;
+  } catch {
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+    return true;
+  } catch {
+    return false;
+  }
+}
+var defaultSpawner = (spec) => {
+  fs8.mkdirSync(path9.dirname(spec.logFile), { recursive: true });
+  const fd = fs8.openSync(spec.logFile, "a");
+  const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ["ignore", fd, fd] });
+  child.unref();
+  return {
+    pid: child.pid ?? -1,
+    onExit: (cb) => {
+      child.once("exit", (code) => {
+        try {
+          fs8.closeSync(fd);
+        } catch {
+        }
+        cb(code);
+      });
+    },
+    onError: (cb) => {
+      child.once("error", (err) => {
+        try {
+          fs8.closeSync(fd);
+        } catch {
+        }
+        cb(err);
+      });
+    },
+    kill: () => signalWorker(child.pid ?? -1)
+  };
+};
+function pidAlive2(pid) {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+function probeProcess(pid) {
+  if (!pid || pid <= 0) return void 0;
+  try {
+    const start = execFileSync2("ps", ["-o", "lstart=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
+    const command = execFileSync2("ps", ["-o", "command=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
+    const t = Date.parse(start);
+    return { ...Number.isFinite(t) ? { start: t } : {}, ...command ? { command } : {} };
+  } catch {
+    return void 0;
+  }
+}
+function pidIsOurWorker(pid, w, probe = probeProcess) {
+  if (!pidAlive2(pid)) return false;
+  const info = probe(pid);
+  if (!info?.start || !info.command) return false;
+  if (Math.abs(info.start - w.startedAt) > 5e3) return false;
+  if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info.command)) return false;
+  return info.command.includes(w.tag) || info.command.includes(w.dir);
+}
+
 // packages/room-mcp/src/registry.ts
 function workerId(lead, tag, gen) {
   return `${lead}/${tag}#${gen}`;
@@ -35064,6 +35322,8 @@ var Rooms = class _Rooms {
   handles = /* @__PURE__ */ new Map();
   /** Tags whose worktree is being prepared, so two concurrent room_spawn calls cannot both pass the tag check. */
   reserving = /* @__PURE__ */ new Set();
+  retirementTimers = /* @__PURE__ */ new Map();
+  retiring = /* @__PURE__ */ new Map();
   // ---- sessions ---------------------------------------------------------------
   primary() {
     return this.o.primary();
@@ -35095,6 +35355,7 @@ var Rooms = class _Rooms {
     if (cur?.attachment) return;
     for (const [other, e] of this.entries) if (other !== s && e.role === role) {
       e.attachment?.stop();
+      this.stopRetirement(other);
       this.entries.delete(other);
     }
     this.entries.set(s, { role, attachment: this.o.attach(s, role, lead) });
@@ -35104,9 +35365,16 @@ var Rooms = class _Rooms {
     if (this.tracked.has(s)) return;
     this.tracked.add(s);
     this.o.observeClaims(s);
+    const timer = setInterval(() => {
+      void this.retireWorkers(s).catch(() => {
+      });
+    }, 6e4);
+    timer.unref();
+    this.retirementTimers.set(s, timer);
   }
   /** Stop the session's attachments and forget it; a primary is also cleared from the host. Does not leave the room. */
   remove(s) {
+    this.stopRetirement(s);
     const e = this.entries.get(s);
     e?.attachment?.stop();
     this.entries.delete(s);
@@ -35115,6 +35383,63 @@ var Rooms = class _Rooms {
   }
   async flush() {
     for (const e of this.entries.values()) await e.attachment?.flush?.();
+  }
+  stopRetirement(s) {
+    clearInterval(this.retirementTimers.get(s));
+    this.retirementTimers.delete(s);
+    this.tracked.delete(s);
+  }
+  /** Recheck after exits, dismissals, merge previews and periodically while a session is tracked. */
+  async retireWorkers(session) {
+    for (const s of session ? [session] : this.all()) {
+      const pending = this.retiring.get(s);
+      if (pending) {
+        await pending;
+        await this.retireWorkers(s);
+        continue;
+      }
+      const run = this.evaluateRetirement(s);
+      this.retiring.set(s, run);
+      try {
+        await run;
+      } finally {
+        this.retiring.delete(s);
+      }
+    }
+  }
+  async evaluateRetirement(s) {
+    for (const w of s.room.workers.values()) {
+      if (w.lead !== s.me.name || this.hasHandle(s, w)) continue;
+      const exited = w.exitCode !== void 0 || !pidAlive2(w.pid);
+      if (!exited) continue;
+      if (w.status === "running") {
+        s.room.updateWorker(w.tag, { status: "failed", finishedAt: Date.now(), summary: w.summary ?? "process exited without room_done" }, w.id);
+        continue;
+      }
+      const facts = { exited, done: w.status === "done", dismissed: w.dismissedAt !== void 0 || w.status === "dismissed", merged: false, clean: false, ahead: void 0 };
+      if (!facts.done && !facts.dismissed) continue;
+      if (!facts.dismissed) Object.assign(facts, await workerGitFacts(s.dir, w));
+      const outcome = shouldRetire(facts);
+      if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue;
+      const done = s.room.messages().filter((m) => m.type === "done" && m.from === w.name && m.at >= w.startedAt).at(-1);
+      const files = [.../* @__PURE__ */ new Set([...s.room.changedPaths(w.name), ...done?.type === "done" ? done.changed : []])].sort();
+      const retiredAt = Date.now();
+      s.room.retireParticipant(w.name, {
+        name: w.name,
+        tag: w.tag,
+        lead: w.lead,
+        host: w.host,
+        ...w.model ? { model: w.model } : {},
+        task: w.task,
+        summary: w.summary ?? "",
+        files,
+        fileCount: files.length,
+        startedAt: w.startedAt,
+        finishedAt: w.finishedAt ?? done?.at ?? retiredAt,
+        retiredAt,
+        outcome
+      });
+    }
   }
   // ---- who lives where ----------------------------------------------------------
   static presences(s) {
@@ -35269,7 +35594,8 @@ function createHandlerState(ctx) {
     for (const k of s.room.overlays.keys()) names.add(k);
     for (const p of presences(s)) names.add(p.user.name);
     names.delete(s.me.name);
-    return Array.from(names).filter((n) => !isPrName(n)).sort();
+    const retired = new Set(s.room.retiredWorkers().map((w) => w.name));
+    return Array.from(names).filter((n) => !isPrName(n) && (!retired.has(n) || s.room.workerOf(n))).sort();
   };
   const presences = (s) => Array.from(s.awareness.getStates().values()).filter((x) => !!x && typeof x === "object" && !!x.user);
   const shareOf = (s, person) => {
@@ -35427,130 +35753,6 @@ Load the room-etiquette skill for detailed coordination, inbox, conflict, waitin
 // packages/room-mcp/src/tools/join.ts
 import { resolve as resolve4 } from "node:path";
 
-// packages/room-mcp/src/workers.ts
-import { execFileSync as execFileSync2, spawn } from "node:child_process";
-import fs8 from "node:fs";
-import path9 from "node:path";
-var WORKERS_DIR = path9.join(".room", "workers");
-function workerBudget({ cores, memBytes, maxWorkers, running }) {
-  const workers = running + 1;
-  const divisor = Math.max(1, Math.min(maxWorkers, Math.max(workers, 4)), workers);
-  return { threads: Math.max(1, Math.floor(cores / divisor)), memGb: Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3)) };
-}
-function validTag(tag) {
-  if (typeof tag !== "string") return void 0;
-  const t = tag.trim();
-  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(t) ? t : void 0;
-}
-function workerPrompt(lead, tag, task) {
-  return [
-    `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
-    `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
-    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
-    `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
-    "",
-    `TASK: ${task}`
-  ].join("\n");
-}
-function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort) {
-  if (host === "codex") return { cmd: "codex", args: ["exec", "-s", "workspace-write", ...model ? ["-m", model] : [], prompt] };
-  return {
-    cmd: "claude",
-    args: [...claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : []]
-  };
-}
-async function prepareWorktree(repoDir, tag) {
-  const dir = path9.join(repoDir, WORKERS_DIR, tag);
-  const branch = `room/${tag}`;
-  if (fs8.existsSync(path9.join(dir, ".git"))) return { dir, branch, created: false };
-  fs8.mkdirSync(path9.dirname(dir), { recursive: true });
-  await git(repoDir, ["worktree", "prune"]);
-  let hasBranch = false;
-  try {
-    await git(repoDir, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
-    hasBranch = true;
-  } catch {
-  }
-  await git(repoDir, hasBranch ? ["worktree", "add", "-q", dir, branch] : ["worktree", "add", "-q", "-b", branch, dir, "HEAD"]);
-  return { dir, branch, created: true };
-}
-var LEAD_ONLY_ENV = ["ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_GEN", "ROOM_WORKER_ID", "ROOM_WORKER_HOST", "ROOM_WORKER_MODEL", "ROOM_WORKER_EFFORT", "ROOM_LOG_FILE", "ROOM_KIND"];
-function workerEnv(base, extra) {
-  const out = {};
-  for (const [k, v] of Object.entries(base)) if (v !== void 0 && !LEAD_ONLY_ENV.includes(k)) out[k] = v;
-  return { ...out, ...extra };
-}
-function signalWorker(pid) {
-  if (!pid || pid <= 0) return false;
-  try {
-    process.kill(-pid, "SIGTERM");
-    return true;
-  } catch {
-  }
-  try {
-    process.kill(pid, "SIGTERM");
-    return true;
-  } catch {
-    return false;
-  }
-}
-var defaultSpawner = (spec) => {
-  fs8.mkdirSync(path9.dirname(spec.logFile), { recursive: true });
-  const fd = fs8.openSync(spec.logFile, "a");
-  const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ["ignore", fd, fd] });
-  child.unref();
-  return {
-    pid: child.pid ?? -1,
-    onExit: (cb) => {
-      child.once("exit", (code) => {
-        try {
-          fs8.closeSync(fd);
-        } catch {
-        }
-        cb(code);
-      });
-    },
-    onError: (cb) => {
-      child.once("error", (err) => {
-        try {
-          fs8.closeSync(fd);
-        } catch {
-        }
-        cb(err);
-      });
-    },
-    kill: () => signalWorker(child.pid ?? -1)
-  };
-};
-function pidAlive2(pid) {
-  if (!pid || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-}
-function probeProcess(pid) {
-  if (!pid || pid <= 0) return void 0;
-  try {
-    const start = execFileSync2("ps", ["-o", "lstart=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
-    const command = execFileSync2("ps", ["-o", "command=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
-    const t = Date.parse(start);
-    return { ...Number.isFinite(t) ? { start: t } : {}, ...command ? { command } : {} };
-  } catch {
-    return void 0;
-  }
-}
-function pidIsOurWorker(pid, w, probe = probeProcess) {
-  if (!pidAlive2(pid)) return false;
-  const info = probe(pid);
-  if (!info?.start || !info.command) return false;
-  if (Math.abs(info.start - w.startedAt) > 5e3) return false;
-  if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info.command)) return false;
-  return info.command.includes(w.tag) || info.command.includes(w.dir);
-}
-
 // packages/room-mcp/src/tools/scope.ts
 var defs = [
   {
@@ -35620,11 +35822,23 @@ function handlers(state) {
         const theirs = s.room.openClaims().filter((c) => c.by === person);
         return theirs.some((c) => myClaims.some((m2) => c.path === m2.path && rangesOverlap(c.from, c.to, m2.from, m2.to)));
       };
-      const everyone = Array.from(new Set([s.me.name, ...others(s), ...[...s.room.workers.values()].map((w) => w.name)].filter((n) => ps.some((p) => p.user.name === n) || s.room.scopes.has(n) || s.room.workerOf(n)))).sort();
+      const groups = splitParticipants({
+        presences: ps,
+        workers: [...s.room.workers.values()],
+        retiredWorkers: s.room.retiredWorkers(),
+        scopes: [...s.room.scopes.entries()],
+        overlayPeople: [...s.room.overlays.keys()],
+        changesByPerson: /* @__PURE__ */ new Map(),
+        claims: s.room.openClaims(),
+        now: now()
+      });
+      const everyone = [...groups.active, ...groups.offlineTeammates].map((p) => p.name).filter((n) => !isPrName(n)).sort();
       const names = everyone.filter(inView);
       const hidden = everyone.filter((n) => !inView(n));
+      const activeCount = groups.active.filter((p) => names.includes(p.name)).length;
+      const offlineCount = groups.offlineTeammates.filter((p) => names.includes(p.name)).length;
       out.push(all2 ? `areas: ${mineA.length ? mineA.join(", ") : "none yet"} (showing all)` : `your areas: ${mineA.join(", ")} (room_state all=true for everything)`);
-      out.push(`participants${all2 ? "" : " overlapping your work"} (${names.length}):`);
+      out.push(`participants${all2 ? "" : " overlapping your work"} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? "" : "s"}` : ""}):`);
       for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
@@ -35667,14 +35881,14 @@ function handlers(state) {
       out.push(...workerLines(myWorkers(s).map((worker) => ({ worker, processGone: worker.status === "running" && !pidAlive2(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => {
         const message = s.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
         return message ? formatMsg(message) : void 0;
-      })(), now: now() }))));
+      })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter((w) => w.lead === s.me.name) }));
       const ws = wsRoom;
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`);
         out.push(...workerLines(myWorkers(ws).map((worker) => ({ worker, processGone: worker.status === "running" && !pidAlive2(worker.pid), changedCount: ws.room.changedPaths(worker.name).length, last: (() => {
           const message = ws.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
           return message ? formatMsg(message) : void 0;
-        })(), now: now() }))));
+        })(), now: now() })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter((w) => w.lead === ws.me.name) }));
       }
       return out.join("\n");
     },
@@ -38160,7 +38374,7 @@ function handlers6(state) {
       const myId = ctx.config?.workerId, gen = ctx.config?.gen;
       const stale = !!asWorker && (myId ? asWorker.id !== void 0 && asWorker.id !== myId : !!gen && asWorker.gen !== void 0 && String(asWorker.gen) !== gen);
       if (asWorker) {
-        if (!stale) s.room.updateWorker(asWorker.tag, { status: "done", summary }, asWorker.id);
+        if (!stale) s.room.updateWorker(asWorker.tag, { status: "done", summary, finishedAt: now() }, asWorker.id);
         s.room.post(s.me, { type: "done", tag: asWorker.tag, summary: stale ? `${summary} (from an earlier generation of ${asWorker.tag}; the current worker's record was left alone)` : summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: "notify" });
       } else {
         s.room.post(s.me, { type: "note", text: `done${sc ? ` (${sc.area})` : ""}: ${summary}` });
@@ -38210,7 +38424,9 @@ function handlers6(state) {
       const existing = s.room.workers.get(tag);
       if (existing && existing.lead !== s.me.name && existing.status === "running") return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; pick another tag`;
       if (existing && (existing.status === "running" || workerAlive(s, existing))) return `error: worker ${tag} is ${existing.status === "running" ? "already running" : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_dismiss it first or pick another tag`;
-      const gen = (existing?.gen ?? 0) + 1;
+      if (existing) return `error: worker ${tag} is ${existing.status} and still holds its room state; room_dismiss it before reusing the tag`;
+      const retired = s.room.retiredWorkers().filter((w) => w.tag === tag && w.lead === s.me.name);
+      const gen = Math.max(0, ...retired.map((w) => w.retiredAt)) + 1;
       const id2 = workerId(s.me.name, tag, gen);
       const running = myWorkers(s).filter((w) => w.status === "running");
       const config2 = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers: ctx.maxWorkers } });
@@ -38291,19 +38507,22 @@ function handlers6(state) {
           if (!cur) return;
           if (cur.status === "running") s.room.updateWorker(tag, { status: "failed", exitCode: -1, summary: `could not start ${cmd}: ${err.message}` }, id2);
           s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` });
+          void rooms.retireWorkers(s).catch((e) => state.log(`worker retirement: ${e}`));
         });
         proc.onExit((code) => {
           rooms.dropHandle(s, id2, proc);
           const cur = s.room.workerById(id2);
           if (!cur) return;
           if (cur.status !== "running") {
-            s.room.updateWorker(tag, { exitCode: code ?? -1 }, id2);
+            s.room.updateWorker(tag, { exitCode: code ?? -1, finishedAt: cur.finishedAt ?? now() }, id2);
+            void rooms.retireWorkers(s).catch((e) => state.log(`worker retirement: ${e}`));
             return;
           }
           const summary = cur.summary ?? (code === 0 ? "process exited without room_done" : `process exited with code ${code}`);
-          s.room.updateWorker(tag, { status: code === 0 ? "done" : "failed", exitCode: code ?? -1, summary }, id2);
+          s.room.updateWorker(tag, { status: "failed", exitCode: code ?? -1, summary, finishedAt: now() }, id2);
           s.room.post(s.me, { type: "note", to: s.me.name, priority: "notify", text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? "" : `; see ${logFile}`}` });
           s.room.post({ name, kind: "agent", owner, label: tag }, { type: "done", tag, summary: `${summary} (exit ${code})`, changed: s.room.changedPaths(name), to: s.me.name, priority: "notify" });
+          void rooms.retireWorkers(s).catch((e) => state.log(`worker retirement: ${e}`));
         });
         s.room.post(s.me, { type: "note", text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ""}) as ${name}: ${task.slice(0, 100)}` });
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ""}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? " (new worktree)" : ""}`];
@@ -38324,9 +38543,14 @@ function handlers6(state) {
       const w = s.room.workers.get(tag);
       if (!w) return `error: no worker ${tag}`;
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`;
-      if (w.status !== "running" && !workerAlive(s, w)) return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`;
+      if (w.status !== "running" && !workerAlive(s, w)) {
+        s.room.updateWorker(tag, { dismissedAt: now() }, w.id);
+        await rooms.retireWorkers(s);
+        return `${s.room.workers.has(tag) ? `dismissal recorded for worker ${tag}; waiting for confirmed process exit` : `retired worker ${tag} (${w.status}, dismissed)`}; its work is on branch ${w.branch} in ${w.dir}`;
+      }
       const how = dismissWorker(s, w, w.status === "running" ? "dismissed by the lead" : `its process was stopped by the lead after it reported ${w.status}`);
       if (w.status === "running" && s.room.workers.get(tag)?.status === "running") return `could not dismiss ${tag}: ${how}; status stays running; its work is on branch ${w.branch} in ${w.dir}`;
+      await rooms.retireWorkers(s);
       return `${w.status === "running" ? "dismissed" : `stopped the ${w.status} worker`} ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`;
     }
   };
@@ -38363,6 +38587,7 @@ function install5(state) {
   };
   const dismissWorker = (s, w, why) => {
     const proc = rooms.handle(s, w.id);
+    if (proc && w.dismissedAt !== void 0) return `pid ${w.pid} already signalled; waiting for exit`;
     let how, signalled;
     if (proc) {
       signalled = proc.kill();
@@ -38374,8 +38599,7 @@ function install5(state) {
       signalled = false;
       how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`;
     }
-    if (signalled || !proc) rooms.dropHandle(s, w.id);
-    if (signalled && w.status === "running") s.room.updateWorker(w.tag, { status: "dismissed" }, w.id);
+    if (signalled) s.room.updateWorker(w.tag, { ...w.status === "running" ? { status: "dismissed" } : {}, dismissedAt: state.now() }, w.id);
     s.room.post(s.me, { type: "note", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
     return how;
   };
@@ -38584,6 +38808,7 @@ function createTools(ctx) {
       }
       try {
         const body = await h(args2 ?? {});
+        if (name === "room_preview_merge" || name.startsWith("room_pr_")) await state.rooms.retireWorkers();
         const s2 = ctx.getSession();
         if (s2 && name !== "room_join" && name !== "room_create") s2.daemon.touch();
         const prefix = moved ? `${moved}
