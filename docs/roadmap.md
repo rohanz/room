@@ -60,6 +60,19 @@ but never called `room_wait`, never previewed a merge and integrated by copying 
   line on a yes. Never edit `.roomignore` unasked; stay silent when nothing matches. The rule
   lives in the daemon, not in the model's judgement.
 
+## Browser view under load
+
+Measured 2026-09-21 on a live room (8 participants, 88 changed files): heap 9 to 27 MB, about
+4,700 DOM nodes, idle when the room is idle, median file open 17 ms. Memory is fine. CPU under
+activity is not: every panel re-renders in full on every document update with no coalescing, and
+the code pane re-runs the merge for the open file each time (542 ms for a 2,523-line file).
+- One render scheduler: collect updates, render at most once per animation frame, slower when
+  the tab is hidden.
+- Memoise the merge by a hash of its input texts; recompute only when the open file changed.
+- Lower the large-file threshold from 3,000 to about 1,500 lines.
+- A lead has no notion of how heavy its workers are beyond the thread budget (0.7.0); consider
+  surfacing machine load in `room_state` for leads.
+
 ## What an enterprise would ask before installing
 
 - **Permission checks beyond GitHub.com.** Only GitHub.com rooms verify push access. On GitHub
