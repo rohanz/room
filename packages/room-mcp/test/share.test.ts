@@ -55,6 +55,7 @@ function setup(opts: { share?: ShareLevel; shareMax?: ShareLevel; requested?: Sh
     provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: daemon as unknown as Session['daemon'],
     shareMax: opts.shareMax ?? 'full',
+    local: { url: 'ws://x' } as Session['local'],
     shareRequested: opts.requested ?? opts.share ?? 'full',
   }
   const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
@@ -83,35 +84,37 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 describe('room_share', () => {
   it('reports the current level without arguments', async () => {
     const t = setup()
-    expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: full')
+    expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: the full text of files you change')
   })
 
   it('changes the level live through the daemon, using my scope paths, and posts a note', async () => {
     const t = setup()
     t.room.setScope({ by: 'Rohan', byKind: 'agent', area: 'api', summary: 's', paths: ['app.py'] })
     const out = t.body(await t.tools.call('room_share', { level: 'intent' }))
-    expect(out).toContain('changed sharing full -> sharing: intent')
+    expect(out).toContain('changed sharing full -> sharing: only your plans, no file text')
     expect(out).toContain('withheld 1 changed file(s): app.py')
     expect(t.daemon.calls).toEqual([{ level: 'intent', paths: undefined }]) // the daemon keeps following the declared scope
     expect(t.room.changedPaths('Rohan')).toEqual([])
-    expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'note', text: 'now sharing intent (withdrew all file text)' })
-    expect(t.body(await t.tools.call('room_share', { level: 'full' }))).toBe('changed sharing intent -> sharing: full')
+    expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'note', text: 'now sharing only your plans, no file text' })
+    expect(t.body(await t.tools.call('room_share', { level: 'full' }))).toBe('changed sharing intent -> sharing: the full text of files you change')
     expect(t.room.changedPaths('Rohan')).toEqual(['app.py'])
   })
 
-  it('rejects unknown levels and warns when declared has no scope yet', async () => {
+  it('narrows unknown levels and warns when declared has no scope yet', async () => {
     const t = setup()
-    expect(t.body(await t.tools.call('room_share', { level: 'everything' }))).toMatch(/^error: level must be intent, declared or full/)
+    expect(t.body(await t.tools.call('room_share', { level: 'everything' }))).toContain("level='everything' is not a level; sharing plans only")
+    expect(t.daemon.share).toBe('intent')
+    expect(t.room.changedPaths('Rohan')).toEqual([])
     expect(t.body(await t.tools.call('room_share', { level: 'declared' }))).toContain('no scope declared yet')
   })
 
   it('clamps to the server ceiling and says so', async () => {
     const t = setup({ share: 'declared', shareMax: 'declared', requested: 'full' })
-    expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: declared (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
+    expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: only the files in your declared area (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
     const out = t.body(await t.tools.call('room_share', { level: 'full' }))
-    expect(out).toContain('sharing level unchanged: sharing: declared (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
+    expect(out).toContain('sharing level unchanged: sharing: only the files in your declared area (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
     expect(t.daemon.calls).toEqual([{ level: 'declared', paths: undefined }])
-    expect(t.body(await t.tools.call('room_share', { level: 'intent' }))).toContain('changed sharing declared -> sharing: intent')
+    expect(t.body(await t.tools.call('room_share', { level: 'intent' }))).toContain('changed sharing declared -> sharing: only your plans, no file text')
   })
 })
 
@@ -121,8 +124,8 @@ describe('reading someone who shares less than full', () => {
     t.kieran('intent')
     const line = 'Kieran shares intent only; ask them or wait for their push'
     expect(t.body(await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' }))).toBe(line)
-    expect(t.body(await t.tools.call('room_diff', { person: 'Kieran' }))).toBe(line)
-    expect(t.body(await t.tools.call('room_diff', { path: 'app.py', person: 'Kieran' }))).toBe(line)
+    expect(t.body(await t.tools.call('room_read', { diff: true,  person: 'Kieran' }))).toBe(line)
+    expect(t.body(await t.tools.call('room_read', { diff: true,  path: 'app.py', person: 'Kieran' }))).toBe(line)
     expect(t.body(await t.tools.call('room_preview_merge', { person: 'Kieran' }))).toBe(line)
   })
 
@@ -131,9 +134,9 @@ describe('reading someone who shares less than full', () => {
     t.kieran('declared', ['session.py'])
     t.other.setOverlay('Kieran', 'session.py', 'from app import validate\n# k\n')
     expect(t.body(await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' }))).toBe('app.py: not shared (Kieran shares declared paths only; app.py is outside their scope)')
-    expect(t.body(await t.tools.call('room_diff', { path: 'app.py', person: 'Kieran' }))).toContain('not shared')
+    expect(t.body(await t.tools.call('room_read', { diff: true,  path: 'app.py', person: 'Kieran' }))).toContain('not shared')
     expect(t.body(await t.tools.call('room_read', { path: 'session.py', person: 'Kieran' }))).toContain('2| # k')
-    const all = t.body(await t.tools.call('room_diff', { person: 'Kieran' }))
+    const all = t.body(await t.tools.call('room_read', { diff: true,  person: 'Kieran' }))
     expect(all).toContain('+# k')
     expect(all).toContain('Kieran shares declared paths only')
     expect(t.body(await t.tools.call('room_preview_merge', { person: 'Kieran' }))).toContain('touched by one side only')

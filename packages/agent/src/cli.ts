@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { readFileSync } from 'node:fs'
+import { readRoomFile } from '@room/roomd'
 import { execFileSync } from 'node:child_process'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,22 +22,24 @@ function parseArgs(argv: string[]): Record<string, string> {
 
 const args = parseArgs(process.argv.slice(2))
 if (args.help) {
-  console.log('usage: roomagent [--dir <clone>] [--name <Name>] [--room ws://host:1234/<room>] [--server ws://host:1234] [--model <model>] [--turn-timeout-ms <ms>]\n(room defaults to <server>/<origin>/<branch> of the clone, or <dir>/.room.json; name defaults to git config user.name)')
+  console.log('usage: roomagent [--dir <clone>] [--name <Name>] [--room ws://host:1234/<room>] [--server ws://host:1234] [--model <model>] [--turn-timeout-ms <ms>]\n(room defaults to <server>/<origin>/<branch> of the clone, or private Git room metadata; name defaults to git config user.name)')
+  console.log('team runner destination: --room/--server > ROOM_SERVER > ROOM_URL > saved metadata; no default server or local mode')
   process.exit(0)
 }
 const dir = resolve(args.dir ?? process.cwd())
-let cfg: { room?: string; name?: string; dir?: string } = {}
-try { cfg = JSON.parse(readFileSync(resolve(dir, '.room.json'), 'utf8')) } catch { /* optional */ }
+const cfg = readRoomFile(dir) ?? {}
 const workDir = resolve(cfg.dir ?? dir)
 const gitName = () => { try { return execFileSync('git', ['-C', workDir, 'config', 'user.name'], { encoding: 'utf8' }).trim() || undefined } catch { return undefined } }
 const name = args.name ?? cfg.name ?? gitName()
-let roomUrl = args.room ?? cfg.room
-if (!roomUrl) {
-  const server = parseServer(args.server ?? process.env.ROOM_SERVER ?? 'ws://localhost:1234').server
+const serverChoice = args.room ? undefined : args.server ?? process.env.ROOM_SERVER
+let roomUrl = args.room ?? (serverChoice ? undefined : process.env.ROOM_URL ?? cfg.room)
+if (serverChoice) {
+  const server = parseServer(serverChoice).server
+  if (!/^wss?:\/\//.test(server)) { console.error('roomagent: team runner needs a ws:// or wss:// server; local mode is not supported'); process.exit(2) }
   const d = await deriveRoomName(workDir)
   if (d.roomName) roomUrl = `${server}/${encodeRoom(d.roomName)}`
 }
-if (!name || !roomUrl) { console.error('roomagent: could not derive room/name; pass --room and --name (or run in a clone with an origin remote)'); process.exit(2) }
+if (!name || !roomUrl) { console.error('roomagent: pass --room and --name, or choose --server/ROOM_SERVER/ROOM_URL in a clone with an origin'); process.exit(2) }
 
 // ws://host:1234/<room> → server + room name
 const u = new URL(roomUrl)

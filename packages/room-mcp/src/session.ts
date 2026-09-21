@@ -4,25 +4,24 @@ import { trackConnection } from './connection.js'
  * websocket provider) plus the identity the tools act as. `room_join` creates it,
  * `room_leave` tears it down.
  */
-import { existsSync, readFileSync, watchFile, unwatchFile } from 'node:fs'
+import { readFileSync, watchFile, unwatchFile } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { WebsocketProvider } from 'y-websocket'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
-import { startRoomd, RoomdError, clampShare, parseShare, type Roomd, type ShareLevel } from '@room/roomd'
+import { startRoomd, RoomdError, clampShare, readRoomFile, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
 import { ensureLocalRelay, type LocalRelay } from '@room/relay'
 import { gitCommonDir, localRoomName } from '@room/roomd/local'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
-import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
+import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
 import { isFresh } from './presence.js'
 import { readChoice, rememberTag, worktreePath } from './choice.js'
 
-/** The hosted room server. Override with ROOM_SERVER (e.g. ws://localhost:1234 for local dev). */
-/** The hosted server, used when ROOM_SERVER=hosted (or an explicit URL). Without ROOM_SERVER a session is LOCAL: no server at all. */
+/** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
 export const DEFAULT_WEB = 'http://localhost:5173'
 
@@ -48,7 +47,9 @@ export interface Session {
   local?: LocalRelay
   /** The room was chosen explicitly (room argument, ROOM_ROOM, or local naming): do not follow the clone's branch. */
   pinnedRoom?: boolean
-  /** The level asked for at join, before clamping (so the reply can say it was lowered). */
+  /** Invalid input narrowed to plans only; retained for sharing controls. */
+  shareWarning?: string
+  /** The requested level before the server ceiling. */
   shareRequested: ShareLevel
   /** The shared token this session joined with (argument, ROOM_TOKEN, or `?token=` on the server URL); workers get it as ROOM_TOKEN. Never printed. */
   token?: string
@@ -166,16 +167,14 @@ export async function logout(server: string): Promise<{ login?: string; removed:
   return { login: c?.login, removed: removeCredential(server) }
 }
 
-/** `.room.json` written by the daemon; lets a later process rejoin the same room. */
-export interface RoomFile { room: string; name: string; dir: string }
+/** Private room metadata written by the daemon. */
+export type { RoomFile } from '@room/roomd'
 
-export function findRoomFile(start: string): (RoomFile & { _from: string }) | undefined {
+export function findRoomFile(start: string): (RoomFile & { room: string; _from: string }) | undefined {
   let d = resolve(start)
   for (;;) {
-    const f = resolve(d, '.room.json')
-    if (existsSync(f)) {
-      try { return { ...JSON.parse(readFileSync(f, 'utf8')), _from: dirname(f) } } catch { /* keep walking */ }
-    }
+    const room = readRoomFile(d)
+    if (room?.room) return { ...room, room: room.room, _from: d }
     const up = dirname(d)
     if (up === d) return undefined
     d = up
@@ -213,18 +212,15 @@ export async function serverShareMax(server: string): Promise<ShareLevel> {
   let max: ShareLevel = 'full'
   try {
     const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 })
-    if (res.ok) max = parseShare(((await res.json()) as { shareMax?: unknown }).shareMax) ?? 'full'
+    if (res.ok) max = resolveShare(((await res.json()) as { shareMax?: unknown }).shareMax).level
   } catch { /* unreachable: the join will report it */ }
   shareMaxCache.set(server, max)
   return max
 }
 
-/** The level to join with: the explicit argument, else ROOM_SHARE, else full. Throws on an unknown value. */
+/** Missing uses full; invalid levels fail closed to plans only. */
 export function requestedShare(explicit?: string): ShareLevel {
-  const raw = explicit?.trim() || 'full'
-  const level = parseShare(raw)
-  if (!level) throw new RoomdError(`share must be intent, declared or full (got "${raw}")`, 2)
-  return level
+  return resolveShare(explicit).level
 }
 
 /** The server also serves the browser view: ws(s)://host -> http(s)://host. Local dev keeps the Vite port. */
@@ -360,13 +356,17 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   configureCredentials(config.credentialsPath)
   if (opts.log) setServerLog(opts.log)
   const chosen = config.server
-  if (chosen === LOCAL) return joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, web: config.web })
+  if (chosen === LOCAL) {
+    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, web: config.web })
+    session.shareWarning = config.shareWarning
+    return session
+  }
   const parsed = parseServer(chosen)
   const server = parsed.server
   const token = config.token ?? parsed.token
   const web = (config.web ?? defaultWeb(server)).replace(/\/+$/, '')
 
-  let roomName = opts.room
+  let roomName = config.room
   if (!roomName) {
     const d = await deriveRoomName(dir)
     if (!d.roomName) throw new RoomdError(`${dir} has no origin remote; pass room explicitly (e.g. room="myteam/shop/main")`, 2)
@@ -419,8 +419,9 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     browserUrl,
     shareMax,
     shareRequested,
+    shareWarning: config.shareWarning,
     ...(token ? { token } : {}),
-    ...(opts.room ? { pinnedRoom: true } : {}),
+    ...(config.room ? { pinnedRoom: true } : {}),
   }
   trackConnection(session)
   watchClosed(session, opts.log)

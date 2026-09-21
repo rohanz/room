@@ -1,35 +1,43 @@
 import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
-import { formatPlans, type Claim, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { type Claim, type NoteMsg } from '@room/shared'
 import { resolve } from 'node:path'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
 import { git } from '@room/roomd/git'
 import { DEFAULT_SERVER, NoRoom, deriveRoomName, normalizeLocalRoomName, resolveServer, type Session } from '../session.js'
 import { displayName } from '@room/shared'
-import { clearChoice, chooseServer, describeWhere, markWarned, writeChoice } from '../choice.js'
+import { clearChoice, describeWhere, markWarned, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
 import { LOCAL, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
-import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
-import { resolveConfig } from '../config.js'
+import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { resolveConfig, sharingDescription } from '../config.js'
+import { handlers as shareHandlers } from './share.js'
 import { exportRoomLedger } from '../prs.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_login', annotations: RW, description: 'Log in to the room server. GitHub (device flow): the first call returns a one-time code and URL. OIDC (self-hosted servers with a company identity provider): the first call returns a URL to open. Show them to the user VERBATIM. Call again to wait for the login to confirm (blocks up to `wait` seconds, default 90; call again if still pending). Never ask the user for a token. Your participant name becomes your login (GitHub login or email).',
-    inputSchema: { type: 'object', properties: { provider: { type: 'string', enum: ['github', 'oidc'], description: 'login provider (default: the server\'s first; github.com rooms need github)' }, wait: int('seconds to wait for confirmation on a follow-up call (default 90, max 600)'), server: str('override ws server URL'), credentials: str('override credentials file path') } } },
-  { name: 'room_logout', annotations: RW, description: 'Forget the GitHub login for the room server on this machine (and revoke the session on the server).',
-    inputSchema: { type: 'object', properties: { server: str('override ws server URL'), credentials: str('override credentials file path') } } },
-  { name: 'room_create', annotations: RW, description: 'Open a room for this repo on the server, then join the room for the current branch. Do this once per repo (any teammate can); after that every branch of the repo has a room and sessions join automatically. Ask the user before opening and pass confirm=true only after they agree. Idempotent: on an already-open repo it just joins without confirmation.',
-    inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'true only after the user agrees to open the repo for everyone with push access; unnecessary if already open' }, where: str('team | ws(s)://server'), room: str('override room name (default: <host/owner/repo>/<branch>)'), name: str('override your name'), server: str('override ws server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
-  { name: 'room_join', annotations: RW, description: 'Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo\'s room members); remembered for this clone so later sessions go there on their own. A ws(s) URL is a self-hosted server. Precedence: where > ROOM_SERVER > remembered choice > local. Returns who is here, their scopes, open claims, and the browser view URL. On a team server, fails if nobody has opened a room for the repo yet: ask the user whether to open one, and call room_create with confirm=true only after they agree.',
-    inputSchema: { type: 'object', properties: { where: str('local | team | ws(s)://server'), room: str('optional override for team/server rooms (required without an origin); for local joins omit unless the user asks for a separate named room, normalized to local/<name>'), name: str('override your name'), server: str('alias of where for a server URL'), dir: str('clone directory (default: cwd)'), share: SHARE } } },
-  { name: 'room_leave', annotations: RW, description: 'Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). Refused while workers you spawned are still running unless force=true, which dismisses them first. forget=true also clears the remembered room choice for this clone, so the next session starts local again.',
-    inputSchema: { type: 'object', properties: { forget: { type: 'boolean', description: 'also forget the remembered choice (local/team) for this clone' }, force: { type: 'boolean', description: 'dismiss running workers first instead of refusing' } } } },
-  { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'DESTRUCTIVE: in a local room, export the ledger, remove this room\'s saved memory and leave (memory saving resumes when the relay restarts). On a team server, close the room for this whole repo, for everyone. Every branch room of the repo is removed from the server along with all uncommitted work people have shared into it, and every teammate is disconnected. Nothing in any clone changes. Only on the user\'s explicit request; room_create reopens later.',
-    inputSchema: { type: 'object', properties: { confirm: { type: 'boolean', description: 'must be true' } }, required: ['confirm'] } },
-  { name: 'room_export', annotations: RO, description: 'Export the current room story, including compacted bus history, to a local markdown ledger without changing the room.',
-    inputSchema: { type: 'object', properties: { path: str('optional output path, relative to the clone unless absolute; default .room/ledger/<room>-<timestamp>.md') } } }
+  { name: 'room_login', annotations: RW, description: 'Sign in; show the returned code/URL verbatim, then call again to wait. action=logout revokes and forgets the account.',
+    inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['login', 'logout'] }, provider: { type: 'string', enum: ['github', 'oidc'] }, wait: int('wait seconds, default 90, max 600'), server: str('server URL'), credentials: str('credentials file') } } },
+  { name: 'room_create', annotations: RW, description: 'Open this repo on a team server and join. confirm=true authorizes opening it for members with push access.',
+    inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' }, where: str('team | server URL'), room: str('room name override'), name: str('name override'), server: str('alias of where'), dir: str('clone; default cwd'), share: SHARE } } },
+  { name: 'room_join', annotations: RW, description: 'Join local or a requested team server; remember explicit choices for this clone and its worktrees. Priority: argument, ROOM_SERVER, ROOM_URL, remembered, local.',
+    inputSchema: { type: 'object', properties: { where: str('local | team | server URL'), room: str('room name override'), name: str('name override'), server: str('alias of where'), dir: str('clone; default cwd'), share: SHARE } } },
+  { name: 'room_leave', annotations: RW, description: 'Leave and release your work claims. force dismisses running workers; forget clears this clone’s remembered destination.',
+    inputSchema: { type: 'object', properties: { forget: { type: 'boolean' }, force: { type: 'boolean' } } } },
+  { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'On explicit request, export history then delete local room memory or all branch rooms for everyone on the team server. Leaves clone files intact.',
+    inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } }, required: ['confirm'] } },
+  { name: 'room_export', annotations: RO, description: 'Write room history to a Markdown ledger.',
+    inputSchema: { type: 'object', properties: { path: str('output; default .room/ledger/<room>-<timestamp>.md') } } }
 ]
+
+/** One human disclosure per worktree and destination, including automatic and solo joins. */
+export async function teamSharingNote(s: Session): Promise<string | undefined> {
+  if (s.local) return undefined
+  const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
+  if (!await markWarned(s.dir, s.dir, server).catch(() => true)) return undefined
+  const repo = s.roomName.includes('/') ? s.roomName.slice(0, s.roomName.lastIndexOf('/')) : s.roomName
+  return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? 'intent')} with members of ${repo} on ${server}; use room_share level=intent for plans only or level=declared to limit files to your declared area.`
+}
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
@@ -43,13 +51,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await configureLogin(a)
       const server = serverOf(a)
       if (server === LOCAL) return LOCAL_LOGIN
+      if (a.action === 'logout') {
+        setPending(server, undefined)
+        const r = await doLogout(server)
+        return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ''}${ctx.getSession() ? '; the current session stays connected until room_leave' : ''}` : `no login stored for ${server}`
+      }
       const cfg = await serverAuthConfig(server)
       if (!cfg.providers.length) return `${server} has no login provider: non-GitHub rooms are admitted by its shared token (or open), and github.com rooms cannot be joined there; nothing to log in to`
       const provider = a.provider === 'github' || a.provider === 'oidc' ? a.provider : undefined
       if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(', ')})`
       const cred = getCredential(server)
       const pending = getPending(server)
-      if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_logout to switch accounts`
+      if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_login action=logout to switch accounts`
       if (pending && (!provider || provider === pending.provider)) {
         const wait = Math.min(600, Math.max(5, typeof a.wait === 'number' ? a.wait : 90))
         const r = await pollLogin(server, pending, { maxMs: wait * 1000 })
@@ -61,19 +74,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       setPending(server, { ...p, startedAt: Date.now() })
       return `${p.provider === 'oidc' ? 'Single sign-on' : 'GitHub'} login for ${server}. Tell the user exactly this: ${codeLine(p)}`
     },
-    async room_logout(a) {
-      await configureLogin(a)
-      const server = serverOf(a)
-      if (server === LOCAL) return LOCAL_LOGIN
-      setPending(server, undefined)
-      const r = await doLogout(server)
-      return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ''}${ctx.getSession() ? '; the current session stays connected until room_leave' : ''}` : `no login stored for ${server}`
-    },
     async room_create(a) { return handlers.room_join({ ...a, create: true }) },
     async room_join(a) {
       const cur = ctx.getSession()
+      const currentReply = async () => {
+        const sharing = a.share !== undefined ? await shareHandlers(state).room_share({ level: a.share }) : ''
+        const note = cur ? await teamSharingNote(cur) : undefined
+        return [note, sharing, await scopeHandlers(state).room_state({})].filter(Boolean).join('\n')
+      }
       if (cur && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined) {
-        return scopeHandlers(state).room_state({})
+        return currentReply()
       }
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
@@ -87,10 +97,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const sameServer = choice.server === LOCAL ? !!cur.local
           : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf('/'))).server
         if (sameServer && targetRoom === cur.roomName && resolve(dir) === cur.dir) {
-          return scopeHandlers(state).room_state({})
+          return currentReply()
         }
         const running = runningWorkers(cur)
-        if (running.length) return `error: ${running.length} worker(s) are running in ${cur.roomName}; they would be left behind. Wait for them, room_dismiss them, or stay in this room.`
+        if (running.length) return `error: ${running.length} worker(s) are running in ${cur.roomName}; they would be left behind. Wait for them, room_collect(discard=true) them, or stay in this room.`
       }
       if (typeof a.name === 'string' && a.name.trim() && choice.server !== LOCAL) {
         const server = parseServer(choice.server).server
@@ -124,6 +134,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`
       }
       if (choice.rule === 'argument') { try { await writeChoice(dir, choice.where, s.me.name) } catch { /* not a repository? keep going */ } }
+      s.shareWarning = resolved.shareWarning ?? s.shareWarning
       for (const m of s.room.messages()) seen.add(m.id)
       rooms.add(s, 'primary')
       const stale = cleanupMine(s, 'stale from an earlier session')
@@ -132,18 +143,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await loadAreas(s)
       const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
       if (cur) out.unshift(`moved from ${cur.roomName} to ${s.roomName}; links to the old room no longer show this session.`)
+      out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone and its worktrees)' : choice.rule === 'env' ? resolved.whereEnv : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
+      const note = await teamSharingNote(s)
+      if (note) out.push(note)
       const company = hasCompany(s)
       if (!company.company) {
         out.push(shareLine(s))
         out.push('alone here; the room stays quiet until someone joins')
         out.push(`browser view: ${await refreshBrowserUrl(s)}`)
         return out.join('\n')
-      }
-      // Never print a shared token: the chosen server may carry one as ?token=…
-      out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone)' : choice.rule === 'env' ? 'ROOM_SERVER' : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
-      if (!s.local && (choice.rule === 'argument' || choice.rule === 'remembered')) {
-        const fresh = await markWarned(dir, s.dir).catch(() => true)
-        if (fresh || choice.rule === 'argument') out.push(`note for your human: uncommitted work in this clone${choice.rule === 'remembered' ? ' (joined on the choice remembered for this repo)' : ''} is now visible to the members of ${s.roomName.slice(0, s.roomName.lastIndexOf('/'))}'s room.`)
       }
       if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)
       out.push(shareLine(s))
@@ -169,7 +177,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_leave(a) {
       const s = S()
       const running = runningWorkers(s)
-      if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map(r => r.w.tag).join(', ')}. Wait for them (room_wait), room_dismiss them, or room_leave force=true to dismiss them all and leave.`
+      if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map(r => r.w.tag).join(', ')}. Wait for them (room_wait), room_collect(discard=true) them, or room_leave force=true to dismiss them all and leave.`
       for (const r of running) dismissWorker(r.s, r.w, 'the lead left the room')
       await closeWorkersRoom()
       const released = cleanupMine(s, 'left the room')

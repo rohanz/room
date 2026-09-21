@@ -38,7 +38,7 @@ describe('credentials store', () => {
   })
 })
 
-describe('room_login / room_logout', () => {
+describe('room_login account actions', () => {
   const tools = () => createTools({ getSession: () => null, setSession: () => {}, cwd: process.cwd() })
   it('device mode: first call shows the code, second waits and stores the session; join auth then uses it', async () => {
     const t = tools()
@@ -60,7 +60,7 @@ describe('room_login / room_logout', () => {
     expect(a).toMatchObject({ session: 's'.repeat(64), login: 'octo' })
     expect(a.gh).toBeUndefined()
     expect(await t.call('room_login', {})).toContain('already logged in')
-    const out = await t.call('room_logout', {})
+    const out = await t.call('room_login', { action: 'logout', })
     expect(out).toContain('logged out')
     expect(loggedOut).toEqual(['s'.repeat(64)])
     expect(getCredential(url)).toBeUndefined()
@@ -82,7 +82,7 @@ describe('room_login / room_logout', () => {
     } finally { mode.github = 'device' }
   })
   it('logout with nothing stored says so', async () => {
-    expect(await tools().call('room_logout', {})).toContain('no login stored')
+    expect(await tools().call('room_login', { action: 'logout', })).toContain('no login stored')
   })
 })
 

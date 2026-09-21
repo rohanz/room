@@ -19,13 +19,13 @@ describe('resolveConfig', () => {
     expect(c).toMatchObject({ server: LOCAL, whereRule: 'argument', share: 'intent', maxWorkers: 2 })
   })
 
-  it('resolves runner URLs without overriding explicit or remembered destinations', async () => {
+  it('treats runner URLs as explicit environment destinations', async () => {
     const dir = repo(), url = 'ws://runner/room'
     expect((await resolveConfig({ dir, env: { ROOM_URL: url } })).roomUrl).toBe(url)
     expect((await resolveConfig({ dir, env: { ROOM_URL: url, ROOM_SERVER: 'local' } })).roomUrl).toBeUndefined()
     expect((await resolveConfig({ dir, env: { ROOM_URL: url }, args: { where: 'local' } })).roomUrl).toBeUndefined()
     await writeChoice(dir, 'team')
-    expect((await resolveConfig({ dir, env: { ROOM_URL: url } })).roomUrl).toBeUndefined()
+    expect(await resolveConfig({ dir, env: { ROOM_URL: url } })).toMatchObject({ server: 'ws://runner', room: 'room', whereRule: 'env', whereEnv: 'ROOM_URL' })
     expect((await resolveConfig({ dir, env: { ROOM_URL: url }, args: { roomUrl: 'ws://argument/room' } })).roomUrl).toBe('ws://argument/room')
   })
 
@@ -73,4 +73,15 @@ it('resolves hook metadata from the worktree gitdir, not the main clone', () => 
   expect(resolveSessionRuntime(worktree, {})).toEqual({ model: 'worker-model', effort: undefined })
   fs.rmSync(main, { recursive: true, force: true })
   fs.rmSync(worktree, { recursive: true, force: true })
+})
+
+it.each(['decalred', '', 'ful'])('never widens invalid sharing %j from arguments or environment', async raw => {
+  const dir = repo()
+  expect(await resolveConfig({ dir, env: { ROOM_SHARE: raw } })).toMatchObject({ share: 'intent', shareWarning: `ROOM_SHARE='${raw}' is not a level; sharing plans only` })
+  expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'full' }, args: { share: raw } })).toMatchObject({ share: 'intent', shareWarning: `share='${raw}' is not a level; sharing plans only` })
+})
+it.each(['full', 'declared', 'intent'])('accepts level %s through either config source', async share => {
+  const dir = repo()
+  expect(await resolveConfig({ dir, env: { ROOM_SHARE: share } })).toMatchObject({ share, shareWarning: undefined })
+  expect(await resolveConfig({ dir, env: {}, args: { share } })).toMatchObject({ share, shareWarning: undefined })
 })

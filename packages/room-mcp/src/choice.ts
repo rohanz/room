@@ -1,7 +1,7 @@
 /**
  * Which room a clone joins, chosen by instruction and remembered per clone.
  *
- * Precedence: explicit `where` argument > ROOM_SERVER env > the choice remembered in the clone
+ * Precedence: explicit `where` argument > ROOM_SERVER/ROOM_URL env > the choice remembered in the clone
  * (`<git common dir>/room-choice.json`) > local. Joining the team room from a clone that never
  * has is always an explicit instruction (argument or env), never inferred: that is the moment
  * uncommitted work becomes visible to the repo's room members.
@@ -14,7 +14,7 @@ import { DEFAULT_SERVER, LOCAL, normaliseWhere, resolveConfig } from './config.j
 
 export const CHOICE_FILE = 'room-choice.json'
 
-export interface RoomChoice { where: string; at: number; by?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree paths already told that their work is visible to the team */ warned?: string[] }
+export interface RoomChoice { where: string; at: number; by?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree/destination keys already told what they share */ warned?: string[] }
 
 export type ChoiceRule = 'argument' | 'env' | 'remembered' | 'default'
 
@@ -75,10 +75,9 @@ export async function rememberTag(dir: string, tag: string): Promise<RoomChoice>
 }
 
 /** Has this worktree been told its uncommitted work is visible to the team? Marks it told and says whether it was new. */
-export async function markWarned(dir: string, worktree: string): Promise<boolean> {
-  const c = await readChoice(dir)
-  if (!c) return true
-  const key = path.resolve(worktree)
+export async function markWarned(dir: string, worktree: string, destination?: string): Promise<boolean> {
+  const c = await readChoice(dir) ?? { where: LOCAL, at: Date.now() }
+  const key = path.resolve(worktree) + (destination ? '#' + destination : '')
   const warned = c.warned ?? []
   if (warned.includes(key)) return false
   try { const file = await choiceFile(dir); fs.writeFileSync(file, JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + '\n', { mode: 0o600 }); fs.chmodSync(file, 0o600) } catch { /* best effort */ }
