@@ -31,9 +31,10 @@ if (!room || !name || args.help || (shareRaw && !share)) {
 
 startRoomd({ room, dir, name, share })
   .then(d => {
-    const stop = () => d.stop().then(() => process.exit(0))
-    process.on('SIGINT', stop)
-    process.on('SIGTERM', stop)
+    process.on('SIGINT', () => { void d.stop('SIGINT').then(() => process.exit(0)) })
+    process.on('SIGTERM', () => { void d.stop('SIGTERM').then(() => process.exit(0)) })
+    process.on('uncaughtException', error => { void d.stop(`uncaught exception: ${error.stack ?? error}`).finally(() => process.exit(1)) })
+    process.on('unhandledRejection', error => { void d.stop(`unhandled rejection: ${String(error)}`).finally(() => process.exit(1)) })
   })
   .catch(err => {
     console.error(`[roomd] ${err instanceof Error ? err.message : String(err)}`)

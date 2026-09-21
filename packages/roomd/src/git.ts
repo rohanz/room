@@ -95,7 +95,7 @@ export async function gitIgnored(dir: string, rel: string, configuredTimeoutMs?:
     execFile('git', ['check-ignore', '-q', '--', rel], { cwd: dir, timeout }, err => {
       const stopped = err as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null
       if (stopped?.killed || stopped?.signal) reject(new Error(`git check-ignore timed out after ${timeout}ms`))
-      else resolve(!err)
+      else resolve(!err || Number(stopped?.code) !== 1)
     })
   })
 }
