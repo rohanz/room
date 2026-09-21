@@ -4,6 +4,35 @@ Written 2026-09-21. Room today fits a small team on a shared branch. These are t
 between that and a fifty-engineer production repo, in priority order. Nothing here is started.
 Decide the order after the trial with real users; see "What decides the order" at the end.
 
+## The design the gaps point at: cost scales with overlap
+
+The gap list below says what breaks. This is the one idea that fixes most of it. Multiplayer
+games call it area of interest: you receive only what is near you. Every agent already declares
+a scope; today it is advisory. Make it the unit of everything.
+
+**Three tiers of sharing**
+1. **Facts go to everyone.** Presence, scope, the list of changed files with hash and size,
+   claims, and contract changes at symbol level. A hundred engineers' worth is a few hundred
+   kilobytes. This tier is what says "someone across the repo is changing a function you call"
+   without shipping code.
+2. **Text goes only where scopes overlap**, or where a contract change reaches your files.
+3. **Everything else on demand**: `room_read` fetches a stranger's file at that moment.
+
+**Git is already the shared content store.** Publish a patch against a commit the others have,
+not the full file text. The receiver rebuilds the text from git plus the patch. Payloads shrink
+by one or two orders of magnitude with no blob store and no new server. The same move fixes the
+branch model: one room per repository, each participant carries a base commit, merges are
+computed against the merge base that git finds locally.
+
+**Falls out for free:** the daemon watches and indexes only the scope and its dependency
+frontier (the graph cap and watcher cost stop mattering); path-only sharing is tier one without
+tier two; per-directory access control becomes possible because text is exchanged by scope, not
+broadcast; the browser loads the facts tier instantly and fetches text per opened file.
+
+**Does not solve:** name-based symbol matching (needs import resolution) and the enterprise
+list. **Build order:** patches against a base, then a room per repository, then scope-driven
+watching and indexing.
+
 ## Structural gaps
 
 1. **Rooms are per branch; real teams work one branch per person.** A session joins
