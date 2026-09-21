@@ -48,9 +48,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/codegen/code.js
+// node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/codegen/code.js"(exports2) {
+  "node_modules/ajv/dist/compile/codegen/code.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.regexpCode = exports2.getEsmExportName = exports2.getProperty = exports2.safeStringify = exports2.stringify = exports2.strConcat = exports2.addCodeArg = exports2.str = exports2._ = exports2.nil = exports2._Code = exports2.Name = exports2.IDENTIFIER = exports2._CodeOrName = void 0;
@@ -202,9 +202,9 @@ var require_code = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/codegen/scope.js
+// node_modules/ajv/dist/compile/codegen/scope.js
 var require_scope = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/codegen/scope.js"(exports2) {
+  "node_modules/ajv/dist/compile/codegen/scope.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.ValueScope = exports2.ValueScopeName = exports2.Scope = exports2.varKinds = exports2.UsedValueState = void 0;
@@ -347,9 +347,9 @@ var require_scope = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/codegen/index.js
+// node_modules/ajv/dist/compile/codegen/index.js
 var require_codegen = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/codegen/index.js"(exports2) {
+  "node_modules/ajv/dist/compile/codegen/index.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.or = exports2.and = exports2.not = exports2.CodeGen = exports2.operators = exports2.varKinds = exports2.ValueScopeName = exports2.ValueScope = exports2.Scope = exports2.Name = exports2.regexpCode = exports2.stringify = exports2.getProperty = exports2.nil = exports2.strConcat = exports2.str = exports2._ = void 0;
@@ -1067,9 +1067,9 @@ var require_codegen = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/util.js
+// node_modules/ajv/dist/compile/util.js
 var require_util = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/util.js"(exports2) {
+  "node_modules/ajv/dist/compile/util.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.checkStrictMode = exports2.getErrorPath = exports2.Type = exports2.useFunc = exports2.setEvaluated = exports2.evaluatedPropsToName = exports2.mergeEvaluated = exports2.eachItem = exports2.unescapeJsonPointer = exports2.escapeJsonPointer = exports2.escapeFragment = exports2.unescapeFragment = exports2.schemaRefOrVal = exports2.schemaHasRulesButRef = exports2.schemaHasRules = exports2.checkUnknownRules = exports2.alwaysValidSchema = exports2.toHash = void 0;
@@ -1234,9 +1234,9 @@ var require_util = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/names.js
+// node_modules/ajv/dist/compile/names.js
 var require_names = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/names.js"(exports2) {
+  "node_modules/ajv/dist/compile/names.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -1273,9 +1273,9 @@ var require_names = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/errors.js
+// node_modules/ajv/dist/compile/errors.js
 var require_errors = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/errors.js"(exports2) {
+  "node_modules/ajv/dist/compile/errors.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.extendErrors = exports2.resetErrorsCount = exports2.reportExtraError = exports2.reportError = exports2.keyword$DataError = exports2.keywordError = void 0;
@@ -1395,9 +1395,9 @@ var require_errors = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/boolSchema.js
+// node_modules/ajv/dist/compile/validate/boolSchema.js
 var require_boolSchema = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/boolSchema.js"(exports2) {
+  "node_modules/ajv/dist/compile/validate/boolSchema.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.boolOrEmptySchema = exports2.topBoolOrEmptySchema = void 0;
@@ -1446,9 +1446,9 @@ var require_boolSchema = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/rules.js
+// node_modules/ajv/dist/compile/rules.js
 var require_rules = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/rules.js"(exports2) {
+  "node_modules/ajv/dist/compile/rules.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.getRules = exports2.isJSONType = void 0;
@@ -1477,9 +1477,9 @@ var require_rules = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/applicability.js
+// node_modules/ajv/dist/compile/validate/applicability.js
 var require_applicability = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/applicability.js"(exports2) {
+  "node_modules/ajv/dist/compile/validate/applicability.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.shouldUseRule = exports2.shouldUseGroup = exports2.schemaHasRulesForType = void 0;
@@ -1500,9 +1500,9 @@ var require_applicability = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/dataType.js
+// node_modules/ajv/dist/compile/validate/dataType.js
 var require_dataType = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/dataType.js"(exports2) {
+  "node_modules/ajv/dist/compile/validate/dataType.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.reportTypeError = exports2.checkDataTypes = exports2.checkDataType = exports2.coerceAndCheckDataType = exports2.getJSONTypes = exports2.getSchemaTypes = exports2.DataType = void 0;
@@ -1684,9 +1684,9 @@ var require_dataType = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/defaults.js
+// node_modules/ajv/dist/compile/validate/defaults.js
 var require_defaults = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/defaults.js"(exports2) {
+  "node_modules/ajv/dist/compile/validate/defaults.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.assignDefaults = void 0;
@@ -1721,9 +1721,9 @@ var require_defaults = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/code.js
+// node_modules/ajv/dist/vocabularies/code.js
 var require_code2 = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/code.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/code.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.validateUnion = exports2.validateArray = exports2.usePattern = exports2.callValidateCode = exports2.schemaProperties = exports2.allSchemaProperties = exports2.noPropertyInData = exports2.propertyInData = exports2.isOwnProperty = exports2.hasPropFunc = exports2.reportMissingProp = exports2.checkMissingProp = exports2.checkReportMissingProp = void 0;
@@ -1854,9 +1854,9 @@ var require_code2 = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/keyword.js
+// node_modules/ajv/dist/compile/validate/keyword.js
 var require_keyword = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/keyword.js"(exports2) {
+  "node_modules/ajv/dist/compile/validate/keyword.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.validateKeywordUsage = exports2.validSchemaType = exports2.funcKeywordCode = exports2.macroKeywordCode = void 0;
@@ -1972,9 +1972,9 @@ var require_keyword = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/subschema.js
+// node_modules/ajv/dist/compile/validate/subschema.js
 var require_subschema = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/subschema.js"(exports2) {
+  "node_modules/ajv/dist/compile/validate/subschema.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.extendSubschemaMode = exports2.extendSubschemaData = exports2.getSubschema = void 0;
@@ -2055,9 +2055,9 @@ var require_subschema = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/fast-deep-equal/index.js
+// node_modules/fast-deep-equal/index.js
 var require_fast_deep_equal = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/fast-deep-equal/index.js"(exports2, module2) {
+  "node_modules/fast-deep-equal/index.js"(exports2, module2) {
     "use strict";
     module2.exports = function equal(a, b) {
       if (a === b) return true;
@@ -2090,9 +2090,9 @@ var require_fast_deep_equal = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/json-schema-traverse/index.js
+// node_modules/json-schema-traverse/index.js
 var require_json_schema_traverse = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/json-schema-traverse/index.js"(exports2, module2) {
+  "node_modules/json-schema-traverse/index.js"(exports2, module2) {
     "use strict";
     var traverse = module2.exports = function(schema, opts, cb) {
       if (typeof opts == "function") {
@@ -2178,9 +2178,9 @@ var require_json_schema_traverse = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/resolve.js
+// node_modules/ajv/dist/compile/resolve.js
 var require_resolve = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/resolve.js"(exports2) {
+  "node_modules/ajv/dist/compile/resolve.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.getSchemaRefs = exports2.resolveUrl = exports2.normalizeId = exports2._getFullPath = exports2.getFullPath = exports2.inlineRef = void 0;
@@ -2334,9 +2334,9 @@ var require_resolve = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/index.js
+// node_modules/ajv/dist/compile/validate/index.js
 var require_validate = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/validate/index.js"(exports2) {
+  "node_modules/ajv/dist/compile/validate/index.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.getData = exports2.KeywordCxt = exports2.validateFunctionCode = void 0;
@@ -2842,9 +2842,9 @@ var require_validate = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/runtime/validation_error.js
+// node_modules/ajv/dist/runtime/validation_error.js
 var require_validation_error = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/runtime/validation_error.js"(exports2) {
+  "node_modules/ajv/dist/runtime/validation_error.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var ValidationError = class extends Error {
@@ -2858,9 +2858,9 @@ var require_validation_error = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/ref_error.js
+// node_modules/ajv/dist/compile/ref_error.js
 var require_ref_error = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/ref_error.js"(exports2) {
+  "node_modules/ajv/dist/compile/ref_error.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var resolve_1 = require_resolve();
@@ -2875,9 +2875,9 @@ var require_ref_error = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/index.js
+// node_modules/ajv/dist/compile/index.js
 var require_compile = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/compile/index.js"(exports2) {
+  "node_modules/ajv/dist/compile/index.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.resolveSchema = exports2.getCompilingSchema = exports2.resolveRef = exports2.compileSchema = exports2.SchemaEnv = void 0;
@@ -3099,9 +3099,9 @@ var require_compile = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/refs/data.json
+// node_modules/ajv/dist/refs/data.json
 var require_data = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/refs/data.json"(exports2, module2) {
+  "node_modules/ajv/dist/refs/data.json"(exports2, module2) {
     module2.exports = {
       $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
       description: "Meta-schema for $data reference (JSON AnySchema extension proposal)",
@@ -3118,9 +3118,9 @@ var require_data = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/fast-uri/lib/utils.js
+// node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/fast-uri/lib/utils.js"(exports2, module2) {
+  "node_modules/fast-uri/lib/utils.js"(exports2, module2) {
     "use strict";
     var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
     var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
@@ -3620,9 +3620,9 @@ var require_utils = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/fast-uri/lib/schemes.js
+// node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/fast-uri/lib/schemes.js"(exports2, module2) {
+  "node_modules/fast-uri/lib/schemes.js"(exports2, module2) {
     "use strict";
     var { isUUID } = require_utils();
     var URN_REG = /^([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-./:;=@]|%[\da-f]{2})+)$/iu;
@@ -3831,9 +3831,9 @@ var require_schemes = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/fast-uri/index.js
+// node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/fast-uri/index.js"(exports2, module2) {
+  "node_modules/fast-uri/index.js"(exports2, module2) {
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
@@ -4236,9 +4236,9 @@ var require_fast_uri = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/runtime/uri.js
+// node_modules/ajv/dist/runtime/uri.js
 var require_uri = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/runtime/uri.js"(exports2) {
+  "node_modules/ajv/dist/runtime/uri.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var uri = require_fast_uri();
@@ -4247,9 +4247,9 @@ var require_uri = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/core.js
+// node_modules/ajv/dist/core.js
 var require_core = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/core.js"(exports2) {
+  "node_modules/ajv/dist/core.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.CodeGen = exports2.Name = exports2.nil = exports2.stringify = exports2.str = exports2._ = exports2.KeywordCxt = void 0;
@@ -4858,9 +4858,9 @@ var require_core = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/core/id.js
+// node_modules/ajv/dist/vocabularies/core/id.js
 var require_id = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/core/id.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/core/id.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var def = {
@@ -4873,9 +4873,9 @@ var require_id = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/core/ref.js
+// node_modules/ajv/dist/vocabularies/core/ref.js
 var require_ref = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/core/ref.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/core/ref.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.callRef = exports2.getValidate = void 0;
@@ -4995,9 +4995,9 @@ var require_ref = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/core/index.js
+// node_modules/ajv/dist/vocabularies/core/index.js
 var require_core2 = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/core/index.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/core/index.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var id_1 = require_id();
@@ -5016,9 +5016,9 @@ var require_core2 = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/limitNumber.js
+// node_modules/ajv/dist/vocabularies/validation/limitNumber.js
 var require_limitNumber = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5048,9 +5048,9 @@ var require_limitNumber = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/multipleOf.js
+// node_modules/ajv/dist/vocabularies/validation/multipleOf.js
 var require_multipleOf = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5076,9 +5076,9 @@ var require_multipleOf = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/runtime/ucs2length.js
+// node_modules/ajv/dist/runtime/ucs2length.js
 var require_ucs2length = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/runtime/ucs2length.js"(exports2) {
+  "node_modules/ajv/dist/runtime/ucs2length.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     function ucs2length(str3) {
@@ -5102,9 +5102,9 @@ var require_ucs2length = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/limitLength.js
+// node_modules/ajv/dist/vocabularies/validation/limitLength.js
 var require_limitLength = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5134,9 +5134,9 @@ var require_limitLength = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/pattern.js
+// node_modules/ajv/dist/vocabularies/validation/pattern.js
 var require_pattern = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5171,9 +5171,9 @@ var require_pattern = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/limitProperties.js
+// node_modules/ajv/dist/vocabularies/validation/limitProperties.js
 var require_limitProperties = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5200,9 +5200,9 @@ var require_limitProperties = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/required.js
+// node_modules/ajv/dist/vocabularies/validation/required.js
 var require_required = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/required.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/required.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5282,9 +5282,9 @@ var require_required = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/limitItems.js
+// node_modules/ajv/dist/vocabularies/validation/limitItems.js
 var require_limitItems = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5311,9 +5311,9 @@ var require_limitItems = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/runtime/equal.js
+// node_modules/ajv/dist/runtime/equal.js
 var require_equal = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/runtime/equal.js"(exports2) {
+  "node_modules/ajv/dist/runtime/equal.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var equal = require_fast_deep_equal();
@@ -5322,9 +5322,9 @@ var require_equal = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
+// node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
 var require_uniqueItems = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var dataType_1 = require_dataType();
@@ -5389,9 +5389,9 @@ var require_uniqueItems = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/const.js
+// node_modules/ajv/dist/vocabularies/validation/const.js
 var require_const = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/const.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/const.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5418,9 +5418,9 @@ var require_const = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/enum.js
+// node_modules/ajv/dist/vocabularies/validation/enum.js
 var require_enum = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/enum.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/enum.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5467,9 +5467,9 @@ var require_enum = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/index.js
+// node_modules/ajv/dist/vocabularies/validation/index.js
 var require_validation = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/validation/index.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/validation/index.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var limitNumber_1 = require_limitNumber();
@@ -5505,9 +5505,9 @@ var require_validation = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
+// node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
 var require_additionalItems = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.validateAdditionalItems = void 0;
@@ -5558,9 +5558,9 @@ var require_additionalItems = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/items.js
+// node_modules/ajv/dist/vocabularies/applicator/items.js
 var require_items = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/items.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/items.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.validateTuple = void 0;
@@ -5615,9 +5615,9 @@ var require_items = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
+// node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
 var require_prefixItems = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var items_1 = require_items();
@@ -5632,9 +5632,9 @@ var require_prefixItems = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/items2020.js
+// node_modules/ajv/dist/vocabularies/applicator/items2020.js
 var require_items2020 = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5667,9 +5667,9 @@ var require_items2020 = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/contains.js
+// node_modules/ajv/dist/vocabularies/applicator/contains.js
 var require_contains = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5761,9 +5761,9 @@ var require_contains = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/dependencies.js
+// node_modules/ajv/dist/vocabularies/applicator/dependencies.js
 var require_dependencies = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.validateSchemaDeps = exports2.validatePropertyDeps = exports2.error = void 0;
@@ -5855,9 +5855,9 @@ var require_dependencies = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
+// node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
 var require_propertyNames = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5898,9 +5898,9 @@ var require_propertyNames = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
+// node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
 var require_additionalProperties = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6004,9 +6004,9 @@ var require_additionalProperties = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/properties.js
+// node_modules/ajv/dist/vocabularies/applicator/properties.js
 var require_properties = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var validate_1 = require_validate();
@@ -6062,9 +6062,9 @@ var require_properties = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
+// node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
 var require_patternProperties = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6136,9 +6136,9 @@ var require_patternProperties = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/not.js
+// node_modules/ajv/dist/vocabularies/applicator/not.js
 var require_not = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/not.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/not.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6167,9 +6167,9 @@ var require_not = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/anyOf.js
+// node_modules/ajv/dist/vocabularies/applicator/anyOf.js
 var require_anyOf = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6184,9 +6184,9 @@ var require_anyOf = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/oneOf.js
+// node_modules/ajv/dist/vocabularies/applicator/oneOf.js
 var require_oneOf = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6242,9 +6242,9 @@ var require_oneOf = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/allOf.js
+// node_modules/ajv/dist/vocabularies/applicator/allOf.js
 var require_allOf = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6269,9 +6269,9 @@ var require_allOf = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/if.js
+// node_modules/ajv/dist/vocabularies/applicator/if.js
 var require_if = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/if.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/if.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6338,9 +6338,9 @@ var require_if = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/thenElse.js
+// node_modules/ajv/dist/vocabularies/applicator/thenElse.js
 var require_thenElse = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6356,9 +6356,9 @@ var require_thenElse = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/index.js
+// node_modules/ajv/dist/vocabularies/applicator/index.js
 var require_applicator = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/applicator/index.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/applicator/index.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var additionalItems_1 = require_additionalItems();
@@ -6404,9 +6404,9 @@ var require_applicator = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/format/format.js
+// node_modules/ajv/dist/vocabularies/format/format.js
 var require_format = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/format/format.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/format/format.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6494,9 +6494,9 @@ var require_format = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/format/index.js
+// node_modules/ajv/dist/vocabularies/format/index.js
 var require_format2 = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/format/index.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/format/index.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var format_1 = require_format();
@@ -6505,9 +6505,9 @@ var require_format2 = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/metadata.js
+// node_modules/ajv/dist/vocabularies/metadata.js
 var require_metadata = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/metadata.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/metadata.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.contentVocabulary = exports2.metadataVocabulary = void 0;
@@ -6528,9 +6528,9 @@ var require_metadata = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/draft7.js
+// node_modules/ajv/dist/vocabularies/draft7.js
 var require_draft7 = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/draft7.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/draft7.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var core_1 = require_core2();
@@ -6550,9 +6550,9 @@ var require_draft7 = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/discriminator/types.js
+// node_modules/ajv/dist/vocabularies/discriminator/types.js
 var require_types = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.DiscrError = void 0;
@@ -6564,9 +6564,9 @@ var require_types = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/discriminator/index.js
+// node_modules/ajv/dist/vocabularies/discriminator/index.js
 var require_discriminator = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports2) {
+  "node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6669,9 +6669,9 @@ var require_discriminator = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/refs/json-schema-draft-07.json
+// node_modules/ajv/dist/refs/json-schema-draft-07.json
 var require_json_schema_draft_07 = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports2, module2) {
+  "node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports2, module2) {
     module2.exports = {
       $schema: "http://json-schema.org/draft-07/schema#",
       $id: "http://json-schema.org/draft-07/schema#",
@@ -6826,9 +6826,9 @@ var require_json_schema_draft_07 = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv/dist/ajv.js
+// node_modules/ajv/dist/ajv.js
 var require_ajv = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv/dist/ajv.js"(exports2, module2) {
+  "node_modules/ajv/dist/ajv.js"(exports2, module2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.MissingRefError = exports2.ValidationError = exports2.CodeGen = exports2.Name = exports2.nil = exports2.stringify = exports2.str = exports2._ = exports2.KeywordCxt = exports2.Ajv = void 0;
@@ -6896,9 +6896,9 @@ var require_ajv = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv-formats/dist/formats.js
+// node_modules/ajv-formats/dist/formats.js
 var require_formats = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv-formats/dist/formats.js"(exports2) {
+  "node_modules/ajv-formats/dist/formats.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.formatNames = exports2.fastFormats = exports2.fullFormats = void 0;
@@ -7099,9 +7099,9 @@ var require_formats = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv-formats/dist/limit.js
+// node_modules/ajv-formats/dist/limit.js
 var require_limit = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv-formats/dist/limit.js"(exports2) {
+  "node_modules/ajv-formats/dist/limit.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.formatLimitDefinition = void 0;
@@ -7171,9 +7171,9 @@ var require_limit = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ajv-formats/dist/index.js
+// node_modules/ajv-formats/dist/index.js
 var require_dist = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ajv-formats/dist/index.js"(exports2, module2) {
+  "node_modules/ajv-formats/dist/index.js"(exports2, module2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     var formats_1 = require_formats();
@@ -7213,14 +7213,14 @@ var require_dist = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/types.ts
+// packages/shared/src/types.ts
 var init_types = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/types.ts"() {
+  "packages/shared/src/types.ts"() {
     "use strict";
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/identity.ts
+// packages/shared/src/identity.ts
 function colorFor(name2, room) {
   const assigned = typeof room === "object" ? room.colors.get(name2) : void 0;
   if (assigned !== void 0 && Number.isInteger(assigned)) return PALETTE[(assigned % PALETTE.length + PALETTE.length) % PALETTE.length];
@@ -7263,13 +7263,13 @@ function newId(prefix = "") {
 }
 var PALETTE;
 var init_identity = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/identity.ts"() {
+  "packages/shared/src/identity.ts"() {
     "use strict";
     PALETTE = ["#2e86de", "#c9761a", "#6d4fc2", "#27ae60", "#c0392b", "#b5179e", "#0f8b8d", "#8d6e63"];
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/messages.ts
+// packages/shared/src/messages.ts
 function messageKind(m) {
   const kind = MessageKinds[m.type];
   if (!kind) throw new Error(`unregistered message kind: ${m.type}`);
@@ -7305,7 +7305,7 @@ function formatPlans(plans) {
 }
 var who, to, priority, builtins, MessageKinds;
 var init_messages = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/messages.ts"() {
+  "packages/shared/src/messages.ts"() {
     "use strict";
     init_claims();
     init_identity();
@@ -7331,7 +7331,7 @@ var init_messages = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/format.ts
+// packages/shared/src/format.ts
 function withLineNumbers(text) {
   const lines = text.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
@@ -7339,13 +7339,13 @@ function withLineNumbers(text) {
   return lines.map((l, i2) => `${String(i2 + 1).padStart(w)}| ${l}`).join("\n");
 }
 var init_format = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/format.ts"() {
+  "packages/shared/src/format.ts"() {
     "use strict";
     init_messages();
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/claims.ts
+// packages/shared/src/claims.ts
 function rangesOverlap(aFrom, aTo, bFrom, bTo) {
   return aFrom <= bTo && bFrom <= aTo;
 }
@@ -7368,16 +7368,16 @@ function describeClaim(c) {
   return `${who2} \xB7 ${c.path}${c.path.endsWith("/") ? "" : `:${c.from}-${c.to}`} \xB7 ${c.intent}${c.plans?.length ? ` \xB7 plans: ${formatPlans(c.plans)}` : ""}`;
 }
 var init_claims = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/claims.ts"() {
+  "packages/shared/src/claims.ts"() {
     "use strict";
     init_identity();
     init_format();
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/fast-diff/diff.js
+// node_modules/fast-diff/diff.js
 var require_diff = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/fast-diff/diff.js"(exports2, module2) {
+  "node_modules/fast-diff/diff.js"(exports2, module2) {
     "use strict";
     var DIFF_DELETE = -1;
     var DIFF_INSERT = 1;
@@ -8144,10 +8144,10 @@ var require_diff = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/map.js
+// node_modules/lib0/map.js
 var create, copy, setIfUndefined, any;
 var init_map = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/map.js"() {
+  "node_modules/lib0/map.js"() {
     "use strict";
     create = () => /* @__PURE__ */ new Map();
     copy = (m) => {
@@ -8175,19 +8175,19 @@ var init_map = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/set.js
+// node_modules/lib0/set.js
 var create2;
 var init_set = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/set.js"() {
+  "node_modules/lib0/set.js"() {
     "use strict";
     create2 = () => /* @__PURE__ */ new Set();
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/array.js
+// node_modules/lib0/array.js
 var last, appendTo, from, isArray;
 var init_array = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/array.js"() {
+  "node_modules/lib0/array.js"() {
     "use strict";
     last = (arr) => arr[arr.length - 1];
     appendTo = (dest, src) => {
@@ -8200,10 +8200,10 @@ var init_array = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/observable.js
+// node_modules/lib0/observable.js
 var ObservableV2, Observable;
 var init_observable = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/observable.js"() {
+  "node_modules/lib0/observable.js"() {
     "use strict";
     init_map();
     init_set();
@@ -8331,10 +8331,10 @@ var init_observable = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/math.js
+// node_modules/lib0/math.js
 var floor, abs, min, max, isNaN2, pow, isNegativeZero;
 var init_math = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/math.js"() {
+  "node_modules/lib0/math.js"() {
     "use strict";
     floor = Math.floor;
     abs = Math.abs;
@@ -8346,10 +8346,10 @@ var init_math = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/binary.js
+// node_modules/lib0/binary.js
 var BIT1, BIT2, BIT3, BIT4, BIT6, BIT7, BIT8, BIT18, BIT19, BIT20, BIT21, BIT22, BIT23, BIT24, BIT25, BIT26, BIT27, BIT28, BIT29, BIT30, BIT31, BIT32, BITS5, BITS6, BITS7, BITS17, BITS18, BITS19, BITS20, BITS21, BITS22, BITS23, BITS24, BITS25, BITS26, BITS27, BITS28, BITS29, BITS30, BITS31;
 var init_binary = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/binary.js"() {
+  "node_modules/lib0/binary.js"() {
     "use strict";
     BIT1 = 1;
     BIT2 = 2;
@@ -8394,10 +8394,10 @@ var init_binary = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/number.js
+// node_modules/lib0/number.js
 var MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, LOWEST_INT32, isInteger, isNaN3, parseInt2;
 var init_number = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/number.js"() {
+  "node_modules/lib0/number.js"() {
     "use strict";
     init_math();
     MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
@@ -8409,10 +8409,10 @@ var init_number = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/string.js
+// node_modules/lib0/string.js
 var fromCharCode, fromCodePoint, MAX_UTF16_CHARACTER, toLowerCase, trimLeftRegex, trimLeft, fromCamelCaseRegex, fromCamelCase, _encodeUtf8Polyfill, utf8TextEncoder, _encodeUtf8Native, encodeUtf8, utf8TextDecoder;
 var init_string = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/string.js"() {
+  "node_modules/lib0/string.js"() {
     "use strict";
     fromCharCode = String.fromCharCode;
     fromCodePoint = String.fromCodePoint;
@@ -8443,10 +8443,10 @@ var init_string = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/encoding.js
+// node_modules/lib0/encoding.js
 var Encoder, createEncoder, length, toUint8Array, verifyLen, write, writeUint8, writeVarUint, writeVarInt, _strBuffer, _maxStrBSize, _writeVarStringNative, _writeVarStringPolyfill, writeVarString, writeUint8Array, writeVarUint8Array, writeOnDataView, writeFloat32, writeFloat64, writeBigInt64, floatTestBed, isFloat32, writeAny, RleEncoder, flushUintOptRleEncoder, UintOptRleEncoder, flushIntDiffOptRleEncoder, IntDiffOptRleEncoder, StringEncoder;
 var init_encoding = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/encoding.js"() {
+  "node_modules/lib0/encoding.js"() {
     "use strict";
     init_math();
     init_number();
@@ -8761,10 +8761,10 @@ var init_encoding = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/error.js
+// node_modules/lib0/error.js
 var create3, methodUnimplemented, unexpectedCase;
 var init_error = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/error.js"() {
+  "node_modules/lib0/error.js"() {
     "use strict";
     create3 = (s) => new Error(s);
     methodUnimplemented = () => {
@@ -8776,10 +8776,10 @@ var init_error = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/decoding.js
+// node_modules/lib0/decoding.js
 var errorUnexpectedEndOfArray, errorIntegerOutOfRange, Decoder, createDecoder, hasContent, readUint8Array, readVarUint8Array, readUint8, readVarUint, readVarInt, _readVarStringPolyfill, _readVarStringNative, readVarString, readFromDataView, readFloat32, readFloat64, readBigInt64, readAnyLookupTable, readAny, RleDecoder, UintOptRleDecoder, IntDiffOptRleDecoder, StringDecoder;
 var init_decoding = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/decoding.js"() {
+  "node_modules/lib0/decoding.js"() {
     "use strict";
     init_binary();
     init_math();
@@ -9030,11 +9030,11 @@ var init_decoding = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/webcrypto.node.js
+// node_modules/lib0/webcrypto.node.js
 import { webcrypto } from "node:crypto";
 var subtle, getRandomValues;
 var init_webcrypto_node = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/webcrypto.node.js"() {
+  "node_modules/lib0/webcrypto.node.js"() {
     "use strict";
     subtle = /** @type {any} */
     webcrypto.subtle;
@@ -9043,10 +9043,10 @@ var init_webcrypto_node = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/random.js
+// node_modules/lib0/random.js
 var uint32, uuidv4Template, uuidv4;
 var init_random = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/random.js"() {
+  "node_modules/lib0/random.js"() {
     "use strict";
     init_webcrypto_node();
     uint32 = () => getRandomValues(new Uint32Array(1))[0];
@@ -9059,19 +9059,19 @@ var init_random = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/time.js
+// node_modules/lib0/time.js
 var getUnixTime;
 var init_time = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/time.js"() {
+  "node_modules/lib0/time.js"() {
     "use strict";
     getUnixTime = Date.now;
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/promise.js
+// node_modules/lib0/promise.js
 var create4, all;
 var init_promise = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/promise.js"() {
+  "node_modules/lib0/promise.js"() {
     "use strict";
     create4 = (f) => (
       /** @type {Promise<T>} */
@@ -9081,19 +9081,19 @@ var init_promise = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/conditions.js
+// node_modules/lib0/conditions.js
 var undefinedToNull;
 var init_conditions = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/conditions.js"() {
+  "node_modules/lib0/conditions.js"() {
     "use strict";
     undefinedToNull = (v) => v === void 0 ? null : v;
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/storage.js
+// node_modules/lib0/storage.js
 var VarStoragePolyfill, _localStorage, usePolyfill, varStorage, onChange, offChange;
 var init_storage = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/storage.js"() {
+  "node_modules/lib0/storage.js"() {
     "use strict";
     VarStoragePolyfill = class {
       constructor() {
@@ -9136,20 +9136,20 @@ var init_storage = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/trait/equality.js
+// node_modules/lib0/trait/equality.js
 var EqualityTraitSymbol, equals;
 var init_equality = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/trait/equality.js"() {
+  "node_modules/lib0/trait/equality.js"() {
     "use strict";
     EqualityTraitSymbol = /* @__PURE__ */ Symbol("Equality");
     equals = (a, b) => a === b || !!a?.[EqualityTraitSymbol]?.(b) || false;
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/object.js
+// node_modules/lib0/object.js
 var assign, keys, forEach, map, size, isEmpty, every, hasProperty, equalFlat, freeze, deepFreeze;
 var init_object = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/object.js"() {
+  "node_modules/lib0/object.js"() {
     "use strict";
     init_equality();
     assign = Object.assign;
@@ -9196,10 +9196,10 @@ var init_object = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/function.js
+// node_modules/lib0/function.js
 var callAll, id, equalityDeep, isOneOf;
 var init_function = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/function.js"() {
+  "node_modules/lib0/function.js"() {
     "use strict";
     init_object();
     init_equality();
@@ -9293,10 +9293,10 @@ var init_function = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/environment.js
+// node_modules/lib0/environment.js
 var isNode, isBrowser, isMac, params, args2, computeParams, hasParam, getVariable, hasConf, production, forceColor, supportsColor;
 var init_environment = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/environment.js"() {
+  "node_modules/lib0/environment.js"() {
     "use strict";
     init_map();
     init_string();
@@ -9357,10 +9357,10 @@ var init_environment = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/buffer.js
+// node_modules/lib0/buffer.js
 var createUint8ArrayFromLen, createUint8ArrayViewFromArrayBuffer, createUint8ArrayFromArrayBuffer, toBase64Browser, toBase64Node, fromBase64Browser, fromBase64Node, toBase64, fromBase64, copyUint8Array;
 var init_buffer = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/buffer.js"() {
+  "node_modules/lib0/buffer.js"() {
     "use strict";
     init_string();
     init_environment();
@@ -9397,19 +9397,19 @@ var init_buffer = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/symbol.js
+// node_modules/lib0/symbol.js
 var create5;
 var init_symbol = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/symbol.js"() {
+  "node_modules/lib0/symbol.js"() {
     "use strict";
     create5 = Symbol;
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/logging.common.js
+// node_modules/lib0/logging.common.js
 var BOLD, UNBOLD, BLUE, GREY, GREEN, RED, PURPLE, ORANGE, UNCOLOR, computeNoColorLoggingArgs, lastLoggingTime;
 var init_logging_common = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/logging.common.js"() {
+  "node_modules/lib0/logging.common.js"() {
     "use strict";
     init_symbol();
     init_time();
@@ -9456,10 +9456,10 @@ var init_logging_common = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/logging.node.js
+// node_modules/lib0/logging.node.js
 var _nodeStyleMap, computeNodeLoggingArgs, computeLoggingArgs, print, warn;
 var init_logging_node = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/logging.node.js"() {
+  "node_modules/lib0/logging.node.js"() {
     "use strict";
     init_environment();
     init_logging_common();
@@ -9521,10 +9521,10 @@ var init_logging_node = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/iterator.js
+// node_modules/lib0/iterator.js
 var createIterator, iteratorFilter, iteratorMap;
 var init_iterator = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/iterator.js"() {
+  "node_modules/lib0/iterator.js"() {
     "use strict";
     createIterator = (next) => ({
       /**
@@ -9550,7 +9550,7 @@ var init_iterator = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/yjs/dist/yjs.mjs
+// node_modules/yjs/dist/yjs.mjs
 function* lazyStructReaderGenerator(decoder) {
   const numOfStateUpdates = readVarUint(decoder.restDecoder);
   for (let i2 = 0; i2 < numOfStateUpdates; i2++) {
@@ -9595,7 +9595,7 @@ function* lazyStructReaderGenerator(decoder) {
 }
 var DeleteItem, DeleteSet, iterateDeletedStructs, findIndexDS, isDeleted, sortAndMergeDeleteSet, mergeDeleteSets, addToDeleteSet, createDeleteSet, createDeleteSetFromStructStore, writeDeleteSet, readDeleteSet, readAndApplyDeleteSet, generateNewClientId, Doc2, DSDecoderV1, UpdateDecoderV1, DSDecoderV2, UpdateDecoderV2, DSEncoderV1, UpdateEncoderV1, DSEncoderV2, UpdateEncoderV2, writeStructs, writeClientsStructs, readClientsStructRefs, integrateStructs, writeStructsFromTransaction, readUpdateV2, applyUpdateV2, applyUpdate, writeStateAsUpdate, encodeStateAsUpdateV2, encodeStateAsUpdate, readStateVector, decodeStateVector, writeStateVector, writeDocumentStateVector, encodeStateVectorV2, encodeStateVector, EventHandler, createEventHandler, addEventHandlerListener, removeEventHandlerListener, callEventHandlerListeners, ID, compareIDs, createID, findRootTypeKey, RelativePosition, relativePositionToJSON, createRelativePositionFromJSON, AbsolutePosition, createAbsolutePosition, createRelativePosition, createRelativePositionFromTypeIndex, getItemWithOffset, createAbsolutePositionFromRelativePosition, Snapshot, createSnapshot, emptySnapshot, isVisible, splitSnapshotAffectedStructs, StructStore, getStateVector, getState, addStruct, findIndexSS, find, getItem, findIndexCleanStart, getItemCleanStart, getItemCleanEnd, replaceStruct, iterateStructs, Transaction, writeUpdateMessageFromTransaction, addChangedTypeToTransaction, tryToMergeWithLefts, tryGcDeleteSet, tryMergeDeleteSet, cleanupTransactions, transact, LazyStructReader, LazyStructWriter, mergeUpdates, sliceStruct, mergeUpdatesV2, diffUpdateV2, flushLazyStructWriter, writeStructToLazyStructWriter, finishLazyStructWriting, convertUpdateFormat, convertUpdateFormatV2ToV1, errorComputeChanges, YEvent, getPathTo, warnPrematureAccess, maxSearchMarker, globalSearchMarkerTimestamp, ArraySearchMarker, refreshMarkerTimestamp, overwriteMarker, markPosition, findMarker, updateMarkerChanges, callTypeObservers, AbstractType, typeListSlice, typeListToArray, typeListForEach, typeListMap, typeListCreateIterator, typeListGet, typeListInsertGenericsAfter, lengthExceeded, typeListInsertGenerics, typeListPushGenerics, typeListDelete, typeMapDelete, typeMapSet, typeMapGet, typeMapGetAll, typeMapHas, typeMapGetAllSnapshot, createMapIterator, YArrayEvent, YArray, readYArray, YMapEvent, YMap, readYMap, equalAttrs, ItemTextListPosition, findNextPosition, findPosition, insertNegatedAttributes, updateCurrentAttributes, minimizeAttributeChanges, insertAttributes, insertText, formatText, cleanupFormattingGap, cleanupContextlessFormattingGap, cleanupYTextFormatting, cleanupYTextAfterTransaction, deleteText, YTextEvent, YText, readYText, YXmlTreeWalker, YXmlFragment, readYXmlFragment, YXmlElement, readYXmlElement, YXmlEvent, YXmlHook, readYXmlHook, YXmlText, readYXmlText, AbstractStruct, structGCRefNumber, GC, ContentBinary, readContentBinary, ContentDeleted, readContentDeleted, createDocFromOpts, ContentDoc, readContentDoc, ContentEmbed, readContentEmbed, ContentFormat, readContentFormat, ContentJSON, readContentJSON, isDevMode, ContentAny, readContentAny, ContentString, readContentString, typeRefs, YArrayRefID, YMapRefID, YTextRefID, YXmlElementRefID, YXmlFragmentRefID, YXmlHookRefID, YXmlTextRefID, ContentType, readContentType, followRedone, splitItem, Item, readItemContent, contentRefs, structSkipRefNumber, Skip, glo, importIdentifier;
 var init_yjs = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/yjs/dist/yjs.mjs"() {
+  "node_modules/yjs/dist/yjs.mjs"() {
     "use strict";
     init_observable();
     init_array();
@@ -16159,7 +16159,7 @@ var init_yjs = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/ledger.ts
+// packages/shared/src/ledger.ts
 function compactRetiredWorker(record2) {
   const files = [...new Set(record2.files)];
   return {
@@ -16227,14 +16227,14 @@ function areaSummary(messages, scopes, windowMs = 10 * 60 * 1e3, now = Date.now(
 }
 var MAX_RETIRED_WORKERS, LEDGER_TYPES;
 var init_ledger = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/ledger.ts"() {
+  "packages/shared/src/ledger.ts"() {
     "use strict";
     MAX_RETIRED_WORKERS = 200;
     LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict", "base", "plan"]);
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/doc.ts
+// packages/shared/src/doc.ts
 function defaultPriority(msg) {
   const kind = MessageKinds[msg.type];
   if (!kind) throw new Error(`unregistered message kind: ${msg.type}`);
@@ -16262,7 +16262,7 @@ function makeAnchor(text, from2, to2) {
 }
 var import_fast_diff, validColorIndex, RoomDoc;
 var init_doc = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/doc.ts"() {
+  "packages/shared/src/doc.ts"() {
     "use strict";
     import_fast_diff = __toESM(require_diff(), 1);
     init_claims();
@@ -16732,7 +16732,7 @@ var init_doc = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/wake.ts
+// packages/shared/src/wake.ts
 function shouldWakeOnMsg(me, m, myClaims = [], hasUncommitted = false) {
   if (m.type === "plan" && m.priority === "fyi") return { wake: false, mustAnswer: false, reason: "ended plan" };
   if (m.from === me.name && isAgentic(m.fromKind)) return { wake: false, mustAnswer: false, reason: "own message" };
@@ -16765,7 +16765,7 @@ function shouldWakeOnClaim(me, claim2, myClaims) {
   return { wake: true, mustAnswer: false, reason: `overlaps my claim ${hit.id}` };
 }
 var init_wake = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/wake.ts"() {
+  "packages/shared/src/wake.ts"() {
     "use strict";
     init_identity();
     init_claims();
@@ -16773,7 +16773,7 @@ var init_wake = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/graph.ts
+// packages/shared/src/graph.ts
 function pythonHeader(line) {
   let depth = 0, quote = "", escaped = false;
   for (let i2 = 0; i2 < line.length; i2++) {
@@ -16851,6 +16851,16 @@ function observedContractChanges(baseText, overlayText, path19, parse3) {
   for (const [symbol, newLine] of after) if (!before.has(symbol)) changes.push({ symbol, kind: "add", detail: `now \`${newLine.display}\`` });
   return changes.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.kind.localeCompare(b.kind));
 }
+function importMentions(value2, definingPath) {
+  const path19 = definingPath.replace(/\\/g, "/").toLowerCase();
+  const parts2 = path19.split("/").filter(Boolean);
+  const filename = parts2.at(-1) ?? "";
+  const stem = filename.replace(/\.[^.]+$/, "");
+  const parent = parts2.at(-2);
+  const moduleNames = new Set([stem, parent].filter((name2) => Boolean(name2)));
+  const importParts = value2.toLowerCase().match(/[a-z0-9_$-]+/g) ?? [];
+  return importParts.some((part) => moduleNames.has(part));
+}
 function add(m, k, v) {
   let s = m.get(k);
   if (!s) {
@@ -16912,9 +16922,9 @@ function symbolRange(path19, text, symbol, parse3) {
   }
   return void 0;
 }
-var WORD, PY_DEF, PY_ASSIGN, JS_DEF, KEYWORDS, regexExtractor, bareSymbol, normalized, comparable, lineContaining, definitionName, SymbolGraph;
+var WORD, PY_DEF, PY_ASSIGN, JS_DEF, KEYWORDS, regexExtractor, bareSymbol, normalized, comparable, lineContaining, definitionName, COMMON_SYMBOL_FILE_THRESHOLD, SymbolGraph, importsOf;
 var init_graph = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/graph.ts"() {
+  "packages/shared/src/graph.ts"() {
     "use strict";
     WORD = /[A-Za-z_][A-Za-z0-9_]*/g;
     PY_DEF = /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
@@ -16947,6 +16957,7 @@ var init_graph = __esm({
       return text.slice(from2, to2 < 0 ? text.length : to2);
     };
     definitionName = (definition) => definition.container ? `${definition.container}.${definition.name}` : definition.name;
+    COMMON_SYMBOL_FILE_THRESHOLD = 5;
     SymbolGraph = class {
       constructor(extract = regexExtractor) {
         this.extract = extract;
@@ -16987,7 +16998,7 @@ var init_graph = __esm({
       /** Files that reference a symbol defined elsewhere (a definer that also references itself is excluded). */
       usersOf(symbol) {
         const defs10 = this.definers.get(symbol) ?? /* @__PURE__ */ new Set();
-        return Array.from(this.users.get(symbol) ?? []).filter((p) => !defs10.has(p)).sort();
+        return Array.from(this.users.get(symbol) ?? []).filter((path19) => !defs10.has(path19) && (defs10.size === 0 || this.resolvedDefiners(symbol, path19).length > 0)).sort();
       }
       /** Symbols a file uses that some other file defines. */
       dependenciesOf(path19) {
@@ -16995,7 +17006,7 @@ var init_graph = __esm({
         if (!syms) return [];
         const out2 = [];
         for (const r of syms.refs) {
-          const definedIn = this.definersOf(r).filter((p) => p !== path19);
+          const definedIn = this.resolvedDefiners(r, path19);
           if (definedIn.length) out2.push({ symbol: r, definedIn, usedIn: [path19] });
         }
         return out2.sort((a, b) => a.symbol.localeCompare(b.symbol));
@@ -17006,7 +17017,7 @@ var init_graph = __esm({
         if (!syms) return [];
         const out2 = [];
         for (const d of syms.defs) {
-          const usedIn = this.usersOf(d);
+          const usedIn = Array.from(this.users.get(d) ?? []).filter((consumer) => consumer !== path19 && this.resolvedDefiners(d, consumer).includes(path19)).sort();
           if (usedIn.length) out2.push({ symbol: d, definedIn: [path19], usedIn });
         }
         return out2.sort((a, b) => b.usedIn.length - a.usedIn.length || a.symbol.localeCompare(b.symbol));
@@ -17014,11 +17025,20 @@ var init_graph = __esm({
       impact(symbol) {
         return { symbol, definedIn: this.definersOf(symbol), usedIn: this.usersOf(symbol) };
       }
+      resolvedDefiners(symbol, consumer) {
+        const candidates = this.definersOf(symbol).filter((path19) => path19 !== consumer);
+        const imports = importsOf(this.files.get(consumer));
+        if (imports === void 0) return candidates;
+        const imported = candidates.filter((path19) => imports.some((value2) => importMentions(value2, path19)));
+        if (imported.length) return imported;
+        return (this.definers.get(symbol)?.size ?? 0) > COMMON_SYMBOL_FILE_THRESHOLD ? [] : candidates;
+      }
     };
+    importsOf = (symbols) => symbols?.imports;
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/areas.ts
+// packages/shared/src/areas.ts
 function parseCodeowners(text) {
   const rules = [];
   for (const raw of text.split("\n")) {
@@ -17099,7 +17119,7 @@ function sharesArea(a, b) {
 }
 var CODEOWNERS_PATHS, Areas;
 var init_areas = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/areas.ts"() {
+  "packages/shared/src/areas.ts"() {
     "use strict";
     CODEOWNERS_PATHS = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
     Areas = class _Areas {
@@ -17154,7 +17174,7 @@ var init_areas = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/views.ts
+// packages/shared/src/views.ts
 function formatCount(count, singular, plural = singular + "s") {
   return count + " " + (count === 1 ? singular : plural);
 }
@@ -17278,7 +17298,7 @@ function workerLines(inputs, options = {}) {
 }
 var STOPPED_WITH_SESSION, stoppedWithSession, scopeLine;
 var init_views = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/views.ts"() {
+  "packages/shared/src/views.ts"() {
     "use strict";
     init_claims();
     init_identity();
@@ -17288,7 +17308,7 @@ var init_views = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/memory.ts
+// packages/shared/src/memory.ts
 function* memoryTypes(doc) {
   for (const [name2, kind] of Object.entries(MEMORY_TYPES)) if (doc.share.has(name2)) yield [name2, kind];
   for (const name2 of doc.share.keys()) {
@@ -17319,7 +17339,7 @@ function memorySnapshot(doc) {
 }
 var MEMORY_TYPES, MEMORY_PREFIXES;
 var init_memory = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/memory.ts"() {
+  "packages/shared/src/memory.ts"() {
     "use strict";
     init_yjs();
     MEMORY_TYPES = {
@@ -17335,7 +17355,7 @@ var init_memory = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/near.ts
+// packages/shared/src/near.ts
 function coversPath(a, b) {
   const normalize2 = (p) => {
     const parts2 = [];
@@ -17353,21 +17373,21 @@ function nearPath(path19, others) {
   return others.filter((other) => coversPath(path19, other.path));
 }
 var init_near = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/near.ts"() {
+  "packages/shared/src/near.ts"() {
     "use strict";
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/parsed.ts
+// packages/shared/src/parsed.ts
 var init_parsed = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/parsed.ts"() {
+  "packages/shared/src/parsed.ts"() {
     "use strict";
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/shared/src/index.ts
+// packages/shared/src/index.ts
 var init_src = __esm({
-  "../../room-ts/.room/workers/engine/packages/shared/src/index.ts"() {
+  "packages/shared/src/index.ts"() {
     "use strict";
     init_types();
     init_identity();
@@ -17386,7 +17406,7 @@ var init_src = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/relay/src/memory.ts
+// packages/relay/src/memory.ts
 import fs2 from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -17437,7 +17457,7 @@ function saveMemory(commonDir, room, doc, log2 = stderr) {
 }
 var MAX_MEMORY_BYTES, stderr, RoomMemory;
 var init_memory2 = __esm({
-  "../../room-ts/.room/workers/engine/packages/relay/src/memory.ts"() {
+  "packages/relay/src/memory.ts"() {
     "use strict";
     init_yjs();
     init_src();
@@ -17520,9 +17540,9 @@ var init_memory2 = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/constants.js
+// node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/constants.js"(exports2, module2) {
+  "node_modules/ws/lib/constants.js"(exports2, module2) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -17543,9 +17563,9 @@ var require_constants = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/buffer-util.js
+// node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/buffer-util.js"(exports2, module2) {
+  "node_modules/ws/lib/buffer-util.js"(exports2, module2) {
     "use strict";
     var { EMPTY_BUFFER } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
@@ -17618,9 +17638,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/limiter.js
+// node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/limiter.js"(exports2, module2) {
+  "node_modules/ws/lib/limiter.js"(exports2, module2) {
     "use strict";
     var kDone = /* @__PURE__ */ Symbol("kDone");
     var kRun = /* @__PURE__ */ Symbol("kRun");
@@ -17668,9 +17688,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/permessage-deflate.js
+// node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
+  "node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
     "use strict";
     var zlib = __require("zlib");
     var bufferUtil = require_buffer_util();
@@ -18051,9 +18071,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/validation.js
+// node_modules/ws/lib/validation.js
 var require_validation2 = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/validation.js"(exports2, module2) {
+  "node_modules/ws/lib/validation.js"(exports2, module2) {
     "use strict";
     var { isUtf8 } = __require("buffer");
     var { hasBlob } = require_constants();
@@ -18252,9 +18272,9 @@ var require_validation2 = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/receiver.js
+// node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/receiver.js"(exports2, module2) {
+  "node_modules/ws/lib/receiver.js"(exports2, module2) {
     "use strict";
     var { Writable } = __require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -18875,9 +18895,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/sender.js
+// node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/sender.js"(exports2, module2) {
+  "node_modules/ws/lib/sender.js"(exports2, module2) {
     "use strict";
     var { Duplex } = __require("stream");
     var { randomFillSync } = __require("crypto");
@@ -19368,9 +19388,9 @@ var require_sender = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/event-target.js
+// node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/event-target.js"(exports2, module2) {
+  "node_modules/ws/lib/event-target.js"(exports2, module2) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants();
     var kCode = /* @__PURE__ */ Symbol("kCode");
@@ -19597,9 +19617,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/extension.js
+// node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/extension.js"(exports2, module2) {
+  "node_modules/ws/lib/extension.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation2();
     function push(dest, name2, elem) {
@@ -19750,9 +19770,9 @@ var require_extension = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/websocket.js
+// node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/websocket.js"(exports2, module2) {
+  "node_modules/ws/lib/websocket.js"(exports2, module2) {
     "use strict";
     var EventEmitter2 = __require("events");
     var https = __require("https");
@@ -20646,9 +20666,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/stream.js
+// node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/stream.js"(exports2, module2) {
+  "node_modules/ws/lib/stream.js"(exports2, module2) {
     "use strict";
     var WebSocket3 = require_websocket();
     var { Duplex } = __require("stream");
@@ -20744,9 +20764,9 @@ var require_stream = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/subprotocol.js
+// node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/subprotocol.js"(exports2, module2) {
+  "node_modules/ws/lib/subprotocol.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation2();
     function parse3(header) {
@@ -20789,9 +20809,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/lib/websocket-server.js
+// node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/ws/lib/websocket-server.js"(exports2, module2) {
+  "node_modules/ws/lib/websocket-server.js"(exports2, module2) {
     "use strict";
     var EventEmitter2 = __require("events");
     var http2 = __require("http");
@@ -21190,10 +21210,10 @@ var require_websocket_server = __commonJS({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/ws/wrapper.mjs
+// node_modules/ws/wrapper.mjs
 var import_stream, import_extension, import_permessage_deflate, import_receiver, import_sender, import_subprotocol, import_websocket, import_websocket_server, wrapper_default;
 var init_wrapper = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/ws/wrapper.mjs"() {
+  "node_modules/ws/wrapper.mjs"() {
     "use strict";
     import_stream = __toESM(require_stream(), 1);
     import_extension = __toESM(require_extension(), 1);
@@ -21207,10 +21227,10 @@ var init_wrapper = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/y-protocols/sync.js
+// node_modules/y-protocols/sync.js
 var messageYjsSyncStep1, messageYjsSyncStep2, messageYjsUpdate, writeSyncStep1, writeSyncStep2, readSyncStep1, readSyncStep2, writeUpdate, readUpdate, readSyncMessage;
 var init_sync = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/y-protocols/sync.js"() {
+  "node_modules/y-protocols/sync.js"() {
     "use strict";
     init_encoding();
     init_decoding();
@@ -21264,10 +21284,10 @@ var init_sync = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/y-protocols/awareness.js
+// node_modules/y-protocols/awareness.js
 var outdatedTimeout, Awareness, removeAwarenessStates, encodeAwarenessUpdate, applyAwarenessUpdate;
 var init_awareness = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/y-protocols/awareness.js"() {
+  "node_modules/y-protocols/awareness.js"() {
     "use strict";
     init_encoding();
     init_decoding();
@@ -21478,7 +21498,7 @@ var init_awareness = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/relay/src/index.ts
+// packages/relay/src/index.ts
 import crypto2 from "node:crypto";
 import fs3 from "node:fs";
 import http from "node:http";
@@ -21833,7 +21853,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
 }
 var MSG_SYNC, MSG_AWARENESS, LOCAL_FILE, MIME, LOOPBACK;
 var init_src2 = __esm({
-  "../../room-ts/.room/workers/engine/packages/relay/src/index.ts"() {
+  "packages/relay/src/index.ts"() {
     "use strict";
     init_memory2();
     init_memory2();
@@ -21851,7 +21871,7 @@ var init_src2 = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/roomd/src/git.ts
+// packages/roomd/src/git.ts
 import { execFile } from "node:child_process";
 function timeoutMs(configured) {
   const fromEnv = Number(process.env.ROOM_GIT_TIMEOUT_MS);
@@ -21952,7 +21972,7 @@ async function gitIsOnRemote(dir, sha) {
 }
 var DEFAULT_GIT_TIMEOUT_MS, gitHead, gitBranch, gitCountBetween, gitPathsBetween, gitSubject;
 var init_git = __esm({
-  "../../room-ts/.room/workers/engine/packages/roomd/src/git.ts"() {
+  "packages/roomd/src/git.ts"() {
     "use strict";
     DEFAULT_GIT_TIMEOUT_MS = 3e4;
     gitHead = (dir) => git(dir, ["rev-parse", "HEAD"]).then((s) => s.trim());
@@ -21963,7 +21983,7 @@ var init_git = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/roomd/src/local.ts
+// packages/roomd/src/local.ts
 import path3 from "node:path";
 async function gitCommonDir(dir) {
   const out2 = (await git(dir, ["rev-parse", "--git-common-dir"])).trim();
@@ -21987,14 +22007,14 @@ async function localRoomName(dir, localBranch) {
   return `local/${path3.basename(main2)}/${branch}`;
 }
 var init_local = __esm({
-  "../../room-ts/.room/workers/engine/packages/roomd/src/local.ts"() {
+  "packages/roomd/src/local.ts"() {
     "use strict";
     init_src2();
     init_git();
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/roomd/src/room-file.ts
+// packages/roomd/src/room-file.ts
 import fs4 from "node:fs";
 import path4 from "node:path";
 import { execFileSync } from "node:child_process";
@@ -22021,15 +22041,15 @@ function readRoomFile(dir) {
   }
 }
 var init_room_file = __esm({
-  "../../room-ts/.room/workers/engine/packages/roomd/src/room-file.ts"() {
+  "packages/roomd/src/room-file.ts"() {
     "use strict";
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/roomd/src/disk-batch.ts
+// packages/roomd/src/disk-batch.ts
 var DiskBatch;
 var init_disk_batch = __esm({
-  "../../room-ts/.room/workers/engine/packages/roomd/src/disk-batch.ts"() {
+  "packages/roomd/src/disk-batch.ts"() {
     "use strict";
     DiskBatch = class {
       constructor(run2, debounceMs = 300, now = Date.now) {
@@ -22098,10 +22118,10 @@ var init_disk_batch = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/broadcastchannel.js
+// node_modules/lib0/broadcastchannel.js
 var channels, LocalStoragePolyfill, BC, getChannel, subscribe, unsubscribe, publish;
 var init_broadcastchannel = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/broadcastchannel.js"() {
+  "node_modules/lib0/broadcastchannel.js"() {
     "use strict";
     init_map();
     init_set();
@@ -22159,10 +22179,10 @@ var init_broadcastchannel = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/y-protocols/auth.js
+// node_modules/y-protocols/auth.js
 var messagePermissionDenied, readAuthMessage;
 var init_auth = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/y-protocols/auth.js"() {
+  "node_modules/y-protocols/auth.js"() {
     "use strict";
     init_decoding();
     messagePermissionDenied = 0;
@@ -22175,20 +22195,20 @@ var init_auth = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/lib0/url.js
+// node_modules/lib0/url.js
 var encodeQueryParams;
 var init_url = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/lib0/url.js"() {
+  "node_modules/lib0/url.js"() {
     "use strict";
     init_object();
     encodeQueryParams = (params2) => map(params2, (val, key) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`).join("&");
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/y-websocket/src/y-websocket.js
+// node_modules/y-websocket/src/y-websocket.js
 var messageSync, messageQueryAwareness, messageAwareness, messageAuth, messageHandlers, messageReconnectTimeout, permissionDeniedHandler, readMessage, defaultShouldReconnect, closeWebsocketConnection, setupWS, broadcastMessage, WebsocketProvider;
 var init_y_websocket = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/y-websocket/src/y-websocket.js"() {
+  "node_modules/y-websocket/src/y-websocket.js"() {
     "use strict";
     init_broadcastchannel();
     init_time();
@@ -22585,7 +22605,7 @@ ${reason}`);
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/readdirp/esm/index.js
+// node_modules/readdirp/esm/index.js
 import { stat, lstat, readdir, realpath } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { resolve as presolve, relative as prelative, join as pjoin, sep as psep } from "node:path";
@@ -22607,7 +22627,7 @@ function readdirp(root, options = {}) {
 }
 var EntryTypes, defaultOptions, RECURSIVE_ERROR_CODE, NORMAL_FLOW_ERRORS, ALL_TYPES, DIR_TYPES, FILE_TYPES, isNormalFlowError, wantBigintFsStats, emptyFn, normalizeFilter, ReaddirpStream;
 var init_esm = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/readdirp/esm/index.js"() {
+  "node_modules/readdirp/esm/index.js"() {
     "use strict";
     EntryTypes = {
       FILE_TYPE: "files",
@@ -22810,7 +22830,7 @@ var init_esm = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/chokidar/esm/handler.js
+// node_modules/chokidar/esm/handler.js
 import { watchFile, unwatchFile, watch as fs_watch } from "fs";
 import { open as open2, stat as stat2, lstat as lstat2, realpath as fsrealpath } from "fs/promises";
 import * as sysPath from "path";
@@ -22834,7 +22854,7 @@ function createFsWatchInstance(path19, options, listener, errHandler, emitRaw) {
 }
 var STR_DATA, STR_END, STR_CLOSE, EMPTY_FN, pl, isWindows, isMacos, isLinux, isFreeBSD, isIBMi, EVENTS, EV, THROTTLE_MODE_WATCH, statMethods, KEY_LISTENERS, KEY_ERR, KEY_RAW, HANDLER_KEYS, binaryExtensions, isBinaryPath, foreach, addAndConvert, clearItem, delFromSet, isEmptySet, FsWatchInstances, fsWatchBroadcast, setFsWatchListener, FsWatchFileInstances, setFsWatchFileListener, NodeFsHandler;
 var init_handler = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/chokidar/esm/handler.js"() {
+  "node_modules/chokidar/esm/handler.js"() {
     "use strict";
     STR_DATA = "data";
     STR_END = "end";
@@ -23572,7 +23592,7 @@ var init_handler = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/chokidar/esm/index.js
+// node_modules/chokidar/esm/index.js
 import { stat as statcb } from "fs";
 import { stat as stat3, readdir as readdir2 } from "fs/promises";
 import { EventEmitter } from "events";
@@ -23648,7 +23668,7 @@ function watch(paths, options = {}) {
 }
 var SLASH, SLASH_SLASH, ONE_DOT, TWO_DOTS, STRING_TYPE, BACK_SLASH_RE, DOUBLE_SLASH_RE, DOT_RE, REPLACER_RE, isMatcherObject, unifyPaths, toUnix, normalizePathToUnix, normalizeIgnored, getAbsolutePath, EMPTY_SET, DirEntry, STAT_METHOD_F, STAT_METHOD_L, WatchHelper, FSWatcher, esm_default;
 var init_esm2 = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/chokidar/esm/index.js"() {
+  "node_modules/chokidar/esm/index.js"() {
     "use strict";
     init_esm();
     init_handler();
@@ -24294,7 +24314,7 @@ var init_esm2 = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/roomd/src/roomignore.ts
+// packages/roomd/src/roomignore.ts
 function parseRoomIgnore(text) {
   const rules = [];
   for (const raw of text.split(/\r?\n/)) {
@@ -24330,12 +24350,12 @@ function parseRoomIgnore(text) {
   };
 }
 var init_roomignore = __esm({
-  "../../room-ts/.room/workers/engine/packages/roomd/src/roomignore.ts"() {
+  "packages/roomd/src/roomignore.ts"() {
     "use strict";
   }
 });
 
-// ../../room-ts/.room/workers/engine/packages/roomd/src/index.ts
+// packages/roomd/src/index.ts
 import fs5 from "node:fs";
 import path5 from "node:path";
 import { createHash } from "node:crypto";
@@ -24377,7 +24397,7 @@ function errMsg(error2) {
 }
 var SHARE_LEVELS, SHARE_RANK, RoomdError, DEFAULT_IGNORED_DIRS, ROOM_FILE, ROOMIGNORE, Daemon;
 var init_src3 = __esm({
-  "../../room-ts/.room/workers/engine/packages/roomd/src/index.ts"() {
+  "packages/roomd/src/index.ts"() {
     "use strict";
     init_room_file();
     init_room_file();
@@ -25740,7 +25760,14 @@ var init_rust = __esm({
     (static_item name: (identifier) @def.name) @def
     (macro_definition name: (identifier) @def.name) @def
 
+    (mod_item name: (identifier) @def.container
+      body: (declaration_list (function_item name: (identifier) @def.name) @def))
+
     (call_expression function: (identifier) @ref)
+    (scoped_identifier name: (identifier) @ref)
+    (use_list (identifier) @ref)
+    (use_as_clause path: (identifier) @ref)
+    (macro_invocation macro: (identifier) @ref)
     (call_expression function: (field_expression field: (field_identifier) @ref))
     (field_expression field: (field_identifier) @ref)
     (type_identifier) @ref
@@ -25892,6 +25919,7 @@ var init_cpp = __esm({
     (preproc_function_def name: (identifier) @def.name) @def
 
     (call_expression function: (identifier) @ref)
+    (call_expression function: (qualified_identifier name: (identifier) @ref))
     (call_expression function: (field_expression field: (field_identifier) @ref))
     (field_expression field: (field_identifier) @ref)
     (type_identifier) @ref
@@ -26520,9 +26548,9 @@ var init_parse = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/web-tree-sitter/tree-sitter.js
+// node_modules/web-tree-sitter/tree-sitter.js
 var require_tree_sitter = __commonJS({
-  "../../room-ts/.room/workers/engine/node_modules/web-tree-sitter/tree-sitter.js"(exports, module) {
+  "node_modules/web-tree-sitter/tree-sitter.js"(exports, module) {
     "use strict";
     var Module = typeof Module != "undefined" ? Module : {};
     var ENVIRONMENT_IS_WEB = typeof window == "object";
@@ -30991,10 +31019,10 @@ var init_workers = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/diff/libesm/diff/base.js
+// node_modules/diff/libesm/diff/base.js
 var Diff;
 var init_base = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/diff/libesm/diff/base.js"() {
+  "node_modules/diff/libesm/diff/base.js"() {
     "use strict";
     Diff = class {
       diff(oldStr, newStr, options = {}) {
@@ -31199,7 +31227,7 @@ var init_base = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/diff/libesm/diff/line.js
+// node_modules/diff/libesm/diff/line.js
 function diffLines(oldStr, newStr, options) {
   return lineDiff.diff(oldStr, newStr, options);
 }
@@ -31223,7 +31251,7 @@ function tokenize(value2, options) {
 }
 var LineDiff, lineDiff;
 var init_line = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/diff/libesm/diff/line.js"() {
+  "node_modules/diff/libesm/diff/line.js"() {
     "use strict";
     init_base();
     LineDiff = class extends Diff {
@@ -31254,7 +31282,7 @@ var init_line = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/diff/libesm/patch/create.js
+// node_modules/diff/libesm/patch/create.js
 function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
   let optionsObj;
   if (!options) {
@@ -31430,7 +31458,7 @@ function splitLines(text) {
 }
 var INCLUDE_HEADERS;
 var init_create = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/diff/libesm/patch/create.js"() {
+  "node_modules/diff/libesm/patch/create.js"() {
     "use strict";
     init_line();
     INCLUDE_HEADERS = {
@@ -31441,15 +31469,15 @@ var init_create = __esm({
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/diff/libesm/index.js
+// node_modules/diff/libesm/index.js
 var init_libesm = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/diff/libesm/index.js"() {
+  "node_modules/diff/libesm/index.js"() {
     "use strict";
     init_create();
   }
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/node-diff3/dist/diff3.mjs
+// node_modules/node-diff3/dist/diff3.mjs
 function LCS(buffer1, buffer2) {
   let equivalenceClasses = /* @__PURE__ */ Object.create(null);
   for (let j = 0; j < buffer2.length; j++) {
@@ -31662,7 +31690,7 @@ function diff3Merge(a, o, b, options) {
   return results;
 }
 var init_diff3 = __esm({
-  "../../room-ts/.room/workers/engine/node_modules/node-diff3/dist/diff3.mjs"() {
+  "node_modules/node-diff3/dist/diff3.mjs"() {
     "use strict";
   }
 });
@@ -32829,7 +32857,7 @@ var init_context = __esm({
 // packages/room-mcp/src/index.ts
 import fs18 from "node:fs";
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/util.js
+// node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -33666,7 +33694,7 @@ function constantCatch(value2) {
   return fn;
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/core.js
+// node_modules/zod/v4/core/core.js
 var _a;
 var _zodDesc = { value: void 0, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
@@ -33785,7 +33813,7 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/errors.js
+// node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -33904,7 +33932,7 @@ function formatError(error2, mapper = (issue2) => issue2.message) {
   return fieldErrors;
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/parse.js
+// node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params2) {
   return { callee: params2?.callee ?? callee, Err: params2?.Err };
 }
@@ -34007,7 +34035,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value2, _ctx) => {
   return _safeParseAsync(_Err)(schema, value2, _ctx);
 };
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/regexes.js
+// node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][0-9a-z]{6,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
@@ -34069,7 +34097,7 @@ var _null = /^null$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/checks.js
+// node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a3;
   inst._zod ?? (inst._zod = {});
@@ -34460,7 +34488,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/doc.js
+// node_modules/zod/v4/core/doc.js
 var Doc = class {
   constructor(args3 = [], closed = {}) {
     this.content = [];
@@ -34497,14 +34525,14 @@ ${content.join("\n")}
   }
 };
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/versions.js
+// node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 5,
   patch: 4
 };
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/schemas.js
+// node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a3;
   inst ?? (inst = {});
@@ -36092,7 +36120,7 @@ function handleRefineResult(result, payload, input, inst) {
   }
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/memoizer.js
+// node_modules/zod/v4/core/memoizer.js
 var $ZodCyclicError = class extends Error {
   constructor() {
     super(`Cannot parse a reference cycle that closes through a transform`);
@@ -36330,7 +36358,7 @@ function isBackEdge(ctx, value2) {
   return backEdges !== void 0 && value2 !== null && typeof value2 === "object" && backEdges.has(value2);
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/locales/en.js
+// node_modules/zod/v4/locales/en.js
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -36453,7 +36481,7 @@ function en_default() {
   };
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/registries.js
+// node_modules/zod/v4/core/registries.js
 var _a2;
 var $ZodRegistry = class {
   constructor() {
@@ -36501,7 +36529,7 @@ function registry() {
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/api.js
+// node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string(Class2, params2) {
   return new Class2({
@@ -37030,7 +37058,7 @@ function _check(fn, params2) {
   return ch;
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/to-json-schema.js
+// node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key of Reflect.ownKeys(source)) {
@@ -37561,7 +37589,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params2) 
   return finalize(ctx, schema);
 };
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/core/json-schema-processors.js
+// node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -38004,7 +38032,7 @@ var optionalProcessor = (schema, ctx, _json, params2) => {
   seen.ref = def.innerType;
 };
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
 function isZ4Schema(s) {
   const schema = s;
   return !!schema._zod;
@@ -38067,7 +38095,7 @@ function getLiteralValue(schema) {
   return void 0;
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/classic/errors.js
+// node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
@@ -38112,7 +38140,7 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, void 0
   Parent: Error
 });
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/classic/parse.js
+// node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse3 = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -38126,7 +38154,7 @@ var safeDecode2 = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync2 = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync2 = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/classic/schemas.js
+// node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
     config(en_default());
@@ -39047,7 +39075,7 @@ function preprocess(fn, schema) {
   });
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod/v4/classic/iso.js
+// node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate,
@@ -39072,7 +39100,7 @@ function duration2(params2) {
   return _isoDuration(ZodISODuration, params2);
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var LATEST_PROTOCOL_VERSION = "2025-11-25";
 var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
@@ -40591,15 +40619,15 @@ var UrlElicitationRequiredError = class extends McpError {
   }
 };
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
 function isTerminal(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/zod-to-json-schema/dist/esm/parsers/string.js
+// node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
 function getMethodLiteral(schema) {
   const shape = getObjectShape(schema);
   const methodSchema = shape?.method;
@@ -40620,7 +40648,7 @@ function parseWithCompat(schema, data) {
   return result.data;
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
 var DEFAULT_REQUEST_TIMEOUT_MSEC = 6e4;
 var Protocol = class {
   constructor(_options) {
@@ -41574,7 +41602,7 @@ function mergeCapabilities(base, additional) {
   return result;
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
 var import_ajv = __toESM(require_ajv(), 1);
 var import_ajv_formats = __toESM(require_dist(), 1);
 function createDefaultAjvInstance() {
@@ -41642,7 +41670,7 @@ var AjvJsonSchemaValidator = class {
   }
 };
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
 var ExperimentalServerTasks = class {
   constructor(_server) {
     this._server = _server;
@@ -41855,7 +41883,7 @@ var ExperimentalServerTasks = class {
   }
 };
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
 function assertToolsCallTaskCapability(requests, method, entityName) {
   if (!requests) {
     throw new Error(`${entityName} does not support task creation (required for ${method})`);
@@ -41890,7 +41918,7 @@ function assertClientRequestTaskCapability(requests, method, entityName) {
   }
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 var Server = class extends Protocol {
   /**
    * Initializes this server with the given name and version information.
@@ -42261,10 +42289,10 @@ var Server = class extends Protocol {
   }
 };
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process3 from "node:process";
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 var ReadBuffer = class {
   constructor(options) {
@@ -42301,7 +42329,7 @@ function serializeMessage(message) {
   return JSON.stringify(message) + "\n";
 }
 
-// ../../room-ts/.room/workers/engine/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 var StdioServerTransport = class {
   constructor(_stdin = process3.stdin, _stdout = process3.stdout, options) {
     this._stdin = _stdin;
