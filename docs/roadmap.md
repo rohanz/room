@@ -36,6 +36,40 @@ broadcast; the browser loads the facts tier instantly and fetches text per opene
 list. **Build order:** patches against a base, then a room per repository, then scope-driven
 watching and indexing.
 
+## Decided 2026-09-21: what a room is
+
+**A room forms around the work.** Not around a branch (today's bug: teams with a branch per
+person all sit alone), not around a folder (rejected: see below), and at scale not around the
+whole repository either.
+
+*Now, before the trial:* one room per repository. Each participant carries their own branch and
+base commit; checks between two people use their common ancestor. Spawned workers already work
+this way (they sit on `room/<tag>` branches inside the lead's room), so most of the machinery
+exists. This is the overlap design below in the case where everyone is near everyone.
+
+*Later, when someone with a very large repository needs it:* everyone is "in" the repository's
+room in concept, but each session only ever receives the state of the people near it. "Near"
+means one of two things: working on the same files, or a dependency between what they are
+changing and what I am working on. Each participant publishes their own small document; others
+subscribe to their neighbours' documents; the server keeps only an index of who is working on
+what (paths and symbol names, never code) and tells each session who its neighbours are. Presence
+is routed the same way: five thousand people announcing themselves every fifteen seconds to
+everyone is over a million messages a second. Use the repository's real dependency graph where
+one exists (the build system, a code index) instead of Room's name-based one, which connects
+everything to everything through names like `get` and `Config`. Files that touch everything
+(lockfiles, root configs, shared constants) must not count as overlap, or "near" means the whole
+company.
+
+*Rejected: folder rooms* (a checked-in file declaring a directory subtree to be a room). They miss
+the collisions that matter most in a large repository (a payments engineer editing the shared
+money library sits in the payments room, so the library's owners never see it), somebody has to
+set them up, and the design above replaces them with no configuration.
+
+*Continuity:* 0.9.0 introduced one rule for "someone is near this path" (`near.ts`, used by
+`room_claim` and the before-edit hook). Keep it the ONE definition used for claims, notices, who
+appears in `room_state` and who counts as company; scaling later then means moving that rule to
+the server, not redesigning Room.
+
 ## Structural gaps
 
 1. **Rooms are per branch; real teams work one branch per person.** A session joins
