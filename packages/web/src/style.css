@@ -359,7 +359,8 @@ h2, p { margin: 0; }
 .empty { min-height: 180px; font-size: 14px; }
 .timeline-head { padding: 16px; }
 .timeline-list { padding: 16px; gap: 16px; }
-.filter-chips { flex-wrap: wrap; gap: 8px; overflow: visible; }
+/* Never stretch: an open "More" is the tallest item on its line and would inflate its neighbours into circles. */
+.filter-chips { flex-wrap: wrap; align-items: flex-start; gap: 8px; overflow: visible; }
 .filter-chip { font-size: 12px; padding: 4px 10px; }
 .timeline-item, .episode-summary, .item-copy .mono, .base-divider { font-size: 12px; color: var(--ink); }
 .item-main { grid-template-columns: 40px minmax(0, 1fr); }
@@ -771,7 +772,7 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .finished-workers > summary, .more-chips > summary { cursor: pointer; color: var(--muted); }
 .archive-worker { padding: 10px; border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
 .archive-worker p { margin: 6px 0; }
-.more-chips { align-self: center; font-size: 12px; }
+.more-chips { font-size: 12px; line-height: 24px; }
 .more-chips > .filter-chips { padding: 8px 0; }
 .timeline-more { margin: 8px; color: var(--muted); }
 .state-pill.failed { background: var(--danger-bg); color: var(--danger-ink); }

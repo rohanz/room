@@ -88,3 +88,11 @@ it('shows dismissed uncommitted files in the archive row', () => {
   room.retireParticipant('Lead+dirty', { ...retired('dirty'), outcome: 'dismissed', uncommitted: 2 })
   expect(participantsPanel(conn, createFocusState()).textContent).toContain('dismissed with 2 uncommitted files left in its worktree')
 })
+
+it('chip rows never stretch their chips to the height of an open "More"', async () => {
+  const { readFileSync } = await import('node:fs')
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  const rule = [...css.matchAll(/^\.filter-chips \{([^}]*)\}/gm)].map(m => m[1]).join(' ')
+  expect(rule).toContain('flex-wrap: wrap')
+  expect(rule).toContain('align-items: flex-start')
+})
