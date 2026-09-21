@@ -1,6 +1,6 @@
 import { describeClaim } from './claims.js'
 import { describeIdentity, isAgentic } from './identity.js'
-import type { Claim, Kind, NoteMsg, Presence, Scope, ShareLevel, Worker } from './types.js'
+import type { Claim, Kind, NoteMsg, Presence, RetiredWorker, Scope, ShareLevel, Worker } from './types.js'
 
 /** Split a room identity while preserving slashes within its branch. */
 export function roomNameParts(roomName: string): { host?: string; owner?: string; repo: string; branch: string; local: boolean } {
@@ -113,6 +113,40 @@ export function deriveParticipants(input: ParticipantInput): Participant[] {
   })
 }
 
+export interface WorkerParticipantGroup {
+  lead: string
+  active: Participant[]
+  retiredWorkers: RetiredWorker[]
+  running: number
+}
+
+export interface ParticipantGroups {
+  active: Participant[]
+  offlineTeammates: Participant[]
+  retiredWorkers: RetiredWorker[]
+  workerGroups: WorkerParticipantGroup[]
+}
+
+/** Archived workers are history, not offline teammates. Failed workers remain actionable.
+ * A new worker record with a reused name takes precedence over that name's archive. */
+export function splitParticipants(input: ParticipantInput & { retiredWorkers: readonly RetiredWorker[] }): ParticipantGroups {
+  const workers = new Map((input.workers ?? []).map(w => [w.name, w]))
+  const retiredWorkers = [...input.retiredWorkers].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))
+  const retiredNames = new Set(retiredWorkers.map(w => w.name))
+  const participants = deriveParticipants(input).filter(p => !retiredNames.has(p.name) || workers.has(p.name))
+  const active = participants.filter(p => p.online || workers.has(p.name))
+  const offlineTeammates = participants.filter(p => !p.online && !workers.has(p.name))
+  const leads = new Set([...workers.values()].map(w => w.lead))
+  for (const w of retiredWorkers) leads.add(w.lead)
+  const workerGroups = [...leads].sort().map(lead => ({
+    lead,
+    active: active.filter(p => workers.get(p.name)?.lead === lead),
+    retiredWorkers: retiredWorkers.filter(w => w.lead === lead),
+    running: [...workers.values()].filter(w => w.lead === lead && w.status === 'running').length,
+  }))
+  return { active, offlineTeammates, retiredWorkers, workerGroups }
+}
+
 export const scopeLine = (scope: Scope): string => `${scope.area}: ${scope.summary} (${scope.paths.join(', ')})`
 
 export interface PersonLineInput {
@@ -177,11 +211,20 @@ export function workerLine({ worker: w, processGone = false, changedCount, last,
   ]
 }
 
-export function workerLines(inputs: readonly WorkerLineInput[]): string[] {
-  if (!inputs.length) return []
-  return [`workers (${inputs.length}):`, ...[...inputs]
+export function workerLines(inputs: readonly WorkerLineInput[], options: { all?: boolean; retiredWorkers?: readonly RetiredWorker[] } = {}): string[] {
+  const retired = options.retiredWorkers ?? []
+  if (!inputs.length && !retired.length) return []
+  const visible = inputs.filter(i => options.all || i.worker.status === 'running' || i.worker.status === 'failed')
+  const finished = inputs.length - visible.length + retired.length
+  const out = [`workers (${inputs.length + retired.length}):`, ...[...visible]
     .sort((a, b) => a.worker.startedAt - b.worker.startedAt)
     .flatMap(workerLine)]
+  if (options.all) {
+    for (const w of [...retired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
+      out.push(`  - ${w.tag} (${w.outcome}${w.model ? `, ${w.model}` : ''}): ${w.summary} · ${formatCount(w.fileCount, 'file')}`)
+    }
+  } else if (finished) out.push(`  finished: ${finished} (all=true lists them)`)
+  return out
 }
 
 export interface ConflictResolution {

@@ -73,6 +73,28 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('session gating', () => {
+  it('keeps worker history compact until all=true and excludes retired participants', async () => {
+    const t = setup()
+    t.room.clearOverlays('Rohan') // No scope or edits: default area view expands, history still stays compact.
+    const worker = { name: 'Rohan+failed', tag: 'failed', lead: 'Rohan', host: 'codex' as const, task: 'failed task', dir, branch: 'main', pid: 0, startedAt: 1, status: 'failed' as const }
+    t.room.setWorker(worker)
+    t.room.setWorker({ ...worker, name: 'Rohan+old', tag: 'old', status: 'done' })
+    t.room.retireParticipant('Rohan+old', { name: 'Rohan+old', tag: 'old', lead: 'Rohan', host: 'codex', model: 'actual-model', task: 'old task', summary: 'archived summary', files: ['app.py'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' })
+    t.room.setOverlay('Teammate', 'app.py', 'offline work')
+    const peer = addPresence(t.session!.awareness, 'Rohan+old')
+    try {
+      const compact = await t.tools.call('room_state', {})
+      expect(compact).toContain('participants (2 active, 1 offline teammate):')
+      expect(compact).toContain('failed (codex, failed')
+      expect(compact).toContain('finished: 1 (all=true lists them)')
+      expect(compact).not.toContain('Rohan+old ·')
+      expect(compact).not.toContain('archived summary')
+      const expanded = await t.tools.call('room_state', { all: true })
+      expect(expanded).toContain('old (merged, actual-model): archived summary · 60 files')
+      expect(expanded).not.toContain('Rohan+old ·')
+    } finally { peer.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
+  })
+
   it('renders stale claims using the resolved staleDays argument', async () => {
     const config = await resolveConfig({ dir, env: { ROOM_STALE_DAYS: '7' }, args: { staleDays: 1 } })
     const t = setup({ config })

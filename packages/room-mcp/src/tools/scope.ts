@@ -1,10 +1,11 @@
 import { offlineSince } from '../connection.js'
-import { Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, describeClaim, participantIdentityLine, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
 import { pidAlive } from '../workers.js'
+import { isPrName } from '../prs.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 
@@ -66,11 +67,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const theirs = s.room.openClaims().filter(c => c.by === person)
         return theirs.some(c => myClaims.some(m => c.path === m.path && rangesOverlap(c.from, c.to, m.from, m.to)))
       }
-      const everyone = Array.from(new Set<string>([s.me.name, ...others(s), ...[...s.room.workers.values()].map(w => w.name)].filter(n => ps.some(p => p.user.name === n) || s.room.scopes.has(n) || s.room.workerOf(n)))).sort()
+      const groups = splitParticipants({
+        presences: ps, workers: [...s.room.workers.values()], retiredWorkers: s.room.retiredWorkers(),
+        scopes: [...s.room.scopes.entries()], overlayPeople: [...s.room.overlays.keys()],
+        changesByPerson: new Map(), claims: s.room.openClaims(), now: now(),
+      })
+      const everyone = [...groups.active, ...groups.offlineTeammates].map(p => p.name).filter(n => !isPrName(n)).sort()
       const names = everyone.filter(inView)
       const hidden = everyone.filter(n => !inView(n))
+      const activeCount = groups.active.filter(p => names.includes(p.name)).length
+      const offlineCount = groups.offlineTeammates.filter(p => names.includes(p.name)).length
       out.push(all ? `areas: ${mineA.length ? mineA.join(', ') : 'none yet'} (showing all)` : `your areas: ${mineA.join(', ')} (room_state all=true for everything)`)
-      out.push(`participants${all ? '' : ' overlapping your work'} (${names.length}):`)
+      out.push(`participants${all ? '' : ' overlapping your work'} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? '' : 's'}` : ''}):`)
       for (const n of names) {
         const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1000))}s ago` : 'offline'
@@ -107,11 +115,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
-      out.push(...formatWorkerLines(myWorkers(s).map(worker => ({ worker, processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() }))))
+      out.push(...formatWorkerLines(myWorkers(s).map(worker => ({ worker, processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)
-        out.push(...formatWorkerLines(myWorkers(ws).map(worker => ({ worker, processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: ws.room.changedPaths(worker.name).length, last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() }))))
+        out.push(...formatWorkerLines(myWorkers(ws).map(worker => ({ worker, processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: ws.room.changedPaths(worker.name).length, last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
       }
       return out.join('\n')
     },
