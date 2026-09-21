@@ -5,6 +5,7 @@ import { defs as joinDefs, handlers as joinHandlers, install as installJoin } fr
 import { defs as scopeDefs, handlers as scopeHandlers, install as installScope } from './scope.js'
 import { defs as claimDefs, handlers as claimHandlers, install as installClaims } from './claims.js'
 import { defs as messagingDefs, handlers as messagingHandlers, install as installMessaging } from './messaging.js'
+import { defs as collectDefs, handlers as collectHandlers } from './collect.js'
 import { defs as fileDefs, handlers as fileHandlers } from './files.js'
 import { defs as workerDefs, handlers as workerHandlers, install as installWorkers } from './workers.js'
 import { defs as shareDefs, handlers as shareHandlers, install as installShare } from './share.js'
@@ -25,8 +26,8 @@ export interface Tools {
   flushConflicts(): Promise<void>
 }
 
-const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...prDefs, ...shareDefs]
-const DEF_ORDER = ['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss']
+const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...collectDefs, ...prDefs, ...shareDefs]
+const DEF_ORDER = ['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss', 'room_collect']
 export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name === name)!)
 
 export function createTools(ctx: ToolCtx): Tools {
@@ -40,7 +41,7 @@ export function createTools(ctx: ToolCtx): Tools {
   installJoin(state)
   installWorkers(state)
   installShare(state)
-  const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), prHandlers(state), shareHandlers(state))
+  const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), collectHandlers(state), prHandlers(state), shareHandlers(state))
 
   return {
     list: () => DEFS,

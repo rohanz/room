@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { gitMergeFile } from '../src/merge.js'
 
 let dir: string
@@ -49,4 +49,33 @@ describe('gitMergeFile', () => {
     expect(result.text).toContain('return 10')
     expect(result.text).toContain('return 20')
   })
+})
+
+describe('new files and merge engine errors', () => {
+  const labels = { ours: 'ours', base: 'base', theirs: 'theirs' }
+  it('takes additions on either side against an absent base', async () => {
+    expect((await gitMergeFile('', '', 'new\n', labels)).text).toBe('new\n')
+    expect((await gitMergeFile('', 'new\n', '', labels)).text).toBe('new\n')
+    expect((await gitMergeFile('', 'same\n', 'same\n', labels)).status).toBe('clean')
+  })
+  it('merges differing additions against the empty base', async () => {
+    const result = await gitMergeFile('', 'ours\n', 'theirs\n', labels)
+    expect(result.status).toBe('conflict')
+    expect(result.conflicts[0]).toMatchObject({ a: ['ours'], o: [], b: ['theirs'] })
+  })
+  it('returns a conflict for binary text rather than a raw git failure', async () => {
+    const result = await gitMergeFile('base\0\n', 'ours\0\n', 'theirs\0\n', labels)
+    expect(result.status).toBe('conflict')
+  })
+})
+
+it('recovers from git merge-file exiting 128 without markers', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-bad-git-'))
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nexit 128\n', { mode: 0o755 })
+  vi.stubEnv('PATH', bin)
+  try {
+    const result = await gitMergeFile('', 'ours\n', 'theirs\n', { ours: 'ours', base: 'base', theirs: 'theirs' })
+    expect(result.status).toBe('conflict')
+    expect(result.conflicts[0]).toMatchObject({ a: ['ours'], b: ['theirs'] })
+  } finally { vi.unstubAllEnvs(); fs.rmSync(bin, { recursive: true, force: true }) }
 })

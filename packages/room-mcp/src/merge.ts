@@ -32,6 +32,9 @@ export async function gitMergeFile(
   theirs: string,
   labels: { ours: string; base: string; theirs: string },
 ): Promise<GitMergeResult> {
+  const clean = (text: string): GitMergeResult => ({ status: 'clean', text, chunks: [{ ok: text.split('\n') }], conflicts: [] })
+  if (ours === theirs || theirs === base) return clean(ours)
+  if (ours === base) return clean(theirs)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-file-'))
   const oursPath = path.join(dir, 'ours'), basePath = path.join(dir, 'base'), theirsPath = path.join(dir, 'theirs')
   try {
@@ -51,8 +54,10 @@ export async function gitMergeFile(
         })
     })
     if (result.unavailable) return fallback(base, ours, theirs, labels)
-    if (result.code < 0) throw result.error ?? new Error('git merge-file failed')
-    return parseGitMerge(result.stdout, labels, result.code)
+    // Git setup failures and binary inputs may produce no markers.
+    if (result.code < 0 || (result.code > 0 && !result.stdout.includes('<<<<<<< ' + labels.ours))) return fallback(base, ours, theirs, labels)
+    try { return parseGitMerge(result.stdout, labels, result.code) }
+    catch { return fallback(base, ours, theirs, labels) }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -61,7 +66,7 @@ export async function gitMergeFile(
 function fallback(base: string, ours: string, theirs: string, labels: { ours: string; base: string; theirs: string }): GitMergeResult {
   if (!warnedFallback) {
     warnedFallback = true
-    console.error('room: git is unavailable; falling back to node-diff3 for merge previews')
+    console.error('room: git could not render this preview; falling back to node-diff3')
   }
   const raw = diff3Merge(ours.split('\n'), base.split('\n'), theirs.split('\n'))
   const chunks: MergeChunk[] = []

@@ -19,11 +19,13 @@ whether the parts edit files, treat them as edits.
 5. As workers report done, call `room_preview_merge(people=[...], run="<test command>")`
    with all workers together, using their full participant names returned by spawn.
    Repeat after the last finishes; resolve conflicts and failing tests before merging.
-6. Commit each worker's uncommitted changes in its own worktree as the lead, then merge
-   their `room/<tag>` branches into your branch. Never push. Respect any explicit user
-   restriction on commits or merges; if prohibited, leave the previewed changes uncommitted.
+6. After the preview passes, stop any worker process still running with `room_dismiss(tag)`,
+   then call `room_collect(tag)`: it commits the worker's non-ignored changes as the lead
+   and merges its branch, releasing its claims first. For named artifacts (including ignored
+   files the preview explicitly excludes), use `room_collect(tag, mode="copy", paths=[...])`.
+   Inspect the result; merge conflicts are aborted and listed. Never push. Respect explicit
+   restrictions on commits or merges; if prohibited, leave changes uncommitted.
 7. Report what landed, the test result, conflicts, and that nothing is pushed.
-   Call `room_dismiss(tag)` for any worker whose process is still running, even after it reports done.
 
 Respect `ROOM_MAX_WORKERS` (default 8); wait for capacity. Do not spawn for a task that
 is one file or a few lines. Never spawn into the team room unless you, the lead, are in it;

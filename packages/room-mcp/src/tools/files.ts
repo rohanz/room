@@ -90,6 +90,26 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_preview_merge(a) {
       const caller = S()
+      // Local worktrees are authoritative even before the daemon publishes a new file.
+      const previewWorker = (s: Session, person: string) => {
+        const w = s.local ? s.room.workerOf(person) : undefined
+        return w?.lead === s.me.name && fs.existsSync(w.dir) ? w : diskWorker(s, person)
+      }
+      const previewText = async (s: Session, p: string, person: string) => {
+        const w = previewWorker(s, person)
+        const dir = w?.dir ?? (person === caller.me.name && s === caller ? caller.dir : undefined)
+        if (!dir || (!w && (s.room.text(p, person) !== undefined || s.room.deleted.get(person)?.has(p)))) return liveText(s, p, person)
+        if (path.isAbsolute(p) || p.split(/[\\/]/).includes('..')) throw new Error('unsafe preview path: ' + p)
+        const root = fs.realpathSync(dir)
+        try {
+          const file = fs.realpathSync(path.join(root, p))
+          if (!file.startsWith(root + path.sep)) throw new Error('unsafe preview symlink: ' + p)
+          return fs.readFileSync(file, 'utf8')
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
+          throw e
+        }
+      }
       const alias = typeof a.person === 'string' && a.person.trim() ? a.person.trim() : ''
       if (a.people !== undefined && !Array.isArray(a.people)) return 'error: people must be an array of names'
       if (Array.isArray(a.people) && a.people.some(p => typeof p !== 'string' || !p.trim())) return 'error: people must contain non-empty names'
@@ -123,27 +143,47 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         catch { return `error: ${item.person}'s HEAD ${item.base.slice(0, 10)} is not in this clone; git fetch, then retry` }
       }
       const pathSet = new Set<string>()
+      const ignoredNotes: string[] = []
       for (const item of [{ person: caller.me.name, session: caller }, ...participants]) {
-        for (const p of item.session.room.changedPaths(item.person)) pathSet.add(p)
+        const worker = previewWorker(item.session, item.person)
+        const dir = worker?.dir ?? (item.person === caller.me.name ? caller.dir : undefined)
+        const ignored = dir ? (await git(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
+        if (ignored.length) ignoredNotes.push('NOT previewed (gitignored, ' + item.person + '): ' + ignored.join(', '))
+        for (const p of item.session.room.changedPaths(item.person)) if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) pathSet.add(p)
+        if (dir) {
+          for (const p of (await git(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) pathSet.add(p)
+          for (const p of (await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) pathSet.add(p)
+        }
         if (baseFor(item.session, item.person) !== ancestor) {
           for (const p of (await git(caller.dir, ['diff', '--name-only', ancestor, baseFor(item.session, item.person)])).split('\n').filter(Boolean)) pathSet.add(p)
         }
       }
+      // ls-files represents nested repositories/submodules as directory entries.
+      // They are not file text and cannot participate in a file merge preview.
+      for (const p of pathSet) {
+        const dirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir): dir is string => !!dir)]
+        if (dirs.some(dir => { try { return fs.lstatSync(path.join(dir, p)).isDirectory() } catch { return false } })) {
+          pathSet.delete(p)
+          ignoredNotes.push('NOT previewed (directory or nested repository): ' + p)
+        }
+      }
       const paths = Array.from(pathSet).sort()
+      if (!paths.length && ignoredNotes.length) return ['no mergeable changes', ...ignoredNotes].join('\n')
       if (!paths.length) return [`none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
-      const baseTexts = new Map<string, string>()
+      const baseTexts = new Map<string, string | null>()
       const merged = new Map<string, string | null>()
       const owners = new Map<string, string[]>()
       for (const p of paths) {
-        const b = (await gitShow(caller.dir, ancestor, p)) ?? ''
+        const b = (await gitShow(caller.dir, ancestor, p)) ?? null
         baseTexts.set(p, b)
-        const mine = await liveText(caller, p, caller.me.name)
+        const mine = await previewText(caller, p, caller.me.name)
         const text = mine === undefined ? b : mine
         merged.set(p, text)
-        if ((text ?? '') !== b) owners.set(p, [caller.me.name])
+        if (text !== b) owners.set(p, [caller.me.name])
       }
       const out = [`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: git):`]
       if (skippedNote) out.push(skippedNote)
+      out.push(...ignoredNotes)
       let hardCount = 0
       let conflictCount = 0
       const resolvedText = new Map<string, string>()
@@ -153,16 +193,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         for (const p of paths) {
           const b = baseTexts.get(p)!
           const mine = merged.get(p)
-          const theirsRaw = await liveText(session, p, person)
-          const mineT = mine ?? '', theirs = theirsRaw === null ? '' : theirsRaw ?? b
+          const theirsRaw = await previewText(session, p, person)
+          const mineT = mine ?? '', theirs = theirsRaw === undefined ? b : theirsRaw
           if (theirs === b) continue
-          if (mineT === b) {
+          if (mine === b || mine === theirs) {
             onlyOne.push(`${p} (${person} only)`)
-            merged.set(p, theirsRaw === null ? null : theirs)
+            merged.set(p, theirs)
             owners.set(p, [...(owners.get(p) ?? []), person])
             continue
           }
-          const res = await gitMergeFile(b, mineT, theirs, { ours: 'combined', base: 'base', theirs: person })
+          const res = await gitMergeFile(b ?? '', mineT, theirs ?? '', { ours: 'combined', base: 'base', theirs: person })
           const hunks = res.conflicts
           if (!hunks.length) {
             clean.push(p)
@@ -176,9 +216,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const pairNames: string[] = []
           for (const owner of prior) {
             const ownerSession = owner === caller.me.name ? caller : rooms.holding(owner, caller)
-            const ownerRaw = await liveText(ownerSession, p, owner)
+            const ownerRaw = await previewText(ownerSession, p, owner)
             const ownerText = ownerRaw === null ? '' : ownerRaw ?? b
-            if ((await gitMergeFile(b, ownerText, theirs, { ours: owner, base: 'base', theirs: person })).status === 'conflict') pairNames.push(owner)
+            if ((await gitMergeFile(b ?? '', ownerText ?? '', theirs ?? '', { ours: owner, base: 'base', theirs: person })).status === 'conflict') pairNames.push(owner)
           }
           const conflictsWith = pairNames.length ? pairNames : [prior[prior.length - 1]]
           for (const r of res.chunks) {

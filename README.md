@@ -307,6 +307,7 @@ supplies shared state and presence; Git remains the integration mechanism.
 | `room_impact` | Symbol providers, consumers, dependencies, and owners. |
 | `room_preview_merge` | Three-way merge with one or several people's live trees, in order; optionally run the tests in the combined tree. The room also tells you when a file you changed stops merging cleanly with a teammate's. |
 | `room_done` / `room_pr_note` | Finish a task (release, clear scope, tell the lead if you are a worker; `pr_note: true` posts the branch ledger on its PR); post or update the one room comment on a PR. |
+| `room_collect` | Collect a finished local worker: commit non-ignored output and merge its branch, or copy named artifacts (including ignored files), protecting modified lead files. Releases collected claims first; aborts merge conflicts. |
 | `room_spawn` / `room_dismiss` | Dispatch a Claude Code or Codex worker into a worktree, in this room or a local workers room; stop one. |
 | `room_share` | Change your sharing level live: `intent`, `declared`, `full`. |
 
