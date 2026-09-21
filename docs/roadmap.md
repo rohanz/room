@@ -36,6 +36,30 @@ Layered, in order of authority, never silent:
 Origin: an untracked 31,871-line CSV in a repo with no ignore rules hung the code view
 (2026-09-21). The view is now bounded; this is the upstream half.
 
+## Orchestration (a lead with workers)
+
+Seen in a real 17-worker session on 2026-09-21: the lead spawned, broadcast and answered well,
+but never called `room_wait`, never previewed a merge and integrated by copying folders. The
+`room-workers` skill (0.7.0) now spells out the finish. Beyond what a skill can fix:
+- **A finished worker cannot take new instructions.** Headless workers are one-shot; the lead
+  spawns a follow-up. A `room_spawn` that resumes a worker's session in its worktree would fix it.
+- **Quiet workers are not flagged.** The lead learns of trouble only when it looks or waits. Flag
+  a running worker with no edits, messages or tool activity for N minutes.
+- **No lead summary.** `room_state` lists everything; a lead wants "3 done, 2 waiting on you,
+  1 quiet" as the first lines, with the questions addressed to it.
+
+## Less ritual
+
+- **Claim only where someone is near.** With company, an agent claims before every edit; two
+  agents under `api/` produced eleven claim/release/announce rounds for one-line edits. The
+  before-edit hook already knows others' scopes, claims and changed files, so it can say "nobody
+  is near this file, no claim needed" and ask for a claim only on overlap. Keep the scope call.
+- **Suggest `.roomignore` entries, once, by rule.** At first sync the daemon flags shared files
+  that look like data or generated output (the same detection as path-only sharing); the join
+  reply carries one line naming them and the entry to add; the agent relays it and writes the
+  line on a yes. Never edit `.roomignore` unasked; stay silent when nothing matches. The rule
+  lives in the daemon, not in the model's judgement.
+
 ## What an enterprise would ask before installing
 
 - **Permission checks beyond GitHub.com.** Only GitHub.com rooms verify push access. On GitHub
