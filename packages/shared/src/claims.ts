@@ -7,11 +7,13 @@ export function rangesOverlap(aFrom: number, aTo: number, bFrom: number, bTo: nu
 }
 
 export function claimsOverlap(a: Pick<Claim, 'path' | 'from' | 'to'>, b: Pick<Claim, 'path' | 'from' | 'to'>): boolean {
+  if (a.path.endsWith('/') && b.path.startsWith(a.path)) return true
+  if (b.path.endsWith('/') && a.path.startsWith(b.path)) return true
   return a.path === b.path && rangesOverlap(a.from, a.to, b.from, b.to)
 }
 
 export function cursorInClaim(c: Cursor, claim: Claim): boolean {
-  return c.path === claim.path && rangesOverlap(c.from, c.to, claim.from, claim.to)
+  return claimsOverlap(c, claim)
 }
 
 /** Clamp a 1-based inclusive range to a file of `lineCount` lines. */
@@ -24,5 +26,5 @@ export function clampRange(from: number, to: number, lineCount: number): { from:
 
 export function describeClaim(c: Claim): string {
   const who = displayName({ name: c.by, kind: c.byKind })
-  return `${who} · ${c.path}:${c.from}-${c.to} · ${c.intent}${c.plans?.length ? ` · plans: ${formatPlans(c.plans)}` : ''}`
+  return `${who} · ${c.path}${c.path.endsWith('/') ? '' : `:${c.from}-${c.to}`} · ${c.intent}${c.plans?.length ? ` · plans: ${formatPlans(c.plans)}` : ''}`
 }

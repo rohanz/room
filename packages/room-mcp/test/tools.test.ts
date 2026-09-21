@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
-import type { Identity } from '@room/shared'
+import type { Identity, NoteMsg } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, type Session } from '../src/session.js'
 import { resolveConfig, type ResolvedConfig } from '../src/config.js'
@@ -179,7 +179,7 @@ describe('session gating', () => {
     await t.tools.call('room_join', {})
     expect(t.room.scope('Rohan')).toBeUndefined()
     expect(t.room.openClaims()).toEqual([])
-    expect(t.room.messages().some(m => m.type === 'release' && m.summary === 'stale from an earlier session')).toBe(true)
+    expect(t.room.messages().filter(m => m.type === 'note')).toMatchObject([{ priority: 'fyi', text: 'Rohan released 1 claim(s)' }])
     await t.tools.call('room_scope', { area: 'x', summary: 'y', paths: ['app.py'] })
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'z' })
     await t.tools.shutdown()
@@ -252,7 +252,7 @@ describe('session gating', () => {
   })
 
   it('lists the twenty-three tools', () => {
-    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss'])
+    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_logout', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_diff', 'room_who', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_dismiss', 'room_collect'])
   })
 })
 
@@ -443,19 +443,19 @@ describe('plan changes', () => {
     expect(t.room.dependentsOf(claim.msgId!)).toEqual(['Kieran']) // routed copy
     // Rohan changes his mind: a new claim with a different plan on the same symbol supersedes the old one.
     const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'rename differently', plans: [{ kind: 'rename', symbol: 'validate', detail: 'check' }] })
-    expect(out).toContain("plan superseded: rename validate → verify — told Kieran's agent")
+    expect(out).not.toContain('plan superseded:')
     const sup = t.room.messages().filter(m => m.type === 'plan' && m.status === 'superseded')
-    expect(sup.length).toBe(2) // original + copy to Kieran
-    expect(sup.find(m => m.to === 'Kieran')).toMatchObject({ priority: 'interrupt', replacedBy: { detail: 'check' } })
+    expect(sup).toHaveLength(0)
+    expect(t.room.messages().filter(m => m.type === 'note' && m.text.includes('superseded'))).toMatchObject([{ priority: 'fyi', text: 'Rohan superseded 1 plan(s)' }])
     // Then releases the new claim without doing it: cancelled, routed again.
-    const c2 = t.room.openClaims().find(c => c.plans?.[0].detail === 'check')!
+    const c2 = t.room.openClaims().find(c => c.plans?.[0]?.detail === 'check')!
     const rel = await t.tools.call('room_release', { claimId: c2.id, summary: 'abandoned' })
     expect(rel).toContain("plan cancelled: rename validate → check — told Kieran's agent")
-    // Kieran's view: both arrive as interrupts in the inbox.
+    // Only the explicit cancellation enters Kieran's inbox.
     let ks: Session | null = { ...fakeSession(t.other), me: { name: 'Kieran', kind: 'agent' } }
     const ktools = createTools({ getSession: () => ks, setSession: s => { ks = s }, cwd: dir })
     const state = await ktools.call('room_state', {})
-    expect(state.split('\n\n')[0]).toMatch(/interrupt.*superseded plan rename validate/)
+    expect(state.split('\n\n')[0]).not.toMatch(/superseded plan/)
     expect(state.split('\n\n')[0]).toMatch(/interrupt.*cancelled plan rename validate → check/)
   })
 })
@@ -640,3 +640,52 @@ describe('merge preview scratch tree', () => {
     expect(readlinkSync(join(scratch, 'packages/shared/node_modules/lib0'))).toBe(join(clone, 'packages/shared/node_modules/lib0'))
   })
 })
+
+ describe('quiet room state and directory claims', () => {
+   it('claims a whole directory without a range and reports overlap in room_who', async () => {
+     const t = setup()
+     try {
+       const out = await t.tools.call('room_claim', { path: 'src/', intent: 'own source' })
+       expect(out).toContain('claimed')
+       expect(out).not.toContain('error:')
+       expect(await t.tools.call('room_who', { path: 'src/a.ts' })).toContain('own source')
+       t.other.addClaim({ by: 'Ada', byKind: 'agent', path: 'src/nested/b.ts', from: 10, to: 20, intent: 'other work' })
+       expect(await t.tools.call('room_claim', { path: 'src/', intent: 'overlap' })).toContain('CONFLICT')
+     } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+   })
+
+   it('groups unrelated claims, expands all=true, and caps default state', async () => {
+     const t = setup()
+     try {
+       await t.tools.call('room_scope', { area: 'mine', summary: 'my work', paths: ['mine/'] })
+       t.room.addClaim({ by: 'Rohan', byKind: 'agent', path: 'mine/a.ts', from: 1, to: 1, intent: 'my unique claim' })
+       t.other.addClaim({ by: 'Ada', byKind: 'agent', path: 'mine/b.ts', from: 1, to: 1, intent: 'overlapping unique claim' })
+       for (let i = 0; i < 100; i++) t.other.addClaim({ by: 'Other', byKind: 'agent', path: 'unrelated/' + i + '.ts', from: 1, to: 2, intent: 'unrelated claim detail ' + 'long'.repeat(40) })
+       const compact = await t.tools.call('room_state', {})
+       expect(compact).toContain('my unique claim')
+       expect(compact).toContain('overlapping unique claim')
+       expect(compact).toContain('Other: 100 claim(s) · unrelated/')
+       expect(compact).not.toContain('unrelated claim detail long')
+       expect(compact).toContain('room_who')
+       expect(compact.length).toBeLessThan(8100)
+       for (let i = 0; i < 10; i++) t.room.post<NoteMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'note', text: 'long history '.repeat(200) })
+       const bounded = await t.tools.call('room_state', {})
+       expect(bounded.length).toBeLessThan(8100)
+       expect(bounded).toContain('state lines; room_state all=true')
+       const full = await t.tools.call('room_state', { all: true })
+       expect(full).toContain('unrelated/99.ts')
+       expect(full).toContain('unrelated claim detail')
+     } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+   })
+ })
+
+ it('does not replay a channel or hook receipt into the next tool inbox', async () => {
+   const t = setup()
+   try {
+     await t.tools.call('room_state', {})
+     const msg = t.other.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'already delivered by channel' })
+     t.room.markSeen('Rohan', [msg.id])
+     const state = await t.tools.call('room_state', {})
+     expect(state.startsWith('[inbox')).toBe(false)
+   } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+ })

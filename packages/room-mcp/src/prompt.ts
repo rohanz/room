@@ -1,11 +1,25 @@
-import { resolveSessionHost } from './config.js'
+import { execFileSync } from 'node:child_process'
+import { DEFAULT_CLAUDE_CHANNEL, resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
+
+/** Claude host detection alone cannot prove channels are enabled. Never promise a wake-up. */
+export function claudeWakeUnavailable(dir: string, host = resolveSessionHost(dir), parentArgs?: string): boolean {
+  if (host !== 'claude') return false
+  if (parentArgs === undefined) {
+    try { parentArgs = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() }
+    catch { /* unknown: warn conservatively */ }
+  }
+  const channel = process.env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL
+  const admitted = [...(parentArgs ?? '').matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)]
+  if (channel && admitted.some(m => m[1].split(',').includes(channel))) return false
+  return true
+}
 
 const wakeNoted = new WeakSet<Session>()
 
 /** A neutral reminder on join, once per session; an explicit opt-out stays quiet. */
 export function claudeWakeNote(session: Session): string {
-  if (process.env.ROOM_CLAUDE_CHANNEL === '' || wakeNoted.has(session) || resolveSessionHost(session.dir) !== 'claude') return ''
+  if (process.env.ROOM_CLAUDE_CHANNEL === '' || wakeNoted.has(session) || !claudeWakeUnavailable(session.dir)) return ''
   wakeNoted.add(session)
   return 'Wake-ups on Claude Code need the session started with claude-room (or the channels flag).'
 }

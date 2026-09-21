@@ -1,11 +1,12 @@
+import { createWriteIntentReader } from '../hooks-bridge.js'
 import { ConflictWatcher } from '../conflicts.js'
 import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
-import { claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type ReleaseMsg } from '@room/shared'
+import { claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_claim', annotations: RW, description: 'Claim what you are about to edit, saying what you will do: either a symbol (function/class name; the room resolves its line range) or a line range. Declare renames/signature changes in `plans` so anyone who uses those symbols is told now. Reports overlaps (posting a conflict). Returns claimId.',
+  { name: 'room_claim', annotations: RW, description: 'Claim a directory once with a trailing / (no line range), or claim what you are about to edit: either a symbol (function/class name; the room resolves its line range) or a line range. Declare renames/signature changes in `plans` so anyone who uses those symbols is told now. Reports overlaps (posting a conflict). Returns claimId.',
     inputSchema: { type: 'object', properties: { path: str('repo-relative path'), symbol: str('function/class to claim (preferred over from/to)'), from: int('first line (if no symbol)'), to: int('last line (if no symbol)'), intent: str('what you are about to do'), plans: PLANS }, required: ['path', 'intent'] } },
   { name: 'room_release', annotations: RW, description: 'Release a claim with a summary of what you did. Plans whose symbol is not mentioned in the summary (or in `done`) are reported as not done.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('what changed, one line'), done: strs('symbols from your plans that you completed') }, required: ['claimId'] } }
@@ -21,12 +22,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const p = a.path, intent = a.intent
       const plans = parsePlans(a.plans)
       if (typeof plans === 'string') return plans
-      const t = await liveText(s, p, s.me.name)
+      const directory = p.endsWith('/')
+      if (directory && a.symbol) return 'error: directory claims do not take a symbol'
+      const t = directory ? undefined : await liveText(s, p, s.me.name)
       const isNew = t === undefined || t === null
       const n = isNew ? 1 : lines(t)
       let range: { from: number; to: number }
       const symbol = typeof a.symbol === 'string' && a.symbol.trim() ? a.symbol.trim() : undefined
-      if (symbol) {
+      if (directory) {
+        range = { from: 1, to: Number.MAX_SAFE_INTEGER }
+      } else if (symbol) {
         const r0 = isNew ? undefined : symbolRange(p, t!, symbol)
         if (!r0) return `error: could not find a definition of ${symbol} in ${p}; pass from/to instead`
         range = r0
@@ -34,9 +39,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!Number.isFinite(Number(a.from)) || !Number.isFinite(Number(a.to))) return 'error: pass symbol, or from and to'
         range = { from: Number(a.from), to: Number(a.to) }
       }
-      const r = clampRange(range.from, range.to, n)
+      const r = directory ? range : clampRange(range.from, range.to, n)
       const intentFull = symbol ? `${symbol}: ${intent}` : intent
-      const overl = s.room.claimsFor(p).filter(c => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }))
+      const overl = s.room.openClaims().filter(c => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }))
       let claim!: Claim
       let msg!: ClaimMsg
       s.room.doc.transact(() => {
@@ -50,15 +55,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       s.room.setClaimMsg(claim.id, msg.id)
       s.daemon.touch()
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} — ${intent}` })
-      const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew ? ' (new file)' : ''}`]
+      const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew && !directory ? ' (new file)' : ''}`]
       // A new plan on a symbol I already have an open plan for supersedes the old one.
+      let superseded = 0
       for (const pl of plans) {
         for (const other of mine(s)) {
           if (other.id === claim.id) continue
           const old = other.plans?.find(x => x.symbol === pl.symbol && (x.kind !== pl.kind || x.detail !== pl.detail))
-          if (old) out.push(...planChanged(s, other, old, 'superseded', `replaced by ${formatPlans([pl])} in claim ${claim.id}`, pl))
+          if (old) {
+            s.room.claims.set(other.id, { ...other, plans: other.plans!.filter(x => x !== old) })
+            superseded++
+          }
         }
       }
+      if (superseded) s.room.post<NoteMsg>(s.me, { type: 'note', priority: 'fyi', text: `${s.me.name} superseded ${superseded} plan(s)` })
       for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`)
       if (s.graph && plans.length) {
         await s.graph.ready
@@ -102,23 +112,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   return handlers
 }
 
-/** Finish only this task's claims; the task summary belongs solely in the done message. */
-export function releaseClaimsOnDone(s: Session, keep?: (claim: Claim) => boolean): number {
-  const released = s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === s.me.kind && !keep?.(c))
+/** Quietly end an owner's selected claims; collection can retain the scope for ongoing work. */
+export function releaseClaimsOnDone(s: Session, keep?: (claim: Claim) => boolean, name = s.me.name, clearScope = true): number {
+  const released = s.room.openClaims().filter(c => c.by === name && c.byKind !== 'human' && !keep?.(c))
   s.room.doc.transact(() => {
-    for (const c of released) {
-      s.room.removeClaim(c.id)
-      s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: 'released on done', ...(c.plans?.length ? { unfulfilled: c.plans } : {}) })
-      for (const plan of c.plans ?? []) postPlanChange(s, c, plan, 'cancelled', '', undefined, 'fyi')
-    }
-    s.room.clearScope(s.me.name)
+    for (const c of released) s.room.removeClaim(c.id)
+    const plans = released.reduce((n, c) => n + (c.plans?.length ?? 0), 0)
+    if (released.length) s.room.post<NoteMsg>(s.me, { type: 'note', priority: 'fyi', text: `${name} released ${released.length} claim(s)${plans ? `; ended ${plans} plan(s)` : ''}` })
+    if (clearScope) s.room.clearScope(name)
   }, s.me)
   return released.length
 }
 
 function postPlanChange(s: Session, c: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan, priority?: PlanMsg['priority']): string[] {
   const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter(p => p !== s.me.name)
-  const base = { type: 'plan' as const, status, claimId: c.id, path: c.path, plan, text, ...(replacedBy ? { replacedBy } : {}), ...(priority ? { priority } : {}) }
+  const base = { type: 'plan' as const, status, claimId: c.id, path: c.path, plan, text, ...(replacedBy ? { replacedBy } : {}), priority: priority ?? 'interrupt' }
   const orig = s.room.post<PlanMsg>(s.me, base)
   for (const p of deps) s.room.post<PlanMsg>(s.me, { ...base, to: p, copyOf: orig.id })
   return deps.length ? [`plan ${status}: ${formatPlans([plan])} — told ${deps.map(d => `${d}'s agent`).join(', ')} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} — nobody had been shown it`]
@@ -165,6 +173,12 @@ export function install(state: HandlerState): void {
   const startConflictWatcher = (s: import('../session.js').Session): ConflictWatcher => {
     const watcher = new ConflictWatcher({
       room: s.room, me: s.me, log, debounceMs: ctx.conflictDebounceMs,
+      writeIntent: createWriteIntentReader(s.dir),
+      coLocated: person => {
+        const states = [...s.awareness.getStates().values()]
+        const mine = s.awareness.getLocalState()?.watchedDirectory
+        return !!mine && states.some(state => state?.user?.name === person && state.watchedDirectory === mine)
+      },
       liveText: (p, person) => liveText(s, p, person),
       baseText: (sha, p) => gitShow(s.dir, sha, p),
       baseFor: person => baseFor(s, person),

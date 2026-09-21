@@ -11,7 +11,7 @@ import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
-import { Rooms, workerId, workerIdBase } from '../src/registry.js'
+import { Rooms, workerId, workerIdBase, finishWorkerProcess } from '../src/registry.js'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 
@@ -186,5 +186,39 @@ describe('worker identity', () => {
     expect(a.workers.get('money')).toMatchObject({ id: second.id, status: 'running', task: 'second' })
     exits[1](0)
     expect(a.workers.get('money')).toMatchObject({ id: second.id, status: 'failed' })
+  })
+})
+
+describe('worker process exits', () => {
+  it('cleans a dead worker after lead restart and posts exactly one interrupt', async () => {
+    const r = registry(), s = fakeSession(pair().a, lead)
+    r.rooms.add(s, 'primary')
+    const w = { id: 'dead#1', tag: 'dead', name: 'rohanz+dead', host: 'codex' as const, task: 'test', dir, branch: 'room/dead', pid: -1, startedAt: Date.now() - 100_000, status: 'running' as const, lead: 'rohanz' }
+    s.room.setWorker(w)
+    s.room.setScope({ by: w.name, byKind: 'agent', area: 'dead', summary: 'test', paths: ['app.py'] })
+    s.room.addClaim({ path: 'app.py', from: 1, to: 1, by: w.name, byKind: 'agent', intent: 'work', plans: [{ kind: 'add', symbol: 'newFunction' }] })
+    s.room.addClaim({ path: 'other.py', from: 1, to: 1, by: lead.name, byKind: 'agent', intent: 'lead work' })
+    await r.rooms.retireWorkers(s)
+    await r.rooms.retireWorkers(s)
+    expect(s.room.workers.get('dead')).toMatchObject({ status: 'failed', exitCode: -1 })
+    expect(s.room.openClaims().map(c => c.by)).toEqual([lead.name])
+    expect(s.room.scope(w.name)).toBeUndefined()
+    expect(s.room.messages().filter(m => m.priority === 'interrupt')).toMatchObject([{ type: 'note', to: lead.name }])
+    expect(s.room.messages().filter(m => m.type === 'done')).toEqual([])
+    r.rooms.remove(s)
+  })
+
+  it.each([
+    ['running', 0, 120_000, true], ['done', 1, 120_000, true],
+    ['done', 0, 89_999, true], ['done', 0, 90_000, false],
+  ] as const)('status %s exit %i after %i ms: interrupt=%s', async (status, code, elapsed, warn) => {
+    const s = fakeSession(pair().a, lead)
+    s.room.setWorker({ id: 'exit#1', tag: 'exit', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/exit', pid: -1, startedAt: 1000, status, lead: lead.name, ...(status === 'done' ? { summary: 'finished' } : {}) })
+    await finishWorkerProcess(s, s.room.workers.get('exit')!, code, 1000 + elapsed)
+    // Process error + exit callbacks and repeated discovery must not duplicate the report.
+    await finishWorkerProcess(s, s.room.workers.get('exit')!, code, 1000 + elapsed)
+    expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(warn ? 1 : 0)
+    expect(s.room.workers.get('exit')).toMatchObject({ status: status === 'done' ? 'done' : 'failed', exitCode: code })
+    if (status === 'done') expect(s.room.workers.get('exit')?.summary).toBe('finished')
   })
 })

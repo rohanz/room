@@ -2,7 +2,7 @@
  * Keeps a SymbolGraph current for one room: base commit + everyone's overlays.
  * For each path the indexed text is: my overlay, else another person's overlay, else base.
  */
-import { observedContractChanges, SymbolGraph, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
+import { observedContractChanges, SymbolGraph, type FileSymbols, type GraphSnapshot, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { extractSymbols } from './pyextract.js'
 
@@ -29,11 +29,15 @@ export class GraphIndex {
   private phase: 'ready' | 'indexing' | 'error' = 'indexing'
   private base = ''
   private stopped = false
+  private reused?: GraphSnapshot
+  private initialStarted = false
+  private jitterTimer?: ReturnType<typeof setTimeout>
+  private endJitter?: () => void
   private unobserve: (() => void)[] = []
   /** Resolves when the initial build is done. */
   ready: Promise<void> = Promise.resolve()
 
-  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number } = {}) {
+  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number; present?: () => string[] } = {}) {
     this.graph = new SymbolGraph(path => this.cache.get(path))
   }
 
@@ -41,25 +45,68 @@ export class GraphIndex {
     for (const person of new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) {
       for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) this.previousChanged.add(p)
     }
-    this.ready = this.rebuild()
+    this.ready = this.initialBuild()
     const onOverlays = () => { if (!this.stopped) this.refreshChanged() }
     this.room.overlays.observeDeep(onOverlays)
     this.room.deleted.observeDeep(onOverlays)
     this.unobserve.push(() => { this.room.overlays.unobserveDeep(onOverlays); this.room.deleted.unobserveDeep(onOverlays) })
-    const onMeta = () => { if (!this.stopped && this.room.meta.base && this.room.meta.base !== this.base) this.ready = this.rebuild() }
+    const onMeta = () => { if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.ready = this.rebuild() }
     this.room.metaMap.observe(onMeta)
     this.unobserve.push(() => this.room.metaMap.unobserve(onMeta))
   }
 
-  stop(): void { this.stopped = true; clearTimeout(this.publishing); for (const u of this.unobserve) u(); this.unobserve = [] }
+  stop(): void { this.stopped = true; clearTimeout(this.jitterTimer); this.endJitter?.(); clearTimeout(this.publishing); for (const u of this.unobserve) u(); this.unobserve = [] }
+
+  private async initialBuild(): Promise<void> {
+    await new Promise<void>(resolve => {
+      this.endJitter = resolve
+      this.jitterTimer = setTimeout(resolve, Math.floor((this.opts.random ?? Math.random)() * 4001))
+    })
+    this.initialStarted = true
+    if (!this.stopped) await this.rebuild()
+  }
+
+  private reusableSnapshot(): GraphSnapshot | undefined {
+    const now = Date.now(), present = new Set(this.opts.present?.() ?? [])
+    return [...this.room.graphs.entries()].filter(([person, snapshot]) => person !== this.me && present.has(person)
+      && snapshot.status === 'ready' && snapshot.base === this.base && now >= snapshot.at && now - snapshot.at < 60_000)
+      .sort((a, b) => b[1].at - a[1].at)[0]?.[1]
+  }
+
+  private reuse(snapshot: GraphSnapshot): void {
+    this.cache.clear()
+    for (const p of snapshot.paths) this.cache.set(p, { defs: [], refs: [] })
+    for (const edge of snapshot.edges) {
+      if (!this.cache.has(edge.source)) this.cache.set(edge.source, { defs: [], refs: [] })
+      if (!this.cache.has(edge.target)) this.cache.set(edge.target, { defs: [], refs: [] })
+      this.cache.get(edge.source)!.defs.push(...edge.symbols)
+      this.cache.get(edge.target)!.refs.push(...edge.symbols)
+    }
+    for (const p of this.cache.keys()) this.graph.set(p, '')
+    this.truncated = snapshot.truncated
+    this.reused = snapshot
+  }
 
   private async rebuild(): Promise<void> {
     const generation = ++this.generation
     this.phase = 'indexing'
     this.base = this.room.meta.base ?? ''
     this.observedByPath.clear()
+    for (const p of this.cache.keys()) this.graph.remove(p)
+    this.cache.clear()
+    this.reused = undefined
     if (!this.base) return
     this.publish('indexing')
+    const shared = this.reusableSnapshot()
+    if (shared) {
+      this.reuse(shared)
+      await Promise.all(this.room.changedPaths(this.me).filter(p => SOURCE_EXT.test(p)).map(p => this.refresh(p)))
+      if (generation !== this.generation || this.stopped) return
+      this.phase = 'ready'
+      this.publish('ready')
+      this.log(`graph: reused ready snapshot (${shared.paths.length} files)`)
+      return
+    }
     let paths: string[] = []
     try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', this.base])).split('\n').filter(p => SOURCE_EXT.test(p)) }
     catch (e) { if (generation === this.generation) { this.phase = 'error'; this.publish('error') }; this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`); return }
@@ -81,8 +128,9 @@ export class GraphIndex {
   }
 
   private refreshChanged(): void {
+    if (!this.base) return
     const changed = new Set<string>()
-    for (const person of new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) changed.add(p)
+    for (const person of (this.reused ? [this.me] : new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()]))) for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) changed.add(p)
     for (const p of new Set([...changed, ...this.previousChanged])) void this.refresh(p)
     this.previousChanged = changed
   }
@@ -104,15 +152,17 @@ export class GraphIndex {
     const p = (async () => {
       while (!this.stopped) {
         const revision = this.revisions.get(path), generation = this.generation
-        const text = await this.textFor(path)
-        const symbols = text === undefined || text.length > MAX_BYTES ? undefined : await extractSymbols(path, text)
+        const text = this.reused ? undefined : await this.textFor(path)
+        const symbols = this.reused || text === undefined || text.length > MAX_BYTES ? undefined : await extractSymbols(path, text)
         const mine = this.room.text(path, this.me)
         const mineDeleted = this.room.deleted.get(this.me)?.has(path) ?? false
         const baseText = mine !== undefined || mineDeleted ? await gitShow(this.dir, this.base, path) : undefined
         if (this.stopped) return
         if (generation !== this.generation || revision !== this.revisions.get(path)) continue
-        if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
-        else { this.cache.set(path, symbols); this.graph.set(path, text) }
+        if (!this.reused) {
+          if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
+          else { this.cache.set(path, symbols); this.graph.set(path, text) }
+        }
         if (mine !== undefined || mineDeleted) {
           const changes = observedContractChanges(baseText ?? '', mineDeleted ? '' : mine ?? '', path).map(change => ({ path, ...change }))
           if (changes.length) this.observedByPath.set(path, changes)
@@ -150,7 +200,7 @@ export class GraphIndex {
       }
       edges.get(key)!.symbols.push(dep.symbol)
     }
-    let edgeList = [...edges.values()]
+    let edgeList = this.reused?.edges ?? [...edges.values()]
     const allObserved = [...this.observedByPath.values()].flat().sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
     let observedTruncated = allObserved.length > MAX_OBSERVED
     const observed = allObserved.slice(0, MAX_OBSERVED)

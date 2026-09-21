@@ -127,6 +127,8 @@ export interface Worker {
   host: 'claude' | 'codex'
   model?: string
   effort?: string
+  /** Repo-relative inputs linked from the lead's clone; read-only by worker instruction. */
+  link?: string[]
   task: string
   dir: string
   branch: string
@@ -181,6 +183,10 @@ export interface Cursor {
 
 /** Awareness state published by every client. */
 export interface Presence {
+  /** SHA256 of the watched directory realpath; never the path itself. */
+  watchedDirectory?: string
+  /** Co-located participant publishing this directory; this participant publishes no files. */
+  publishUnder?: string
   host?: string
   model?: string
   effort?: string

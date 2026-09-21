@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -29,7 +29,7 @@ describe('GraphIndex', () => {
   it('indexes base source files, prefers overlays, and tracks overlay edits', async () => {
     const room = new RoomDoc()
     room.setMeta({ base })
-    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     gi.start(); await gi.ready
     expect(gi.graph.size).toBe(2)
     expect(gi.graph.usersOf('validate_token')).toEqual(['session.py'])
@@ -139,5 +139,73 @@ describe('GraphIndex snapshot discipline', () => {
     expect(room.graphs.get('Rohan')!.at - firstAt).toBeGreaterThanOrEqual(400)
     expect(room.graphs.get('Rohan')!.edges).toEqual([])
     gi.stop()
+  })
+})
+
+describe('shared graph startup', () => {
+  it('jitters startup with an injectable random source and cancels cleanly', async () => {
+    vi.useFakeTimers()
+    const room = new RoomDoc(); room.setMeta({ base })
+    const gi = new GraphIndex(room, 'New', dir, undefined, { random: () => 0.5 })
+    try {
+      gi.start()
+      await vi.advanceTimersByTimeAsync(1999)
+      expect(room.graphs.has('New')).toBe(false)
+      gi.stop(); await gi.ready
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(room.graphs.has('New')).toBe(false)
+    } finally { gi.stop(); room.doc.destroy(); vi.useRealTimers() }
+  })
+
+  it('builds when the room gets its first base after the startup wait', async () => {
+    const room = new RoomDoc()
+    const gi = new GraphIndex(room, 'New', dir, undefined, { random: () => 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      expect(gi.graph.size).toBe(0)
+      room.setMeta({ base }); await gi.whenIdle()
+      expect(gi.graph.has('utils.py')).toBe(true)
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it('reuses a present peer snapshot and computes only its own contract changes', async () => {
+    const room = new RoomDoc(); room.setMeta({ base })
+    room.graphs.set('Peer', {
+      version: 1, base, at: Date.now(), status: 'ready', truncated: false,
+      paths: ['utils.py', 'session.py'],
+      edges: [{ source: 'utils.py', target: 'session.py', symbols: ['validate_token'] }],
+      observed: [{ path: 'utils.py', symbol: 'other', kind: 'add', detail: 'peer only' }],
+    })
+    room.setOverlay('New', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
+    const logs: string[] = []
+    const gi = new GraphIndex(room, 'New', dir, s => logs.push(s), { random: () => 0, minPublishMs: 0, present: () => ['Peer'] })
+    try {
+      gi.start(); await gi.whenIdle()
+      expect(logs).toEqual(['graph: reused ready snapshot (2 files)'])
+      expect(gi.graph.usersOf('validate_token')).toEqual(['session.py'])
+      expect(room.graphs.get('New')?.edges).toEqual(room.graphs.get('Peer')?.edges)
+      expect(room.graphs.get('New')?.observed?.map(c => c.symbol)).toEqual(['validate_token'])
+      room.clearOverlay('New', 'utils.py')
+      await gi.whenIdle()
+      await eventually(() => room.graphs.get('New')?.observed?.length === 0)
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it.each(['offline', 'stale', 'wrong base', 'indexing'])('does not reuse a %s snapshot', async reason => {
+    const room = new RoomDoc(); room.setMeta({ base })
+    room.graphs.set('Peer', {
+      version: 1, base: reason === 'wrong base' ? 'old' : base,
+      at: Date.now() - (reason === 'stale' ? 60_001 : 0),
+      status: reason === 'indexing' ? 'indexing' : 'ready', truncated: false,
+      paths: ['fake.py'], edges: [],
+    })
+    const logs: string[] = []
+    const gi = new GraphIndex(room, 'New', dir, s => logs.push(s), { random: () => 0, present: () => reason === 'offline' ? [] : ['Peer'] })
+    try {
+      gi.start(); await gi.whenIdle()
+      expect(gi.graph.has('fake.py')).toBe(false)
+      expect(gi.graph.has('utils.py')).toBe(true)
+      expect(logs.some(s => s.includes('reused'))).toBe(false)
+    } finally { gi.stop(); room.doc.destroy() }
   })
 })

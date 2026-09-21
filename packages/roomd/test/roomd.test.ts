@@ -7,8 +7,8 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
-import { startRoomd, RoomdError, clampShare, parseShare, type Roomd, type RoomdOptions } from '../src/index.js'
-import { normalizeGitOrigin } from '../src/git.js'
+import { startRoomd, defaultIgnoredPath, RoomdError, clampShare, parseShare, type Roomd, type RoomdOptions } from '../src/index.js'
+import { normalizeGitOrigin, gitIgnored } from '../src/git.js'
 
 vi.setConfig({ testTimeout: 30_000 })
 // Use real chokidar polling consistently: native events can be lost in sandboxes.
@@ -50,6 +50,7 @@ async function cloneRepo(src: string): Promise<string> {
  */
 class MemoryHub {
   private rooms = new Map<string, Set<Y.Doc>>()
+  private presence = new Map<string, Map<number, Record<string, unknown>>>()
 
   connect(key: string, doc: Y.Doc): WebsocketProvider {
     const peers = this.rooms.get(key) ?? new Set<Y.Doc>()
@@ -63,10 +64,13 @@ class MemoryHub {
     const rooms = this.rooms
 
     let localState: Record<string, unknown> | null = null
+    const states = this.presence.get(key) ?? new Map<number, Record<string, unknown>>()
+    this.presence.set(key, states)
     const provider = {
       synced: true,
       awareness: {
-        setLocalState(state: Record<string, unknown> | null) { localState = state },
+        setLocalState(state: Record<string, unknown> | null) { localState = state; if (state) states.set(doc.clientID, state); else states.delete(doc.clientID) },
+        getStates() { return states },
         getLocalState() { return localState },
       },
       on() { return provider },
@@ -126,22 +130,88 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.provider.awareness.getLocalState()).toMatchObject({ host: 'codex', model: 'gpt-6-astra', effort: 'medium' })
   })
 
-  it('a committed symlink is not reported as changed, and a retargeted one is', async () => {
-    const dir = await makeRepo({ 'AGENTS.md': '# rules\n', 'app.py': 'x = 1\n' })
-    await fsp.symlink('AGENTS.md', path.join(dir, 'CLAUDE.md'))
-    execFileSync('git', ['-C', dir, 'add', 'CLAUDE.md'], { stdio: 'pipe' })
-    execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'link'], { stdio: 'pipe' })
+  it('never traverses or publishes symlinks, including linked ignored inputs', async () => {
+    const dir = await makeRepo({ 'app.py': 'x = 1\n' })
+    const outside = await makeRepo({ '.gitignore': 'data/\n', 'readme': 'inputs' })
+    await fsp.mkdir(path.join(outside, 'data'))
+    await fsp.writeFile(path.join(outside, 'data', 'results.csv'), 'private\n')
+    await fsp.symlink(path.join(outside, 'data'), path.join(dir, 'data'))
+    await fsp.symlink('app.py', path.join(dir, 'alias.py'))
+    expect(await gitIgnored(dir, 'data/results.csv')).toBe(true)
     const daemon = await start({ room: room(), dir, name: 'Ann' })
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
     await waitFor(() => daemon.roomDoc.text('app.py', 'Ann') === 'x = 2\n')
     expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
-    await fsp.unlink(path.join(dir, 'CLAUDE.md'))
-    // Let polling observe the unlink before recreating the same path.
-    await waitFor(() => daemon.roomDoc.deletedFor('Ann').has('CLAUDE.md'))
-    await fsp.symlink('app.py', path.join(dir, 'CLAUDE.md'))
-    await waitFor(() => daemon.roomDoc.overlayText('Ann', 'CLAUDE.md')?.toString() === 'app.py'
-      && !daemon.roomDoc.deletedFor('Ann').has('CLAUDE.md'))
-    expect(daemon.roomDoc.overlayText('Ann', 'CLAUDE.md')?.toString()).toBe('app.py')
+    expect(daemon.skipped().ignore).toContain('data')
+    expect(daemon.skipped().ignore).toContain('alias.py')
+  })
+
+  it('ignores bulky and temporary names without reading file contents and logs once', async () => {
+    const names = ['.DS_Store', 'a.npy', 'a.npz', 'a.parquet', 'a.pkl', 'a.pt', 'a.bin', 'a.sqlite', 'a.zip', 'a.gz', 'a.tmp', 'a~', '.a.tmp-123', '.tmp.result']
+    for (const name of names) expect(defaultIgnoredPath('nested/' + name), name).toBe(true)
+    expect(defaultIgnoredPath('.env.example')).toBe(false)
+    const dir = await makeRepo({ 'app.py': 'x = 1\n', 'a.npy': 'data' })
+    const logs: string[] = []
+    const reader = vi.spyOn(fs, 'readFileSync')
+    try {
+      const daemon = await start({ room: room(), dir, name: 'Ann', log: line => logs.push(line) })
+      await daemon.setShare('full')
+      expect(reader.mock.calls.some(([p]) => String(p) === path.join(dir, 'a.npy'))).toBe(false)
+      expect(logs.filter(line => line.startsWith('skip a.npy:'))).toHaveLength(1)
+    } finally { reader.mockRestore() }
+  })
+
+  it('publishes only once for a shared real directory and logs its stop reason once', async () => {
+    const dir = await makeRepo({ 'app.py': 'x = 1\n' }), url = room()
+    const primary = await start({ room: url, dir, name: 'Zoe' })
+    const logs: string[] = []
+    const secondary = await start({ room: url, dir, name: 'Amy', log: line => logs.push(line) })
+    const state = secondary.provider.awareness.getLocalState()!
+    expect(state.watchedDirectory).toMatch(/^[a-f0-9]{64}$/)
+    expect(state.watchedDirectory).toBe(primary.provider.awareness.getLocalState()!.watchedDirectory)
+    expect(state.publishUnder).toBe('Zoe')
+    await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
+    await waitFor(() => primary.roomDoc.text('app.py', 'Zoe') === 'x = 2\n')
+    await secondary.setShare('full')
+    expect(secondary.roomDoc.changedPaths('Amy')).toEqual([])
+    await primary.stop('handoff')
+    await waitFor(() => secondary.provider.awareness.getLocalState()!.publishUnder === undefined
+      && secondary.roomDoc.text('app.py', 'Amy') === 'x = 2\n')
+    await secondary.stop('test complete'); await secondary.stop('again')
+    expect(logs.filter(line => line.startsWith('stopped:'))).toEqual(['stopped: test complete'])
+  })
+
+  it('checks HEAD before publishing a watcher batch after a commit', async () => {
+    const dir = await makeRepo({ 'app.py': 'x = 1\n' })
+    const logs: string[] = []
+    const daemon = await start({ room: room(), dir, name: 'Ann', debounceMs: 300, basePollMs: 60_000, log: line => logs.push(line) })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
+    sh(dir, ['add', '.']); sh(dir, ['commit', '-qm', 'merge result'])
+    await waitFor(() => daemon.base === sh(dir, ['rev-parse', 'HEAD']))
+    expect(daemon.roomDoc.changedPaths('Ann')).toEqual([])
+    expect(logs.some(line => line === 'published app.py overlay')).toBe(false)
+  })
+
+  it('drops an in-flight old-base publish when HEAD moves during the read', async () => {
+    const dir = await makeRepo({ 'app.py': 'x = 1\n' })
+    let armed = false, parked = false
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const logs: string[] = []
+    const daemon = await start({ room: room(), dir, name: 'Ann', basePollMs: 60_000,
+      log: line => logs.push(line), beforePublishWrite: async p => {
+        if (armed && p === 'app.py' && !parked) { parked = true; await held }
+      } })
+    armed = true
+    try {
+      await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
+      await waitFor(() => parked)
+      sh(dir, ['add', '.']); sh(dir, ['commit', '-qm', 'committed during publish'])
+    } finally { release() }
+    await waitFor(() => daemon.base === sh(dir, ['rev-parse', 'HEAD']))
+    await daemon.settle()
+    expect(daemon.roomDoc.changedPaths('Ann')).toEqual([])
+    expect(logs.some(line => line === 'published app.py overlay')).toBe(false)
   })
 
   it('skips files matched by .roomignore and re-evaluates when it changes', async () => {
@@ -241,7 +311,7 @@ describe('roomd v2 push-only overlays', () => {
   it('drops stale overlay and deleted paths when the same person restarts on a clean clone', async () => {
     const dir = await makeRepo({ 'keep.py': 'base\n' })
     const roomUrl = room()
-    const peer = await start({ room: roomUrl, dir, name: 'Peer' })
+    const peer = await start({ room: roomUrl, dir: await cloneRepo(dir), name: 'Peer' })
     peer.roomDoc.setOverlay('Alice', 'ghost.py', 'stale\n')
     peer.roomDoc.markDeleted('Alice', 'phantom.py')
     const logs: string[] = []
@@ -261,7 +331,7 @@ describe('roomd v2 push-only overlays', () => {
   it('keeps a persisted overlay for a base file deleted on disk reported as deleted', async () => {
     const dir = await makeRepo({ 'deleted.py': 'base\n' })
     const roomUrl = room()
-    const peer = await start({ room: roomUrl, dir, name: 'Peer' })
+    const peer = await start({ room: roomUrl, dir: await cloneRepo(dir), name: 'Peer' })
     peer.roomDoc.setOverlay('Alice', 'deleted.py', 'old edit\n')
     await fsp.unlink(path.join(dir, 'deleted.py'))
 

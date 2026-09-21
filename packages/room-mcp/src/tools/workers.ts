@@ -1,5 +1,6 @@
+import { claudeWakeUnavailable } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidIsOurWorker, signalWorker, workerPriority } from '../workers.js'
+import { pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks } from '../workers.js'
 import { releaseClaimsOnDone } from './claims.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -7,18 +8,18 @@ import path from 'node:path'
 import { type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
-import { workerId, workerIdBase } from '../registry.js'
+import { workerId, workerIdBase, finishWorkerProcess } from '../registry.js'
 import { LOCAL, type Session } from '../session.js'
-import { workerBudget, DEFAULT_MAX_WORKERS, defaultSpawner, prepareWorktree, validTag, workerCommand, workerPrompt, type SpawnedProcess, type WorkerHost } from '../workers.js'
+import { workerBudget, defaultSpawner, prepareWorktree, validTag, workerCommand, workerPrompt, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
-import { SHARE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. Call after your final room_preview_merge, before reporting to your human. Stay in the room for questions.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'also post the branch ledger as a comment on the open PR whose head is this branch (room_pr_note), if there is one' } }, required: ['summary'] } },
-  { name: 'room_spawn', annotations: RW, description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Math-library threads are capped per worker (override with threads). Max running workers per lead: ROOM_MAX_WORKERS (8). Prefer this over built-in subagents for parallel edits: handing part of an editing task to another agent, including "get codex to do X" (host=codex), means a room worker, so it gets its own worktree and identity.',
-    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), effort: str('explicit worker effort; passed via Claude --effort, informational only for Codex'), threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims).' } }, required: ['tag', 'task'] } },
+  { name: 'room_spawn', annotations: RW, description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done. Use for independent subtasks; keep answering its questions; merge its branch when it is done. Math-library threads are capped per worker (override with threads). Max running workers per lead: ROOM_MAX_WORKERS (8). Prefer this over built-in subagents for parallel edits: handing part of an editing task to another agent, including "get codex to do X" (host=codex), means a room worker, so it gets its own worktree and identity.',
+    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort; passed to Codex, included in the prompt for Claude' }, link: strs('repo-relative read-only inputs to symlink from this clone; defaults to .roomlinks, [] disables defaults'), threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims).' } }, required: ['tag', 'task'] } },
   { name: 'room_dismiss', annotations: RW, description: 'Stop a worker you spawned (SIGTERM to its process). Its worktree and branch are kept so you can inspect or merge what it did.',
     inputSchema: { type: 'object', properties: { tag: str('the worker tag') }, required: ['tag'] } }
 ]
@@ -63,8 +64,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_spawn(a) {
       const lead = S()
-      if (a.effort !== undefined && typeof a.effort !== 'string') return 'error: effort must be a string'
-      const effort = typeof a.effort === 'string' ? a.effort.replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80) || undefined : undefined
+      if (a.effort !== undefined && !(WORKER_EFFORTS as readonly unknown[]).includes(a.effort)) return `error: effort must be ${WORKER_EFFORTS.join('|')}`
+      const effort = a.effort as string | undefined
       if (a.threads !== undefined && (typeof a.threads !== 'number' || !Number.isSafeInteger(a.threads) || a.threads < 1)) return 'error: threads must be an integer >= 1'
       if (a.where !== undefined && a.where !== 'here' && a.where !== 'local') return 'error: where must be here or local'
       let s = lead
@@ -110,8 +111,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const owner = s.me.owner ?? s.me.name
         const name = `${owner}+${tag}`
-        const prompt = workerPrompt(s.me.name, tag, task)
-        const { cmd, args } = workerCommand(host, model, prompt, config.claudeChannel, effort)
         // The worker's room variables are set here in full; defaultSpawner strips the lead's own ROOM_* first
         // (ROOM_URL/ROOM_NAME/ROOM_DIR from a runner would otherwise send it into the lead's room as the lead).
         // The server URL is passed without its query: a shared token travels only as ROOM_TOKEN.
@@ -137,45 +136,38 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           ...(s.token && !s.local ? { ROOM_TOKEN: s.token } : {}),
           ROOM_LOG_FILE: path.join(s.dir, '.room', 'workers', `${tag}.mcp.log`),
         }
+        let link: string[]
+        try { link = prepareWorkerLinks(lead.dir, dir, a.link) }
+        catch (e) { return `error: could not link inputs: ${e instanceof Error ? e.message : String(e)}` }
+        const scheduling = workerPriority({ cmd: host, args: [] })
+        const prompt = workerPrompt(s.me.name, tag, task, { threads, memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort, link })
+        const { cmd, args } = workerCommand(host, model, prompt, config.claudeChannel, effort)
         const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
-        const priority = workerPriority({ cmd, args })
+        const priority = { cmd: scheduling.cmd, args: [...scheduling.args, ...args], nice: scheduling.nice }
         let proc: SpawnedProcess
         try { proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args, cwd: dir, env, logFile }) }
         catch (e) { return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}` }
         rooms.setHandle(s, id, proc)
-        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), task, dir, branch, ...(base ? { base } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
+        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(link.length ? { link } : {}), task, dir, branch, ...(base ? { base } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
         s.room.setWorker(w)
         // Callbacks resolve the record by this spawn's id: a reused tag has a new id, so an older process
         // (or another lead's record under the same tag) is simply not found and touches nothing.
-        proc.onError?.(err => {
+        const exited = (code: number | null, error?: string) => {
           rooms.dropHandle(s, id, proc)
           const cur = s.room.workerById(id)
           if (!cur) return
-          if (cur.status === 'running') s.room.updateWorker(tag, { status: 'failed', exitCode: -1, summary: `could not start ${cmd}: ${err.message}` }, id)
-          s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` })
-          void rooms.retireWorkers(s).catch(e => state.log(`worker retirement: ${e}`))
-        })
-        proc.onExit(code => {
-          rooms.dropHandle(s, id, proc) // this process is gone whatever record the tag holds now
-          const cur = s.room.workerById(id)
-          if (!cur) return
-          if (cur.status !== 'running') {
-            s.room.updateWorker(tag, { exitCode: code ?? -1, finishedAt: cur.finishedAt ?? now() }, id)
-            void rooms.retireWorkers(s).catch(e => state.log(`worker retirement: ${e}`))
-            return
-          }
-          const summary = cur.summary ?? (code === 0 ? 'process exited without room_done' : `process exited with code ${code}`)
-          s.room.updateWorker(tag, { status: 'failed', exitCode: code ?? -1, summary, finishedAt: now() }, id)
-          s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? '' : `; see ${logFile}`}` })
-          // An exit without room_done still ends the lead's wait: post the done message the worker never sent, as the worker.
-          s.room.post<DoneMsg>({ name, kind: 'agent', owner, label: tag }, { type: 'done', tag, summary: `${summary} (exit ${code})`, changed: s.room.changedPaths(name), to: s.me.name, priority: 'notify' })
-          void rooms.retireWorkers(s).catch(e => state.log(`worker retirement: ${e}`))
-        })
+          void finishWorkerProcess(s, cur, code, now(), error)
+            .then(() => rooms.retireWorkers(s))
+            .catch(e => state.log(`worker exit: ${e}`))
+        }
+        proc.onError?.(err => exited(-1, `could not start ${cmd}: ${err.message}`))
+        proc.onExit(code => exited(code))
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
-        out.push(`budget: ${threads} threads, ~${budget.memGb} GB (machine: ${cores} cores, ${Math.floor(memBytes / 1024 ** 3)} GB; ${count + 1} workers running) · priority ${priority.nice ? `nice ${priority.nice}` : 'normal'}. Put this in the task for compute-heavy work and stagger heavy jobs.`)
+        if (claudeWakeUnavailable(lead.dir)) out.unshift('Lead wake-ups are not confirmed for this Claude session; block on room_wait in a loop to receive worker questions and completions.')
+        out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${priority.nice ? `nice ${priority.nice}` : 'normal'}${effort ? ` · effort ${effort}` : ''}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
-        out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`)
+        out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`)
         if (created && !gitignored(s.dir)) out.push('tip: add .room/ to .gitignore (the room already ignores it; git status will not).')
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         return out.join('\n')
