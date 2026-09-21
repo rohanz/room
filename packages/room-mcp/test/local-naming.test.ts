@@ -56,7 +56,7 @@ it.each(['local', 'team'])('reports the actual %s name and preserves team argume
   if (where === 'local') {
     expect(reply.split('\n')[0]).toMatch(/^joined local\/anything /)
     expect(reply).toContain(encodeURIComponent(encodeURIComponent(name)))
-    expect((await tools.call('room_state', {})).split('\n')[0]).toContain(name)
+    expect((await tools.call('room_state', {})).split('\n')[1]).toContain(name)
   } else {
     expect(reply).toMatch(/^joined anything /)
     expect(reply).not.toContain('ignored room=')
@@ -93,7 +93,7 @@ it('refuses to strand running workers and preserves the session and link', async
   await t.tools.call('room_join', { where: 'local', room: 'custom' })
   const cur = t.current()
   cur.room.setWorker({ tag: 'w', name: 'Ada+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', lead: 'Ada' })
-  expect(await t.tools.call('room_join', { where: 'local' })).toBe('error: 1 worker(s) are running in local/custom; they would be left behind. Wait for them, room_dismiss them, or stay in this room.')
+  expect(await t.tools.call('room_join', { where: 'local' })).toBe('error: 1 worker(s) are running in local/custom; they would be left behind. Wait for them, room_collect(discard=true) them, or stay in this room.')
   expect(t.current()).toBe(cur)
   expect(t.joiner).toHaveBeenCalledTimes(1)
   expect(t.leave).not.toHaveBeenCalled()
@@ -111,7 +111,7 @@ it('moves without workers and reports the new room and its browser link', async 
   expect(t.current()).not.toBe(old)
   expect(reply).toContain('browser view: ' + t.current().browserUrl)
   expect(reply).not.toContain(old.browserUrl)
-  expect((await t.tools.call('room_state', {})).split('\n')[0]).toContain(name)
+  expect((await t.tools.call('room_state', {})).split('\n')[1]).toContain(name)
 })
 
 it('same-room rejoin is a no-op even with a running worker, preserving scope', async () => {
@@ -126,7 +126,7 @@ it('same-room rejoin is a no-op even with a running worker, preserving scope', a
   expect(t.joiner).toHaveBeenCalledTimes(1)
   expect(t.leave).not.toHaveBeenCalled()
   expect(cur.room.scope('Ada')).toEqual(scope)
-  expect(reply.split('\n')[0]).toContain('local/custom')
+  expect(reply.split('\n')[1]).toContain('local/custom')
   expect(reply).toContain('browser view: ' + cur.browserUrl)
   expect(reply).not.toContain('moved from')
   cur.room.workers.clear()

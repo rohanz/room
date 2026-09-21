@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, type Worker } from '@room/shared'
@@ -149,6 +149,9 @@ it('retires clean zero-commit and legacy workers as clean, and archives dismisse
   r.room.setWorker(w)
   await r.rooms.retireWorkers()
   expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'clean' }])
+  // a clean retirement removes the worktree and its branch; the next worker of that tag starts fresh
+  expect(existsSync(w.dir)).toBe(false)
+  await prepareWorktree(dir, 'w')
   const legacy = { ...w, base: undefined, startedAt: 2 }
   writeFileSync(join(w.dir, 'a'), 'two')
   execFileSync('git', ['-C', w.dir, 'commit', '-qam', 'change'])
@@ -156,6 +159,7 @@ it('retires clean zero-commit and legacy workers as clean, and archives dismisse
   r.room.setWorker(legacy)
   await r.rooms.retireWorkers()
   expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('clean')
+  await prepareWorktree(dir, 'w')
   writeFileSync(join(w.dir, 'a'), 'three')
   writeFileSync(join(w.dir, 'new'), 'untracked')
   r.room.setWorker({ ...w, startedAt: 3, dismissedAt: 4 })

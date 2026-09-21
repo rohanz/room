@@ -30,7 +30,7 @@ function fixture() {
   const state = {
     S: () => s, rooms, now: () => clock, myWorkers: (x: Session) => Array.from(x.room.workers.values()),
     workerAlive: vi.fn(() => false), presences: (x: Session) => Array.from(x.awareness.getStates().values()),
-    upgrade: async () => [], setPresence: vi.fn(), forMe: () => false, seen: new Set<string>(),
+    upgrade: async () => [], setPresence: vi.fn(), forMe: () => false, seen: new Set<string>(), scheduleInboxWrite: vi.fn(),
   } as unknown as HandlerState
   close.push(() => sessions.forEach(x => { rooms.remove(x); x.awareness.destroy(); x.room.doc.destroy() }))
   return { s, rooms, state, makeSession, tools: handlers(state) }
@@ -161,8 +161,12 @@ describe('finishing claim notices', () => {
     const { s, state } = fixture()
     install(state)
     const c = s.room.addClaim({ by: 'lead', byKind: 'agent', path: 'a.ts', from: 1, to: 1, intent: 'fix' })
-    state.planChanged(s, c, { kind: 'add', symbol: 'helper' }, 'cancelled', 'changed direction')
-    expect(s.room.messages().at(-1)).toMatchObject({ priority: 'interrupt', text: 'changed direction' })
+    const shown = s.room.post(s.me, { type: 'claim', claimId: c.id, path: c.path, from_line: 1, to_line: 1, intent: 'fix' })
+    s.room.setClaimMsg(c.id, shown.id)
+    s.room.markSeen('kieran', [shown.id])
+    state.planChanged(s, { ...c, msgId: shown.id }, { kind: 'add', symbol: 'helper' }, 'cancelled', 'changed direction')
+    // the feed entry is fyi; whoever was shown the plan gets the interrupt
+    expect(s.room.messages().at(-1)).toMatchObject({ to: 'kieran', priority: 'interrupt', text: 'changed direction' })
   })
 })
 

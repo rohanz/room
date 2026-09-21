@@ -16,7 +16,7 @@
 - L3. Routine waiting, browser-link and renewed commit-permission relays are removed; the sharing disclosure remains mandatory.
 - L4. Replies avoid repeating wait-ending messages and routine guidance; waiting no longer mandates a second state call.
 - L5. State starts with the sharing boundary and returns browser links only with `link: true`; `room_state(path)` replaces `room_who`, and `room_read(diff: true)` replaces `room_diff`.
-- L6. Feed-only message kinds do not wake agents; actionable merge conflicts use an addressed conflict kind that enters the inbox and wakes its recipient.
+- L6. Feed-only message kinds (scope, release, claim, broadcast changed) do not wake agents; a changed notice addressed to someone who uses the renamed symbol still does; actionable merge conflicts use an addressed conflict kind that enters the inbox and wakes its recipient.
 - L7. Tool descriptions and compact schemas have a 9,500-character regression budget (20 tools, 9,023 characters in this batch); shorter instructions and skills explain Room without a tool tour.
 - S1. With coordination expected, missing hook activity produces one actionable notice; startup login and join failures reach the first Room reply instead of only logs.
 - S2. Addressing a participant known to be unwakeable says it will see the message on its next turn.

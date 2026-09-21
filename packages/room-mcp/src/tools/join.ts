@@ -80,7 +80,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const currentReply = async () => {
         const sharing = a.share !== undefined ? await shareHandlers(state).room_share({ level: a.share }) : ''
         const note = cur ? await teamSharingNote(cur) : undefined
-        return [note, sharing, await scopeHandlers(state).room_state({})].filter(Boolean).join('\n')
+        return [note, sharing, await scopeHandlers(state).room_state({ link: true })].filter(Boolean).join('\n')
       }
       if (cur && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined) {
         return currentReply()

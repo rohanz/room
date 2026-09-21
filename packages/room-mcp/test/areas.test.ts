@@ -89,6 +89,9 @@ describe('areas from CODEOWNERS', () => {
   it('a changed file puts you in its area even without a scope; room_claim hints the owners', async () => {
     const t = two(owned)
     t.a.setOverlay('Rohan', 'api/a.py', 'def a():\n    return 11\n')
+    // a claim is only recorded (and hinted) when someone else is near the path
+    await t.kieran.tools.call('room_scope', { area: 'api', summary: 'handlers', paths: ['api/'] })
+    t.sync()
     const claim = await t.rohan.tools.call('room_claim', { path: 'api/a.py', from: 1, to: 1, intent: 'x' })
     expect(claim).toContain('owners of api/: @kieran')
     const st = await t.rohan.tools.call('room_state', {})
@@ -99,7 +102,7 @@ describe('areas from CODEOWNERS', () => {
     const t = two(owned)
     await t.rohan.tools.call('room_scope', { area: 'web', summary: 'ui', paths: ['web/'] })
     await t.kieran.tools.call('room_scope', { area: 'api', summary: 'handlers', paths: ['api/'] })
-    await t.kieran.tools.call('room_claim', { path: 'api/a.py', from: 1, to: 2, intent: 'tune a' })
+    t.b.addClaim({ by: 'Kieran', byKind: 'agent', path: 'api/a.py', from: 1, to: 2, intent: 'tune a' })
     t.b.setOverlay('Kieran', 'api/a.py', 'def a():\n    return 12\n')
     t.sync()
     const mine = await t.rohan.tools.call('room_state', {})

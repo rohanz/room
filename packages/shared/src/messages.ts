@@ -33,7 +33,7 @@ const priority = (m: MsgBase) => `[${m.priority}] `
 const builtins = {
   claim: { priority: 'fyi', audience: 'claim-holders', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} — ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ''}` },
   release: { priority: 'fyi', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` — ${m.summary}` : ''}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ''}` },
-  changed: { priority: m => m.symbols?.length ? 'notify' : 'fyi', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
+  changed: { priority: m => m.symbols?.length ? 'notify' : 'fyi', audience: 'everyone', inbox: false, wakes: 'addressed', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
   question: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
   answer: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId, format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
   conflict: { priority: 'interrupt', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },

@@ -174,7 +174,7 @@ describe('worker identity', () => {
     await tools.call('room_spawn', { tag: 'money', task: 'first' })
     const first = a.workers.get('money')!
     expect(first.id).toBe('rohanz/money#1')
-    await tools.call('room_dismiss', { tag: 'money' })
+    await tools.call('room_collect', { tag: 'money', discard: true })
     expect(await tools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('process is still alive')
     exits[0](0)
     await vi.waitFor(() => expect(a.workers.has('money')).toBe(false))

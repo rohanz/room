@@ -94,7 +94,7 @@ describe('worker plumbing', () => {
   })
 })
 
-describe('room_spawn / room_done / room_dismiss', () => {
+describe('room_spawn / room_done / room_collect discard', () => {
   function setup() {
     const { a, b } = pair()
     a.setMeta({ repo: 'x', branch: 'main', base })
@@ -221,7 +221,7 @@ describe('room_spawn / room_done / room_dismiss', () => {
     await new Promise(r => setTimeout(r, 50))
     t.exits[0](0)
     const out = await waiting
-    expect(out).toContain('interrupt:')
+    expect(out).toContain('[interrupt]')
     expect(out).toContain('exited without room_done')
     expect(t.a.workers.get('money')).toMatchObject({ status: 'failed', exitCode: 0 })
   })
@@ -579,8 +579,8 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const read = await leadTools.call('room_read', { path: 'app.py', person: 'rohanz+money' })
     expect(read).toContain('x = 100')
     expect(read).toContain('as rohanz+money sees it')
-    expect(await leadTools.call('room_diff', { path: 'app.py', person: 'rohanz+money' })).toContain('+x = 100')
-    expect(await leadTools.call('room_who', { path: 'app.py' })).toContain('uncommitted changes by: rohanz+money')
+    expect(await leadTools.call('room_read', { diff: true, path: 'app.py', person: 'rohanz+money' })).toContain('+x = 100')
+    expect(await leadTools.call('room_state', { path: 'app.py' })).toContain('uncommitted changes by: rohanz+money')
     const pm = await leadTools.call('room_preview_merge', { person: 'rohanz+money' })
     expect(pm, pm).toContain('no conflicts')
     const all = await leadTools.call('room_preview_merge', { people: ['rohanz+money', 'rohanz+tiers'], run: 'cat app.py tiers.py' })

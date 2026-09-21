@@ -47,7 +47,7 @@ describe('local mode (no server)', () => {
     expect(reply.split('\n')[0]).toMatch(/^joined local\/anything /)
     expect(session!.roomName).toBe(name)
     expect(reply).toContain(encodeURIComponent(encodeURIComponent(name)))
-    expect((await tools.call('room_state', {})).split('\n')[0]).toContain(name)
+    expect((await tools.call('room_state', {})).split('\n')[1]).toContain(name)
   })
 
   it('preserves an explicit local worker room across branch overrides', async () => {

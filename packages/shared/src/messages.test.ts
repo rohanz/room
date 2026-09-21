@@ -82,7 +82,7 @@ describe('MessageKinds', () => {
    room.doc.destroy()
  })
 
-it.each(['scope', 'release', 'changed', 'claim'] as const)('%s stays feed-only and never wakes, even with an urgency override', type => {
+it.each(['scope', 'release', 'claim'] as const)('%s stays feed-only and never wakes, even with an urgency override', type => {
   for (const priority of ['fyi', 'notify', 'interrupt'] as const) {
     const m = { id: 'routine', type, priority, from: 'Kieran', fromKind: 'agent', at: 1 } as import('./types.js').Msg
     expect(MessageKinds[type].wakes).toBe('never')
@@ -90,6 +90,13 @@ it.each(['scope', 'release', 'changed', 'claim'] as const)('%s stays feed-only a
     expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m).wake).toBe(false)
     expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, { ...m, to: 'Rohan' }).wake).toBe(false)
   }
+})
+
+it('changed is feed-only as a broadcast; the copy addressed to someone who uses the symbol wakes them', () => {
+  const m = { id: 'rename', type: 'changed', priority: 'notify', from: 'Kieran', fromKind: 'agent', at: 1, paths: ['a.py'], summary: 'renamed f', symbols: ['f'] } as import('./types.js').Msg
+  expect(MessageKinds.changed.inbox).toBe(false)
+  expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m).wake).toBe(false)
+  expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, { ...m, to: 'Rohan' }).wake).toBe(true)
 })
 
 it('addresses merge conflicts to the affected participant as a waking notification', () => {

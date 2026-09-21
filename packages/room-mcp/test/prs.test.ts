@@ -97,7 +97,7 @@ describe('PR mirror in the doc', () => {
     await tb.call('room_send', { type: 'changed', paths: ['src/auth.py'], text: 'touched auth', symbols: ['login'] })
     expect(b.messages().some(m => m.to === 'pr#7')).toBe(false)
     // PR paths are visible to impact/ownership queries through the scope
-    expect(await tb.call('room_who', { path: 'src/auth.py' })).toContain('scope: pr#7 is on src: PR #7: Add login')
+    expect(await tb.call('room_state', { path: 'src/auth.py' })).toContain('scope: pr#7 is on src: PR #7: Add login')
     // a claim on a PR's file mentions the PR but does not route a copy to it
     await tb.call('room_claim', { path: 'src/auth.py', from: 1, to: 1, intent: 'x', plans: [{ kind: 'rename', symbol: 'login' }] })
     expect(b.messages().some(m => m.to === 'pr#7')).toBe(false)
