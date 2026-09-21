@@ -12,6 +12,7 @@ primary_region = "sin"
 [env]
   PORT = "8080"
   YPERSISTENCE = "/data"
+  NODE_ENV = "production"         # refuses the test login issuer (GITHUB_CLIENT_ID=fake)
 
 [http_service]
   internal_port = 8080
@@ -32,4 +33,4 @@ primary_region = "sin"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"                 # 256 MB was OOM-killed under a large room; a deploy applies this value

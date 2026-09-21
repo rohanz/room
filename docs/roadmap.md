@@ -4,7 +4,7 @@ Written 2026-09-21. Room today fits a small team on a shared branch. These are t
 between that and a fifty-engineer production repo, in priority order. Completed work is marked below.
 Decide the order after the trial with real users; see "What decides the order" at the end.
 
-**Start here:** [is Room invisible?](audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
+**Start here:** [the full review of 0.10.0](audit-2026-09-21-review.md) (2 blockers and 29 items to fix before a trial, most reproduced), then [is Room invisible?](audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
 use broke and proposes the order of work.
 
 ## The design the gaps point at: cost scales with overlap

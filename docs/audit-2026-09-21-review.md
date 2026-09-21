@@ -1,0 +1,226 @@
+# Full review of 0.10.0 by Codex (gpt-6-astra, medium), 2026-09-21
+
+Independent review of code and of the product from three user seats, against the invisibility standard.
+Reviewed main at 0f7a4e6. The lead session verified findings 1, 3, 4, 5, 19 and 33 against the code; 19 and 33 were fixed the same day.
+
+## Executive summary
+
+1. Do not trial this build until sharing survives branch changes and newly ignored files are actually withdrawn.
+2. The default team-worker journey ends at “error: room_collect requires a local worker”.
+3. First-time team setup and automatic sharing disclosures still depend on tool calls the instructions do not reliably induce.
+4. The strongest part is ordinary local isolation: the default destination is local and the relay binds loopback with a private key.
+5. Collection’s offline tests substantiate uncommitted integration, preservation on conflicts, and successful cleanup.
+6. The parser ships all 15 grammars, loads them lazily, and deletes each successfully created syntax tree in a finally block.
+7. Parser coverage is substantially narrower than the supported-language list suggests; all language examples below were run against the real engine.
+8. Snapshot reuse defeats import narrowing, while several ordinary API changes produce no contract notice at all.
+9. Typecheck and 216 tests across 17 focused suites passed; passing tests do not cover the reproduced gaps below.
+10. Reviewed clone HEAD 0f7a4e645f06a467d525026cd4370a34c15c3955, plugin 0.10.0; no network, source edits, or commits.
+
+## Part A — code
+
+Evidence convention: “reproduced” means an offline invocation of the real function/engine, sometimes with in-memory dependencies. “Trace” means the concrete execution path was checked in source, not exercised against a server or host. Paths are relative to this clone. Findings are ordered by severity within each part.
+
+1. **blocker — team privacy — packages/room-mcp/src/tools/join.ts:241; packages/room-mcp/src/config.ts:56.** Automatic branch following drops an explicitly narrowed sharing level. **Scenario (source trace; extracted followBranch also executed with an injected Git result):** join with `share: 'intent'`, leave `ROOM_SHARE` unset, then change branches. The rejoin receives only `dir`, `name`, `room`, and `server`; it does not receive the current share level. Resolution therefore chooses `full`. The already-recorded destination disclosure does not announce the widening. This can publish existing changed-file text without another sharing decision. **Smallest fix:** pass the session’s requested level and credentials configuration through automatic moves; test a narrowed session moving branches with no sharing environment variable.
+
+2. **blocker — daemon/privacy — packages/roomd/src/index.ts:856.** Adding an already-published untracked file to `.gitignore` does not withdraw its old text. **Reproduced:** invoked the actual `Daemon.refreshTracked` method in memory with a previously tracked/published `secret.txt`, a refreshed Git file set without it, and an existing disk destination. Its overlay remained `do not keep`, and no removal was scheduled. The `removed` loop only reconciles paths that no longer exist on disk. `onDiskChange` can also keep processing an already-known overlay without rechecking Git ignore status. **Smallest fix:** explicitly withdraw newly ignored paths during refresh and check Git ignore eligibility before republishing them. Also cover `.roomignore` deletion records: invoking `reloadRoomIgnore` with an ignored, deleted-only `deleted.py` leaves its deletion marker because the code checks only `overlayText` (line 828).
+
+3. **should-fix-before-trial — worker collection — packages/room-mcp/src/tools/collect.ts:110; packages/room-mcp/src/tools/workers.ts:129.** A worker running on the lead’s machine is uncollectable when it belongs to a team room. **Reproduced:** the real collect handler, given a done worker in a session without `s.local`, returns `error: room_collect requires a local worker` before inspecting its worktree. `room_spawn` defaults to the current room, including a team room; README:149 says the local workflow applies unchanged. The finished work survives, but the advertised finish does not work. **Smallest fix:** authorize disk collection by verified worktree/lead ownership, not transport locality; add a team-session collection test with a real local worktree. Existing collect fixtures always set `local: {}`.
+
+4. **should-fix-before-trial — branch routing — packages/room-mcp/src/tools/join.ts:232.** A slash-containing branch is mistaken for a branch switch and routed to the wrong room. **Reproduced with the source’s followBranch function and injected Git result:** current room `github.com/a/b/feature/x`, current branch `feature/x` produced `left x, joined github.com/a/b/feature/feature/x`. The resulting explicit room is pinned by session creation, leaving the agent in that erroneous destination. **Smallest fix:** extract the repository with the shared room-name parser, compare the entire branch suffix, and preserve whether the original session was automatically following branches. Test unchanged and changed branches containing `/`. This is additional to the known per-branch isolation limitation.
+
+5. **should-fix-before-trial — preview/security — packages/room-mcp/src/tools/files.ts:193.** Merge-preview setup interpolates the clone directory into a shell command without shell escaping. **Trace:** `git -C "${s.dir}" archive ${ancestor} | tar ...` treats `$()` and backticks inside a legitimate directory name as command substitution. A directory named `/tmp/$(some-command)` executes that command when the user merely requests a preview with tests; an embedded double quote also breaks the command. **Smallest fix:** run Git and tar with argument arrays and pipe their streams, avoiding the shell for materialization. Validate the ref separately. No hostile command was executed during this review.
+
+6. **should-fix-before-trial — server identity/security — packages/server/src/readonly.ts:39,73; packages/server/src/index.ts:364.** Verified login and read-only view access do not constrain all participant impersonation paths. **Reproduced at the real protocol wrappers:** a view connection’s `makeReadOnly` accepted an awareness packet naming an arbitrary `victim` agent; a member’s `bindIdentity('attacker')` accepted a Yjs sync-update setting `scopes['victim']`. Only awareness names are checked for members, and view connections get no identity binding. Null awareness entries also lack connection ownership checks. **Impact:** a view-link holder can manufacture company/presence, and a room member can forge another agent’s coordination records or messages. **Smallest fix:** drop awareness writes from read-only viewers or restrict them to a server-assigned viewer identity; enforce ownership for client IDs and identity-bearing document mutations, with an explicit trusted path for Room’s synthetic records. Do not present presence binding as document authorship verification.
+
+7. **should-fix-before-trial — graph reuse — packages/room-mcp/src/graph-index.ts:78,132.** Reusing a graph snapshot creates false edges and then freezes dependency facts for the session. **Reproduced:** a snapshot containing only `a.ts → use-a.ts (Config)` and `b.ts → use-b.ts (Config)` was passed through the real `reuse` method; `dependenciesOf('use-a.ts')` then named both `a.ts` and `b.ts`. Reuse reconstructs a global name index without import facts. Subsequent refreshes use `this.reused ? undefined`, skip symbol replacement, and ignore others’ changed paths, so new imports/definitions do not correct it until a rebuild. **Smallest fix:** reuse per-file facts including imports, or use snapshot edges directly until a background local build replaces them; continue incremental dependency refresh. Test edge preservation and a post-reuse import change, not only that reuse avoided parsing.
+
+8. **should-fix-before-trial — graph noise — packages/shared/src/graph.ts:228,237.** Import narrowing accepts a shared directory component as evidence for every sibling provider. **Reproduced with the real TypeScript parser and SymbolGraph:** six files `src/a.ts` through `src/f.ts` each declare `export interface Config {}`; `consumer.ts` contains `import { Config } from "./src/a"; let c: Config;`. The dependency names all six providers because `src` matches every provider’s parent. Thus the new common-symbol filter does not suppress this very ordinary source layout. **Smallest fix:** resolve relative import paths against the consumer, prefer exact modules, and never treat generic parent names as positive matches. Add a sibling-provider fixture to graph-noise tests.
+
+9. **should-fix-before-trial — TypeScript/TSX contracts — packages/room-mcp/src/parse/engine.ts:130; packages/room-mcp/src/parse/languages/typescript.ts:11; packages/room-mcp/src/parse/languages/tsx.ts:11.** Type-literal bodies are discarded as if they were implementation bodies. **Reproduced separately for `.ts` and `.tsx`:** `export type Props = { label: string };` parses with signature `type Props =`; changing `string` to `number` gives `observedContractChanges(...) === []`. The public contract is precisely the discarded text. **Smallest fix:** make signature extraction declaration-kind-aware, retaining structural type content and interface/property contracts while excluding executable bodies. Add a consumer-facing contract-change test for a React props type.
+
+10. **should-fix-before-trial — overload contracts across languages — packages/shared/src/graph.ts:93; packages/room-mcp/src/parse/engine.ts:178; packages/room-mcp/src/parse/languages/typescript.ts:7.** Only the first same-name definition is compared, and same-line overloads can disappear even before comparison. **Reproduced with each real grammar:** the following inputs all miss changes to the later overload through `observedContractChanges`:
+
+    ```java
+    class A {
+      void run(int x) {}
+      void run(String x) {}
+    }
+    // Change String x to boolean x: []
+    ```
+    ```csharp
+    class A { public void Run(int x) {} public void Run(string x) {} }
+    // Change string x to bool x: []; parser keeps only the first Run on this line.
+    ```
+    ```swift
+    struct A {
+      func run(_ x: Int) {}
+      func run(_ x: String) {}
+    }
+    // Change String to Bool: []
+    ```
+    ```scala
+    object A { def run(x: Int): Int = x
+      def run(x: String): String = x }
+    // Change both String occurrences to Boolean: []
+    ```
+    ```typescript
+    export function f(x: string): string;
+    export function f(x: number): number;
+    export function f(x: any): any { return x; }
+    // Change the number parameter to boolean: []; only implementation is a def.
+    ```
+    **Smallest fix:** capture declaration signatures, deduplicate by node offsets rather than line ranges, and compare the overload set per qualified name. The JVM signature tests compare one chosen method, so they pass with this broken behavior. Also preserve literal contents during canonicalization: `function f(x = "a b") {}` → `function f(x = "ab") {}` was reproduced as `[]` because all whitespace is stripped.
+
+11. **should-fix-before-trial — systems-language query coverage — packages/room-mcp/src/parse/languages/rust.ts:9, go.ts:9, c.ts:7, cpp.ts:7.** Several normal definition shapes are absent from the index, so their symbol claims and contract changes cannot work. **Reproduced with all four real grammars:**
+
+    ```rust
+    trait Local { fn run(&self); }
+    impl Local for &str { fn run(&self) {} }
+    // Defs: Local and Local.run; no implementation method for &str.
+    ```
+    ```go
+    package p
+    type Box[T any] struct { Value T }
+    func (b *Box[T]) Get() T { return b.Value }
+    // Defs: Box only; Get is absent.
+    ```
+    ```c
+    int **alloc(int n) { return 0; }
+    // No alloc definition (query only accommodates one pointer layer).
+    ```
+    ```cpp
+    template <typename T> T identity(T x) { return x; }
+    class Foo { public: int *get(); };
+    int *Foo::get() { return nullptr; }
+    // Defs: Foo only; neither identity nor get.
+    ```
+    **Smallest fix:** unwrap receiver/declarator/template shapes before extracting a name, or add the explicit missing alternatives; retain trait/type containers for Rust. Add these exact cases to the systems suite, including parameter-change detection. These findings are syntactic misses, not a request for full type resolution.
+
+12. **should-fix-before-trial — Python decorators — packages/room-mcp/src/parse/languages/python.ts:9,16.** Decorators that change calling conventions are excluded from both the signature and claimed range. **Reproduced:**
+
+    ```python
+    class A:
+      @staticmethod
+      def run(x: int): return x
+    ```
+    `A.run` starts at line 3 and has signature `def run(x: int):`; replacing `@staticmethod` with `@classmethod` yields no contract change. **Smallest fix:** associate the enclosing decorated definition with the function’s contract/range and include decorator syntax in the comparison. Test the receiver-changing decorator, not just successful parsing of a decorated method.
+
+13. **should-fix-before-trial — JavaScript exports — packages/room-mcp/src/parse/languages/javascript.ts:7,22.** Anonymous default exports and re-export barrels provide no definition/reference/import facts. **Reproduced:**
+
+    ```javascript
+    export default function (x) { return x; }
+    export {thing} from "./thing.js";
+    ```
+    Output is `{defs:[], refs:[], imports:[]}`. Consumers routed through a barrel lose that dependency path, and changing the exported function’s parameters cannot produce an observed contract. **Smallest fix:** represent the module’s default export explicitly and capture export sources/specifiers, then retain that mapping when narrowing imports. Test the barrel-to-consumer path rather than only the source file’s syntax.
+
+14. **should-fix-before-trial — Kotlin contracts/noise — packages/room-mcp/src/parse/languages/kotlin.ts:18; packages/room-mcp/src/parse/engine.ts:130.** Ordinary unnamed companions lose methods, while expression-bodied extensions generate implementation-change noise. **Reproduced:**
+
+    ```kotlin
+    class A {
+      companion object {
+        fun create(): A = A()
+      }
+    }
+    ```
+    Only `A` is a definition. Separately, `fun String.clean(): String = trim()` → `fun String.clean(): String = trimStart()` produces a `signature` notice with the entire expression in its before/after detail. **Smallest fix:** support an unnamed companion using its enclosing class, and extract the Kotlin function header before its expression body. The block-body signature fixture does not cover this common style.
+
+15. **should-fix-before-trial — Ruby singleton/accessor APIs — packages/room-mcp/src/parse/languages/ruby.ts:9.** Singleton-class methods and declarative accessors are not definitions. **Reproduced:**
+
+    ```ruby
+    class A
+      attr_accessor :name
+      class << self
+        def create(x); new; end
+      end
+    end
+    ```
+    Definitions contain only `A`; references contain `attr_accessor`, not the generated API. **Smallest fix:** capture methods inside `singleton_class` with an enclosing class identity and recognize literal `attr_reader`/`attr_writer`/`attr_accessor` names. Add a signature-change check on `create` and removal of the accessor.
+
+16. **should-fix-before-trial — PHP namespace/trait APIs — packages/room-mcp/src/parse/languages/php.ts:7,39.** Namespaces collapse distinct functions and trait use is not a dependency. **Reproduced:**
+
+    ```php
+    <?php
+    namespace A { function run(int $x) {} }
+    namespace B { function run(string $x) {} }
+    ```
+    Both definitions are unqualified `run`; changing B’s parameter to `bool` produces `[]`. Separately, `trait T { public function run(int $x) {} } class A { use T { run as execute; } }` yields no references and no `execute` definition. **Smallest fix:** retain namespace identity, record trait-use dependencies, and represent literal aliases. Test namespace-specific changes and a trait consumer.
+
+17. **should-fix-before-trial — worker recovery — packages/room-mcp/src/registry.ts:42,149.** “Unwitnessed exit” is converted into a confident but unproven `lead-session-ended` diagnosis. **Trace:** the old lead crashes, a detached worker continues, then fails independently before the next lead starts. Retirement sees no handle and a dead PID, assigns `dismissed`/`lead-session-ended`, suppresses the death/log-tail notice, and permanently skips that record on subsequent retirement sweeps. PID reuse can alternatively postpone recognizing the old worker’s exit because this path uses `pidAlive`, not the worker identity probe. **Smallest fix:** preserve `exit reason unknown` unless shutdown recorded the cause; distinguish absence of a process handle from evidence of why it stopped, and use the guarded identity probe during recovery.
+
+18. **should-fix-before-trial — on-duty runner lifecycle — packages/agent/src/runner.ts:83.** `Runner.stop()` removes observers but does not abort the active backend turn. **Reproduced:** a held backend captured its AbortSignal, a human chat started the turn, and `runner.stop()` left `signal.aborted === false`; the turn completed only after the test explicitly released it. The CLI calls this method on shutdown and exits 200 ms later, rather than using the existing cancellation path. **Smallest fix:** abort and clear pending work in `stop`, ignore late backend callbacks, and make shutdown wait for bounded backend cancellation. Test stopping during an active tool turn, not just observer removal.
+
+19. **should-fix-before-trial — deployed test-auth guard — Dockerfile:11; deploy/fly.toml:12; packages/server/src/index.ts:62.** The shipped deployment configuration never sets the environment value on which refusal of the fake GitHub issuer depends. **Trace:** build the image or use the supplied Fly/Compose configuration with an accidentally retained `GITHUB_CLIENT_ID=fake`; `NODE_ENV` is absent, so both production guards permit the issuer and any syntactically valid `fakeLogin` can obtain GitHub-room admission. The runbook says the test issuer is refused in production, but the deployable artifact is not marked production. **Smallest fix:** set `NODE_ENV=production` in the image/deployment and explicitly override it only in development demos; test the deployment configuration as well as the Auth constructor’s explicit production option.
+
+## Part B — product and actual replies
+
+### Journey baseline and cost
+
+**Alone for a week:** with no destination environment or remembered choice, configuration selects local and a healthy fresh solo before-tool hook emits nothing. The intended cost is **zero Room tool calls per task**. The actual catalog measures **20 tools / 9,181 characters** for names, descriptions and JSON schemas, plus **1,067 instruction characters**, excluding skill descriptors and protocol framing. At a rough four characters per token that is about 2,560 tokens if a host eagerly includes everything; this is an estimate, not measured host billing. Hosts that defer schemas pay differently. Every matching tool still launches the Node hook, and the MCP process still maintains the relay, daemon, and graph; zero tool calls is not zero machine work. Conditional catalog loading is **already on the roadmap**. “Start your agent as usual; by default nothing leaves your machine” (README:10) is appropriately qualified at README:23 by environment/remembered choices. The privacy statement applies to Room traffic, not the host model’s normal API traffic.
+
+**Three friends:** assuming Git/Node/host availability, README setup is seven distinct user actions before the first shared task: (1) add marketplace, (2) install plugin, (3) trust hooks, (4) start in the repository—using the channels flag for each Claude user—(5) say “join the room”, (6) complete GitHub device authorization, (7) approve opening the repository once if needed. The other two repeat actions 1–6. Onboarding additionally asks the user to tell the agent authorization is complete. Their branch must match; branch isolation is **already on the roadmap**. The first tool-driven snag is finding the login server after “join the room” from a default local session (#21). The environment-first README example avoids that particular snag but requires editing launch commands for the two Claude users. Hooks can warn before a recognized write when current scope/claim evidence exists; automatic text conflicts are detected after edits, and the parser findings limit proactive contract warnings. The documentation does correctly call claims advisory.
+
+**“Get another agent to do half”:** instructions select the workers skill, the lead briefs/spawns a worker, continues independent work or waits, previews the combined output with tests, collects, then tests the actual tree. For one worker that is at least spawn + preview + collect on the lead, usually one or more waits; the worker also scopes, previews, and finishes. Replies identify tag, full participant name, directory, branch, log and budget. Successful local collection removes the worktree/branch/logs; failures and partial copies generally retain them. Session shutdown signals workers and records a stop reason where it can; abrupt exits use the problematic inference in #17. A finished worker cannot take a follow-up: **already on the roadmap**. The team-room default fails at collection (#3).
+
+20. **should-fix-before-trial — seat 1/2, disclosure delivery — packages/room-mcp/src/index.ts:48,89; packages/room-mcp/src/tools/index.ts:82; README.md:38.** A first automatic team join can share files for an entire solo task without delivering its mandatory disclosure. **Trace:** `ROOM_SERVER=hosted` and an existing login/open repo cause auto-join; no teammate is online. Instructions say “While alone, work normally without room tools”, hooks return early on `company !== true`, and `teamSharingNote` is reached only through a Room tool reply. README promises “the agent relays one disclosure, including when you are alone or the destination came from an environment variable”. The consent test calls `room_state` to trigger the supposed automatic disclosure, so it does not test the zero-call journey. **Smallest fix:** send the one pending sharing disclosure through the ordinary session/hook context independently of company and Room calls. Keep it once per applicable boundary, not once per edit. Startup connection-failure notices have the same tool-call-only delivery limitation.
+
+21. **should-fix-before-trial — seat 2, login recovery — plugins/room/skills/room-join/SKILL.md:31; packages/room-mcp/src/tools/join.ts:267.** The join skill drops the requested destination during login recovery. **Reproduced resolver result/source trace:** a process started local, asked to `room_join(where="team")`, remains configured local after the failed attempt. The skill says “Call `room_login`”; `serverOf({})` returns `local`, and the actual reply is “no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...)”. A user who already asked to join now gets configuration advice instead of their GitHub code. A custom-server join can similarly recover against the wrong destination. **Smallest fix:** include the requested server in the error/recovery instruction and pass it to both login calls; test fresh local → requested team → login → join as one journey.
+
+22. **should-fix-before-trial — seat 2, tool selection — packages/room-mcp/src/tools/join.ts:77,85.** `room_create(confirm=true)` can answer with the existing local room state instead of opening a team room or explaining the required destination. **Trace:** the handler adds `create: true` then hits the same-room fast path, which ignores that flag whenever no destination arguments were supplied. Its description promises “Open this repo on a team server and join”, and README:134 tells the user only “Open a room for this repo”. **Smallest fix:** exclude creation from that fast path and make its default destination explicit and consistent with its description. Preserve the confirmation requirement for actually opening the repository. This is a real overlap between create/join behavior, not a need for more tools.
+
+23. **should-fix-before-trial — seat 1/2, remembered privacy — packages/room-mcp/src/choice.ts:17,56,78; packages/room-mcp/src/config.ts:56; packages/room-mcp/src/tools/share.ts:29.** A remembered team destination outlives a user’s explicitly reduced sharing level, without a new disclosure on restart. **Trace:** the user asks for plans-only sharing using `room_share`; its reply says “changed sharing full -> sharing: only your plans, no file text”. Quit and restart with no `ROOM_SHARE`: only the destination and warned marker were saved, so sharing is full again and the destination marker suppresses the banner. “Live” in the tool description does not communicate this consequential expiry to the human. **Smallest fix:** remember the selected sharing level with the clone’s choice, or clearly state its session-only lifetime and obtain/disclose the new wider boundary before publishing on the next session. This is separate from automatic branch moves in #1.
+
+24. **should-fix-before-trial — seat 3, discard/recovery truth — README.md:101; docs/onboarding.md:18; packages/room-mcp/src/tools/collect.ts:84.** The current user guides promise a dirty worktree survives discard, but the implementation removes it forcibly. **Exact text:** “it cleans up a clean worktree but keeps a dirty one and reports its location”; onboarding says “Stopping without collecting also preserves a dirty worktree.” Actual discard saves a patch then calls `cleanupWorker(..., true, true)`, whose `worktree remove --force` deletes the tree. The patch includes non-ignored Git changes, not ignored artifacts such as a generated model or result file. The workers skill and CHANGELOG already describe the newer patch behavior, so the guides disagree at the decision point. **Smallest fix:** align the guides and tool reply with the actual deletion/recovery boundary, including ignored artifacts; preserve excluded valuable output or report it before deletion.
+
+25. **should-fix-before-trial — seat 2/3, repeated ritual — plugins/room/hooks/before-edit.mjs:70; packages/room-mcp/src/hooks-bridge.ts:162.** Overlap guidance is repeated on every recognized edit even after the agent has already claimed its region. **Exact text:** “[room] Claim before editing: …” and “Do not edit inside that range; room_wait or ask.” **Scenario:** Bob’s broad scope covers `api.ts`; Ada claims her separate region and makes ten small edits. `near` contains Bob’s scope every time; the hook neither checks Ada’s existing claim nor deduplicates this guidance, although it does deduplicate inbox IDs. This reintroduces a prompt ritual after the newer scope-once rule removed tool-call ritual. **Smallest fix:** announce an overlap/ownership change once, suppress the imperative when an adequate own claim exists, and repeat only on changed evidence or a newly conflicting range.
+
+26. **should-fix-before-trial — seat 3, validation truth — packages/room-mcp/src/tools/workers.ts:51; packages/room-mcp/src/tools/files.ts:137.** `room_done` can claim that a combined preview passed when no tests ran. **Exact text:** “Local failures caused by a teammate's unmerged files are expected until merge; the combined preview passed.” **Trace:** perform a text-only clean preview (no `run`), then finish with summary `local tests failed`. `lastPreview.testsPassed` is undefined, which satisfies `!== false`; the reassurance is appended. The code has not established that the local failure comes from teammates either. **Smallest fix:** require `testsPassed === true`, identify the command/revision that passed, and avoid attributing the failure’s cause without evidence.
+
+27. **should-fix-before-trial — seat 2, wake-up truth — packages/room-mcp/src/tools/workers.ts:51; packages/room-mcp/src/prompt.ts:25.** Task completion promises a wake-up even when Room already knows it cannot provide one. **Exact text for a non-worker:** “You are still in the room and will be woken for questions.” **Scenario:** a Claude session without channels finishes its task; `claudeWakeUnavailable` would return true and presence can expose that fact, but this reply is unconditional. A friend can wait for an agent that is merely parked. **Smallest fix:** use the existing wake capability result in this reply, or omit the promise entirely; say the next-turn behavior only when it affects a pending dependency. No need to repeat the launcher tutorial on every completion.
+
+28. **should-fix-before-trial — seat 1, stale company — plugins/room/hooks/session-start.mjs:27.** Session start trusts an arbitrarily old company snapshot and announces teammates who may have left days ago. **Exact text path:** it calls `companyLine(state)` whenever `state.company === true`, ignoring `state.at`. **Scenario:** the MCP process is killed before its normal removal of `room-state.json`; the user starts alone a week later before the new bridge writes its state. They receive “[room] Bob is here” and the agent can enter the company workflow from that false premise. **Smallest fix:** validate snapshot freshness and room/session identity at startup; let the live bridge announce company once refreshed. This is a stale-file issue even with only one session per folder, not the already-listed concurrent-session state problem.
+
+29. **should-fix-before-trial — seat 2, declared-sharing finish — packages/room-mcp/src/tools/claims.ts:130; packages/roomd/src/index.ts:293; README.md:56.** Finishing a task withdraws declared shared output before another agent necessarily inspects or integrates it. **Exact instructions:** “Teams should start at `declared`” and “then room_done releases claims.” **Trace:** Ada shares declared paths and finishes without committing, as instructed. `room_done` also clears the scope; the daemon follows the now-empty scope and removes her overlays. Bob’s next preview cannot see her finished changes, although the work remains on disk. This also harms team workers independently of collection’s transport restriction. **Smallest fix:** separate the publication boundary from active task scope, retaining explicitly shared finished output until collected/withdrawn or the boundary is deliberately changed. If immediate withdrawal is intended, explain it at completion and supply a reliable retrieval path.
+
+30. **should-fix-before-trial — seat 2/3, demo/on-duty first use — scripts/demo.sh:54; packages/agent/src/cli.ts:69; scripts/say.mts:11.** The printed on-duty demo commands cannot authenticate to the very server the demo starts. **Exact guidance:** “Or leave an agent on duty (reacts to interrupts and questions unattended)” followed by `ROOM_SERVER=ws://localhost:$PORT ... packages/agent/src/cli.ts --dir ...`. The demo starts the fake login issuer and keeps its session in a shell variable; the runner creates its own WebSocket with only optional `token`, no device session, and waits for sync before starting. `scripts/say.mts` also drops query credentials from `ROOM_URL` and waits for sync before installing its watch timeout. **Smallest fix:** have these development clients resolve/pass an explicitly provided Room session (and local key when applicable), fail within a connection deadline, and print commands that use the demo’s actual admission mode. Do not bypass authentication to make the example work.
+
+31. **later — all seats, stale secondary guide/tool surface — packages/room-mcp/README.md:5.** The package guide still documents an older product and can send an agent to nonexistent tools. **Checked discrepancies and exact text:**
+
+    - Line 5: “Agents get no write tool.” Collection and export now write files.
+    - Lines 23,31,33,42: `room_logout`, `room_who`, `room_diff`, `room_dismiss` are absent from DEFS; `room_collect` is missing from this table. Use login action, state path, read diff, and collect discard respectively. Line 46 says “Twenty-three tools”; there are 20. Lines 52 and 91 also reference removed tools.
+    - Lines 104–105: “Without ROOM_SERVER” implies local despite ROOM_URL/remembered choice, and “in-memory, no persistence” contradicts `RoomMemory`.
+    - Line 116: `room_close` no longer says it needs a server; it forgets local history with confirmation.
+    - Lines 129–131 omit ROOM_URL precedence; line 134 says state names the room “on its first line”, which now reports local/team sharing instead.
+    - Lines 146–147 say all relayed events become “interrupts”; bridge.ts:20 limits that promotion to plans, conflicts and base (and pathless base events return before forwarding).
+    - Line 158 says “nothing else is inherited”; `workerEnv` copies the parent environment except its explicit lead-only list.
+    - Line 166 says “add it to .gitignore too”, despite automatic Git-private exclusion.
+    - Line 190 says state “starts with an OFFLINE line”; sharing is first, with OFFLINE later.
+    - Line 214 still describes `room_dismiss`.
+
+    **Smallest fix:** update this one maintained reference from current DEFS and lifecycle behavior, and link to the canonical user guide instead of duplicating mutable procedures. The checked catalog otherwise routes read/diff, state/ownership, impact and preview distinctly. `room_done(pr_note=true)` duplicates the external-post path of `room_pr_note`; the no-post-without-request instruction should be explicit at both selection points. The catalog-budget test checks character count and routing substrings, not whether a model selects a workable sequence.
+
+32. **later — seat 3, visual identity promise — README.md:270; packages/shared/src/identity.ts:12.** The guide promises unique simultaneous colors that an eight-color modulo palette cannot deliver. **Exact text:** “people who are in a room together never share a colour.” **Reproduced:** assigned slots 0 and 8 both return `#2e86de`. One lead plus the allowed eight workers already exceeds the palette before any friends join. **Smallest fix:** state that colors repeat and make names/non-color cues sufficient everywhere, or expand the palette with tested differentiation. This matters when the user is trying to identify who changed a line in a busy batch.
+
+33. **later — adopter/operations documentation — deploy/fly.toml:35; deploy/DEPLOYING.md:54.** The checked-in machine size contradicts the runbook’s stated minimum learned from an OOM. **Exact text:** runbook says “512 MB” and “256 MB was OOM-killed under a large room”; deployment declares `memory = "256mb"`. **Scenario:** a new deployment follows the committed config rather than the author’s manually scaled machine. **Smallest fix:** put the documented 512 MB in the configuration and align the cold-start comment (`~2s` in fly.toml:22 versus `~15–70 s` in the runbook). No live machine size or startup time was checked. Other checked stale implementation descriptions: README:311–312 says “the same relay code” runs locally, but server/index.ts uses `@y/websocket-server` and relay/index.ts implements its own wire handler; `.github/workflows/ci.yml:22` still mentions removed `src/pyextract.ts`. Update those statements without implying a new deployment was verified.
+
+## Verified fine
+
+- **Scope and validation:** read the requested AGENTS, README, roadmap, invisibility audit and changelog before investigating; also inspected the brief, decisions/submission material, current onboarding, and package guide. No source file changed. Typecheck passed. Focused Vitest runs passed **104 tests in 9 suites** (four parser suites, graph/noise, config, priority timeline, tool budget) and **112 tests in 8 suites** (collect, retirement, admission, read-only protocol, document cap, runner, panels, graph index).
+- **Local boundary:** resolveConfig defaults to local unless arguments/environment/remembered destination select otherwise. The normal local join path starts loopback transport; no hard-coded hosted fallback was found in it. The relay key is random on initial creation, stored/chmodded 0600, checked with timing-safe comparison, and sockets are restricted to loopback. Its memory directory is 0700; snapshots use a 0600 temporary file and atomic rename, enforce a 5 MB cap, and omit live overlays/base text/graphs/claims through the shared memory projection. This does not certify the network server under attack.
+- **Sharing controls:** invalid supplied client sharing settings fail to intent, and malformed fetched ceilings fail closed. The daemon checks real paths/symlink components and rechecks sharing after awaited reads before publication. The bridge pins declared sharing to the lead’s own paths before publishing the union of worker coordination scopes. The ignore-withdrawal and lifecycle gaps are listed above rather than obscured by these successful checks.
+- **Collection and merge:** examined collect.ts, combined-tree.ts, files.ts and worker cleanup; executed their existing behavior tests. Full apply checks conflicts before file writes, compares the lead snapshot before applying, attempts rollback on write failure, leaves the Git index/history alone, handles deletion/binary conflicts, and rejects unsafe collection paths including `.git` and symlinks. Partial copy remains recoverable. These checks do not prove filesystem race freedom or preservation of ignored artifacts during discard.
+- **Parser/runtime and packaging:** all 15 registered grammars loaded in actual engine invocations; every language has a reproduced construct above, including separate TSX structural-type verification. Inspected runtime/language promise caches, query errors and tree deletion. Parsed output is plain data in shared/parsed.ts, keeping tree-sitter objects out of shared consumers. The build script copies one runtime plus the same 15 grammar names currently registered; all shipped files exist. The grammar list is duplicated in the build script but is presently in sync. Did not run the mutating plugin build.
+- **Transcript reader:** inspected both callers and ran the shared helper. Reads are bounded to 64 KiB, file descriptors close in finally, malformed/truncated lines and synthetic `<...>` model names are skipped, and mtime/size caches avoid unchanged rereads. It chooses the newest `message.model`, not explicitly the newest assistant role: a synthetic user-shaped object with `message.model` is accepted. That is a limitation of the “real assistant” comment, not evidence that ordinary host transcripts currently mislabel users. No host transcript or home configuration was opened.
+- **Server:** reviewed admission, awareness/write filters, size meter, GitHub proxy, auth and store. GitHub room admission requires a device session with push permission; OIDC does not substitute for that proof. OIDC callback verifies signature, issuer, audience, nonce, and verified email for an allowed-domain restriction. Persistent GitHub tokens are in the session store, not the doc. File sessions are chmodded 0600; queued Postgres room replacement uses one transaction/client with release in finally. The document cap does bound accepted growth with a cached meter, but drops are server-log-only; a synced client can mistake a refused write for collaboration progress. This delivery limitation was not exercised against a live socket.
+- **Hooks/manifests/tools:** inspected both manifests and frozen hook definitions without editing them. Codex explicitly identifies its host; forwarded GH_TOKEN/GITHUB_TOKEN are absent from its allowlist. Skill/tool text contains the intended plain-language worker routing. Routine scope/release/changed events stay feed-only; own messages are filtered; worker waits and terminal-recipient handling have concise paths. Read-only research is explicitly allowed to use built-in agents in the workers skill.
+- **Web:** inspected priority chips, compactChips, timeline filtering, rendered controls, merged view, scheduling and styles; ran panels/priority tests. Hidden historical chips use DOM `hidden` backed by `[hidden] { display: none !important; }`. Expanding applies in the existing row. Counts are computed before the priority window, area/people prominence uses a priority-independent window, selected filters survive localStorage failure, and the final priority toggle deliberately restores all priorities. Conflict cards deliberately bypass priority filtering. Those two choices can surprise a user but are implemented and tested consistently; they are not reported as fresh defects.
+- **scripts/deploy/.github:** inspected demo/say, bundling, Dockerfile, Compose, Fly config, deployment/self-host instructions and CI. CI runs the relevant check/build commands and detects changed tracked plugin assets after rebuilding. Its asset diff does not detect newly generated untracked files, so it is not a complete manifest assertion; no such missing shipped asset was found in the current tree.
+- **Maintainability:** context.ts still has empty section/comment scaffolding from extraction and duplicates Git state-path resolution with hooks/config; panels.ts combines many large panel implementations. These are maintenance costs, but the concrete behavior failures above deserve trial time first. No unsupported claim of dead executable code is included.
+
+## Not covered
+
+- No external network calls, live GitHub/OIDC authorization, actual team-room join, deployment, publishing, or PR-note post. Setup assessment follows checked docs and code, not a fresh paid host session. Authentication snippets used protocol objects/mocks; they did not attack a running server.
+- No real Codex/Claude worker launch, UI automation, browser screenshot QA, or host token/accounting measurement. The suite’s worker/process tests are narrower than an actual interrupted batch. Nothing under `~/.claude` or `~/.codex` was opened or modified.
+- No socket integration suites were selected; the reviewed environment is documented to refuse listeners with EPERM. All selected tests passed. The hosted cap’s client-visible behavior, relay takeover races, simultaneous team spawns and OS-specific shutdown need actual integration verification.
+- No whole-suite run, plugin rebuild, asset freshness rebuild, Docker build, or benchmark on a production-size repository. Existing tests may create temporary fixtures; the review delivered only this Markdown file and made no source edits or commits.
+- Did not exhaustively audit every historical design/demo document, binary asset, vendored dependency, language construct, or parser grammar internals. “Supports a language” was tested against the concrete constructs shown, not certified against its full specification. All seven packages and the requested plugin/scripts/deployment/CI surfaces were inspected, but this is not a line-by-line security certification.
+- Known open items—repository-wide rooms, whole-document syncing, scale caps, secret scanning, concurrent-session hook files, worker follow-ups, and the research-preview channels requirement—are **already on the roadmap** and are not counted again as new findings.
