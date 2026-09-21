@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.10.1
+
+- Finding 1: automatic branch following preserves the selected sharing level and credentials instead of silently widening file sharing.
+- Finding 2: the daemon atomically withdraws overlays and deletion markers when Git or `.roomignore` starts ignoring a path, and rechecks Git eligibility before republishing known paths.
+- Finding 3: a lead in a team room can collect a local worker after Room verifies its ownership, repository worktree and worker branch.
+- Finding 4: automatic branch following handles slash-containing branch names, remains in follow mode, preserves identity and credentials, leaves the old room connected on failure, and refuses to move while workers run.
+- Finding 5: merge previews validate the ancestor commit and stream `git archive` into `tar` through argument-only child processes, so shell metacharacters in clone paths stay literal.
+- Finding 6: view links cannot publish awareness; member writes and awareness client IDs are bound to the login or its tagged agents, rejected packets are audited, and the narrow Room-notice and numbered-PR exceptions are not treated as authorship proof.
+- Finding 7: graph snapshot reuse reconstructs exact per-edge import facts, preserves narrowed edges, and resumes incremental refreshes for every participant.
+- Finding 8: import narrowing resolves paths relative to the consumer and prefers exact or path-specific sources without treating a shared parent directory as a match.
+- Finding 9: TypeScript and TSX structural type and interface bodies are retained in contract signatures.
+- Finding 10: overload declarations across TypeScript, Java, C#, Swift and Scala are retained by syntax-node offset; contract comparison checks the complete signature set for each qualified name and preserves whitespace inside string literals.
+- Finding 11: Rust reference-type trait implementations, generic Go pointer receivers, multi-pointer C functions, and C++ function templates and pointer-returning out-of-line methods are indexed.
+- Finding 12: Python decorators are included in a definition's claimed range and contract comparison.
+- Finding 13: anonymous JavaScript default exports and re-export barrels contribute definitions, external references and import sources to the graph.
+- Finding 14: unnamed Kotlin companion methods are indexed, while expression bodies are excluded from function signatures.
+- Finding 15: Ruby singleton-class methods and literal reader, writer and accessor declarations are indexed.
+- Finding 16: PHP namespace functions are qualified, and trait uses and aliases are recorded.
+- Finding 17: recovered workers use the guarded process identity probe and report an unwitnessed stop as reason unknown, with the worktree and log tail, while only recorded shutdowns say the lead session ended.
+- Finding 18: stopping the on-duty runner aborts the active turn, clears queued work, ignores late callbacks and waits at most one second; CLI shutdown awaits it.
+- Finding 20: pending sharing and startup notices are delivered once across hooks and tool replies with session-bound lock arbitration, including the first automatic solo team join.
+- Finding 21: login recovery preserves and names the requested destination across both login calls, and the join skill carries that destination through.
+- Finding 22: bare `room_create` explicitly targets the hosted team server and cannot return local same-room state.
+- Finding 23: a clone remembers its chosen sharing level across sessions, and a later explicitly wider boundary is disclosed again.
+- Finding 24: discard saves tracked and non-ignored changes in a one-week recovery patch; ignored artifacts outside dependency and cache trees make it refuse, list the artifacts and retain the worktree for explicit copying.
+- Finding 25: pre-edit overlap guidance records its evidence, stays silent when the agent already has an adequate claim, and repeats only after that evidence changes.
+- Finding 26: `room_done` credits a combined test only when it passed and names the exact preview command, without guessing why a local test failed.
+- Finding 27: a non-worker `room_done` reply no longer promises that the finished session can be woken.
+- Finding 28: session-start ignores stale or foreign company snapshots unless their session and room identity match and they are fresh.
+- Finding 29: declared sharing retains only the paths that were eligible when a task finished, until the sharing level changes or an ignore rule or clean commit withdraws them.
+- Finding 30: the on-duty CLI and message script preserve session, token and local-key credentials, fail synchronization within a deadline, and the demo prints authenticated fake sessions for each agent.
+- Finding 31: the MCP package guide now lists the 20 shipped tools and current configuration, local-memory, bridge, worker-environment and offline-state behavior, with mutable workflow guidance linked to the main guide.
+- Finding 32: participant documentation says the eight-colour palette repeats and names disambiguate people.
+- Finding 33: operations and implementation docs now match the checked-in 512 MB deployment and its cold-start comment, distinguish the hosted server from the local relay, and remove the obsolete Python extractor CI comment.
+
 ## 0.10.0
 
 - The MCP symbol indexer now uses tree-sitter for Rust, Go, C, C++, Java, Kotlin, C#, Swift,

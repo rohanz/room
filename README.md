@@ -8,7 +8,8 @@ claude plugin marketplace add rohanz/room && claude plugin install room@room # C
 ```
 
 Start your agent as usual; by default nothing leaves your machine. Say **“join the room”**
-to work with teammates. **Team rooms are currently per branch: teammates must use the same branch.**
+to work with teammates. **Team rooms are currently per branch: everyone in a trial must work
+on one shared branch.**
 
 For Claude Code, launch with `claude --dangerously-load-development-channels plugin:room@room`
 (or set up the `claude-room` launcher). [Why this flag is needed](#claude-code).
@@ -98,9 +99,12 @@ Collection never commits; when requested, the agent uses plain Git for one norma
 Full successful collection removes the exited worker's temporary files, branch and logs.
 Failed or partial collection preserves recoverable work.
 
-`discard: true` stops a worker without collecting output; it cleans up a clean worktree but
-keeps a dirty one and reports its location. Room excludes `.room/` through Git’s private
-exclude file automatically.
+`discard: true` stops a worker without collecting output, saves tracked and non-ignored changes
+in a recovery patch for one week, then removes the worktree, branch and logs. If the worktree
+contains ignored artifacts outside dependency and cache trees, discard refuses before deletion,
+lists those artifacts and keeps the worktree so you can copy them explicitly; a repeated forced
+discard knowingly deletes them and reports what was removed. Room excludes
+`.room/` through Git’s private exclude file automatically.
 
 Workers of one lead see each other, so two of them touching the same function get the
 same claims and conflict notices as two teammates would.
@@ -135,8 +139,8 @@ The first person on a repo opens it once: ask **"Open a room for this repo"** (t
 calls `room_create`). From then on every branch of that repo has a room, and each session
 started in a clone joins the room for its current branch automatically:
 `github.com/<owner>/<repo>/<branch>`. Nothing about your clone leaves your machine until
-that join happens, and no session joins a repo nobody has opened. Teammates must currently
-use the same branch; removing this boundary is the next planned change.
+that join happens, and no session joins a repo nobody has opened. Everyone in a trial must
+currently work on one shared branch; removing this boundary is the next planned change.
 
 The first time you use a server, the agent runs `room_login`: open the GitHub device
 page it prints, enter the code, and approve Room. The server holds the resulting token
@@ -268,7 +272,7 @@ nodes with edits or plans retain their fill and gain a red outline. Neither sour
 the change is finished; the merged-tree test run is the proof.
 
 Participant colours are assigned in join order from an eight-colour palette and kept for
-the life of the room, so people who are in a room together never share a colour.
+the life of the room. Colours repeat after eight participants; names disambiguate people.
 
 Hover or keyboard focus gives a preview; click or Enter opens dependencies, owners,
 plans, and consumer details. Search, participant selection, compact nodes, zoom, Fit,
@@ -307,9 +311,9 @@ Developer A’s clone                                  Developer B’s clone
    a temporary workspace. The shared base advances only when the new commit is on the
    remote. Teammates see that their clone is behind and can pull.
 
-The server uses `y-websocket` with GitHub device-login (or OIDC) admission, read-only view
-keys, size caps, optional LevelDB or Postgres persistence, and static browser hosting; the same
-relay code, in `packages/relay`, runs on loopback for local rooms. Coordination logic runs in
+The server uses `@y/websocket-server` with GitHub device-login (or OIDC) admission, read-only
+view keys, size caps, optional LevelDB or Postgres persistence, and static browser hosting.
+The separate relay in `packages/relay` implements the local-room wire handler on loopback. Coordination logic runs in
 clients: a session registry (`packages/room-mcp/src/registry.ts`) lets one process hold
 several rooms, and message routing, views and configuration each live in one place
 (`packages/shared/src/messages.ts`, `views.ts`, `packages/room-mcp/src/config.ts`). Yjs

@@ -17,7 +17,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # ubuntu-latest provides python3 for packages/room-mcp/src/pyextract.ts.
+    # The test suite and plugin build run on the hosted Ubuntu image.
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

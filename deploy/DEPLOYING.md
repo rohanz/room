@@ -53,7 +53,7 @@ Optional tuning, all with defaults in `.env.example`: `ROOM_IDLE_DAYS`, `ROOM_DO
 
 Machine: 1 shared CPU, **512 MB** (`flyctl scale memory 512`). 256 MB was OOM-killed under a
 large room. `auto_stop_machines = "stop"`, `min_machines_running = 0`: the machine stops when
-idle and the first request starts it (~15–70 s). Set `min_machines_running = 1` in
+idle and the next request or websocket starts it in about 2 seconds. Set `min_machines_running = 1` in
 `deploy/fly.toml` and redeploy for always-on.
 
 ## Rooms and repos

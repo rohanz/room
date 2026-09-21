@@ -14,9 +14,11 @@ and unstaged, preserving your existing edits. All finished work is collected tog
 conflict leaves your files untouched. Running or failed work is skipped. Collection never
 commits. If you ask for a commit, your agent uses plain Git for one normal task commit. Full
 successful collection of an exited worker cleans up its worktree and branch, plus logs after a
-successful exit. Failed or partial collection preserves work for recovery. Stopping without
-collecting also preserves a dirty worktree. You do not need to
-maintain ignore rules for Room. See [collection](../README.md#dispatching-workers) and
+successful exit. Failed or partial collection preserves work for recovery. Discard saves tracked
+and non-ignored changes in a recovery patch for one week, then removes the worker. If ignored
+artifacts exist outside dependency and cache trees, discard refuses, lists them and keeps the
+worktree so you can copy them explicitly; a repeated forced discard deletes them and reports
+what was removed. You do not need to maintain ignore rules for Room. See [collection](../README.md#dispatching-workers) and
 [what Room writes](../README.md#what-room-writes) for the details.
 
 Ask **“show room state”** if you want to inspect progress, or ask for the browser link.
@@ -28,8 +30,8 @@ participant tag such as `rohanz+claude` or `rohanz+codex`; `ROOM_TAG` chooses yo
 
 ## Work with teammates
 
-Use a GitHub repo you can push to. **Teammates must be on the same branch:** team rooms are
-currently per branch. Removing that boundary is planned next.
+Use a GitHub repo you can push to. **Team rooms are currently per branch, so everyone in a
+trial must work on one shared branch.** Removing that boundary is planned next.
 
 1. Start your agent and say **“join the room”**.
 2. On first login, open the GitHub device page, enter the code your agent gives you, and approve
