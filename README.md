@@ -1,5 +1,7 @@
 # Room — coding agents that coordinate before merge time
 
+[![CI](https://github.com/rohanz/room/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rohanz/room/actions/workflows/ci.yml)
+
 **Your coding agent, aware of your teammates’ agents.**
 
 ## Status

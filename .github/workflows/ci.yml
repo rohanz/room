@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # ubuntu-latest provides python3 for packages/room-mcp/src/pyextract.ts.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure Git identity for tests
+        run: git config --global user.name 'CI' && git config --global user.email 'ci@example.com'
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test
+
+      - name: Build web
+        run: npm run build -w @room/web
+
+      - name: Build plugin
+        run: npm run build:plugin
+
+      - name: Check committed plugin assets
+        # Locked dependencies, fixed esbuild target and content-hashed Vite assets;
+        # neither build config injects timestamps or absolute build paths.
+        run: |
+          if ! git diff --exit-code -- plugins/room/server plugins/room/web; then
+            echo '::error::Plugin assets are out of date. Run npm run build:plugin and commit plugins/room/server and plugins/room/web.'
+            exit 1
+          fi

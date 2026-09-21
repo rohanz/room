@@ -95,6 +95,7 @@ Hook definitions (`plugins/room/hooks.json`, `plugins/room/hooks/claude.json` â€
 - Hosted server operations (deploy, secrets, opening/closing repos, incidents): `deploy/DEPLOYING.md`.
   Deploy with `--depot=false`; only server/web changes need a deploy, plugin changes need a bundle rebuild + push.
 
+- CI runs these same commands (`npm run typecheck`, `env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test`, `npm run build -w @room/web`, and `npm run build:plugin`) on every push to `main` and every pull request, and checks that committed plugin assets are up to date.
 - `env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test` runs every package's vitest suite
   (some suites listen on loopback; inherited ROOM_* variables change identity-sensitive tests).
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web
