@@ -39,7 +39,8 @@ describe('GraphIndex', () => {
     room.setOverlay('Kieran', 'session.py', 'def login(t):\n    return verify_token(t)\n')
     await gi.whenIdle()
     expect(gi.graph.usersOf('validate_token')).toEqual([])
-    expect(gi.graph.usersOf('verify_token')).toEqual(['session.py'])
+    expect(gi.graph.symbolsOf('session.py')?.refs).toContain('verify_token')
+    expect(gi.graph.usersOf('verify_token')).toEqual([]) // unresolved names are not impact edges
     gi.stop()
   })
 
@@ -67,8 +68,8 @@ describe('GraphIndex', () => {
     room.setOverlay('Rohan', 'session.py', 'def login(t):\n    return first_token(t)\n')
     room.setOverlay('Rohan', 'session.py', 'def login(t):\n    return last_token(t)\n')
     await gi.whenIdle()
-    expect(gi.graph.usersOf('last_token')).toEqual(['session.py'])
-    expect(gi.graph.usersOf('first_token')).toEqual([])
+    expect(gi.graph.symbolsOf('session.py')?.refs).toContain('last_token')
+    expect(gi.graph.symbolsOf('session.py')?.refs).not.toContain('first_token')
     room.markDeleted('Rohan', 'utils.py')
     await gi.whenIdle()
     expect(gi.graph.definersOf('validate_token')).toEqual([])

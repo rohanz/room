@@ -2,6 +2,7 @@ import { createWriteIntentReader } from '../hooks-bridge.js'
 import { ConflictWatcher } from '../conflicts.js'
 import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
+import { ensureLanguages, parseFile } from '../parse/engine.js'
 import { nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -38,7 +39,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (directory) {
         range = { from: 1, to: Number.MAX_SAFE_INTEGER }
       } else if (symbol) {
-        const r0 = isNew ? undefined : symbolRange(p, t!, symbol)
+        if (!isNew) await ensureLanguages([p])
+        const r0 = isNew ? undefined : symbolRange(p, t!, symbol, parseFile)
         if (!r0) return `error: could not find a definition of ${symbol} in ${p}; pass from/to instead`
         range = r0
       } else {

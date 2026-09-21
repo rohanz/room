@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { observedContractChanges, SymbolGraph, regexExtractor, symbolRange } from './graph.js'
+import type { FileParser, ParsedDef } from './parsed.js'
+
+const parsed = (defs: ParsedDef[]): ReturnType<FileParser> => ({ defs, refs: [], imports: [] })
 
 describe('SymbolGraph', () => {
   it('extracts python defs and refs, ignoring keywords and self-defs', () => {
@@ -50,6 +53,23 @@ describe('observedContractChanges', () => {
       ['tax', 'signature'], ['total', 'signature'],
     ])
   })
+
+  it('uses parser signatures and container-qualified names without treating bodies as contracts', () => {
+    const parser: FileParser = (_path, text) => {
+      if (text === 'base' || text === 'body') return parsed([
+        { name: 'new', container: 'Foo', kind: 'function_item', from: 2, to: 4, signature: 'fn new(value: i32)' },
+        { name: 'new', container: 'Bar', kind: 'function_item', from: 7, to: 9, signature: 'fn new(value: i32)' },
+      ])
+      return parsed([
+        { name: 'new', container: 'Foo', kind: 'function_item', from: 2, to: 4, signature: 'fn new(value: i64)' },
+        { name: 'new', container: 'Bar', kind: 'function_item', from: 7, to: 9, signature: 'fn new(value: i32)' },
+      ])
+    }
+    expect(observedContractChanges('base', 'body', 'lib.rs', parser)).toEqual([])
+    expect(observedContractChanges('base', 'signature', 'lib.rs', parser)).toEqual([{
+      symbol: 'Foo.new', kind: 'signature', detail: 'was `fn new(value: i32)` now `fn new(value: i64)`',
+    }])
+  })
 })
 
 describe('symbolRange', () => {
@@ -63,5 +83,14 @@ describe('symbolRange', () => {
     const js = 'const x = 1\nexport function f(a) {\n  if (a) {\n    return 1\n  }\n}\nconst g = () => 2\n'
     expect(symbolRange('f.ts', js, 'f')).toEqual({ from: 2, to: 6 })
     expect(symbolRange('f.ts', js, 'g')).toEqual({ from: 7, to: 7 })
+  })
+
+  it('uses parser ranges when available', () => {
+    const parser: FileParser = () => parsed([
+      { name: 'new', container: 'Foo', kind: 'function_item', from: 3, to: 8, signature: 'fn new()' },
+    ])
+    expect(symbolRange('lib.rs', 'anything', 'Foo.new', parser)).toEqual({ from: 3, to: 8 })
+    expect(symbolRange('lib.rs', 'anything', 'new', parser)).toEqual({ from: 3, to: 8 })
+    expect(symbolRange('lib.rs', 'anything', 'comment_only', parser)).toBeUndefined()
   })
 })

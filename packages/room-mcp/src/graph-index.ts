@@ -4,9 +4,10 @@
  */
 import { observedContractChanges, SymbolGraph, type FileSymbols, type GraphSnapshot, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
-import { extractSymbols } from './pyextract.js'
+import { parseFile, ensureLanguages } from './parse/engine.js'
+import { specForPath } from './parse/index.js'
 
-const SOURCE_EXT = /\.(py|js|jsx|ts|tsx|mjs|mts|cjs)$/
+const isSourcePath = (path: string): boolean => specForPath(path) !== undefined
 const MAX_FILES = 3000
 const MAX_BYTES = 256 * 1024
 /** Snapshot limits: every publish is appended to the room's persisted update log, so keep each one small and rare. */
@@ -43,7 +44,7 @@ export class GraphIndex {
 
   start(): void {
     for (const person of new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) {
-      for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) this.previousChanged.add(p)
+      for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) this.previousChanged.add(p)
     }
     this.ready = this.initialBuild()
     const onOverlays = () => { if (!this.stopped) this.refreshChanged() }
@@ -100,7 +101,7 @@ export class GraphIndex {
     const shared = this.reusableSnapshot()
     if (shared) {
       this.reuse(shared)
-      await Promise.all(this.room.changedPaths(this.me).filter(p => SOURCE_EXT.test(p)).map(p => this.refresh(p)))
+      await Promise.all(this.room.changedPaths(this.me).filter(isSourcePath).map(p => this.refresh(p)))
       if (generation !== this.generation || this.stopped) return
       this.phase = 'ready'
       this.publish('ready')
@@ -108,16 +109,17 @@ export class GraphIndex {
       return
     }
     let paths: string[] = []
-    try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', this.base])).split('\n').filter(p => SOURCE_EXT.test(p)) }
+    try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', this.base])).split('\n').filter(isSourcePath) }
     catch (e) { if (generation === this.generation) { this.phase = 'error'; this.publish('error') }; this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`); return }
     if (generation !== this.generation || this.stopped) return
     this.truncated = paths.length > MAX_FILES
     if (paths.length > MAX_FILES) { this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`); paths = paths.slice(0, MAX_FILES) }
     const all = new Set(paths)
-    for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) all.add(p)
+    for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) all.add(p)
     for (const p of this.cache.keys()) if (!all.has(p)) { this.cache.delete(p); this.graph.remove(p) }
     const t0 = Date.now()
     const queue = Array.from(all)
+    await ensureLanguages(queue)
     await Promise.all(Array.from({ length: Math.min(8, queue.length) }, async () => {
       while (queue.length && generation === this.generation && !this.stopped) await this.refresh(queue.shift()!)
     }))
@@ -130,7 +132,7 @@ export class GraphIndex {
   private refreshChanged(): void {
     if (!this.base) return
     const changed = new Set<string>()
-    for (const person of (this.reused ? [this.me] : new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()]))) for (const p of this.room.changedPaths(person)) if (SOURCE_EXT.test(p)) changed.add(p)
+    for (const person of (this.reused ? [this.me] : new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()]))) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) changed.add(p)
     for (const p of new Set([...changed, ...this.previousChanged])) void this.refresh(p)
     this.previousChanged = changed
   }
@@ -152,8 +154,14 @@ export class GraphIndex {
     const p = (async () => {
       while (!this.stopped) {
         const revision = this.revisions.get(path), generation = this.generation
+        await ensureLanguages([path])
         const text = this.reused ? undefined : await this.textFor(path)
-        const symbols = this.reused || text === undefined || text.length > MAX_BYTES ? undefined : await extractSymbols(path, text)
+        const parsed = this.reused || text === undefined || text.length > MAX_BYTES ? undefined : parseFile(path, text)
+        const symbols: FileSymbols | undefined = parsed ? {
+          defs: parsed.defs.map(definition => definition.name),
+          refs: parsed.refs,
+          imports: parsed.imports,
+        } as FileSymbols & { imports?: string[] } : undefined
         const mine = this.room.text(path, this.me)
         const mineDeleted = this.room.deleted.get(this.me)?.has(path) ?? false
         const baseText = mine !== undefined || mineDeleted ? await gitShow(this.dir, this.base, path) : undefined
@@ -164,7 +172,7 @@ export class GraphIndex {
           else { this.cache.set(path, symbols); this.graph.set(path, text) }
         }
         if (mine !== undefined || mineDeleted) {
-          const changes = observedContractChanges(baseText ?? '', mineDeleted ? '' : mine ?? '', path).map(change => ({ path, ...change }))
+          const changes = observedContractChanges(baseText ?? '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
           if (changes.length) this.observedByPath.set(path, changes)
           else this.observedByPath.delete(path)
         } else this.observedByPath.delete(path)

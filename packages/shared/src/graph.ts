@@ -7,7 +7,9 @@
  * the base commit plus everyone's overlays and refreshes one file at a time.
  */
 
-export interface FileSymbols { defs: string[]; refs: string[] }
+import type { FileParser, ParsedDef } from './parsed.js'
+
+export interface FileSymbols { defs: string[]; refs: string[]; imports?: string[] }
 export type ObservedContractKind = 'signature' | 'delete' | 'add'
 export interface ObservedContractChange { path: string; symbol: string; kind: ObservedContractKind; detail: string }
 /** Read-only browser projection, published by each participant's local indexer. */
@@ -82,7 +84,19 @@ function pythonHeader(line: string): string {
   return line
 }
 
-function definitionLines(path: string, text: string): Map<string, DefinitionLine> | undefined {
+const definitionName = (definition: ParsedDef): string => definition.container ? `${definition.container}.${definition.name}` : definition.name
+
+function definitionLines(path: string, text: string, parse?: FileParser): Map<string, DefinitionLine> | undefined {
+  const parsed = parse?.(path, text)
+  if (parsed) {
+    const out = new Map<string, DefinitionLine>()
+    for (const definition of parsed.defs) {
+      const name = definitionName(definition)
+      const display = normalized(definition.signature)
+      if (!out.has(name)) out.set(name, { display, canonical: comparable(display) })
+    }
+    return out
+  }
   const ext = path.slice(path.lastIndexOf('.') + 1)
   const out = new Map<string, DefinitionLine>()
   const add = (name: string, raw: string, signature = raw) => {
@@ -119,8 +133,8 @@ function definitionLines(path: string, text: string): Map<string, DefinitionLine
 }
 
 /** Definition-line changes inferred from an overlay; ordinary body edits are intentionally ignored. */
-export function observedContractChanges(baseText: string, overlayText: string, path: string): Omit<ObservedContractChange, 'path'>[] {
-  const before = definitionLines(path, baseText), after = definitionLines(path, overlayText)
+export function observedContractChanges(baseText: string, overlayText: string, path: string, parse?: FileParser): Omit<ObservedContractChange, 'path'>[] {
+  const before = definitionLines(path, baseText, parse), after = definitionLines(path, overlayText, parse)
   if (!before || !after) return []
   const changes: Omit<ObservedContractChange, 'path'>[] = []
   for (const [symbol, oldLine] of before) {
@@ -206,7 +220,12 @@ function del(m: Map<string, Set<string>>, k: string, v: string) { const s = m.ge
  * undefined. Python: the def/class line through the last line indented deeper than it.
  * JS/TS: the declaration line through its matching closing brace.
  */
-export function symbolRange(path: string, text: string, symbol: string): { from: number; to: number } | undefined {
+export function symbolRange(path: string, text: string, symbol: string, parse?: FileParser): { from: number; to: number } | undefined {
+  const parsed = parse?.(path, text)
+  if (parsed) {
+    const definition = parsed.defs.find(candidate => candidate.name === symbol || definitionName(candidate) === symbol)
+    return definition ? { from: definition.from, to: definition.to } : undefined
+  }
   const lines = text.split('\n')
   const ext = path.slice(path.lastIndexOf('.') + 1)
   const esc = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
