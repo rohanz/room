@@ -62,13 +62,41 @@ export function newestModelInTranscriptTail(tail, startsMidLine = false) {
 export function readHookSeen(file) {
   const value = readJson(file, { seen: [], companyTold: false })
   if (Array.isArray(value)) return { seen: value, companyTold: false }
-  return { seen: Array.isArray(value?.seen) ? value.seen : [], companyTold: value?.companyTold === true, ...(value?.transcript && typeof value.transcript === 'object' ? { transcript: value.transcript } : {}), ...(value?.shown && typeof value.shown === 'object' ? { shown: value.shown } : {}) }
+  return { seen: Array.isArray(value?.seen) ? value.seen : [], companyTold: value?.companyTold === true, ...(value?.transcript && typeof value.transcript === 'object' ? { transcript: value.transcript } : {}), ...(value?.shown && typeof value.shown === 'object' ? { shown: value.shown } : {}), ...(value?.near && typeof value.near === 'object' ? { near: value.near } : {}), ...(value?.claims && typeof value.claims === 'object' ? { claims: value.claims } : {}) }
 }
 
 export function writeHookSeen(file, value) {
   const seen = value.seen.slice(-2000)
   const shown = value.shown ? Object.fromEntries(seen.filter(id => typeof value.shown[id] === 'string').map(id => [id, value.shown[id]])) : undefined
-  try { fs.writeFileSync(file, JSON.stringify({ seen, companyTold: value.companyTold === true, ...(value.transcript ? { transcript: value.transcript } : {}), ...(shown ? { shown } : {}) })) } catch { /* best effort */ }
+  const near = value.near && typeof value.near === 'object' ? Object.fromEntries(Object.entries(value.near).slice(-200)) : undefined
+  const claims = value.claims && typeof value.claims === 'object' ? Object.fromEntries(Object.entries(value.claims).slice(-200)) : undefined
+  try { fs.writeFileSync(file, JSON.stringify({ seen, companyTold: value.companyTold === true, ...(value.transcript ? { transcript: value.transcript } : {}), ...(shown ? { shown } : {}), ...(near && Object.keys(near).length ? { near } : {}), ...(claims && Object.keys(claims).length ? { claims } : {}) })) } catch { /* best effort */ }
+}
+
+/** Consume hook context under a tiny cross-process lock. The delivered value remains as
+ * an acknowledgement so the MCP process cannot restore or repeat it through a tool reply. */
+export function takePendingContext(file, state, fields = ['pendingDisclosure', 'pendingNotice']) {
+  const lock = file + '.notice-lock'
+  let fd
+  try {
+    fd = fs.openSync(lock, 'wx', 0o600)
+    const current = readJson(file, state)
+    const lines = []
+    for (const field of fields) {
+      if (typeof current?.[field] !== 'string' || !current[field]) continue
+      lines.push(current[field])
+      current[field === 'pendingDisclosure' ? 'deliveredDisclosure' : 'deliveredNotice'] = current[field]
+      delete current[field]
+    }
+    if (lines.length) fs.writeFileSync(file, JSON.stringify(current, null, 1) + '\n')
+    return lines
+  } catch { return [] }
+  finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* best effort */ }
+      try { fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
+    }
+  }
 }
 
 /** Keep evidence separate for two agent sessions using the same worktree. */

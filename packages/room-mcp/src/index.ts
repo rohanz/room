@@ -9,9 +9,10 @@ import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
-import { syncHookSeen } from './hooks-bridge.js'
+import { consumeHookDisclosure, consumeHookNotice, syncHookSeen, writePendingHookContext } from './hooks-bridge.js'
 import { resolveConfig } from './config.js'
 import { pushChannelNotification } from './channel.js'
+import { markTeamSharingDisclosureDelivered, pendingTeamSharingDisclosure, prepareTeamSharingDisclosure } from './tools/join.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
@@ -45,7 +46,18 @@ async function main() {
   LOG_FILE = startup.logFile
   // attachChannel is also handed to the tools so the workers room (opened by room_spawn next to a team session) pushes its wake-ups too.
   const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir, config: startup, attachChannel: s => attachChannel(s) })
-  const adopt = (s: Session) => { session = s; attachChannel(s); tools.attachHooks(s); const n = tools.clearStale(s); if (n) log(`cleared ${n} stale claim(s) from an earlier session`) }
+  const adopt = async (s: Session) => {
+    await prepareTeamSharingDisclosure(s)
+    const disclosure = pendingTeamSharingDisclosure(s)
+    if (disclosure) writePendingHookContext(s.dir, 'pendingDisclosure', disclosure, s.roomName)
+    session = s
+    attachChannel(s)
+    tools.attachHooks(s)
+    const n = tools.clearStale(s)
+    if (n) log(`cleared ${n} stale claim(s) from an earlier session`)
+  }
+
+  let autoJoin: Promise<void> = Promise.resolve()
 
   const mcp = new Server(
     { name: 'room', version: '0.2.0' },
@@ -53,10 +65,23 @@ async function main() {
   )
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }))
   mcp.setRequestHandler(CallToolRequestSchema, async req => {
+    await autoJoin
+    let disclosure = ''
+    if (session) {
+      const sentence = pendingTeamSharingDisclosure(session)
+      if (sentence) {
+        const delivery = consumeHookDisclosure(session, sentence)
+        if (delivery) {
+          markTeamSharingDisclosureDelivered(session)
+          if (delivery === 'tool') disclosure = sentence
+        }
+      }
+    }
     const body = await tools.call(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>)
-    const notice = session ? '' : startupNotice
+    const delivery = startupNotice ? consumeHookNotice(dir, startupNotice) : undefined
+    const notice = session || delivery === 'hook' ? '' : startupNotice
     startupNotice = ''
-    return { content: [{ type: 'text', text: (notice ? notice + '\n\n' : '') + body }] }
+    return { content: [{ type: 'text', text: (notice ? notice + '\n\n' : '') + (disclosure ? disclosure + '\n\n' : '') + body }] }
   })
 
   // Claude Code channel: push interrupts and addressed notifies as they arrive.
@@ -80,7 +105,7 @@ async function main() {
   // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
   // simply a clone with a git origin. A repo nobody has opened waits for room_create.
   const prior = findRoomFile(dir)
-  const autoJoin = (async () => {
+  autoJoin = (async () => {
     try {
       // The clone's origin + current branch always decides the room. ROOM_URL (runner) or a
       // prior .room.json only fill in when the clone has no origin.
@@ -89,14 +114,14 @@ async function main() {
       log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? (startup as typeof startup & { whereEnv?: string }).whereEnv ?? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
       if (chosen === LOCAL) {
         // No server configured: a local room on this machine (workers get the lead's room via ROOM_ROOM).
-        adopt(await joinSession({ dir, room: startup.room, server: LOCAL, log }))
+        await adopt(await joinSession({ dir, room: startup.room, server: LOCAL, log }))
       } else if (startup.room) {
-        adopt(await joinSession({ dir, room: startup.room, server: chosen, log }))
+        await adopt(await joinSession({ dir, room: startup.room, server: chosen, log }))
       } else if (derived.roomName) {
-        adopt(await joinSession({ dir, server: chosen, log }))
+        await adopt(await joinSession({ dir, server: chosen, log }))
       } else if (prior) {
         const u = new URL(prior.room)
-        adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: chosen, log }))
+        await adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: chosen, log }))
       } else { log(`ready; ${dir} has no git origin — call room_join with a room name`); return }
       log('ready')
     } catch (e) {
@@ -106,7 +131,10 @@ async function main() {
         const line = e instanceof NotLoggedIn
           ? 'Room is not connected: not logged in; use room_login.'
           : `Room could not join: ${e instanceof Error ? e.message : String(e)}; use room_join.`
-        if (expected) startupNotice = line
+        if (expected) {
+          startupNotice = line
+          writePendingHookContext(dir, 'pendingNotice', line)
+        }
         log(line)
       }
     }

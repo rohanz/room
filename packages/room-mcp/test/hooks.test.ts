@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
-import { createWriteIntentReader, HooksBridge, hookHealthNote, syncHookSeen } from '../src/hooks-bridge.js'
+import { consumeHookDisclosure, consumeHookNotice, createWriteIntentReader, HooksBridge, hookHealthNote, syncHookSeen, writePendingHookContext } from '../src/hooks-bridge.js'
 import type { Session } from '../src/session.js'
 import { hasCompany } from '../src/company.js'
 import type { Worker } from '@room/shared'
@@ -158,6 +158,13 @@ describe('shell edit hooks', () => {
     expect(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Edit', tool_input: { file_path: 'api-other/tax.py' } })).toBe('')
   })
 
+  it('announces unchanged conflicting claim evidence once', async () => {
+    state({ company: true, others: ['Kieran'] })
+    const input = { cwd: dir, tool_name: 'Edit', tool_input: { file_path: 'api/tax.py' } }
+    expect(await runHook('before-edit.mjs', input)).toContain("Kieran's agent holds api/tax.py:1-1")
+    expect(await runHook('before-edit.mjs', input)).toBe('')
+  })
+
   it.each(shellNames)('%s matches Codex hooks and announces company only once', async tool_name => {
     const manifest = JSON.parse(readFileSync(join(HOOKS, '../hooks.json'), 'utf8'))
     expect(new RegExp(manifest.hooks.PreToolUse[0].matcher).test(tool_name)).toBe(true)
@@ -295,16 +302,64 @@ describe('hooks bridge + plugin hook scripts', () => {
     expect(await runHook('session-start.mjs', { session_id: 'quiet', cwd: dir })).toBe('')
     writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: false, others: [] }))
     expect(await runHook('session-start.mjs', { session_id: 'alone', cwd: dir })).toBe('')
-    writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true, others: ['Kieran'] }))
+    writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ room: 'r', sessionId: 'shared', at: Date.now(), company: true, others: ['Kieran'] }))
     const out = JSON.parse(await runHook('session-start.mjs', { session_id: 'shared', cwd: dir }))
     expect(out.hookSpecificOutput.additionalContext).toBe("[room] Kieran is here.")
+  })
+
+  it('SessionStart ignores stale or foreign company snapshots', async () => {
+    const state = join(dir, '.git/room-state.json')
+    writeFileSync(state, JSON.stringify({ room: 'r', sessionId: 'old-session', at: Date.now() - 24 * 60 * 60_000, company: true, others: ['Kieran'] }))
+    expect(await runHook('session-start.mjs', { session_id: 'new-session', cwd: dir })).toBe('')
+    writeFileSync(state, JSON.stringify({ room: 'r', sessionId: 'other-session', at: Date.now(), company: true, others: ['Kieran'] }))
+    expect(await runHook('session-start.mjs', { session_id: 'new-session', cwd: dir })).toBe('')
+  })
+
+  it.each(['session-start.mjs', 'before-edit.mjs'])('%s delivers a pending solo notice once', async script => {
+    const sessionId = `solo-${script}`
+    writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({
+      room: 'repo/main', sessionId, at: Date.now(), company: false, others: [], unread: [], claims: [], near: [],
+      pendingDisclosure: 'note for your human: this clone now shares only your plans, no file text',
+    }))
+    const input = script === 'session-start.mjs'
+      ? { session_id: sessionId, cwd: dir }
+      : { session_id: sessionId, cwd: dir, tool_name: 'Write', tool_input: { file_path: join(dir, 'app.py') } }
+    const first = JSON.parse(await runHook(script, input)).hookSpecificOutput.additionalContext
+    expect(first).toContain('note for your human: this clone now shares only your plans, no file text')
+    expect(await runHook(script, input)).toBe('')
+  })
+
+  it('delivers an automatic connection failure through hooks without a room tool', async () => {
+    await runHook('session-start.mjs', { session_id: 'failed-startup', cwd: dir })
+    const notice = 'Room is not connected: not logged in; use room_login.'
+    writePendingHookContext(dir, 'pendingNotice', notice)
+    const input = { session_id: 'failed-startup', cwd: dir, tool_name: 'Read' }
+    expect(await runHook('before-edit.mjs', input)).toContain(notice)
+    expect(consumeHookNotice(dir, notice)).toBe('hook')
+    expect(await runHook('before-edit.mjs', input)).toBe('')
+  })
+
+  it('arbitrates pending sharing disclosure once across hook and tool paths', async () => {
+    const s = session(new RoomDoc())
+    await runHook('session-start.mjs', { session_id: 'disclosure-race', cwd: dir })
+    const input = { session_id: 'disclosure-race', cwd: dir, tool_name: 'Read' }
+    const toolFirst = 'note for your human: tool first'
+    writePendingHookContext(dir, 'pendingDisclosure', toolFirst, s.roomName)
+    expect(consumeHookDisclosure(s, toolFirst)).toBe('tool')
+    expect(await runHook('before-edit.mjs', input)).toBe('')
+
+    const hookFirst = 'note for your human: hook first'
+    writePendingHookContext(dir, 'pendingDisclosure', hookFirst, s.roomName)
+    expect(await runHook('before-edit.mjs', input)).toContain(hookFirst)
+    expect(consumeHookDisclosure(s, hookFirst)).toBe('hook')
+    s.awareness.destroy(); s.room.doc.destroy()
   })
 
   it('SessionStart resets company delivery for a new session without forgetting seen inbox ids', async () => {
     const seenFile = join(dir, '.git/room-hook-seen.json')
     writeFileSync(seenFile, JSON.stringify({ seen: ['old'], companyTold: true }))
     writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({
-      company: true, others: ['Kieran'],
+      room: 'r', sessionId: 'new-session', at: Date.now(), company: true, others: ['Kieran'],
       unread: [{ id: 'old', priority: 'notify', line: 'old message' }], claims: [],
     }))
     await runHook('session-start.mjs', { session_id: 'new-session', cwd: dir })
@@ -478,11 +533,9 @@ describe('hooks bridge + plugin hook scripts', () => {
     expect(ctx).toContain('[room inbox 1]')
     expect(ctx).toContain('touching app.py?')
     expect(ctx).toContain("Kieran's agent holds app.py:1-1 — bump x (plans: rename x → y)")
-    // second edit: inbox already shown by the hook, claim still reported
+    // second edit: unchanged inbox and ownership evidence stay quiet
     const out2 = await runHook('before-edit.mjs', { tool_name: 'Write', cwd: dir, tool_input: { file_path: join(dir, 'app.py') } })
-    const ctx2 = JSON.parse(out2).hookSpecificOutput.additionalContext as string
-    expect(ctx2).not.toContain('[room inbox')
-    expect(ctx2).toContain("Kieran's agent holds")
+    expect(out2).toBe('')
     // unrelated file, nothing new: silent
     expect(await runHook('before-edit.mjs', { tool_name: 'Write', cwd: dir, tool_input: { file_path: join(dir, 'other.py') } })).toBe('')
     b.stop()
@@ -677,6 +730,7 @@ it('company includes who and their scope; nearby claims are needed only for over
   s.room.setScope({ by: 'Ada', byKind: 'agent', area: 'orders', summary: 'pricing', paths: ['api/'], at: Date.now() })
   s.room.setOverlay('Bea', 'other.py', 'changed')
   const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'near', at: Date.now(), cwd: dir }))
   b.write()
   const announce = await runHook('session-start.mjs', { cwd: dir, session_id: 'near' })
   expect(announce).toContain('Ada is here, on orders: api/')
@@ -684,6 +738,21 @@ it('company includes who and their scope; nearby claims are needed only for over
   expect(await edit('api/tax.py')).toContain('Claim before editing: Ada has scope on api/')
   expect(await edit('other.py')).toContain('Bea has changed on other.py')
   expect(await edit('api-other/new.py')).toBe('')
+  b.stop(); peer.destroy(); s.awareness.destroy()
+})
+
+it('announces unchanged near evidence once and stays silent with an adequate own claim', async () => {
+  const s = session(new RoomDoc())
+  const peer = addPresence(s, 'Ada')
+  s.room.setScope({ by: 'Ada', byKind: 'agent', area: 'orders', summary: 'pricing', paths: ['api/'], at: Date.now() })
+  const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
+  b.write()
+  const input = { cwd: dir, session_id: 'near-once', tool_name: 'Write', tool_input: { file_path: 'api/tax.py' } }
+  expect(await runHook('before-edit.mjs', input)).toContain('Claim before editing: Ada has scope on api/')
+  expect(await runHook('before-edit.mjs', input)).toBe('')
+  s.room.addClaim({ path: 'api/tax.py', from: 1, to: 1, by: s.me.name, byKind: 'agent', intent: 'tax rules' })
+  b.write()
+  expect(await runHook('before-edit.mjs', input)).toBe('')
   b.stop(); peer.destroy(); s.awareness.destroy()
 })
 

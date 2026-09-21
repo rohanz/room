@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readStdinJson, gitRoot, gitStatePath, sessionStateDir, readJson, readHookSeen, writeHookSeen, companyLine } from './common.mjs'
+import { readStdinJson, gitRoot, gitStatePath, sessionStateDir, readJson, readHookSeen, writeHookSeen, takePendingContext, companyLine } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -24,10 +24,16 @@ if (root && id) {
 if (root) {
   const seenFile = gitStatePath(root, 'room-hook-seen.json')
   const hookSeen = readHookSeen(seenFile)
-  const state = readJson(gitStatePath(root, 'room-state.json'), null)
-  const announced = state?.company === true
+  const stateFile = gitStatePath(root, 'room-state.json')
+  const state = readJson(stateFile, null)
+  const now = Date.now()
+  const fresh = typeof state?.at === 'number' && state.at <= now && now - state.at < 60_000
+  const sameSession = state?.sessionId === id
+  const notices = fresh && (state?.sessionId === undefined || sameSession) ? takePendingContext(stateFile, state) : []
+  const announced = fresh && sameSession && typeof state?.room === 'string' && state.room.length > 0 && state.company === true
   writeHookSeen(seenFile, { ...hookSeen, companyTold: announced })
-  if (announced) {
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: companyLine(state) } }))
+  const lines = [...notices, ...(announced ? [companyLine(state)] : [])]
+  if (lines.length) {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: lines.join('\n') } }))
   }
 }

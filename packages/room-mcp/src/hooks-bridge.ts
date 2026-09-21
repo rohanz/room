@@ -30,6 +30,63 @@ function gitStatePath(root: string, name: string): string {
   return path.join(dotgit, name)
 }
 
+type PendingHookField = 'pendingDisclosure' | 'pendingNotice'
+type HookState = Record<string, unknown> & { sessionId?: string; at?: number; pendingDisclosure?: string; deliveredDisclosure?: string; pendingNotice?: string; deliveredNotice?: string }
+
+function readHookState(dir: string): HookState {
+  try { return JSON.parse(fs.readFileSync(gitStatePath(dir, 'room-state.json'), 'utf8')) as HookState } catch { return {} }
+}
+
+function hookSessionId(dir: string): string | undefined {
+  try { const id = JSON.parse(fs.readFileSync(gitStatePath(dir, 'room-session.json'), 'utf8')).session_id; return typeof id === 'string' && id ? id : undefined } catch { return undefined }
+}
+
+/** Queue context for either hook path. The hook moves the field to its delivered acknowledgement. */
+export function writePendingHookContext(dir: string, field: PendingHookField, text: string, room?: string, now = Date.now()): void {
+  const file = gitStatePath(dir, 'room-state.json')
+  const previous = readHookState(dir)
+  const delivered = field === 'pendingDisclosure' ? 'deliveredDisclosure' : 'deliveredNotice'
+  const sessionId = hookSessionId(dir)
+  const sameBoundary = !!sessionId && previous.sessionId === sessionId
+  const state: HookState = { ...(sameBoundary ? previous : { company: false, others: [], unread: [], claims: [], ownClaims: [], near: [] }), ...(room ? { room } : {}), ...(sessionId ? { sessionId } : {}), at: now, [field]: text }
+  delete state[delivered]
+  try { fs.writeFileSync(file, JSON.stringify(state, null, 1) + '\n') } catch { /* hooks are optional */ }
+}
+
+/** Arbitrate the hook and tool delivery paths for the same sharing sentence. */
+export function consumeHookDisclosure(s: Session, sentence: string): 'hook' | 'tool' | undefined {
+  return consumeHookContext(s.dir, 'pendingDisclosure', sentence)
+}
+
+/** The same once-only arbitration for startup connection notices, before a Session exists. */
+export function consumeHookNotice(dir: string, sentence: string): 'hook' | 'tool' | undefined {
+  return consumeHookContext(dir, 'pendingNotice', sentence)
+}
+
+function consumeHookContext(dir: string, field: PendingHookField, sentence: string): 'hook' | 'tool' | undefined {
+  const file = gitStatePath(dir, 'room-state.json')
+  const lock = file + '.notice-lock'
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(lock, 'wx', 0o600)
+    const state = readHookState(dir)
+    const delivered = field === 'pendingDisclosure' ? 'deliveredDisclosure' : 'deliveredNotice'
+    if (state[delivered] === sentence) return 'hook'
+    if (state[field] !== sentence) return undefined
+    state[delivered] = sentence
+    delete state[field]
+    fs.writeFileSync(file, JSON.stringify(state, null, 1) + '\n')
+    return 'tool'
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EEXIST' ? 'hook' : undefined
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* best effort */ }
+      try { fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
+    }
+  }
+}
+
 /** Pin the host session before another session can replace the clone's hint. */
 export function createWriteIntentReader(dir: string, now: () => number = Date.now): (p: string) => boolean | undefined {
   const sessionId = () => {
@@ -153,7 +210,9 @@ export class HooksBridge {
     syncHookSeen(this.s)
     const me = this.s.me.name
     const unread = this.s.room.messages().filter(m => !this.isSeen(m.id) && this.o.forMe(m)).map(m => ({ id: m.id, priority: m.priority, line: formatMsg(m) }))
-    const claims = this.s.room.openClaims().filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
+    const openClaims = this.s.room.openClaims()
+    const ownClaims = openClaims.filter(c => c.by === me && isAgentic(c.byKind)).map(c => ({ path: c.path, from: c.from, to: c.to }))
+    const claims = openClaims.filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
     const near = [
       ...this.s.room.allScopes().filter(sc => sc.by !== me).flatMap(sc => sc.paths.map(path => ({ by: sc.by, path, reason: 'scope' }))),
       ...claims.map(c => ({ by: c.by, path: c.path, reason: 'claim' })),
@@ -161,8 +220,27 @@ export class HooksBridge {
         .flatMap(by => this.s.room.changedPaths(by).map(path => ({ by, path, reason: 'changed' }))),
     ]
     const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now())
-    try { fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, at: this.o.now?.() ?? Date.now(), company: company.company, others: company.others, companyLine: describeCompany(this.s, company), unread, claims, near }, null, 1) + '\n') }
-    catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`) }
+    const sessionId = this.freshSession()?.id
+    const lock = this.stateFile() + '.notice-lock'
+    let fd: number | undefined
+    try {
+      fd = fs.openSync(lock, 'wx', 0o600)
+      const previous = readHookState(this.s.dir)
+      const at = this.now()
+      const carry = (!previous.sessionId || !sessionId || previous.sessionId === sessionId) &&
+        typeof previous.at === 'number' && previous.at <= at && at - previous.at < 60_000
+        ? Object.fromEntries(['pendingDisclosure', 'deliveredDisclosure', 'pendingNotice', 'deliveredNotice']
+            .filter(key => typeof previous[key] === 'string').map(key => [key, previous[key]])) : {}
+      fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, ...(sessionId ? { sessionId } : {}), at, company: company.company, others: company.others, companyLine: describeCompany(this.s, company), unread, claims, ownClaims, near, ...carry }, null, 1) + '\n')
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EEXIST') this.scheduleWrite()
+      else this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd) } catch { /* best effort */ }
+        try { fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
+      }
+    }
   }
 
   /** Interrupts, questions addressed to me, and a base move while I have uncommitted work wake the idle Codex thread, once per message. */

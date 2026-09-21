@@ -4,15 +4,23 @@
 // Reads .git/room-state.json, which the room MCP server keeps current.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, newestModelInTranscriptTail } from './common.mjs'
+import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, takePendingContext, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, newestModelInTranscriptTail } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
 if (!root) process.exit(0)
 const stateDir = sessionStateDir(root, ev.session_id)
-const state = readJson(path.join(stateDir, 'room-state.json'), null)
+const stateFile = path.join(stateDir, 'room-state.json')
+const state = readJson(stateFile, null)
+const sameSession = state?.sessionId === undefined || ev.session_id === undefined || state.sessionId === ev.session_id
+const stateFresh = typeof state?.at !== 'number' || (state.at <= Date.now() && Date.now() - state.at < 60_000)
+const pending = state && sameSession && (state.sessionId !== undefined || stateFresh) ? takePendingContext(stateFile, state) : []
 // Only the state lookup is needed while alone; no activity, transcript or write scans.
-if (!state || state.company !== true) process.exit(0)
+if (!state || !sameSession || (state.company !== true && !pending.length)) process.exit(0)
+if (state.company !== true) {
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: pending.join('\n') } }))
+  process.exit(0)
+}
 const activityFile = path.join(stateDir, 'room-hook-activity.json')
 const now = Date.now()
 const paths = (isShellTool(ev.tool_name) ? shellLooksLikeWrite(ev.tool_input) : /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
@@ -57,7 +65,7 @@ if (typeof state.name === 'string' && fresh.length) {
 const claims = (state.claims ?? []).filter(c => paths.some(p => c.path.endsWith('/') ? p.startsWith(c.path) : p === c.path))
 
 const nearby = (state.near ?? []).filter(n => paths.some(p => coversPath(p, n.path)))
-const lines = []
+const lines = [...pending]
 if (state.company === true && !hookSeen.companyTold) {
   lines.push(companyLine(state))
   hookSeen.companyTold = true
@@ -66,14 +74,34 @@ if (fresh.length) {
   lines.push(`[room inbox ${fresh.length}]`)
   for (const m of fresh) lines.push(`  ${m.line}`)
 }
-if (nearby.length) {
-  lines.push('[room] Claim before editing: ' + [...new Set(nearby.map(n => `${n.by} has ${n.reason} on ${n.path}`))].join('; ') + '.')
+const nearEvidence = [...new Set(nearby.map(n => `${n.by} has ${n.reason} on ${n.path}`))].sort()
+const adequateClaim = paths.length > 0 && paths.every(p => (state.ownClaims ?? []).some(c => coversPath(p, c.path)))
+const nearKey = JSON.stringify(nearEvidence)
+const previousNear = hookSeen.near ?? {}
+const nearChanged = paths.some(p => nearby.length
+  ? previousNear[p] !== `${adequateClaim ? 'claimed' : 'open'}:${nearKey}`
+  : previousNear[p] !== undefined)
+for (const p of paths) {
+  if (nearby.length) previousNear[p] = `${adequateClaim ? 'claimed' : 'open'}:${nearKey}`
+  else delete previousNear[p]
 }
-if (claims.length) {
+hookSeen.near = previousNear
+if (nearby.length && !adequateClaim && nearChanged) {
+  lines.push('[room] Claim before editing: ' + nearEvidence.join('; ') + '.')
+}
+const claimEvidence = JSON.stringify(claims.map(c => [c.id, c.path, c.from, c.to, c.by, c.intent, c.plans]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
+const previousClaims = hookSeen.claims ?? {}
+const claimsChanged = paths.some(p => claims.length ? previousClaims[p] !== claimEvidence : previousClaims[p] !== undefined)
+for (const p of paths) {
+  if (claims.length) previousClaims[p] = claimEvidence
+  else delete previousClaims[p]
+}
+hookSeen.claims = previousClaims
+if (claims.length && claimsChanged) {
   lines.push(`[room claims on ${paths.join(', ')}]`)
   for (const c of claims) lines.push(`  ${c.by}'s agent holds ${c.path}:${c.from}-${c.to} — ${c.intent}${c.plans ? ` (plans: ${c.plans})` : ''}. Do not edit inside that range; room_wait or ask.`)
 }
-if (transcriptChecked || fresh.length || lines.length || hookSeen.companyTold !== companyWasTold) {
+if (transcriptChecked || fresh.length || lines.length || nearChanged || claimsChanged || hookSeen.companyTold !== companyWasTold) {
   writeHookSeen(seenFile, { ...hookSeen, seen: [...seen, ...fresh.map(m => m.id)], companyTold: hookSeen.companyTold })
 }
 if (lines.length) {
