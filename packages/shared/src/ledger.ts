@@ -1,4 +1,12 @@
-import type { Msg, Plan, ReleaseMsg, Scope } from './types.js'
+import type { Msg, Plan, ReleaseMsg, Scope, RetiredWorker } from './types.js'
+
+export const MAX_RETIRED_WORKERS = 200
+
+export function compactRetiredWorker(record: RetiredWorker): RetiredWorker {
+  const files = [...new Set(record.files)]
+  return { ...record, task: record.task.slice(0, 200), summary: record.summary.slice(0, 400),
+    files: files.slice(0, 50), fileCount: Math.max(record.fileCount, files.length) }
+}
 
 export type LedgerEntry = Msg
 const LEDGER_TYPES = new Set<Msg['type']>(['scope', 'claim', 'changed', 'release', 'conflict', 'base', 'plan'])

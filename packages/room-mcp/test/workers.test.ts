@@ -204,7 +204,7 @@ describe('room_spawn / room_done / room_dismiss', () => {
     const out = await waiting
     expect(out).toContain('worker done:')
     expect(out).toContain('exited without room_done')
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'done', exitCode: 0 })
+    expect(t.a.workers.get('money')).toMatchObject({ status: 'failed', exitCode: 0 })
   })
 
   it('refuses beyond the worker budget', async () => {
@@ -256,7 +256,7 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(t.a.workers.get('money')).toMatchObject({ status: 'done', exitCode: 0 })
   })
 
-  it('a worker that exits without room_done is marked failed or done by exit code; dismiss kills a running one', async () => {
+  it('a worker that exits without room_done is marked failed regardless of exit code; dismiss kills a running one', async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
     await t.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
@@ -267,7 +267,8 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(d).toContain('dismissed b')
     expect(t.killed).toHaveLength(1)
     expect(t.a.workers.get('b')?.status).toBe('dismissed')
-    expect(await t.leadTools.call('room_dismiss', { tag: 'b' })).toContain('already dismissed')
+    t.exits[1](0)
+    await vi.waitFor(() => expect(t.a.retiredWorkers().some(w => w.tag === 'b')).toBe(true))
   })
 })
 
@@ -366,7 +367,7 @@ describe('worker safety', () => {
     expect(a.workers.get('nope')).toMatchObject({ status: 'failed', exitCode: -1 })
     expect(a.messages().some(m => m.type === 'note' && /could not start: spawn codex ENOENT/.test((m as { text: string }).text))).toBe(true)
     // dismissing it never signals anything
-    expect(await tools.call('room_dismiss', { tag: 'nope' })).toContain('already failed')
+    expect(await tools.call('room_dismiss', { tag: 'nope' })).toContain('retired worker nope')
   })
 
   it('room_spawn refuses a dir outside the repo unless allowOutside, and then skips worktree bookkeeping', async () => {
@@ -446,13 +447,16 @@ describe('review fixes: workers', () => {
     expect(t.a.workers.get('money')!.gen).toBe(1)
     // dismissed (process signalled) but the exit callback has not fired yet
     await t.leadTools.call('room_dismiss', { tag: 'money' })
+    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('process is still alive')
+    t.exits[0](1)
+    await vi.waitFor(() => expect(t.a.workers.has('money')).toBe(false))
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })
     const second = t.a.workers.get('money')!
-    expect(second).toMatchObject({ status: 'running', task: 'second', gen: 2 })
+    expect(second).toMatchObject({ status: 'running', task: 'second', gen: second.gen })
     t.exits[0](1) // the first process finally dies
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'running', task: 'second', gen: 2 })
+    expect(t.a.workers.get('money')).toMatchObject({ status: 'running', task: 'second', gen: second.gen })
     t.exits[1](0)
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'done', gen: 2 })
+    expect(t.a.workers.get('money')).toMatchObject({ status: 'failed', gen: second.gen })
     // and while a process is alive the tag cannot be reused
     await t.leadTools.call('room_spawn', { tag: 'x', task: 't' })
     expect(await t.leadTools.call('room_spawn', { tag: 'x', task: 'again' })).toContain('already running')
@@ -527,8 +531,10 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(merged).toMatchObject({ PATH: '/bin', ROOM_MAX_WORKERS: '3', ROOM_DIR: env.ROOM_DIR, ROOM_TAG: 'money' })
     // a second spawn of a reused tag carries the next generation
     t.exits[0](0)
+    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('still holds its room state')
+    await t.leadTools.call('room_dismiss', { tag: 'money' })
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })
-    expect(t.specs[1].env.ROOM_GEN).toBe('2')
+    expect(Number(t.specs[1].env.ROOM_GEN)).toBeGreaterThan(1)
   })
 
   it('W2/W3: the same tag in the lead\'s room and the workers room are two processes; reads and diffs of a local worker come from the workers room', async () => {
@@ -710,4 +716,30 @@ it('passes explicit effort only to the verified Claude flag; no effort is invent
   expect(workerCommand('claude', undefined, 'task').args).not.toContain('--effort')
   expect(workerCommand('codex', undefined, 'task', '', 'medium').args).not.toContain('medium')
   expect(workerEnv({ ROOM_WORKER_HOST: 'claude', ROOM_WORKER_MODEL: 'old', ROOM_WORKER_EFFORT: 'high' }, {})).toEqual({})
+})
+
+describe('retirement integration', () => {
+  it('archives a done worker only after its dismissed process exits, preserving its summary and files', async () => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'archive me' })
+    t.a.setOverlay('rohanz+money', 'app.py', 'x = 2\n')
+    t.a.updateWorker('money', { status: 'done', summary: 'implemented money', finishedAt: Date.now() })
+    await t.leadTools.call('room_dismiss', { tag: 'money' })
+    expect(t.a.retiredWorkers()).toEqual([])
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.a.workers.has('money')).toBe(false))
+    expect(t.a.retiredWorkers()).toMatchObject([{ name: 'rohanz+money', summary: 'implemented money', files: ['app.py'], outcome: 'dismissed' }])
+    expect(t.a.changedPaths('rohanz+money')).toEqual([])
+    await t.leadTools.shutdown()
+  })
+
+  it('a merge preview retires a merged done worker even with a dirty worktree', async () => {
+    const t = setupLead()
+    execFileSync('git', ['-C', dir, 'branch', 'room/finished'])
+    writeFileSync(join(dir, 'uncommitted-retirement-check'), 'dirty')
+    t.a.setWorker({ tag: 'finished', name: 'rohanz+finished', host: 'codex', task: 'x', dir, branch: 'room/finished', pid: -1, startedAt: 1, status: 'done', lead: 'rohanz', exitCode: 0 })
+    await t.leadTools.call('room_preview_merge', {})
+    expect(t.a.retiredWorkers()).toMatchObject([{ tag: 'finished', outcome: 'merged' }])
+    await t.leadTools.shutdown()
+  })
 })

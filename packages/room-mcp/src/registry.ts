@@ -10,7 +10,7 @@
  */
 import type { Presence, Worker } from '@room/shared'
 import type { Session } from './session.js'
-import type { SpawnedProcess } from './workers.js'
+import { pidAlive, shouldRetire, workerGitFacts, type SpawnedProcess } from './workers.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -44,6 +44,8 @@ export class Rooms {
   private handles = new Map<string, { proc: SpawnedProcess; session: Session }>()
   /** Tags whose worktree is being prepared, so two concurrent room_spawn calls cannot both pass the tag check. */
   private reserving = new Set<string>()
+  private retirementTimers = new Map<Session, ReturnType<typeof setInterval>>()
+  private retiring = new Map<Session, Promise<void>>()
 
   constructor(private o: RoomsOptions) {}
 
@@ -72,7 +74,7 @@ export class Rooms {
     const cur = this.entries.get(s)
     if (cur?.attachment) return
     // One primary and one workers room at a time: an older session in the same role is detached first.
-    for (const [other, e] of this.entries) if (other !== s && e.role === role) { e.attachment?.stop(); this.entries.delete(other) }
+    for (const [other, e] of this.entries) if (other !== s && e.role === role) { e.attachment?.stop(); this.stopRetirement(other); this.entries.delete(other) }
     this.entries.set(s, { role, attachment: this.o.attach(s, role, lead) })
   }
   /** Claims observer only (a session the host set without joining through the tools, e.g. in tests). */
@@ -80,9 +82,13 @@ export class Rooms {
     if (this.tracked.has(s)) return
     this.tracked.add(s)
     this.o.observeClaims(s)
+    const timer = setInterval(() => { void this.retireWorkers(s).catch(() => {}) }, 60_000)
+    timer.unref()
+    this.retirementTimers.set(s, timer)
   }
   /** Stop the session's attachments and forget it; a primary is also cleared from the host. Does not leave the room. */
   remove(s: Session): void {
+    this.stopRetirement(s)
     const e = this.entries.get(s)
     e?.attachment?.stop()
     this.entries.delete(s)
@@ -90,6 +96,49 @@ export class Rooms {
     if (this.primary() === s) this.o.setPrimary(null)
   }
   async flush(): Promise<void> { for (const e of this.entries.values()) await e.attachment?.flush?.() }
+
+  private stopRetirement(s: Session): void {
+    clearInterval(this.retirementTimers.get(s))
+    this.retirementTimers.delete(s)
+    this.tracked.delete(s)
+  }
+
+  /** Recheck after exits, dismissals, merge previews and periodically while a session is tracked. */
+  async retireWorkers(session?: Session): Promise<void> {
+    for (const s of session ? [session] : this.all()) {
+      const pending = this.retiring.get(s)
+      if (pending) { await pending; await this.retireWorkers(s); continue }
+      const run = this.evaluateRetirement(s)
+      this.retiring.set(s, run)
+      try { await run } finally { this.retiring.delete(s) }
+    }
+  }
+
+  private async evaluateRetirement(s: Session): Promise<void> {
+    for (const w of s.room.workers.values()) {
+      if (w.lead !== s.me.name || this.hasHandle(s, w)) continue
+      const exited = w.exitCode !== undefined || !pidAlive(w.pid)
+      if (!exited) continue
+      if (w.status === 'running') {
+        s.room.updateWorker(w.tag, { status: 'failed', finishedAt: Date.now(), summary: w.summary ?? 'process exited without room_done' }, w.id)
+        continue
+      }
+      const facts = { exited, done: w.status === 'done', dismissed: w.dismissedAt !== undefined || w.status === 'dismissed', merged: false, clean: false, ahead: undefined as number | undefined }
+      if (!facts.done && !facts.dismissed) continue
+      if (!facts.dismissed) Object.assign(facts, await workerGitFacts(s.dir, w))
+      const outcome = shouldRetire(facts)
+      // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
+      if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
+      const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
+      const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
+      const retiredAt = Date.now()
+      s.room.retireParticipant(w.name, {
+        name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
+        task: w.task, summary: w.summary ?? '', files, fileCount: files.length, startedAt: w.startedAt,
+        finishedAt: w.finishedAt ?? done?.at ?? retiredAt, retiredAt, outcome,
+      })
+    }
+  }
 
   // ---- who lives where ----------------------------------------------------------
   private static presences(s: Session): Presence[] {

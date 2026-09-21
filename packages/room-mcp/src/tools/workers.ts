@@ -40,7 +40,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const myId = ctx.config?.workerId, gen = ctx.config?.gen
       const stale = !!asWorker && (myId ? asWorker.id !== undefined && asWorker.id !== myId : !!gen && asWorker.gen !== undefined && String(asWorker.gen) !== gen)
       if (asWorker) {
-        if (!stale) s.room.updateWorker(asWorker.tag, { status: 'done', summary }, asWorker.id)
+        if (!stale) s.room.updateWorker(asWorker.tag, { status: 'done', summary, finishedAt: now() }, asWorker.id)
         s.room.post<DoneMsg>(s.me, { type: 'done', tag: asWorker.tag, summary: stale ? `${summary} (from an earlier generation of ${asWorker.tag}; the current worker's record was left alone)` : summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: 'notify' })
       } else {
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
@@ -81,7 +81,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const existing = s.room.workers.get(tag)
       if (existing && existing.lead !== s.me.name && existing.status === 'running') return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; pick another tag`
       if (existing && (existing.status === 'running' || workerAlive(s, existing))) return `error: worker ${tag} is ${existing.status === 'running' ? 'already running' : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_dismiss it first or pick another tag`
-      const gen = (existing?.gen ?? 0) + 1
+      if (existing) return `error: worker ${tag} is ${existing.status} and still holds its room state; room_dismiss it before reusing the tag`
+      const retired = s.room.retiredWorkers().filter(w => w.tag === tag && w.lead === s.me.name)
+      const gen = Math.max(0, ...retired.map(w => w.retiredAt)) + 1
       const id = workerId(s.me.name, tag, gen)
       const running = myWorkers(s).filter(w => w.status === 'running')
       const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers: ctx.maxWorkers } })
@@ -149,17 +151,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (!cur) return
           if (cur.status === 'running') s.room.updateWorker(tag, { status: 'failed', exitCode: -1, summary: `could not start ${cmd}: ${err.message}` }, id)
           s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) could not start: ${err.message}; is ${cmd} installed?` })
+          void rooms.retireWorkers(s).catch(e => state.log(`worker retirement: ${e}`))
         })
         proc.onExit(code => {
           rooms.dropHandle(s, id, proc) // this process is gone whatever record the tag holds now
           const cur = s.room.workerById(id)
           if (!cur) return
-          if (cur.status !== 'running') { s.room.updateWorker(tag, { exitCode: code ?? -1 }, id); return }
+          if (cur.status !== 'running') {
+            s.room.updateWorker(tag, { exitCode: code ?? -1, finishedAt: cur.finishedAt ?? now() }, id)
+            void rooms.retireWorkers(s).catch(e => state.log(`worker retirement: ${e}`))
+            return
+          }
           const summary = cur.summary ?? (code === 0 ? 'process exited without room_done' : `process exited with code ${code}`)
-          s.room.updateWorker(tag, { status: code === 0 ? 'done' : 'failed', exitCode: code ?? -1, summary }, id)
+          s.room.updateWorker(tag, { status: 'failed', exitCode: code ?? -1, summary, finishedAt: now() }, id)
           s.room.post<NoteMsg>(s.me, { type: 'note', to: s.me.name, priority: 'notify', text: `worker ${tag} (${name}) exited with code ${code}${code === 0 ? '' : `; see ${logFile}`}` })
           // An exit without room_done still ends the lead's wait: post the done message the worker never sent, as the worker.
           s.room.post<DoneMsg>({ name, kind: 'agent', owner, label: tag }, { type: 'done', tag, summary: `${summary} (exit ${code})`, changed: s.room.changedPaths(name), to: s.me.name, priority: 'notify' })
+          void rooms.retireWorkers(s).catch(e => state.log(`worker retirement: ${e}`))
         })
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
@@ -180,9 +188,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const w = s.room.workers.get(tag)
       if (!w) return `error: no worker ${tag}`
       if (w.lead !== s.me.name) return `error: worker ${tag} was spawned by ${w.lead}, not you`
-      if (w.status !== 'running' && !workerAlive(s, w)) return `worker ${tag} is already ${w.status}; its work is on branch ${w.branch} in ${w.dir}`
+      if (w.status !== 'running' && !workerAlive(s, w)) {
+        s.room.updateWorker(tag, { dismissedAt: now() }, w.id)
+        await rooms.retireWorkers(s)
+        return `${s.room.workers.has(tag) ? `dismissal recorded for worker ${tag}; waiting for confirmed process exit` : `retired worker ${tag} (${w.status}, dismissed)`}; its work is on branch ${w.branch} in ${w.dir}`
+      }
       const how = dismissWorker(s, w, w.status === 'running' ? 'dismissed by the lead' : `its process was stopped by the lead after it reported ${w.status}`)
       if (w.status === 'running' && s.room.workers.get(tag)?.status === 'running') return `could not dismiss ${tag}: ${how}; status stays running; its work is on branch ${w.branch} in ${w.dir}`
+      await rooms.retireWorkers(s)
       return `${w.status === 'running' ? 'dismissed' : `stopped the ${w.status} worker`} ${tag} (${how}); its work is on branch ${w.branch} in ${w.dir}`
     }
   }
@@ -218,6 +231,7 @@ export function install(state: HandlerState): void {
     }
   const dismissWorker = (s: Session, w: Worker, why: string): string => {
       const proc = rooms.handle(s, w.id)
+      if (proc && w.dismissedAt !== undefined) return `pid ${w.pid} already signalled; waiting for exit`
       let how: string, signalled: boolean
       if (proc) {
         signalled = proc.kill()
@@ -229,8 +243,8 @@ export function install(state: HandlerState): void {
         signalled = false
         how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`
       }
-      if (signalled || !proc) rooms.dropHandle(s, w.id)
-      if (signalled && w.status === 'running') s.room.updateWorker(w.tag, { status: 'dismissed' }, w.id)
+      // Keep an owned handle until exit confirms the process can no longer publish live state.
+      if (signalled) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now() }, w.id)
       s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
       return how
     }

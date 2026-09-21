@@ -7,12 +7,48 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { Worker } from '@room/shared'
+import type { Worker, RetiredWorker } from '@room/shared'
 import { git } from '@room/roomd/git'
 
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 
 export type WorkerHost = 'claude' | 'codex'
+
+export interface RetirementFacts {
+  exited: boolean
+  done: boolean
+  dismissed: boolean
+  merged: boolean
+  clean: boolean
+  ahead: number | undefined
+}
+
+/** Explicit dismissal also retires failures, but never a process that is still running. */
+export function shouldRetire(facts: RetirementFacts): RetiredWorker['outcome'] | undefined {
+  if (!facts.exited) return undefined
+  if (facts.dismissed) return 'dismissed'
+  if (!facts.done) return undefined
+  // The agreed rule intentionally allows merged branches with a dirty worktree.
+  if (facts.merged) return 'merged'
+  if (facts.clean && facts.ahead === 0) return 'clean'
+  return undefined
+}
+
+/** Unknown git state must never be mistaken for clean work. */
+export async function workerGitFacts(leadDir: string, w: Worker): Promise<Pick<RetirementFacts, 'merged' | 'clean' | 'ahead'>> {
+  const facts: Pick<RetirementFacts, 'merged' | 'clean' | 'ahead'> = { merged: false, clean: false, ahead: undefined }
+  let head: string
+  try { head = (await git(leadDir, ['rev-parse', 'HEAD'])).trim() } catch { return facts }
+  if (w.branch === `room/${w.tag}`) {
+    try { await git(leadDir, ['merge-base', '--is-ancestor', `refs/heads/${w.branch}`, head]); facts.merged = true } catch { /* unmerged or unknown */ }
+  }
+  try {
+    facts.clean = !(await git(w.dir, ['status', '--porcelain', '--untracked-files=all'])).trim()
+    const count = (await git(w.dir, ['rev-list', '--count', `${head}..HEAD`])).trim()
+    if (/^\d+$/.test(count)) facts.ahead = Number(count)
+  } catch { /* missing worktree, commit or git: retain the worker */ }
+  return facts
+}
 
 export interface SpawnSpec {
   cmd: string
@@ -152,18 +188,4 @@ export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string;
   if (Math.abs(info.start - w.startedAt) > 5000) return false
   if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info.command)) return false
   return info.command.includes(w.tag) || info.command.includes(w.dir)
-}
-
-/** One line per worker of this lead, for room_state. */
-export function workerLines(workers: Worker[], lastLineFrom: (name: string) => string | undefined, changedCount: (name: string) => number, now = Date.now()): string[] {
-  if (!workers.length) return []
-  const out = [`workers (${workers.length}):`]
-  for (const w of workers.sort((a, b) => a.startedAt - b.startedAt)) {
-    const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
-    const alive = w.status === 'running' ? (pidAlive(w.pid) ? '' : ' (process gone)') : ''
-    const last = lastLineFrom(w.name)
-    out.push(`  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`)
-    out.push(`      ${changedCount(w.name)} changed file(s) · branch ${w.branch}${w.summary ? ` · ${w.summary.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`)
-  }
-  return out
 }

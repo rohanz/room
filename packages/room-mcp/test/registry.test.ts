@@ -2,7 +2,7 @@
  * The session registry: which of a process's rooms holds a participant, a question or a worker;
  * attachments start on add and stop on remove; worker ids stay distinct across a reused tag.
  */
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -175,13 +175,16 @@ describe('worker identity', () => {
     const first = a.workers.get('money')!
     expect(first.id).toBe('rohanz/money#1')
     await tools.call('room_dismiss', { tag: 'money' })
+    expect(await tools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('process is still alive')
+    exits[0](0)
+    await vi.waitFor(() => expect(a.workers.has('money')).toBe(false))
     await tools.call('room_spawn', { tag: 'money', task: 'second' })
     const second = a.workers.get('money')!
-    expect(second.id).toBe('rohanz/money#2')
+    expect(second.id).not.toBe(first.id)
     expect(a.workerById('rohanz/money#1')).toBeUndefined()
     exits[0](0) // the first process finally exits: its record is gone, so nothing changes
-    expect(a.workers.get('money')).toMatchObject({ id: 'rohanz/money#2', status: 'running', task: 'second' })
+    expect(a.workers.get('money')).toMatchObject({ id: second.id, status: 'running', task: 'second' })
     exits[1](0)
-    expect(a.workers.get('money')).toMatchObject({ id: 'rohanz/money#2', status: 'done' })
+    expect(a.workers.get('money')).toMatchObject({ id: second.id, status: 'failed' })
   })
 })

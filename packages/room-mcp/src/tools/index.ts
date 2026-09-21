@@ -63,6 +63,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (s) { trackConnection(s, state.now); state.rooms.track(s) }
       try {
         const body = await h(args ?? {})
+        if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
         const s2 = ctx.getSession()
         if (s2 && name !== 'room_join' && name !== 'room_create') s2.daemon.touch()
         const prefix = moved ? `${moved}\n\n` : ''

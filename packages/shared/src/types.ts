@@ -135,10 +135,29 @@ export interface Worker {
   status: WorkerStatus
   summary?: string
   exitCode?: number
+  finishedAt?: number
+  dismissedAt?: number
   /** Participant name of the lead that spawned it. */
   lead: string
   /** Spawn generation for this tag: exit callbacks of an older process must not touch a newer record. */
   gen?: number
+}
+
+/** Compact history of a worker whose live room state has been removed. */
+export interface RetiredWorker {
+  name: string
+  tag: string
+  lead: string
+  host: 'claude' | 'codex'
+  model?: string
+  task: string
+  summary: string
+  files: string[]
+  fileCount: number
+  startedAt: number
+  finishedAt: number
+  retiredAt: number
+  outcome: 'merged' | 'dismissed' | 'clean'
 }
 
 export interface Meta {

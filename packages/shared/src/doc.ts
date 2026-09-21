@@ -12,10 +12,12 @@ import type {
   Priority,
   Scope,
   Worker,
+  RetiredWorker,
+  ReleaseMsg,
 } from './types.js'
 import { newId, PALETTE } from './identity.js'
 import type { GraphSnapshot } from './graph.js'
-import { ledger as ledgerView, areaSummary as areaSummaryView, emptyLedgerArchive, foldLedger, messageAreas, type LedgerArchive, type LedgerQuery } from './ledger.js'
+import { ledger as ledgerView, areaSummary as areaSummaryView, emptyLedgerArchive, foldLedger, messageAreas, compactRetiredWorker, MAX_RETIRED_WORKERS, type LedgerArchive, type LedgerQuery } from './ledger.js'
 
 type ScopeInput = Omit<Scope, 'by' | 'at'> & { at?: number }
 type NewScope = Omit<Scope, 'at'> & { at?: number }
@@ -104,6 +106,33 @@ export class RoomDoc {
   }
   workerOf(name: string): Worker | undefined { for (const w of this.workers.values()) if (w.name === name) return w; return undefined }
   workerById(id: string): Worker | undefined { for (const w of this.workers.values()) if (w.id === id) return w; return undefined }
+  retiredWorkers(): RetiredWorker[] { return this.doc.getArray<RetiredWorker>('retiredWorkers').toArray() }
+
+  /** Atomically replace live worker state with a bounded archive entry. */
+  retireParticipant(name: string, record: RetiredWorker): void {
+    if (record.name !== name) throw new Error('retirement name does not match record')
+    const current = this.workerOf(name)
+    if (current && (current.startedAt !== record.startedAt || current.lead !== record.lead)) return
+    this.doc.transact(() => {
+      const archive = this.doc.getArray<RetiredWorker>('retiredWorkers')
+      if (archive.toArray().some(r => r.name === name && r.startedAt === record.startedAt && r.lead === record.lead)) return
+      for (const claim of this.claims.values()) if (claim.by === name) {
+        this.claims.delete(claim.id)
+        this.post<ReleaseMsg>({ name, kind: claim.byKind }, { type: 'release', claimId: claim.id, path: claim.path, summary: 'retired' })
+      }
+      this.clearOverlays(name)
+      this.scopes.delete(name)
+      this.graphs.delete(name)
+      this.colors.delete(name)
+      this.reconcileColors()
+      this.bases.delete(name)
+      this.seen(name).clear()
+      const worker = this.workers.get(record.tag)
+      if (worker?.name === name && worker.startedAt === record.startedAt) this.workers.delete(record.tag)
+      archive.push([compactRetiredWorker(record)])
+      if (archive.length > MAX_RETIRED_WORKERS) archive.delete(0, archive.length - MAX_RETIRED_WORKERS)
+    })
+  }
   get metaMap(): Y.Map<string | number> { return this.doc.getMap<string | number>('meta') }
   /** Base-commit text of files someone has changed, keyed "<sha>:<path>", so browsers can three-way merge. */
   get baseTexts(): Y.Map<string> { return this.doc.getMap<string>('basetext') }
