@@ -21244,7 +21244,7 @@ var builtins = {
   note: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)}: ${m.text}` },
   done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
   base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up` },
-  plan: { priority: "interrupt", audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""} \u2014 ${m.text}` },
+  plan: { priority: "interrupt", audience: "broadcast", wakes: "never", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""}${m.text ? ` \u2014 ${m.text}` : ""}` },
   scope: { priority: "notify", audience: "everyone", inbox: false, wakes: "always", format: (m) => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` }
 };
 var MessageKinds = builtins;
@@ -30072,6 +30072,13 @@ function sharesArea(a, b) {
 function formatCount(count, singular, plural = singular + "s") {
   return count + " " + (count === 1 ? singular : plural);
 }
+function activityLabel(lastActive, now = Date.now(), options = {}) {
+  if (lastActive === void 0 || !Number.isFinite(lastActive)) return options.running ? "running" : "activity unknown";
+  const seconds = Math.max(0, Math.floor((now - lastActive) / 1e3));
+  const duration3 = seconds < 60 ? seconds + "s" : seconds < 3600 ? Math.floor(seconds / 60) + "m" : seconds < 86400 ? Math.floor(seconds / 3600) + "h" : Math.floor(seconds / 86400) + "d";
+  if (options.running) return now - lastActive > 3e5 ? "running \xB7 quiet " + duration3 : "running";
+  return seconds < 90 ? "working" : "last action " + duration3 + " ago";
+}
 function participantIdentityLine(current, name, worker) {
   const p = [...current].filter((p2) => p2.user.name === name).sort((a, b) => Number(isAgentic(b.user.kind)) - Number(isAgentic(a.user.kind)) || (b.lastActive ?? 0) - (a.lastActive ?? 0))[0];
   const id2 = p?.user ?? (worker ? { name, kind: "agent", owner: worker.name.split("+")[0], label: worker.tag } : void 0);
@@ -30148,7 +30155,7 @@ function personLine(input) {
   if (input.scope) what = `working on ${scopeLine(input.scope)}`;
   else if (p?.status?.startsWith("done")) what = p.status;
   else if (lastDone && (!p || p.status === "idle" || p.status === "synced")) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`;
-  else what = p ? `${p.status ?? "idle"}, no task declared` : "offline";
+  else what = p ? `${p.status && !["idle", "synced"].includes(p.status) ? p.status : activityLabel(p.lastActive)}, no task declared` : "offline";
   const share = input.share === "full" ? "" : `; shares ${input.share}${input.share === "intent" ? " (no file text)" : " (file text only under their scope paths)"}`;
   return `${what}${share}${input.changedPaths.length ? `; uncommitted, not yet pushed: ${input.changedPaths.join(", ")}` : ""}`;
 }
@@ -30158,11 +30165,11 @@ function claimLine(claim2, options = {}) {
 function areaMembershipSummary(areas) {
   return areas.length ? `areas ${Array.from(new Set(areas)).sort().join(", ")}` : "";
 }
-function workerLine({ worker: w, processGone = false, changedCount, last: last2, now = Date.now() }) {
+function workerLine({ worker: w, processGone = false, lastActive, changedCount, last: last2, now = Date.now() }) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
   const alive = w.status === "running" && processGone ? " (process gone)" : "";
   return [
-    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
+    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${w.status === "running" && !processGone ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.summary ? ` \xB7 ${w.summary.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
   ];
 }
@@ -30190,18 +30197,27 @@ var MEMORY_TYPES = {
   colors: "map",
   meta: "map"
 };
+var MEMORY_PREFIXES = { "seen:": { kind: "map", limit: 2e3 } };
+function* memoryTypes(doc) {
+  for (const [name, kind] of Object.entries(MEMORY_TYPES)) if (doc.share.has(name)) yield [name, kind];
+  for (const name of doc.share.keys()) {
+    for (const [prefix, rule] of Object.entries(MEMORY_PREFIXES)) {
+      if (name.startsWith(prefix)) yield [name, rule.kind, rule.limit];
+    }
+  }
+}
 function memorySnapshot(doc) {
   const copy2 = new Doc2();
   try {
     copy2.transact(() => {
-      for (const [name, kind] of Object.entries(MEMORY_TYPES)) {
-        if (!doc.share.has(name)) continue;
+      for (const [name, kind, limit] of memoryTypes(doc)) {
         if (kind === "array") {
           const values = JSON.parse(JSON.stringify(doc.getArray(name).toArray()));
           if (values.length) copy2.getArray(name).push(values);
         } else {
-          const values = JSON.parse(JSON.stringify(doc.getMap(name).toJSON()));
-          for (const [key, value2] of Object.entries(values)) copy2.getMap(name).set(key, value2);
+          let entries = Object.entries(JSON.parse(JSON.stringify(doc.getMap(name).toJSON())));
+          if (limit !== void 0) entries = entries.filter((entry) => typeof entry[1] === "number" && Number.isFinite(entry[1])).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, limit);
+          for (const [key, value2] of entries) copy2.getMap(name).set(key, value2);
         }
       }
     });
@@ -33542,8 +33558,7 @@ var RoomMemory = class {
     clearTimeout(this.debounce);
     clearTimeout(this.deadline);
     this.doc.transact(() => {
-      for (const [name, kind] of Object.entries(MEMORY_TYPES)) {
-        if (!this.doc.share.has(name)) continue;
+      for (const [name, kind] of memoryTypes(this.doc)) {
         if (kind === "map") this.doc.getMap(name).clear();
         else {
           const array2 = this.doc.getArray(name);
@@ -34728,11 +34743,25 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     const worker = daemon.roomDoc.workerOf(name);
     if (worker && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID) && runtime.model && worker.model !== runtime.model) daemon.roomDoc.updateWorker(worker.tag, { model: runtime.model }, worker.id);
   };
+  const activityFile = resolve3(dirname3(file), "room-hook-activity.json");
+  let lastActivity = Date.now();
+  const refreshActivity = () => {
+    try {
+      const activity = JSON.parse(readFileSync(activityFile, "utf8"));
+      const session = JSON.parse(readFileSync(file, "utf8"));
+      if (activity.session_id !== session.session_id || typeof activity.at !== "number" || !Number.isFinite(activity.at) || activity.at <= lastActivity || activity.at > Date.now()) return;
+      lastActivity = activity.at;
+      daemon.touch();
+    } catch {
+    }
+  };
   watchFile2(file, { interval: 500, persistent: false }, refresh);
+  watchFile2(activityFile, { interval: 500, persistent: false }, refreshActivity);
   refresh();
   const stop = daemon.stop.bind(daemon);
   daemon.stop = async () => {
     unwatchFile2(file, refresh);
+    unwatchFile2(activityFile, refreshActivity);
     await stop();
   };
   return { daemon, me: { name, kind: options.kind ?? "agent", owner: options.owner, ...label ? { label } : {} }, autoTagNote };
@@ -35389,6 +35418,26 @@ async function workerGitFacts(leadDir, w) {
   return facts;
 }
 var WORKERS_DIR = path10.join(".room", "workers");
+var warnedMissingNice = false;
+function workerPriority(command, env = process.env, platform = process.platform) {
+  const raw = env.ROOM_WORKER_NICE?.trim();
+  const value2 = raw ? Number(raw) : 10;
+  const nice = Number.isFinite(value2) ? Math.max(0, Math.min(19, Math.trunc(value2))) : 10;
+  if (platform === "win32" || nice === 0) return { ...command, nice: 0 };
+  for (const dir of (env.PATH ?? "/usr/bin:/bin").split(path10.delimiter)) {
+    const executable = path10.resolve(dir, "nice");
+    try {
+      fs9.accessSync(executable, fs9.constants.X_OK);
+      if (fs9.statSync(executable).isFile()) return { cmd: executable, args: ["-n", String(nice), command.cmd, ...command.args], nice };
+    } catch {
+    }
+  }
+  if (!warnedMissingNice) {
+    warnedMissingNice = true;
+    process.stderr.write("room workers: nice is unavailable; starting workers at normal priority\n");
+  }
+  return { ...command, nice: 0 };
+}
 function workerBudget({ cores, memBytes, maxWorkers, running }) {
   const workers = running + 1;
   const divisor = Math.max(1, Math.min(maxWorkers, Math.max(workers, 4)), workers);
@@ -36073,7 +36122,7 @@ function handlers(state) {
       out.push(`participants${all2 ? "" : " overlapping your work"} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? "" : "s"}` : ""}):`);
       for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
-        const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
+        const ago = p ? activityLabel(p.lastActive, now()) : "offline";
         const who2 = participantIdentityLine(ps, n, s.room.workerOf(n));
         const theirs = areasFor(s, n);
         const areaSummary2 = areaMembershipSummary(theirs);
@@ -36110,7 +36159,7 @@ function handlers(state) {
       out.push(`recent bus${all2 ? "" : " in your areas"} (${msgs.length}):`);
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`);
       out.push(...prLines(s));
-      out.push(...workerLines(myWorkers(s).map((worker) => ({ worker, processGone: worker.status === "running" && !pidAlive2(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => {
+      out.push(...workerLines(myWorkers(s).map((worker) => ({ worker, lastActive: presences(s).filter((p) => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone: worker.status === "running" && !pidAlive2(worker.pid), changedCount: s.room.changedPaths(worker.name).length, last: (() => {
         const message = s.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
         return message ? formatMsg(message) : void 0;
       })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter((w) => w.lead === s.me.name) }));
@@ -37653,6 +37702,25 @@ function handlers3(state) {
   };
   return handlers9;
 }
+function releaseClaimsOnDone(s, keep) {
+  const released = s.room.openClaims().filter((c) => c.by === s.me.name && c.byKind === s.me.kind && !keep?.(c));
+  s.room.doc.transact(() => {
+    for (const c of released) {
+      s.room.removeClaim(c.id);
+      s.room.post(s.me, { type: "release", claimId: c.id, path: c.path, summary: "released on done", ...c.plans?.length ? { unfulfilled: c.plans } : {} });
+      for (const plan of c.plans ?? []) postPlanChange(s, c, plan, "cancelled", "", void 0, "fyi");
+    }
+    s.room.clearScope(s.me.name);
+  }, s.me);
+  return released.length;
+}
+function postPlanChange(s, c, plan, status, text, replacedBy, priority2) {
+  const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter((p) => p !== s.me.name);
+  const base = { type: "plan", status, claimId: c.id, path: c.path, plan, text, ...replacedBy ? { replacedBy } : {}, ...priority2 ? { priority: priority2 } : {} };
+  const orig = s.room.post(s.me, base);
+  for (const p of deps) s.room.post(s.me, { ...base, to: p, copyOf: orig.id });
+  return deps.length ? [`plan ${status}: ${formatPlans([plan])} \u2014 told ${deps.map((d) => `${d}'s agent`).join(", ")} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} \u2014 nobody had been shown it`];
+}
 function parsePlans(v) {
   if (v === void 0 || v === null) return [];
   if (!Array.isArray(v)) return "error: plans must be an array";
@@ -37689,13 +37757,7 @@ function install3(state) {
       }
     });
   };
-  const planChanged = (s, c, plan, status, text, replacedBy) => {
-    const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter((p) => p !== s.me.name);
-    const base = { type: "plan", status, claimId: c.id, path: c.path, plan, text, ...replacedBy ? { replacedBy } : {} };
-    const orig = s.room.post(s.me, base);
-    for (const p of deps) s.room.post(s.me, { ...base, to: p, copyOf: orig.id });
-    return deps.length ? [`plan ${status}: ${formatPlans([plan])} \u2014 told ${deps.map((d) => `${d}'s agent`).join(", ")} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} \u2014 nobody had been shown it`];
-  };
+  const planChanged = postPlanChange;
   const startConflictWatcher = (s) => {
     const watcher = new ConflictWatcher({
       room: s.room,
@@ -37740,15 +37802,55 @@ var defs4 = [
   }
 ];
 function handlers4(state) {
-  const { S, rooms, myWorkers, upgrade, setPresence, forMe, seen } = state;
+  const { S, rooms, myWorkers, workerAlive, presences, now, upgrade, setPresence, forMe, seen } = state;
   const offline = (s) => !!s.closed || !s.provider.synced || s.provider.wsconnected === false;
+  const unavailableQuestions = /* @__PURE__ */ new Map();
+  const recipientNotice = (s, name) => {
+    const present = presences(s).some((p) => p.user.name === name);
+    const worker = s.room.workerOf(name);
+    const retired = !worker && s.room.retiredWorkers().filter((w) => w.name === name).sort((a, b) => b.retiredAt - a.retiredAt)[0];
+    const exited = worker && (worker.exitCode !== void 0 || (s.local ? !workerAlive(s, worker) : worker.status !== "running" && !present));
+    if (retired || exited) {
+      const record2 = retired || worker;
+      const finished = record2.finishedAt;
+      const ago = finished === void 0 ? "" : ` ${Math.max(0, Math.floor((now() - finished) / 6e4))}m ago`;
+      const summary = record2.summary?.replace(/\s+/g, " ").trim() || "no summary recorded";
+      return { text: `${name} finished${ago} and will not answer; its summary: ${summary}`, terminal: true };
+    }
+    if (present || worker) return void 0;
+    const known = new Set([
+      s.me.name,
+      ...presences(s).map((p) => p.user.name),
+      ...s.room.colors.keys(),
+      ...s.room.scopes.keys(),
+      ...s.room.overlays.keys(),
+      ...s.room.deleted.keys(),
+      ...s.room.openClaims().map((c) => c.by),
+      ...Array.from(s.room.workers.values(), (w) => w.name),
+      ...s.room.messages().map((m) => m.from)
+    ].filter((n) => !isPrName(n)));
+    if (known.has(name)) return { text: `${name} is offline; it will see this when it returns`, terminal: false };
+    if (offline(s)) return void 0;
+    return { text: `nobody called ${name} is or was in this room; participants: ${[...known].sort().join(", ")}`, terminal: true };
+  };
+  const unavailableQuestion = (s, questionId) => {
+    const cached2 = unavailableQuestions.get(questionId);
+    if (cached2) return cached2;
+    const question = s.room.messages().find((m) => m.id === questionId && m.type === "question");
+    if (!question?.to) return void 0;
+    const notice = recipientNotice(s, question.to);
+    if (!notice?.terminal) return void 0;
+    unavailableQuestions.set(questionId, notice.text);
+    if (unavailableQuestions.size > 256) unavailableQuestions.delete(unavailableQuestions.keys().next().value);
+    return notice.text;
+  };
   const handlers9 = {
     async room_send(a) {
       const lead = S();
       const to2 = typeof a.to === "string" && a.to ? a.to : void 0;
       const wsr = rooms.workers();
       const byQuestion = typeof a.inReplyTo === "string" && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : void 0;
-      const s = byQuestion ?? (wsr && wsr !== lead && to2 && myWorkers(wsr).some((w) => w.name === to2) ? wsr : lead);
+      const s = byQuestion ?? (wsr && wsr !== lead && to2 && (myWorkers(wsr).some((w) => w.name === to2) || wsr.room.retiredWorkers().some((w) => w.name === to2)) ? wsr : lead);
       const text = typeof a.text === "string" ? a.text : "";
       if (!text) return "error: text is required";
       if (to2 === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
@@ -37768,7 +37870,6 @@ function handlers4(state) {
         case "question":
           if (!to2) return "error: question requires to (whose agent)";
           msg = s.room.post(s.me, withPr({ type: "question", text, to: to2 }));
-          notes.push(`room_wait questionId=${msg.id} to block for the answer`);
           break;
         case "answer": {
           if (typeof a.inReplyTo !== "string" || !a.inReplyTo) return "error: answer requires inReplyTo";
@@ -37784,6 +37885,9 @@ function handlers4(state) {
         default:
           return `error: type must be changed|question|answer|note (got ${String(a.type)})`;
       }
+      const notice = msg.to ? recipientNotice(s, msg.to) : void 0;
+      if (notice) notes.push(msg.type === "question" && notice.terminal ? unavailableQuestion(s, msg.id) : notice.text);
+      if (msg.type === "question" && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`);
       s.daemon.touch();
       return [`sent [${msg.id}] ${formatMsg(msg)}${s !== lead ? " (in the workers room)" : ""}`, ...notes, ...offline(s) ? ["offline: queued/not delivered"] : []].join("\n");
     },
@@ -37798,6 +37902,10 @@ function handlers4(state) {
       if (questionId) {
         const an = answered(questionId);
         if (an) return `answered: ${formatMsg(an)}`;
+      }
+      if (questionId) {
+        const notice = unavailableQuestion(qRoom, questionId);
+        if (notice) return notice;
       }
       const waitResult = (x, m, workersRoom = false) => {
         if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
@@ -37825,7 +37933,13 @@ call room_state before continuing.`;
           s.room.claims.unobserve(onClaims);
           s.room.bus.unobserve(onBus);
           ws?.room.bus.unobserve(onWorkersBus);
+          qRoom.room.doc.off("update", onRecipient);
           resolve5(r);
+        };
+        const onRecipient = () => {
+          if (!questionId) return;
+          const notice = unavailableQuestion(qRoom, questionId);
+          if (notice) finish(notice);
         };
         const onWorkersBus = (ev) => {
           if (!ws) return;
@@ -37849,6 +37963,10 @@ call room_state before continuing.`;
         s.room.claims.observe(onClaims);
         s.room.bus.observe(onBus);
         ws?.room.bus.observe(onWorkersBus);
+        if (questionId) {
+          qRoom.room.doc.on("update", onRecipient);
+          onRecipient();
+        }
       });
       setPresence(s, { status: "idle" });
       return `${result}
@@ -37992,6 +38110,7 @@ import { execFile as execFile5 } from "node:child_process";
 import fs12 from "node:fs";
 import os4 from "node:os";
 import path13 from "node:path";
+import { stripVTControlCharacters } from "node:util";
 var defs5 = [
   {
     name: "room_read",
@@ -38284,6 +38403,11 @@ function mirrorLinks(cloneDir, scratchDir, src, dst) {
     }
   }
 }
+function testVerdict(output, code) {
+  const lines = stripVTControlCharacters(output).split(/\r?\n/).map((line) => line.trim());
+  const summaries = lines.filter((line) => /^(?:Test Files\s+|Tests(?:\s+|:))/.test(line) || /^=+ .*(?:passed|failed|error|skipped|deselected|no tests ran).* =+$/i.test(line));
+  return [...summaries.slice(-5), `tests: ${code === 0 ? "PASSED" : "FAILED"} (exit ${code ?? "unknown"})`].join("\n");
+}
 async function runInMergedTree(s, ancestor, merged, cmd) {
   const dir = fs12.mkdtempSync(path13.join(os4.tmpdir(), "room-merge-"));
   try {
@@ -38308,9 +38432,10 @@ async function runInMergedTree(s, ancestor, merged, cmd) {
         resolve5({ code: typeof raw === "number" ? raw : err ? 1 : 0, out: `${stdout}${stderr2}` });
       });
     });
-    const tail = result.out.trim().split("\n").slice(-25).join("\n");
+    const tail = stripVTControlCharacters(result.out).trim().split("\n").slice(-25).join("\n");
     return `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}
-${tail}`;
+${tail}
+${testVerdict(result.out, result.code)}`;
   } catch (e) {
     return `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
@@ -38607,7 +38732,7 @@ var defs6 = [
   }
 ];
 function handlers6(state) {
-  const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, gitignored, dismissWorker, runningWorkers, cleanupMine, setPresence, refreshPrs, myPr, postLedger } = state;
+  const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, gitignored, dismissWorker, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state;
   const handlers9 = {
     async room_done(a) {
       const s = S();
@@ -38616,7 +38741,7 @@ function handlers6(state) {
       const sc = s.room.scope(s.me.name);
       const live = new Set(runningWorkers(s).map((x) => x.w.tag));
       const kept = mine(s).filter((c) => c.mirrorOf && live.has(c.mirrorOf)).length;
-      const released = cleanupMine(s, `done: ${summary}`, (c) => !!c.mirrorOf && live.has(c.mirrorOf));
+      const released = releaseClaimsOnDone(s, (c) => !!c.mirrorOf && live.has(c.mirrorOf));
       const asWorker = s.room.workerOf(s.me.name);
       const myId = ctx.config?.workerId, gen = ctx.config?.gen;
       const stale = !!asWorker && (myId ? asWorker.id !== void 0 && asWorker.id !== myId : !!gen && asWorker.gen !== void 0 && String(asWorker.gen) !== gen);
@@ -38739,9 +38864,10 @@ function handlers6(state) {
           ROOM_LOG_FILE: path14.join(s.dir, ".room", "workers", `${tag}.mcp.log`)
         };
         const logFile = path14.join(s.dir, ".room", "workers", `${tag}.log`);
+        const priority2 = workerPriority({ cmd, args: args2 });
         let proc;
         try {
-          proc = (ctx.spawner ?? defaultSpawner)({ cmd, args: args2, cwd: dir, env, logFile });
+          proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority2.cmd, args: priority2.args, cwd: dir, env, logFile });
         } catch (e) {
           return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`;
         }
@@ -38773,7 +38899,7 @@ function handlers6(state) {
         });
         s.room.post(s.me, { type: "note", text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ""}) as ${name}: ${task.slice(0, 100)}` });
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ""}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? " (new worktree)" : ""}`];
-        out.push(`budget: ${threads} threads, ~${budget.memGb} GB (machine: ${cores} cores, ${Math.floor(memBytes / 1024 ** 3)} GB; ${count + 1} workers running). Put this in the task for compute-heavy work and stagger heavy jobs.`);
+        out.push(`budget: ${threads} threads, ~${budget.memGb} GB (machine: ${cores} cores, ${Math.floor(memBytes / 1024 ** 3)} GB; ${count + 1} workers running) \xB7 priority ${priority2.nice ? `nice ${priority2.nice}` : "normal"}. Put this in the task for compute-heavy work and stagger heavy jobs.`);
         out.push(`log: ${logFile}`);
         out.push(`it joins ${s === lead ? "this room" : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`);
         if (created && !gitignored(s.dir)) out.push("tip: add .room/ to .gitignore (the room already ignores it; git status will not).");
@@ -39040,6 +39166,7 @@ function createTools(ctx) {
         state.pendingJoin = null;
       }
       const current = ctx.getSession();
+      current?.daemon.touch();
       const closed = current?.closed;
       const offlineTool = name === "room_state" || name === "room_send" || name === "room_wait";
       if (closed && name !== "room_leave" && !offlineTool) {
@@ -39057,7 +39184,6 @@ function createTools(ctx) {
         const body = await h(args2 ?? {});
         if (name === "room_preview_merge" || name.startsWith("room_pr_")) await state.rooms.retireWorkers();
         const s2 = ctx.getSession();
-        if (s2 && name !== "room_join" && name !== "room_create") s2.daemon.touch();
         const prefix = moved ? `${moved}
 
 ` : "";

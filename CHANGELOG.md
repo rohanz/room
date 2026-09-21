@@ -4,6 +4,13 @@
 
 - Local rooms remember. The relay saves the room's memory (timeline and its archive, finished-worker records, worker records, scopes, colours) to `<git dir>/room-local/` and loads it on start; it never saves file text, base texts, graphs or claims, which present agents rebuild. Reading a file from a finished worker that is no longer connected falls back to its worktree on disk, labelled as such. `room_close` on a local room forgets it.
 - Add Node 22 GitHub Actions CI for typechecking, identity-isolated tests, web/plugin builds and committed plugin asset freshness, with a README status badge.
+- Asking someone who cannot answer no longer times out: `room_send` to an exited or retired worker replies at once with when it finished and its one-line summary, an unknown name lists the participants, and `room_wait` on that question returns the same line. An offline teammate keeps the old behaviour plus "X is offline; it will see this when it returns".
+- A finishing worker's summary is said once, in the done message. Releases on done carry the claim's own short summary (or "released on done") and plans ended by finishing are fyi with no summary text (`releaseClaimsOnDone`).
+- Activity means "did something": every tool call (hook-recorded, throttled to 5 s) and every `room_*` call touches presence. One shared `activityLabel` in `views.ts` words it for web and `room_state`: "working" under 90 s, then "last action 4m ago", never "idle"; a live worker is "running", plus "quiet 6m" after 5 minutes without an action.
+- Hooks resolve their state directory by session id, not shell cwd, so a lead working inside a worker's worktree is no longer described as that worker.
+- Spawned workers run under `nice` (`ROOM_WORKER_NICE`, default 10, 0 disables, POSIX only); the tracked pid is still the worker's. The spawn reply shows "priority nice 10".
+- `room_preview_merge` with `run` ends with "tests: PASSED|FAILED (exit N)" and the runner's own summary lines (vitest, pytest, jest), ANSI stripped, at most 6 lines.
+- Local rooms save read markers (`seen:*` maps, newest 2000 per participant), so addressed messages are not re-delivered after a restart.
 
 - Retirement rule corrected after review: a finished worker retires only when its worktree is clean and its branch has nothing the lead lacks. Workers leave changes uncommitted for the lead, so "branch is merged" was trivially true at exit and would have removed their work from the room before the lead saw it. Dismissing a dirty worker records how many uncommitted files stay on disk.
 - Fix idle Codex wake-ups: unflagged SessionStart hooks identify as Codex, and wake routing prefers the MCP process host over stale session hints.
