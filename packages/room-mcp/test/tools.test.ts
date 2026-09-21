@@ -166,7 +166,9 @@ describe('session gating', () => {
     const out = await t.tools.call('room_join', {})
     expect(t.joined).toEqual([dir])
     expect(out).toContain("joined r as Rohan's agent")
-    expect(out).toContain('browser view: http://x')
+    expect(out).not.toContain('browser view:')
+    expect(await t.tools.call('room_state', { link: true })).toContain('browser view: http://x')
+    expect(await t.tools.call('room_join', {})).not.toContain('browser view:')
     expect(out).toContain('alone here; the room stays quiet until someone joins')
     expect(out).not.toContain('next: room_scope')
     expect(await t.tools.call('room_join', {})).toContain('room: r —')
@@ -175,6 +177,18 @@ describe('session gating', () => {
     expect(await t.tools.call('room_leave', {})).toBe('left r; released 1 claim(s)')
     expect(t.room.openClaims()).toEqual([])
     expect(t.session).toBeNull()
+  })
+
+  it('joins and rejoins with company retain the browser link', async () => {
+    const t = setup()
+    const peer = addPresence(t.session!.awareness, 'Kieran')
+    try {
+      expect(await t.tools.call('room_join', {})).toContain('browser view: http://x')
+      const session = t.session!
+      const fresh = createTools({ getSession: () => null, setSession: () => {}, cwd: dir, join: async () => session, leave: async () => {} })
+      expect(await fresh.call('room_join', {})).toContain('browser view: http://x')
+      await fresh.shutdown()
+    } finally { peer.destroy(); await t.tools.shutdown() }
   })
 
   it('room_create opens the repo then joins; room_join never opens', async () => {

@@ -31,7 +31,7 @@ export const AGENT_INSTRUCTIONS = (name?: string) => `You are ${name ? `${name}'
 2. With company, declare scope once. Claim only where someone else is near the file; prefer one directory claim for an area you own. Respect others' claims and declare public-symbol plans.
 3. With company, answer addressed questions promptly; ask the relevant agent and wait when unsure.
 4. With company, preview current overlapping work before finishing, then room_done releases claims. No release or changed-message ritual.
-5. Parallelise with room_spawn only when each part is real work; for a few lines, just do it. Load room-workers for parallel edits.
+5. Asked for another agent, agents in parallel, background work, or for codex/claude to take part of an editing task: use room_spawn (load room-workers), not a built-in subagent. For a few lines, just do it yourself.
 6. Ask your human only when blocked on their decision. Never commit or push unless asked.
 
 Load room-etiquette for coordination details.`

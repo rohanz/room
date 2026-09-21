@@ -14,6 +14,14 @@ import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
 
+// Disk cleanup and patch restoration are exercised with real worktrees in collect.test.ts.
+// These lifecycle tests use synthetic worker directories and controlled process callbacks.
+vi.mock('../src/workers.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/workers.js')>(),
+  saveDiscardPatch: vi.fn(async () => undefined),
+  cleanupWorker: vi.fn(async () => true),
+}))
+
 let dir: string
 let base: string
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
@@ -121,6 +129,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
       expect(t.a.workers.get('first')?.host).toBe('codex')
       expect(first).toContain('reports through room_done'); expect(second).not.toContain('reports through room_done')
       expect(first).not.toContain('tip:')
+      expect(first).toContain('browser view: http://x')
+      expect(second).not.toContain('browser view:')
       expect(t.specs[0].args.join(' ')).toContain('one-line summary')
       await t.leadTools.shutdown()
     } finally { vi.unstubAllEnvs() }
@@ -282,10 +292,11 @@ describe('room_spawn / room_done / room_collect discard', () => {
     t.exits[0](1)
     expect(t.a.workers.get('a')).toMatchObject({ status: 'failed', exitCode: 1 })
     await vi.waitFor(() => expect(t.a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && /worker a died .*exit 1/.test(m.text))).toBe(true))
+    setTimeout(() => t.exits[1](0), 10)
     const d = await t.leadTools.call('room_collect', { discard: true, tag: 'b' })
     expect(d).toContain('discarded b')
     expect(t.killed).toHaveLength(1)
-    expect(t.a.workers.get('b')?.status).toBe('dismissed')
+    expect(t.a.workers.has('b')).toBe(false)
     t.exits[1](0)
     await vi.waitFor(() => expect(t.a.retiredWorkers().some(w => w.tag === 'b')).toBe(true))
   })
@@ -368,7 +379,14 @@ describe('worker safety', () => {
     await t2.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
     await t2.leadTools.shutdown()
     expect(t2.killed).toHaveLength(1)
-    expect(t2.a.workers.get('b')?.status).toBe('dismissed')
+    expect(t2.a.workers.get('b')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
+    t2.exits[0](null)
+    await vi.waitFor(() => expect(t2.a.workers.get('b')?.exitCode).toBe(-1))
+    expect(t2.a.messages().some(m => m.type === 'note' && m.text.includes('died'))).toBe(false)
+    const session = fakeSession(t2.a, lead)
+    const next = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
+    expect(await next.call('room_state', {})).toContain('stopped when your last session ended; its partial work is in its worktree')
+    await next.shutdown()
   })
 
   it('a worker that cannot start is marked failed', async () => {
@@ -448,9 +466,10 @@ describe('review fixes: workers', () => {
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
     await workerTools.call('room_done', { summary: 'done but still running' })
     expect(t.a.workers.get('money')!.status).toBe('done')
+    setTimeout(() => t.exits[0](0), 10)
     expect(await t.leadTools.call('room_collect', { discard: true, tag: 'money' })).toContain('discarded money')
     expect(t.killed).toHaveLength(1)
-    expect(t.a.workers.get('money')!.status).toBe('done') // the outcome stands; only the process was stopped
+    expect(t.a.workers.has('money')).toBe(false)
     // shutdown with a live process behind a done record signals it as well
     await t.leadTools.call('room_spawn', { tag: 'tiers', task: 't' })
     let ws2: Session | null = fakeSession(t.b, { name: 'rohanz+tiers', kind: 'agent', owner: 'rohanz', label: 'tiers' })
@@ -464,10 +483,12 @@ describe('review fixes: workers', () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'first' })
     expect(t.a.workers.get('money')!.gen).toBe(1)
-    // dismissed (process signalled) but the exit callback has not fired yet
-    await t.leadTools.call('room_collect', { discard: true, tag: 'money' })
+    // Discard must not report success until its process exits.
+    const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
+    await new Promise(resolve => setTimeout(resolve, 1))
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('process is still alive')
     t.exits[0](1)
+    expect(await discarding).toContain('discarded money')
     await vi.waitFor(() => expect(t.a.workers.has('money')).toBe(false))
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })
     const second = t.a.workers.get('money')!
@@ -638,7 +659,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(await tools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('done but its process is still alive')
     const out = await tools.call('room_collect', { discard: true, tag: 'money' })
     expect(out).toContain('discarded money')
-    expect(a.workers.get('money')?.status).toBe('done') // the outcome stands; only the process was stopped
+    expect(a.workers.has('money')).toBe(false)
     await exited
   })
 
@@ -646,9 +667,10 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
     let ls: Session | null = fakeSession(a, lead)
     let deliverable = false
+    let exit: (code: number | null) => void = () => {}
     const tools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
-      spawner: () => ({ pid: 8, onExit: () => {}, kill: () => deliverable }),
+      spawner: () => ({ pid: 8, onExit: cb => { exit = cb }, kill: () => { if (deliverable) setTimeout(() => exit(0), 1); return deliverable } }),
       worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
     })
     await tools.call('room_spawn', { tag: 'money', task: 't' })
@@ -658,7 +680,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(a.messages().some(m => m.type === 'note' && /could not dismiss worker money/.test((m as { text: string }).text))).toBe(true)
     deliverable = true
     expect(await tools.call('room_collect', { discard: true, tag: 'money' })).toContain('discarded money')
-    expect(a.workers.get('money')?.status).toBe('dismissed')
+    expect(a.workers.has('money')).toBe(false)
   })
 })
 
@@ -784,11 +806,13 @@ describe('retirement integration', () => {
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'archive me' })
     t.a.setOverlay('rohanz+money', 'app.py', 'x = 2\n')
     t.a.updateWorker('money', { status: 'done', summary: 'implemented money', finishedAt: Date.now() })
-    await t.leadTools.call('room_collect', { discard: true, tag: 'money' })
+    const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
+    await new Promise(resolve => setTimeout(resolve, 1))
     expect(t.a.retiredWorkers()).toEqual([])
     t.exits[0](0)
+    expect(await discarding).toContain('discarded money')
     await vi.waitFor(() => expect(t.a.workers.has('money')).toBe(false))
-    expect(t.a.retiredWorkers()).toMatchObject([{ name: 'rohanz+money', summary: 'implemented money', files: ['app.py'], outcome: 'dismissed' }])
+    expect(t.a.retiredWorkers()).toMatchObject([{ name: 'rohanz+money', summary: 'discarded', files: [], outcome: 'dismissed' }])
     expect(t.a.changedPaths('rohanz+money')).toEqual([])
     await t.leadTools.shutdown()
   })
@@ -804,8 +828,8 @@ describe('retirement integration', () => {
     await t.leadTools.call('room_collect', { discard: true, tag: 'finished' })
     const retired = t.a.retiredWorkers()[0]
     expect(retired).toMatchObject({ tag: 'finished', outcome: 'dismissed' })
-    expect(retired.uncommitted).toBeGreaterThan(0)
-    expect(await t.leadTools.call('room_state', { all: true })).toContain(`dismissed with ${retired.uncommitted} uncommitted files left in its worktree`)
+    expect(retired.uncommitted).toBeUndefined()
+    expect(await t.leadTools.call('room_state', { all: true })).toContain('discarded')
     expect(existsSync(join(dir, 'uncommitted-retirement-check'))).toBe(true)
     await t.leadTools.shutdown()
   })

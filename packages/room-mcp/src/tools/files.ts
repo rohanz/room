@@ -1,3 +1,4 @@
+import { git } from '@room/roomd/git'
 import { createTwoFilesPatch } from 'diff'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
@@ -5,10 +6,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import { describeClaim, withLineNumbers, type NoteMsg } from '@room/shared'
-import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
-import { gitMergeFile } from '../merge.js'
-import { workerOwnedPaths } from '../workers.js'
+import { buildCombinedTree } from './combined-tree.js'
 import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -91,26 +90,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_preview_merge(a) {
       const caller = S()
-      // Local worktrees are authoritative even before the daemon publishes a new file.
-      const previewWorker = (s: Session, person: string) => {
-        const w = s.local ? s.room.workerOf(person) : undefined
-        return w?.lead === s.me.name && fs.existsSync(w.dir) ? w : diskWorker(s, person)
-      }
-      const previewText = async (s: Session, p: string, person: string) => {
-        const w = previewWorker(s, person)
-        const dir = w?.dir ?? (person === caller.me.name && s === caller ? caller.dir : undefined)
-        if (!dir || (!w && (s.room.text(p, person) !== undefined || s.room.deleted.get(person)?.has(p)))) return liveText(s, p, person)
-        if (path.isAbsolute(p) || p.split(/[\\/]/).includes('..')) throw new Error('unsafe preview path: ' + p)
-        const root = fs.realpathSync(dir)
-        try {
-          const file = fs.realpathSync(path.join(root, p))
-          if (!file.startsWith(root + path.sep)) throw new Error('unsafe preview symlink: ' + p)
-          return fs.readFileSync(file, 'utf8')
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
-          throw e
-        }
-      }
       const alias = typeof a.person === 'string' && a.person.trim() ? a.person.trim() : ''
       if (a.people !== undefined && !Array.isArray(a.people)) return 'error: people must be an array of names'
       if (Array.isArray(a.people) && a.people.some(p => typeof p !== 'string' || !p.trim())) return 'error: people must contain non-empty names'
@@ -136,151 +115,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const held = withheld(session, person)
         if (held) return held
       }
-      const bases = [{ person: caller.me.name, base: baseFor(caller, caller.me.name) }, ...participants.map(({ person, session }) => ({ person, base: baseFor(session, person) }))]
-      let ancestor = bases[0].base
-      for (const item of bases.slice(1)) {
-        if (item.base === ancestor) continue
-        try { ancestor = (await git(caller.dir, ['merge-base', ancestor, item.base])).trim() }
-        catch { return `error: ${item.person}'s HEAD ${item.base.slice(0, 10)} is not in this clone; git fetch, then retry` }
-      }
-      const pathSet = new Set<string>()
-      const ignoredNotes: string[] = []
-      for (const item of [{ person: caller.me.name, session: caller }, ...participants]) {
-        const worker = previewWorker(item.session, item.person)
-        const dir = worker?.dir ?? (item.person === caller.me.name ? caller.dir : undefined)
-        const ignored = dir ? (await git(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
-        const visibleIgnored = ignored.filter(p => !/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/.test(p))
-        if (visibleIgnored.length) ignoredNotes.push('NOT previewed (gitignored, ' + item.person + '): ' + visibleIgnored.join(', '))
-        for (const p of item.session.room.changedPaths(item.person)) if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) pathSet.add(p)
-        if (dir) {
-          for (const p of (await git(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) pathSet.add(p)
-          for (const p of (await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) pathSet.add(p)
-        }
-        if (baseFor(item.session, item.person) !== ancestor) {
-          for (const p of (await git(caller.dir, ['diff', '--name-only', ancestor, baseFor(item.session, item.person)])).split('\n').filter(Boolean)) pathSet.add(p)
-        }
-      }
-      // ls-files represents nested repositories/submodules as directory entries.
-      // They are not file text and cannot participate in a file merge preview.
-      for (const p of pathSet) {
-        let excluded = false
-        for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
-          const worker = previewWorker(session, person)
-          const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined)
-          let reason = workerOwnedPaths(session.room.workerOf(person)).includes(p) ? 'linked input' : undefined
-          if (!reason && dir) {
-            const root = fs.realpathSync(dir)
-            try {
-              const target = fs.realpathSync(path.join(root, p))
-              if (target !== root && !target.startsWith(root + path.sep)) reason = 'symlink leaving the worktree'
-            } catch (e) {
-              if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
-              try { if (fs.lstatSync(path.join(root, p)).isSymbolicLink()) reason = 'dangling symlink' } catch { /* absent path */ }
-            }
-          }
-          if (reason) {
-            ignoredNotes.push(`NOT previewed (${reason}, ${person}): ${p}`)
-            excluded = true
-          }
-        }
-        if (excluded) { pathSet.delete(p); continue }
-        const dirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir): dir is string => !!dir)]
-        if (dirs.some(dir => { try { return fs.lstatSync(path.join(dir, p)).isDirectory() } catch { return false } })) {
-          pathSet.delete(p)
-          ignoredNotes.push('NOT previewed (directory or nested repository): ' + p)
-        }
-      }
-      const paths = Array.from(pathSet).sort()
-      if (!paths.length && ignoredNotes.length) return ['no mergeable changes', ...ignoredNotes].join('\n')
+      const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true })
+      const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out } = result
+      if (!paths.length && result.ignoredNotes.length) return ['no mergeable changes', ...result.ignoredNotes].join('\n')
       if (!paths.length) return [`none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
-      const baseTexts = new Map<string, string | null>()
-      const merged = new Map<string, string | null>()
-      const owners = new Map<string, string[]>()
-      for (const p of paths) {
-        const b = (await gitShow(caller.dir, ancestor, p)) ?? null
-        baseTexts.set(p, b)
-        const mine = await previewText(caller, p, caller.me.name)
-        const text = mine === undefined ? b : mine
-        merged.set(p, text)
-        if (text !== b) owners.set(p, [caller.me.name])
-      }
-      const out = [`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: git):`]
       if (skippedNote) out.push(skippedNote)
-      out.push(...ignoredNotes)
-      let hardCount = 0
-      let conflictCount = 0
-      const resolvedText = new Map<string, string>()
-      for (const [index, { person, session }] of participants.entries()) {
-        const declaredNote = shareOf(session, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
-        const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], resolvable: string[] = []
-        for (const p of paths) {
-          const b = baseTexts.get(p)!
-          const mine = merged.get(p)
-          const theirsRaw = await previewText(session, p, person)
-          const mineT = mine ?? '', theirs = theirsRaw === undefined ? b : theirsRaw
-          if (theirs === b) continue
-          if (mine === b || mine === theirs) {
-            onlyOne.push(`${p} (${person} only)`)
-            merged.set(p, theirs)
-            owners.set(p, [...(owners.get(p) ?? []), person])
-            continue
-          }
-          const res = await gitMergeFile(b ?? '', mineT, theirs ?? '', { ours: 'combined', base: 'base', theirs: person })
-          const hunks = res.conflicts
-          if (!hunks.length) {
-            clean.push(p)
-            merged.set(p, res.text)
-            owners.set(p, [...(owners.get(p) ?? []), person])
-            continue
-          }
-          let line = 1, unresolved = 0
-          const detail: string[] = [], resolvedLines: string[] = []
-          const prior = owners.get(p) ?? [caller.me.name]
-          const pairNames: string[] = []
-          for (const owner of prior) {
-            const ownerSession = owner === caller.me.name ? caller : rooms.holding(owner, caller)
-            const ownerRaw = await previewText(ownerSession, p, owner)
-            const ownerText = ownerRaw === null ? '' : ownerRaw ?? b
-            if ((await gitMergeFile(b ?? '', ownerText ?? '', theirs ?? '', { ours: owner, base: 'base', theirs: person })).status === 'conflict') pairNames.push(owner)
-          }
-          const conflictsWith = pairNames.length ? pairNames : [prior[prior.length - 1]]
-          for (const r of res.chunks) {
-            if (r.ok) { line += r.ok.length; resolvedLines.push(...r.ok); continue }
-            const c = r.conflict
-            if (!c) continue
-            const who = conflictsWith.map(owner => `${owner} and ${person}`).join(', ')
-            const sup = supersetSide(c.a, c.b)
-            if (sup) {
-              const contains = sup === 'a'
-                ? conflictsWith.length === 1 && conflictsWith[0] === caller.me.name ? `your version contains ${person}'s change in order` : `the combined version contains ${person}'s change in order`
-                : `${person}'s version contains ${conflictsWith.length === 1 && conflictsWith[0] === caller.me.name ? 'your' : 'the combined'} change in order`
-              detail.push(`  around line ${line}: conflict between ${who}; ${contains} — resolvable by taking ${sup === 'a' ? 'the combined version' : `${person}'s`}`)
-              resolvedLines.push(...(sup === 'a' ? c.a : c.b))
-            } else {
-              unresolved++
-              detail.push(`  around line ${line}: conflict between ${who}; combined tree changed ${c.a.length} line(s), ${person} changed ${c.b.length} line(s) — needs a human or a rewrite`)
-              resolvedLines.push('<<<<<<< combined', ...c.a, '=======', ...c.b, `>>>>>>> ${person}`)
-            }
-            line += c.o.length
-          }
-          conflictCount++
-          if (!unresolved) {
-            resolvable.push(p)
-            const text = resolvedLines.join('\n') + (resolvedLines.length ? '\n' : '')
-            merged.set(p, text)
-            owners.set(p, [...prior, person])
-            if (a.resolve === true) resolvedText.set(p, text)
-          } else hardCount++
-          conflicts.push(`${p}${unresolved ? '' : ' (resolvable)'}\n${detail.join('\n')}`)
-        }
-        out.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(' + ')}`)
-        if (declaredNote) out.push(declaredNote)
-        if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
-        if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
-        if (conflicts.length) out.push(`CONFLICTS:\n${conflicts.join('\n')}`)
-        else out.push('no conflicts')
-        if (resolvable.length && a.resolve !== true) out.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone.`)
-      }
       for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
       out.push(`final combined tree: ${merged.size} path(s) applied over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
@@ -297,18 +136,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   }
   return handlers
 }
-/** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
-export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {
-  const contains = (outer: string[], inner: string[]) => {
-    if (!inner.length || inner.length > outer.length) return false
-    let i = 0
-    for (const line of outer) if (line === inner[i]) i++
-    return i === inner.length
-  }
-  if (a.length > b.length && contains(a, b)) return 'a'
-  if (b.length > a.length && contains(b, a)) return 'b'
-  return undefined
-}
+export { supersetSide } from './combined-tree.js'
 
 /**
  * Give the scratch tree my clone's dependencies without letting them point back at my clone's sources.

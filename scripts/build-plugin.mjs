@@ -11,7 +11,9 @@ await build({
   banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
   logLevel: 'info',
 })
-execSync('npm run build -w @room/web', { stdio: 'inherit' })
-fs.rmSync('plugins/room/web', { recursive: true, force: true })
-fs.cpSync('packages/web/dist', 'plugins/room/web', { recursive: true })
-console.log('copied packages/web/dist -> plugins/room/web')
+if (!process.argv.includes('--skip-web')) {
+  execSync('npm run build -w @room/web', { stdio: 'inherit' })
+  fs.rmSync('plugins/room/web', { recursive: true, force: true })
+  fs.cpSync('packages/web/dist', 'plugins/room/web', { recursive: true })
+  console.log('copied packages/web/dist -> plugins/room/web')
+}

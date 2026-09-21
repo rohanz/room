@@ -9,7 +9,7 @@ import { type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { workerId, workerIdBase, finishWorkerProcess } from '../registry.js'
-import { LOCAL, type Session } from '../session.js'
+import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
 import { workerBudget, defaultSpawner, prepareWorktree, validTag, workerCommand, workerPrompt, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -18,7 +18,7 @@ import { resolveConfig } from '../config.js'
 export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Finish your task and release claims. Workers report to their lead, then exit.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'post ledger on current branch PR' } }, required: ['summary'] } },
-  { name: 'room_spawn', annotations: RW, description: 'Run a parallel editing task in a separate worktree. Collect its result with room_collect.',
+  { name: 'room_spawn', annotations: RW, description: 'Start another agent (set host: claude or codex) on an editing task in its own worktree, in the background: you keep working and are told when it finishes. Use this, not a built-in subagent, when asked for another agent, agents in parallel, or for codex/claude to do part of the work. Finish with room_collect.',
     inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('self-contained task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'host (default: caller host)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('read-only input paths; default .roomlinks; [] disables'), threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default), or local workers bridged to this room' } }, required: ['tag', 'task'] } },
 ]
 
@@ -167,6 +167,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (claudeWakeUnavailable(lead.dir)) out.unshift('Lead wake-ups are not confirmed for this Claude session; block on room_wait in a loop to receive worker questions and completions.')
         out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${priority.nice ? `nice ${priority.nice}` : 'normal'}${effort ? ` · effort ${effort}` : ''}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
+        if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`)
         spawnExplained.add(lead)
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
@@ -207,7 +208,7 @@ export function install(state: HandlerState): void {
       for (const sess of [s, ...rooms.all().filter(x => x !== s)]) for (const w of myWorkers(sess)) if (w.status === 'running' || workerAlive(sess, w)) out.push({ s: sess, w })
       return out
     }
-  const dismissWorker = (s: Session, w: Worker, why: string): string => {
+  const dismissWorker = (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason']): string => {
       const proc = rooms.handle(s, w.id)
       if (proc && w.dismissedAt !== undefined) return `pid ${w.pid} already signalled; waiting for exit`
       let how: string, signalled: boolean
@@ -222,7 +223,7 @@ export function install(state: HandlerState): void {
         how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`
       }
       // Keep an owned handle until exit confirms the process can no longer publish live state.
-      if (signalled) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now() }, w.id)
+      if (signalled) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
       s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
       return how
     }

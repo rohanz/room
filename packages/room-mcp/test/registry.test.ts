@@ -208,6 +208,14 @@ describe('worker process exits', () => {
     r.rooms.remove(s)
   })
 
+  it.each([true, false])('intentional stop produces no death interrupt (session ended=%s)', async ended => {
+    const s = fakeSession(pair().a, lead)
+    s.room.setWorker({ tag: 'stopped', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/stopped', pid: -1, startedAt: 1, status: 'dismissed', lead: lead.name, dismissedAt: 2, ...(ended ? { stopReason: 'lead-session-ended' as const } : {}) })
+    await finishWorkerProcess(s, s.room.workers.get('stopped')!, null)
+    expect(s.room.workers.get('stopped')?.exitCode).toBe(-1)
+    expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(0)
+  })
+
   it.each([
     ['running', 0, 120_000, true], ['done', 1, 120_000, true],
     ['done', 0, 56_000, false], ['done', 0, 90_000, false],

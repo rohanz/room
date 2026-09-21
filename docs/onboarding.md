@@ -10,7 +10,9 @@
    > Use a couple of subagents: add the endpoint in api.ts and its tests in api.test.ts.
 
 Your agent handles coordination and brings finished output into your working tree, uncommitted
-and unstaged, preserving your existing edits. Committing is a separate, requested action. Full
+and unstaged, preserving your existing edits. All finished work is collected together; any
+conflict leaves your files untouched. Running or failed work is skipped. Collection never
+commits. If you ask for a commit, your agent uses plain Git for one normal task commit. Full
 successful collection of an exited worker cleans up its worktree and branch, plus logs after a
 successful exit. Failed or partial collection preserves work for recovery. Stopping without
 collecting also preserves a dirty worktree. You do not need to

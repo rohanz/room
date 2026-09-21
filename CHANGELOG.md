@@ -2,13 +2,18 @@
 
 ## 0.9.0
 
+- Last-worker cleanup removes empty `.room/workers` and `.room` directories after collection or discard.
+- Workers stopped at lead shutdown retain `stopReason: lead-session-ended`, remain visible with their partial-work location, and produce no death interrupt; the next lead asks whether to restart or discard instead of silently redoing the work.
+- Alone joins and same-room rejoins omit browser access links; explicit state links, joins with company and first-spawn links remain available.
+- The spawn description keeps its routing words (another agent, in parallel, in the background, codex/claude doing part): a live phrasing test showed trimming them routed “get codex to do half” and “start another agent, don’t wait” to built-in subagents.
+
 - K1. Team joins disclose the actual sharing level, repository and server once per worktree and destination, including first participants and environment-selected auto-joins.
 - K2. Unknown sharing levels fall back to plans only and report the invalid setting instead of widening to full text.
 - K3. Destination precedence is explicit argument, ROOM_SERVER, legacy ROOM_URL, remembered choice, then local; environment overrides do not become remembered choices. The optional team runner uses an explicit or saved destination instead of silently falling back to localhost.
 - K4. Logout is `room_login(action: "logout")`; the separate `room_logout` tool is removed.
-- C1. Collection applies worker output as uncommitted, unstaged edits by default, preserving the lead’s edits and leaving files untouched on conflicts. `commit: true` requests commits and a merge with a short subject; `mode: "copy"` plus paths collects artifacts.
+- C1. `room_collect()` collects every done worker in finish-time/tag order; optional `tag` selects one. The shared preview engine combines their changes with the lead’s current edits before writing. Any conflict writes nothing and names paths/tags. Changes are always uncommitted and unstaged; running/failed workers are skipped. The commit argument and commit/merge path are removed; requested commits use plain Git afterwards. Named artifact copy and discard remain.
 - C2. Full successful collection cleans up an exited worker’s worktree and branch, removes logs after a successful exit, and retires its room record; failed or partial collection preserves recoverable work.
-- C3. `room_collect(discard: true)` replaces `room_dismiss`: stop without collecting, clean up a clean worktree, or retain dirty work and report its location.
+- C3. `room_collect(discard: true)` replaces `room_dismiss`: stop without collecting and remove its worktree, branch and logs, releasing claims and retiring the record; committed and uncommitted changes (including untracked non-ignored files) are saved as one recovery patch for a week, with expired patches pruned on discard.
 - C4. Room privately excludes `.room/` and moves root `.room.json` into the worktree’s Git directory as `room.json`, migrating the legacy file once.
 - C5. Workers default to the caller’s host, receive setup guidance once per session, and finish with one line through `room_done`; finished workers are no longer told to stay for questions.
 - L1. The always-loaded prompt applies coordination rules only with company, describes disk writes truthfully, and reserves worker dispatch for substantial work.
@@ -48,7 +53,7 @@ Fixes from the audit of the longest real use of Room (`docs/audit-2026-09-21-qub
 - B5. `room_spawn` `link` (default: `.roomlinks`) symlinks repo-relative inputs from the lead's clone into the worktree, validated, recorded on the worker (`Worker.link`) and named in the prompt as read-only.
 - B6. When the lead's session cannot be confirmed wakeable (`claudeWakeUnavailable`, shared with `claudeWakeNote`), the spawn reply starts by saying so and telling it to loop on `room_wait`.
 - C1. `room_preview_merge` handles files absent at the base, present on one side only, or added on both sides (empty base), never surfaces a raw git exit code, and names changed paths it did not preview because git ignores them.
-- C2. New lead tool `room_collect(tag, mode?, paths?, force?)`: "merge" commits the worker's worktree as the lead and merges `room/<tag>` (aborting and listing files on conflict); "copy" copies named paths, including untracked or ignored artifacts, path-safe, refusing to overwrite modified files without `force`. Releases the worker's claims on those paths first and triggers retirement.
+- C2. New lead tool `room_collect` collects worker output and named artifacts with path checks and modified-destination protection. Its original history-writing behavior is removed in 0.9.0.
 - C3. The room-workers skill finishes with `room_preview_merge`, then `room_collect`, then the report; README tools table updated.
 - D1. The daemon never descends into a symlinked directory, never publishes a path whose real path leaves the worktree, and treats paths git cannot classify beyond a symlink as ignored.
 - D2. Default ignores by name without reading the file (`.DS_Store`, `*.npy`, `*.npz`, `*.parquet`, `*.pkl`, `*.pt`, `*.bin`, `*.sqlite`, `*.zip`, `*.gz`, `*.tmp`, `*~`, dot-prefixed atomic-write temps); a skip is logged once per path.
@@ -95,7 +100,7 @@ Fixes from the audit of the longest real use of Room (`docs/audit-2026-09-21-qub
 - Reset `companyTold` at every session start while preserving seen inbox ids, so a new session hears about teammates already present in the clone.
 - Hook re-trust note: this release widened the before-edit hook matcher. Start Codex interactively and trust the Room hooks again; until then, `codex exec` silently skips the changed hook.
 - The before-edit hook also runs on the host's shell tool. A Codex session that edited only through shell commands was never told it had company and never saw its inbox or teammates' claims. Inbox and company lines are delivered on any call; the claims warning fires only when the command looks like a write.
-- New `room-workers` skill: the procedure for running parallel work through room workers (split, spawn, answer, preview all together, commit for the workers, merge, report). A phrasing check showed five of six everyday requests already reached `room_spawn`; the miss, "get codex to do half", is now named in the tool description.
+- New `room-workers` skill: the procedure for running parallel work through room workers (split, spawn, answer, preview all together, collect, test, report). A phrasing check showed five of six everyday requests already reached `room_spawn`; the miss, "get codex to do half", is now named in the tool description.
 - Fixed two sessions under one login both joining as the bare login when one runs in a worktree of the other's clone: the remembered tag is now stored per worktree, and the name probe judges presence by the connection heartbeat (one shared definition with company), not by the last file change.
 - Company is detected from the connection heartbeat, not from the last file change, so an agent that thinks for a minute between edits still counts as present.
 - Instructions, the etiquette skill and the `room_spawn` description say to prefer `room_spawn` over a host's built-in subagents for parallel edits: separate worktree, identity, claims and wake-ups.

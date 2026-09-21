@@ -1,6 +1,6 @@
 ---
 name: room-workers
-description: Dispatch independent editing tasks through Room workers; use before room_spawn.
+description: Running editing work through other agents. Use when asked for another agent, a few agents in parallel, work in the background, or for codex/claude to do part of it; load before room_spawn.
 ---
 
 1. Split substantial work into independent parts with disjoint files where possible.
@@ -14,11 +14,16 @@ description: Dispatch independent editing tasks through Room workers; use before
 4. Preview current worker output together using full participant names:
    `room_preview_merge(people=[...], run="<tests>")`. Repeat after the last worker finishes
    and resolve conflicts or failing tests before collecting.
-5. `room_collect(tag)` brings output into your clone uncommitted. Use `commit=true` only
-   when commits are explicitly authorized. `discard=true` stops and discards a worker
-   instead of collecting. Successful collection/discard cleans up its worktree and branch;
-   inspect errors before retrying. For named artifacts, use `mode="copy", paths=[...]`.
-6. Report the work and validation result. Never push unless asked.
+5. Call `room_collect()` once with no tag to bring every finished worker's changes into
+   your working tree, uncommitted and unstaged. Conflicts write nothing: resolve them or
+   collect one tag at a time. Running and failed workers are skipped. Fully collected workers
+   are cleaned up after a clean exit. For named artifacts, use `tag, mode="copy", paths=[...]`;
+   `tag, discard=true` stops a worker and removes its worktree, branch and logs, keeping a recovery patch for a week.
+6. Run the tests on the real working tree, then report the work and validation result.
+   Never commit or push unless the human asked. If asked to commit, use plain git for one
+   task commit with a normal message; worker details do not belong in the history.
+
+When you find workers stopped because the previous session ended, tell the human and ask whether to restart or discard them; do not silently redo their work.
 
 Respect `ROOM_MAX_WORKERS`. Do not join a team room just to dispatch workers.
 `where="local"` keeps workers local; a lead already in a team room still mirrors their

@@ -77,7 +77,7 @@ export interface HandlerState {
   closeWorkersRoom: () => Promise<void>
   runningWorkers: (s: Session) => { s: Session; w: Worker }[]
   hasCompany: (s: Session) => CompanyState
-  dismissWorker: (s: Session, w: Worker, why: string) => string
+  dismissWorker: (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason']) => string
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]
   shareOf: (s: Session, person: string) => ShareLevel
@@ -392,7 +392,9 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     async shutdown() {
       const s = ctx.getSession()
       if (!s) return
-      for (const r of runtime.runningWorkers(s)) { try { runtime.dismissWorker(r.s, r.w, "the lead's session ended") } catch { /* best effort */ } }
+      for (const r of runtime.runningWorkers(s)) { try {
+        runtime.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended')
+      } catch { /* best effort */ } }
       await runtime.closeWorkersRoom().catch(() => {})
       try { runtime.cleanupMine(s, 'session ended') } catch { /* best effort */ }
       rooms.remove(s)

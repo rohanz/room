@@ -46,7 +46,7 @@ describe('local mode (no server)', () => {
     const name = 'local/anything'
     expect(reply.split('\n')[0]).toMatch(/^joined local\/anything /)
     expect(session!.roomName).toBe(name)
-    expect(reply).toContain(encodeURIComponent(encodeURIComponent(name)))
+    expect(await tools.call('room_state', { link: true })).toContain(encodeURIComponent(encodeURIComponent(name)))
     expect((await tools.call('room_state', {})).split('\n')[1]).toContain(name)
   })
 

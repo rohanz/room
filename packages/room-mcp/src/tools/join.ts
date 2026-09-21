@@ -80,7 +80,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const currentReply = async () => {
         const sharing = a.share !== undefined ? await shareHandlers(state).room_share({ level: a.share }) : ''
         const note = cur ? await teamSharingNote(cur) : undefined
-        return [note, sharing, await scopeHandlers(state).room_state({ link: true })].filter(Boolean).join('\n')
+        return [note, sharing, await scopeHandlers(state).room_state({ link: cur ? state.hasCompany(cur).company : false })].filter(Boolean).join('\n')
       }
       if (cur && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined) {
         return currentReply()
@@ -150,7 +150,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!company.company) {
         out.push(shareLine(s))
         out.push('alone here; the room stays quiet until someone joins')
-        out.push(`browser view: ${await refreshBrowserUrl(s)}`)
         return out.join('\n')
       }
       if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)

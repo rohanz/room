@@ -21,7 +21,8 @@ export function formatCount(count: number, singular: string, plural = singular +
 }
 
 /** Wording for action recency; connectivity and process liveness are separate facts. */
-export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; worker?: Pick<Worker, 'status' | 'finishedAt'> } = {}): string {
+export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; worker?: Pick<Worker, 'status' | 'finishedAt' | 'stopReason'> } = {}): string {
+  if (options.worker?.stopReason === 'lead-session-ended') return 'stopped when your last session ended; its partial work is in its worktree'
   const finished = options.worker !== undefined && options.worker.status !== 'running'
   const running = options.worker ? options.worker.status === 'running' : options.running
   if (finished) lastActive = options.worker!.finishedAt ?? lastActive
@@ -218,7 +219,7 @@ export interface WorkerLineInput {
 /** The two canonical room_state lines for one dispatched worker. */
 export function workerLine({ worker: w, processGone = false, lastActive, changedCount, last, now = Date.now() }: WorkerLineInput): [string, string] {
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
-  const alive = w.status === 'running' && processGone ? ' (process gone)' : ''
+  const alive = w.stopReason === 'lead-session-ended' ? '; stopped when your last session ended; its partial work is in its worktree' : w.status === 'running' && processGone ? ' (process gone)' : ''
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${w.status === 'running' && !processGone ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${w.summary ? ` · ${w.summary.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
@@ -228,7 +229,7 @@ export function workerLine({ worker: w, processGone = false, lastActive, changed
 export function workerLines(inputs: readonly WorkerLineInput[], options: { all?: boolean; retiredWorkers?: readonly RetiredWorker[] } = {}): string[] {
   const retired = options.retiredWorkers ?? []
   if (!inputs.length && !retired.length) return []
-  const visible = inputs.filter(i => options.all || i.worker.status === 'running' || i.worker.status === 'failed')
+  const visible = inputs.filter(i => options.all || i.worker.stopReason || i.worker.status === 'running' || i.worker.status === 'failed')
   const finished = inputs.length - visible.length + retired.length
   const out = [`workers (${inputs.length + retired.length}):`, ...[...visible]
     .sort((a, b) => a.worker.startedAt - b.worker.startedAt)

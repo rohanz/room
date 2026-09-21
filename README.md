@@ -89,11 +89,13 @@ It uses the caller’s agent host unless you choose another. The worker joins as
 declares its task, coordinates where work overlaps, previews the combined changes, and finishes
 with a one-line summary. Up to eight workers run at once (`ROOM_MAX_WORKERS`).
 
-The lead collects finished work with `room_collect(tag)`: changes arrive in its working tree
-**uncommitted and unstaged**, preserving the lead’s own edits. Conflicts leave its files untouched
-and name the paths to resolve. `commit: true` requests commits and a merge. `mode: "copy"`
-with `paths` collects named artifacts, including ignored files. Full successful collection of
-an exited worker removes its worktree and branch, and removes logs after a successful exit.
+The lead calls `room_collect()` once to collect all its finished workers, in finish-time order
+(with tag as the tie-breaker). An optional `tag` selects just one. Changes arrive in its working
+tree **uncommitted and unstaged**, preserving its own edits. Any conflict leaves all files
+untouched and names the paths and tags involved. Running and failed workers are skipped.
+Collection never commits; when requested, the agent uses plain Git for one normal task commit.
+`mode: "copy"` with `tag` and `paths` collects named artifacts, including ignored files.
+Full successful collection removes the exited worker's temporary files, branch and logs.
 Failed or partial collection preserves recoverable work.
 
 `discard: true` stops a worker without collecting output; it cleans up a clean worktree but
@@ -324,7 +326,7 @@ supplies shared state and presence; Git remains the integration mechanism.
 | `room_impact` | Symbol providers, consumers, dependencies, and owners. |
 | `room_preview_merge` | Three-way merge with one or several people's live trees, in order; optionally run the tests in the combined tree. The room also tells you when a file you changed stops merging cleanly with a teammate's. |
 | `room_done` / `room_pr_note` | Finish a task (release, clear scope, tell the lead if you are a worker; `pr_note: true` posts the branch ledger on its PR); post or update the one room comment on a PR. |
-| `room_collect` | Apply a worker’s output uncommitted and unstaged; `commit: true` commits and merges, `discard: true` stops without collecting, `mode: "copy"` with `paths` copies artifacts. |
+| `room_collect` | Collect all finished workers (or one `tag`) as unstaged edits; conflicts write nothing. Never commits. `tag, discard: true` stops without collecting; `tag, mode: "copy", paths` copies artifacts. |
 | `room_spawn` | Dispatch a worker into a worktree, using the caller’s host by default, in this room or a local workers room. |
 | `room_share` | Change your sharing level live: `intent`, `declared`, `full`. |
 

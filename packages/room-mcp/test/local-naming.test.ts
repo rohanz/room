@@ -55,7 +55,8 @@ it.each(['local', 'team'])('reports the actual %s name and preserves team argume
   expect(joiner).toHaveBeenCalledWith(expect.objectContaining({ room: where === 'local' ? 'local/anything' : 'anything', server: where === 'local' ? 'local' : 'wss://room-rohanz.fly.dev' }))
   if (where === 'local') {
     expect(reply.split('\n')[0]).toMatch(/^joined local\/anything /)
-    expect(reply).toContain(encodeURIComponent(encodeURIComponent(name)))
+    expect(reply).not.toContain('browser view:')
+    expect(await tools.call('room_state', { link: true })).toContain(encodeURIComponent(encodeURIComponent(name)))
     expect((await tools.call('room_state', {})).split('\n')[1]).toContain(name)
   } else {
     expect(reply).toMatch(/^joined anything /)
@@ -100,7 +101,7 @@ it('refuses to strand running workers and preserves the session and link', async
   cur.room.workers.clear()
 })
 
-it('moves without workers and reports the new room and its browser link', async () => {
+it('moves alone without a browser link, available on explicit request', async () => {
   const t = transitionTools()
   await t.tools.call('room_join', { where: 'local', room: 'custom' })
   const old = t.current()
@@ -109,7 +110,8 @@ it('moves without workers and reports the new room and its browser link', async 
   expect(reply.split('\n')[0]).toBe('moved from local/custom to ' + name + '; links to the old room no longer show this session.')
   expect(t.leave).toHaveBeenCalledWith(old)
   expect(t.current()).not.toBe(old)
-  expect(reply).toContain('browser view: ' + t.current().browserUrl)
+  expect(reply).not.toContain('browser view:')
+  expect(await t.tools.call('room_state', { link: true })).toContain('browser view: ' + t.current().browserUrl)
   expect(reply).not.toContain(old.browserUrl)
   expect((await t.tools.call('room_state', {})).split('\n')[1]).toContain(name)
 })

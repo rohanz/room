@@ -38,5 +38,6 @@ exports write the ledger. `room_close` removes all branch rooms of a repo for ev
 and requires your human's explicit request. `room_leave` ends participation when asked.
 
 For substantial parallel edits, load [room-workers](../room-workers/SKILL.md).
-Collection applies worker output uncommitted by default. Finished headless workers cannot
+Collection always leaves output uncommitted and unstaged. If asked to commit, use plain git
+for one task commit with a normal message. Finished headless workers cannot
 answer new questions; use their output and summary. Keep bus messages brief and concrete.

@@ -100,7 +100,13 @@ Hook definitions (`plugins/room/hooks.json`, `plugins/room/hooks/claude.json` â€
   (some suites listen on loopback; inherited ROOM_* variables change identity-sensitive tests).
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web
   (the bundle and `plugins/room/web` are committed). Installed plugins copy the bundle: reinstall
-  `room@room` on both hosts after a rebuild.
+  `room@room` on both hosts after a rebuild. `node scripts/build-plugin.mjs --skip-web` rebuilds
+  only the server bundle (for sandboxes that cannot build the web view); never commit from it.
+- Tool descriptions are how a human's plain words reach the right tool. Keep the routing words
+  ("another agent", "in parallel", "in the background", "codex/claude to do part of it") when
+  trimming, stay under the budget in `packages/room-mcp/test/tool-budget.test.ts`, and rerun a
+  human-phrasing check after any description change: a trim once sent "get codex to do half" to
+  a built-in subagent.
 - Implementation work goes to Codex (model 5.6 Sol at medium, or 6 Astra at low): either the
   codex:codex-rescue subagent or room workers with `host: 'codex'`. Claude plans, writes briefs,
   leads room batches, reviews, integrates and deploys. Codex's sandbox cannot write a git dir

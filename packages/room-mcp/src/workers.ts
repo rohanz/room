@@ -6,6 +6,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import type { Worker, RetiredWorker } from '@room/shared'
@@ -238,12 +239,12 @@ export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>
   return { ...out, ...extra }
 }
 
-/** SIGTERM a pid's process group, else the pid itself; true when either signal was delivered. */
-export function signalWorker(pid: number): boolean {
+/** Signal a pid's process group, else the pid itself; true when either signal was delivered. */
+export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM'): boolean {
   // Only ever signal a real pid: kill(-0) would hit our own process group.
   if (!pid || pid <= 0) return false
-  try { process.kill(-pid, 'SIGTERM'); return true } catch { /* not a group leader, or gone */ }
-  try { process.kill(pid, 'SIGTERM'); return true } catch { return false }
+  try { process.kill(-pid, signal); return true } catch { /* not a group leader, or gone */ }
+  try { process.kill(pid, signal); return true } catch { return false }
 }
 
 export const defaultSpawner: Spawner = spec => {
@@ -290,14 +291,45 @@ export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string;
   return info.command.includes(w.tag) || info.command.includes(w.dir)
 }
 
-/** Remove only Room worktrees; failed workers and foreign directories remain recoverable. */
-export async function cleanupWorker(leadDir: string, w: Worker, collected = false): Promise<boolean> {
-  if (w.status === 'failed' || w.branch !== 'room/' + w.tag || w.exitCode !== 0) return false
+/** Remove only owned Room worktrees; failures require explicit discard. */
+export async function cleanupWorker(leadDir: string, w: Worker, collected = false, discarded = false): Promise<boolean> {
+  if (w.branch !== 'room/' + w.tag || (!discarded && (w.status === 'failed' || w.exitCode !== 0))) return false
   const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
   if (await common(leadDir) !== await common(w.dir) || fs.realpathSync(leadDir) === fs.realpathSync(w.dir)) return false
   if ((await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) return false
   await git(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
   await git(leadDir, ['branch', '-D', w.branch])
-  if (w.exitCode === 0) for (const suffix of ['.log', '.mcp.log']) fs.rmSync(path.join(leadDir, WORKERS_DIR, w.tag + suffix), { force: true })
+  for (const suffix of ['.log', '.mcp.log']) fs.rmSync(path.join(leadDir, WORKERS_DIR, w.tag + suffix), { force: true })
+  for (const dir of [path.join(leadDir, WORKERS_DIR), path.join(leadDir, '.room')]) {
+    try { fs.rmdirSync(dir) } catch (e) {
+      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e
+    }
+  }
   return true
+}
+
+/** One binary-capable snapshot against the fork, without modifying the worker's index. */
+export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<string | undefined> {
+  const dir = path.join(leadDir, '.room', 'discarded'), now = Date.now()
+  if (fs.existsSync(dir)) {
+    for (const name of fs.readdirSync(dir)) {
+      const file = path.join(dir, name), stat = fs.lstatSync(file)
+      if (name.endsWith('.patch') && stat.isFile() && stat.mtimeMs < now - 7 * 86400_000) fs.unlinkSync(file)
+    }
+    try { fs.rmdirSync(dir) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw e }
+  }
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-discard-'))
+  try {
+    const run = (args: string[]) => execFileSync('git', args, { cwd: w.dir, env: { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }, maxBuffer: 64 * 1024 * 1024 })
+    const base = w.base ?? (await git(leadDir, ['merge-base', 'HEAD', w.branch])).trim()
+    run(['read-tree', 'HEAD'])
+    run(['add', '-A', '--', '.', ...workerOwnedPaths(w).exclusions])
+    const patch = run(['diff', '--cached', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', base, '--', '.', ...workerOwnedPaths(w).exclusions])
+    if (!patch.length) return undefined
+    fs.mkdirSync(dir, { recursive: true })
+    const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+    const file = path.join(dir, `${w.tag}-${stamp}.patch`)
+    fs.writeFileSync(file, patch, { flag: 'wx', mode: 0o600 })
+    return file
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
 }

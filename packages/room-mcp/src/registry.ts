@@ -55,7 +55,7 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
     if (!current || current.id !== w.id || current.gen !== w.gen || current.startedAt !== w.startedAt) return
     releaseClaimsOnDone(s, undefined, w.name)
   }
-  if (exitCode !== 0 || !done) {
+  if (!w.stopReason && w.dismissedAt === undefined && (exitCode !== 0 || !done)) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1000))
     const elapsed = seconds < 90 ? `${seconds} s after start` : `after ${Math.floor(seconds / 60)}m`
     const tail = workerLogTail(path.join(s.dir, '.room', 'workers', `${w.tag}.log`))
@@ -145,6 +145,9 @@ export class Rooms {
 
   private async evaluateRetirement(s: Session): Promise<void> {
     for (const w of s.room.workers.values()) {
+      // The next lead must be able to explain and resume this intentionally stopped work.
+      if (w.stopReason === 'lead-session-ended') continue
+      if (this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
       if (w.lead !== s.me.name || this.hasHandle(s, w)) continue
       const exited = w.exitCode !== undefined || !pidAlive(w.pid)
       if (!exited) continue
@@ -157,7 +160,7 @@ export class Rooms {
       Object.assign(facts, await workerGitFacts(s.dir, w))
       const outcome = shouldRetire(facts)
       // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
-      if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
+      if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s) || this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
       const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
       const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
       if (facts.clean && w.exitCode === 0) {
