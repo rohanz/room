@@ -77,6 +77,24 @@ but never called `room_wait`, never previewed a merge and integrated by copying 
 - **No lead summary.** `room_state` lists everything; a lead wants "3 done, 2 waiting on you,
   1 quiet" as the first lines, with the questions addressed to it.
 
+## Found by the lifecycle batch lead (2026-09-21), next small batch
+
+A Claude lead ran three Codex workers through a local room to build worker retirement. Seven
+questions and six answers settled a shared record shape and a shared helper's signature; the
+merge was clean. What got in the lead's way:
+- A question to a worker that has already exited just times out. Tell the asker at once that
+  the recipient has finished.
+- `room_preview_merge` with `run` returns log lines but not the test runner's pass/fail summary.
+- "Run only the files you touch" let intended behaviour changes break suites nobody owned. The
+  preview could suggest tests that mention strings a worker changed.
+- A finishing worker's full summary is repeated in every release line and in plan-cancelled
+  interrupts. Say it once.
+- A hook line described the lead as one of its own workers: the hook state file is confused when
+  worktrees share a clone.
+- "Idle" is wrong: it tracks file changes, not activity. Bump activity on every tool call (the
+  before-edit hook and every room tool call), show "working" or "last action Nm ago", and let a
+  lead flag a running worker with no action for several minutes.
+
 ## Less ritual
 
 - **Claim only where someone is near.** With company, an agent claims before every edit; two
