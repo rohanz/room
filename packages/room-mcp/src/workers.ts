@@ -76,6 +76,27 @@ export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 export const WORKERS_DIR = path.join('.room', 'workers')
 export const DEFAULT_MAX_WORKERS = 8
 
+let warnedMissingNice = false
+/** nice execs the command, preserving the pid used for liveness and dismissal. */
+export function workerPriority(command: { cmd: string; args: string[] }, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): { cmd: string; args: string[]; nice: number } {
+  const raw = env.ROOM_WORKER_NICE?.trim()
+  const value = raw ? Number(raw) : 10
+  const nice = Number.isFinite(value) ? Math.max(0, Math.min(19, Math.trunc(value))) : 10
+  if (platform === 'win32' || nice === 0) return { ...command, nice: 0 }
+  for (const dir of (env.PATH ?? '/usr/bin:/bin').split(path.delimiter)) {
+    const executable = path.resolve(dir, 'nice')
+    try {
+      fs.accessSync(executable, fs.constants.X_OK)
+      if (fs.statSync(executable).isFile()) return { cmd: executable, args: ['-n', String(nice), command.cmd, ...command.args], nice }
+    } catch { /* try the next PATH entry */ }
+  }
+  if (!warnedMissingNice) {
+    warnedMissingNice = true
+    process.stderr.write('room workers: nice is unavailable; starting workers at normal priority\n')
+  }
+  return { ...command, nice: 0 }
+}
+
 /** Reserve for at least four intended workers (bounded by maxWorkers), even on the first spawn.
  * Also cap by actual concurrency when it exceeds that reservation; one thread is the floor.
  */

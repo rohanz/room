@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -11,7 +11,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { workerBudget, prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
+import { workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
 
 let dir: string
 let base: string
@@ -113,6 +113,7 @@ describe('room_spawn / room_done / room_dismiss', () => {
 
   it.each(['plugin:custom@market', ''])('passes ROOM_CLAUDE_CHANNEL through room_spawn (%s)', async channel => {
     vi.stubEnv('ROOM_CLAUDE_CHANNEL', channel)
+    vi.stubEnv('ROOM_WORKER_NICE', '0')
     try {
       const t = setup()
       expect(await t.leadTools.call('room_spawn', { tag: 'channel', task: 'check channels' })).toContain('spawned channel')
@@ -128,7 +129,10 @@ describe('room_spawn / room_done / room_dismiss', () => {
     const t = setup()
     const out = await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents', host: 'codex', model: 'gpt-5.6', effort: 'medium' })
     expect(out).toContain('spawned money: rohanz+money (codex gpt-5.6, pid 4243)')
-    expect(t.specs[0].cmd).toBe('codex')
+    const priority = workerPriority(workerCommand('codex', 'gpt-5.6', 'unused'))
+    expect(t.specs[0].cmd).toBe(priority.cmd)
+    if (priority.nice) expect(t.specs[0].args.slice(0, 3)).toEqual(['-n', '10', 'codex'])
+    expect(out).toContain(` · priority ${priority.nice ? 'nice 10' : 'normal'}`)
     expect(t.specs[0].env).toMatchObject({ ROOM_WORKER_HOST: 'codex', ROOM_WORKER_MODEL: 'gpt-5.6', ROOM_WORKER_EFFORT: 'medium', ROOM_TAG: 'money', ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
     expect(t.specs[0].cwd).toBe(join(dir, '.room', 'workers', 'money'))
     const w = t.a.workers.get('money')
@@ -568,6 +572,9 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(all).toContain('x = 100')
     expect(all).toContain('tier = "gold"')
     expect(all).toContain('exit 0')
+    expect(all).toMatch(/tests: PASSED \(exit 0\)$/)
+    const failed = await leadTools.call('room_preview_merge', { people: ['rohanz+money', 'rohanz+tiers'], run: "printf 'Tests: 1 failed, 1 total\\n'; exit 3" })
+    expect(failed).toMatch(/Tests: 1 failed, 1 total\ntests: FAILED \(exit 3\)$/)
     // dismissing the team-room worker signals only the team-room process; the local one is untouched
     await leadTools.call('room_dismiss', { tag: 'money' })
     expect(killed).toEqual(['github.com/rohanz/x/main'])
@@ -690,13 +697,14 @@ describe('worker compute budgets', () => {
     const t = setupLead()
     const reply = await t.leadTools.call('room_spawn', { tag: 'budget', task: 'train', host, threads: 2 })
     const spec = t.specs[0]
-    expect(spec.cmd).toBe(host)
+    expect(spec.cmd).toBe(workerPriority({ cmd: host, args: [] }).cmd)
     const env = workerEnv(process.env, spec.env)
     expect(env).toMatchObject({ OMP_NUM_THREADS: '7', ROOM_WORKER_THREADS: '2', ROOM_WORKER_MEM_GB: '9',
       OPENBLAS_NUM_THREADS: '2', MKL_NUM_THREADS: '2', VECLIB_MAXIMUM_THREADS: '2', NUMEXPR_NUM_THREADS: '2', LOKY_MAX_CPU_COUNT: '2', RAYON_NUM_THREADS: '2' })
     const cores = os.availableParallelism?.() ?? os.cpus().length
     const totalGb = Math.floor(os.totalmem() / 1024 ** 3)
-    expect(reply).toContain(`budget: 2 threads, ~${Math.max(1, Math.floor(os.totalmem() / 2 / 1024 ** 3))} GB (machine: ${cores} cores, ${totalGb} GB; 1 workers running). Put this in the task for compute-heavy work and stagger heavy jobs.`)
+    const priority = workerPriority({ cmd: host, args: [] })
+    expect(reply).toContain(`budget: 2 threads, ~${Math.max(1, Math.floor(os.totalmem() / 2 / 1024 ** 3))} GB (machine: ${cores} cores, ${totalGb} GB; 1 workers running) · priority ${priority.nice ? 'nice 10' : 'normal'}. Put this in the task for compute-heavy work and stagger heavy jobs.`)
     expect(process.env.ROOM_WORKER_THREADS).toBe('5')
     expect(process.env.OPENBLAS_NUM_THREADS).toBeUndefined()
     await t.leadTools.call('room_spawn', { tag: 'inherited', task: 'train', host })
@@ -708,6 +716,43 @@ describe('worker compute budgets', () => {
     const t = setupLead()
     expect(await t.leadTools.call('room_spawn', { tag: 'bad', task: 'train', threads })).toContain('error: threads must be an integer >= 1')
     expect(t.specs).toHaveLength(0)
+  })
+})
+
+describe('worker scheduling priority', () => {
+  const command = { cmd: 'fake-worker', args: ['task with spaces'] }
+  it.each([[undefined, 10], ['0', 0], ['-5', 0], ['50', 19], ['3.9', 3], ['bad', 10], ['', 10]])
+    ('normalises ROOM_WORKER_NICE=%s to %i', (value, expected) => {
+      const result = workerPriority(command, { PATH: '/usr/bin:/bin', ROOM_WORKER_NICE: value }, 'linux')
+      expect(result.nice).toBe(expected)
+      if (expected) expect(result.args).toEqual(['-n', String(expected), command.cmd, ...command.args])
+      else expect(result).toEqual({ ...command, nice: 0 })
+    })
+
+  it('does not wrap on Windows and falls back with one warning when nice is missing', () => {
+    const log = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    expect(workerPriority(command, { PATH: '/missing' }, 'win32')).toEqual({ ...command, nice: 0 })
+    expect(log).not.toHaveBeenCalled()
+    for (let i = 0; i < 2; i++) expect(workerPriority(command, { PATH: '/missing' }, 'linux')).toEqual({ ...command, nice: 0 })
+    expect(log).toHaveBeenCalledTimes(1)
+  })
+
+  it.skipIf(process.platform === 'win32')('tracks the real execed worker pid and can dismiss it', async () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'room-nice-'))
+    const pidFile = join(scratch, 'pid')
+    const cmd = workerPriority({ cmd: process.execPath, args: ['-e', `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`] })
+    expect(cmd.nice).toBe(10)
+    const child = defaultSpawner({ cmd: cmd.cmd, args: cmd.args, cwd: scratch, env: {}, logFile: join(scratch, 'worker.log') })
+    const exited = new Promise<void>((resolve, reject) => { child.onExit(() => resolve()); child.onError?.(reject) })
+    try {
+      await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true))
+      expect(Number(readFileSync(pidFile, 'utf8'))).toBe(child.pid)
+      expect(pidAlive(child.pid)).toBe(true)
+      expect(os.getPriority(child.pid)).toBeGreaterThanOrEqual(10)
+      expect(child.kill()).toBe(true)
+      await exited
+      expect(pidAlive(child.pid)).toBe(false)
+    } finally { child.kill(); await exited; rmSync(scratch, { recursive: true, force: true }) }
   })
 })
 

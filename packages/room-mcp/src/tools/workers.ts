@@ -1,5 +1,6 @@
 import { Bridge } from '../bridge.js'
-import { pidIsOurWorker, signalWorker } from '../workers.js'
+import { pidIsOurWorker, signalWorker, workerPriority } from '../workers.js'
+import { releaseClaimsOnDone } from './claims.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -23,7 +24,7 @@ export const defs: ToolDef[] = [
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, gitignored, dismissWorker, runningWorkers, cleanupMine, setPresence, refreshPrs, myPr, postLedger } = state
+  const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, gitignored, dismissWorker, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state
   const handlers: Record<string, Handler> = {
     async room_done(a) {
       const s = S()
@@ -33,7 +34,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // Claims mirroring a worker that is still running are the worker's, not this task's: they stay until it finishes.
       const live = new Set(runningWorkers(s).map(x => x.w.tag))
       const kept = mine(s).filter(c => c.mirrorOf && live.has(c.mirrorOf)).length
-      const released = cleanupMine(s, `done: ${summary}`, c => !!c.mirrorOf && live.has(c.mirrorOf))
+      const released = releaseClaimsOnDone(s, c => !!c.mirrorOf && live.has(c.mirrorOf))
       const asWorker = s.room.workerOf(s.me.name)
       // A worker finishes only the record of its own spawn (ROOM_WORKER_ID; older leads passed ROOM_GEN): a stale
       // process of a reused tag must not mark the lead's current worker done. Its report still reaches the lead.
@@ -137,8 +138,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           ROOM_LOG_FILE: path.join(s.dir, '.room', 'workers', `${tag}.mcp.log`),
         }
         const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
+        const priority = workerPriority({ cmd, args })
         let proc: SpawnedProcess
-        try { proc = (ctx.spawner ?? defaultSpawner)({ cmd, args, cwd: dir, env, logFile }) }
+        try { proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args, cwd: dir, env, logFile }) }
         catch (e) { return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}` }
         rooms.setHandle(s, id, proc)
         const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), task, dir, branch, ...(base ? { base } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
@@ -171,7 +173,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         })
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
-        out.push(`budget: ${threads} threads, ~${budget.memGb} GB (machine: ${cores} cores, ${Math.floor(memBytes / 1024 ** 3)} GB; ${count + 1} workers running). Put this in the task for compute-heavy work and stagger heavy jobs.`)
+        out.push(`budget: ${threads} threads, ~${budget.memGb} GB (machine: ${cores} cores, ${Math.floor(memBytes / 1024 ** 3)} GB; ${count + 1} workers running) · priority ${priority.nice ? `nice ${priority.nice}` : 'normal'}. Put this in the task for compute-heavy work and stagger heavy jobs.`)
         out.push(`log: ${logFile}`)
         out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} on its own, declares a scope, and posts room_done to you when finished (you will be woken). room_state shows it under "workers"; answer its questions promptly.`)
         if (created && !gitignored(s.dir)) out.push('tip: add .room/ to .gitignore (the room already ignores it; git status will not).')
