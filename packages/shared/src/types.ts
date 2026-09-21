@@ -127,6 +127,8 @@ export interface Worker {
   host: 'claude' | 'codex'
   model?: string
   effort?: string
+  /** Repo-relative inputs linked from the lead's clone; read-only by worker instruction. */
+  link?: string[]
   task: string
   dir: string
   branch: string

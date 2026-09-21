@@ -7,6 +7,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { stripVTControlCharacters } from 'node:util'
 import type { Worker, RetiredWorker } from '@room/shared'
 import { git } from '@room/roomd/git'
 
@@ -113,24 +114,88 @@ export function validTag(tag: unknown): string | undefined {
 }
 
 /** The fixed preamble every worker gets, then the task. */
-export function workerPrompt(lead: string, tag: string, task: string): string {
+export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; link?: string[] }): string {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
     `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
+    ...(context ? [
+      `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
+      ...(context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(', ')}. Do not modify these paths or their contents; write outputs elsewhere.`] : []),
+    ] : []),
     '',
     `TASK: ${task}`,
   ].join('\n')
 }
 
-// Claude --help documents --effort <level>; Codex effort remains informational until a flag is verified.
+export const WORKER_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const
+
+// Claude effort is communicated in the prompt; no unverified host flag is passed.
 export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort?: string): { cmd: string; args: string[] } {
-  if (host === 'codex') return { cmd: 'codex', args: ['exec', '-s', 'workspace-write', ...(model ? ['-m', model] : []), prompt] }
+  if (effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join('|')}`)
+  if (host === 'codex') return { cmd: 'codex', args: ['exec', '-s', 'workspace-write', ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt] }
   return {
     cmd: 'claude',
-    args: [...(claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])],
+    args: [...(claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : [])],
   }
+}
+
+/** Validate the entire list before making links; neither source nor destination may escape its root. */
+export function prepareWorkerLinks(repoDir: string, workerDir: string, requested?: unknown): string[] {
+  let input = requested
+  if (input === undefined) {
+    try { input = fs.readFileSync(path.join(repoDir, '.roomlinks'), 'utf8').split(/\r?\n/).map(l => l.replace(/#.*/, '').trim()).filter(Boolean) }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; input = [] }
+  }
+  if (!Array.isArray(input) || input.some(p => typeof p !== 'string')) throw new Error('link must be an array of repo-relative paths')
+  if (!input.length) return []
+  const root = fs.realpathSync(repoDir), destRoot = fs.realpathSync(workerDir)
+  const inside = (base: string, target: string): boolean => {
+    const rel = path.relative(base, target)
+    return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)
+  }
+  const links = (input as string[]).map(raw => {
+    const p = raw.trim(), parts = p.split(/[\\/]/)
+    if (!p || path.isAbsolute(p) || parts.some(x => !x || x === '.' || x === '..') || parts[0] === '.git' || parts[0] === '.room') throw new Error(`invalid link path: ${raw}`)
+    const source = fs.realpathSync(path.join(root, p))
+    if (!inside(root, source)) throw new Error(`link source escapes repo: ${p}`)
+    const stat = fs.statSync(source)
+    if (!stat.isFile() && !stat.isDirectory()) throw new Error(`link source must be a file or directory: ${p}`)
+    const target = path.join(destRoot, p)
+    for (let at = target; at !== destRoot; at = path.dirname(at)) {
+      let entry
+      try { entry = fs.lstatSync(at) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+      if (entry && (at === target || entry.isSymbolicLink() || !entry.isDirectory())) throw new Error(`link destination already present or traverses a non-directory: ${p}`)
+    }
+    return { p, source, target, directory: stat.isDirectory() }
+  })
+  for (const [i, a] of links.entries()) for (const b of links.slice(i + 1)) {
+    if (a.target === b.target || inside(a.target, b.target) || inside(b.target, a.target)) throw new Error(`overlapping link paths: ${a.p}, ${b.p}`)
+  }
+  const made: string[] = []
+  try {
+    for (const link of links) {
+      fs.mkdirSync(path.dirname(link.target), { recursive: true })
+      fs.symlinkSync(link.source, link.target, link.directory ? 'dir' : 'file')
+      made.push(link.target)
+    }
+  } catch (e) { for (const target of made.reverse()) fs.unlinkSync(target); throw e }
+  return links.map(l => l.p)
+}
+
+/** Read a bounded suffix even for multi-GB logs, then take five non-empty, ANSI-free lines. */
+export function workerLogTail(logFile: string): string {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(logFile, 'r')
+    const size = fs.fstatSync(fd).size, start = Math.max(0, size - 64 * 1024)
+    const buffer = Buffer.alloc(size - start)
+    fs.readSync(fd, buffer, 0, buffer.length, start)
+    const text = stripVTControlCharacters(buffer.toString('utf8'))
+    return text.split(/\r?\n|\r/).map(l => l.trim()).filter(Boolean).slice(-5).join('\n').slice(-600)
+  } catch { return '(log unavailable)' }
+  finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
 /** A worktree for the worker, created from the lead's HEAD on branch room/<tag>; reused if it already exists. */

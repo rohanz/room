@@ -1,6 +1,7 @@
+import { claudeWakeUnavailable } from '../src/prompt.js'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, symlinkSync, lstatSync, realpathSync } from 'node:fs'
 import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -11,7 +12,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
+import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
 
 let dir: string
 let base: string
@@ -199,14 +200,14 @@ describe('room_spawn / room_done / room_dismiss', () => {
     expect(out).toContain('which field carries the price?')
   })
 
-  it("a worker that exits without room_done still ends the lead's wait, as a done message", async () => {
+  it("a worker that exits without room_done ends the lead's wait with one interrupt", async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
     const waiting = t.leadTools.call('room_wait', { timeoutMs: 3000 })
     await new Promise(r => setTimeout(r, 50))
     t.exits[0](0)
     const out = await waiting
-    expect(out).toContain('worker done:')
+    expect(out).toContain('interrupt:')
     expect(out).toContain('exited without room_done')
     expect(t.a.workers.get('money')).toMatchObject({ status: 'failed', exitCode: 0 })
   })
@@ -266,7 +267,7 @@ describe('room_spawn / room_done / room_dismiss', () => {
     await t.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
     t.exits[0](1)
     expect(t.a.workers.get('a')).toMatchObject({ status: 'failed', exitCode: 1 })
-    expect(t.a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && /worker a .*exited with code 1/.test(m.text))).toBe(true)
+    await vi.waitFor(() => expect(t.a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && /worker a died .*exit 1/.test(m.text))).toBe(true))
     const d = await t.leadTools.call('room_dismiss', { tag: 'b' })
     expect(d).toContain('dismissed b')
     expect(t.killed).toHaveLength(1)
@@ -369,7 +370,7 @@ describe('worker safety', () => {
     await tools.call('room_spawn', { tag: 'nope', task: 'x', host: 'codex' })
     onErr!(new Error('spawn codex ENOENT'))
     expect(a.workers.get('nope')).toMatchObject({ status: 'failed', exitCode: -1 })
-    expect(a.messages().some(m => m.type === 'note' && /could not start: spawn codex ENOENT/.test((m as { text: string }).text))).toBe(true)
+    await vi.waitFor(() => expect(a.messages().some(m => m.type === 'note' && /could not start codex: spawn codex ENOENT/.test((m as { text: string }).text))).toBe(true))
     // dismissing it never signals anything
     expect(await tools.call('room_dismiss', { tag: 'nope' })).toContain('retired worker nope')
   })
@@ -552,7 +553,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
       join: async () => fakeSession(local.a, lead),
       leave: async () => {},
       spawner: spec => ({ pid: 99, onExit: () => {}, kill: () => { killed.push(spec.env.ROOM_ROOM); return true } }),
-      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', `routing-${tag}`), branch: `room/${tag}`, created: true }),
     })
     await leadTools.call('room_spawn', { tag: 'money', task: 'team side' })
     await leadTools.call('room_spawn', { tag: 'money', task: 'local side', where: 'local' })
@@ -567,7 +568,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(await leadTools.call('room_diff', { path: 'app.py', person: 'rohanz+money' })).toContain('+x = 100')
     expect(await leadTools.call('room_who', { path: 'app.py' })).toContain('uncommitted changes by: rohanz+money')
     const pm = await leadTools.call('room_preview_merge', { person: 'rohanz+money' })
-    expect(pm).toContain('rohanz+money only')
+    expect(pm, pm).toContain('no conflicts')
     const all = await leadTools.call('room_preview_merge', { people: ['rohanz+money', 'rohanz+tiers'], run: 'cat app.py tiers.py' })
     expect(all).toContain('x = 100')
     expect(all).toContain('tier = "gold"')
@@ -666,8 +667,8 @@ describe('worker compute budgets', () => {
     expect(t.specs).toHaveLength(2)
     expect(t.specs.map(s => s.env.ROOM_WORKER_THREADS)).toEqual(['6', '6'])
     expect(t.specs.map(s => s.env.ROOM_WORKER_MEM_GB)).toEqual(['12', '12'])
-    expect(replies.filter(r => r.includes('budget:'))).toHaveLength(2)
-    expect(replies.some(r => r.includes('2 workers running)'))).toBe(true)
+    expect(replies.filter(r => r.includes('budget in prompt:'))).toHaveLength(2)
+    expect(t.specs.every(s => s.args.some(a => a.includes('Compute budget: 6 threads, ~12 GB')))).toBe(true)
     expect(replies.some(r => r.includes('2 workers already running'))).toBe(true)
     await t.leadTools.shutdown()
   })
@@ -701,10 +702,9 @@ describe('worker compute budgets', () => {
     const env = workerEnv(process.env, spec.env)
     expect(env).toMatchObject({ OMP_NUM_THREADS: '7', ROOM_WORKER_THREADS: '2', ROOM_WORKER_MEM_GB: '9',
       OPENBLAS_NUM_THREADS: '2', MKL_NUM_THREADS: '2', VECLIB_MAXIMUM_THREADS: '2', NUMEXPR_NUM_THREADS: '2', LOKY_MAX_CPU_COUNT: '2', RAYON_NUM_THREADS: '2' })
-    const cores = os.availableParallelism?.() ?? os.cpus().length
-    const totalGb = Math.floor(os.totalmem() / 1024 ** 3)
     const priority = workerPriority({ cmd: host, args: [] })
-    expect(reply).toContain(`budget: 2 threads, ~${Math.max(1, Math.floor(os.totalmem() / 2 / 1024 ** 3))} GB (machine: ${cores} cores, ${totalGb} GB; 1 workers running) · priority ${priority.nice ? 'nice 10' : 'normal'}. Put this in the task for compute-heavy work and stagger heavy jobs.`)
+    expect(reply).toContain(`budget in prompt: 2 threads, ~9 GB · priority ${priority.nice ? 'nice 10' : 'normal'}`)
+    expect(spec.args.some(a => a.includes('Compute budget: 2 threads, ~9 GB RAM; scheduling priority:') && a.includes('reasoning effort: host default'))).toBe(true)
     expect(process.env.ROOM_WORKER_THREADS).toBe('5')
     expect(process.env.OPENBLAS_NUM_THREADS).toBeUndefined()
     await t.leadTools.call('room_spawn', { tag: 'inherited', task: 'train', host })
@@ -756,10 +756,11 @@ describe('worker scheduling priority', () => {
   })
 })
 
-it('passes explicit effort only to the verified Claude flag; no effort is invented', () => {
-  expect(workerCommand('claude', undefined, 'task', '', 'medium').args.slice(-2)).toEqual(['--effort', 'medium'])
+it('passes explicit effort to Codex and leaves Claude effort in the prompt', () => {
+  expect(workerCommand('claude', undefined, 'task', '', 'medium').args).not.toContain('--effort')
   expect(workerCommand('claude', undefined, 'task').args).not.toContain('--effort')
-  expect(workerCommand('codex', undefined, 'task', '', 'medium').args).not.toContain('medium')
+  expect(workerCommand('codex', undefined, 'task', '', 'medium').args).toContain('model_reasoning_effort=medium')
+  expect(workerCommand('codex', undefined, 'task').args).not.toContain('-c')
   expect(workerEnv({ ROOM_WORKER_HOST: 'claude', ROOM_WORKER_MODEL: 'old', ROOM_WORKER_EFFORT: 'high' }, {})).toEqual({})
 })
 
@@ -794,4 +795,94 @@ describe('retirement integration', () => {
     expect(existsSync(join(dir, 'uncommitted-retirement-check'))).toBe(true)
     await t.leadTools.shutdown()
   })
+})
+
+describe('spawn inputs and effort', () => {
+  it.each(['minimal', 'low', 'medium', 'high'])('passes valid Codex effort %s into config and the worker prompt', async effort => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'effort', task: 'reason carefully', host: 'codex', effort })
+    expect(t.specs[0].args).toContain(`model_reasoning_effort=${effort}`)
+    expect(t.specs[0].args.some(a => a.includes(`reasoning effort: ${effort}`))).toBe(true)
+    await t.leadTools.shutdown()
+  })
+
+  it.each(['max', '', 'HIGH', 2, null])('rejects invalid effort %s before spawning', async effort => {
+    const t = setupLead()
+    expect(await t.leadTools.call('room_spawn', { tag: 'effort', task: 'x', effort })).toContain('error: effort must be')
+    expect(t.specs).toEqual([])
+    await t.leadTools.shutdown()
+  })
+
+  it('uses .roomlinks defaults, records links and describes them as read-only in the actual prompt', async () => {
+    const t = setupLead()
+    const source = 'spawn-linked-input'
+    const dest = join(dir, '.room', 'workers', 'linked')
+    mkdirSync(dest, { recursive: true })
+    writeFileSync(join(dir, source), 'training data')
+    writeFileSync(join(dir, '.roomlinks'), `# shared inputs\n\n${source} # comment\n`)
+    try {
+      expect(await t.leadTools.call('room_spawn', { tag: 'linked', task: 'read inputs' })).toContain(`inputs ${source}`)
+      expect(t.a.workers.get('linked')?.link).toEqual([source])
+      expect(lstatSync(join(dest, source)).isSymbolicLink()).toBe(true)
+      expect(t.specs[0].args.some(a => a.includes(`Read-only inputs linked from the lead's clone: ${source}`))).toBe(true)
+      expect(prepareWorkerLinks(dir, dest, [])).toEqual([])
+    } finally {
+      rmSync(join(dir, '.roomlinks'), { force: true })
+      rmSync(join(dir, source), { force: true })
+      rmSync(dest, { recursive: true, force: true })
+      await t.leadTools.shutdown()
+    }
+  })
+
+  it('validates the entire link list before mutating and never overwrites a destination', () => {
+    const root = mkdtempSync(join(tmpdir(), 'room-links-'))
+    const target = join(root, 'worktree')
+    mkdirSync(target)
+    mkdirSync(join(root, 'data'))
+    writeFileSync(join(root, 'data', 'in.txt'), 'input')
+    writeFileSync(join(target, 'present'), 'keep')
+    try {
+      expect(() => prepareWorkerLinks(root, target, ['data', 'missing'])).toThrow()
+      expect(existsSync(join(target, 'data'))).toBe(false)
+      expect(() => prepareWorkerLinks(root, target, ['data', 'data/in.txt'])).toThrow('overlapping')
+      for (const p of ['../escape', '/tmp', '.', '.git', '.room', 'data/../../escape']) expect(() => prepareWorkerLinks(root, target, [p])).toThrow()
+      symlinkSync(tmpdir(), join(root, 'outside'))
+      expect(() => prepareWorkerLinks(root, target, ['outside'])).toThrow('escapes repo')
+      symlinkSync(join(root, 'data'), join(target, 'data'))
+      expect(() => prepareWorkerLinks(root, target, ['data/in.txt'])).toThrow('destination')
+      expect(() => prepareWorkerLinks(root, target, ['data'])).toThrow('destination')
+      rmSync(join(target, 'data'))
+      expect(prepareWorkerLinks(root, target, ['data/in.txt'])).toEqual(['data/in.txt'])
+      expect(realpathSync(join(target, 'data', 'in.txt'))).toBe(realpathSync(join(root, 'data', 'in.txt')))
+      writeFileSync(join(root, 'present'), 'do not replace')
+      expect(() => prepareWorkerLinks(root, target, ['present'])).toThrow('destination')
+      expect(readFileSync(join(target, 'present'), 'utf8')).toBe('keep')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('warns conservatively for a Claude lead and puts the room_wait instruction first', async () => {
+    expect(claudeWakeUnavailable(dir, 'claude', 'claude')).toBe(true)
+    expect(claudeWakeUnavailable(dir, 'codex', 'codex')).toBe(false)
+    expect(claudeWakeUnavailable(dir, 'claude', 'claude --dangerously-load-development-channels plugin:room@room')).toBe(false)
+    expect(claudeWakeUnavailable(dir, 'claude', 'claude --channels plugin:unrelated@other')).toBe(true)
+    vi.stubEnv('ROOM_HOST', 'claude')
+    vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
+    const t = setupLead()
+    const reply = await t.leadTools.call('room_spawn', { tag: 'warning', task: 'x' })
+    expect(reply.startsWith('Lead wake-ups are not confirmed')).toBe(true)
+    expect(reply.split('\n')[0]).toContain('room_wait in a loop')
+    await t.leadTools.shutdown()
+  })
+})
+
+it('reads only the last five non-empty log lines, strips ANSI, and caps output at 600 characters', () => {
+  const log = join(dir, 'worker-tail.log')
+  try {
+    writeFileSync(log, 'old\n' + 'x'.repeat(70_000) + '\n1\n\n2\n3\n\u001b[31m4\u001b[0m\n5\n')
+    expect(workerLogTail(log)).toBe('1\n2\n3\n4\n5')
+    writeFileSync(log, 'x'.repeat(1000) + '\nlast')
+    expect(workerLogTail(log)).toHaveLength(600)
+    expect(workerLogTail(log)).toMatch(/last$/)
+    expect(workerLogTail(join(dir, 'missing-log'))).toBe('(log unavailable)')
+  } finally { rmSync(log, { force: true }) }
 })

@@ -8,9 +8,10 @@
  * bridge) so they start when a session is added and stop when it is removed, and the process
  * handles of workers this process spawned, keyed by the worker's stable id.
  */
-import type { Presence, Worker } from '@room/shared'
+import type { NoteMsg, Presence, Worker } from '@room/shared'
+import path from 'node:path'
 import type { Session } from './session.js'
-import { pidAlive, shouldRetire, workerGitFacts, type SpawnedProcess } from './workers.js'
+import { pidAlive, shouldRetire, workerGitFacts, workerLogTail, type SpawnedProcess } from './workers.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -36,6 +37,33 @@ export interface RoomsOptions {
 export function workerId(lead: string, tag: string, gen: number): string { return `${lead}/${tag}#${gen}` }
 /** The part of an id that a concurrent spawn of the same tag would share. */
 export function workerIdBase(roomName: string, lead: string, tag: string): string { return `${roomName}|${lead}/${tag}` }
+
+/** A confirmed exit is recorded once, including when discovered after the lead restarts. */
+export async function finishWorkerProcess(s: Session, w: Worker, code: number | null, at = Date.now(), error?: string): Promise<void> {
+  const current = s.room.workers.get(w.tag)
+  if (current !== w || w.exitCode !== undefined) return
+  const done = w.status === 'done'
+  const exitCode = code ?? -1
+  s.room.updateWorker(w.tag, {
+    exitCode, finishedAt: w.finishedAt ?? at,
+    ...(w.status === 'running' ? { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' } : {}),
+  }, w.id)
+  if (!done) {
+    // tools/context constructs Rooms: defer this dependency until all tool definitions are loaded.
+    const { releaseClaimsOnDone } = await import('./tools/claims.js')
+    const current = s.room.workers.get(w.tag)
+    if (!current || current.id !== w.id || current.gen !== w.gen || current.startedAt !== w.startedAt) return
+    releaseClaimsOnDone(s, undefined, w.name)
+  }
+  if (exitCode !== 0 || at - w.startedAt < 90_000 || !done) {
+    const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1000))
+    const tail = workerLogTail(path.join(s.dir, '.room', 'workers', `${w.tag}.log`))
+    s.room.post<NoteMsg>({ name: 'room', kind: 'bot' }, {
+      type: 'note', to: w.lead, priority: 'interrupt',
+      text: `worker ${w.tag} died ${seconds} s after start (exit ${code ?? 'unknown'})${!done ? '; exited without room_done' : ''}${error ? `; ${error}` : ''}; last lines of its log: ${tail || '(empty log)'}`,
+    })
+  }
+}
 
 export class Rooms {
   private entries = new Map<Session, { role: Role; attachment?: Attachment }>()
@@ -120,7 +148,7 @@ export class Rooms {
       const exited = w.exitCode !== undefined || !pidAlive(w.pid)
       if (!exited) continue
       if (w.status === 'running') {
-        s.room.updateWorker(w.tag, { status: 'failed', finishedAt: Date.now(), summary: w.summary ?? 'process exited without room_done' }, w.id)
+        await finishWorkerProcess(s, w, null)
         continue
       }
       const facts = { exited, done: w.status === 'done', dismissed: w.dismissedAt !== undefined || w.status === 'dismissed', merged: false, clean: false, ahead: undefined as number | undefined, uncommitted: undefined as number | undefined }
