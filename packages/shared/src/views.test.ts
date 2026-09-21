@@ -58,3 +58,15 @@ it('returns only populated line detail sections without missing-data placeholder
   expect(JSON.stringify(detail.sections)).not.toContain('unavailable')
   expect(lineDetail({ conflicts: [{ people: ['a', 'b'], resolved: true }] }).sections.map(s => s.label)).toEqual(['Line', 'Conflict'])
 })
+
+it('uses the same reported runtime line online and for recorded offline workers', async () => {
+  const { participantIdentityLine, deriveParticipants } = await import('./views.js')
+  const p = { user: { name: 'rohanz+codex', kind: 'agent' as const, owner: 'rohanz', label: 'codex', color: '#000' } }
+  expect(participantIdentityLine([p], p.user.name)).toBe('rohanz+codex · agent of rohanz · codex')
+  expect(participantIdentityLine([{ ...p, host: 'codex', model: 'gpt-6-astra', effort: 'medium' }], p.user.name)).toBe('rohanz+codex · agent of rohanz · codex · gpt-6-astra · medium')
+  expect(participantIdentityLine([], 'unknown')).toBe('unknown')
+  const worker = { name: p.user.name, tag: 'codex', host: 'codex' as const, model: 'gpt-6-astra', effort: 'medium', task: 'test', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'done' as const, lead: 'rohanz' }
+  const input = { presences: [], workers: [worker], scopes: [], overlayPeople: [], changesByPerson: new Map(), claims: [] }
+  expect(deriveParticipants(input)[0]).toMatchObject({ online: false, identity: 'agent of rohanz · codex · gpt-6-astra · medium' })
+  expect(participantIdentityLine([{ ...p, model: 'actual' }], p.user.name, worker)).toContain('actual · medium')
+})

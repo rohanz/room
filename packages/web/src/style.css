@@ -761,3 +761,5 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .line-text-show, .file-more { border: 0; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
 .line-text-show { padding: 0 6px; }
 .file-more { display: block; width: 100%; padding: 8px 10px; text-align: left; }
+
+.participant-identity { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -389,3 +389,10 @@ describe('workers-room bridge', () => {
     expect(existsSync(join(dir, '.git', 'room-state.json'))).toBe(true)
   })
 })
+
+it.each([[' gpt-6-astra ', 'gpt-6-astra'], ['x'.repeat(100), 'x'.repeat(80)], [undefined, undefined], [42, undefined], ['', undefined], ['  ', undefined]])('SessionStart records only a nonempty string model (%s)', async (model, expected) => {
+  await runHook('session-start.mjs', { session_id: 'model-session', cwd: dir, model })
+  const hint = JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8'))
+  expect(hint.model).toBe(expected)
+  expect(Object.hasOwn(hint, 'model')).toBe(expected !== undefined)
+})

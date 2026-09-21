@@ -2,6 +2,8 @@ import { renderScheduler } from './scheduler.ts'
 import { afterEach, expect, it, vi } from 'vitest'
 import { RoomDoc } from '@room/shared'
 import type { Conn } from './conn.ts'
+import { readFileSync } from 'node:fs'
+import { boardPanel } from './board.ts'
 import { createFocusState, participantsPanel } from './panels.ts'
 
 // Minimal DOM surface used by h()/the rail; no browser or socket required.
@@ -10,6 +12,7 @@ class Element {
   events = new Map<string, unknown>()
   setAttribute(name: string, value: string) { this.attributes.set(name, value) }
   addEventListener(name: string, fn: unknown) { this.events.set(name, fn) }
+  classList = { toggle: vi.fn() }
   className = ''; title = ''; style = {}; children: (Element | string)[] = []
   append(...children: (Element | string)[]) { this.children.push(...children) }
   replaceChildren(...children: (Element | string)[]) { this.children = children }
@@ -42,5 +45,24 @@ it('renders live Code presence without treating missing activity as disconnected
   expect(rail.find('participant')?.className).not.toContain('offline')
   expect(rail.textContent).toContain('Online · idle 152s')
   expect(rail.textContent).not.toContain('Offline')
+  room.doc.destroy()
+})
+
+it('renders the shared model line with ellipsis styling and full title/tooltip on both cards', () => {
+  vi.useFakeTimers()
+  vi.stubGlobal('document', { createElement: () => new Element(), activeElement: null, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+  const room = new RoomDoc()
+  const model = 'model-' + 'x'.repeat(74)
+  const states = new Map([[1, { user: { name: 'Ada', kind: 'agent', label: 'codex' }, model, effort: 'medium' }]])
+  const conn = { room, provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
+  const people = participantsPanel(conn, createFocusState()) as unknown as Element
+  const board = boardPanel(conn, vi.fn()) as unknown as Element
+  const line = 'agent · codex · ' + model + ' · medium'
+  expect(people.find('participant-identity')?.textContent).toBe(line)
+  expect(people.find('participant-identity')?.title).toBe(line)
+  expect(board.find('participant-identity')?.textContent).toBe(line)
+  expect(board.find('participant-identity')?.attributes.get('data-tooltip')).toBe(line)
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  expect(css).toMatch(/\.participant-identity\s*\{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/)
   room.doc.destroy()
 })

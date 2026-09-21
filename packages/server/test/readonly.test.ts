@@ -76,6 +76,18 @@ describe('identity-bound connections', () => {
       state: JSON.parse(decoding.readVarString(inner)),
     }))
   }
+  it('keeps and bounds owned runtime metadata, dropping foreign entries', () => {
+    const result = filterAwareness(pack([
+      { clientID: 1, clock: 3, state: { user: { name: 'octo' }, model: ' gpt-6-astra ', effort: 'm'.repeat(100) + '\n' } },
+      { clientID: 2, clock: 4, state: { user: { name: 'octo+worker' }, model: '\u001b' + 'x'.repeat(100) + 'é', effort: 42 } },
+      { clientID: 3, clock: 5, state: { user: { name: 'stranger' }, model: 'no' } },
+    ]), 'octo')
+    expect(unpack(result.buf!)).toEqual([
+      { clientID: 1, clock: 3, state: { user: { name: 'octo' }, model: 'gpt-6-astra', effort: 'm'.repeat(80) } },
+      { clientID: 2, clock: 4, state: { user: { name: 'octo+worker' }, model: 'x'.repeat(80) } },
+    ])
+    expect(result.stripped).toEqual(['stranger'])
+  })
   const own = { clientID: 123, clock: 42, state: { user: { name: 'octo+codex', owner: 'octo' }, status: 'working' } }
   const foreign = { clientID: 456, clock: 17, state: { user: { name: 'kieran' } } }
 

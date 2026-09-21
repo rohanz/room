@@ -15,7 +15,7 @@ const id = ev.session_id ?? ev.thread_id ?? ev.sessionId
 const flag = process.argv.indexOf('--host')
 const host = flag >= 0 && process.argv[flag + 1] ? process.argv[flag + 1] : (ev.hook_event_name || ev.transcript_path ? 'claude' : 'codex')
 if (root && id) {
-  try { fs.writeFileSync(gitStatePath(root, 'room-session.json'), JSON.stringify({ session_id: id, at: Date.now(), cwd: ev.cwd, host }) + '\n') } catch { /* best effort */ }
+  try { fs.writeFileSync(gitStatePath(root, 'room-session.json'), JSON.stringify({ session_id: id, at: Date.now(), cwd: ev.cwd, host, ...(typeof ev.model === 'string' && ev.model.trim() ? { model: ev.model.trim().slice(0, 80) } : {}) }) + '\n') } catch { /* best effort */ }
 } else {
   try { fs.appendFileSync(path.join(os.tmpdir(), 'room-hook.log'), `${new Date().toISOString()} session-start: no root/id; keys=${Object.keys(ev).join(',')} cwd=${ev.cwd}\n`) } catch { /* ignore */ }
 }

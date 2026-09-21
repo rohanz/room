@@ -126,6 +126,7 @@ export interface Worker {
   name: string
   host: 'claude' | 'codex'
   model?: string
+  effort?: string
   task: string
   dir: string
   branch: string
@@ -157,6 +158,9 @@ export interface Cursor {
 
 /** Awareness state published by every client. */
 export interface Presence {
+  host?: string
+  model?: string
+  effort?: string
   user: Identity & { color: string }
   cursor?: Cursor
   status?: string

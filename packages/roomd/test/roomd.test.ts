@@ -119,6 +119,13 @@ describe('roomd v2 push-only overlays', () => {
 
   afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
 
+  it('carries reported runtime metadata through subsequent status updates', async () => {
+    const dir = await makeRepo({ 'app.py': 'x = 1\n' })
+    const daemon = await start({ dir, room: room(), name: 'Ada', kind: 'agent', host: 'codex', model: 'gpt-6-astra', effort: 'medium' })
+    daemon.touch()
+    expect(daemon.provider.awareness.getLocalState()).toMatchObject({ host: 'codex', model: 'gpt-6-astra', effort: 'medium' })
+  })
+
   it('a committed symlink is not reported as changed, and a retargeted one is', async () => {
     const dir = await makeRepo({ 'AGENTS.md': '# rules\n', 'app.py': 'x = 1\n' })
     await fsp.symlink('AGENTS.md', path.join(dir, 'CLAUDE.md'))

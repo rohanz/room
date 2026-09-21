@@ -87,9 +87,10 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   }
 }
 
-/** Static plugin env wins over the parent process, then the shared SessionStart hint. */
+/** Explicit worker host wins, then static plugin env, parent process and the SessionStart hint. */
 export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process.env, parentCommand: () => string = () => execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] })): string {
   const host = (v: unknown) => v === 'claude' || v === 'codex' ? v : undefined
+  if (host(env.ROOM_WORKER_HOST)) return env.ROOM_WORKER_HOST!
   if (host(env.ROOM_HOST)) return env.ROOM_HOST!
   try {
     const command = path.basename(parentCommand().trim()).toLowerCase()
@@ -97,11 +98,26 @@ export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process
     if (/^claude(?:[.-]|$)/.test(command)) return 'claude'
   } catch { /* ps unavailable: try the session file */ }
   try {
-    let gitDir = path.join(dir, '.git')
+    return host(JSON.parse(fs.readFileSync(sessionMetadataPath(dir), 'utf8')).host) ?? 'agent'
+  } catch { return 'agent' }
+}
+
+/** Per-worktree hook file, also used when the session changes under a live MCP process. */
+export function sessionMetadataPath(dir: string): string {
+  let gitDir = path.join(dir, '.git')
+  try {
     if (fs.statSync(gitDir).isFile()) {
       const target = fs.readFileSync(gitDir, 'utf8').match(/gitdir:\s*(.+)/)?.[1].trim()
       if (target) gitDir = path.resolve(dir, target)
     }
-    return host(JSON.parse(fs.readFileSync(path.join(gitDir, 'room-session.json'), 'utf8')).host) ?? 'agent'
-  } catch { return 'agent' }
+  } catch { /* the hook may not have run yet */ }
+  return path.join(gitDir, 'room-session.json')
+}
+
+/** Never infer model/effort from ambient host configuration or inherited host-specific variables. */
+export function resolveSessionRuntime(dir: string, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
+  const clean = (v: unknown) => typeof v === 'string' ? v.replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80) || undefined : undefined
+  let model: string | undefined
+  try { model = clean(JSON.parse(fs.readFileSync(sessionMetadataPath(dir), 'utf8')).model) } catch { /* unknown */ }
+  return { model: model ?? clean(env.ROOM_WORKER_MODEL), effort: clean(env.ROOM_WORKER_EFFORT) }
 }

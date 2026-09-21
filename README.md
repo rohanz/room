@@ -214,6 +214,8 @@ that their changes are compatible.
 
 ## Browser interface
 
+People and Board cards show models reported by session hooks or explicit worker settings, plus explicitly requested worker effort; unknown values stay hidden.
+
 ![Room file viewer showing two participants’ changes and the activity timeline](docs/img/room-v2-redesign.png)
 
 *File-view screenshot from an earlier two-agent run: participant changes, possible

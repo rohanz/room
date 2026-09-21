@@ -43,6 +43,7 @@ export interface Participant {
 
 export interface ParticipantInput {
   presences: readonly Presence[]
+  workers?: readonly Worker[]
   scopes: readonly (readonly [string, Scope])[]
   overlayPeople: readonly string[]
   changesByPerson: ReadonlyMap<string, readonly string[]>
@@ -52,11 +53,19 @@ export interface ParticipantInput {
   now?: number
 }
 
-function identityLine(current: readonly Presence[], name: string): string {
-  const p = [...current].sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0)).find(x => x.user.owner || x.user.label) ?? current[0]
-  if (!p) return ''
-  const line = describeIdentity(p.user)
-  return line === name ? '' : line.slice(name.length + 3)
+/** Shared identity text for browser cards and room_state, using only reported runtime facts. */
+export function participantIdentityLine(current: readonly Presence[], name: string, worker?: Worker): string {
+  const p = [...current].filter(p => p.user.name === name).sort((a, b) => Number(isAgentic(b.user.kind)) - Number(isAgentic(a.user.kind)) || (b.lastActive ?? 0) - (a.lastActive ?? 0))[0]
+  const id = p?.user ?? (worker ? { name, kind: 'agent' as const, owner: worker.name.split('+')[0], label: worker.tag } : undefined)
+  if (!id) return name
+  const parts = [describeIdentity(id)]
+  const host = p?.host ?? worker?.host
+  if (host && host !== 'agent' && host !== id.label) parts.push(host)
+  const model = p?.model ?? worker?.model
+  const effort = p?.effort ?? worker?.effort
+  if (model) parts.push(model)
+  if (effort) parts.push(effort)
+  return parts.join(' · ')
 }
 
 /** One card model per person, derived without mutating room state. */
@@ -64,6 +73,7 @@ export function deriveParticipants(input: ParticipantInput): Participant[] {
   const now = input.now ?? Date.now()
   const names = new Set<string>()
   for (const presence of input.presences) names.add(presence.user.name)
+  for (const worker of input.workers ?? []) names.add(worker.name)
   for (const [name] of input.scopes) names.add(name)
   for (const name of input.overlayPeople) names.add(name)
 
@@ -90,7 +100,7 @@ export function deriveParticipants(input: ParticipantInput): Participant[] {
       behindBase: Boolean(input.roomBase && ownBase && ownBase !== input.roomBase),
       latestActive,
       kinds: Array.from(kinds).sort((a, b) => a.localeCompare(b)),
-      identity: identityLine(current, name),
+      identity: participantIdentityLine(current, name, input.workers?.find(w => w.name === name)).slice(name.length + 3),
       statuses: Array.from(latest.entries())
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([kind, presence]) => ({ kind, status: presence.status ?? 'online' })),
@@ -162,7 +172,7 @@ export function workerLine({ worker: w, processGone = false, changedCount, last,
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
   const alive = w.status === 'running' && processGone ? ' (process gone)' : ''
   return [
-    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
+    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${w.summary ? ` · ${w.summary.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
   ]
 }

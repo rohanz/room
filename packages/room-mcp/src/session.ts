@@ -4,7 +4,7 @@ import { trackConnection } from './connection.js'
  * websocket provider) plus the identity the tools act as. `room_join` creates it,
  * `room_leave` tears it down.
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, watchFile, unwatchFile } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { WebsocketProvider } from 'y-websocket'
 import WebSocket from 'ws'
@@ -17,7 +17,7 @@ import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
-import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveServer, resolveSessionHost } from './config.js'
+import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
 import { isFresh } from './presence.js'
 import { readChoice, rememberTag, worktreePath } from './choice.js'
 
@@ -326,7 +326,19 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
       doc.destroy()
     }
   }
-  const daemon = await startRoomd({ ...options, name, label })
+  const daemon = await startRoomd({ ...options, name, label, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) })
+  const file = sessionMetadataPath(options.dir)
+  const refresh = () => {
+    const current = daemon.provider.awareness.getLocalState()
+    const runtime = resolveSessionRuntime(options.dir)
+    if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(options.dir), ...runtime })
+    const worker = daemon.roomDoc.workerOf(name)
+    if (worker && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID) && runtime.model && worker.model !== runtime.model) daemon.roomDoc.updateWorker(worker.tag, { model: runtime.model }, worker.id)
+  }
+  watchFile(file, { interval: 500, persistent: false }, refresh)
+  refresh() // cover a rewrite during initial connection
+  const stop = daemon.stop.bind(daemon)
+  daemon.stop = async () => { unwatchFile(file, refresh); await stop() }
   return { daemon, me: { name, kind: options.kind ?? 'agent', owner: options.owner, ...(label ? { label } : {}) }, autoTagNote }
 }
 

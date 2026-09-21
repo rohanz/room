@@ -30033,6 +30033,19 @@ function sharesArea(a, b) {
 function formatCount(count, singular, plural = singular + "s") {
   return count + " " + (count === 1 ? singular : plural);
 }
+function participantIdentityLine(current, name, worker) {
+  const p = [...current].filter((p2) => p2.user.name === name).sort((a, b) => Number(isAgentic(b.user.kind)) - Number(isAgentic(a.user.kind)) || (b.lastActive ?? 0) - (a.lastActive ?? 0))[0];
+  const id2 = p?.user ?? (worker ? { name, kind: "agent", owner: worker.name.split("+")[0], label: worker.tag } : void 0);
+  if (!id2) return name;
+  const parts = [describeIdentity(id2)];
+  const host = p?.host ?? worker?.host;
+  if (host && host !== "agent" && host !== id2.label) parts.push(host);
+  const model = p?.model ?? worker?.model;
+  const effort = p?.effort ?? worker?.effort;
+  if (model) parts.push(model);
+  if (effort) parts.push(effort);
+  return parts.join(" \xB7 ");
+}
 var scopeLine = (scope) => `${scope.area}: ${scope.summary} (${scope.paths.join(", ")})`;
 function personLine(input) {
   const p = input.presences.find((x) => x.user.name === input.name && isAgentic(x.user.kind)) ?? input.presences.find((x) => x.user.name === input.name);
@@ -30055,7 +30068,7 @@ function workerLine({ worker: w, processGone = false, changedCount, last: last2,
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
   const alive = w.status === "running" && processGone ? " (process gone)" : "";
   return [
-    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
+    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${w.status}${alive}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.summary ? ` \xB7 ${w.summary.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
   ];
 }
@@ -30095,7 +30108,7 @@ function connectedBefore(session) {
 }
 
 // packages/room-mcp/src/session.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, watchFile as watchFile2, unwatchFile as unwatchFile2 } from "node:fs";
 import { dirname as dirname3, resolve as resolve3 } from "node:path";
 
 // node_modules/lib0/broadcastchannel.js
@@ -32750,7 +32763,7 @@ var Daemon = class {
       WebSocketPolyfill: import_websocket.default,
       params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.localKey ? { key: options.localKey } : {}, ...options.session ? { session: options.session } : {} }
     });
-    this.setStatus("syncing");
+    this.setStatus("syncing", { host: options.host, model: options.model, effort: options.effort });
   }
   async start() {
     if (!fs.existsSync(path.join(this.dir, ".git"))) {
@@ -32907,10 +32920,11 @@ var Daemon = class {
     timer.unref?.();
     this.timers.add(timer);
   }
-  setStatus(status) {
+  setStatus(status, runtime = {}) {
     const current = this.provider.awareness.getLocalState() ?? {};
     const state = {
       ...current,
+      ...runtime,
       user: { name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {}, color: colorFor(this.name, this.roomDoc) },
       status,
       share: this.share,
@@ -33975,6 +33989,7 @@ async function resolveConfig({ env, args: args2 = {}, dir }) {
 }
 function resolveSessionHost(dir, env = process.env, parentCommand = () => execFileSync("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] })) {
   const host = (v) => v === "claude" || v === "codex" ? v : void 0;
+  if (host(env.ROOM_WORKER_HOST)) return env.ROOM_WORKER_HOST;
   if (host(env.ROOM_HOST)) return env.ROOM_HOST;
   try {
     const command = path4.basename(parentCommand().trim()).toLowerCase();
@@ -33983,15 +33998,30 @@ function resolveSessionHost(dir, env = process.env, parentCommand = () => execFi
   } catch {
   }
   try {
-    let gitDir = path4.join(dir, ".git");
+    return host(JSON.parse(fs3.readFileSync(sessionMetadataPath(dir), "utf8")).host) ?? "agent";
+  } catch {
+    return "agent";
+  }
+}
+function sessionMetadataPath(dir) {
+  let gitDir = path4.join(dir, ".git");
+  try {
     if (fs3.statSync(gitDir).isFile()) {
       const target = fs3.readFileSync(gitDir, "utf8").match(/gitdir:\s*(.+)/)?.[1].trim();
       if (target) gitDir = path4.resolve(dir, target);
     }
-    return host(JSON.parse(fs3.readFileSync(path4.join(gitDir, "room-session.json"), "utf8")).host) ?? "agent";
   } catch {
-    return "agent";
   }
+  return path4.join(gitDir, "room-session.json");
+}
+function resolveSessionRuntime(dir, env = process.env) {
+  const clean = (v) => typeof v === "string" ? v.replace(/[^\x20-\x7e]/g, "").trim().slice(0, 80) || void 0 : void 0;
+  let model;
+  try {
+    model = clean(JSON.parse(fs3.readFileSync(sessionMetadataPath(dir), "utf8")).model);
+  } catch {
+  }
+  return { model: model ?? clean(env.ROOM_WORKER_MODEL), effort: clean(env.ROOM_WORKER_EFFORT) };
 }
 
 // packages/room-mcp/src/credentials.ts
@@ -34382,7 +34412,22 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       doc.destroy();
     }
   }
-  const daemon = await startRoomd({ ...options, name, label });
+  const daemon = await startRoomd({ ...options, name, label, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) });
+  const file = sessionMetadataPath(options.dir);
+  const refresh = () => {
+    const current = daemon.provider.awareness.getLocalState();
+    const runtime = resolveSessionRuntime(options.dir);
+    if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(options.dir), ...runtime });
+    const worker = daemon.roomDoc.workerOf(name);
+    if (worker && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID) && runtime.model && worker.model !== runtime.model) daemon.roomDoc.updateWorker(worker.tag, { model: runtime.model }, worker.id);
+  };
+  watchFile2(file, { interval: 500, persistent: false }, refresh);
+  refresh();
+  const stop = daemon.stop.bind(daemon);
+  daemon.stop = async () => {
+    unwatchFile2(file, refresh);
+    await stop();
+  };
   return { daemon, me: { name, kind: options.kind ?? "agent", owner: options.owner, ...label ? { label } : {} }, autoTagNote };
 }
 async function joinSession(opts) {
@@ -35407,11 +35452,11 @@ function workerPrompt(lead, tag, task) {
     `TASK: ${task}`
   ].join("\n");
 }
-function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL) {
+function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort) {
   if (host === "codex") return { cmd: "codex", args: ["exec", "-s", "workspace-write", ...model ? ["-m", model] : [], prompt] };
   return {
     cmd: "claude",
-    args: [...claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : []]
+    args: [...claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : []]
   };
 }
 async function prepareWorktree(repoDir, tag) {
@@ -35429,7 +35474,7 @@ async function prepareWorktree(repoDir, tag) {
   await git(repoDir, hasBranch ? ["worktree", "add", "-q", dir, branch] : ["worktree", "add", "-q", "-b", branch, dir, "HEAD"]);
   return { dir, branch, created: true };
 }
-var LEAD_ONLY_ENV = ["ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_GEN", "ROOM_WORKER_ID", "ROOM_LOG_FILE", "ROOM_KIND"];
+var LEAD_ONLY_ENV = ["ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_GEN", "ROOM_WORKER_ID", "ROOM_WORKER_HOST", "ROOM_WORKER_MODEL", "ROOM_WORKER_EFFORT", "ROOM_LOG_FILE", "ROOM_KIND"];
 function workerEnv(base, extra) {
   const out = {};
   for (const [k, v] of Object.entries(base)) if (v !== void 0 && !LEAD_ONLY_ENV.includes(k)) out[k] = v;
@@ -35575,7 +35620,7 @@ function handlers(state) {
         const theirs = s.room.openClaims().filter((c) => c.by === person);
         return theirs.some((c) => myClaims.some((m2) => c.path === m2.path && rangesOverlap(c.from, c.to, m2.from, m2.to)));
       };
-      const everyone = Array.from(new Set([s.me.name, ...others(s)].filter((n) => ps.some((p) => p.user.name === n) || s.room.scopes.has(n)))).sort();
+      const everyone = Array.from(new Set([s.me.name, ...others(s), ...[...s.room.workers.values()].map((w) => w.name)].filter((n) => ps.some((p) => p.user.name === n) || s.room.scopes.has(n) || s.room.workerOf(n)))).sort();
       const names = everyone.filter(inView);
       const hidden = everyone.filter((n) => !inView(n));
       out.push(all2 ? `areas: ${mineA.length ? mineA.join(", ") : "none yet"} (showing all)` : `your areas: ${mineA.join(", ")} (room_state all=true for everything)`);
@@ -35583,7 +35628,7 @@ function handlers(state) {
       for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1e3))}s ago` : "offline";
-        const who2 = p ? describeIdentity(p.user) : n;
+        const who2 = participantIdentityLine(ps, n, s.room.workerOf(n));
         const theirs = areasFor(s, n);
         const areaSummary2 = areaMembershipSummary(theirs);
         out.push(`  - ${who2}${n === s.me.name ? " (you)" : ""}: ${personLine2(s, n)}${areaSummary2 ? ` \xB7 ${areaSummary2}` : ""} \xB7 ${ago}`);
@@ -38091,7 +38136,7 @@ var defs6 = [
     name: "room_spawn",
     annotations: RW,
     description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Math-library threads are capped per worker (override with threads). Max running workers per lead: ROOM_MAX_WORKERS (8). Prefer this over built-in subagents for parallel edits: handing part of an editing task to another agent, including "get codex to do X" (host=codex), means a room worker, so it gets its own worktree and identity.',
-    inputSchema: { type: "object", properties: { tag: str("short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>"), task: str("what the worker should do, self-contained"), host: { type: "string", enum: ["claude", "codex"], description: "which agent runs it (default claude)" }, model: str("model override for that host (optional)"), threads: { type: "integer", minimum: 1, description: "math-library thread budget for this worker (optional)" }, share: SHARE, allowOutside: { type: "boolean", description: "permit dir outside this repo (no worktree bookkeeping)" }, dir: str("use this existing directory instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims)." } }, required: ["tag", "task"] }
+    inputSchema: { type: "object", properties: { tag: str("short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>"), task: str("what the worker should do, self-contained"), host: { type: "string", enum: ["claude", "codex"], description: "which agent runs it (default claude)" }, model: str("model override for that host (optional)"), effort: str("explicit worker effort; passed via Claude --effort, informational only for Codex"), threads: { type: "integer", minimum: 1, description: "math-library thread budget for this worker (optional)" }, share: SHARE, allowOutside: { type: "boolean", description: "permit dir outside this repo (no worktree bookkeeping)" }, dir: str("use this existing directory instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims)." } }, required: ["tag", "task"] }
   },
   {
     name: "room_dismiss",
@@ -38143,6 +38188,8 @@ function handlers6(state) {
     },
     async room_spawn(a) {
       const lead = S();
+      if (a.effort !== void 0 && typeof a.effort !== "string") return "error: effort must be a string";
+      const effort = typeof a.effort === "string" ? a.effort.replace(/[^\x20-\x7e]/g, "").trim().slice(0, 80) || void 0 : void 0;
       if (a.threads !== void 0 && (typeof a.threads !== "number" || !Number.isSafeInteger(a.threads) || a.threads < 1)) return "error: threads must be an integer >= 1";
       if (a.where !== void 0 && a.where !== "here" && a.where !== "local") return "error: where must be here or local";
       let s = lead;
@@ -38195,7 +38242,7 @@ function handlers6(state) {
         const owner = s.me.owner ?? s.me.name;
         const name = `${owner}+${tag}`;
         const prompt = workerPrompt(s.me.name, tag, task);
-        const { cmd, args: args2 } = workerCommand(host, model, prompt, config2.claudeChannel);
+        const { cmd, args: args2 } = workerCommand(host, model, prompt, config2.claudeChannel, effort);
         const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
         const count = runningWorkers(lead).length;
         if (count >= max2) return `error: ${count} workers already running (max ${max2}, ROOM_MAX_WORKERS); wait for one to finish or room_dismiss it`;
@@ -38212,6 +38259,9 @@ function handlers6(state) {
           ...caps,
           ROOM_WORKER_THREADS: String(threads),
           ROOM_WORKER_MEM_GB: process.env.ROOM_WORKER_MEM_GB ?? String(budget.memGb),
+          ROOM_WORKER_HOST: host,
+          ...model ? { ROOM_WORKER_MODEL: model } : {},
+          ...effort ? { ROOM_WORKER_EFFORT: effort } : {},
           ROOM_SERVER: server,
           ROOM_ROOM: s.roomName,
           ROOM_DIR: dir,
@@ -38233,7 +38283,7 @@ function handlers6(state) {
           return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`;
         }
         rooms.setHandle(s, id2, proc);
-        const w = { id: id2, tag, name, host, ...model ? { model } : {}, task, dir, branch, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name, gen };
+        const w = { id: id2, tag, name, host, ...model ? { model } : {}, ...effort ? { effort } : {}, task, dir, branch, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name, gen };
         s.room.setWorker(w);
         proc.onError?.((err) => {
           rooms.dropHandle(s, id2, proc);

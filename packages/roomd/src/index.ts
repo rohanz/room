@@ -48,6 +48,9 @@ export interface RoomdOptions {
   owner?: string
   /** Display hint, e.g. the tag of a second agent. */
   label?: string
+  host?: string
+  model?: string
+  effort?: string
   /** Shared room token, sent as ?token= on the websocket. Default: ROOM_TOKEN env. */
   token?: string
   /** Room session id from GitHub device login, sent as ?session= (servers with GITHUB_CLIENT_ID). */
@@ -209,7 +212,7 @@ class Daemon implements Roomd {
           WebSocketPolyfill: WebSocket as any,
           params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...(options.localKey ? { key: options.localKey } : {}), ...(options.session ? { session: options.session } : {}) },
         })
-    this.setStatus('syncing')
+    this.setStatus('syncing', { host: options.host, model: options.model, effort: options.effort })
   }
 
   async start(): Promise<void> {
@@ -376,10 +379,11 @@ class Daemon implements Roomd {
     this.timers.add(timer)
   }
 
-  private setStatus(status: string): void {
+  private setStatus(status: string, runtime: Pick<Presence, 'host' | 'model' | 'effort'> = {}): void {
     const current = (this.provider.awareness.getLocalState() ?? {}) as Partial<SharePresence>
     const state: SharePresence = {
       ...current,
+      ...runtime,
       user: { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}), color: colorFor(this.name, this.roomDoc) },
       status,
       share: this.share,

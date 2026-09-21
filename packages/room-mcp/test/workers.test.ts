@@ -126,16 +126,18 @@ describe('room_spawn / room_done / room_dismiss', () => {
 
   it('spawns a worker with the room passed through the environment, records it, and shows it in room_state', async () => {
     const t = setup()
-    const out = await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents', host: 'codex', model: 'gpt-5.6' })
+    const out = await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents', host: 'codex', model: 'gpt-5.6', effort: 'medium' })
     expect(out).toContain('spawned money: rohanz+money (codex gpt-5.6, pid 4243)')
     expect(t.specs[0].cmd).toBe('codex')
-    expect(t.specs[0].env).toMatchObject({ ROOM_TAG: 'money', ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
+    expect(t.specs[0].env).toMatchObject({ ROOM_WORKER_HOST: 'codex', ROOM_WORKER_MODEL: 'gpt-5.6', ROOM_WORKER_EFFORT: 'medium', ROOM_TAG: 'money', ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
     expect(t.specs[0].cwd).toBe(join(dir, '.room', 'workers', 'money'))
     const w = t.a.workers.get('money')
-    expect(w).toMatchObject({ name: 'rohanz+money', status: 'running', lead: 'rohanz', branch: 'room/money', host: 'codex', model: 'gpt-5.6' })
+    expect(w).toMatchObject({ name: 'rohanz+money', status: 'running', lead: 'rohanz', branch: 'room/money', host: 'codex', model: 'gpt-5.6', effort: 'medium' })
     const st = await t.leadTools.call('room_state', { all: true })
     expect(st).toContain('workers (1):')
-    expect(st).toContain('money (codex gpt-5.6, running')
+    expect(st).toContain('money (codex gpt-5.6 · medium, running')
+    expect(st).toContain('agent of rohanz · money · codex · gpt-5.6 · medium')
+    expect(await t.leadTools.call('room_state', {})).toContain('codex · gpt-5.6 · medium')
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('already running')
     expect(await t.leadTools.call('room_spawn', { tag: 'bad tag', task: 'x' })).toContain('error: tag')
   })
@@ -515,7 +517,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 't' })
     const env = t.specs[0].env
-    expect(Object.keys(env).filter(k => k.startsWith('ROOM_')).sort()).toEqual(['ROOM_DIR', 'ROOM_GEN', 'ROOM_LEAD', 'ROOM_LOG_FILE', 'ROOM_OWNER', 'ROOM_ROOM', 'ROOM_SERVER', 'ROOM_SHARE', 'ROOM_TAG', 'ROOM_WORKER_ID', 'ROOM_WORKER_MEM_GB', 'ROOM_WORKER_THREADS'])
+    expect(Object.keys(env).filter(k => k.startsWith('ROOM_')).sort()).toEqual(['ROOM_DIR', 'ROOM_GEN', 'ROOM_LEAD', 'ROOM_LOG_FILE', 'ROOM_OWNER', 'ROOM_ROOM', 'ROOM_SERVER', 'ROOM_SHARE', 'ROOM_TAG', 'ROOM_WORKER_HOST', 'ROOM_WORKER_ID', 'ROOM_WORKER_MEM_GB', 'ROOM_WORKER_THREADS'])
     expect(env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_TAG: 'money', ROOM_LEAD: 'rohanz', ROOM_OWNER: 'rohanz', ROOM_GEN: '1', ROOM_SHARE: 'full' })
     expect(env.ROOM_DIR).toBe(join(dir, '.room', 'workers', 'money'))
     expect(env.ROOM_LOG_FILE).toBe(join(dir, '.room', 'workers', 'money.mcp.log'))
@@ -573,14 +575,16 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     let ls: Session | null = fakeSession(a, lead)
     let release!: () => void
     const gate = new Promise<void>(r => { release = r })
+    let entered!: () => void
+    const preparing = new Promise<void>(resolve => { entered = resolve })
     const specs: SpawnSpec[] = []
     const tools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
       spawner: spec => { specs.push(spec); return { pid: 7, onExit: () => {}, kill: () => true } },
-      worktree: async (repo, tag) => { await gate; return { dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true } },
+      worktree: async (repo, tag) => { entered(); await gate; return { dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true } },
     })
     const first = tools.call('room_spawn', { tag: 'money', task: 'one' })
-    await new Promise(r => setTimeout(r, 10))
+    await preparing // the first spawn holds the reservation before the second races it
     const second = await tools.call('room_spawn', { tag: 'money', task: 'two' })
     expect(second).toContain('being spawned right now')
     release()
@@ -699,4 +703,11 @@ describe('worker compute budgets', () => {
     expect(await t.leadTools.call('room_spawn', { tag: 'bad', task: 'train', threads })).toContain('error: threads must be an integer >= 1')
     expect(t.specs).toHaveLength(0)
   })
+})
+
+it('passes explicit effort only to the verified Claude flag; no effort is invented', () => {
+  expect(workerCommand('claude', undefined, 'task', '', 'medium').args.slice(-2)).toEqual(['--effort', 'medium'])
+  expect(workerCommand('claude', undefined, 'task').args).not.toContain('--effort')
+  expect(workerCommand('codex', undefined, 'task', '', 'medium').args).not.toContain('medium')
+  expect(workerEnv({ ROOM_WORKER_HOST: 'claude', ROOM_WORKER_MODEL: 'old', ROOM_WORKER_EFFORT: 'high' }, {})).toEqual({})
 })

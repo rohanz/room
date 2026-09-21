@@ -107,6 +107,9 @@ export function presences(provider: WebsocketProvider, room?: RoomDoc): Presence
         ...(typeof user.label === 'string' ? { label: user.label } : {}),
         color: typeof user.color === 'string' ? user.color : colorFor(user.name, room),
       },
+      host: typeof value.host === 'string' ? value.host.replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80) || undefined : undefined,
+      model: typeof value.model === 'string' ? value.model.replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80) || undefined : undefined,
+      effort: typeof value.effort === 'string' ? value.effort.replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80) || undefined : undefined,
       status: typeof value.status === 'string' ? value.status : undefined,
       lastActive: typeof value.lastActive === 'number' ? value.lastActive : undefined,
     })

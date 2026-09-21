@@ -63,11 +63,12 @@ export function workerPrompt(lead: string, tag: string, task: string): string {
   ].join('\n')
 }
 
-export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string, claudeChannel = DEFAULT_CLAUDE_CHANNEL): { cmd: string; args: string[] } {
+// Claude --help documents --effort <level>; Codex effort remains informational until a flag is verified.
+export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort?: string): { cmd: string; args: string[] } {
   if (host === 'codex') return { cmd: 'codex', args: ['exec', '-s', 'workspace-write', ...(model ? ['-m', model] : []), prompt] }
   return {
     cmd: 'claude',
-    args: [...(claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : [])],
+    args: [...(claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])],
   }
 }
 
@@ -93,7 +94,7 @@ export async function prepareWorktree(repoDir: string, tag: string): Promise<{ d
  * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG, ROOM_LEAD,
  * ROOM_OWNER, ROOM_SHARE, ROOM_GEN, ROOM_LOG_FILE and, when the lead joined with one, ROOM_TOKEN).
  */
-export const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_WORKER_ID', 'ROOM_LOG_FILE', 'ROOM_KIND'] as const
+export const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND'] as const
 /** The environment a worker process starts with: the lead's, minus LEAD_ONLY_ENV, plus the spec's variables. */
 export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}

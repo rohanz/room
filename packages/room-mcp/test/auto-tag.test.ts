@@ -16,7 +16,11 @@ import { clearChoice, readChoice, rememberTag, writeChoice, worktreePath } from 
 
 vi.mock('@room/roomd', async importOriginal => ({
   ...await importOriginal<typeof import('@room/roomd')>(),
-  startRoomd: vi.fn(async options => ({ name: options.name })),
+  startRoomd: vi.fn(async options => {
+    const roomDoc = new RoomDoc(), awareness = new Awareness(roomDoc.doc)
+    awareness.setLocalState({ user: { name: options.name, kind: 'agent' } })
+    return { name: options.name, roomDoc, provider: { awareness }, stop: async () => { awareness.destroy(); roomDoc.doc.destroy() } }
+  }),
 }))
 
 const cleanup: (() => void)[] = []
@@ -60,6 +64,7 @@ async function start(names: string[], tag?: string, stale: string[] = [], work: 
   const log = vi.fn()
   const config = await resolveConfig({ dir, env: tag ? { ROOM_TAG: tag } : {} })
   const result = await startAutoTaggedRoomd({ dir, room: 'ws://test/room', name: tag ? `name+${tag}` : 'name', label: config.tag, owner: 'name', kind: 'agent', providerFactory: hub(names, 'name', new Set(stale), new Set(work)), log }, config.tag)
+  cleanup.push(() => { void result.daemon.stop() })
   return { ...result, log, dir }
 }
 describe('automatic session tags', () => {
@@ -78,6 +83,7 @@ describe('automatic session tags', () => {
         company = hasCompany({ awareness, me: { name: 'observer' } } as Session).company
       }),
     })
+    cleanup.push(() => { void result.daemon.stop() })
     expect(company).toBe(!stale)
     expect(result.me.name).toBe(stale ? 'name' : 'name+claude')
   })

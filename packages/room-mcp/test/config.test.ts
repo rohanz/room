@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import fs, { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveConfig, DEFAULT_SERVER, LOCAL } from '../src/config.js'
+import { resolveSessionRuntime, sessionMetadataPath, resolveConfig, DEFAULT_SERVER, LOCAL } from '../src/config.js'
 import { writeChoice } from '../src/choice.js'
 
 const repo = () => { const dir = mkdtempSync(join(tmpdir(), 'room-config-')); execFileSync('git', ['-C', dir, 'init', '-q']); return dir }
@@ -49,4 +49,28 @@ describe('resolveConfig', () => {
     expect(c).toMatchObject({ name: 'arg-name', owner: 'env-owner', tag: 'arg-tag', kind: 'ci', token: 'arg-token', logFile: '/arg/log', credentialsPath: '/arg/creds', staleDays: 4, maxWorkers: 8 })
     expect(env.ROOM_TOKEN).toBe('env-token')
   })
+})
+
+it('reads only hook and explicit worker runtime metadata, and clears absent values', () => {
+  const dir = repo()
+  const env = { CLAUDE_MODEL: 'wrong', CLAUDE_EFFORT: 'high', CODEX_MODEL: 'wrong', CODEX_EFFORT: 'high' }
+  expect(resolveSessionRuntime(dir, env)).toEqual({ model: undefined, effort: undefined })
+  const worker = { ...env, ROOM_WORKER_MODEL: ' gpt-6-astra ', ROOM_WORKER_EFFORT: ' medium ' }
+  expect(resolveSessionRuntime(dir, worker)).toEqual({ model: 'gpt-6-astra', effort: 'medium' })
+  fs.writeFileSync(sessionMetadataPath(dir), JSON.stringify({ model: ' actual ', effort: 'wrong' }))
+  expect(resolveSessionRuntime(dir, worker)).toEqual({ model: 'actual', effort: 'medium' })
+  fs.writeFileSync(sessionMetadataPath(dir), JSON.stringify({ model: 42 }))
+  expect(resolveSessionRuntime(dir, env)).toEqual({ model: undefined, effort: undefined })
+})
+
+it('resolves hook metadata from the worktree gitdir, not the main clone', () => {
+  const main = repo(), worktree = fs.mkdtempSync(join(tmpdir(), 'room-model-worktree-'))
+  const gitdir = join(main, '.git', 'worktrees', 'worker')
+  fs.mkdirSync(gitdir, { recursive: true })
+  fs.writeFileSync(join(worktree, '.git'), 'gitdir: ' + gitdir + '\n')
+  fs.writeFileSync(sessionMetadataPath(main), JSON.stringify({ model: 'main-model' }))
+  fs.writeFileSync(join(gitdir, 'room-session.json'), JSON.stringify({ model: 'worker-model' }))
+  expect(resolveSessionRuntime(worktree, {})).toEqual({ model: 'worker-model', effort: undefined })
+  fs.rmSync(main, { recursive: true, force: true })
+  fs.rmSync(worktree, { recursive: true, force: true })
 })

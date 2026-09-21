@@ -60,7 +60,7 @@ export function filterAwareness(buf: Uint8Array, login: string): { buf: Uint8Arr
     for (let i = 0; i < n; i++) {
       const clientID = decoding.readVarUint(inner), clock = decoding.readVarUint(inner)
       const raw = decoding.readVarString(inner)
-      const state = JSON.parse(raw) as { user?: { name?: unknown; owner?: unknown } } | null
+      const state = JSON.parse(raw) as { user?: { name?: unknown; owner?: unknown }; host?: unknown; model?: unknown; effort?: unknown } | null
       const name = state?.user?.name, owner = state?.user?.owner
       if (state !== null && (typeof name !== 'string' || !ownsName(name, login) || (owner !== undefined && owner !== login))) {
         stripped.push(typeof name === 'string' ? name : '(unnamed)')
@@ -68,7 +68,13 @@ export function filterAwareness(buf: Uint8Array, login: string): { buf: Uint8Arr
       }
       encoding.writeVarUint(entries, clientID)
       encoding.writeVarUint(entries, clock)
-      encoding.writeVarString(entries, raw)
+      if (state) for (const key of ['host', 'model', 'effort'] as const) {
+        const value = state[key]
+        const clean = typeof value === 'string' ? value.replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80) : ''
+        if (clean) state[key] = clean
+        else delete state[key]
+      }
+      encoding.writeVarString(entries, JSON.stringify(state))
       kept++
     }
     if (!kept) return { buf: null, stripped }

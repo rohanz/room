@@ -139,6 +139,7 @@ export function participantInput(conn: Conn): ParticipantInput {
   for (const name of names) changes.set(name, conn.room.changedPaths(name))
   return {
     presences: presences(conn.provider, conn.room),
+    workers: [...conn.room.workers.values()],
     scopes: Array.from(conn.room.scopes.entries()),
     overlayPeople: Array.from(conn.room.overlays.keys()),
     changesByPerson: changes,
@@ -167,7 +168,7 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
       },
       h('div', { class: 'participant-head' }, dot(participant.name, participant.name, conn.room), h('strong', {}, participant.name), h('span', { class: 'sp' }),
         h('span', { class: `state-pill ${state.split(' ')[0]}`, title: state }, short)),
-      participant.identity ? h('div', { class: 'micro muted' }, participant.identity) : null,
+      participant.identity ? h('div', { class: 'micro muted participant-identity', title: participant.identity }, participant.identity) : null,
       participant.scope
         ? h('div', { class: 'scope-line' }, h('strong', {}, `${participant.scope.area}:`), ` ${participant.scope.summary}`)
         : h('div', { class: 'scope-line muted' }, 'no area declared'),

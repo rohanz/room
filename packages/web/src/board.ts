@@ -49,7 +49,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
       const el = h('article', { class: `board-card${person.online ? '' : ' offline'}` },
         h('div', { class: 'participant-head' }, h('span', { class: `presence-dot ${person.online ? 'online' : ''}`, title: person.online ? 'Online' : 'Offline' }), name,
           ...person.kinds.map(kind => h('span', { class: 'kind-badge' }, kind))),
-        person.identity ? h('div', { class: 'muted' }, person.identity) : null,
+        person.identity ? h('div', { class: 'muted participant-identity', title: person.identity }, person.identity) : null,
         h('div', { class: 'area-chips', title: areaMembershipSummary(areas) }, ...areas.map(area => h('span', { class: 'area-chip' }, area))),
         h('p', { class: 'participant-line', title: label }, label),
         h('div', { class: 'sharing muted' }, `Sharing: ${share}`),

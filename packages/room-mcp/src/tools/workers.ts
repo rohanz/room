@@ -17,7 +17,7 @@ export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. Call after your final room_preview_merge, before reporting to your human. Stay in the room for questions.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'also post the branch ledger as a comment on the open PR whose head is this branch (room_pr_note), if there is one' } }, required: ['summary'] } },
   { name: 'room_spawn', annotations: RW, description: 'Dispatch a worker agent into this room to do a task in parallel with you. It runs in its own git worktree (<repo>/.room/workers/<tag>, branch room/<tag> from HEAD), joins as <you>+<tag>, follows the room etiquette, and reports back with room_done (you are woken). Use for independent subtasks; keep answering its questions; merge its branch when it is done. Math-library threads are capped per worker (override with threads). Max running workers per lead: ROOM_MAX_WORKERS (8). Prefer this over built-in subagents for parallel edits: handing part of an editing task to another agent, including "get codex to do X" (host=codex), means a room worker, so it gets its own worktree and identity.',
-    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims).' } }, required: ['tag', 'task'] } },
+    inputSchema: { type: 'object', properties: { tag: str('short name, e.g. money or tiers; becomes the worker name suffix and branch room/<tag>'), task: str('what the worker should do, self-contained'), host: { type: 'string', enum: ['claude', 'codex'], description: 'which agent runs it (default claude)' }, model: str('model override for that host (optional)'), effort: str('explicit worker effort; passed via Claude --effort, informational only for Codex'), threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default): the room you are in. local: a local workers room on this machine even while you are in a team room; the workers never touch the server, and the team room sees their work as yours (scope union, mirrored claims).' } }, required: ['tag', 'task'] } },
   { name: 'room_dismiss', annotations: RW, description: 'Stop a worker you spawned (SIGTERM to its process). Its worktree and branch are kept so you can inspect or merge what it did.',
     inputSchema: { type: 'object', properties: { tag: str('the worker tag') }, required: ['tag'] } }
 ]
@@ -62,6 +62,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_spawn(a) {
       const lead = S()
+      if (a.effort !== undefined && typeof a.effort !== 'string') return 'error: effort must be a string'
+      const effort = typeof a.effort === 'string' ? a.effort.replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80) || undefined : undefined
       if (a.threads !== undefined && (typeof a.threads !== 'number' || !Number.isSafeInteger(a.threads) || a.threads < 1)) return 'error: threads must be an integer >= 1'
       if (a.where !== undefined && a.where !== 'here' && a.where !== 'local') return 'error: where must be here or local'
       let s = lead
@@ -106,7 +108,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const owner = s.me.owner ?? s.me.name
         const name = `${owner}+${tag}`
         const prompt = workerPrompt(s.me.name, tag, task)
-        const { cmd, args } = workerCommand(host, model, prompt, config.claudeChannel)
+        const { cmd, args } = workerCommand(host, model, prompt, config.claudeChannel, effort)
         // The worker's room variables are set here in full; defaultSpawner strips the lead's own ROOM_* first
         // (ROOM_URL/ROOM_NAME/ROOM_DIR from a runner would otherwise send it into the lead's room as the lead).
         // The server URL is passed without its query: a shared token travels only as ROOM_TOKEN.
@@ -126,6 +128,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const env: Record<string, string> = {
           ...caps, ROOM_WORKER_THREADS: String(threads), ROOM_WORKER_MEM_GB: process.env.ROOM_WORKER_MEM_GB ?? String(budget.memGb),
+          ROOM_WORKER_HOST: host, ...(model ? { ROOM_WORKER_MODEL: model } : {}), ...(effort ? { ROOM_WORKER_EFFORT: effort } : {}),
           ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_DIR: dir, PWD: dir, ROOM_TAG: tag, ROOM_LEAD: s.me.name, ROOM_OWNER: owner,
           ROOM_SHARE: share ?? s.daemon.share ?? 'full', ROOM_GEN: String(gen), ROOM_WORKER_ID: id,
           ...(s.token && !s.local ? { ROOM_TOKEN: s.token } : {}),
@@ -136,7 +139,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try { proc = (ctx.spawner ?? defaultSpawner)({ cmd, args, cwd: dir, env, logFile }) }
         catch (e) { return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}` }
         rooms.setHandle(s, id, proc)
-        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), task, dir, branch, pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
+        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), task, dir, branch, pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
         s.room.setWorker(w)
         // Callbacks resolve the record by this spawn's id: a reused tag has a new id, so an older process
         // (or another lead's record under the same tag) is simply not found and touches nothing.

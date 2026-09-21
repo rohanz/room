@@ -1,5 +1,5 @@
 import { offlineSince } from '../connection.js'
-import { Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, describeClaim, describeIdentity, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, describeClaim, participantIdentityLine, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
@@ -66,7 +66,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const theirs = s.room.openClaims().filter(c => c.by === person)
         return theirs.some(c => myClaims.some(m => c.path === m.path && rangesOverlap(c.from, c.to, m.from, m.to)))
       }
-      const everyone = Array.from(new Set<string>([s.me.name, ...others(s)].filter(n => ps.some(p => p.user.name === n) || s.room.scopes.has(n)))).sort()
+      const everyone = Array.from(new Set<string>([s.me.name, ...others(s), ...[...s.room.workers.values()].map(w => w.name)].filter(n => ps.some(p => p.user.name === n) || s.room.scopes.has(n) || s.room.workerOf(n)))).sort()
       const names = everyone.filter(inView)
       const hidden = everyone.filter(n => !inView(n))
       out.push(all ? `areas: ${mineA.length ? mineA.join(', ') : 'none yet'} (showing all)` : `your areas: ${mineA.join(', ')} (room_state all=true for everything)`)
@@ -74,7 +74,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const n of names) {
         const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
         const ago = p?.lastActive ? `active ${Math.max(0, Math.round((now() - p.lastActive) / 1000))}s ago` : 'offline'
-        const who = p ? describeIdentity(p.user) : n
+        const who = participantIdentityLine(ps, n, s.room.workerOf(n))
         const theirs = areasFor(s, n)
         const areaSummary = areaMembershipSummary(theirs)
         out.push(`  - ${who}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)}${areaSummary ? ` · ${areaSummary}` : ''} · ${ago}`)
