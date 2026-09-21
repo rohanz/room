@@ -160,7 +160,7 @@ function onlyMapDeletes(event: Y.YEvent<Y.AbstractType<unknown>>): boolean {
   return event.target instanceof Y.Map && keys.size > 0 && [...keys.values()].every(change => change.action === 'delete')
 }
 
-/** One shadow document per room: accepted packets advance it; rejected packets rebuild it from the real doc. */
+/** One shadow document per room: inspected packets advance it; objected packets rebuild it from the real doc. */
 export class DocumentIdentityGuard {
   private source?: Y.Doc
   private shadow?: Y.Doc
@@ -285,13 +285,21 @@ export class DocumentIdentityGuard {
   }
 }
 
-/** Reject a whole sync update when it adds or changes identity-bearing records outside `login`. */
-export function bindDocumentIdentity(conn: EmitterLike, login: string, guard: DocumentIdentityGuard, onDrop: (login: string, reason: string) => void): void {
+export type DocumentIdentityMode = 'observe' | 'enforce'
+
+/**
+ * Inspect identity-bearing member updates. Observe mode reports objections but preserves the Yjs
+ * stream; experimental enforce mode drops the whole packet and can desynchronise that client.
+ */
+export function bindDocumentIdentity(conn: EmitterLike, login: string, guard: DocumentIdentityGuard, onViolation: (login: string, reason: string) => void, mode: DocumentIdentityMode = 'observe'): void {
   const emit = conn.emit.bind(conn)
   conn.emit = ((event: string | symbol, ...args: unknown[]) => {
     if (event === 'message') {
       const result = guard.accept(toBytes(args[0]), login)
-      if (!result.ok) { onDrop(login, result.reason); return false }
+      if (!result.ok) {
+        onViolation(login, result.reason)
+        if (mode === 'enforce') return false
+      }
     }
     return emit(event, ...args)
   }) as EmitterLike['emit']

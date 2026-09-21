@@ -218,6 +218,13 @@ describe('document identity binding', () => {
     expect([1, 2]).toContain(decoding.readVarUint(decoder))
     Y.applyUpdate(server, decoding.readVarUint8Array(decoder))
   }
+  const updatePacket = (update: Uint8Array) => sync(enc => syncProtocol.writeUpdate(enc, update))
+  const connect = (server: Y.Doc, guard: DocumentIdentityGuard, login: string, violations: string[]) => {
+    const conn = new EventEmitter()
+    conn.on('message', message => applyPacket(server, message))
+    bindDocumentIdentity(conn, login, guard, (_login, reason) => violations.push(reason))
+    return conn
+  }
   const fixture = () => {
     const server = new Y.Doc(), room = new RoomDoc(server)
     room.setScope({ by: 'victim', byKind: 'agent', area: 'api', summary: 'real', paths: ['api.ts'] })
@@ -225,11 +232,11 @@ describe('document identity binding', () => {
     room.post({ name: 'victim', kind: 'agent' }, { type: 'note', text: 'real' })
     const conn = new EventEmitter(), dropped: string[] = []
     conn.on('message', message => applyPacket(server, message))
-    bindDocumentIdentity(conn, 'octo', new DocumentIdentityGuard(() => server), (_login, reason) => dropped.push(reason))
+    bindDocumentIdentity(conn, 'octo', new DocumentIdentityGuard(() => server), (_login, reason) => dropped.push(reason), 'enforce')
     return { server, room, claim, conn, dropped }
   }
 
-  it('rejects victim scope, claim, and message forgeries as whole protocol packets', () => {
+  it('enforce mode rejects victim scope, claim, and message forgeries as whole protocol packets', () => {
     const { server, room, claim, conn, dropped } = fixture()
     const attempts = [
       packet(server, doc => doc.getMap('scopes').set('victim', { by: 'victim', byKind: 'agent', area: 'pwn', summary: 'forged', paths: [] })),
@@ -302,6 +309,62 @@ describe('document identity binding', () => {
     expect(viewer.emit('message', packet(server, doc => doc.getMap('scopes').set('pr#13', prScope('pr#13'))))).toBe(false)
     expect(room.scope('pr#13')).toBeUndefined()
     server.destroy()
+  })
+
+  it('accepts caller-owned repair after two clients concurrently choose the same colour', () => {
+    const server = new Y.Doc(), guard = new DocumentIdentityGuard(() => server), violations: string[] = []
+    const aliceDoc = new Y.Doc(), bobDoc = new Y.Doc()
+    const alice = new RoomDoc(aliceDoc), bob = new RoomDoc(bobDoc)
+    const aliceConn = connect(server, guard, 'alice', violations)
+    const bobConn = connect(server, guard, 'bob', violations)
+
+    expect(alice.assignColor('alice')).toBe(0)
+    expect(bob.assignColor('bob')).toBe(0)
+    expect(aliceConn.emit('message', updatePacket(Y.encodeStateAsUpdate(aliceDoc)))).toBe(true)
+    expect(bobConn.emit('message', updatePacket(Y.encodeStateAsUpdate(bobDoc)))).toBe(true)
+
+    const aliceBefore = Y.encodeStateVector(aliceDoc), bobBefore = Y.encodeStateVector(bobDoc)
+    const merged = Y.encodeStateAsUpdate(server)
+    Y.applyUpdate(aliceDoc, merged); Y.applyUpdate(bobDoc, merged)
+    expect(aliceConn.emit('message', updatePacket(Y.encodeStateAsUpdate(aliceDoc, aliceBefore)))).toBe(true)
+    expect(bobConn.emit('message', updatePacket(Y.encodeStateAsUpdate(bobDoc, bobBefore)))).toBe(true)
+
+    expect(new RoomDoc(server).colors.toJSON()).toEqual({ alice: 0, bob: 1 })
+    expect(violations).toEqual([])
+    aliceDoc.destroy(); bobDoc.destroy(); server.destroy()
+  })
+
+  it('observes an objected member update and applies its causally following valid update', () => {
+    const server = new Y.Doc(), guard = new DocumentIdentityGuard(() => server)
+    const objections: string[] = [], logged: string[] = [], audited: string[] = []
+    const aliceConn = connect(server, guard, 'alice', objections)
+    const bob = new Y.Doc(), bobRoom = new RoomDoc(bob)
+    const bobConn = new EventEmitter()
+    bobConn.on('message', message => applyPacket(server, message))
+    bindDocumentIdentity(bobConn, 'bob', guard, (_login, reason) => {
+      objections.push(reason); logged.push(reason); audited.push(reason)
+    })
+
+    expect(aliceConn.emit('message', packet(server, doc => doc.getMap('scopes').set('alice', {
+      by: 'alice', byKind: 'agent', area: 'api', summary: 'original', paths: ['a.ts'], at: 1,
+    })))).toBe(true)
+    Y.applyUpdate(bob, Y.encodeStateAsUpdate(server))
+
+    let before = Y.encodeStateVector(bob)
+    bob.getMap('scopes').set('alice', { by: 'alice', byKind: 'agent', area: 'api', summary: 'objected', paths: ['a.ts'], at: 2 })
+    expect(bobConn.emit('message', updatePacket(Y.encodeStateAsUpdate(bob, before)))).toBe(true)
+    before = Y.encodeStateVector(bob)
+    bobRoom.setScope({ by: 'bob', byKind: 'agent', area: 'tests', summary: 'valid next update', paths: ['b.ts'], at: 3 })
+    expect(bobConn.emit('message', updatePacket(Y.encodeStateAsUpdate(bob, before)))).toBe(true)
+
+    const room = new RoomDoc(server)
+    expect(room.scope('alice')?.summary).toBe('objected')
+    expect(room.scope('bob')?.summary).toBe('valid next update')
+    expect((server.store as unknown as { pendingStructs: unknown }).pendingStructs).toBeNull()
+    expect(objections).toEqual(['scopes mutation for alice'])
+    expect(logged).toEqual(objections)
+    expect(audited).toEqual(objections)
+    bob.destroy(); server.destroy()
   })
 })
 

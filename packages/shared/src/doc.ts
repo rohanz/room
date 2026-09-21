@@ -35,38 +35,40 @@ export function defaultPriority(msg: { type: MsgType; symbols?: readonly string[
 /** Typed accessors over the single room Y.Doc. */
 export class RoomDoc {
   readonly doc: Y.Doc
+  private colorName?: string
+  private colorOrigin?: unknown
   get graphs(): Y.Map<GraphSnapshot> { return this.doc.getMap<GraphSnapshot>('graphs') }
   /** Persistent participant -> palette slot assignments. */
   get colors(): Y.Map<number> { return this.doc.getMap<number>('colors') }
 
   constructor(doc: Y.Doc = new Y.Doc()) {
     this.doc = doc
-    this.colors.observe(() => { this.reconcileColors() })
+    this.colors.observe(() => { if (this.colorName) this.reconcileColors(this.colorName, this.colorOrigin) })
   }
 
   /** Claim the lowest unused slot, retaining existing slots across reconnects. */
   assignColor(name: string, origin?: unknown): number {
+    this.colorName = name
+    this.colorOrigin = origin
     if (!this.colors.has(name)) {
       const used = new Set(Array.from(this.colors.values()).filter(validColorIndex))
       const free = Array.from({ length: PALETTE.length }, (_, i) => i).find(i => !used.has(i))
       this.doc.transact(() => { this.colors.set(name, free ?? (this.colors.size % PALETTE.length)) }, origin)
     }
-    this.reconcileColors(origin)
+    this.reconcileColors(name, origin)
     return this.colors.get(name)!
   }
 
-  /** Lexically first keeps a concurrently claimed slot; later names move to the next free one. */
-  reconcileColors(origin?: unknown): void {
-    const entries = [...this.colors.entries()].sort(([a], [b]) => a.localeCompare(b))
-    const used = new Set<number>()
-    const repairs: [string, number][] = []
-    for (const [name, raw] of entries) {
-      const index = validColorIndex(raw) ? raw : 0
-      if (!used.has(index)) { used.add(index); if (index !== raw) repairs.push([name, index]); continue }
-      const free = Array.from({ length: PALETTE.length }, (_, i) => i).find(i => !used.has(i))
-      if (free !== undefined) { used.add(free); repairs.push([name, free]) }
-    }
-    if (repairs.length) this.doc.transact(() => { for (const [name, index] of repairs) this.colors.set(name, index) }, origin)
+  /** Lexically first keeps a concurrently claimed slot; a later caller moves only its own slot. */
+  reconcileColors(name: string, origin?: unknown): void {
+    const current = this.colors.get(name)
+    if (current === undefined) return
+    const entries = [...this.colors.entries()]
+    const losesTie = validColorIndex(current) && entries.some(([other, slot]) => other.localeCompare(name) < 0 && slot === current)
+    if (validColorIndex(current) && !losesTie) return
+    const used = new Set(entries.flatMap(([other, slot]) => other !== name && validColorIndex(slot) ? [slot] : []))
+    const free = Array.from({ length: PALETTE.length }, (_, i) => i).find(i => !used.has(i))
+    if (free !== undefined && free !== current) this.doc.transact(() => { this.colors.set(name, free) }, origin)
   }
 
   get overlays(): Y.Map<Y.Map<Y.Text>> { return this.doc.getMap<Y.Map<Y.Text>>('overlays') }
@@ -125,7 +127,6 @@ export class RoomDoc {
       this.scopes.delete(name)
       this.graphs.delete(name)
       this.colors.delete(name)
-      this.reconcileColors()
       this.bases.delete(name)
       this.seen(name).clear()
       const worker = this.workers.get(record.tag)

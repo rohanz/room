@@ -47,6 +47,12 @@ const HOST = process.env.HOST ?? '0.0.0.0'
 const TOKEN = process.env.ROOM_TOKEN?.trim() || undefined
 /** Ceiling on what clients may share: intent | declared | full (ROOM_SHARE_MAX). */
 const SHARE_MAX = (['intent', 'declared', 'full'] as const).find(l => l === process.env.ROOM_SHARE_MAX?.trim()) ?? 'full'
+/**
+ * Member document checks are observe-only by default so a rejected Yjs packet cannot break that
+ * client's causal stream. ROOM_IDENTITY_GUARD=enforce is experimental: it drops objected packets
+ * and can desynchronise the client. No shipped configuration enables it.
+ */
+const IDENTITY_GUARD_MODE = process.env.ROOM_IDENTITY_GUARD?.trim() === 'enforce' ? 'enforce' : 'observe'
 /** Directory with the built browser view (packages/web/dist). Served at / when present. */
 const STATIC = process.env.ROOM_STATIC ?? path.resolve(process.cwd(), 'public')
 /** Logins allowed to read the audit log (ROOM_ADMINS, comma list). */
@@ -378,9 +384,18 @@ server.on('upgrade', (req, socket, head) => {
           console.log(`dropped presence under ${JSON.stringify(name)} from ${login} (room ${roomName})`)
         }, awarenessOwnerMap(roomName))
         bindDocumentIdentity(ws, opts.login, documentGuard(roomName), (login, reason) => {
-          console.log(`dropped identity-bearing update from ${login} (room ${roomName}): ${reason}`)
-          audit({ event: 'refused', room: roomName, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update rejected: ${reason}` })
-        })
+          const key = `document:${login}`
+          const now = Date.now()
+          if ((identityLog.get(key) ?? 0) > now - 60_000) return
+          identityLog.set(key, now)
+          if (IDENTITY_GUARD_MODE === 'enforce') {
+            console.log(`rejected identity-bearing update from ${login} (room ${roomName}): ${reason}`)
+            audit({ event: 'refused', room: roomName, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update rejected: ${reason}` })
+          } else {
+            console.log(`observed identity-bearing update from ${login} (room ${roomName}); update applied: ${reason}`)
+            audit({ event: 'identity_violation', room: roomName, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update observed; update applied: ${reason}` })
+          }
+        }, IDENTITY_GUARD_MODE)
       }
       // The cap is the outermost wrapper: a packet it refuses never advances the identity shadow.
       const meter = docMeter(roomName)

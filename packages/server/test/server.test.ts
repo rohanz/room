@@ -9,6 +9,9 @@ import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
+import * as Y from 'yjs'
+import * as encoding from 'lib0/encoding'
+import * as syncProtocol from 'y-protocols/sync'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 let proc: ChildProcess, port = 0, base = ''
@@ -43,6 +46,21 @@ function join(room: string, query: Record<string, string>): Promise<number> {
     ws.on('error', () => resolve(0))
   })
 }
+function sendMemberUpdate(room: string, session: string, change: (doc: Y.Doc) => void): Promise<void> {
+  const doc = new Y.Doc()
+  change(doc)
+  const message = encoding.createEncoder()
+  encoding.writeVarUint(message, 0)
+  syncProtocol.writeUpdate(message, Y.encodeStateAsUpdate(doc))
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?session=${encodeURIComponent(session)}`)
+    ws.on('open', () => {
+      ws.send(encoding.toUint8Array(message))
+      setTimeout(() => { ws.close(); doc.destroy(); resolve() }, 50)
+    })
+    ws.on('error', reject)
+  })
+}
 async function login(fakeLogin: string): Promise<string> {
   const start = await (await post('/auth/device', {})).json() as { device: string; user_code: string }
   expect(start.user_code).toBe('FAKE-0000')
@@ -55,7 +73,7 @@ async function login(fakeLogin: string): Promise<string> {
 
 beforeAll(async () => {
   port = await freePort(); base = `http://127.0.0.1:${port}`
-  proc = await startServer({ GITHUB_CLIENT_ID: 'fake', ROOM_TOKEN: 'shared', NODE_ENV: 'test' })
+  proc = await startServer({ GITHUB_CLIENT_ID: 'fake', ROOM_TOKEN: 'shared', ROOM_ADMINS: 'bob', ROOM_IDENTITY_GUARD: '', NODE_ENV: 'test' })
 }, 30_000)
 afterAll(() => { proc?.kill() })
 
@@ -101,6 +119,26 @@ describe('room server with the fake GitHub issuer', () => {
     expect(await join('local/origin/main', { session })).toBe(101)
     expect(await join('local/origin/main', {})).toBe(401)
     expect(await join('github.com/o/r/main', {})).toBe(401)
+  })
+
+  it('logs and audits an observed identity objection while applying the member update', async () => {
+    const session = await login('bob')
+    const room = 'github.com/o/identity/main'
+    expect((await post('/rooms', { room, session })).status).toBe(201)
+    await sendMemberUpdate(room, session, doc => doc.getMap('scopes').set('alice', {
+      by: 'alice', byKind: 'agent', area: 'api', summary: 'foreign', paths: ['a.ts'], at: 1,
+    }))
+
+    let entries: { event: string; room?: string; login?: string; reason?: string }[] = []
+    for (let i = 0; i < 20; i++) {
+      entries = await (await fetch(`${base}/audit?session=${session}`)).json() as typeof entries
+      if (entries.some(entry => entry.event === 'identity_violation' && entry.room === room)) break
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+    expect(entries).toContainEqual(expect.objectContaining({
+      event: 'identity_violation', room, login: 'bob', reason: expect.stringMatching(/update applied: scopes mutation for alice/),
+    }))
+    expect(logs.join('')).toContain(`observed identity-bearing update from bob (room ${room}); update applied: scopes mutation for alice`)
   })
 })
 
