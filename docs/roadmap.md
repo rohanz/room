@@ -113,6 +113,35 @@ but never called `room_wait`, never previewed a merge and integrated by copying 
   without activity. Proactive detection of a worker needing intervention remains open.
 - **No lead summary.** `room_state` lists everything; a lead wants "3 done, 2 waiting on you,
   1 quiet" as the first lines, with the questions addressed to it.
+- **Background batches: the lead as a worker.** Leading a large batch from the session the human
+  talks to fills that session's context and ties it up; a separate headless lead fixes that but
+  cannot be steered. Untested idea: the human's session spawns one worker whose task is to lead,
+  it spawns the real workers, and the human steers it through their own session with `room_send`.
+  Open questions to test before designing anything: can a worker spawn workers (nested
+  worktrees, retirement, cleanup), does a headless lead hold a `room_wait` loop for hours, and
+  the lead still dies with the human's session unless there is a detached mode.
+
+### Tasks from issues
+
+Every batch today starts with a hand-written brief, while on a real team the intent already
+lives in an issue tracker. Room already talks to GitHub (PR proxy, PR notes, device login), so
+reading issues is the same plumbing. In order:
+1. **An issue as the source of a scope.** "Take issue 212": the agent reads it and declares its
+   scope with the issue attached. The room shows who is on which issue and warns when two
+   people pick up the same one, or two issues that touch the same files. Cheap and invisible.
+2. **A lead splits a set of issues.** "Work through the `v2-cleanup` label": the lead reads the
+   issues, uses the dependency graph to decide which can run in parallel and which collide,
+   and spawns one worker per issue with the issue text as the brief. The graph is what makes
+   this more than a to-do list. Issues rarely name files, so this depends on the lead guessing
+   well from text plus graph; the trial should show how well leads do that.
+3. **Report back only when asked.** On collect the lead offers to open a PR that references
+   the issue. Same rule as commits: nothing is posted to GitHub unless the human says so.
+
+Rules: no autonomous triage (agents never pick up, comment on or label issues unprompted: an
+agent posting on a team's tracker is the opposite of invisible, and is what gets a tool switched
+off). Design for "a task with an id, a title and a body"; GitHub is only the first adapter
+(Linear and Jira exist). Not before the trial; filing the trial's task cards as real issues on
+the fork tests step 1 for free.
 
 ## Found by batch leads using Room to build Room (2026-09-21)
 
