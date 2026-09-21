@@ -4,7 +4,7 @@ Written 2026-09-21. Room today fits a small team on a shared branch. These are t
 between that and a fifty-engineer production repo, in priority order. Completed work is marked below.
 Decide the order after the trial with real users; see "What decides the order" at the end.
 
-**Start here:** [the full review of 0.10.0](audit-2026-09-21-review.md) (2 blockers and 29 items to fix before a trial, most reproduced), then [is Room invisible?](audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
+**Start here:** [the full review of 0.10.0](audit-2026-09-21-review.md) (30 of its 33 findings fixed in 0.10.1, three partly; each is marked in the file), then [is Room invisible?](audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
 use broke and proposes the order of work.
 
 ## The design the gaps point at: cost scales with overlap
@@ -204,6 +204,27 @@ saved with a local room's memory.
   goes to the lead. Same root as "a finished worker cannot take new instructions" above.
 - **Noise:** fyi messages about cancelled plans while a claim is being narrowed; the sharing
   banner prepended to tool output when tools are driven from a script.
+
+### From the review-fixes batch (eight Codex workers, 2026-09-21, open)
+
+Recurred from the tree-sitter batch: a busy worker left three questions unanswered until the lead
+ruled; a directory scope (`packages/room-mcp/test/`) was accepted without a warning; a collected
+worker could not take a fix-up, so the lead patched a finding itself. The semantic-break problem
+did not recur only because every preview was run with tests.
+- **Preview leaks its environment into the tests it runs.** The MCP process's `ROOM_HOST` reached
+  the test run, so one suite failed only inside previews.
+- **Preview's verdict trusts the exit status alone.** A piped test command exited 0 while the
+  runner printed failures, and the preview said "tests: PASSED".
+- **A note sent to one recipient shows no recipient.** The sender cannot tell it was addressed.
+- **A bare worker tag is accepted as an addressee.** The lead sent to `graph` instead of
+  `rohanz+graph`; Room took it without complaint and it may have reached nobody. Resolve a bare
+  tag to the sender's own worker, or refuse it.
+- **"Hooks are not running… In Codex, approve them" was shown to a Claude lead.**
+- Still open from the review itself: finding 6 (notices posted as `room` and `pr#<n>` records are
+  still forgeable by a member; the identity guard keeps a second copy of each room document in
+  server memory), finding 29 (finished output published at `declared` is lost on a restart after
+  `room_done`, and collection does not withdraw it), finding 30 (the demo script was not run end
+  to end).
 
 ## Less ritual
 
