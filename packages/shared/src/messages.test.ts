@@ -8,6 +8,8 @@ import {
   shouldWakeOnMsg,
   type MsgBase,
   type BaseMsg,
+  type PlanMsg,
+  type NoteMsg,
 } from './index.js'
 
 declare module './types.js' {
@@ -61,3 +63,21 @@ describe('MessageKinds', () => {
     expect(formatMsg(ping)).toBe('[notify] ping from Kieran: please look')
   })
 })
+
+ it('never routes own messages, even human or explicitly addressed messages', () => {
+   const room = new RoomDoc()
+   for (const kind of ['human', 'agent', 'bot', 'ci'] as const) {
+     const m = room.post<NoteMsg>({ name: 'Rohan', kind }, { type: 'note', text: 'own', priority: 'interrupt', to: 'Rohan' })
+     expect(messageForMe({ name: 'Rohan' }, m)).toBe(false)
+   }
+   room.doc.destroy()
+ })
+
+ it('keeps ended plans out of inboxes and wakeups even when addressed', () => {
+   const room = new RoomDoc()
+   const m = room.post<PlanMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'plan', status: 'cancelled', claimId: 'c', path: 'a.ts', plan: { kind: 'add', symbol: 'f' }, text: 'session ended', to: 'Rohan' })
+   expect(m.priority).toBe('fyi')
+   expect(messageForMe({ name: 'Rohan' }, m)).toBe(false)
+   expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m).wake).toBe(false)
+   room.doc.destroy()
+ })

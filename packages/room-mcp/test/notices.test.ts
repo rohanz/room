@@ -151,14 +151,10 @@ describe('finishing claim notices', () => {
     expect(s.room.openClaims().map(c => c.id)).toEqual([kept.id, other.id])
     expect(s.room.scope('lead')).toBeUndefined()
     const releases = s.room.messages().filter(m => m.type === 'release')
-    expect(releases).toMatchObject([{ summary: 'released on done', unfulfilled: [plan] }])
+    expect(releases).toHaveLength(0)
     const plans = s.room.messages().filter((m): m is PlanMsg => m.type === 'plan')
-    expect(plans).toHaveLength(2)
-    expect(plans[1].to).toBe('Ada')
-    for (const m of plans) {
-      expect(m).toMatchObject({ status: 'cancelled', priority: 'fyi', text: '' })
-      expect(formatMsg(m)).toMatch(/in a\.ts$/)
-    }
+    expect(plans).toHaveLength(0)
+    expect(s.room.messages().filter(m => m.type === 'note')).toMatchObject([{ priority: 'fyi', text: 'lead released 1 claim(s); ended 1 plan(s)' }])
   })
 
   it('keeps explicit plan cancellations as interrupts with their explanation', () => {
@@ -169,3 +165,25 @@ describe('finishing claim notices', () => {
     expect(s.room.messages().at(-1)).toMatchObject({ priority: 'interrupt', text: 'changed direction' })
   })
 })
+
+ it('keeps a lead waiting quietly while workers run', async () => {
+   vi.useFakeTimers()
+   const { s, tools } = fixture()
+   for (const tag of ['a', 'b', 'c']) s.room.setWorker(worker({ tag, name: 'lead+' + tag, status: 'running', exitCode: undefined }))
+   const waiting = tools.room_wait({ timeoutMs: 10 })
+   await vi.advanceTimersByTimeAsync(10)
+   expect(await waiting).toContain('nothing yet; 3 workers still running (a, b, c); nothing needs you')
+ })
+
+ it('releases another worker selectively while preserving its scope and other owners', () => {
+   const { s } = fixture()
+   s.room.setScope({ by: 'lead+state', byKind: 'agent', area: 'fix', summary: 'task', paths: ['src/'] })
+   const add = (by: string, path: string) => s.room.addClaim({ by, byKind: 'agent', path, from: 1, to: 1, intent: 'fix', plans: [{ kind: 'add', symbol: 'helper' }] })
+   add('lead+state', 'src/a.ts'); const keep = add('lead+state', 'src/b.ts'); const other = add('Ada', 'src/a.ts')
+   expect(releaseClaimsOnDone(s, c => c.path !== 'src/a.ts', 'lead+state', false)).toBe(1)
+   expect(s.room.openClaims().map(c => c.id)).toEqual([keep.id, other.id])
+   expect(s.room.scope('lead+state')).toBeDefined()
+   expect(s.room.messages()).toMatchObject([{ type: 'note', priority: 'fyi' }])
+   expect(releaseClaimsOnDone(s, undefined, 'lead+state')).toBe(1)
+   expect(s.room.scope('lead+state')).toBeUndefined()
+ })

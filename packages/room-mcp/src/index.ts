@@ -9,7 +9,8 @@ import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
-import { resolveConfig } from './config.js'
+import { syncHookSeen } from './hooks-bridge.js'
+import { resolveConfig, resolveSessionHost } from './config.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
@@ -23,9 +24,9 @@ export { resolveConfig } from './config.js'
 export type { ResolvedConfig, ConfigArgs, ConfigRule } from './config.js'
 
 // ROOM_LOG_FILE: also append every log line to a file (workers spawned by room_spawn get one per tag).
-let LOG_FILE: string | undefined
+let LOG_FILE: string | undefined = process.env.ROOM_LOG_FILE
 const log = (s: string) => {
-  process.stderr.write(`room-mcp: ${s}\n`)
+  try { fs.writeSync(2, `room-mcp: ${s}\n`) } catch { /* stderr may already be closed */ }
   if (LOG_FILE) { try { fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${s}\n`) } catch { /* best effort */ } }
 }
 
@@ -55,16 +56,17 @@ async function main() {
 
   // Claude Code channel: push interrupts and addressed notifies as they arrive.
   const attachChannel = (s: Session) => {
-    const push = (w: { content: string; meta: Record<string, string> } | null) => {
-      if (!w) return
-      mcp.notification({ method: 'notifications/claude/channel', params: { content: w.content, meta: w.meta } }).catch(() => { /* no channel attached */ })
+    const push = (m: Msg, w: { content: string; meta: Record<string, string> } | null) => {
+      if (!w || resolveSessionHost(s.dir) !== 'claude' || startup.claudeChannel === '') return
+      mcp.notification({ method: 'notifications/claude/channel', params: { content: w.content, meta: w.meta } }).then(() => s.room.markSeen(s.me.name, [m.id])).catch(() => { /* no channel attached */ })
     }
     const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
     s.room.bus.observe(ev => {
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
         // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
-        if (ev.transaction.local && m.from === s.me.name) continue
-        push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0))
+        syncHookSeen(s)
+        if (m.from === s.me.name || s.room.seen(s.me.name).has(m.id)) continue
+        push(m, shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0))
       }
     })
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
@@ -109,18 +111,33 @@ async function main() {
   tools.setPendingJoin(autoJoin)
 
   let closing = false
-  const bye = async () => {
+  const bye = async (reason: string) => {
     if (closing) return
     closing = true
+    log(`stopping: ${reason}`)
     // A close/signal can race startup. Do not let a late auto-join create presence after shutdown.
     try { await autoJoin } catch { /* startup already reported the error */ }
     try { await tools.shutdown() } catch { /* ignore */ }
     process.exit(0)
   }
-  process.on('SIGINT', bye); process.on('SIGTERM', bye)
-  mcp.onclose = bye
-  process.stdin.on('end', bye)
+  process.on('SIGINT', () => { void bye('SIGINT') }); process.on('SIGTERM', () => { void bye('SIGTERM') })
+  mcp.onclose = () => { void bye('stdin/transport closed') }
+  process.stdin.on('end', () => { void bye('stdin closed') })
 }
 
 const isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\]index\.ts|\.mjs)?$/.test(process.argv[1])
-if (isEntry) main().catch(e => { process.stderr.write(`room-mcp: ${e?.stack ?? e}\n`); process.exit(1) })
+/** Install only for the executable, never when consumers import the package. */
+export function installFailureHandlers(report: (message: string) => void, target: Pick<NodeJS.Process, 'on' | 'exit'> = process): (reason: string, error: unknown) => never {
+  const fatal = (reason: string, error: unknown): never => {
+    report(`stopping: ${reason}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+    return target.exit(1)
+  }
+  target.on('uncaughtException', error => fatal('uncaughtException', error))
+  target.on('unhandledRejection', error => fatal('unhandledRejection', error))
+  return fatal
+}
+
+if (isEntry) {
+  const fatal = installFailureHandlers(log)
+  main().catch(error => fatal('startup failed', error))
+}

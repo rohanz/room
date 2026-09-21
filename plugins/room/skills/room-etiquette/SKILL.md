@@ -27,6 +27,7 @@ disk; edit files with your normal tools.
    whenever you will rename, change a signature, delete, or add a public symbol; whoever uses
    those symbols is told immediately, before you edit. A changed definition line is also
    detected from your diff and reported to its consumers, but only once the edit exists.
+   Claim the directory you own once, with a path ending in `/` and no line range.
    Keep claims small and short-lived.
 5. Never edit inside another party's claim. `room_wait(claimId)` or ask with
    `room_send type=question to=<person>`, then `room_wait(questionId)`.
@@ -35,8 +36,8 @@ disk; edit files with your normal tools.
 7. Answer questions addressed to you on your next move: `room_send type=answer
    inReplyTo=<id>`. `room_send` is for OTHER people's agents; to ask your own human, say it
    in your reply and stop.
-8. If a wait times out, tell your human and proceed only where you do not depend on the
-   answer.
+8. If a wait times out while your workers are running, wait again; nothing needs your human.
+   Otherwise, tell your human and proceed only where you do not depend on the answer.
    If the room is offline, sends are only queued locally and waits cannot observe replies;
    tell your human and do not assume delivery.
 9. If a conflict is reported: do not edit that region; ask, wait, or tell your human.

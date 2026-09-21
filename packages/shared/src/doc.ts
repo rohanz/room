@@ -1,4 +1,5 @@
 import diff from 'fast-diff'
+import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
 import * as Y from 'yjs'
 import type {
@@ -303,7 +304,7 @@ export class RoomDoc {
       .sort((a, b) => a.at - b.at)
   }
 
-  claimsFor(relpath: string): Claim[] { return this.openClaims().filter(claim => claim.path === relpath) }
+  claimsFor(relpath: string): Claim[] { return this.openClaims().filter(claim => claimsOverlap(claim, { path: relpath, from: 1, to: Number.MAX_SAFE_INTEGER })) }
 
   /** Everyone who was shown a message: recipients of routed copies plus agents with a read receipt for it or its copies. */
   dependentsOf(msgId: string): string[] {

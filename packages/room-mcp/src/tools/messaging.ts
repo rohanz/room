@@ -1,5 +1,6 @@
 import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
 import type { Session } from '../session.js'
+import { syncHookSeen } from '../hooks-bridge.js'
 import { isPrName } from '../prs.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -131,7 +132,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const x of [s, ...rooms.all().filter(x => x !== s)]) {
         const workersRoom = x !== s
         for (const m of x.room.messages()) {
-          if (seen.has(m.id)) continue
+          if (seen.has(m.id) || x.room.seen(x.me.name).has(m.id)) continue
           const ended = waitResult(x, m, workersRoom)
           if (ended) return `${ended}\ncall room_state before continuing.`
         }
@@ -154,7 +155,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             if (m.priority === 'interrupt' && forMe(ws, m)) return finish(`interrupt (workers room): ${formatMsg(m)}`)
           }
         }
-        const timer = setTimeout(() => finish(`timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Tell your human; proceed only where you do not depend on it.`), timeoutMs)
+        const timer = setTimeout(() => {
+          const running = [...new Map(rooms.all().flatMap(room => myWorkers(room)).filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
+          finish(running.length
+            ? `nothing yet; ${running.length} worker${running.length === 1 ? '' : 's'} still running (${running.map(w => w.tag).join(', ')}); nothing needs you`
+            : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Tell your human; proceed only where you do not depend on it.`)
+        }, timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
@@ -179,22 +185,24 @@ export function install(state: HandlerState): void {
   const forMe = (s: Session, m: Msg) => messageForMe(s.me, m, { claims: mine(s), inMyAreas: x => msgInMyAreas(s, x) })
   const inbox = (s: Session): string => {
       const fresh: Msg[] = []
-      for (const m of s.room.messages()) {
-        if (seen.has(m.id)) continue
-        seen.add(m.id)
-        if (forMe(s, m)) fresh.push(m)
-      }
       const ws = rooms.workers()
-      if (ws && ws !== s) for (const m of ws.room.messages()) {
-        if (seen.has(m.id)) continue
-        seen.add(m.id)
-        if (forMe(ws, m)) fresh.push({ ...m, ...('text' in m ? { text: `[workers room] ${m.text}` } : {}) } as Msg)
+      const sources = [s, ...(ws && ws !== s ? [ws] : [])]
+      for (const source of sources) {
+        syncHookSeen(source)
+        const delivered: string[] = []
+        for (const m of source.room.messages()) {
+          if (seen.has(m.id) || source.room.seen(source.me.name).has(m.id)) continue
+          seen.add(m.id)
+          if (!forMe(source, m)) continue
+          delivered.push(m.id)
+          fresh.push(source === s ? m : { ...m, ...('text' in m ? { text: `[workers room] ${m.text}` } : {}) } as Msg)
+        }
+        source.room.markSeen(source.me.name, delivered)
       }
       if (seen.size > 5000) { const keep = s.room.lastMessages(2000).map(m => m.id); seen.clear(); for (const k of keep) seen.add(k) }
       if (!fresh.length) return ''
       const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
       fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at)
-      s.room.markSeen(s.me.name, fresh.map(m => m.id))
       for (const m of fresh) log(`inbox → ${s.me.name}: [${m.priority}] ${formatMsg(m)}`)
       scheduleInboxWrite()
       return `[inbox ${fresh.length}]\n${fresh.map(m => `  ${m.priority.padEnd(9)} [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`

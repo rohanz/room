@@ -1,3 +1,4 @@
+import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
 import { formatPlans, type Claim, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { resolve } from 'node:path'
@@ -253,16 +254,7 @@ export function install(state: HandlerState): void {
       }
       return gone
     }
-  const cleanupMine = (s: Session, why: string, keep?: (c: Claim) => boolean): number => {
-      const released = keep ? mine(s).filter(c => !keep(c)) : mine(s)
-      for (const c of released) {
-        s.room.removeClaim(c.id)
-        s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, summary: why, ...(c.plans?.length ? { unfulfilled: c.plans } : {}) })
-        for (const pl of c.plans ?? []) planChanged(s, c, pl, 'cancelled', why)
-      }
-      s.room.clearScope(s.me.name)
-      return released.length
-    }
+  const cleanupMine = (s: Session, _why: string, keep?: (c: Claim) => boolean): number => releaseClaimsOnDone(s, keep)
   const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`
   const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url

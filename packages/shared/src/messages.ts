@@ -1,3 +1,4 @@
+import { claimsOverlap } from './claims.js'
 import { isAgentic, displayName } from './identity.js'
 import type { BuiltinMsgType, Claim, MessageMap, Msg, MsgBase, MsgType, Plan, Identity, Priority } from './types.js'
 
@@ -40,7 +41,7 @@ const builtins = {
   note: { priority: 'fyi', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)}: ${m.text}` },
   done: { priority: 'fyi', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },
   base: { priority: 'notify', audience: 'everyone', wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: m => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — git pull to catch up` },
-  plan: { priority: 'interrupt', audience: 'broadcast', wakes: 'never', format: m => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''}${m.text ? ` — ${m.text}` : ''}` },
+  plan: { priority: 'fyi', audience: 'broadcast', wakes: 'never', format: m => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''}${m.text ? ` — ${m.text}` : ''}` },
   scope: { priority: 'notify', audience: 'everyone', inbox: false, wakes: 'always', format: m => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})` },
 } satisfies Record<BuiltinMsgType, MessageKind<any>>
 
@@ -65,12 +66,13 @@ export interface MessageRouteContext {
 function holdsClaim(me: string, m: Msg, claims: readonly Claim[]): boolean {
   const ids = 'claimId' in m ? [m.claimId, ...('otherClaimId' in m ? [m.otherClaimId] : [])] : []
   if (claims.some(c => c.by === me && ids.includes(c.id))) return true
-  return 'path' in m && claims.some(c => c.by === me && isAgentic(c.byKind) && c.path === m.path)
+  return 'path' in m && claims.some(c => c.by === me && isAgentic(c.byKind) && claimsOverlap(c, { path: m.path, from: 1, to: Number.MAX_SAFE_INTEGER }))
 }
 
 /** Shared inbox routing. Priority controls urgency; the kind controls its natural audience. */
 export function messageForMe(me: { name: string }, m: Msg, context: MessageRouteContext = {}): boolean {
-  if (m.from === me.name && isAgentic(m.fromKind)) return false
+  if (m.from === me.name) return false
+  if (m.type === 'plan' && m.priority === 'fyi') return false
   if (m.to === me.name) return true
   if (m.to) return false
   const kind = messageKind(m)

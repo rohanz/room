@@ -1,5 +1,5 @@
 import { offlineSince } from '../connection.js'
-import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
@@ -65,7 +65,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const sc = s.room.scope(person)
         if (sc?.paths.some(overlapsMyPath)) return true
         const theirs = s.room.openClaims().filter(c => c.by === person)
-        return theirs.some(c => myClaims.some(m => c.path === m.path && rangesOverlap(c.from, c.to, m.from, m.to)))
+        return theirs.some(c => myClaims.some(m => claimsOverlap(c, m)))
       }
       const groups = splitParticipants({
         presences: ps, workers: [...s.room.workers.values()], retiredWorkers: s.room.retiredWorkers(),
@@ -93,10 +93,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const areaScopes = all ? s.room.allScopes() : s.room.allScopes().filter(sc => inView(sc.by))
       const summary = s.room.areaSummary().filter(l => areaScopes.some(sc => l.startsWith(`${sc.area} (`)))
       if (summary.length) { out.push('activity by scope area:'); for (const l of summary) out.push(`  - ${l}`) }
-      const cs = s.room.openClaims().filter(c => pathInView(c.path))
-      const hiddenClaims = s.room.openClaims().length - cs.length
-      out.push(`open claims${all ? '' : ' in your areas'} (${cs.length}${hiddenClaims ? `, ${hiddenClaims} elsewhere` : ''}):`)
-      for (const c of cs) out.push(claimLine(s, c))
+      const cs = s.room.openClaims()
+      out.push(`open claims (${cs.length}):`)
+      const byPerson = new Map<string, Claim[]>()
+      for (const c of cs) { const claims = byPerson.get(c.by) ?? []; claims.push(c); byPerson.set(c.by, claims) }
+      let summarizedClaims = 0
+      for (const [person, claims] of [...byPerson].sort(([a], [b]) => a === s.me.name ? -1 : b === s.me.name ? 1 : a.localeCompare(b))) {
+        const full = claims.filter(c => a.all === true || c.by === s.me.name || overlapsMyPath(c.path))
+        const rest = claims.filter(c => !full.includes(c))
+        out.push(`  ${person}: ${claims.length} claim(s)${rest.length ? ` · ${commonDirectory(rest.map(c => c.path))}` : ''}`)
+        for (const c of full) out.push(claimLine(s, c))
+        summarizedClaims += rest.length
+      }
       const changed = new Map<string, string[]>()
       let hiddenChanged = 0
       for (const person of [s.me.name, ...others(s)]) {
@@ -122,7 +130,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)
         out.push(...formatWorkerLines(myWorkers(ws).map(worker => ({ worker, processGone: worker.status === 'running' && !pidAlive(worker.pid), changedCount: ws.room.changedPaths(worker.name).length, last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
       }
-      return out.join('\n')
+      return a.all === true ? out.join('\n') : compactState(out, summarizedClaims)
     },
     async room_who(a) {
       const s = S()
@@ -137,7 +145,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const tagged = (x: Session, line: string) => x === s ? line : `${line} (workers room)`
       const who = new Set<string>()
       for (const x of inRooms) {
-        for (const c of x.room.claimsFor(p)) if (rangesOverlap(c.from, c.to, r.from, r.to)) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`))
+        for (const c of x.room.openClaims()) if (claimsOverlap(c, { path: p, ...r })) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`))
         for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
         for (const n of x.room.whoChanged(p)) if (n !== s.me.name) who.add(n)
       }
@@ -222,4 +230,24 @@ export function install(state: HandlerState): void {
       })
     }
   Object.assign(state, { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine, ledgerLines, scopeLine, personLine })
+}
+
+function commonDirectory(paths: string[]): string {
+  const parts = paths.map(p => p.split('/').slice(0, -1))
+  const prefix = parts[0] ?? []
+  let n = 0
+  while (n < prefix.length && parts.every(p => p[n] === prefix[n])) n++
+  return n ? prefix.slice(0, n).join('/') + '/' : './'
+}
+
+function compactState(lines: string[], summarizedClaims: number): string {
+  const max = 7800
+  const kept: string[] = []
+  let length = 0, omitted = 0
+  for (const line of lines) {
+    if (length + line.length + 1 > max) { omitted++; continue }
+    kept.push(line); length += line.length + 1
+  }
+  if (omitted || summarizedClaims) kept.push(`omitted: ${summarizedClaims} unrelated claim details, ${omitted} state lines; room_state all=true for everything, room_who path=... for a path.`)
+  return kept.join('\n')
 }

@@ -12,6 +12,7 @@ export interface WakeDecision {
 
 /** Shared bus wake policy for both reactive runners and MCP channel notifications. */
 export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = [], hasUncommitted = false): WakeDecision {
+  if (m.type === 'plan' && m.priority === 'fyi') return { wake: false, mustAnswer: false, reason: 'ended plan' }
   if (m.from === me.name && isAgentic(m.fromKind)) return { wake: false, mustAnswer: false, reason: 'own message' }
   const addressed = m.to === me.name
   const kind = messageKind(m)
