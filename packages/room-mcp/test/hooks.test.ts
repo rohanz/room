@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
-import { createWriteIntentReader, HooksBridge, syncHookSeen } from '../src/hooks-bridge.js'
+import { createWriteIntentReader, HooksBridge, hookHealthNote, syncHookSeen } from '../src/hooks-bridge.js'
 import type { Session } from '../src/session.js'
 import { hasCompany } from '../src/company.js'
 import type { Worker } from '@room/shared'
@@ -30,6 +30,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
   vi.stubEnv('ROOM_HOST', '')
   vi.stubEnv('ROOM_WORKER_HOST', '')
+  rmSync(join(dir, '.git/room-hook-activity.json'), { force: true })
   rmSync(join(dir, '.git/room-session.json'), { force: true })
   rmSync(join(dir, '.git/room-state.json'), { force: true })
   rmSync(join(dir, '.git/room-hook-seen.json'), { force: true })
@@ -59,7 +60,7 @@ describe('hasCompany', () => {
     const alone = session(new RoomDoc())
     expect(hasCompany(alone)).toEqual({ company: false, others: [] })
     const agent = addPresence(alone, 'Kieran')
-    expect(hasCompany(alone)).toMatchObject({ company: true, others: ["Kieran's agent"] })
+    expect(hasCompany(alone)).toMatchObject({ company: true, others: ['Kieran'] })
     agent.destroy()
 
     const viewed = session(new RoomDoc())
@@ -73,7 +74,7 @@ describe('hasCompany', () => {
     const peer = new Awareness(new Y.Doc())
     peer.setLocalState({ user: { name: 'Kieran', kind: 'agent', color: '#111' }, status: 'idle', lastActive: Date.now() - 5 * 60_000 })
     applyAwarenessUpdate(stale.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
-    expect(hasCompany(stale)).toEqual({ company: true, others: ["Kieran's agent"] })
+    expect(hasCompany(stale)).toEqual({ company: true, others: ['Kieran'] })
     peer.destroy()
     stale.awareness.destroy()
   })
@@ -116,9 +117,10 @@ describe('hasCompany', () => {
 describe('shell edit hooks', () => {
   const shellNames = ['Bash', 'shell', 'local_shell', 'exec', 'exec_command', 'unified_exec']
   const claim = { by: 'Kieran', path: 'api/tax.py', from: 1, to: 1, intent: 'tax rules' }
-  const state = (extra = {}) => writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ claims: [claim], ...extra }))
+  const state = (extra = {}) => writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true, claims: [claim], ...extra }))
 
-  it('records session-specific write intents before room state exists, including new edit files', async () => {
+  it('records session-specific write intents with company, including new edit files', async () => {
+    state()
     await runHook('session-start.mjs', { session_id: 'intent-lead', cwd: dir })
     const lead = createWriteIntentReader(dir)
     expect(lead('app.py')).toBeUndefined()
@@ -161,7 +163,7 @@ describe('shell edit hooks', () => {
     expect(new RegExp(manifest.hooks.PreToolUse[0].matcher).test(tool_name)).toBe(true)
     state({ company: true, others: ['Kieran'] })
     const input = { tool_name, cwd: dir, tool_input: { command: 'git status' } }
-    expect(JSON.parse(await runHook('before-edit.mjs', input)).hookSpecificOutput.additionalContext).toContain('[room] Kieran is in this room')
+    expect(JSON.parse(await runHook('before-edit.mjs', input)).hookSpecificOutput.additionalContext).toContain('[room] Kieran is here.')
     expect(await runHook('before-edit.mjs', input)).toBe('')
   })
 
@@ -186,6 +188,7 @@ describe('shell edit hooks', () => {
 
   it.each(['cat', 'ls', 'grep x', 'git status', 'git diff', 'git log', 'pytest', 'npm test'])('does not warn on claims for %s', async command => {
     state()
+    writeFileSync(join(dir, '.git/room-hook-seen.json'), JSON.stringify({ seen: [], companyTold: true }))
     expect(await runHook('before-edit.mjs', { tool_name: 'Bash', cwd: dir, tool_input: { command: command + ' api/tax.py' } })).toBe('')
   })
 
@@ -217,7 +220,7 @@ describe('shell edit hooks', () => {
     expect(performance.now() - start).toBeLessThan(100)
     state({ company: true, others: ['Kieran'] })
     const out = JSON.parse(await runHook('before-edit.mjs', { tool_name: 'exec', cwd: dir, tool_input }))
-    expect(out.hookSpecificOutput.additionalContext).toContain('[room] Kieran is in this room')
+    expect(out.hookSpecificOutput.additionalContext).toContain('[room] Kieran is here.')
     expect(out.hookSpecificOutput.additionalContext).not.toContain('[room claims')
   })
 })
@@ -244,6 +247,7 @@ describe('hooks bridge + plugin hook scripts', () => {
     await runHook('session-start.mjs', { session_id: 'receipt-thread', cwd: dir })
     const s = session(new RoomDoc()), queue = vi.fn(async () => {})
     const b = new HooksBridge(s, { forMe: m => m.to === s.me.name, isSeen: () => false, queue })
+    addPresence(s, 'Kieran')
     const msg = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'hook first?' })
     b.write()
     const out = await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'git status' } })
@@ -291,9 +295,9 @@ describe('hooks bridge + plugin hook scripts', () => {
     expect(await runHook('session-start.mjs', { session_id: 'quiet', cwd: dir })).toBe('')
     writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: false, others: [] }))
     expect(await runHook('session-start.mjs', { session_id: 'alone', cwd: dir })).toBe('')
-    writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true, others: ["Kieran's agent"] }))
+    writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true, others: ['Kieran'] }))
     const out = JSON.parse(await runHook('session-start.mjs', { session_id: 'shared', cwd: dir }))
-    expect(out.hookSpecificOutput.additionalContext).toBe("Room: Kieran's agent in this room. Follow the room-etiquette skill.")
+    expect(out.hookSpecificOutput.additionalContext).toBe("[room] Kieran is here.")
   })
 
   it('SessionStart resets company delivery for a new session without forgetting seen inbox ids', async () => {
@@ -304,40 +308,38 @@ describe('hooks bridge + plugin hook scripts', () => {
       unread: [{ id: 'old', priority: 'notify', line: 'old message' }], claims: [],
     }))
     await runHook('session-start.mjs', { session_id: 'new-session', cwd: dir })
-    expect(JSON.parse(readFileSync(seenFile, 'utf8'))).toEqual({ seen: ['old'], companyTold: false })
+    expect(JSON.parse(readFileSync(seenFile, 'utf8'))).toEqual({ seen: ['old'], companyTold: true })
     const input = { tool_name: 'Write', cwd: dir, tool_input: { file_path: join(dir, 'app.py') } }
-    const out = JSON.parse(await runHook('before-edit.mjs', input)).hookSpecificOutput.additionalContext
-    expect(out).toContain('[room] Kieran is in this room')
-    expect(out).not.toContain('old message')
+    expect(await runHook('before-edit.mjs', input)).toBe('')
     expect(JSON.parse(readFileSync(seenFile, 'utf8'))).toEqual({ seen: ['old'], companyTold: true })
     expect(await runHook('before-edit.mjs', input)).toBe('')
   })
 
-  it('PreToolUse announces company once, then again after company went false', async () => {
+  it('PreToolUse announces company once even after company leaves and returns', async () => {
     const state = join(dir, '.git/room-state.json')
     writeFileSync(state, JSON.stringify({ company: true, others: ['Kieran'], unread: [], claims: [] }))
     const input = { tool_name: 'Write', cwd: dir, tool_input: { file_path: join(dir, 'app.py') } }
-    expect(JSON.parse(await runHook('before-edit.mjs', input)).hookSpecificOutput.additionalContext).toContain('[room] Kieran is in this room')
+    expect(JSON.parse(await runHook('before-edit.mjs', input)).hookSpecificOutput.additionalContext).toContain('[room] Kieran is here.')
     expect(await runHook('before-edit.mjs', input)).toBe('')
-    writeFileSync(state, JSON.stringify({ company: false, others: [], unread: [], claims: [] }))
+    writeFileSync(state, JSON.stringify({ company: true, others: [], unread: [], claims: [] }))
     expect(await runHook('before-edit.mjs', input)).toBe('')
     writeFileSync(state, JSON.stringify({ company: true, others: ['Kieran'], unread: [], claims: [] }))
-    expect(JSON.parse(await runHook('before-edit.mjs', input)).hookSpecificOutput.additionalContext).toContain('[room] Kieran is in this room')
+    expect(await runHook('before-edit.mjs', input)).toBe('')
   })
 
   it.each([
-    { others: ['Kieran', 'Rohan+tests'], text: 'Kieran, Rohan+tests are in this room' },
-    { others: [], text: 'Someone is in this room' },
-    { others: undefined, text: 'Someone is in this room' },
+    { others: ['Kieran', 'Rohan+tests'], text: 'Kieran, Rohan+tests are here.' },
+    { others: [], text: 'Someone is here.' },
+    { others: undefined, text: 'Someone is here.' },
   ])('PreToolUse describes current company: $text', async ({ others, text }) => {
     writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true, others, unread: [], claims: [] }))
     const out = JSON.parse(await runHook('before-edit.mjs', { tool_name: 'Write', cwd: dir, tool_input: { file_path: join(dir, 'app.py') } }))
-    expect(out.hookSpecificOutput.additionalContext).toContain(`[room] ${text}:`)
+    expect(out.hookSpecificOutput.additionalContext).toContain(`[room] ${text}`)
   })
 
   it('reads the old array-form seen file and migrates it on the next delivery', async () => {
     writeFileSync(join(dir, '.git/room-hook-seen.json'), JSON.stringify(['old']))
-    writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: false, others: [], unread: [
+    writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true, others: [], unread: [
       { id: 'old', priority: 'notify', line: 'old message' },
       { id: 'new', priority: 'notify', line: 'new message' },
     ], claims: [] }))
@@ -355,6 +357,9 @@ describe('hooks bridge + plugin hook scripts', () => {
     const queued: string[] = []
     const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan' || m.type === 'conflict' || m.type === 'base', isSeen: () => false, queue: async (id, text) => { queued.push(`${id}: ${text.split('\n')[0]}`) } })
     b.start()
+    const peer = addPresence(s, 'Kieran')
+    addPresence(s, 'Kieran')
+    addPresence(s, 'Kieran')
     const k = { name: 'Kieran', kind: 'agent' as const }
     // remote inserts: apply from another doc so transaction.local is false
     const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u))
@@ -384,7 +389,7 @@ describe('hooks bridge + plugin hook scripts', () => {
     addPresence(s, 'Kieran')
     await new Promise(r => setTimeout(r, 200))
     expect(queued).toEqual([])
-    expect(JSON.parse(readFileSync(join(dir, '.git/room-state.json'), 'utf8'))).toMatchObject({ company: true, others: ["Kieran's agent"] })
+    expect(JSON.parse(readFileSync(join(dir, '.git/room-state.json'), 'utf8'))).toMatchObject({ company: true, others: ['Kieran'] })
     b.stop()
   })
 
@@ -462,6 +467,7 @@ describe('hooks bridge + plugin hook scripts', () => {
     const room = new RoomDoc()
     const s = session(room)
     const b = new HooksBridge(s, { forMe: m => m.to === 'Rohan', isSeen: () => false })
+    addPresence(s, 'Kieran')
     const k = { name: 'Kieran', kind: 'agent' as const }
     room.post(k, { type: 'question', to: 'Rohan', text: 'touching app.py?' } as never)
     room.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'bump x', plans: [{ kind: 'rename', symbol: 'x', detail: 'y' }] })
@@ -494,7 +500,7 @@ describe('workers-room bridge', () => {
     writeFileSync(join(dir, '.git', 'room-state.json'), '{}')
     const { RoomDoc } = await import('@room/shared')
     const room = new RoomDoc()
-    const fake = { room, dir, me: { name: 'rohanz', kind: 'agent' } } as unknown as import('../src/session.js').Session
+    const fake = { room, dir, awareness: new Awareness(room.doc), me: { name: 'rohanz', kind: 'agent' } } as unknown as import('../src/session.js').Session
     const b = new HooksBridge(fake, { forMe: () => false, isSeen: () => false, writeState: false })
     b.start(); b.stop()
     expect(existsSync(join(dir, '.git', 'room-state.json'))).toBe(true)
@@ -537,6 +543,8 @@ it.each([['codex', 'claude'], ['claude', 'codex']])('ROOM_HOST=%s overrides a st
 
 const modelLine = (model: unknown) => JSON.stringify({ type: 'assistant', message: { model } }) + '\n'
 function transcriptSession(host = 'claude', model?: string) {
+  writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true, others: [] }))
+  writeFileSync(join(dir, '.git/room-hook-seen.json'), JSON.stringify({ seen: [], companyTold: true }))
   const file = join(dir, '.git/room-session.json')
   const hint = { session_id: 'claude-thread', host, at: 123, cwd: dir, extra: 'preserved', ...(model ? { model } : {}) }
   writeFileSync(file, JSON.stringify(hint))
@@ -619,7 +627,8 @@ it.each(['lead', 'worker'])('resolves %s hook identity by session while cwd is i
   }
 })
 
-it('records read and shell activity without room state, throttles writes, and falls back for unknown sessions', async () => {
+it('records activity with company, throttles writes, and falls back for unknown sessions', async () => {
+  writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true }))
   const file = join(dir, '.git/room-hook-activity.json')
   const input = { session_id: 'unknown-session', cwd: dir, tool_name: 'Read' }
   rmSync(file, { force: true })
@@ -631,4 +640,71 @@ it('records read and shell activity without room state, throttles writes, and fa
   writeFileSync(file, JSON.stringify({ session_id: input.session_id, at: Date.now() - 6000 }))
   await runHook('before-edit.mjs', input)
   expect(JSON.parse(readFileSync(file, 'utf8')).at).toBeGreaterThan(JSON.parse(first).at)
+})
+
+it('does no activity, intent or transcript work without state or company', async () => {
+  const activity = join(dir, '.git/room-hook-activity.json')
+  rmSync(activity, { force: true })
+  const input = { cwd: dir, session_id: 'silent', tool_name: 'Write', tool_input: { file_path: 'app.py' }, transcript_path: '/nonexistent' }
+  expect(await runHook('before-edit.mjs', input)).toBe('')
+  expect(existsSync(activity)).toBe(false)
+  writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: false, unread: [], claims: [] }))
+  expect(await runHook('before-edit.mjs', input)).toBe('')
+  expect(existsSync(activity)).toBe(false)
+})
+
+it('reports absent hooks once after tool-use grace, never while alone or after current activity', () => {
+  const s = session(new RoomDoc())
+  const now = Date.now()
+  expect(hookHealthNote(s, false, now)).toBe('')
+  expect(hookHealthNote(s, true, now + 1)).toBe('')
+  expect(hookHealthNote(s, true, now + 30_001)).toContain('hooks are not running here')
+  expect(hookHealthNote(s, true, now + 60_000)).toBe('')
+  const healthy = session(new RoomDoc())
+  expect(hookHealthNote(healthy, true, now)).toBe('')
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'healthy' }))
+  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'healthy', at: now + 1 }))
+  expect(hookHealthNote(healthy, true, now + 30_000)).toBe('')
+  expect(hookHealthNote(healthy, true, now + 60_000)).toBe('')
+  s.awareness.destroy(); healthy.awareness.destroy()
+})
+
+it('company includes who and their scope; nearby claims are needed only for overlapping writes', async () => {
+  const s = session(new RoomDoc())
+  const peer = addPresence(s, 'Ada')
+  s.room.setScope({ by: 'Ada', byKind: 'agent', area: 'orders', summary: 'pricing', paths: ['api/'], at: Date.now() })
+  s.room.setOverlay('Bea', 'other.py', 'changed')
+  const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
+  b.write()
+  const announce = await runHook('session-start.mjs', { cwd: dir, session_id: 'near' })
+  expect(announce).toContain('Ada is here, on orders: api/')
+  const edit = (file_path: string) => runHook('before-edit.mjs', { cwd: dir, session_id: 'near', tool_name: 'Write', tool_input: { file_path } })
+  expect(await edit('api/tax.py')).toContain('Claim before editing: Ada has scope on api/')
+  expect(await edit('other.py')).toContain('Bea has changed on other.py')
+  expect(await edit('api-other/new.py')).toBe('')
+  b.stop(); peer.destroy(); s.awareness.destroy()
+})
+
+it('publishes known unavailable Claude wake capability', () => {
+  vi.stubEnv('ROOM_HOST', 'claude')
+  vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
+  const s = session(new RoomDoc())
+  const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
+  b.start()
+  expect(s.awareness.getLocalState()).toMatchObject({ wakeUnavailable: true })
+  b.stop(); s.awareness.destroy()
+})
+
+it('matches the shared overlap rule on exact files, directory boundaries and normalized paths', async () => {
+  const shared = await import('@room/shared')
+  // The shared export lands with the lean worker; run this check on the combined tree.
+  const covers = (shared as unknown as { coversPath: (a: string, b: string) => boolean }).coversPath
+  expect(covers).toBeTypeOf('function')
+  const hook = await import(join(HOOKS, 'common.mjs'))
+  for (const [a, b] of [
+    ['api/tax.py', 'api/tax.py'], ['api/', 'api/tax.py'], ['api/tax.py', 'api/'],
+    ['api', 'api-other/a'], ['./api/tax.py', 'api/'], ['api\\tax.py', 'api'],
+    ['.', 'api/tax.py'], ['./', 'api/tax.py'], ['', 'api/tax.py'], ['api///', 'api/a'],
+    ['src/a', 'src/b'], ['././src/a', 'src/a'], ['src/../api', 'api/a'],
+  ]) expect(hook.coversPath(a, b), `${a} vs ${b}`).toBe(covers(a, b))
 })
