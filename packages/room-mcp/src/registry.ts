@@ -11,7 +11,7 @@
 import type { NoteMsg, Presence, Worker } from '@room/shared'
 import path from 'node:path'
 import type { Session } from './session.js'
-import { cleanupWorker, pidAlive, shouldRetire, workerGitFacts, workerLogTail, type SpawnedProcess } from './workers.js'
+import { cleanupWorker, pidIsOurWorker, shouldRetire, workerGitFacts, workerLogTail, type SpawnedProcess } from './workers.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -39,17 +39,17 @@ export function workerId(lead: string, tag: string, gen: number): string { retur
 export function workerIdBase(roomName: string, lead: string, tag: string): string { return `${roomName}|${lead}/${tag}` }
 
 /** A confirmed exit is recorded once, including when discovered after the lead restarts. */
-/** `unwitnessed`: a later lead found a running worker's process gone. A lead that was alive would have seen the
- * exit, so the lead's session ended first (hosts kill the MCP process before its shutdown can record that). */
+/** `unwitnessed`: a later lead found the recorded worker process gone, but cannot know why it stopped. */
 export async function finishWorkerProcess(s: Session, w: Worker, code: number | null, at = Date.now(), error?: string, unwitnessed = false): Promise<void> {
   const current = s.room.workers.get(w.tag)
   if (current !== w || w.exitCode !== undefined) return
   const done = w.status === 'done'
   const exitCode = code ?? -1
+  const tail = workerLogTail(path.join(s.dir, '.room', 'workers', `${w.tag}.log`))
   s.room.updateWorker(w.tag, {
     exitCode, finishedAt: w.finishedAt ?? at,
     ...(w.status !== 'running' ? {}
-      : unwitnessed ? { status: 'dismissed' as const, stopReason: 'lead-session-ended' as const }
+      : unwitnessed ? { status: 'failed' as const, summary: `stopped while no session of yours was running; reason unknown; worktree: ${w.dir}; last lines of its log: ${tail || '(empty log)'}` }
       : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
   }, w.id)
   if (!done) {
@@ -62,7 +62,6 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
   if (!unwitnessed && !w.stopReason && w.dismissedAt === undefined && (exitCode !== 0 || !done)) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1000))
     const elapsed = seconds < 90 ? `${seconds} s after start` : `after ${Math.floor(seconds / 60)}m`
-    const tail = workerLogTail(path.join(s.dir, '.room', 'workers', `${w.tag}.log`))
     s.room.post<NoteMsg>({ name: 'room', kind: 'bot' }, {
       type: 'note', to: w.lead, priority: 'interrupt',
       text: `worker ${w.tag} died ${elapsed} (exit ${code ?? 'unknown'})${!done ? '; exited without room_done' : ''}${error ? `; ${error}` : ''}; last lines of its log: ${tail || '(empty log)'}`,
@@ -153,7 +152,7 @@ export class Rooms {
       if (w.stopReason === 'lead-session-ended') continue
       if (this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
       if (w.lead !== s.me.name || this.hasHandle(s, w)) continue
-      const exited = w.exitCode !== undefined || !pidAlive(w.pid)
+      const exited = w.exitCode !== undefined || !pidIsOurWorker(w.pid, w)
       if (!exited) continue
       if (w.status === 'running') {
         await finishWorkerProcess(s, w, null, Date.now(), undefined, true)

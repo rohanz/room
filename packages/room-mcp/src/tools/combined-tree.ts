@@ -7,12 +7,12 @@ import { workerOwnedPaths } from '../workers.js'
 import { diskWorker, type HandlerState } from './context.js'
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
-export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; baseText?: typeof gitShow } = {}) {
+export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; baseText?: typeof gitShow } = {}) {
   const { rooms, liveText, baseFor, shareOf } = state
   const people = participants.map(p => p.person)
-  // Local worktrees are authoritative even before the daemon publishes a new file.
+  // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
   const previewWorker = (s: Session, person: string) => {
-    const w = s.local ? s.room.workerOf(person) : undefined
+    const w = s.local || options.diskWorkers?.has(person) ? s.room.workerOf(person) : undefined
     return w?.lead === s.me.name && fs.existsSync(w.dir) ? w : diskWorker(s, person)
   }
   const previewText = async (s: Session, p: string, person: string) => {
@@ -199,4 +199,3 @@ export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {
   if (b.length > a.length && contains(b, a)) return 'b'
   return undefined
 }
-

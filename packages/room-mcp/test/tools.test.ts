@@ -238,12 +238,13 @@ describe('session gating', () => {
     expect(t.session).not.toBeNull()
   })
 
-  it('explains local test failures when the last clean combined preview passed', async () => {
+  it('reports the exact command only when the last clean combined preview tests passed', async () => {
     const t = setup()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'true' })).toContain('exit 0')
     const out = await t.tools.call('room_done', { summary: 'implementation done; local tests are failing on teammate files' })
-    expect(out).toContain("Local failures caused by a teammate's unmerged files are expected until merge; the combined preview passed.")
+    expect(out).toContain('The combined preview passed `true`.')
+    expect(out).not.toContain('caused by')
 
     const failed = setup()
     failed.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))

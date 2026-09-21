@@ -25,6 +25,16 @@ export function workerOwnedPaths(w?: Pick<Worker, 'link'>) {
   }
 }
 
+const IGNORED_DEPENDENCY_DIRS = new Set(['node_modules', '.venv', 'venv', 'vendor', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.gradle', 'target'])
+
+/** Ignored output that a discard patch cannot recover, excluding reproducible dependency/cache trees. */
+export async function ignoredWorkerArtifacts(w: Worker): Promise<string[]> {
+  const raw = await git(w.dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', '--', '.', ...workerOwnedPaths(w).exclusions])
+  return raw.split('\0').filter(Boolean)
+    .filter(p => !p.split('/').some(part => IGNORED_DEPENDENCY_DIRS.has(part)))
+    .sort()
+}
+
 export interface RetirementFacts {
   exited: boolean
   done: boolean

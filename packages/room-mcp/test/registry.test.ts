@@ -190,7 +190,7 @@ describe('worker identity', () => {
 })
 
 describe('worker process exits', () => {
-  it('cleans a worker found dead after lead restart: stopped by the session ending, claims released, no death alarm', async () => {
+  it('records a worker found dead after lead restart as an unknown unwitnessed exit, releases claims, and sends no false death alarm', async () => {
     const r = registry(), s = fakeSession(pair().a, lead)
     r.rooms.add(s, 'primary')
     const w = { id: 'dead#1', tag: 'dead', name: 'rohanz+dead', host: 'codex' as const, task: 'test', dir, branch: 'room/dead', pid: -1, startedAt: Date.now() - 100_000, status: 'running' as const, lead: 'rohanz' }
@@ -200,7 +200,10 @@ describe('worker process exits', () => {
     s.room.addClaim({ path: 'other.py', from: 1, to: 1, by: lead.name, byKind: 'agent', intent: 'lead work' })
     await r.rooms.retireWorkers(s)
     await r.rooms.retireWorkers(s)
-    expect(s.room.workers.get('dead')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended', exitCode: -1 })
+    expect(s.room.workers.get('dead')).toMatchObject({ status: 'failed', exitCode: -1 })
+    expect(s.room.workers.get('dead')?.summary).toContain('stopped while no session of yours was running; reason unknown')
+    expect(s.room.workers.get('dead')?.summary).toContain(`worktree: ${dir}`)
+    expect(s.room.workers.get('dead')?.summary).toContain('last lines of its log:')
     expect(s.room.openClaims().map(c => c.by)).toEqual([lead.name])
     expect(s.room.scope(w.name)).toBeUndefined()
     expect(s.room.messages().filter(m => m.priority === 'interrupt')).toEqual([])
@@ -208,12 +211,23 @@ describe('worker process exits', () => {
     r.rooms.remove(s)
   })
 
-  it('an exit no lead witnessed is recorded as stopped by the session ending, without a death report', async () => {
+  it('an exit no lead witnessed keeps its cause unknown, without a death report', async () => {
     const s = fakeSession(pair().a, lead)
     s.room.setWorker({ tag: 'orphan', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/orphan', pid: -1, startedAt: 1, status: 'running', lead: lead.name })
     await finishWorkerProcess(s, s.room.workers.get('orphan')!, null, 5, undefined, true)
-    expect(s.room.workers.get('orphan')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended', exitCode: -1 })
+    expect(s.room.workers.get('orphan')).toMatchObject({ status: 'failed', exitCode: -1 })
+    expect(s.room.workers.get('orphan')?.summary).toContain('reason unknown')
     expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(0)
+  })
+
+  it('does not let a recycled live pid hide an exited worker after restart', async () => {
+    const r = registry(), s = fakeSession(pair().a, lead)
+    r.rooms.add(s, 'primary')
+    s.room.setWorker({ tag: 'reused', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/reused', pid: process.pid, startedAt: 1, status: 'running', lead: lead.name })
+    await r.rooms.retireWorkers(s)
+    expect(s.room.workers.get('reused')).toMatchObject({ status: 'failed', exitCode: -1 })
+    expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(0)
+    r.rooms.remove(s)
   })
 
   it.each([true, false])('intentional stop produces no death interrupt (session ended=%s)', async ended => {

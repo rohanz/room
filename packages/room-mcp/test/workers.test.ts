@@ -18,6 +18,7 @@ import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaul
 // These lifecycle tests use synthetic worker directories and controlled process callbacks.
 vi.mock('../src/workers.js', async importOriginal => ({
   ...await importOriginal<typeof import('../src/workers.js')>(),
+  ignoredWorkerArtifacts: vi.fn(async () => []),
   saveDiscardPatch: vi.fn(async () => undefined),
   cleanupWorker: vi.fn(async () => true),
 }))
@@ -283,6 +284,27 @@ describe('room_spawn / room_done / room_collect discard', () => {
     // A later process exit keeps the done status and records the code.
     t.exits[0](0)
     expect(t.a.workers.get('money')).toMatchObject({ status: 'done', exitCode: 0 })
+  })
+
+  it('does not promise a wake-up when a non-worker finishes', async () => {
+    const t = setup()
+    const out = await t.leadTools.call('room_done', { summary: 'finished' })
+    expect(out).toContain('You remain in the room.')
+    expect(out).not.toContain('will be woken')
+  })
+
+  it('credits only an actual passing preview test command, never a text-only preview or an inferred cause', async () => {
+    const t = setup()
+    const leadSession = fakeSession(t.a, lead)
+    let current: Session | null = leadSession
+    const tools = createTools({ getSession: () => current, setSession: s => { current = s }, cwd: dir })
+    leadSession.lastPreview = { clean: true }
+    const textOnly = await tools.call('room_done', { summary: 'local tests failed' })
+    expect(textOnly).not.toContain('combined preview passed')
+    leadSession.lastPreview = { clean: true, testsPassed: true, testsCommand: 'npm test' }
+    const tested = await tools.call('room_done', { summary: 'local tests failed' })
+    expect(tested).toContain('The combined preview passed `npm test`.')
+    expect(tested).not.toContain('caused by')
   })
 
   it('a worker that exits without room_done is marked failed regardless of exit code; dismiss kills a running one', async () => {

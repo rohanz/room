@@ -128,7 +128,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
         else { const r = await runInMergedTree(caller, ancestor, merged, run); out.push(r); ranOk = /: exit 0\n/.test(r) }
       }
-      caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk } : {}) }
+      caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run } : {}) }
       // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
       if (!hardCount && ranOk) caller.room.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
       return out.join('\n')

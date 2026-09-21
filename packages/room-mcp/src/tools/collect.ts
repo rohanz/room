@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { claimsOverlap } from '@room/shared'
 import { git } from '@room/roomd/git'
-import { cleanupWorker, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths } from '../workers.js'
+import { cleanupWorker, ignoredWorkerArtifacts, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -16,7 +16,7 @@ export const defs: ToolDef[] = [{
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },
     paths: strs('copy mode: repo-relative files or directories'),
-    force: { type: 'boolean', description: 'overwrite modified copy destinations' },
+    force: { type: 'boolean', description: 'overwrite modified copy destinations; discard ignored artifacts too' },
   } },
 }]
 
@@ -82,6 +82,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep(50)
           if (state.workerAlive(s, w)) throw new Error('worker process has not stopped')
         }
+        const ignored = await ignoredWorkerArtifacts(w)
+        if (ignored.length && a.force !== true) {
+          return [
+            `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}`,
+            ...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`),
+            `retained worktree: ${w.dir}`,
+            'copy what you need (mode="copy", paths=[...]), then repeat with force=true to delete the rest',
+          ].join('\n')
+        }
         const patch = await saveDiscardPatch(s.dir, w)
         if (!await cleanupWorker(s.dir, w, true, true)) throw new Error('worker is not an owned Room worktree')
         releaseClaimsOnDone(s, () => false, w.name, false)
@@ -91,7 +100,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           summary: 'discarded', files: [], fileCount: 0, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
         })
-        return 'discarded ' + w.tag + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '')
+        return 'discarded ' + w.tag + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '')
       } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
       finally { rooms.unreserve(lock) }
     }
@@ -107,7 +116,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const item of candidates) {
         const { s } = item; let { w } = item
         if (w.status !== 'done') { out.push('skipped ' + w.tag + ': ' + w.status); continue }
-        if (!s.local) throw new Error('room_collect requires a local worker')
         const now = state.now ?? Date.now
         const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
         const deadline = now() + 15_000
@@ -162,7 +170,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // Latin-1 transports bytes losslessly through the text engine, including binary additions.
       const result = await buildCombinedTree({ ...state, baseFor: (_s, person) => heads.get(person)!, shareOf: () => 'full' }, lead,
         selected.map(({ s, w }) => ({ session: s, person: w.name })), {
-          diskOnly: true, encoding: 'latin1',
+          diskOnly: true, diskWorkers: new Set(selected.map(({ w }) => w.name)), encoding: 'latin1',
           baseText: async (dir, base, p) => {
             try { return (await run('git', ['show', base + ':' + p], { cwd: dir, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 })).stdout.toString('latin1') }
             catch (e) { if (/does not exist|exists on disk, but not in|path .* not in/i.test(String((e as { stderr?: unknown }).stderr))) return undefined; throw e }

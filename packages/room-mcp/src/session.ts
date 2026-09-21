@@ -55,7 +55,7 @@ export interface Session {
   token?: string
   autoTagNote?: string
   /** Latest preview started by this MCP session; never reconstructed from shared room history. */
-  lastPreview?: { clean: boolean; testsPassed?: boolean }
+  lastPreview?: { clean: boolean; testsPassed?: boolean; testsCommand?: string }
   /** Refresh hook/session runtime metadata before a Room tool is dispatched. */
   refreshRuntime?: () => void
 }
