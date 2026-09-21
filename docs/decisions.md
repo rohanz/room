@@ -329,3 +329,12 @@ to stay easy, does not intend to pursue people using it at work, but wants the o
 if someone sells Room itself or runs it as a paid service. PolyForm Noncommercial says exactly
 that in plain terms; a commercial licence can be granted case by case. It is source-available,
 not OSI open source. Releases up to 0.6.8 stay MIT.
+
+## 2026-09-21 — Invisibility batch (0.9.0)
+**Decision:** Make collection uncommitted by default; coordinate only on overlap; disclose team
+sharing once; report missing coordination coverage; simplify setup and terminology.
+**Why:** The [0.8.0 audit](audit-2026-09-21-invisibility.md) found Room imposing work on people
+and agents that did not help them coordinate.
+**Built when:** 21 Sep, post-hackathon: consent/configuration, collection/cleanup, lean tools and
+skills, failure notices and documentation, split across five Room workers.
+**Still open:** Rooms remain per branch, and updates take effect only in new agent sessions.

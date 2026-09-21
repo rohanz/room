@@ -1,7 +1,7 @@
 # Future work: Room on large production repos
 
 Written 2026-09-21. Room today fits a small team on a shared branch. These are the known gaps
-between that and a fifty-engineer production repo, in priority order. Nothing here is started.
+between that and a fifty-engineer production repo, in priority order. Completed work is marked below.
 Decide the order after the trial with real users; see "What decides the order" at the end.
 
 **Start here:** [is Room invisible?](audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
@@ -75,8 +75,8 @@ but never called `room_wait`, never previewed a merge and integrated by copying 
 `room-workers` skill (0.7.0) now spells out the finish. Beyond what a skill can fix:
 - **A finished worker cannot take new instructions.** Headless workers are one-shot; the lead
   spawns a follow-up. A `room_spawn` that resumes a worker's session in its worktree would fix it.
-- **Quiet workers are not flagged.** The lead learns of trouble only when it looks or waits. Flag
-  a running worker with no edits, messages or tool activity for N minutes.
+- **Quiet workers require a status check.** State already labels workers quiet after five minutes
+  without activity. Proactive detection of a worker needing intervention remains open.
 - **No lead summary.** `room_state` lists everything; a lead wants "3 done, 2 waiting on you,
   1 quiet" as the first lines, with the questions addressed to it.
 
@@ -102,37 +102,31 @@ saved with a local room's memory.
   Declined as out of scope in the 0.8.0 batch; it matters when two sessions share one folder.
 - An answer reaches only the asker. A lead ruling on a shared signature had to repeat it to the
   second worker. Let an answer be addressed to several participants, or offer "answer and note".
-- Claim traffic is still high: five workers made 46 claims where five directory claims would do.
-  Directory claims exist now (0.8.0); the etiquette and the worker prompt should lead with them.
+- **Fixed in 0.9.0:** claims are required only where another participant’s work overlaps;
+  routine releases and changed announcements are no longer required.
 - Shared files (`types.ts`, `join.ts`, `prompt.ts`) had no named owner and cost the lead five
   rulings. A brief format or a `room_scope` convention for "shared, ask the lead" would help.
 - A contract between two workers can be satisfied by the combined typecheck without either ever
   confirming it to the other. Fine when it compiles; invisible when it does not.
-- Cosmetic, seen in the 0.8.0 live test: a worker's done notice appears twice in one `room_wait`
-  reply (the inbox block and the wait result); `room_collect` uses the worker's whole one-line
-  summary as the commit subject, which can run to hundreds of characters (cap near 72, put the
-  rest in the body); a lead with nothing running and nothing pending is still told "Tell your
-  human" on a wait timeout.
+- **Fixed in 0.9.0:** wait-ending messages are not repeated in the inbox, requested collection
+  commits have short subjects with details in the body, and quiet timeouts do not mandate a report.
 
 **Earlier, still open:**
-- `room_wait` timing out says "Tell your human" even while the lead's workers are plainly busy.
-  With running workers it should say "3 workers still running; nothing needs you yet".
+- **Fixed in 0.7.0:** a wait timeout with running workers says nothing needs you yet; it no longer
+  asks you to supervise a healthy wait.
 - `room_state`'s recent-bus section is dominated by claim and release lines; the lead had to run
   `room_export` to find the questions and answers. Rank questions, answers, notices and done
   messages above claim traffic, at least for a lead.
 - After the lead committed, `room_state` still listed `plugins/room/web` files as uncommitted.
   Needs investigation: daemon staleness after a commit in the same clone, or an ignore rule.
-- The company line reads "rohanz's agent (notices) is in this room", which can be misread as
-  describing the reader. Use the participant name: "rohanz+notices is in this room".
+- **Fixed in 0.9.0:** the company line uses participant names and current work, once per session.
 - "Run only the files you touch" let intended behaviour changes break suites nobody owned (first
   batch). The preview could suggest tests that mention strings a worker changed.
 
 ## Less ritual
 
-- **Claim only where someone is near.** With company, an agent claims before every edit; two
-  agents under `api/` produced eleven claim/release/announce rounds for one-line edits. The
-  before-edit hook already knows others' scopes, claims and changed files, so it can say "nobody
-  is near this file, no claim needed" and ask for a claim only on overlap. Keep the scope call.
+- **Done in 0.9.0: claim only where someone is near.** Hooks and tools use the same overlap
+  rule over participants’ scopes, claims and changed paths; the initial scope declaration remains.
 - **Suggest `.roomignore` entries, once, by rule.** At first sync the daemon flags shared files
   that look like data or generated output (the same detection as path-only sharing); the join
   reply carries one line naming them and the entry to add; the agent relays it and writes the
@@ -168,8 +162,8 @@ the code pane re-runs the merge for the open file each time (542 ms for a 2,523-
 
 ## Housekeeping
 
-- **CI.** Nothing runs the test suite on push. Add a GitHub Actions workflow (typecheck, tests,
-  web build, plugin bundle is up to date).
+- **Done in 0.7.0:** GitHub Actions runs typechecks, tests, web/plugin builds and committed
+  plugin asset freshness checks on pushes and pull requests.
 - **Published server image** (see decisions, 2026-09-16): multi-stage Dockerfile, GHCR on tags.
 - **Hook at the point of decision** for built-in subagents: only if trials show agents picking
   built-in subagents for parallel edits. The phrasing check on 2026-09-21 was six of six after

@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.0
+
+- K1. Team joins disclose the actual sharing level, repository and server once per worktree and destination, including first participants and environment-selected auto-joins.
+- K2. Unknown sharing levels fall back to plans only and report the invalid setting instead of widening to full text.
+- K3. Destination precedence is explicit argument, ROOM_SERVER, legacy ROOM_URL, remembered choice, then local; environment overrides do not become remembered choices. The optional team runner uses an explicit or saved destination instead of silently falling back to localhost.
+- K4. Logout is `room_login(action: "logout")`; the separate `room_logout` tool is removed.
+- C1. Collection applies worker output as uncommitted, unstaged edits by default, preserving the lead’s edits and leaving files untouched on conflicts. `commit: true` requests commits and a merge with a short subject; `mode: "copy"` plus paths collects artifacts.
+- C2. Full successful collection cleans up an exited worker’s worktree and branch, removes logs after a successful exit, and retires its room record; failed or partial collection preserves recoverable work.
+- C3. `room_collect(discard: true)` replaces `room_dismiss`: stop without collecting, clean up a clean worktree, or retain dirty work and report its location.
+- C4. Room privately excludes `.room/` and moves root `.room.json` into the worktree’s Git directory as `room.json`, migrating the legacy file once.
+- C5. Workers default to the caller’s host, receive setup guidance once per session, and finish with one line through `room_done`; finished workers are no longer told to stay for questions.
+- L1. The always-loaded prompt applies coordination rules only with company, describes disk writes truthfully, and reserves worker dispatch for substantial work.
+- L2. Claims are needed only where work overlaps; `room_claim` records nothing when no claim is needed. Routine release and changed announcements are no longer required.
+- L3. Routine waiting, browser-link and renewed commit-permission relays are removed; the sharing disclosure remains mandatory.
+- L4. Replies avoid repeating wait-ending messages and routine guidance; waiting no longer mandates a second state call.
+- L5. State starts with the sharing boundary and returns browser links only with `link: true`; `room_state(path)` replaces `room_who`, and `room_read(diff: true)` replaces `room_diff`.
+- L6. Feed-only message kinds do not wake agents; actionable merge conflicts use an addressed conflict kind that enters the inbox and wakes its recipient.
+- L7. Tool descriptions and compact schemas have a 9,500-character regression budget (20 tools, 9,023 characters in this batch); shorter instructions and skills explain Room without a tool tour.
+- S1. With coordination expected, missing hook activity produces one actionable notice; startup login and join failures reach the first Room reply instead of only logs.
+- S2. Addressing a participant known to be unwakeable says it will see the message on its next turn.
+- S3. State reports changed files withheld by size or sharing budget; the daemon withdraws stale shared text when a file becomes too large.
+- S4. Company is announced once per session using participant names and their current task or files.
+- S5. Before-edit hooks request a claim only where another participant’s scope, claim or changes overlap the path, using the same directory-boundary matcher as the tools.
+- D1. README starts with installation and local/team use; Claude Code channel setup has one canonical explanation linked by onboarding, the launcher and join skill.
+- D2. Guides document collection and cleanup, actual storage locations, the current same-branch requirement, and plugin updates taking effect in new sessions.
+- D3. Current guides and plugin descriptions use plain, consistent terms: team room, participants, and you; historical submission drafts are labelled as such.
+
 ## 0.8.0 — 2026-09-21
 
 - Linked inputs and symlinks leaving a worktree are listed under "NOT previewed" on both worker and lead previews.

@@ -1,7 +1,7 @@
 {
   "name": "room",
-  "version": "0.8.0",
-  "description": "Room awareness for coding agents: open a room for the repo once, auto-join per branch, see what teammates and their agents are on, declare intent, claim lines, get told when your symbols are about to change or your edits collide.",
+  "version": "0.9.0",
+  "description": "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   "author": {
     "name": "Rohan",
     "url": "https://github.com/rohanz/room"
@@ -18,8 +18,8 @@
   "mcpServers": "./codex-mcp.json",
   "interface": {
     "displayName": "Room",
-    "shortDescription": "Work in a shared live room without stepping on teammates",
-    "longDescription": "Gives Codex the room_* tools: open a room for the repo once, auto-join the room for your branch after that, declare scope, claim line ranges with planned changes, read teammates' live versions and per-area ledgers, ask and wait, and preview-merge before committing. Nothing is written to your disk by the room.",
+    "shortDescription": "See what teammates' agents are changing",
+    "longDescription": "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
     "developerName": "Rohan",
     "category": "Productivity",
     "capabilities": [

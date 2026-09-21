@@ -9,7 +9,31 @@ Two independent auditors with the same brief: Codex on gpt-6-astra at low effort
 string a human or agent is shown, with file and line) and Claude Fable (the same, plus four real
 headless sessions in scratch clones, measured). Neither saw the other's report.
 
-## Verdict
+## Fix status — 0.9.0
+
+The observations below describe 0.8.0 and are retained as evidence. The release changes are
+tracked in [the changelog](../CHANGELOG.md#090); a fixed item is not a claim that every delivery
+path or the whole experience is solved.
+
+| Finding | Status after this batch |
+|---|---|
+| Consent/truth 1–2: missing first-join disclosure; invalid share setting | Fixed: one destination-specific disclosure, including auto-joins; unknown levels share plans only. |
+| Consent/truth 3: absolute no-disk-write promise | Fixed: guides distinguish live sharing, private metadata, requested collection and export. |
+| Consent/truth 4: unsolicited collection commits | Fixed: default collection is uncommitted and unstaged; committing requires an explicit request. |
+| Consent/truth 5: retained worker artifacts | Fixed for full successful collection; failed/partial work and dirty dismissed worktrees are deliberately retained. |
+| Consent/truth 6: obsolete onboarding and ignore chores | Fixed: current collection guidance and automatic Git-private exclusion. |
+| Agent cost: always-loaded catalog and contradictory solo rules | Reduced: 20 tools, 9,023 description/schema characters under a 9,500 regression budget; coordination rules apply with company. Conditional catalog loading is not added. |
+| Agent cost: per-edit scope/read/claim/release/changed ceremony | Fixed: scope once, claim only on overlap, no routine release/changed calls. |
+| Agent cost: duplicated replies and wait/state round trips | Fixed: wait-ending messages are consumed once and routine waiting needs no compulsory state call. |
+| Agent cost: conflict notes cannot wake idle recipients | Fixed: actionable conflicts use the addressed conflict kind; feed-only kinds do not wake. |
+| Human experience: mandatory timeout/commit/browser relays and privacy tool tour | Fixed: ordinary relays removed; state begins with the sharing boundary and links are requested explicitly. |
+| Agent cost: host default and terminal worker instructions | Fixed: caller’s host by default; one-line terminal completion; no promise of replies after exit. |
+| Human experience: buried installation and repeated flag explanation | Fixed: first-screen setup and one canonical explanation. |
+| Human experience: invisible coordination failures | Improved: missing-hook, unwakeable-participant, skipped-file and startup-failure notices; this is detection, not a guarantee of delivery. |
+| Human experience: terminology and marketplace jargon | Fixed in current guides, skills and manifest descriptions; historical audit quotes are preserved. |
+| Human experience: branch isolation and stale session instructions | Documented: same branch is still required, and updates require a new session. Branch isolation is not fixed here. |
+
+## Verdict (0.8.0)
 
 Solo, Room is close to invisible, and that is measured: an ordinary coding task under Claude Code
 and under Codex made 0 room calls, loaded no Room skill, said nothing about Room, and left no
@@ -85,7 +109,7 @@ it is used.
   person works on their own branch, everyone is alone and Room does nothing.
 - A long-lived session keeps the instructions of the plugin version it started with.
 
-## Already invisible, must not regress
+## Already invisible in 0.8.0, must not regress
 
 Solo hooks inject nothing; solo sessions make no room calls and say nothing about Room (Claude
 and Codex); no nag without the launcher when alone; no orphan processes; `.room.json` is
