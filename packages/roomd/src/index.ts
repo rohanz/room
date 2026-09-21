@@ -176,6 +176,8 @@ class Daemon implements Roomd {
   share: ShareLevel
   /** Explicit scope paths (option / setShare); when unset, the person's scope in the room doc decides. */
   private explicitScopePaths?: string[]
+  /** Exact paths already published while declared; task scope may end before teammates collect them. */
+  private readonly retainedDeclaredPaths = new Set<string>()
   private beforePublishWrite?: (relpath: string) => Promise<void>
 
   private onScanned?: (relpath: string) => void
@@ -311,6 +313,7 @@ class Daemon implements Roomd {
 
   async setShare(level: ShareLevel, scopePaths?: string[]): Promise<void> {
     const before = this.share
+    if (before !== level) this.retainedDeclaredPaths.clear()
     this.share = level
     // Paths passed here are a one-off override; `undefined` keeps following the declared scope.
     this.explicitScopePaths = scopePaths
@@ -338,7 +341,7 @@ class Daemon implements Roomd {
   private isShared(relpath: string): boolean {
     if (this.share === 'full') return true
     if (this.share === 'intent') return false
-    return scopeCovers({ paths: this.scopePaths() }, relpath)
+    return this.retainedDeclaredPaths.has(relpath) || scopeCovers({ paths: this.scopePaths() }, relpath)
   }
 
   /** Re-evaluate every tracked file against the current level: withdraw what is no longer allowed, publish what now is. */
@@ -358,8 +361,21 @@ class Daemon implements Roomd {
       this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this) }, this)
       this.log(`withdrew ${relpath} overlay (sharing ${this.share})`)
     }
+    this.retainedDeclaredPaths.delete(relpath)
     if (changed) this.skips.share.add(relpath)
     else this.skips.share.delete(relpath)
+  }
+
+  /** Stop publishing a path that an ignore rule now excludes, including deletion-only overlays. */
+  private withdrawIgnored(relpath: string, reason: string): void {
+    const had = this.roomDoc.overlayText(this.name, relpath) !== undefined || (this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false)
+    if (had) {
+      this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this) }, this)
+      this.log(`withdrew ${relpath} (${reason})`)
+    }
+    this.retainedDeclaredPaths.delete(relpath)
+    this.skips.share.delete(relpath)
+    this.skipIgnored(relpath, reason)
   }
 
   private loadRoomIgnore(): void {
@@ -671,6 +687,7 @@ class Daemon implements Roomd {
     if (!this.isSafeRoomPath(relpath)) {
       this.roomDoc.clearOverlay(this.name, relpath, this)
       this.roomDoc.unmarkDeleted(this.name, relpath, this)
+      this.retainedDeclaredPaths.delete(relpath)
       return
     }
     if (this.batch.deferHot(relpath)) return
@@ -698,6 +715,7 @@ class Daemon implements Roomd {
           this.roomDoc.clearOverlay(this.name, relpath, this)
           this.roomDoc.unmarkDeleted(this.name, relpath, this)
         }, this)
+        this.retainedDeclaredPaths.delete(relpath)
         droppedStale = beforeText !== undefined || beforeDeleted
       } else if (!this.isShared(relpath)) {
         this.withhold(relpath, true)
@@ -724,6 +742,7 @@ class Daemon implements Roomd {
         if (this.skips.size.has(relpath)) await oversizedChanged()
         this.roomDoc.clearOverlay(this.name, relpath, this)
         this.roomDoc.unmarkDeleted(this.name, relpath, this)
+        this.retainedDeclaredPaths.delete(relpath)
         return
       }
       const base = await gitShow(this.dir, this.base, relpath)
@@ -735,6 +754,7 @@ class Daemon implements Roomd {
         if (!this.skips.budget.has(relpath)) { this.skips.budget.add(relpath); this.log(`skip ${relpath}: sharing it would exceed the ${Math.round(this.totalBudget / 1024)} KB total budget`) }
         this.roomDoc.clearOverlay(this.name, relpath, this)
         this.roomDoc.unmarkDeleted(this.name, relpath, this)
+        this.retainedDeclaredPaths.delete(relpath)
         return
       }
       this.skips.budget.delete(relpath)
@@ -750,6 +770,8 @@ class Daemon implements Roomd {
 
     const afterText = this.roomDoc.text(relpath, this.name)
     const afterDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false
+    if (this.share === 'declared' && (afterText !== undefined || afterDeleted)) this.retainedDeclaredPaths.add(relpath)
+    else if (afterText === undefined && !afterDeleted) this.retainedDeclaredPaths.delete(relpath)
     if (beforeText !== afterText || beforeDeleted !== afterDeleted) {
       this.batch.published(relpath)
       this.bumpLastActive()
@@ -823,12 +845,10 @@ class Daemon implements Roomd {
     const before = new Set(this.skips.ignore)
     this.skips.ignore.clear()
     this.loadRoomIgnore()
-    for (const relpath of this.tracked) {
+    for (const relpath of this.pathsToReconcile(before)) {
       const nowIgnored = this.isIgnoredPath(relpath)
-      if (nowIgnored && this.roomDoc.overlayText(this.name, relpath)) {
-        this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this) }, this)
-        this.log(`cleared ${relpath} overlay (${ROOMIGNORE})`)
-      } else if (!nowIgnored && before.has(relpath)) this.scheduleDisk(relpath, false)
+      if (nowIgnored) this.withdrawIgnored(relpath, ROOMIGNORE)
+      else if (before.has(relpath)) this.scheduleDisk(relpath, false)
     }
   }
 
@@ -845,8 +865,13 @@ class Daemon implements Roomd {
 
   private async onDiskChange(relpath: string, isNew: boolean): Promise<void> {
     if (this.stopped) return
+    if (await gitIgnored(this.dir, relpath)) {
+      this.tracked.delete(relpath)
+      this.withdrawIgnored(relpath, '.gitignore')
+      return
+    }
     if (!this.tracked.has(relpath) && !this.roomDoc.changedPaths(this.name).includes(relpath)) {
-      if (!isNew || !fs.existsSync(this.abs(relpath)) || await gitIgnored(this.dir, relpath)) return
+      if (!isNew || !fs.existsSync(this.abs(relpath))) return
       this.tracked.add(relpath)
     }
     await this.publishDiskState(relpath)
@@ -857,7 +882,7 @@ class Daemon implements Roomd {
     try {
       const next = await gitTracked(this.dir)
       const added = Array.from(next).filter(relpath => !this.tracked.has(relpath))
-      const removed = Array.from(this.tracked).filter(relpath => !next.has(relpath))
+      const removed = Array.from(new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter(relpath => !next.has(relpath))
       this.tracked = next
       for (const relpath of added) {
         if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) this.scheduleDisk(relpath, true)
@@ -865,7 +890,9 @@ class Daemon implements Roomd {
       // Untracked files disappear from ls-files when deleted, so polling must
       // publish their deletion even if the platform watcher misses the unlink.
       for (const relpath of removed) {
-        if (this.roomDoc.overlayText(this.name, relpath) && !fs.existsSync(this.abs(relpath))) {
+        if (fs.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
+          this.withdrawIgnored(relpath, '.gitignore')
+        } else if (this.roomDoc.overlayText(this.name, relpath) && !fs.existsSync(this.abs(relpath))) {
           this.scheduleDisk(relpath, false)
         }
       }

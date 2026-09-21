@@ -235,6 +235,19 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
   })
 
+  it('clears a deletion marker when .roomignore starts matching its path', async () => {
+    const dir = await makeRepo({ 'deleted.py': 'base\n', '.roomignore': '' })
+    const daemon = await start({ room: room(), dir, name: 'Ann' })
+    await fsp.unlink(path.join(dir, 'deleted.py'))
+    await waitFor(() => daemon.roomDoc.deletedFor('Ann').has('deleted.py'))
+
+    await fsp.writeFile(path.join(dir, '.roomignore'), 'deleted.py\n')
+    ;(daemon as unknown as { reloadRoomIgnore(): void }).reloadRoomIgnore()
+
+    expect(daemon.roomDoc.deletedFor('Ann').has('deleted.py')).toBe(false)
+    expect(daemon.roomDoc.changedPaths('Ann')).toEqual([])
+  })
+
   it('a publish already in flight when sharing drops to intent writes nothing', async () => {
     const dir = await makeRepo({ 'a.txt': 'a\n' })
     let gate: (() => void) | null = null
@@ -373,6 +386,31 @@ describe('roomd v2 push-only overlays', () => {
     await waitFor(() => !daemon.roomDoc.changedPaths('Alice').includes('new.py'))
     expect(daemon.roomDoc.text('new.py', 'Alice')).toBeUndefined()
     expect(daemon.roomDoc.deletedFor('Alice').has('new.py')).toBe(false)
+  })
+
+  it('does not republish an existing overlay after git starts ignoring its path', async () => {
+    const dir = await makeRepo({ '.gitignore': '' })
+    const daemon = await start({ room: room(), dir, name: 'Alice', trackedRefreshMs: 60_000 })
+    await fsp.writeFile(path.join(dir, 'secret.txt'), 'first\n')
+    await waitFor(() => daemon.roomDoc.text('secret.txt', 'Alice') === 'first\n')
+
+    await fsp.writeFile(path.join(dir, '.gitignore'), 'secret.txt\n')
+    await fsp.writeFile(path.join(dir, 'secret.txt'), 'second\n')
+    await (daemon as unknown as { onDiskChange(path: string, isNew: boolean): Promise<void> }).onDiskChange('secret.txt', false)
+
+    expect(daemon.roomDoc.text('secret.txt', 'Alice')).toBeUndefined()
+  })
+
+  it('withdraws a published untracked file when a tracked refresh finds it newly git-ignored', async () => {
+    const dir = await makeRepo({ '.gitignore': '' })
+    const daemon = await start({ room: room(), dir, name: 'Alice', trackedRefreshMs: 60_000 })
+    await fsp.writeFile(path.join(dir, 'secret.txt'), 'private\n')
+    await waitFor(() => daemon.roomDoc.text('secret.txt', 'Alice') === 'private\n')
+
+    await fsp.writeFile(path.join(dir, '.gitignore'), 'secret.txt\n')
+    await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
+
+    expect(daemon.roomDoc.text('secret.txt', 'Alice')).toBeUndefined()
   })
 
   it('never changes clone bytes when another person overlay arrives', async () => {
@@ -571,27 +609,49 @@ describe('sharing levels', () => {
     expect(daemon.roomDoc.scope('Quiet')?.area).toBe('x')
   })
 
-  it('declared publishes only paths under the scope in the doc, and follows scope changes', async () => {
-    const dir = await makeRepo({ 'src/a.py': 'a\n', 'docs/b.md': 'b\n' })
+  it('declared publishes only paths that entered the scope and follows scope additions', async () => {
+    const dir = await makeRepo({ 'src/a.py': 'a\n', 'docs/b.md': 'b\n', 'misc/c.txt': 'c\n' })
     await fsp.writeFile(path.join(dir, 'src/a.py'), 'A\n')
     await fsp.writeFile(path.join(dir, 'docs/b.md'), 'B\n')
+    await fsp.writeFile(path.join(dir, 'misc/c.txt'), 'C\n')
     const daemon = await start({ room: room(), dir, name: 'Decl', share: 'declared' })
     // no scope yet: nothing is shared
     expect(daemon.roomDoc.changedPaths('Decl')).toEqual([])
-    expect(daemon.skipped().share).toEqual(['docs/b.md', 'src/a.py'])
+    expect(daemon.skipped().share).toEqual(['docs/b.md', 'misc/c.txt', 'src/a.py'])
     daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'src', summary: 's', paths: ['src/'] })
     await waitFor(() => daemon.roomDoc.changedPaths('Decl').join(',') === 'src/a.py'
-      && daemon.skipped().share.join(',') === 'docs/b.md')
+      && daemon.skipped().share.join(',') === 'docs/b.md,misc/c.txt')
     expect(daemon.roomDoc.changedPaths('Decl')).toEqual(['src/a.py'])
-    expect(daemon.skipped().share).toEqual(['docs/b.md'])
-    // moving the scope withdraws src and publishes docs
+    expect(daemon.skipped().share).toEqual(['docs/b.md', 'misc/c.txt'])
+    // Moving the active scope publishes docs but retains already-published finished output.
     daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'docs', summary: 'd', paths: ['docs'] })
-    await waitFor(() => daemon.roomDoc.changedPaths('Decl').join(',') === 'docs/b.md'
-      && daemon.skipped().share.join(',') === 'src/a.py')
-    expect(daemon.skipped().share).toEqual(['src/a.py'])
-    // explicit scopePaths win over the doc
+    await waitFor(() => daemon.roomDoc.changedPaths('Decl').join(',') === 'docs/b.md,src/a.py'
+      && daemon.skipped().share.join(',') === 'misc/c.txt')
+    expect(daemon.skipped().share).toEqual(['misc/c.txt'])
+    // A real sharing-level change resets retention; explicit paths then win over the doc.
+    await daemon.setShare('intent')
     await daemon.setShare('declared', ['src/'])
     expect(daemon.roomDoc.changedPaths('Decl')).toEqual(['src/a.py'])
+    expect(daemon.skipped().share).toEqual(['docs/b.md', 'misc/c.txt'])
+  })
+
+  it('keeps declared output published after task scope clears until the sharing boundary changes', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n', 'private.py': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'finished\n')
+    await fsp.writeFile(path.join(dir, 'private.py'), 'never shared\n')
+    const daemon = await start({ room: room(), dir, name: 'Decl', share: 'declared' })
+    daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'app', summary: 'finish app', paths: ['app.py'] })
+    await waitFor(() => daemon.roomDoc.text('app.py', 'Decl') === 'finished\n')
+    expect(daemon.roomDoc.text('private.py', 'Decl')).toBeUndefined()
+
+    daemon.roomDoc.clearScope('Decl')
+    await (daemon as unknown as { resharePaths(): Promise<void> }).resharePaths()
+    expect(daemon.roomDoc.text('app.py', 'Decl')).toBe('finished\n')
+    expect(daemon.roomDoc.text('private.py', 'Decl')).toBeUndefined()
+
+    await daemon.setShare('intent')
+    await daemon.setShare('declared')
+    expect(daemon.roomDoc.changedPaths('Decl')).toEqual([])
   })
 
   it('setShare withdraws overlays when the level drops and republishes when it rises', async () => {
