@@ -39,6 +39,60 @@ function setup(status = 'done') {
 }
 
 describe('room_collect', () => {
+  it('applies unstaged changes three-way without moving either HEAD or index', async () => {
+    const text = 'one\ntwo\nthree\nfour\nfive\n'; put(lead, 'file.txt', text); git(lead, 'commit', '-qam', 'lines'); git(worker, 'merge', '--ff-only', git(lead, 'rev-parse', 'HEAD'))
+    const before = git(lead, 'rev-parse', 'HEAD')
+    put(lead, 'file.txt', text.replace('one', 'LEAD')); git(lead, 'add', 'file.txt')
+    const index = git(lead, 'write-tree')
+    put(worker, 'file.txt', text.replace('five', 'WORKER')); put(worker, 'new.txt', 'new'); put(worker, 'artifact.bin', 'ignored')
+    expect(await setup().call({ tag: 'test' })).toContain('applied test (unstaged)')
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe(text.replace('one', 'LEAD').replace('five', 'WORKER'))
+    expect(git(lead, 'write-tree')).toBe(index); expect(git(lead, 'rev-parse', 'HEAD')).toBe(before)
+    expect(git(worker, 'rev-parse', 'HEAD')).toBe(before)
+    expect(fs.existsSync(path.join(lead, 'artifact.bin'))).toBe(false)
+    expect(git(lead, 'status', '--porcelain')).toContain('?? new.txt')
+  })
+  it('applies binary output, executable bits and deletions, excluding linked inputs', async () => {
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, link: ['data'] } as never)
+    put(lead, 'data/input', 'private'); fs.symlinkSync(path.join(lead, 'data'), path.join(worker, 'data'))
+    fs.unlinkSync(path.join(worker, 'file.txt')); fs.writeFileSync(path.join(worker, 'binary'), Buffer.from([0, 255, 128, 1]))
+    put(worker, 'run.sh', '#!/bin/sh\n'); fs.chmodSync(path.join(worker, 'run.sh'), 0o755)
+    expect(await t.call({ tag: 'test' })).toContain('applied test')
+    expect(fs.existsSync(path.join(lead, 'file.txt'))).toBe(false)
+    expect(fs.readFileSync(path.join(lead, 'binary'))).toEqual(Buffer.from([0, 255, 128, 1]))
+    expect(fs.statSync(path.join(lead, 'run.sh')).mode & 0o111).toBe(0o111)
+    expect(fs.readFileSync(path.join(lead, 'data/input'), 'utf8')).toBe('private')
+  })
+  it('retains failed workers even when output applies successfully', async () => {
+    const t = setup('failed'); t.s.room.workers.set('test', { ...t.w, exitCode: 1 } as never)
+    put(worker, 'new.txt', 'new'); expect(await t.call({ tag: 'test' })).toContain('applied test')
+    expect(fs.existsSync(worker)).toBe(true); expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
+  })
+  it('discard preserves dirty work and cleans only clean successful workers', async () => {
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'new.txt', 'new')
+    expect(await t.call({ tag: 'test', discard: true })).toContain('retained ' + worker)
+    expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
+    fs.unlinkSync(path.join(worker, 'new.txt'))
+    expect(await t.call({ tag: 'test', discard: true })).toContain('cleaned up')
+    expect(fs.existsSync(worker)).toBe(false)
+  })
+  it('leaves all files and indexes untouched on a conflict', async () => {
+    put(lead, 'file.txt', 'lead\n'); put(worker, 'file.txt', 'worker\n'); put(worker, 'new.txt', 'new')
+    const before = git(lead, 'write-tree')
+    expect(await setup().call({ tag: 'test' })).toContain('not applied; conflicting files: file.txt')
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('lead\n')
+    expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
+    expect(git(lead, 'write-tree')).toBe(before); expect(git(worker, 'rev-parse', 'HEAD')).toBe(base)
+  })
+  it('cleans successful fully applied workers and their logs', async () => {
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'new.txt', 'new'); put(lead, '.room/workers/test.log', 'log'); put(lead, '.room/workers/test.mcp.log', 'log')
+    expect(await t.call({ tag: 'test' })).toContain('applied test')
+    expect(fs.existsSync(worker)).toBe(false); expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
+    expect(fs.existsSync(path.join(lead, '.room/workers/test.log'))).toBe(false)
+  })
+
   it('waits for a done worker to exit without requiring force', async () => {
     const t = setup()
     let at = 0
@@ -47,9 +101,17 @@ describe('room_collect', () => {
     t.state.ctx = { sleep } as HandlerState['ctx']
     t.state.workerAlive = () => at < 10_000
     put(worker, 'new.txt', 'new')
-    expect(await t.call({ tag: 'test' })).toContain('merged room/test')
+    expect(await t.call({ tag: 'test', commit: true })).toContain('merged room/test')
     expect(sleep).toHaveBeenCalledTimes(40)
     expect(sleep).toHaveBeenCalledWith(250)
+  })
+  it('uses the confirmed exit record after waiting when cleaning up', async () => {
+    const t = setup(); let alive = true
+    t.state.workerAlive = () => alive
+    t.state.ctx = { sleep: async () => { alive = false; t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never) } } as HandlerState['ctx']
+    put(worker, 'new.txt', 'new')
+    expect(await t.call({ tag: 'test' })).toContain('applied test')
+    expect(fs.existsSync(worker)).toBe(false)
   })
   it('bounds the exit wait at 15 seconds and allows an explicit force override', async () => {
     const t = setup()
@@ -57,10 +119,10 @@ describe('room_collect', () => {
     t.state.now = () => at
     t.state.ctx = { sleep: async (ms: number) => { at += ms } } as HandlerState['ctx']
     t.state.workerAlive = () => true
-    expect(await t.call({ tag: 'test' })).toContain('reported done but its process has not exited after 15 s; force=true overrides')
+    expect(await t.call({ tag: 'test', commit: true })).toContain('reported done but its process has not exited after 15 s; force=true overrides')
     expect(at).toBe(15_000)
     expect(git(worker, 'rev-parse', 'HEAD')).toBe(base)
-    expect(await t.call({ tag: 'test', force: true })).toContain('merged room/test')
+    expect(await t.call({ tag: 'test', force: true, commit: true })).toContain('merged room/test')
     expect(at).toBe(15_000)
   })
   it('collects and retires merged work despite an untracked linked input', async () => {
@@ -74,7 +136,7 @@ describe('room_collect', () => {
     const w = { ...t.s.room.workers.get('test')!, link: ['data'] }
     t.s.room.workers.set('test', w)
     expect(git(worker, 'status', '--porcelain', '--untracked-files=all')).toContain('?? data')
-    expect(await t.call({ tag: 'test' })).toContain('merged room/test')
+    expect(await t.call({ tag: 'test', commit: true })).toContain('merged room/test')
     expect(git(worker, 'ls-files', 'data')).toBe('')
     const facts = await workerGitFacts(lead, w)
     expect(facts).toMatchObject({ clean: true, merged: true, ahead: 0, uncommitted: 0 })
@@ -88,9 +150,9 @@ describe('room_collect', () => {
     put(worker, 'file.txt', 'worker\n'); put(worker, 'new.txt', 'new\n'); put(worker, 'artifact.bin', 'ignored')
     const t = setup()
     release.mockImplementation(() => expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n'))
-    const result = await t.call({ tag: 'test' })
+    const result = await t.call({ tag: 'test', commit: true })
     expect(result).toContain('committed '); expect(result).toContain('merged room/test')
-    expect(git(worker, 'log', '-1', '--format=%s')).toBe('room: collect test: finished')
+    expect(git(worker, 'log', '-1', '--format=%s')).toBe('room: collect test')
     expect(git(worker, 'log', '-1', '--format=%an <%ae>')).toBe('Lead <lead@example.test>')
     expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(true)
     expect(fs.existsSync(path.join(lead, 'artifact.bin'))).toBe(false)
@@ -102,7 +164,7 @@ describe('room_collect', () => {
   it('aborts conflicts and retains the worker commit, leaving the lead clean', async () => {
     put(lead, 'file.txt', 'lead\n'); git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'lead')
     put(worker, 'file.txt', 'worker\n')
-    const result = await setup().call({ tag: 'test' })
+    const result = await setup().call({ tag: 'test', commit: true })
     expect(result).toContain('committed '); expect(result).toContain('merge aborted; conflicting files: file.txt')
     expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('lead\n')
     expect(git(lead, 'status', '--porcelain')).toBe('')
@@ -124,9 +186,9 @@ describe('room_collect', () => {
   })
   it('guards running workers and invalid modes', async () => {
     const t = setup('running')
-    expect(await t.call({ tag: 'test' })).toContain('still running')
+    expect(await t.call({ tag: 'test', commit: true })).toContain('still running')
     expect(await t.call({ tag: 'test', mode: 'bad' })).toContain('mode must be')
-    expect(await t.call({ tag: 'test', force: true })).toContain('merged room/test')
+    expect(await t.call({ tag: 'test', force: true, commit: true })).toContain('merged room/test')
   })
   it('rejects traversal, Git metadata, source and destination symlinks even with force', async () => {
     put(worker, 'out/value', 'value'); fs.symlinkSync(root, path.join(worker, 'escape'))
@@ -139,7 +201,7 @@ describe('room_collect', () => {
   })
   it('refuses dirty lead tracked files without committing worker output', async () => {
     put(lead, 'file.txt', 'lead'); put(worker, 'new.txt', 'new')
-    expect(await setup().call({ tag: 'test' })).toContain('commit or stash')
+    expect(await setup().call({ tag: 'test', commit: true })).toContain('commit or stash')
     expect(git(worker, 'rev-parse', 'HEAD')).toBe(base)
   })
 })

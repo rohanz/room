@@ -112,6 +112,20 @@ describe('room_spawn / room_done / room_dismiss', () => {
     return { a, b, leadTools, workerTools, specs, exits, killed }
   }
 
+  it('inherits the caller host and explains worker reporting only once', async () => {
+    vi.stubEnv('ROOM_HOST', 'codex')
+    try {
+      const t = setup()
+      const first = await t.leadTools.call('room_spawn', { tag: 'first', task: 'x' })
+      const second = await t.leadTools.call('room_spawn', { tag: 'second', task: 'y' })
+      expect(t.a.workers.get('first')?.host).toBe('codex')
+      expect(first).toContain('reports through room_done'); expect(second).not.toContain('reports through room_done')
+      expect(first).not.toContain('tip:')
+      expect(t.specs[0].args.join(' ')).toContain('one-line summary')
+      await t.leadTools.shutdown()
+    } finally { vi.unstubAllEnvs() }
+  })
+
   it.each(['plugin:custom@market', ''])('passes ROOM_CLAUDE_CHANNEL through room_spawn (%s)', async channel => {
     vi.stubEnv('ROOM_CLAUDE_CHANNEL', channel)
     vi.stubEnv('ROOM_WORKER_NICE', '0')
@@ -268,8 +282,8 @@ describe('room_spawn / room_done / room_dismiss', () => {
     t.exits[0](1)
     expect(t.a.workers.get('a')).toMatchObject({ status: 'failed', exitCode: 1 })
     await vi.waitFor(() => expect(t.a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && /worker a died .*exit 1/.test(m.text))).toBe(true))
-    const d = await t.leadTools.call('room_dismiss', { tag: 'b' })
-    expect(d).toContain('dismissed b')
+    const d = await t.leadTools.call('room_collect', { discard: true, tag: 'b' })
+    expect(d).toContain('discarded b')
     expect(t.killed).toHaveLength(1)
     expect(t.a.workers.get('b')?.status).toBe('dismissed')
     t.exits[1](0)
@@ -333,8 +347,8 @@ describe('worker safety', () => {
     a.setWorker({ tag: 'ghost', name: 'rohanz+ghost', host: 'claude', task: 'x', dir, branch: 'room/ghost', pid: 1, startedAt: Date.now(), status: 'running', lead: 'rohanz' })
     let ls: Session | null = fakeSession(b, lead)
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir })
-    const out = await tools.call('room_dismiss', { tag: 'ghost' })
-    expect(out).toMatch(/^could not dismiss ghost: pid 1 not signalled.*; status stays running;/)
+    const out = await tools.call('room_collect', { discard: true, tag: 'ghost' })
+    expect(out).toMatch(/^could not discard ghost: pid 1 not signalled/)
     expect(a.workers.get('ghost')?.status).toBe('running') // nothing was signalled, so nothing changed
   })
 
@@ -372,7 +386,7 @@ describe('worker safety', () => {
     expect(a.workers.get('nope')).toMatchObject({ status: 'failed', exitCode: -1 })
     await vi.waitFor(() => expect(a.messages().some(m => m.type === 'note' && /could not start codex: spawn codex ENOENT/.test((m as { text: string }).text))).toBe(true))
     // dismissing it never signals anything
-    expect(await tools.call('room_dismiss', { tag: 'nope' })).toContain('retired worker nope')
+    expect(await tools.call('room_collect', { discard: true, tag: 'nope' })).toContain('discarded nope')
   })
 
   it('room_spawn refuses a dir outside the repo unless allowOutside, and then skips worktree bookkeeping', async () => {
@@ -434,7 +448,7 @@ describe('review fixes: workers', () => {
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
     await workerTools.call('room_done', { summary: 'done but still running' })
     expect(t.a.workers.get('money')!.status).toBe('done')
-    expect(await t.leadTools.call('room_dismiss', { tag: 'money' })).toContain('stopped the done worker money')
+    expect(await t.leadTools.call('room_collect', { discard: true, tag: 'money' })).toContain('discarded money')
     expect(t.killed).toHaveLength(1)
     expect(t.a.workers.get('money')!.status).toBe('done') // the outcome stands; only the process was stopped
     // shutdown with a live process behind a done record signals it as well
@@ -451,7 +465,7 @@ describe('review fixes: workers', () => {
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'first' })
     expect(t.a.workers.get('money')!.gen).toBe(1)
     // dismissed (process signalled) but the exit callback has not fired yet
-    await t.leadTools.call('room_dismiss', { tag: 'money' })
+    await t.leadTools.call('room_collect', { discard: true, tag: 'money' })
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('process is still alive')
     t.exits[0](1)
     await vi.waitFor(() => expect(t.a.workers.has('money')).toBe(false))
@@ -537,7 +551,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     // a second spawn of a reused tag carries the next generation
     t.exits[0](0)
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('still holds its room state')
-    await t.leadTools.call('room_dismiss', { tag: 'money' })
+    await t.leadTools.call('room_collect', { discard: true, tag: 'money' })
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })
     expect(Number(t.specs[1].env.ROOM_GEN)).toBeGreaterThan(1)
   })
@@ -577,7 +591,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const failed = await leadTools.call('room_preview_merge', { people: ['rohanz+money', 'rohanz+tiers'], run: "printf 'Tests: 1 failed, 1 total\\n'; exit 3" })
     expect(failed).toMatch(/Tests: 1 failed, 1 total\ntests: FAILED \(exit 3\)$/)
     // dismissing the team-room worker signals only the team-room process; the local one is untouched
-    await leadTools.call('room_dismiss', { tag: 'money' })
+    await leadTools.call('room_collect', { discard: true, tag: 'money' })
     expect(killed).toEqual(['github.com/rohanz/x/main'])
     expect(local.a.workers.get('money')?.status).toBe('running')
     await leadTools.call('room_leave', { force: true })
@@ -622,8 +636,8 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe })
     expect(await tools.call('room_leave', {})).toContain('still running: money')
     expect(await tools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('done but its process is still alive')
-    const out = await tools.call('room_dismiss', { tag: 'money' })
-    expect(out).toContain('stopped the done worker money')
+    const out = await tools.call('room_collect', { discard: true, tag: 'money' })
+    expect(out).toContain('discarded money')
     expect(a.workers.get('money')?.status).toBe('done') // the outcome stands; only the process was stopped
     await exited
   })
@@ -638,12 +652,12 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
       worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
     })
     await tools.call('room_spawn', { tag: 'money', task: 't' })
-    const refused = await tools.call('room_dismiss', { tag: 'money' })
-    expect(refused).toMatch(/^could not dismiss money: pid 8 not signalled: .*; status stays running;/)
+    const refused = await tools.call('room_collect', { discard: true, tag: 'money' })
+    expect(refused).toMatch(/^could not discard money: pid 8 not signalled:/)
     expect(a.workers.get('money')?.status).toBe('running')
     expect(a.messages().some(m => m.type === 'note' && /could not dismiss worker money/.test((m as { text: string }).text))).toBe(true)
     deliverable = true
-    expect(await tools.call('room_dismiss', { tag: 'money' })).toContain('dismissed money')
+    expect(await tools.call('room_collect', { discard: true, tag: 'money' })).toContain('discarded money')
     expect(a.workers.get('money')?.status).toBe('dismissed')
   })
 })
@@ -770,7 +784,7 @@ describe('retirement integration', () => {
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'archive me' })
     t.a.setOverlay('rohanz+money', 'app.py', 'x = 2\n')
     t.a.updateWorker('money', { status: 'done', summary: 'implemented money', finishedAt: Date.now() })
-    await t.leadTools.call('room_dismiss', { tag: 'money' })
+    await t.leadTools.call('room_collect', { discard: true, tag: 'money' })
     expect(t.a.retiredWorkers()).toEqual([])
     t.exits[0](0)
     await vi.waitFor(() => expect(t.a.workers.has('money')).toBe(false))
@@ -787,7 +801,7 @@ describe('retirement integration', () => {
     await t.leadTools.call('room_preview_merge', {})
     expect(t.a.retiredWorkers()).toEqual([])
     expect(t.a.workers.has('finished')).toBe(true)
-    await t.leadTools.call('room_dismiss', { tag: 'finished' })
+    await t.leadTools.call('room_collect', { discard: true, tag: 'finished' })
     const retired = t.a.retiredWorkers()[0]
     expect(retired).toMatchObject({ tag: 'finished', outcome: 'dismissed' })
     expect(retired.uncommitted).toBeGreaterThan(0)

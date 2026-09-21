@@ -11,7 +11,7 @@
 import type { NoteMsg, Presence, Worker } from '@room/shared'
 import path from 'node:path'
 import type { Session } from './session.js'
-import { pidAlive, shouldRetire, workerGitFacts, workerLogTail, type SpawnedProcess } from './workers.js'
+import { cleanupWorker, pidAlive, shouldRetire, workerGitFacts, workerLogTail, type SpawnedProcess } from './workers.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -160,6 +160,9 @@ export class Rooms {
       if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
       const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
       const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
+      if (facts.clean && w.exitCode === 0) {
+        try { await cleanupWorker(s.dir, w, true) } catch { /* Retain artifacts when cleanup fails. */ }
+      }
       const retiredAt = Date.now()
       s.room.retireParticipant(w.name, {
         name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),

@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { readFileSync } from 'node:fs'
+import { readRoomFile } from '@room/roomd'
 import { execFileSync } from 'node:child_process'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,12 +22,11 @@ function parseArgs(argv: string[]): Record<string, string> {
 
 const args = parseArgs(process.argv.slice(2))
 if (args.help) {
-  console.log('usage: roomagent [--dir <clone>] [--name <Name>] [--room ws://host:1234/<room>] [--server ws://host:1234] [--model <model>] [--turn-timeout-ms <ms>]\n(room defaults to <server>/<origin>/<branch> of the clone, or <dir>/.room.json; name defaults to git config user.name)')
+  console.log('usage: roomagent [--dir <clone>] [--name <Name>] [--room ws://host:1234/<room>] [--server ws://host:1234] [--model <model>] [--turn-timeout-ms <ms>]\n(room defaults to <server>/<origin>/<branch> of the clone, or private Git room metadata; name defaults to git config user.name)')
   process.exit(0)
 }
 const dir = resolve(args.dir ?? process.cwd())
-let cfg: { room?: string; name?: string; dir?: string } = {}
-try { cfg = JSON.parse(readFileSync(resolve(dir, '.room.json'), 'utf8')) } catch { /* optional */ }
+const cfg = readRoomFile(dir) ?? {}
 const workDir = resolve(cfg.dir ?? dir)
 const gitName = () => { try { return execFileSync('git', ['-C', workDir, 'config', 'user.name'], { encoding: 'utf8' }).trim() || undefined } catch { return undefined } }
 const name = args.name ?? cfg.name ?? gitName()

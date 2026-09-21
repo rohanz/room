@@ -127,7 +127,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
-    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-paragraph summary when finished.`,
+    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process (you cannot answer afterwards).`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
@@ -288,4 +288,16 @@ export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string;
   if (Math.abs(info.start - w.startedAt) > 5000) return false
   if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info.command)) return false
   return info.command.includes(w.tag) || info.command.includes(w.dir)
+}
+
+/** Remove only Room worktrees; failed workers and foreign directories remain recoverable. */
+export async function cleanupWorker(leadDir: string, w: Worker, collected = false): Promise<boolean> {
+  if (w.status === 'failed' || w.branch !== 'room/' + w.tag || w.exitCode !== 0) return false
+  const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
+  if (await common(leadDir) !== await common(w.dir) || fs.realpathSync(leadDir) === fs.realpathSync(w.dir)) return false
+  if ((await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) return false
+  await git(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
+  await git(leadDir, ['branch', '-D', w.branch])
+  if (w.exitCode === 0) for (const suffix of ['.log', '.mcp.log']) fs.rmSync(path.join(leadDir, WORKERS_DIR, w.tag + suffix), { force: true })
+  return true
 }

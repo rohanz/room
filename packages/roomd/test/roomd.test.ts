@@ -392,13 +392,14 @@ describe('roomd v2 push-only overlays', () => {
     expect(alice.roomDoc.whoChanged('app.py')).toEqual(['Alice'])
   })
 
-  it('writes .room.json and appends it once to .git/info/exclude', async () => {
+  it('writes private room metadata and excludes Room files once', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n' })
     const roomUrl = room()
     const daemon = await start({ room: roomUrl, dir, name: 'Alice' })
 
-    expect(JSON.parse(read(dir, '.room.json'))).toMatchObject({ name: 'Alice', dir })
+    expect(JSON.parse(read(dir, '.git/room.json'))).toMatchObject({ name: 'Alice', dir })
     expect(read(dir, '.git/info/exclude').split('\n').filter(line => line === '.room.json')).toHaveLength(1)
+    expect(read(dir, '.git/info/exclude').split('\n').filter(line => line === '.room/')).toHaveLength(1)
 
     await daemon.stop()
     await start({ room: roomUrl, dir, name: 'Alice' })

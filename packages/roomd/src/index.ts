@@ -4,6 +4,8 @@
  * Other participants' overlays are coordination context only. They never write
  * into this clone.
  */
+import { readRoomFile, roomFilePath } from './room-file.js'
+export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -482,8 +484,9 @@ class Daemon implements Roomd {
 
   private writeRoomFile(): void {
     try {
+      readRoomFile(this.dir) // Migrate legacy metadata before replacing it.
       fs.writeFileSync(
-        path.join(this.dir, ROOM_FILE),
+        roomFilePath(this.dir),
         JSON.stringify({ room: this.roomUrl, name: this.name, dir: this.dir }, null, 2) + '\n',
       )
     } catch (error) {
@@ -508,9 +511,10 @@ class Daemon implements Roomd {
     try {
       fs.mkdirSync(path.dirname(exclude), { recursive: true })
       const current = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
-      if (current.split(/\r?\n/).includes(ROOM_FILE)) return
+      const missing = [ROOM_FILE, '.room/'].filter(p => !current.split(/\r?\n/).includes(p))
+      if (!missing.length) return
       const separator = current.length > 0 && !current.endsWith('\n') ? '\n' : ''
-      fs.appendFileSync(exclude, `${separator}${ROOM_FILE}\n`)
+      fs.appendFileSync(exclude, `${separator}${missing.join('\n')}\n`)
     } catch (error) {
       this.log(`warn: could not add ${ROOM_FILE} to .git/info/exclude: ${errMsg(error)}`)
     }
