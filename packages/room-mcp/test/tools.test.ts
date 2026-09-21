@@ -193,8 +193,7 @@ describe('session gating', () => {
 
   it('room_create opens the repo then joins; room_join never opens', async () => {
     const t = setup({ joined: false })
-    expect(await t.tools.call('room_create', {})).toContain('room_create needs a server')
-    expect(await t.tools.call('room_create', { where: 'team' })).toContain("opened and joined r as Rohan's agent")
+    expect(await t.tools.call('room_create', {})).toContain("opened and joined r as Rohan's agent")
     expect(t.created).toEqual([true])
     await t.tools.call('room_leave', {})
     await t.tools.call('room_join', {})

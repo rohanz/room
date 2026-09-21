@@ -2,7 +2,7 @@
  * Resolve every Room client setting in one place.
  *
  * Precedence is always: tool/caller argument > environment > remembered clone choice
- * (`<git common dir>/room-choice.json`, for `where` only) > default.
+ * (`<git common dir>/room-choice.json`) > default.
  */
 import os from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -58,12 +58,12 @@ export function resolveShare(raw: unknown, source = 'share'): { level: ShareLeve
   return level ? { level } : { level: 'intent', warning: `${source}='${String(raw)}' is not a level; sharing plans only` }
 }
 
-async function rememberedWhere(dir: string): Promise<string | undefined> {
+async function readRememberedChoice(dir: string): Promise<{ where?: string; share?: ShareLevel }> {
   try {
     const file = path.join(await gitCommonDir(dir), 'room-choice.json')
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown }
-    return value(parsed.where)
-  } catch { return undefined }
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown; share?: unknown }
+    return { where: value(parsed.where), share: parseShare(parsed.share) }
+  } catch { return {} }
 }
 
 export function resolveCredentialsPath(args: ConfigArgs = {}, e: NodeJS.ProcessEnv = process.env): string {
@@ -81,13 +81,15 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   if (url && !['ws:', 'wss:'].includes(url.protocol)) throw new Error('ROOM_URL must use ws:// or wss://')
   const urlServer = url ? `${url.protocol}//${url.host}${url.search}` : undefined
   const envWhere = envServer ?? (!argUrl ? urlServer : undefined)
-  const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(await rememberedWhere(dir)) : undefined
+  const rememberedChoice = await readRememberedChoice(dir)
+  const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(rememberedChoice.where) : undefined
   const where = argWhere ?? (argUrl ? urlServer : undefined) ?? envWhere ?? remembered ?? LOCAL
   const whereRule: ConfigRule = argWhere || argUrl ? 'argument' : envWhere ? 'env' : remembered ? 'remembered' : 'default'
   const whereEnv = whereRule === 'env' ? envServer ? 'ROOM_SERVER' : 'ROOM_URL' : undefined
   const rawKind = value(args.kind) ?? value(e.ROOM_KIND) ?? 'agent'
   const kind = rawKind === 'bot' || rawKind === 'ci' ? rawKind : 'agent'
-  const sharing = resolveShare(args.share ?? e.ROOM_SHARE, args.share !== undefined ? 'share' : 'ROOM_SHARE')
+  const rawShare = args.share ?? e.ROOM_SHARE ?? rememberedChoice.share
+  const sharing = resolveShare(rawShare, args.share !== undefined ? 'share' : e.ROOM_SHARE !== undefined ? 'ROOM_SHARE' : 'remembered share')
   const credentialsPath = resolveCredentialsPath(args, e)
   return {
     // Empty explicitly disables development channels; do not discard it with value().

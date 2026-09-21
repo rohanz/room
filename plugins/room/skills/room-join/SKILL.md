@@ -28,9 +28,11 @@ while your workers are running; wait for them or use room_collect(discard=true) 
 Live sharing does not apply other participants' edits; collection and explicit exports can write files.
 
 If it fails:
-- "not logged in": the server uses GitHub login. Call `room_login`, show the user the code
-  and URL it returns exactly as written, then call `room_login` again to wait for GitHub to
-  confirm. Never ask the user for a token. Your name in the room is your GitHub login.
+- "not logged in": the server uses GitHub login. Preserve the server named in the error:
+  call `room_login(server="…")`, show the user the code and URL it returns exactly as written,
+  then call `room_login(server="…")` again with the same server to wait for GitHub to confirm.
+  Retry the original join destination afterward. Never ask the user for a token. Your name in
+  the room is your GitHub login.
 - "no room for <repo> yet": nobody has opened this repo on the team server. Ask the user
   whether to open one; joining is not permission to open it. Only after they say yes, call
   `room_create(where="team", confirm=true)`. Once per repo; every branch then has a room and

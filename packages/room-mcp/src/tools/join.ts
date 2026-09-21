@@ -1,11 +1,11 @@
 import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
-import { type Claim, type NoteMsg } from '@room/shared'
+import { roomNameParts, type Claim, type NoteMsg } from '@room/shared'
 import { resolve } from 'node:path'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
 import { git } from '@room/roomd/git'
-import { DEFAULT_SERVER, NoRoom, deriveRoomName, normalizeLocalRoomName, resolveServer, type Session } from '../session.js'
+import { DEFAULT_SERVER, NoRoom, NotLoggedIn, deriveRoomName, normalizeLocalRoomName, resolveServer, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { clearChoice, describeWhere, markWarned, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
@@ -30,13 +30,49 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { path: str('output; default .room/ledger/<room>-<timestamp>.md') } } }
 ]
 
+const disclosures = new WeakMap<Session, { pending?: string; prepared?: Promise<void>; delivered?: boolean }>()
+
+function sharingSentence(s: Session): string {
+  const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
+  const parts = roomNameParts(s.roomName)
+  const repo = parts.branch ? s.roomName.slice(0, -(parts.branch.length + 1)) : s.roomName
+  return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? 'intent')} with members of ${repo} on ${server}; use room_share level=intent for plans only or level=declared to limit files to your declared area.`
+}
+
+/** Establish whether this session has a disclosure pending without consuming its one delivery. */
+export async function prepareTeamSharingDisclosure(s: Session): Promise<void> {
+  let state = disclosures.get(s)
+  if (!state) { state = {}; disclosures.set(s, state) }
+  if (state.prepared || state.delivered) return state.prepared
+  state.prepared = (async () => {
+    if (s.local) { state!.delivered = true; return }
+    const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
+    const share = s.daemon.share ?? s.shareRequested ?? 'intent'
+    if (await markWarned(s.dir, s.dir, server, share).catch(() => true)) state!.pending = sharingSentence(s)
+    else state!.delivered = true
+  })()
+  await state.prepared
+}
+
+/** The exact hook-context sentence, or nothing when this boundary needs no disclosure. */
+export function pendingTeamSharingDisclosure(s: Session): string | undefined {
+  return disclosures.get(s)?.pending
+}
+
+/** Mark a hook-delivered sentence so a later Room tool reply cannot repeat it. */
+export function markTeamSharingDisclosureDelivered(s: Session): void {
+  const state = disclosures.get(s) ?? {}
+  delete state.pending
+  state.delivered = true
+  disclosures.set(s, state)
+}
+
 /** One human disclosure per worktree and destination, including automatic and solo joins. */
 export async function teamSharingNote(s: Session): Promise<string | undefined> {
-  if (s.local) return undefined
-  const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
-  if (!await markWarned(s.dir, s.dir, server).catch(() => true)) return undefined
-  const repo = s.roomName.includes('/') ? s.roomName.slice(0, s.roomName.lastIndexOf('/')) : s.roomName
-  return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? 'intent')} with members of ${repo} on ${server}; use room_share level=intent for plans only or level=declared to limit files to your declared area.`
+  await prepareTeamSharingDisclosure(s)
+  const note = pendingTeamSharingDisclosure(s)
+  if (note) markTeamSharingDisclosureDelivered(s)
+  return note
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -74,7 +110,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       setPending(server, { ...p, startedAt: Date.now() })
       return `${p.provider === 'oidc' ? 'Single sign-on' : 'GitHub'} login for ${server}. Tell the user exactly this: ${codeLine(p)}`
     },
-    async room_create(a) { return handlers.room_join({ ...a, create: true }) },
+    async room_create(a) { return handlers.room_join({ ...a, where: a.where ?? a.server ?? 'team', create: true }) },
     async room_join(a) {
       const cur = ctx.getSession()
       const currentReply = async () => {
@@ -82,7 +118,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const note = cur ? await teamSharingNote(cur) : undefined
         return [note, sharing, await scopeHandlers(state).room_state({ link: cur ? state.hasCompany(cur).company : false })].filter(Boolean).join('\n')
       }
-      if (cur && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined) {
+      if (cur && a.create !== true && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined) {
         return currentReply()
       }
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()
@@ -108,10 +144,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const login = cfg.mode === 'device' ? getCredential(server)?.login : undefined
         if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`
       }
-      if (a.create === true && choice.server === LOCAL && choice.rule !== 'argument') {
-        // room_create with nothing chosen: opening a repo needs a server, and that is the team room.
-        return 'room_create needs a server: call room_create with where="team" (the user must ask for it), or set ROOM_SERVER. With nothing configured this clone is in a local room, which needs no opening.'
-      }
       if (cur) {
         await closeWorkersRoom()
         cleanupMine(cur, 'moved to another room')
@@ -129,11 +161,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         confirm: a.confirm === true,
         share: resolved.share,
       }) } catch (e) {
+        if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.`
         if (!(e instanceof NoRoom)) throw e
         const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName.slice(0, e.roomName.lastIndexOf('/'))
         return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`
       }
-      if (choice.rule === 'argument') { try { await writeChoice(dir, choice.where, s.me.name) } catch { /* not a repository? keep going */ } }
+      if (choice.rule === 'argument') { try { await writeChoice(dir, choice.where, s.me.name, s.shareRequested) } catch { /* not a repository? keep going */ } }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
       for (const m of s.room.messages()) seen.add(m.id)
       rooms.add(s, 'primary')
@@ -223,22 +256,31 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 
 export function install(state: HandlerState): void {
   const { ctx, log, doJoin, doLeave, seen, rooms, now, presences, mine, planChanged } = state
+  const blockedBranch = new WeakMap<Session, string>()
   const followBranch = async (): Promise<string> => {
       const s = ctx.getSession()
       if (!s || !s.roomName.includes('/') || s.pinnedRoom) return ''
       let branch = ''
       try { branch = (await git(s.dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { return '' }
       if (!branch || branch === 'HEAD') return ''
-      const current = s.roomName.slice(s.roomName.lastIndexOf('/') + 1)
+      const current = roomNameParts(s.roomName).branch
+      if (!current) return ''
       if (branch === current) return ''
-      const repo = s.roomName.slice(0, s.roomName.lastIndexOf('/'))
+      const running = state.runningWorkers(s)
+      if (running.length) {
+        if (blockedBranch.get(s) === branch) return ''
+        blockedBranch.set(s, branch)
+        return `[room] your clone switched to branch ${branch}, but ${running.length} worker(s) are running and would be left behind; staying in ${s.roomName}. Wait for them or room_collect(discard=true) them before moving.`
+      }
+      const repo = s.roomName.slice(0, -(current.length + 1))
       const target = `${repo}/${branch}`
       log(`branch changed ${current} -> ${branch}; moving room`)
-      cleanupMine(s, `switched branch to ${branch}`)
-      rooms.remove(s)
-      await doLeave(s)
       try {
-        const n = await doJoin({ dir: s.dir, name: s.me.name, room: target, server: s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')) })
+        const n = await doJoin({ dir: s.dir, credentialsPath: ctx.config?.credentialsPath, name: s.me.owner ?? s.me.name, tag: s.me.label, room: target, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')), share: s.shareRequested, token: s.token })
+        delete n.pinnedRoom
+        cleanupMine(s, `switched branch to ${branch}`)
+        rooms.remove(s)
+        await doLeave(s)
         for (const m of n.room.messages()) seen.add(m.id)
         rooms.add(n, 'primary'); cleanupMine(n, 'stale from an earlier session')
         return `[room] your clone switched to branch ${branch}: left ${current}, joined ${target}. Scope and claims were reset; declare a scope before editing.`

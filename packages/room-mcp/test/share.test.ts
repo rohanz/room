@@ -11,6 +11,7 @@ import type { ShareLevel } from '@room/roomd'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
+import { readChoice, writeChoice } from '../src/choice.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = COMMITTED.replace('return 2', 'return 22')
@@ -98,6 +99,13 @@ describe('room_share', () => {
     expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'note', text: 'now sharing only your plans, no file text' })
     expect(t.body(await t.tools.call('room_share', { level: 'full' }))).toBe('changed sharing intent -> sharing: the full text of files you change')
     expect(t.room.changedPaths('Rohan')).toEqual(['app.py'])
+  })
+
+  it('remembers an explicit narrower level for the clone', async () => {
+    await writeChoice(dir, 'team', 'Rohan', 'full')
+    const t = setup()
+    await t.tools.call('room_share', { level: 'intent' })
+    expect(await readChoice(dir)).toMatchObject({ where: 'team', share: 'intent' })
   })
 
   it('narrows unknown levels and warns when declared has no scope yet', async () => {

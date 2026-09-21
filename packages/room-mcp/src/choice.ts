@@ -10,11 +10,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { git } from '@room/roomd/git'
 import { gitCommonDir } from '@room/roomd/local'
+import type { ShareLevel } from '@room/roomd'
 import { DEFAULT_SERVER, LOCAL, normaliseWhere, resolveConfig } from './config.js'
 
 export const CHOICE_FILE = 'room-choice.json'
 
-export interface RoomChoice { where: string; at: number; by?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree/destination keys already told what they share */ warned?: string[] }
+export interface RoomChoice { where: string; at: number; by?: string; share?: ShareLevel; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree/destination keys already told what they share */ warned?: string[]; /** most recently disclosed level for each warning key */ warnedLevels?: Record<string, ShareLevel> }
 
 export type ChoiceRule = 'argument' | 'env' | 'remembered' | 'default'
 
@@ -53,10 +54,22 @@ export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
   } catch { return undefined }
 }
 
-export async function writeChoice(dir: string, where: string, by?: string): Promise<RoomChoice> {
+export async function writeChoice(dir: string, where: string, by?: string, share?: ShareLevel): Promise<RoomChoice> {
   where = where.replace(/\?.*$/, '') // never remember a token; it comes from ROOM_SERVER/ROOM_TOKEN at join time
   const prev = await readChoice(dir)
-  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(prev?.tags ? { tags: prev.tags } : {}), ...(prev?.where === where && prev.warned?.length ? { warned: prev.warned } : {}) }
+  const same = prev?.where === where
+  const rememberedShare = share ?? (same ? prev?.share : undefined)
+  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(rememberedShare ? { share: rememberedShare } : {}), ...(prev?.tags ? { tags: prev.tags } : {}), ...(same && prev.warned?.length ? { warned: prev.warned } : {}), ...(same && prev.warnedLevels ? { warnedLevels: prev.warnedLevels } : {}) }
+  const file = await choiceFile(dir)
+  fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
+  try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }
+  return c
+}
+
+/** Remember a live human sharing choice without changing the clone's destination. */
+export async function rememberShare(dir: string, share: ShareLevel): Promise<RoomChoice> {
+  const prev = await readChoice(dir) ?? { where: LOCAL, at: Date.now() }
+  const c: RoomChoice = { ...prev, share, at: Date.now() }
   const file = await choiceFile(dir)
   fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
   try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }
@@ -75,13 +88,17 @@ export async function rememberTag(dir: string, tag: string): Promise<RoomChoice>
 }
 
 /** Has this worktree been told its uncommitted work is visible to the team? Marks it told and says whether it was new. */
-export async function markWarned(dir: string, worktree: string, destination?: string): Promise<boolean> {
+export async function markWarned(dir: string, worktree: string, destination?: string, share?: ShareLevel): Promise<boolean> {
   const c = await readChoice(dir) ?? { where: LOCAL, at: Date.now() }
   const key = path.resolve(worktree) + (destination ? '#' + destination : '')
   const warned = c.warned ?? []
-  if (warned.includes(key)) return false
-  try { const file = await choiceFile(dir); fs.writeFileSync(file, JSON.stringify({ ...c, warned: [...warned, key].slice(-50) }) + '\n', { mode: 0o600 }); fs.chmodSync(file, 0o600) } catch { /* best effort */ }
-  return true
+  const previous = c.warnedLevels?.[key]
+  const rank = (level: ShareLevel) => level === 'intent' ? 0 : level === 'declared' ? 1 : 2
+  const tell = share === undefined ? !warned.includes(key) : previous ? rank(share) > rank(previous) : !warned.includes(key)
+  if (!tell && share === undefined) return false
+  const next = { ...c, warned: [...warned.filter(k => k !== key), key].slice(-50), ...(share ? { warnedLevels: { ...c.warnedLevels, [key]: share } } : {}) }
+  try { const file = await choiceFile(dir); fs.writeFileSync(file, JSON.stringify(next) + '\n', { mode: 0o600 }); fs.chmodSync(file, 0o600) } catch { /* best effort */ }
+  return tell
 }
 
 export async function clearChoice(dir: string): Promise<boolean> {

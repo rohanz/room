@@ -1,6 +1,7 @@
 import { type NoteMsg } from '@room/shared'
 import { clampShare } from '@room/roomd'
 import { resolveShare, sharingDescription } from '../config.js'
+import { rememberShare } from '../choice.js'
 import type { Session } from '../session.js'
 import { SHARE, RW, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -22,6 +23,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const level = clampShare(asked, s.shareMax)
       s.shareRequested = asked
       await s.daemon.setShare(level) // keep following the declared scope
+      try { await rememberShare(s.dir, asked) } catch { /* not a repository: keep the live choice */ }
       if (level !== before) s.room.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${sharingDescription(level)}`, priority: 'fyi' })
       const out = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`]
       if (level === 'declared' && !s.room.scope(s.me.name)) out.push('no scope declared yet, so nothing is shared until room_scope(area, summary, paths)')

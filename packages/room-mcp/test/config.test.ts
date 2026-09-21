@@ -19,6 +19,14 @@ describe('resolveConfig', () => {
     expect(c).toMatchObject({ server: LOCAL, whereRule: 'argument', share: 'intent', maxWorkers: 2 })
   })
 
+  it('restores a remembered narrower share unless an argument or environment explicitly overrides it', async () => {
+    const dir = repo()
+    await writeChoice(dir, 'team', 'Ada', 'intent')
+    expect(await resolveConfig({ dir, env: {} })).toMatchObject({ server: DEFAULT_SERVER, share: 'intent' })
+    expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'declared' } })).toMatchObject({ share: 'declared' })
+    expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'declared' }, args: { share: 'full' } })).toMatchObject({ share: 'full' })
+  })
+
   it('treats runner URLs as explicit environment destinations', async () => {
     const dir = repo(), url = 'ws://runner/room'
     expect((await resolveConfig({ dir, env: { ROOM_URL: url } })).roomUrl).toBe(url)

@@ -100,3 +100,12 @@ it('remembers disclosure per destination without opting an environment-only clon
   expect((await chooseServer(dir)).server).toBe(LOCAL)
   await clearChoice(dir)
 })
+
+it('remembers the sharing level alongside the clone destination', async () => {
+  await clearChoice(dir)
+  await writeChoice(dir, 'team', 'rohanz', 'intent')
+  expect(await readChoice(dir)).toMatchObject({ where: 'team', share: 'intent' })
+  await writeChoice(dir, 'team', 'rohanz', 'declared')
+  expect(await readChoice(dir)).toMatchObject({ where: 'team', share: 'declared' })
+  await clearChoice(dir)
+})

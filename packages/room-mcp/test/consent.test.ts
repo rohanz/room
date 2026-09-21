@@ -90,6 +90,21 @@ it('discloses a remembered team destination and lets explicit local override ROO
   expect(await t.tools.call('room_join', { where: 'local' })).not.toContain('note for your human')
   expect(t.joiner).toHaveBeenLastCalledWith(expect.objectContaining({ server: 'local' }))
 })
+it('keeps the human\'s narrowed sharing level on restart', async () => {
+  await writeChoice(dir, 'ws://remembered', 'Ada', 'intent')
+  const t = setup()
+  await t.tools.call('room_join', { room: 'repo/main' })
+  expect(t.joiner).toHaveBeenCalledWith(expect.objectContaining({ server: 'ws://remembered', share: 'intent' }))
+})
+it('discloses when explicit configuration widens a previously disclosed narrower boundary', async () => {
+  await writeChoice(dir, 'ws://remembered', 'Ada', 'intent')
+  const first = setup()
+  await first.tools.call('room_join', { room: 'repo/main' })
+  await first.tools.call('room_leave', {})
+  vi.stubEnv('ROOM_SHARE', 'full')
+  const restarted = setup()
+  expect(await restarted.tools.call('room_join', { room: 'repo/main' })).toContain('note for your human: this clone now shares the full text of files you change')
+})
 it.each(['decalred', '', 'ful'])('direct sharing resolution fails closed for %j', raw => {
   expect(requestedShare(raw)).toBe('intent')
 })
