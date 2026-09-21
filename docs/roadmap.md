@@ -189,6 +189,22 @@ saved with a local room's memory.
 - "Run only the files you touch" let intended behaviour changes break suites nobody owned (first
   batch). The preview could suggest tests that mention strings a worker changed.
 
+### From the tree-sitter batch (six Codex workers, 2026-09-21, open)
+
+- **A worker deep in a long turn does not see addressed questions.** One worker ignored three
+  askers for about ten minutes until the lead interrupted it. Questions should reach a busy
+  worker at its next tool call, not at the end of its turn.
+- **Directory claims block other people's own files.** A worker claimed a whole test directory
+  and two others stopped on files that were explicitly theirs. Warn on, or refuse, a directory
+  claim that covers files in another participant's declared scope.
+- **A clean merge preview hid a semantic break.** Two workers shared `graph.ts` by region; the
+  text merged cleanly, Room raised nothing, and one worker's change broke the other's tests.
+  Preview should run typecheck and tests by default and report them next to "merges cleanly".
+- **A collected worker cannot take a fix-up.** Cleanup removes it, so a defect found afterwards
+  goes to the lead. Same root as "a finished worker cannot take new instructions" above.
+- **Noise:** fyi messages about cancelled plans while a claim is being narrowed; the sharing
+  banner prepended to tool output when tools are driven from a script.
+
 ## Less ritual
 
 - **Done in 0.9.0: claim only where someone is near.** Hooks and tools use the same overlap
