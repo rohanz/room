@@ -5,6 +5,11 @@ description: Running editing work through other agents. Use when asked for anoth
 
 1. Split substantial work into independent parts with disjoint files where possible.
    For a few lines, do it yourself. Use built-in subagents for read-only research.
+   A plan with sequential stages still parallelises within each stage: run each stage
+   as a wave of workers. Workers do not share context; each needs its own brief. What
+   Room does between them: shows who is near which file, warns before two edits collide,
+   and when a worker changes a function's signature or removes a definition, tells the
+   workers whose files use it (detected from the diff, no message needed).
 2. Call `room_spawn(tag, task, host?, model?)`. Host defaults to your own host; override
    only when requested. Give each worker a self-contained task, owned files and test command.
    Pass a model only when specified.
