@@ -7,6 +7,9 @@ codex plugin marketplace add rohanz/room && codex plugin add room@room       # C
 claude plugin marketplace add rohanz/room && claude plugin install room@room # Claude Code
 ```
 
+Both commands fetch the plugin from GitHub with your own git access, so a private fork installs
+the same way for anyone who can read it.
+
 Start your agent as usual; by default nothing leaves your machine. Say **“join the room”**
 to work with teammates. **Team rooms are currently per branch: everyone in a trial must work
 on one shared branch.**
@@ -92,7 +95,7 @@ worker's `room/<tag>` branch; `git push --all` can publish that tracked work unt
 the worker is collected or discarded. Non-ignored untracked files are copied into
 the worker worktree, never committed to a branch. Their spawn-time contents live
 only under a private Git ref for merge and recovery; ordinary branch pushes do not
-include them.
+include them (`git push --mirror`, which pushes every ref, would).
 Files over 5 MB or beyond 50 MB total, nested repositories, escaping symlinks and
 linked inputs are not carried; the spawn reply names them. Carried files remain the
 lead's, so a worker coordinates with the lead before editing them. Room reports only

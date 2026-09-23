@@ -240,6 +240,16 @@ fetchable base instead of their local carried commit.
 Python dotted-import narrowing remains weak in carried contract checks. The broader
 orchestration and sharing work above remains open.
 
+### After 0.12.0 (2026-09-23, open)
+
+- **The full test suite occasionally freezes.** Seen twice by the batch lead and once in the final
+  check: one vitest worker sits idle forever. The same suite then passes in about 70 s. Suspects:
+  a child process (relay, preview `git archive | tar`, a worker's vitest) outliving its test.
+  Find it with `--reporter=verbose` the next time it happens, and give CI a global timeout.
+- **Measure on real repos, not only fixtures.** The batch's join benchmark used 5,000 tracked
+  files; the real failing repo had 399 tracked and 13 GB of untracked art. Keep a copy-on-write
+  clone (`cp -Rc`) of one real, messy repo as the standing join and carry benchmark.
+
 ### From the carry-wip batch (four workers, two Codex and two Claude, 2026-09-23, open)
 
 The busy-worker problem did not recur: every question was acknowledged within about a minute.
