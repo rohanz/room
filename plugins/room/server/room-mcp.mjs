@@ -29947,6 +29947,29 @@ var init_engine = __esm({
 });
 
 // packages/room-mcp/src/graph-index.ts
+async function referencesSymbol(path19, text, symbol) {
+  if (!isSourcePath(path19) || text.length > MAX_BYTES2) return false;
+  await ensureLanguages([path19]);
+  const parsed = parseFile(path19, text);
+  if (!parsed) return false;
+  const wanted = bareSymbol(symbol);
+  if (parsed.refs.some((ref) => bareSymbol(ref) === wanted)) return true;
+  const own2 = parsed.defs.filter((definition) => bareSymbol(definition.name) === wanted);
+  if (!own2.length) return false;
+  const lines = text.split("\n");
+  let masked = false;
+  for (const definition of own2) {
+    const escaped = definition.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const namedDeclaration = new RegExp(`(\\b(?:async\\s+)?(?:def|function\\*?|class|interface|type|enum|fn|func)\\s+)${escaped}\\b`);
+    for (let line = definition.from - 1; line < Math.min(definition.to, lines.length); line++) {
+      if (!namedDeclaration.test(lines[line])) continue;
+      lines[line] = lines[line].replace(namedDeclaration, "$1__room_definition__");
+      masked = true;
+      break;
+    }
+  }
+  return masked && (parseFile(path19, lines.join("\n"))?.refs.some((ref) => bareSymbol(ref) === wanted) ?? false);
+}
 function hashOf(text) {
   let h = 2166136261;
   for (let i2 = 0; i2 < text.length; i2++) {
@@ -31127,7 +31150,8 @@ function workerPrompt(lead, tag, task, context) {
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     ...context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : "normal"}; reasoning effort: ${context.effort ?? "host default"}. Stay within this budget and stagger heavy jobs.`,
-      ...context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(", ")}. Do not modify these paths or their contents; write outputs elsewhere.`] : []
+      ...context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(", ")}. Do not modify these paths or their contents; write outputs elsewhere.`] : [],
+      ...context.carriedPaths?.length ? [`Files carried from the lead's uncommitted work belong to the lead; do not edit them unless the task says so: ${context.carriedPaths.slice(0, 20).join(", ")}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ""}.`] : []
     ] : [],
     "",
     `TASK: ${task}`
@@ -31240,9 +31264,10 @@ async function prepareWorktree(repoDir, tag, leadName = "lead") {
       }
     }
     await git(dir, ["add", "-A", "--", ".", ":(exclude).room"]);
-    await git(dir, ["-c", "user.name=Room", "-c", "user.email=room@localhost", "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", `room: carried-in uncommitted work from ${leadName}`]);
+    await git(dir, ["-c", "user.name=Room", "-c", "user.email=room@localhost", "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", carriedSubject(leadName)]);
     const commit = (await git(dir, ["rev-parse", "HEAD"])).trim();
-    return { dir, branch, created: true, base: commit, carried: { count, commit } };
+    const paths = (await git(dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", commit])).split("\0").filter(Boolean).sort();
+    return { dir, branch, created: true, base: commit, carried: { count, commit, paths } };
   } catch {
     try {
       await git(dir, ["reset", "--hard", base]);
@@ -31349,7 +31374,7 @@ async function saveDiscardPatch(leadDir, w) {
     fs11.rmSync(scratch, { recursive: true, force: true });
   }
 }
-var IGNORED_DEPENDENCY_DIRS, WORKERS_DIR, warnedMissingNice, WORKER_EFFORTS, LEAD_ONLY_ENV, defaultSpawner;
+var IGNORED_DEPENDENCY_DIRS, WORKERS_DIR, warnedMissingNice, WORKER_EFFORTS, carriedSubject, LEAD_ONLY_ENV, defaultSpawner;
 var init_workers = __esm({
   "packages/room-mcp/src/workers.ts"() {
     "use strict";
@@ -31359,6 +31384,7 @@ var init_workers = __esm({
     WORKERS_DIR = path11.join(".room", "workers");
     warnedMissingNice = false;
     WORKER_EFFORTS = ["minimal", "low", "medium", "high"];
+    carriedSubject = (leadName) => `room: carried-in uncommitted work from ${leadName}`;
     LEAD_ONLY_ENV = ["ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_GEN", "ROOM_WORKER_ID", "ROOM_WORKER_HOST", "ROOM_WORKER_MODEL", "ROOM_WORKER_EFFORT", "ROOM_LOG_FILE", "ROOM_KIND"];
     defaultSpawner = (spec16) => {
       fs11.mkdirSync(path11.dirname(spec16.logFile), { recursive: true });
@@ -32219,6 +32245,10 @@ var init_conflicts = __esm({
     init_src();
     init_libesm();
     init_merge();
+    init_git();
+    init_engine();
+    init_graph_index();
+    init_workers();
     ROOM = { name: "room", kind: "agent" };
     covers = (c, p, r) => claimsOverlap(c, { path: p, ...r }) && (c.path.endsWith("/") || c.from <= r.from && c.to >= r.to);
     ConflictWatcher = class {
@@ -32240,6 +32270,7 @@ var init_conflicts = __esm({
       mergeHashes = /* @__PURE__ */ new Map();
       observedReported = /* @__PURE__ */ new Set();
       observedChecks = /* @__PURE__ */ new Set();
+      carriedBase = /* @__PURE__ */ new Map();
       integrated = /* @__PURE__ */ new Map();
       integrationReported = /* @__PURE__ */ new Set();
       integrationTimer = null;
@@ -32312,6 +32343,26 @@ var init_conflicts = __esm({
       }
       checkAllObserved() {
         for (const person of this.d.room.graphs.keys()) if (person !== this.d.me.name) this.queueObserved(person);
+        const worker = this.workerRecord();
+        if (worker?.lead && !this.d.room.graphs.has(worker.lead)) this.queueObserved(worker.lead);
+      }
+      workerRecord() {
+        return [...this.d.room.workers.values()].find((worker) => worker.name === this.d.me.name && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID));
+      }
+      async carriedWorkerFor(person) {
+        const worker = this.workerRecord();
+        if (!worker?.base || worker.lead !== person || worker.base === this.d.room.meta.base) return void 0;
+        let carried = this.carriedBase.get(worker.base);
+        if (carried === void 0) {
+          try {
+            const subject = (await git(worker.dir, ["log", "-1", "--format=%s", worker.base])).trim();
+            carried = subject === carriedSubject(person);
+          } catch {
+            carried = false;
+          }
+          this.carriedBase.set(worker.base, carried);
+        }
+        return carried ? worker : void 0;
       }
       queueObserved(person) {
         let work;
@@ -32322,15 +32373,29 @@ var init_conflicts = __esm({
       }
       async checkObserved(person) {
         const snapshot = this.d.room.graphs.get(person);
-        if (!snapshot) return;
+        const carried = await this.carriedWorkerFor(person);
+        if (!snapshot && !carried) return;
         const mine = /* @__PURE__ */ new Set([
           ...this.d.room.changedPaths(this.d.me.name),
           ...this.d.room.openClaims().filter((claim2) => claim2.by === this.d.me.name).map((claim2) => claim2.path)
         ]);
         if (!mine.size) return;
-        for (const change of snapshot.observed ?? []) {
+        const carriedChanges = [];
+        if (carried) for (const path19 of this.d.room.changedPaths(person)) {
+          const before = await this.d.baseText(carried.base, path19);
+          if (before === void 0) continue;
+          const live = await this.d.liveText(path19, person);
+          if (live === void 0) continue;
+          await ensureLanguages([path19]);
+          carriedChanges.push(...observedContractChanges(before, live ?? "", path19, parseFile).map((change) => ({ path: path19, ...change })));
+        }
+        const changes = carried ? carriedChanges : snapshot?.observed ?? [];
+        for (const change of changes) {
           if (change.kind === "add") continue;
-          const uses = snapshot.edges.filter((edge) => edge.source === change.path && mine.has(edge.target) && edge.symbols.some((symbol) => bareSymbol(symbol) === bareSymbol(change.symbol))).map((edge) => edge.target).sort();
+          const uses = carried ? (await Promise.all([...mine].map(async (path19) => {
+            const live = await this.d.liveText(path19, this.d.me.name);
+            return live && await referencesSymbol(path19, live, change.symbol) ? path19 : void 0;
+          }))).filter((path19) => !!path19).sort() : snapshot.edges.filter((edge) => edge.source === change.path && mine.has(edge.target) && edge.symbols.some((symbol) => bareSymbol(symbol) === bareSymbol(change.symbol))).map((edge) => edge.target).sort();
           if (!uses.length) continue;
           const key = `${person}\0${change.path}\0${change.symbol}\0${change.detail}`;
           if (this.observedReported.has(key)) continue;
@@ -45129,7 +45194,7 @@ function handlers8(state) {
           return `error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`;
         }
         const scheduling = workerPriority({ cmd: host, args: [] });
-        const prompt = workerPrompt(s.me.name, tag, task, { threads, memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort, link });
+        const prompt = workerPrompt(s.me.name, tag, task, { threads, memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort, link, carriedPaths: carried?.paths });
         const { cmd, args: args3 } = workerCommand(host, model, prompt, config2.claudeChannel, effort);
         const logFile = path18.join(s.dir, ".room", "workers", `${tag}.log`);
         const priority2 = { cmd: scheduling.cmd, args: [...scheduling.args, ...args3], nice: scheduling.nice };
