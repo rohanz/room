@@ -49,6 +49,34 @@ describe('shouldRetire', () => {
 })
 
 describe('git facts and lead evaluation', () => {
+  it('retains a done worker and its actionable record when ignored output remains', async () => {
+    const { dir } = repo(), r = registry(dir)
+    writeFileSync(join(dir, '.gitignore'), 'artifact.bin\n')
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base }
+    writeFileSync(join(w.dir, 'artifact.bin'), 'worker artifact')
+    r.room.setWorker(w)
+    await r.rooms.retireWorkers()
+    expect(existsSync(join(w.dir, 'artifact.bin'))).toBe(true)
+    expect(r.room.workers.get('w')).toBeDefined()
+    expect(r.room.retiredWorkers()).toEqual([])
+    r.room.updateWorker('w', { status: 'dismissed', dismissedAt: 2 })
+    await r.rooms.retireWorkers()
+    expect(r.room.workers.get('w')).toBeDefined()
+    expect(r.room.retiredWorkers()).toEqual([])
+    r.close()
+  })
+
+  it('retains the record when automatic worktree cleanup cannot safely complete', async () => {
+    const { dir } = repo(), r = registry(dir)
+    const w = { ...worker(dir), branch: 'main' }
+    r.room.setWorker(w)
+    await r.rooms.retireWorkers()
+    expect(r.room.workers.get('w')).toBeDefined()
+    expect(r.room.retiredWorkers()).toEqual([])
+    r.close()
+  })
+
   it('retires a carried worker that made no own changes and removes its worktree', async () => {
     const { dir, git } = repo(), r = registry(dir)
     writeFileSync(join(dir, 'a'), 'lead WIP')
@@ -148,8 +176,9 @@ describe('git facts and lead evaluation', () => {
   })
 
   it('retires only this lead’s exited done workers; failures need dismissal; handles block retirement', async () => {
-    const { dir } = repo(), r = registry(dir)
-    const w = { ...worker(dir), branch: 'main' }
+    const { dir, git } = repo(), r = registry(dir), work = join(dir, 'work')
+    git('worktree', 'add', '-qb', 'room/w', work)
+    const w = worker(work)
     r.room.setWorker(w)
     r.room.setOverlay(w.name, 'a', 'published')
     const proc = { pid: 1, onExit() {}, kill: () => true }

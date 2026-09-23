@@ -5,8 +5,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import { describeClaim, withLineNumbers, type NoteMsg } from '@room/shared'
+import { describeClaim, withLineNumbers, type NoteMsg, type Worker } from '@room/shared'
 import type { Session } from '../session.js'
+import { checkoutText, MissingBaseBlob } from '@room/roomd/baseline'
+import { workerOwnedPaths } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -115,18 +117,30 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const held = withheld(session, person)
         if (held) return held
       }
-      const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true })
+      const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
+      const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : {}) })
       const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out } = result
       if (!paths.length && result.ignoredNotes.length) return ['no mergeable changes', ...result.ignoredNotes].join('\n')
       if (!paths.length) return [`none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
       if (skippedNote) out.push(skippedNote)
       for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
       out.push(`final combined tree: ${merged.size} path(s) applied over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
-      const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       let ranOk = !run
       if (run) {
         if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
-        else { const result = await runInMergedTree(caller, ancestor, merged, run); out.push(result.text); ranOk = result.passed }
+        else {
+          const modeParticipants = (await Promise.all(participants.map(async ({ person, session }) => {
+            const w = session.room.workerOf(person)
+            return w && fs.existsSync(w.dir) ? { dir: w.dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: await unchangedCarriedUntracked(w), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) } : undefined
+          }))).filter((x): x is NonNullable<typeof x> => !!x)
+          const modes = new Map<string, number>()
+          for (const p of merged.keys()) {
+            let leadMode = 0o644
+            try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+            modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
+          }
+          const verdict = await runInMergedTree(caller, ancestor, merged, run, modes); out.push(verdict.text); ranOk = verdict.passed
+        }
       }
       caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run } : {}) }
       // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
@@ -161,7 +175,7 @@ export function linkSharedDirs(cloneDir: string, scratchDir: string): void {
   }
 }
 function mirrorLinks(cloneDir: string, scratchDir: string, src: string, dst: string): void {
-  fs.mkdirSync(dst, { recursive: true })
+  ensureMergedDirectory(scratchDir, path.relative(scratchDir, dst))
   for (const e of fs.readdirSync(src, { withFileTypes: true })) {
     const from = path.join(src, e.name), to = path.join(dst, e.name)
     if (e.isSymbolicLink()) {
@@ -178,6 +192,94 @@ function mirrorLinks(cloneDir: string, scratchDir: string, src: string, dst: str
 }
 
 export interface TestResult { text: string; passed: boolean }
+
+function ensureMergedDirectory(root: string, rel: string): string {
+  const canonicalRoot = fs.realpathSync(root)
+  if (!rel) return canonicalRoot
+  if (path.isAbsolute(rel) || rel.includes('\\') || rel.includes('\0') || rel.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) throw new Error('unsafe merged path: ' + rel)
+  let at = canonicalRoot
+  for (const part of rel.split('/')) {
+    at = path.join(at, part)
+    let stat: fs.Stats | undefined
+    try { stat = fs.lstatSync(at) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+    if (stat?.isSymbolicLink() || (stat && !stat.isDirectory())) throw new Error('unsafe merged ancestor: ' + rel)
+    if (!stat) fs.mkdirSync(at)
+    const real = fs.realpathSync(at)
+    if (real !== canonicalRoot && !real.startsWith(canonicalRoot + path.sep)) throw new Error('merged path escapes scratch tree: ' + rel)
+  }
+  return at
+}
+
+export async function gitTreeModes(dir: string, ref: string): Promise<Map<string, number>> {
+  const entries = (await git(dir, ['ls-tree', '-rz', ref])).split('\0').filter(Boolean)
+  return new Map(entries.map(entry => { const [meta, rel] = entry.split('\t'); return [rel, parseInt(meta.split(' ')[0], 8) & 0o777] }))
+}
+
+export function addCarriedUntrackedModes(modes: Map<string, number>, worker: Worker): Map<string, number> {
+  for (const entry of worker.carriedUntracked ?? []) {
+    const mode = (entry as { mode?: number }).mode
+    if (mode !== undefined) modes.set(entry.path, mode)
+  }
+  return modes
+}
+
+/** Carried untracked bytes unchanged by the worker cannot supply a worker mode change. */
+export async function unchangedCarriedUntracked(w: Worker): Promise<Set<string>> {
+  const unchanged = new Set<string>()
+  const root = fs.realpathSync(w.dir)
+  for (const entry of w.carriedUntracked ?? []) {
+    const rel = entry.path
+    if (path.isAbsolute(rel) || rel.includes('\\') || rel.split('/').some(part => !part || part === '.' || part === '..')) continue
+    const file = path.join(root, rel)
+    try {
+      const real = fs.realpathSync(file), stat = fs.lstatSync(file)
+      if (!real.startsWith(root + path.sep) || !stat.isFile()) continue
+      const baseMode = (entry as { mode?: number }).mode
+      if (baseMode !== undefined && (stat.mode & 0o777) !== baseMode) continue
+      if (await checkoutText(w.dir, entry.sha, rel, 'latin1') === fs.readFileSync(file).toString('latin1')) unchanged.add(rel)
+    } catch (e) { if (!(e instanceof MissingBaseBlob) && (e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+  }
+  return unchanged
+}
+
+/** A mode change belongs to a worker only when it differs from that worker's carried base. */
+export function mergedFileMode(rel: string, initialMode: number, participants: { dir: string; baseModes: ReadonlyMap<string, number>; ownedPaths?: { includes(rel: string): boolean }; unchangedCarried?: ReadonlySet<string>; carriedPaths?: ReadonlySet<string> }[]): number {
+  let mode = initialMode
+  for (const participant of participants) {
+    if (participant.ownedPaths?.includes(rel) || participant.unchangedCarried?.has(rel)) continue
+    const src = path.join(participant.dir, rel)
+    let stat: fs.Stats
+    try {
+      const root = fs.realpathSync(participant.dir), real = fs.realpathSync(src)
+      if (real !== root && !real.startsWith(root + path.sep)) throw new Error('unsafe worker mode path: ' + rel)
+      stat = fs.lstatSync(src)
+    } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; throw e }
+    if (!stat.isFile()) continue
+    const workerMode = stat.mode & 0o777, baseMode = participant.baseModes.get(rel)
+    if (baseMode === undefined && participant.carriedPaths?.has(rel)) continue
+    if (workerMode === baseMode) continue
+    if (mode !== initialMode && mode !== workerMode) throw new Error('conflicting file modes: ' + rel)
+    if (baseMode !== undefined && initialMode !== baseMode && initialMode !== workerMode) throw new Error('conflicting file modes: ' + rel)
+    mode = workerMode
+  }
+  return mode
+}
+
+/** Materialize one merged byte image without following links from an archived ancestor. */
+export function materializeMergedFile(root: string, rel: string, bytes: Buffer | null, mode = 0o644): void {
+  if (!rel || path.isAbsolute(rel) || rel.includes('\\') || rel.includes('\0') || rel.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) throw new Error('unsafe merged path: ' + rel)
+  const canonicalRoot = fs.realpathSync(root)
+  const parts = rel.split('/')
+  const parent = ensureMergedDirectory(canonicalRoot, parts.slice(0, -1).join('/'))
+  const file = path.join(parent, parts.at(-1)!)
+  let stat: fs.Stats | undefined
+  try { stat = fs.lstatSync(file) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+  if (stat?.isSymbolicLink()) fs.unlinkSync(file)
+  else if (stat && !stat.isFile()) throw new Error('merged path is not a regular file: ' + rel)
+  if (bytes === null) { if (stat && !stat.isSymbolicLink()) fs.rmSync(file); return }
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0), mode)
+  try { fs.writeFileSync(fd, bytes); fs.fchmodSync(fd, mode) } finally { fs.closeSync(fd) }
+}
 
 /** Runner summaries plus an authoritative verdict; at most six lines total. */
 export function testVerdict(output: string, code: number | null): TestResult {
@@ -202,17 +304,11 @@ export function testVerdict(output: string, code: number | null): TestResult {
 }
 
 /** Materialise ancestor + merged files in a scratch dir (sharing .venv/node_modules from my clone) and run a command there. */
-async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string): Promise<TestResult> {
+async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map()): Promise<TestResult> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-'))
   try {
     await materializeGitTree(s.dir, ancestor, dir)
-    for (const [rel, text] of merged) {
-      const abs = path.resolve(dir, rel)
-      if (!abs.startsWith(dir)) continue
-      if (text === null) { fs.rmSync(abs, { force: true }); continue }
-      fs.mkdirSync(path.dirname(abs), { recursive: true })
-      fs.writeFileSync(abs, text)
-    }
+    for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)
     linkSharedDirs(s.dir, dir)
     const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))

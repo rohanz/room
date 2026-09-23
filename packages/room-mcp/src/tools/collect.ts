@@ -1,11 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { claimsOverlap, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { cleanupWorker, ignoredWorkerArtifacts, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths, workerOperationKey } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
+import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode, unchangedCarriedUntracked } from './files.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import type { Session } from '../session.js'
@@ -180,15 +179,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const heads = new Map<string, string>()
       heads.set(lead.me.name, (await git(lead.dir, ['rev-parse', 'HEAD'])).trim())
       for (const { w } of selected) heads.set(w.name, (await git(w.dir, ['rev-parse', 'HEAD'])).trim())
-      const run = promisify(execFile)
       // Latin-1 transports bytes losslessly through the text engine, including binary additions.
       const result = await buildCombinedTree({ ...state, baseFor: (_s, person) => heads.get(person)!, shareOf: () => 'full' }, lead,
         selected.map(({ s, w }) => ({ session: s, person: w.name })), {
           diskOnly: true, diskWorkers: new Set(selected.map(({ w }) => w.name)), encoding: 'latin1',
-          baseText: async (dir, base, p) => {
-            try { return (await run('git', ['show', base + ':' + p], { cwd: dir, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 })).stdout.toString('latin1') }
-            catch (e) { if (/does not exist|exists on disk, but not in|path .* not in/i.test(String((e as { stderr?: unknown }).stderr))) return undefined; throw e }
-          },
         })
       const unsupported = result.ignoredNotes.filter(note => !note.includes('gitignored') && !note.includes('linked input'))
       if (unsupported.length) return [...out, 'Nothing written; files need manual collection: ' + unsupported.join('; ') + '. All selected workers kept.'].join('\n')
@@ -197,27 +191,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const changes: { p: string; file: string; before: Buffer | null; after: Buffer | null; mode: number; oldMode: number }[] = []
       // A worker's mode change is judged against its own base, like its text.
       const baseModes = new Map<string, Map<string, number>>()
+      const unchangedCarried = new Map<string, Set<string>>()
       for (const { w } of selected) {
         const base = result.deltaBases.get(w.name)!
-        baseModes.set(w.name, new Map(split(await git(lead.dir, ['ls-tree', '-rz', base])).map(entry => { const [meta, p] = entry.split('\t'); return [p, parseInt(meta.split(' ')[0], 8) & 0o777] })))
+        baseModes.set(w.name, addCarriedUntrackedModes(await gitTreeModes(lead.dir, base), w))
+        unchangedCarried.set(w.name, await unchangedCarriedUntracked(w))
       }
       for (const [p, text] of result.merged) {
         const file = safePath(lead.dir, p)
         const before = fs.existsSync(file) ? fs.readFileSync(file) : null
         if ((before === null ? null : before.toString('latin1')) !== result.initial.get(p)) throw new Error(p + ' changed during collection; nothing written, retry')
         const oldMode = before !== null ? fs.statSync(file).mode & 0o777 : 0o644
-        let mode = oldMode
-        for (const { w } of selected) {
-          if (workerOwnedPaths(w).includes(p)) continue
-          const src = safePath(w.dir, p)
-          if (!fs.existsSync(src)) continue
-          const workerMode = fs.statSync(src).mode & 0o777, baseMode = baseModes.get(w.name)!.get(p)
-          if (workerMode !== baseMode) {
-            if (mode !== oldMode && mode !== workerMode) throw new Error('conflicting file modes: ' + p)
-            if (baseMode !== undefined && oldMode !== baseMode && oldMode !== workerMode) throw new Error('conflicting file modes: ' + p)
-            mode = workerMode
-          }
-        }
+        const mode = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: w.dir, baseModes: baseModes.get(w.name)!, ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) })))
         const after = text === null ? null : Buffer.from(text, 'latin1')
         if ((before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode === oldMode) || (before === null && after === null)) continue
         changes.push({ p, file, before, after, mode, oldMode })
@@ -227,13 +212,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       try {
         for (const change of changes) {
           written.push(change)
-          if (change.after === null) fs.rmSync(change.file, { force: true })
-          else { fs.mkdirSync(path.dirname(change.file), { recursive: true }); fs.writeFileSync(change.file, change.after); fs.chmodSync(change.file, change.mode) }
+          materializeMergedFile(lead.dir, change.p, change.after, change.mode)
         }
       } catch (e) {
         for (const change of written.reverse()) {
-          if (change.before === null) fs.rmSync(change.file, { force: true })
-          else { fs.writeFileSync(change.file, change.before); fs.chmodSync(change.file, change.oldMode) }
+          materializeMergedFile(lead.dir, change.p, change.before, change.oldMode)
         }
         throw e
       }

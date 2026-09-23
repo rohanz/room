@@ -1,6 +1,6 @@
 import { claudeWakeUnavailable } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks } from '../workers.js'
+import { pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree } from '../workers.js'
 import { releaseClaimsOnDone } from './claims.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -24,7 +24,6 @@ export const defs: ToolDef[] = [
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const spawnExplained = new WeakSet<Session>()
-  const wipNoted = new WeakSet<Session>()
   const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state
   const handlers: Record<string, Handler> = {
     async room_done(a) {
@@ -100,7 +99,17 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
       try {
         let dir: string, branch: string, base: string | undefined, created = false, outside = false
-        let carried: PreparedWorktree['carried'], carryFailed = false
+        let carried: PreparedWorktree['carried'], carryFailed = false, carryError: string | undefined
+        let carriedBase: string | undefined, carriedUntracked: PreparedWorktree['carriedUntracked'], skippedCarry: PreparedWorktree['skippedCarry']
+        let prepared: PreparedWorktree | undefined
+        let linkPaths: string[]
+        try { linkPaths = resolveWorkerLinks(lead.dir, a.link) }
+        catch (e) { return `error: could not link inputs: ${e instanceof Error ? e.message : String(e)}` }
+        const abortPrepared = async (message: string): Promise<string> => {
+          if (!prepared?.created) return message
+          try { await cleanupPreparedWorktree(s.dir, prepared); return message }
+          catch (e) { return `${message}; could not remove prepared worktree ${prepared.dir}: ${e instanceof Error ? e.message : String(e)}` }
+        }
         if (typeof a.dir === 'string' && a.dir) {
           dir = path.resolve(a.dir)
           if (!fs.existsSync(dir)) return `error: ${dir} does not exist`
@@ -110,9 +119,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           try { branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { branch = '?' }
         } else {
           try {
-            const prepared: PreparedWorktree = await (ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name))
+            prepared = await (ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, linkPaths, `${s.roomName}|${s.me.name}|${id}`))
             dir = prepared.dir; branch = prepared.branch; base = prepared.base; created = prepared.created
-            carried = prepared.carried; carryFailed = prepared.carryFailed ?? false
+            carried = prepared.carried; carryFailed = prepared.carryFailed ?? false; carryError = prepared.carryError
+            carriedBase = prepared.carriedBase; carriedUntracked = prepared.carriedUntracked; skippedCarry = prepared.skippedCarry
           }
           catch (e) { return `error: could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}` }
         }
@@ -124,7 +134,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
         // Recount after async worktree preparation: another spawn may have completed meanwhile.
         const count = runningWorkers(lead).length
-        if (count >= max) return `error: ${count} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`
+        if (count >= max) return abortPrepared(`error: ${count} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`)
         const cores = Math.max(1, os.availableParallelism?.() ?? os.cpus().length)
         const memBytes = os.totalmem()
         const budget = workerBudget({ cores, memBytes, maxWorkers: max, running: count })
@@ -144,8 +154,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           ROOM_LOG_FILE: path.join(s.dir, '.room', 'workers', `${tag}.mcp.log`),
         }
         let link: string[]
-        try { link = prepareWorkerLinks(lead.dir, dir, a.link) }
-        catch (e) { return `error: could not link inputs: ${e instanceof Error ? e.message : String(e)}` }
+        try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
+        catch (e) { return abortPrepared(`error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
         const scheduling = workerPriority({ cmd: host, args: [] })
         const prompt = workerPrompt(s.me.name, tag, task, { threads, memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort, link, carriedPaths: carried?.paths })
         const { cmd, args } = workerCommand(host, model, prompt, config.claudeChannel, effort)
@@ -153,9 +163,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const priority = { cmd: scheduling.cmd, args: [...scheduling.args, ...args], nice: scheduling.nice }
         let proc: SpawnedProcess
         try { proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args, cwd: dir, env, logFile }) }
-        catch (e) { return `error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}` }
+        catch (e) { return abortPrepared(`error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`) }
         rooms.setHandle(s, id, proc)
-        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(link.length ? { link } : {}), task, dir, branch, ...(base ? { base } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
+        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(link.length ? { link } : {}), task, dir, branch, ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}), ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
         s.room.setWorker(w)
         // Callbacks resolve the record by this spawn's id: a reused tag has a new id, so an older process
         // (or another lead's record under the same tag) is simply not found and touches nothing.
@@ -177,15 +187,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`)
         spawnExplained.add(lead)
-        if (carried && !wipNoted.has(lead)) {
-          wipNoted.add(lead)
-          out.push(`carried your ${carried.count} uncommitted change${carried.count === 1 ? '' : 's'} into its worktree (commit ${carried.commit.slice(0, 10)})`)
-        } else if (created && !outside && (carryFailed || !wipNoted.has(lead)) && !carried) {
+        if (carried || skippedCarry?.length) {
+          const count = carried?.paths?.length ?? carried?.count ?? 0
+          out.push(`carried your ${count} uncommitted change${count === 1 ? '' : 's'} into its worktree${carried ? ` (commit ${carried.commit.slice(0, 10)})` : ''}${skippedCarry?.length ? `; not carried: ${skippedCarry.map(({ path: p, reason }) => `${p} (${reason})`).join(', ')}` : ''}`)
+        } else if (created && !outside) {
+          if (carryFailed && carryError) out.push(`note: carry failed: ${carryError}`)
           const pending = await uncommittedCount(lead.dir).catch(() => 0)
           if (pending) {
-            if (!carryFailed) wipNoted.add(lead)
             out.push(`note: ${pending} uncommitted change${pending === 1 ? '' : 's'} in your clone ${pending === 1 ? 'is' : 'are'} not in this worktree, which starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}. Commit them (locally is enough) first if the task builds on them.`)
-          } else if (carryFailed) out.push(`note: could not carry your uncommitted changes; this worktree starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}.`)
+          } else if (carryFailed) out.push(`note: could not carry your uncommitted changes${carryError ? ` (${carryError})` : ''}; this worktree starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}.`)
         }
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         return out.join('\n')

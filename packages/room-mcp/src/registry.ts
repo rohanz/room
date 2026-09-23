@@ -9,9 +9,10 @@
  * handles of workers this process spawned, keyed by the worker's stable id.
  */
 import type { NoteMsg, Presence, Worker } from '@room/shared'
+import fs from 'node:fs'
 import path from 'node:path'
 import type { Session } from './session.js'
-import { cleanupWorker, pidIsOurWorker, shouldRetire, workerGitFacts, workerLogTail, workerOperationKey, type SpawnedProcess } from './workers.js'
+import { cleanupWorker, ignoredWorkerArtifacts, pidIsOurWorker, shouldRetire, workerGitFacts, workerLogTail, workerOperationKey, type SpawnedProcess } from './workers.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -167,10 +168,17 @@ export class Rooms {
         const outcome = shouldRetire(facts)
         // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
         if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s) || this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
+        // An ignored artifact has no recovery patch. Keep both its worktree and the live record so
+        // the lead can copy it or explicitly discard it, exactly as manual collection does.
+        if (fs.existsSync(w.dir)) {
+          try { if ((await ignoredWorkerArtifacts(w)).length) continue }
+          catch { continue }
+        }
         const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
         const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
         if (facts.clean && w.exitCode === 0) {
-          try { await cleanupWorker(s.dir, w, true) } catch { /* Retain artifacts when cleanup fails. */ }
+          try { if (!await cleanupWorker(s.dir, w, true)) continue }
+          catch { continue }
         }
         const retiredAt = Date.now()
         s.room.retireParticipant(w.name, {

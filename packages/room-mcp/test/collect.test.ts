@@ -4,7 +4,7 @@ import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { handlers } from '../src/tools/collect.js'
-import { handlers as fileHandlers } from '../src/tools/files.js'
+import { handlers as fileHandlers, linkSharedDirs, materializeMergedFile } from '../src/tools/files.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { signalWorker, pidAlive } from '../src/workers.js'
 import { RoomDoc } from '@room/shared'
@@ -304,6 +304,66 @@ describe('room_collect', () => {
     expect(await t.call({})).toContain('Changes from second, test: app.py.')
     expect(fs.readFileSync(path.join(lead, 'app.py'), 'utf8')).toBe('one\nW3\nX2\nfour\nB\nsix\nA\n')
   })
+  it('does not treat unchanged CRLF carried files as worker edits', async () => {
+    commitLines()
+    git(lead, 'config', 'core.autocrlf', 'true')
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    const crlf = (value: string) => value.replace(/\n/g, '\r\n')
+    put(lead, 'app.py', crlf(LINES.replace('two', 'W')))
+    put(worker, 'app.py', crlf(LINES.replace('two', 'W')))
+    git(worker, 'add', 'app.py'); git(worker, 'commit', '-qm', 'room: carried-in uncommitted work from lead')
+    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, base: git(worker, 'rev-parse', 'HEAD') })
+    put(lead, 'app.py', crlf(LINES.replace('two', 'W2')))
+    put(worker, 'new.txt', 'worker output\n')
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('Changes from test: new.txt.')
+    expect(fs.readFileSync(path.join(lead, 'app.py'), 'utf8')).toBe(crlf(LINES.replace('two', 'W2')))
+  })
+  it('does not collect unchanged carried untracked files over later lead edits', async () => {
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(lead, 'notes.txt', 'lead draft\n')
+    put(worker, 'notes.txt', 'lead draft\n')
+    const sha = git(worker, 'hash-object', '-w', 'notes.txt')
+    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, carriedUntracked: [{ path: 'notes.txt', sha }] })
+    put(lead, 'notes.txt', 'lead revised draft\n')
+    put(worker, 'new.txt', 'worker output\n')
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('Changes from test: new.txt.')
+    expect(fs.readFileSync(path.join(lead, 'notes.txt'), 'utf8')).toBe('lead revised draft\n')
+  })
+  it('preserves a later lead mode change on an unchanged carried untracked file', async () => {
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(lead, 'run.sh', '#!/bin/sh\necho lead\n')
+    put(worker, 'run.sh', '#!/bin/sh\necho lead\n')
+    const sha = git(worker, 'hash-object', '-w', 'run.sh')
+    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, carriedUntracked: [{ path: 'run.sh', sha }] })
+    fs.chmodSync(path.join(lead, 'run.sh'), 0o755)
+    put(worker, 'new.txt', 'worker output\n')
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt.')
+    expect(fs.statSync(path.join(lead, 'run.sh')).mode & 0o777).toBe(0o755)
+  })
+  it('merges a changed carried untracked file against the lead copy', async () => {
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(lead, 'notes.txt', LINES)
+    put(worker, 'notes.txt', LINES)
+    const sha = git(worker, 'hash-object', '-w', 'notes.txt')
+    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, carriedUntracked: [{ path: 'notes.txt', sha }] })
+    put(lead, 'notes.txt', LINES.replace('two', 'LEAD'))
+    put(worker, 'notes.txt', LINES.replace('six', 'WORKER'))
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('Changes from test: notes.txt.')
+    expect(fs.readFileSync(path.join(lead, 'notes.txt'), 'utf8')).toBe(LINES.replace('two', 'LEAD').replace('six', 'WORKER'))
+  })
+  it('refuses a changed carried untracked file when its private base blob is missing', async () => {
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(lead, 'notes.txt', 'lead revised\n')
+    put(worker, 'notes.txt', 'worker revised\n')
+    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, carriedUntracked: [{ path: 'notes.txt', sha: 'f'.repeat(40) }] })
+    const result = await t.call({ tag: 'test' })
+    expect(result).toMatch(/Nothing written;.*missing private base blob: notes\.txt/i)
+    expect(fs.readFileSync(path.join(lead, 'notes.txt'), 'utf8')).toBe('lead revised\n')
+    expect(fs.existsSync(worker)).toBe(true)
+  })
   it('keeps the lead\'s later file-mode change to a carried file the worker left alone', async () => {
     put(lead, 'run.sh', '#!/bin/sh\n'); git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'script'); git(worker, 'merge', '-q', '--ff-only', git(lead, 'rev-parse', 'HEAD'))
     const t = setup()
@@ -384,6 +444,59 @@ describe('room_collect', () => {
 })
 
 describe('worker preview', () => {
+  it('does not link dependencies through an archived symlink ancestor', () => {
+    const scratch = path.join(root, 'scratch'), outside = path.join(root, 'outside')
+    fs.mkdirSync(path.join(lead, 'packages', 'pkg', 'node_modules', 'dep'), { recursive: true })
+    fs.mkdirSync(path.join(scratch, 'packages'), { recursive: true })
+    fs.mkdirSync(outside)
+    fs.symlinkSync(outside, path.join(scratch, 'packages', 'pkg'))
+    expect(() => linkSharedDirs(lead, scratch)).toThrow(/unsafe merged ancestor|escapes scratch tree/)
+    expect(fs.existsSync(path.join(outside, 'node_modules'))).toBe(false)
+  })
+
+  it('refuses a symlink ancestor in the extracted scratch tree', () => {
+    const scratch = path.join(root, 'scratch'), outside = path.join(root, 'outside')
+    fs.mkdirSync(scratch); fs.mkdirSync(outside)
+    fs.symlinkSync(outside, path.join(scratch, 'config'))
+    expect(() => materializeMergedFile(scratch, 'config/value.txt', Buffer.from('secret'))).toThrow('unsafe merged ancestor')
+    expect(fs.existsSync(path.join(outside, 'value.txt'))).toBe(false)
+  })
+
+  it('does not write through a symlink restored from the ancestor archive', async () => {
+    const external = path.join(root, 'external.txt')
+    put(root, 'external.txt', 'outside stays intact\n')
+    fs.symlinkSync(external, path.join(lead, 'config.txt'))
+    git(lead, 'add', 'config.txt'); git(lead, 'commit', '-qm', 'symlink ancestor')
+    const head = git(lead, 'rev-parse', 'HEAD')
+    git(worker, 'merge', '-q', '--ff-only', head)
+    fs.unlinkSync(path.join(lead, 'config.txt'))
+    fs.unlinkSync(path.join(worker, 'config.txt'))
+    put(lead, 'config.txt', 'safe lead version\n')
+    put(worker, 'config.txt', 'safe lead version\n')
+    put(worker, 'file.txt', 'worker edit\n')
+    const t = setup()
+    Object.assign(t.state, {
+      rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
+      others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
+      baseFor: () => head, shareOf: () => 'full', liveText: async () => undefined,
+    })
+    await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat config.txt && echo "1 passed"' })
+    expect(fs.readFileSync(external, 'utf8')).toBe('outside stays intact\n')
+  })
+
+  it('runs against the same binary bytes and executable mode that collect applies', async () => {
+    const t = setup()
+    fs.writeFileSync(path.join(worker, 'fixture.bin'), Buffer.from([0, 255, 1]))
+    put(worker, 'run.sh', '#!/bin/sh\necho run\n')
+    fs.chmodSync(path.join(worker, 'run.sh'), 0o755)
+    Object.assign(t.state, {
+      rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
+      others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
+      baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,
+    })
+    const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'test "$(od -An -tu1 fixture.bin | tr -s " " | xargs)" = "0 255 1" && test -x run.sh && echo "1 passed"' })
+    expect(result).toContain('tests: PASSED (exit 0)')
+  })
   it.each([true, false])('skips linked and escaping symlinks from both sides (record=%s)', async recorded => {
     put(lead, 'data/input', 'private input')
     put(worker, '.gitignore', 'artifact.bin\ndata/\n')
