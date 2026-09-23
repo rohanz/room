@@ -234,6 +234,18 @@ worktrees on surviving branches keep their prior behavior.
 If a recorded worker base is unavailable or outside the common history, preview and collection
 fall back to the common ancestor; adjacent-line edits can still conflict.
 
+### From the carry-wip batch (four workers, two Codex and two Claude, 2026-09-23, open)
+
+The busy-worker problem did not recur: every question was acknowledged within about a minute.
+- **Kept worktrees for regenerable build output.** Collect kept three worktrees and listed about 35
+  lines of ignored `dist/` and `*.tsbuildinfo` from the workers' own typechecks as artefacts worth
+  keeping. The ignored-artefact rule should treat common build output like caches, or ask once.
+- **Recovery patches for work that already landed.** Discarding an already-collected worktree still
+  wrote a "recovery patch".
+- **The before-edit hook warning fired at spawn**, before the lead had edited anything.
+- **Broadcast rulings went out as `fyi`**, so the lead had to resend them as `notify`: a note to
+  everyone from a lead should reach them.
+
 ### From the review-fixes batch (eight Codex workers, 2026-09-21, open)
 
 Recurred from the tree-sitter batch: a busy worker left three questions unanswered until the lead
