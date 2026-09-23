@@ -2,7 +2,7 @@
  * Keeps a SymbolGraph current for one room: base commit + everyone's overlays.
  * For each path the indexed text is: my overlay, else another person's overlay, else base.
  */
-import { observedContractChanges, SymbolGraph, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
+import { bareSymbol, observedContractChanges, SymbolGraph, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { parseFile, ensureLanguages } from './parse/engine.js'
 import { specForPath } from './parse/index.js'
@@ -15,6 +15,33 @@ const MAX_EDGES = 4000
 const MAX_OBSERVED = 200
 const MAX_SNAPSHOT_BYTES = 200 * 1024
 const MIN_PUBLISH_MS = 20_000
+
+/** Read references from live worker text, including calls in the definition's own file. */
+export async function referencesSymbol(path: string, text: string, symbol: string): Promise<boolean> {
+  if (!isSourcePath(path) || text.length > MAX_BYTES) return false
+  await ensureLanguages([path])
+  const parsed = parseFile(path, text)
+  if (!parsed) return false
+  const wanted = bareSymbol(symbol)
+  if (parsed.refs.some(ref => bareSymbol(ref) === wanted)) return true
+  // The parser removes local definitions from refs. Mask the declaration name and parse
+  // again so a worker call elsewhere in the same file remains visible.
+  const own = parsed.defs.filter(definition => bareSymbol(definition.name) === wanted)
+  if (!own.length) return false
+  const lines = text.split('\n')
+  let masked = false
+  for (const definition of own) {
+    const escaped = definition.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const namedDeclaration = new RegExp(`(\\b(?:async\\s+)?(?:def|function\\*?|class|interface|type|enum|fn|func)\\s+)${escaped}\\b`)
+    for (let line = definition.from - 1; line < Math.min(definition.to, lines.length); line++) {
+      if (!namedDeclaration.test(lines[line])) continue
+      lines[line] = lines[line].replace(namedDeclaration, '$1__room_definition__')
+      masked = true
+      break
+    }
+  }
+  return masked && (parseFile(path, lines.join('\n'))?.refs.some(ref => bareSymbol(ref) === wanted) ?? false)
+}
 
 export class GraphIndex {
   readonly graph: SymbolGraph

@@ -1,4 +1,4 @@
-import { bareSymbol, claimsOverlap, displayName } from '@room/shared'
+import { bareSymbol, claimsOverlap, displayName, observedContractChanges } from '@room/shared'
 /**
  * Conflicts the agents did not declare. Two watchers on the room doc:
  *  - overlap: my own edits landing inside someone else's open claim (I hold no claim there)
@@ -12,6 +12,10 @@ import { structuredPatch } from 'diff'
 import { createHash } from 'node:crypto'
 import type { Claim, ConflictMsg, MergeConflictMsg, ContractMsg, GraphSnapshot, Identity, NoteMsg, RoomDoc } from '@room/shared'
 import { gitMergeFile } from './merge.js'
+import { git } from '@room/roomd/git'
+import { ensureLanguages, parseFile } from './parse/engine.js'
+import { referencesSymbol } from './graph-index.js'
+import { carriedSubject } from './workers.js'
 
 export const ROOM: Identity = { name: 'room', kind: 'agent' }
 
@@ -89,6 +93,7 @@ export class ConflictWatcher {
   private mergeHashes = new Map<string, string>()
   private observedReported = new Set<string>()
   private observedChecks = new Set<Promise<void>>()
+  private carriedBase = new Map<string, boolean>()
   private integrated = new Map<string, Set<string>>()
   private integrationReported = new Set<string>()
   private integrationTimer: NodeJS.Timeout | null = null
@@ -161,6 +166,27 @@ export class ConflictWatcher {
 
   private checkAllObserved(): void {
     for (const person of this.d.room.graphs.keys()) if (person !== this.d.me.name) this.queueObserved(person)
+    const worker = this.workerRecord()
+    if (worker?.lead && !this.d.room.graphs.has(worker.lead)) this.queueObserved(worker.lead)
+  }
+
+  private workerRecord() {
+    return [...this.d.room.workers.values()].find(worker => worker.name === this.d.me.name &&
+      (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID))
+  }
+
+  private async carriedWorkerFor(person: string) {
+    const worker = this.workerRecord()
+    if (!worker?.base || worker.lead !== person || worker.base === this.d.room.meta.base) return undefined
+    let carried = this.carriedBase.get(worker.base)
+    if (carried === undefined) {
+      try {
+        const subject = (await git(worker.dir, ['log', '-1', '--format=%s', worker.base])).trim()
+        carried = subject === carriedSubject(person)
+      } catch { carried = false }
+      this.carriedBase.set(worker.base, carried)
+    }
+    return carried ? worker : undefined
   }
 
   private queueObserved(person: string): void {
@@ -173,15 +199,29 @@ export class ConflictWatcher {
 
   private async checkObserved(person: string): Promise<void> {
     const snapshot: GraphSnapshot | undefined = this.d.room.graphs.get(person)
-    if (!snapshot) return
+    const carried = await this.carriedWorkerFor(person)
+    if (!snapshot && !carried) return
     const mine = new Set([
       ...this.d.room.changedPaths(this.d.me.name),
       ...this.d.room.openClaims().filter(claim => claim.by === this.d.me.name).map(claim => claim.path),
     ])
     if (!mine.size) return
-    for (const change of snapshot.observed ?? []) {
+    const carriedChanges = [] as NonNullable<GraphSnapshot['observed']>
+    if (carried) for (const path of this.d.room.changedPaths(person)) {
+      const before = await this.d.baseText(carried.base!, path)
+      if (before === undefined) continue
+      const live = await this.d.liveText(path, person)
+      if (live === undefined) continue
+      await ensureLanguages([path])
+      carriedChanges.push(...observedContractChanges(before, live ?? '', path, parseFile).map(change => ({ path, ...change })))
+    }
+    const changes = carried ? carriedChanges : snapshot?.observed ?? []
+    for (const change of changes) {
       if (change.kind === 'add') continue
-      const uses = snapshot.edges.filter(edge => edge.source === change.path && mine.has(edge.target) &&
+      const uses = carried ? (await Promise.all([...mine].map(async path => {
+        const live = await this.d.liveText(path, this.d.me.name)
+        return live && await referencesSymbol(path, live, change.symbol) ? path : undefined
+      }))).filter((path): path is string => !!path).sort() : snapshot!.edges.filter(edge => edge.source === change.path && mine.has(edge.target) &&
         edge.symbols.some(symbol => bareSymbol(symbol) === bareSymbol(change.symbol))).map(edge => edge.target).sort()
       if (!uses.length) continue
       const key = `${person}\0${change.path}\0${change.symbol}\0${change.detail}`
