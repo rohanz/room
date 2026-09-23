@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.0
+
+- The workers skill offers once to hand a batch of three or more workers, or a long batch, to a background lead: “I can hand this to a background lead that stays on it until it's done; you can keep talking to me.” For one or two workers, the session leads itself. A worker that spawns workers is prompted to collect them before its own `room_done`.
+- A `room_send` note addressed to someone ends that agent's `room_wait` and wakes it. The sent line names the recipient (`sender → recipient`).
+- Nested workers can be cleaned up with their lead-worker: discard first saves a recovery patch for each worker, then removes their worktrees, branches, refs and carry records deepest first. Without force, discard names those workers and refuses. Room's own `.room/` bookkeeping inside a worker worktree no longer counts as an uncopied artifact.
+- Workers stopped when their lead's session ends retain that reason across a relay restart. Their partial edits can be taken by `room_collect(tag=<tag>)`, applied or copied, or discarded. A plain `room_collect()` skips them and explains how to recover them.
+- The human's session can collect or discard workers orphaned by a dead lead-worker; while the lead-worker lives, its workers remain its responsibility. A dead grand-worker's tag explains how to free it.
+- A worker spawning workers splits its advisory compute budget among them instead of passing on the whole budget. `room_state` counts a stopped worker's edits from its worktree instead of showing zero. The browser shows a lead-worker once with its workers nested beneath it.
+- The README explains background leads and that Room starts Claude workers with `--dangerously-load-development-channels plugin:room@room` so they can be woken. Team and Enterprise policy may block this flag.
+
 ## 0.12.1
 
 - A Claude Code session without instant wake-ups now says so once, to the human, only when it matters: at the first worker spawn, or when joining or checking a room with someone else present. It says everything still works (messages arrive on the next turn), gives the `claude-room` alias line for zsh or bash, and notes that Team and Enterprise accounts need an Owner to enable channels. It stays silent alone in a local room, with wake-ups on, with `ROOM_CLAUDE_CHANNEL=''`, and for Codex. The lead's "block on room_wait in a loop" instruction now appears once, on the first spawn, instead of on every spawn.
