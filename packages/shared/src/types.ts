@@ -136,6 +136,10 @@ export interface Worker {
   branch: string
   /** Commit the worker branch was created from; absent for reused/legacy worktrees. */
   base?: string
+  /** Internal tracked-WIP commit, when one was made. `base` remains the worker delta base. */
+  carriedBase?: string
+  /** Lead-owned untracked files copied outside branch history; sha is a blob retained by a private Room tree ref. */
+  carriedUntracked?: { path: string; sha: string; mode?: number }[]
   pid: number
   startedAt: number
   status: WorkerStatus

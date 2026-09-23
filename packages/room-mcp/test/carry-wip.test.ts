@@ -13,6 +13,7 @@ import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
+import { prepareWorktree, cleanupWorker, saveDiscardPatch } from '../src/workers.js'
 
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 const CARRIED_SUBJECT = 'room: carried-in uncommitted work from rohanz'
@@ -148,12 +149,54 @@ function expectCarried(dir: string, tag: string, baseSha: string | undefined) {
 const CARRIED_LINE = /carried your (\d+) uncommitted changes? into its worktree \(commit ([0-9a-f]{10})\)/
 
 describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () => {
+  it('removes the private carry ref and owner record after normal worker cleanup', async () => {
+    put(repo, 'shared.txt', lines([2, 'W']))
+    put(repo, 'untracked.txt', 'private WIP\n')
+    const prepared = await prepareWorktree(repo, 'retired', 'rohanz', [], 'room-A/retired')
+    expect(git(repo, 'rev-parse', 'refs/room/carry/retired')).toBe(prepared.base)
+    expect(git(repo, 'ls-tree', '-r', '--name-only', 'refs/room/carry-untracked/retired')).toBe('untracked.txt')
+    const record = path.join(repo, '.git', 'room-carry', 'retired.json')
+    expect(fs.existsSync(record)).toBe(true)
+    const w = { tag: 'retired', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0 } as Parameters<typeof cleanupWorker>[1]
+    expect(await cleanupWorker(repo, w, true)).toBe(true)
+    expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry/retired')).toThrow()
+    expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry-untracked/retired')).toThrow()
+    expect(fs.existsSync(record)).toBe(false)
+  })
+  it('restores the worker worktree and private refs when cleanup fails late', async () => {
+    put(repo, 'shared.txt', lines([2, 'W']))
+    put(repo, 'untracked.txt', 'private WIP\n')
+    const prepared = await prepareWorktree(repo, 'cleanup-fails', 'rohanz')
+    const record = path.join(repo, '.git', 'room-carry', 'cleanup-fails.json')
+    const realRm = fs.promises.rm.bind(fs.promises)
+    let failed = false
+    vi.spyOn(fs.promises, 'rm').mockImplementation((target, options) => {
+      if (!failed && String(target) === record) { failed = true; throw new Error('forced late cleanup failure') }
+      return realRm(target, options)
+    })
+    const w = { tag: 'cleanup-fails', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof cleanupWorker>[1]
+    await expect(cleanupWorker(repo, w, true)).rejects.toThrow(/cleanup/)
+    expect(fs.existsSync(prepared.dir)).toBe(true)
+    expect(git(repo, 'rev-parse', `refs/heads/${prepared.branch}`)).toBeTruthy()
+    expect(git(repo, 'rev-parse', 'refs/room/carry-untracked/cleanup-fails')).toBeTruthy()
+    expect(read(prepared.dir, 'untracked.txt')).toBe('private WIP\n')
+  })
+  it('does not put unchanged copied untracked files in a discard recovery patch', async () => {
+    put(repo, 'notes.txt', 'lead WIP\n')
+    const prepared = await prepareWorktree(repo, 'patch', 'rohanz')
+    put(prepared.dir, 'keep.txt', 'worker edit\n')
+    const w = { tag: 'patch', branch: prepared.branch, dir: prepared.dir, base: prepared.base, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof saveDiscardPatch>[1]
+    const patch = await saveDiscardPatch(repo, w)
+    expect(patch).toBeTruthy()
+    expect(fs.readFileSync(patch!, 'utf8')).toContain('diff --git a/keep.txt b/keep.txt')
+    expect(fs.readFileSync(patch!, 'utf8')).not.toContain('notes.txt')
+  })
   it('tells a worker which carried files belong to the lead', async () => {
     leadWip()
     const t = world()
     await t.spawn('owned')
     const prompt = t.prompts.get('owned')!
-    expect(prompt).toContain('Files carried from the lead\'s uncommitted work belong to the lead; do not edit them unless the task says so: gone.txt, notes.txt, run.sh, shared.txt, staged-new.txt, staged.txt.')
+    expect(prompt).toContain('Files carried from the lead\'s uncommitted work belong to the lead; coordinate with the lead before editing these where your task needs to: gone.txt, notes.txt, run.sh, shared.txt, staged-new.txt, staged.txt.')
     expect(prompt).not.toContain('secret.env')
   })
 
@@ -177,7 +220,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const before = leadState()
     const t = world()
     const { reply, w, dir } = await t.spawn('one')
-    // The worktree has all of the lead's WIP, committed, and is otherwise clean.
+    // Tracked WIP is committed; untracked WIP is copied without entering branch history.
     expect(read(dir, 'shared.txt')).toBe(lines([2, 'W']))
     expect(read(dir, 'staged.txt')).toBe('S2\n')
     expect(read(dir, 'staged-new.txt')).toBe('added\n')
@@ -185,9 +228,10 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(read(dir, 'notes.txt')).toBe('untracked\n')
     expect(fs.statSync(path.join(dir, 'run.sh')).mode & 0o111).toBe(0o111)
     for (const p of ['secret.env', 'build', '.room']) expect(exists(dir, p), p).toBe(false)
-    expect(git(dir, 'status', '--porcelain', '--untracked-files=all')).toBe('')
+    expect(git(dir, 'status', '--porcelain', '--untracked-files=all')).toBe('?? notes.txt\n?? run.sh')
     const sha = expectCarried(dir, 'one', w.base)
-    expect(git(repo, 'ls-tree', '-r', '--name-only', sha).split('\n').sort()).toEqual(['.gitignore', 'keep.txt', 'notes.txt', 'run.sh', 'shared.txt', 'staged-new.txt', 'staged.txt'])
+    expect(git(repo, 'ls-tree', '-r', '--name-only', sha).split('\n').sort()).toEqual(['.gitignore', 'keep.txt', 'shared.txt', 'staged-new.txt', 'staged.txt'])
+    expect(w.carriedUntracked?.map(x => x.path)).toEqual(['notes.txt', 'run.sh'])
     // The reply names the carry, and no longer warns that the WIP is missing.
     const m = CARRIED_LINE.exec(reply)
     expect(m, reply).toBeTruthy()
@@ -226,7 +270,8 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const one = await t.spawn('one')
     put(repo, 'shared.txt', lines([2, 'W2'])); put(repo, 'later.txt', 'later\n')
     const two = await t.spawn('two')
-    // The carried line is said once per lead session; the second worker's own carried commit is what counts.
+    // Each reply names its own snapshot, since the lead may have changed WIP between spawns.
+    expect(two.reply).toMatch(CARRIED_LINE)
     expect(read(two.dir, 'shared.txt')).toBe(lines([2, 'W2'])); expect(read(two.dir, 'later.txt')).toBe('later\n')
     expect(read(one.dir, 'shared.txt')).toBe(lines([2, 'W'])); expect(exists(one.dir, 'later.txt')).toBe(false)
     expectCarried(two.dir, 'two', two.w.base)

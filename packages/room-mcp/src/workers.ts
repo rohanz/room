@@ -153,7 +153,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
       ...(context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(', ')}. Do not modify these paths or their contents; write outputs elsewhere.`] : []),
-      ...(context.carriedPaths?.length ? [`Files carried from the lead's uncommitted work belong to the lead; do not edit them unless the task says so: ${context.carriedPaths.slice(0, 20).join(', ')}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ''}.`] : []),
+      ...(context.carriedPaths?.length ? [`Files carried from the lead's uncommitted work belong to the lead; coordinate with the lead before editing these where your task needs to: ${context.carriedPaths.slice(0, 20).join(', ')}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ''}.`] : []),
     ] : []),
     '',
     `TASK: ${task}`,
@@ -172,8 +172,13 @@ export function workerCommand(host: WorkerHost, model: string | undefined, promp
   }
 }
 
-/** Validate the entire list before making links; neither source nor destination may escape its root. */
-export function prepareWorkerLinks(repoDir: string, workerDir: string, requested?: unknown): string[] {
+const inside = (base: string, target: string): boolean => {
+  const rel = path.relative(base, target)
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)
+}
+
+/** Resolve link paths before creating a worker worktree, so carry can exclude them. */
+export function resolveWorkerLinks(repoDir: string, requested?: unknown): string[] {
   let input = requested
   if (input === undefined) {
     try { input = fs.readFileSync(path.join(repoDir, '.roomlinks'), 'utf8').split(/\r?\n/).map(l => l.replace(/#.*/, '').trim()).filter(Boolean) }
@@ -181,18 +186,30 @@ export function prepareWorkerLinks(repoDir: string, workerDir: string, requested
   }
   if (!Array.isArray(input) || input.some(p => typeof p !== 'string')) throw new Error('link must be an array of repo-relative paths')
   if (!input.length) return []
-  const root = fs.realpathSync(repoDir), destRoot = fs.realpathSync(workerDir)
-  const inside = (base: string, target: string): boolean => {
-    const rel = path.relative(base, target)
-    return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)
-  }
-  const links = (input as string[]).map(raw => {
+  const root = fs.realpathSync(repoDir)
+  const paths = (input as string[]).map(raw => {
     const p = raw.trim(), parts = p.split(/[\\/]/)
     if (!p || path.isAbsolute(p) || parts.some(x => !x || x === '.' || x === '..') || parts[0] === '.git' || parts[0] === '.room') throw new Error(`invalid link path: ${raw}`)
     const source = fs.realpathSync(path.join(root, p))
     if (!inside(root, source)) throw new Error(`link source escapes repo: ${p}`)
     const stat = fs.statSync(source)
     if (!stat.isFile() && !stat.isDirectory()) throw new Error(`link source must be a file or directory: ${p}`)
+    return p
+  })
+  for (const [i, a] of paths.entries()) for (const b of paths.slice(i + 1)) {
+    if (a === b || b.startsWith(a + '/') || a.startsWith(b + '/')) throw new Error(`overlapping link paths: ${a}, ${b}`)
+  }
+  return paths
+}
+
+/** Validate destinations, then install links without modifying any pre-existing worker path. */
+export function prepareWorkerLinks(repoDir: string, workerDir: string, requested?: unknown): string[] {
+  const input = resolveWorkerLinks(repoDir, requested)
+  if (!input.length) return []
+  const root = fs.realpathSync(repoDir), destRoot = fs.realpathSync(workerDir)
+  const links = input.map(p => {
+    const source = fs.realpathSync(path.join(root, p))
+    const stat = fs.statSync(source)
     const target = path.join(destRoot, p)
     for (let at = target; at !== destRoot; at = path.dirname(at)) {
       let entry
@@ -201,9 +218,6 @@ export function prepareWorkerLinks(repoDir: string, workerDir: string, requested
     }
     return { p, source, target, directory: stat.isDirectory() }
   })
-  for (const [i, a] of links.entries()) for (const b of links.slice(i + 1)) {
-    if (a.target === b.target || inside(a.target, b.target) || inside(b.target, a.target)) throw new Error(`overlapping link paths: ${a.p}, ${b.p}`)
-  }
   const made: string[] = []
   try {
     for (const link of links) {
@@ -235,57 +249,171 @@ export interface PreparedWorktree {
   created: boolean
   base?: string
   carried?: { count: number; commit: string; paths: string[] }
+  carriedBase?: string
+  carriedUntracked?: { path: string; sha: string; mode?: number }[]
+  skippedCarry?: { path: string; reason: string }[]
   carryFailed?: boolean
+  carryError?: string
 }
 
 /** Subject of the commit that carries a lead's uncommitted work into a new worker's worktree. */
 export const carriedSubject = (leadName: string) => `room: carried-in uncommitted work from ${leadName}`
 
 /** A worktree for the worker, created from the lead's HEAD on branch room/<tag>; reused if it already exists. */
-export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead'): Promise<PreparedWorktree> {
+const internalGit = (dir: string, args: string[]) => git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', ...args])
+const carryRef = (tag: string) => `refs/room/carry/${tag}`
+const carriedUntrackedRef = (tag: string) => `refs/room/carry-untracked/${tag}`
+const pathExcluded = (rel: string, exclusions: string[]) => exclusions.some(p => rel === p || rel.startsWith(p.replace(/\/$/, '') + '/'))
+function carriedContentHash(dir: string, rel: string, write = false): string {
+  const source = path.join(dir, rel), stat = fs.lstatSync(source)
+  const bytes = stat.isSymbolicLink() ? Buffer.from(fs.readlinkSync(source)) : fs.readFileSync(source)
+  return execFileSync('git', ['hash-object', ...(write ? ['-w'] : []), '--path=' + rel, '--stdin'], { cwd: dir, input: bytes }).toString().trim()
+}
+function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sha: string }[]): string | undefined {
+  if (!paths.length) return undefined
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-index-'))
+  const env = { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }
+  const run = (args: string[]) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: dir, env, encoding: 'utf8' }).trim()
+  try {
+    for (const entry of paths) {
+      const stat = fs.lstatSync(path.join(dir, entry.path))
+      const mode = stat.isSymbolicLink() ? '120000' : (stat.mode & 0o111) ? '100755' : '100644'
+      run(['update-index', '--add', '--cacheinfo', `${mode},${entry.sha},${entry.path}`])
+    }
+    const tree = run(['write-tree'])
+    run(['update-ref', carriedUntrackedRef(tag), tree])
+    return tree
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
+}
+type CarryRecord = Pick<PreparedWorktree, 'base' | 'carriedBase' | 'carried' | 'carriedUntracked' | 'skippedCarry'> & { ownerId?: string }
+async function carryRecordFile(repoDir: string, tag: string): Promise<string> {
+  const common = (await git(repoDir, ['rev-parse', '--git-common-dir'])).trim()
+  return path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json')
+}
+async function readCarryRecord(repoDir: string, tag: string): Promise<CarryRecord | undefined> {
+  try { return JSON.parse(await fs.promises.readFile(await carryRecordFile(repoDir, tag), 'utf8')) as CarryRecord }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
+}
+async function writeCarryRecord(repoDir: string, tag: string, record: CarryRecord): Promise<void> {
+  const file = await carryRecordFile(repoDir, tag)
+  await fs.promises.mkdir(path.dirname(file), { recursive: true })
+  const temp = file + '.' + process.pid + '.tmp'
+  try { await fs.promises.writeFile(temp, JSON.stringify(record), { mode: 0o600 }); await fs.promises.rename(temp, file) }
+  finally { await fs.promises.rm(temp, { force: true }) }
+}
+
+/** Roll back only a newly prepared worktree; do not remove reused worker output. */
+export async function cleanupPreparedWorktree(repoDir: string, prepared: PreparedWorktree): Promise<void> {
+  if (!prepared.created) return
+  await internalGit(repoDir, ['worktree', 'remove', '--force', prepared.dir])
+  await internalGit(repoDir, ['branch', '-D', prepared.branch])
+  try { await internalGit(repoDir, ['update-ref', '-d', carryRef(prepared.branch.slice(5))]) } catch { /* no carry ref */ }
+  try { await internalGit(repoDir, ['update-ref', '-d', carriedUntrackedRef(prepared.branch.slice(5))]) } catch { /* no untracked ref */ }
+  await fs.promises.rm(await carryRecordFile(repoDir, prepared.branch.slice(5)), { force: true })
+}
+
+/** A worktree for the worker, with tracked WIP in its base and untracked bytes outside Git. */
+export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', linkExclusions: string[] = [], ownerId?: string, retry = 0): Promise<PreparedWorktree> {
   const dir = path.join(repoDir, WORKERS_DIR, tag)
   const branch = `room/${tag}`
-  if (fs.existsSync(path.join(dir, '.git'))) return { dir, branch, created: false }
+  const gitDir = (await git(repoDir, ['rev-parse', '--absolute-git-dir'])).trim()
+  if (['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply'].some(p => fs.existsSync(path.join(gitDir, p)))) throw new Error('finish the merge or rebase before spawning workers')
+  try { await git(repoDir, ['symbolic-ref', '--quiet', 'HEAD']) }
+  catch { throw new Error('switch to a branch before spawning workers') }
+  const record = await readCarryRecord(repoDir, tag)
+  if (record?.ownerId && ownerId && record.ownerId !== ownerId) throw new Error(`worktree ${tag} is owned by another room or worker`)
+  if (fs.existsSync(path.join(dir, '.git'))) {
+    if (ownerId && !record?.ownerId) throw new Error(`worktree ${tag} has unknown ownership; choose another tag`)
+    return { dir, branch, created: false, ...record }
+  }
   fs.mkdirSync(path.dirname(dir), { recursive: true })
   // A worker directory may have been deleted without removing its worktree registration.
   // Prune before add so Git does not reject the same path as already registered.
-  await git(repoDir, ['worktree', 'prune'])
+  await internalGit(repoDir, ['worktree', 'prune'])
   let hasBranch = false
   try { await git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); hasBranch = true } catch { /* new branch */ }
-  const base = hasBranch ? undefined : (await git(repoDir, ['rev-parse', 'HEAD'])).trim()
-  await git(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, base!])
-  if (!base) return { dir, branch, created: true }
+  if (hasBranch && ownerId && !record?.ownerId) throw new Error(`branch ${branch} has unknown ownership; choose another tag`)
+  let base: string | undefined
+  if (!hasBranch) {
+    try { base = (await git(repoDir, ['rev-parse', '--verify', 'HEAD'])).trim() }
+    catch { throw new Error('make a first commit before spawning workers') }
+  }
+  await internalGit(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, base!])
+  if (!base) return { dir, branch, created: true, ...record }
   try {
-    const count = await uncommittedCount(repoDir)
-    if (!count) return { dir, branch, created: true, base }
-    const patch = await git(repoDir, ['diff', '--binary', 'HEAD', '--', '.', ':(exclude).room'])
-    if (patch) execFileSync('git', ['apply', '--index', '--binary'], { cwd: dir, input: patch, maxBuffer: 64 * 1024 * 1024 })
+    const exclusions = [...linkExclusions]
+    if (!exclusions.length) {
+      try { exclusions.push(...fs.readFileSync(path.join(repoDir, '.roomlinks'), 'utf8').split(/\r?\n/).map(l => l.replace(/#.*/, '').trim()).filter(Boolean)) }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+    }
+    const excluded = ['.room', ...exclusions].map(p => `:(exclude,literal)${p.replace(/\/$/, '')}`)
+    const patch = await internalGit(repoDir, ['diff', '--binary', '--full-index', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', base, '--', '.', ...excluded])
+    if (patch) execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', 'apply', '--index', '--binary'], { cwd: dir, input: patch, maxBuffer: 64 * 1024 * 1024 })
     const untracked = (await git(repoDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ':(exclude).room'])).split('\0').filter(Boolean)
+    const carriedUntracked: { path: string; sha: string; mode?: number }[] = []
+    const skippedCarry: { path: string; reason: string }[] = []
+    let totalBytes = 0
     for (const rel of untracked) {
+      if (pathExcluded(rel, exclusions)) { skippedCarry.push({ path: rel, reason: 'linked input' }); continue }
       const source = path.join(repoDir, rel), target = path.join(dir, rel)
       const stat = fs.lstatSync(source)
+      if (stat.isDirectory()) { skippedCarry.push({ path: rel, reason: 'nested repository or directory' }); continue }
+      if (!stat.isFile() && !stat.isSymbolicLink()) { skippedCarry.push({ path: rel, reason: 'special file' }); continue }
+      let resolved: string
+      try { resolved = fs.realpathSync(source) }
+      catch { skippedCarry.push({ path: rel, reason: 'unresolvable path' }); continue }
+      if (!inside(fs.realpathSync(repoDir), resolved)) { skippedCarry.push({ path: rel, reason: 'path leaves repository' }); continue }
+      if (stat.isSymbolicLink()) {
+        const link = fs.readlinkSync(source)
+        if (path.isAbsolute(link)) { skippedCarry.push({ path: rel, reason: 'absolute link' }); continue }
+      }
+      if (stat.isFile() && (stat.size > 5 * 1024 * 1024 || totalBytes + stat.size > 50 * 1024 * 1024)) { skippedCarry.push({ path: rel, reason: 'size budget' }); continue }
       fs.mkdirSync(path.dirname(target), { recursive: true })
       if (stat.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(source), target)
       else {
-        fs.copyFileSync(source, target)
+        await fs.promises.copyFile(source, target)
         fs.chmodSync(target, stat.mode)
+        totalBytes += stat.size
       }
+      const sha = carriedContentHash(dir, rel, true)
+      carriedUntracked.push({ path: rel, sha, mode: stat.mode & 0o777 })
     }
-    await git(dir, ['add', '-A', '--', '.', ':(exclude).room'])
-    await git(dir, ['-c', 'user.name=Room', '-c', 'user.email=room@localhost', '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', carriedSubject(leadName)])
+    const snapshotStable = async () => {
+      const latestPatch = await internalGit(repoDir, ['diff', '--binary', '--full-index', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', base, '--', '.', ...excluded])
+      const latestUntracked = (await git(repoDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ':(exclude).room'])).split('\0').filter(Boolean)
+      const copiedStable = carriedUntracked.every(({ path: rel, sha }) => {
+        try { return carriedContentHash(repoDir, rel) === sha } catch { return false }
+      })
+      return (await git(repoDir, ['rev-parse', 'HEAD'])).trim() === base && latestPatch === patch && latestUntracked.join('\0') === untracked.join('\0') && copiedStable
+    }
+    if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
+    const staged = (await internalGit(dir, ['diff', '--cached', '--name-only', '-z'])).split('\0').filter(Boolean)
+    if (staged.length) await git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Room', '-c', 'user.email=room@localhost', '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', carriedSubject(leadName)])
     const commit = (await git(dir, ['rev-parse', 'HEAD'])).trim()
-    const paths = (await git(dir, ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', commit])).split('\0').filter(Boolean).sort()
-    return { dir, branch, created: true, base: commit, carried: { count, commit, paths } }
-  } catch {
-    try {
-      await git(dir, ['reset', '--hard', base])
-      await git(dir, ['clean', '-fdx'])
-    } catch {
-      await git(repoDir, ['worktree', 'remove', '--force', dir])
-      await git(repoDir, ['branch', '-D', branch])
-      await git(repoDir, ['worktree', 'add', '-q', '-b', branch, dir, base])
+    const paths = [...new Set([...staged, ...carriedUntracked.map(x => x.path)])].sort()
+    if (paths.length) await internalGit(repoDir, ['update-ref', carryRef(tag), commit])
+    retainUntrackedTree(repoDir, tag, carriedUntracked)
+    if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
+    const result: PreparedWorktree = { dir, branch, created: true, base: commit, carriedBase: staged.length ? commit : undefined, carried: paths.length ? { count: paths.length, commit, paths } : undefined, carriedUntracked, skippedCarry }
+    await writeCarryRecord(repoDir, tag, { base: result.base, carriedBase: result.carriedBase, carried: result.carried, carriedUntracked, skippedCarry, ownerId })
+    return result
+  } catch (e) {
+    if ((e as Error).message === 'lead changed during carry; retrying snapshot') {
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true })
+      if (retry >= 2) throw new Error('lead changed repeatedly during carry; try spawning again when HEAD is stable')
+      return prepareWorktree(repoDir, tag, leadName, linkExclusions, ownerId, retry + 1)
     }
-    return { dir, branch, created: true, base, carryFailed: true }
+    try {
+      await internalGit(dir, ['reset', '--hard', base])
+      await internalGit(dir, ['clean', '-fdx'])
+      for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
+        try { await internalGit(repoDir, ['update-ref', '-d', ref]) } catch { /* ref was never written */ }
+      }
+    } catch {
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true })
+      await internalGit(repoDir, ['worktree', 'add', '-q', '-b', branch, dir, base])
+    }
+    return { dir, branch, created: true, base, carryFailed: true, carryError: (e as Error).message }
   }
 }
 
@@ -362,13 +490,47 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
   const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
   if (await common(leadDir) !== await common(w.dir) || fs.realpathSync(leadDir) === fs.realpathSync(w.dir)) return false
   if ((await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) return false
-  await git(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
-  await git(leadDir, ['branch', '-D', w.branch])
-  for (const suffix of ['.log', '.mcp.log']) fs.rmSync(path.join(leadDir, WORKERS_DIR, w.tag + suffix), { force: true })
+  const head = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
+  const recordFile = await carryRecordFile(leadDir, w.tag)
+  const record = await fs.promises.readFile(recordFile).catch(e => { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e })
+  const refs = new Map<string, string>()
+  for (const ref of [carryRef(w.tag), carriedUntrackedRef(w.tag)]) {
+    try { refs.set(ref, (await git(leadDir, ['rev-parse', '--verify', ref])).trim()) } catch { /* absent on older workers */ }
+  }
+  try {
+    await internalGit(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
+    await internalGit(leadDir, ['branch', '-D', w.branch])
+    for (const ref of refs.keys()) await internalGit(leadDir, ['update-ref', '-d', ref])
+    await fs.promises.rm(recordFile, { force: true })
+  } catch (error) {
+    try {
+      let branchExists = true
+      try { await git(leadDir, ['rev-parse', '--verify', `refs/heads/${w.branch}`]) } catch { branchExists = false }
+      if (!branchExists) await internalGit(leadDir, ['branch', w.branch, head])
+      if (!fs.existsSync(path.join(w.dir, '.git'))) await internalGit(leadDir, ['worktree', 'add', '-q', w.dir, w.branch])
+      for (const [ref, sha] of refs) await internalGit(leadDir, ['update-ref', ref, sha])
+      if (record && !fs.existsSync(recordFile)) await fs.promises.writeFile(recordFile, record, { mode: 0o600 })
+      for (const entry of w.carriedUntracked ?? []) {
+        if (!entry.path || path.isAbsolute(entry.path) || entry.path.split('/').some(part => !part || part === '.' || part === '..')) continue
+        const file = path.join(w.dir, entry.path)
+        if (fs.existsSync(file)) continue
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        const mode = (await git(leadDir, ['ls-tree', carriedUntrackedRef(w.tag), '--', entry.path])).split(' ')[0]
+        if (mode === '120000') fs.symlinkSync(execFileSync('git', ['cat-file', 'blob', entry.sha], { cwd: leadDir }).toString(), file)
+        else {
+          const bytes = execFileSync('git', ['cat-file', '--filters', '--path=' + entry.path, entry.sha], { cwd: leadDir })
+          fs.writeFileSync(file, bytes, { mode: entry.mode ?? 0o644 })
+          fs.chmodSync(file, entry.mode ?? 0o644)
+        }
+      }
+    } catch (restore) { throw new Error(`cleanup failed: ${(error as Error).message}; could not restore ${w.dir}: ${(restore as Error).message}`) }
+    throw new Error(`cleanup failed: ${(error as Error).message}; restored ${w.dir}`)
+  }
+  for (const suffix of ['.log', '.mcp.log']) {
+    try { fs.rmSync(path.join(leadDir, WORKERS_DIR, w.tag + suffix), { force: true }) } catch { /* keep the log if the OS locks it */ }
+  }
   for (const dir of [path.join(leadDir, WORKERS_DIR), path.join(leadDir, '.room')]) {
-    try { fs.rmdirSync(dir) } catch (e) {
-      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e
-    }
+    try { fs.rmdirSync(dir) } catch { /* another worker or a locked log keeps the directory */ }
   }
   return true
 }
@@ -388,8 +550,12 @@ export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<stri
     const run = (args: string[]) => execFileSync('git', args, { cwd: w.dir, env: { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }, maxBuffer: 64 * 1024 * 1024 })
     const base = w.base ?? (await git(leadDir, ['merge-base', 'HEAD', w.branch])).trim()
     run(['read-tree', 'HEAD'])
-    run(['add', '-A', '--', '.', ...workerOwnedPaths(w).exclusions])
-    const patch = run(['diff', '--cached', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', base, '--', '.', ...workerOwnedPaths(w).exclusions])
+    const unchanged = (w.carriedUntracked ?? []).filter(({ path: rel, sha }) => {
+      try { return carriedContentHash(w.dir, rel) === sha } catch { return false }
+    }).map(x => x.path)
+    const exclusions = [...workerOwnedPaths(w).exclusions, ...unchanged.map(p => ':(exclude,literal)' + p)]
+    run(['add', '-A', '--', '.', ...exclusions])
+    const patch = run(['diff', '--cached', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', base, '--', '.', ...exclusions])
     if (!patch.length) return undefined
     fs.mkdirSync(dir, { recursive: true })
     const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)

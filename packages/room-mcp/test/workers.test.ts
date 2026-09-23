@@ -12,7 +12,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
+import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
 
 // Disk cleanup and patch restoration are exercised with real worktrees in collect.test.ts.
 // These lifecycle tests use synthetic worker directories and controlled process callbacks.
@@ -146,10 +146,46 @@ describe('worker plumbing', () => {
     expect(existsSync(join(prepared.dir, 'renamed.txt'))).toBe(false)
     expect(readFileSync(join(prepared.dir, 'binary.bin'))).toEqual(Buffer.from([0, 255, 1, 254, 0]))
     expect(lstatSync(join(prepared.dir, 'new.sh')).mode & 0o111).toBeTruthy()
+    expect(prepared.carriedUntracked).toContainEqual({ path: 'new.sh', sha: git('hash-object', 'new.sh'), mode: 0o755 })
+    expect(git('ls-tree', 'refs/room/carry-untracked/carry', 'new.sh')).toContain('100755 blob')
     expect(existsSync(join(prepared.dir, 'ignored.txt'))).toBe(false)
     expect(existsSync(join(prepared.dir, '.room', 'private'))).toBe(false)
-    expect(execFileSync('git', ['-C', prepared.dir, 'status', '--porcelain']).toString()).toBe('')
+    expect(execFileSync('git', ['-C', prepared.dir, 'status', '--porcelain']).toString().trim()).toBe('?? new.sh')
     expect(git('status', '--porcelain')).toBe(leadStatus)
+  })
+
+  it('keeps carried untracked bytes out of every branch and push --all', async () => {
+    const { repo, git } = realRepo()
+    writeFileSync(join(repo, 'modified.txt'), 'tracked WIP\n')
+    writeFileSync(join(repo, 'private.txt'), 'untracked private bytes\n')
+    const prepared = await prepareWorktree(repo, 'private', 'rohanz')
+    expect(readFileSync(join(prepared.dir, 'private.txt'), 'utf8')).toBe('untracked private bytes\n')
+    expect(prepared.carriedUntracked).toEqual([{ path: 'private.txt', sha: git('hash-object', 'private.txt'), mode: lstatSync(join(repo, 'private.txt')).mode & 0o777 }])
+    expect(prepared.carried?.count).toBe(2)
+    expect(git('ls-tree', '-r', '--name-only', 'refs/heads/room/private')).not.toContain('private.txt')
+    const heads = git('for-each-ref', '--format=%(refname)', 'refs/heads').split('\n')
+    expect(heads).toContain('refs/heads/room/private')
+    expect(git('log', '--all', '--source', '--format=%H', '--', 'private.txt')).toBe('')
+    expect(git('rev-list', '--objects', ...heads)).not.toContain(prepared.carriedUntracked![0].sha)
+    expect(git('cat-file', '-p', prepared.carriedUntracked![0].sha)).toBe('untracked private bytes')
+    expect(git('ls-tree', '-r', '--name-only', 'refs/room/carry-untracked/private')).toBe('private.txt')
+    const remote = mkdtempSync(join(tmpdir(), 'room-carry-remote-')); scratchRepos.push(remote)
+    execFileSync('git', ['init', '--bare', '-q', remote])
+    git('push', '--all', remote)
+    expect(() => execFileSync('git', [`--git-dir=${remote}`, 'cat-file', '-e', 'refs/heads/room/private:private.txt'], { stdio: 'ignore' })).toThrow()
+    expect(execFileSync('git', [`--git-dir=${remote}`, 'for-each-ref', '--format=%(refname)']).toString()).not.toContain('refs/room/')
+  })
+
+  it('carries despite hostile diff config and suppresses every commit hook', async () => {
+    const { repo, git } = realRepo()
+    for (const [key, value] of Object.entries({ 'color.ui': 'always', 'diff.noprefix': 'true', 'diff.external': '/bin/echo', 'diff.mnemonicPrefix': 'true', 'core.autocrlf': 'true', 'commit.gpgsign': 'true' })) git('config', key, value)
+    for (const hook of ['prepare-commit-msg', 'post-commit', 'reference-transaction']) {
+      writeFileSync(join(repo, '.git', 'hooks', hook), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    }
+    writeFileSync(join(repo, 'modified.txt'), 'tracked WIP\r\n')
+    const prepared = await prepareWorktree(repo, 'configured', 'rohanz')
+    expect(prepared.carried?.commit).toBe(prepared.base)
+    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('tracked WIP\r\n')
   })
 
   it('does not make a carry commit for a clean lead or a reused worktree', async () => {
@@ -163,6 +199,91 @@ describe('worker plumbing', () => {
     expect(reused.carried).toBeUndefined()
     expect(existsSync(join(first.dir, 'later.txt'))).toBe(false)
     expect(git('rev-parse', 'room/clean')).toBe(head)
+  })
+
+  it('refuses a second room owner for the same worker directory and recovers carry provenance on reuse', async () => {
+    const { repo } = realRepo()
+    writeFileSync(join(repo, 'modified.txt'), 'lead WIP\n')
+    writeFileSync(join(repo, 'untracked.txt'), 'untracked WIP\n')
+    const first = await prepareWorktree(repo, 'occupied', 'rohanz', [], 'room-A/rohanz/occupied')
+    const reused = await prepareWorktree(repo, 'occupied', 'rohanz', [], 'room-A/rohanz/occupied')
+    expect(reused).toMatchObject({ created: false, base: first.base, carriedBase: first.carriedBase, carriedUntracked: first.carriedUntracked })
+    await expect(prepareWorktree(repo, 'occupied', 'rohanz', [], 'room-B/rohanz/occupied')).rejects.toThrow(/another room|owned/)
+  })
+
+  it('skips linked inputs, oversized files, nested repos and escaping symlinks with names', async () => {
+    const { repo, git } = realRepo()
+    mkdirSync(join(repo, 'data')); writeFileSync(join(repo, 'data', 'input.txt'), 'linked')
+    writeFileSync(join(repo, 'large.bin'), Buffer.alloc(5 * 1024 * 1024 + 1))
+    mkdirSync(join(repo, 'vendor', 'nested'), { recursive: true })
+    execFileSync('git', ['init', '-q', join(repo, 'vendor', 'nested')])
+    const externalDir = mkdtempSync(join(tmpdir(), 'room-outside-')); scratchRepos.push(externalDir)
+    const outside = join(externalDir, 'outside.txt'); writeFileSync(outside, 'outside')
+    symlinkSync(outside, join(repo, 'escape.txt'))
+    symlinkSync(join(repo, 'modified.txt'), join(repo, 'absolute-internal.txt'))
+    symlinkSync('missing.txt', join(repo, 'dangling.txt'))
+    writeFileSync(join(repo, 'keep-new.txt'), 'small')
+    const prepared = await prepareWorktree(repo, 'skips', 'rohanz', ['data'])
+    expect(prepared.carried?.paths).toContain('keep-new.txt')
+    expect(prepared.skippedCarry?.map(x => x.path)).toEqual(expect.arrayContaining(['data/input.txt', 'large.bin', 'vendor/nested/', 'escape.txt', 'absolute-internal.txt', 'dangling.txt']))
+    for (const p of ['data', 'large.bin', 'vendor/nested', 'escape.txt', 'absolute-internal.txt', 'dangling.txt']) expect(existsSync(join(prepared.dir, p))).toBe(false)
+    expect(git('status', '--porcelain')).toContain('keep-new.txt')
+  })
+
+  it('stops untracked copying at the 50 MB total budget', async () => {
+    const { repo } = realRepo()
+    for (let i = 0; i < 11; i++) writeFileSync(join(repo, `part-${String(i).padStart(2, '0')}.bin`), Buffer.alloc(5 * 1024 * 1024, i))
+    const prepared = await prepareWorktree(repo, 'budget')
+    expect(prepared.carriedUntracked).toHaveLength(10)
+    expect(prepared.skippedCarry).toContainEqual({ path: 'part-10.bin', reason: 'size budget' })
+    expect(existsSync(join(prepared.dir, 'part-10.bin'))).toBe(false)
+  })
+
+  it('cleans a failed prepared spawn without removing lead work and retries fresh', async () => {
+    const { repo, git } = realRepo()
+    writeFileSync(join(repo, 'modified.txt'), 'first WIP\n')
+    const first = await prepareWorktree(repo, 'retry', 'rohanz', [], 'room-A/retry')
+    await cleanupPreparedWorktree(repo, first)
+    expect(existsSync(first.dir)).toBe(false)
+    expect(git('branch', '--list', first.branch)).toBe('')
+    expect(() => git('rev-parse', '--verify', 'refs/room/carry/retry')).toThrow()
+    writeFileSync(join(repo, 'modified.txt'), 'second WIP\n')
+    const second = await prepareWorktree(repo, 'retry', 'rohanz', [], 'room-A/retry')
+    expect(readFileSync(join(second.dir, 'modified.txt'), 'utf8')).toBe('second WIP\n')
+  })
+
+  it('retries against a new HEAD when the lead commits during the snapshot', async () => {
+    const { repo, git } = realRepo()
+    writeFileSync(join(repo, 'modified.txt'), 'dirty\n')
+    writeFileSync(join(repo, 'new.txt'), 'new\n')
+    const copy = fs.promises.copyFile
+    let advanced = false
+    vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (src, dest, mode) => {
+      if (!advanced && String(src).endsWith('new.txt')) {
+        advanced = true
+        writeFileSync(join(repo, 'staged.txt'), 'committed mid-snapshot\n')
+        git('add', 'staged.txt'); git('commit', '-qm', 'advance')
+      }
+      return copy(src, dest, mode)
+    })
+    const prepared = await prepareWorktree(repo, 'moving', 'rohanz')
+    expect(prepared.carryFailed).toBeUndefined()
+    expect(readFileSync(join(prepared.dir, 'staged.txt'), 'utf8')).toBe('committed mid-snapshot\n')
+    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('dirty\n')
+    expect(git('rev-parse', `${prepared.base}^`)).toBe(git('rev-parse', 'HEAD'))
+  })
+
+  it('explains unborn HEAD and refuses a lead mid-merge', async () => {
+    const unborn = mkdtempSync(join(tmpdir(), 'room-unborn-')); scratchRepos.push(unborn)
+    execFileSync('git', ['init', '-q', '-b', 'main', unborn])
+    await expect(prepareWorktree(unborn, 'empty')).rejects.toThrow('make a first commit')
+    const { repo, git } = realRepo()
+    writeFileSync(join(repo, '.git', 'MERGE_HEAD'), 'f'.repeat(40) + '\n')
+    await expect(prepareWorktree(repo, 'merging')).rejects.toThrow('finish the merge or rebase')
+    expect(existsSync(join(repo, '.room', 'workers', 'merging'))).toBe(false)
+    rmSync(join(repo, '.git', 'MERGE_HEAD'))
+    git('checkout', '--detach', '-q')
+    await expect(prepareWorktree(repo, 'detached')).rejects.toThrow('switch to a branch')
   })
 
   it('commits carry without git identity and despite a failing pre-commit hook', async () => {
@@ -181,8 +302,8 @@ describe('worker plumbing', () => {
     const { repo, git, head } = realRepo()
     writeFileSync(join(repo, 'modified.txt'), 'after\n')
     writeFileSync(join(repo, 'new.txt'), 'new\n')
-    const copy = fs.copyFileSync
-    vi.spyOn(fs, 'copyFileSync').mockImplementation((src, dest, mode) => {
+    const copy = fs.promises.copyFile
+    vi.spyOn(fs.promises, 'copyFile').mockImplementation((src, dest, mode) => {
       if (String(src).endsWith('new.txt')) throw new Error('forced copy failure')
       return copy(src, dest, mode)
     })
@@ -244,7 +365,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     } finally { vi.unstubAllEnvs() }
   })
 
-  it('names the carried commit once per lead session', async () => {
+  it('names each worker\'s carried files in its spawn reply', async () => {
     const t = setup(prepareWorktree)
     writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
     try {
@@ -252,8 +373,9 @@ describe('room_spawn / room_done / room_collect discard', () => {
       expect(first).toMatch(/carried your 1 uncommitted change into its worktree \(commit [0-9a-f]{10}\)/)
       expect(first).not.toContain('starts from HEAD')
       expect(t.a.workers.get('wip1')?.base).toBe(execFileSync('git', ['-C', join(dir, '.room', 'workers', 'wip1'), 'rev-parse', 'HEAD']).toString().trim())
-      expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).not.toMatch(/carried your/)
-      expect(t.a.workers.get('wip2')?.base).not.toBe(base)
+      expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).toMatch(/carried your 1 uncommitted change into its worktree/)
+      expect(t.a.workers.get('wip2')?.base).toBe(base)
+      expect(t.a.workers.get('wip2')?.carriedUntracked?.map(x => x.path)).toEqual(['wip.txt'])
     } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
     expect(await setup().leadTools.call('room_spawn', { tag: 'wip3', task: 'c' })).not.toMatch(/uncommitted change/)
   })
@@ -284,7 +406,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
       const out = await t.leadTools.call('room_spawn', { tag: 'reusedbranch', task: 'resume' })
       expect(out).not.toContain('carried your')
       expect(out).toContain('1 uncommitted change in your clone is not in this worktree')
-      expect(t.a.workers.get('reusedbranch')?.base).toBeUndefined()
+      expect(t.a.workers.get('reusedbranch')?.base).toBe(base)
       expect(execFileSync('git', ['-C', initial.dir, 'rev-parse', 'HEAD']).toString().trim()).toBe(oldHead)
       expect(readFileSync(join(initial.dir, 'branch.txt'), 'utf8')).toBe('old worker work')
       expect(existsSync(join(initial.dir, 'wip.txt'))).toBe(false)
@@ -454,12 +576,13 @@ describe('room_spawn / room_done / room_collect discard', () => {
     t.exits[0](1)
     expect(t.a.workers.get('a')).toMatchObject({ status: 'failed', exitCode: 1 })
     await vi.waitFor(() => expect(t.a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && /worker a died .*exit 1/.test(m.text))).toBe(true))
-    setTimeout(() => t.exits[1](0), 10)
-    const d = await t.leadTools.call('room_collect', { discard: true, tag: 'b' })
+    const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'b' })
+    await vi.waitFor(() => expect(t.killed).toHaveLength(1))
+    t.exits[1](0)
+    const d = await discarding
     expect(d).toContain('discarded b')
     expect(t.killed).toHaveLength(1)
     expect(t.a.workers.has('b')).toBe(false)
-    t.exits[1](0)
     await vi.waitFor(() => expect(t.a.retiredWorkers().some(w => w.tag === 'b')).toBe(true))
   })
 })
