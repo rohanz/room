@@ -181,19 +181,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const tags = (names: string[]) => names.map(name => selected.find(x => x.w.name === name)?.w.tag ?? 'your edits').join(', ')
       if (result.conflictingPaths.size) return [...out, 'Nothing written; conflicting files: ' + [...result.conflictingPaths].map(([p, names]) => p + ' (' + tags(names) + ')').join('; '), 'Collect one at a time, or resolve by hand using room_read.'].join('\n')
       const changes: { p: string; file: string; before: Buffer | null; after: Buffer | null; mode: number; oldMode: number }[] = []
-      const baseModes = new Map(split(await git(lead.dir, ['ls-tree', '-rz', result.ancestor])).map(entry => { const [meta, p] = entry.split('\t'); return [p, parseInt(meta.split(' ')[0], 8) & 0o777] }))
+      // A worker's mode change is judged against its own base, like its text.
+      const baseModes = new Map<string, Map<string, number>>()
+      for (const { w } of selected) {
+        const base = result.deltaBases.get(w.name)!
+        baseModes.set(w.name, new Map(split(await git(lead.dir, ['ls-tree', '-rz', base])).map(entry => { const [meta, p] = entry.split('\t'); return [p, parseInt(meta.split(' ')[0], 8) & 0o777] })))
+      }
       for (const [p, text] of result.merged) {
         const file = safePath(lead.dir, p)
         const before = fs.existsSync(file) ? fs.readFileSync(file) : null
         if ((before === null ? null : before.toString('latin1')) !== result.initial.get(p)) throw new Error(p + ' changed during collection; nothing written, retry')
         const oldMode = before !== null ? fs.statSync(file).mode & 0o777 : 0o644
         let mode = oldMode
-        const baseMode = baseModes.get(p)
         for (const { w } of selected) {
           if (workerOwnedPaths(w).includes(p)) continue
           const src = safePath(w.dir, p)
           if (!fs.existsSync(src)) continue
-          const workerMode = fs.statSync(src).mode & 0o777
+          const workerMode = fs.statSync(src).mode & 0o777, baseMode = baseModes.get(w.name)!.get(p)
           if (workerMode !== baseMode) {
             if (mode !== oldMode && mode !== workerMode) throw new Error('conflicting file modes: ' + p)
             if (baseMode !== undefined && oldMode !== baseMode && oldMode !== workerMode) throw new Error('conflicting file modes: ' + p)

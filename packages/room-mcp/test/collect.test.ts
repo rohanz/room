@@ -38,6 +38,21 @@ function setup(status = 'done') {
   return { call: handlers(state).room_collect, retireWorkers, state, s, w }
 }
 
+const LINES = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\n'
+/** Commit LINES as app.py in the lead and bring the worker's branch up to it; returns that HEAD. */
+function commitLines() {
+  put(lead, 'app.py', LINES); git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'lines')
+  const head = git(lead, 'rev-parse', 'HEAD')
+  git(worker, 'merge', '-q', '--ff-only', head)
+  return head
+}
+/** Commit files on a worker's branch the way spawn carries the lead's uncommitted work, and record that commit as the worker's base. */
+function carry(t: ReturnType<typeof setup>, dir: string, tag: string, files: Record<string, string>) {
+  for (const [p, text] of Object.entries(files)) put(dir, p, text)
+  git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'room: carried-in uncommitted work from lead')
+  t.s.room.workers.set(tag, { ...t.s.room.workers.get(tag)!, base: git(dir, 'rev-parse', 'HEAD') })
+}
+
 describe('room_collect', () => {
   function second(t: ReturnType<typeof setup>, status = 'done') {
     const dir = path.join(root, 'second')
@@ -263,6 +278,43 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(true)
   })
 
+  it('merges a worker against its carried-in commit: the lead\'s later edits to carried lines survive and only the worker\'s lines land', async () => {
+    commitLines()
+    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(lead, 'app.py', LINES.replace('two', 'W')); put(lead, 'notes.txt', 'draft\n')
+    carry(t, worker, 'test', { 'app.py': LINES.replace('two', 'W'), 'notes.txt': 'draft\n' })
+    put(lead, 'app.py', LINES.replace('two', 'W2')); put(lead, 'notes.txt', 'draft 2\n')
+    put(worker, 'app.py', LINES.replace('two', 'W').replace('five', 'WORKER'))
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('Changes from test: app.py. Nothing committed or staged.')
+    expect(fs.readFileSync(path.join(lead, 'app.py'), 'utf8')).toBe(LINES.replace('two', 'W2').replace('five', 'WORKER'))
+    expect(fs.readFileSync(path.join(lead, 'notes.txt'), 'utf8')).toBe('draft 2\n')
+    expect(t.s.room.retiredWorkers().map(r => r.files)).toEqual([['app.py']])
+  })
+  it('merges each of two workers against its own carried-in commit', async () => {
+    commitLines()
+    const t = setup(), other = second(t)
+    put(lead, 'app.py', LINES.replace('two', 'W'))
+    carry(t, worker, 'test', { 'app.py': LINES.replace('two', 'W') })
+    put(lead, 'app.py', LINES.replace('two', 'W2').replace('three', 'X'))
+    carry(t, other, 'second', { 'app.py': LINES.replace('two', 'W2').replace('three', 'X') })
+    put(lead, 'app.py', LINES.replace('two', 'W3').replace('three', 'X2'))
+    put(worker, 'app.py', LINES.replace('two', 'W').replace('seven', 'A'))
+    put(other, 'app.py', LINES.replace('two', 'W2').replace('three', 'X').replace('five', 'B'))
+    expect(await t.call({})).toContain('Changes from second, test: app.py.')
+    expect(fs.readFileSync(path.join(lead, 'app.py'), 'utf8')).toBe('one\nW3\nX2\nfour\nB\nsix\nA\n')
+  })
+  it('keeps the lead\'s later file-mode change to a carried file the worker left alone', async () => {
+    put(lead, 'run.sh', '#!/bin/sh\n'); git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'script'); git(worker, 'merge', '-q', '--ff-only', git(lead, 'rev-parse', 'HEAD'))
+    const t = setup()
+    fs.chmodSync(path.join(lead, 'run.sh'), 0o755); fs.chmodSync(path.join(worker, 'run.sh'), 0o755)
+    carry(t, worker, 'test', {})
+    fs.chmodSync(path.join(lead, 'run.sh'), 0o644)
+    put(worker, 'new.txt', 'new\n')
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt.')
+    expect(fs.statSync(path.join(lead, 'run.sh')).mode & 0o777).toBe(0o644)
+  })
+
   it('waits for a done worker to exit without requiring force', async () => {
     const t = setup()
     let at = 0
@@ -353,6 +405,25 @@ describe('worker preview', () => {
     const workerResult = await fileHandlers(t.state).room_preview_merge({ person: 'lead' })
     expect(workerResult).toContain(`NOT previewed (${reason}, lead+test): data`)
     expect(workerResult).toContain('no conflicts')
+  })
+  it('previews a worker against its carried-in commit, not the lead\'s HEAD', async () => {
+    const head = commitLines()
+    const t = setup()
+    put(lead, 'app.py', LINES.replace('two', 'W')); put(lead, 'notes.txt', 'draft\n')
+    carry(t, worker, 'test', { 'app.py': LINES.replace('two', 'W'), 'notes.txt': 'draft\n' })
+    put(lead, 'app.py', LINES.replace('two', 'W2')); put(lead, 'notes.txt', 'draft 2\n')
+    put(worker, 'app.py', LINES.replace('two', 'W').replace('five', 'WORKER'))
+    Object.assign(t.state, {
+      rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
+      others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
+      baseFor: (_s: unknown, person: string) => person === 'lead' ? head : t.s.room.workers.get('test')!.base, shareOf: () => 'full',
+      liveText: async () => undefined,
+    })
+    const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat app.py notes.txt' })
+    expect(result).toContain('both changed, merge cleanly: app.py')
+    expect(result).not.toContain('notes.txt (lead+test')
+    expect(result).toContain('no conflicts')
+    expect(result).toContain('one\nW2\nthree\nfour\nWORKER\nsix\nseven\ndraft 2')
   })
   it('discovers untracked worker paths and explicitly excludes ignored output', async () => {
     put(worker, 'new.txt', 'new\n'); put(worker, 'empty.txt', ''); put(worker, 'artifact.bin', 'artifact')
