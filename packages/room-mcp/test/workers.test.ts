@@ -151,6 +151,19 @@ describe('room_spawn / room_done / room_collect discard', () => {
     } finally { vi.unstubAllEnvs() }
   })
 
+  it('names uncommitted work that a new worker worktree cannot see, once per session', async () => {
+    const t = setup()
+    writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
+    try {
+      const first = await t.leadTools.call('room_spawn', { tag: 'wip1', task: 'a' })
+      expect(first).toMatch(/\d+ uncommitted change/)
+      expect(first).toContain('starts from HEAD')
+      // The second worker starts from the same commit: the lead has been told.
+      expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).not.toMatch(/uncommitted change/)
+    } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
+    expect(await setup().leadTools.call('room_spawn', { tag: 'wip3', task: 'c' })).not.toMatch(/uncommitted change/)
+  })
+
   it('spawns a worker with the room passed through the environment, records it, and shows it in room_state', async () => {
     const t = setup()
     const out = await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents', host: 'codex', model: 'gpt-5.6', effort: 'medium' })

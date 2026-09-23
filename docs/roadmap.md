@@ -218,6 +218,21 @@ saved with a local room's memory.
 - **Noise:** fyi messages about cancelled plans while a claim is being narrowed; the sharing
   banner prepended to tool output when tools are driven from a script.
 
+### Uncommitted work and worker worktrees
+
+A worker's worktree is made from the lead's HEAD (`prepareWorktree`), so the lead's uncommitted
+work is absent from it. Observed 2026-09-22 in a website redesign: a whole day's rewrites were
+uncommitted and the human had asked not to commit, so the agent used built-in subagents in the
+dirty checkout instead of Room, and hand-wrote "these files are yours, those are off limits" into
+each brief. That is precisely what Room exists to do, and it lost the job on a mechanical detail.
+0.10.2 tells the truth at spawn time ("N uncommitted changes in your clone are not in this
+worktree"), which is honest but still a refusal. The fix: carry the lead's uncommitted work into a
+new worktree at spawn (tracked diff plus non-ignored untracked files, never ignored ones), so a
+worker starts from what the human can actually see. Then `room_collect`'s three-way merge must
+treat the carried-in changes as common, not as the worker's, so the lead's own edits are not
+re-applied or reported as the worker's work. Decide whether it is the default (probably: it matches
+what a human means by "work on this with me") or `room_spawn(from: 'working-tree')`.
+
 ### From the review-fixes batch (eight Codex workers, 2026-09-21, open)
 
 Recurred from the tree-sitter batch: a busy worker left three questions unanswered until the lead

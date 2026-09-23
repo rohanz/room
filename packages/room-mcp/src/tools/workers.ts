@@ -22,8 +22,17 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('self-contained task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'host (default: caller host)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('read-only input paths; default .roomlinks; [] disables'), threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default), or local workers bridged to this room' } }, required: ['tag', 'task'] } },
 ]
 
+/** Files a new worker worktree cannot see: Room's own directory is excluded, it is never the lead's work. */
+async function uncommittedCount(dir: string): Promise<number> {
+  try {
+    const out = await git(dir, ['status', '--porcelain', '--untracked-files=normal'])
+    return out.split('\n').filter(line => line.trim() && !/^..\s+"?\.room\//.test(line)).length
+  } catch { return 0 }
+}
+
 export function handlers(state: HandlerState): Record<string, Handler> {
   const spawnExplained = new WeakSet<Session>()
+  const wipNoted = new WeakSet<Session>()
   const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state
   const handlers: Record<string, Handler> = {
     async room_done(a) {
@@ -171,6 +180,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`)
         spawnExplained.add(lead)
+        // A worktree is made from HEAD, so the lead's uncommitted work is not in it. Say so once: it decides
+        // whether the human commits first or gives the worker a task that does not build on that work.
+        if (created && !outside && !wipNoted.has(lead)) {
+          const pending = await uncommittedCount(lead.dir)
+          if (pending) {
+            wipNoted.add(lead)
+            out.push(`note: ${pending} uncommitted change${pending === 1 ? '' : 's'} in your clone ${pending === 1 ? 'is' : 'are'} not in this worktree, which starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}. Commit them (locally is enough) first if the task builds on them.`)
+          }
+        }
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         return out.join('\n')
       } finally {
