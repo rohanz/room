@@ -144,7 +144,7 @@ export function validTag(tag: unknown): string | undefined {
 }
 
 /** The fixed preamble every worker gets, then the task. */
-export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; link?: string[] }): string {
+export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; link?: string[]; carriedPaths?: string[] }): string {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
@@ -153,6 +153,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
       ...(context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(', ')}. Do not modify these paths or their contents; write outputs elsewhere.`] : []),
+      ...(context.carriedPaths?.length ? [`Files carried from the lead's uncommitted work belong to the lead; do not edit them unless the task says so: ${context.carriedPaths.slice(0, 20).join(', ')}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ''}.`] : []),
     ] : []),
     '',
     `TASK: ${task}`,
@@ -233,9 +234,12 @@ export interface PreparedWorktree {
   branch: string
   created: boolean
   base?: string
-  carried?: { count: number; commit: string }
+  carried?: { count: number; commit: string; paths: string[] }
   carryFailed?: boolean
 }
+
+/** Subject of the commit that carries a lead's uncommitted work into a new worker's worktree. */
+export const carriedSubject = (leadName: string) => `room: carried-in uncommitted work from ${leadName}`
 
 /** A worktree for the worker, created from the lead's HEAD on branch room/<tag>; reused if it already exists. */
 export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead'): Promise<PreparedWorktree> {
@@ -268,9 +272,10 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
       }
     }
     await git(dir, ['add', '-A', '--', '.', ':(exclude).room'])
-    await git(dir, ['-c', 'user.name=Room', '-c', 'user.email=room@localhost', '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', `room: carried-in uncommitted work from ${leadName}`])
+    await git(dir, ['-c', 'user.name=Room', '-c', 'user.email=room@localhost', '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', carriedSubject(leadName)])
     const commit = (await git(dir, ['rev-parse', 'HEAD'])).trim()
-    return { dir, branch, created: true, base: commit, carried: { count, commit } }
+    const paths = (await git(dir, ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', commit])).split('\0').filter(Boolean).sort()
+    return { dir, branch, created: true, base: commit, carried: { count, commit, paths } }
   } catch {
     try {
       await git(dir, ['reset', '--hard', base])

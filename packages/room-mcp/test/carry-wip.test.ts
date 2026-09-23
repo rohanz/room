@@ -88,10 +88,14 @@ function world() {
   a.setMeta({ repo: 'x', branch: 'main', base: head })
   let ls: Session | null = fakeSession(a, lead, repo)
   const exits = new Map<string, (code: number | null) => void>()
+  const prompts = new Map<string, string>()
   let pid = 4_000_000 // above any real pid: nothing is ever alive or signalled
   const leadTools = createTools({
     getSession: () => ls, setSession: s => { ls = s }, cwd: repo, probe: () => undefined,
-    spawner: spec => ({ pid: pid++, onExit: cb => { exits.set(spec.env.ROOM_TAG, cb) }, kill: () => true }),
+    spawner: spec => {
+      prompts.set(spec.env.ROOM_TAG, spec.args.find(arg => arg.includes('You are worker')) ?? '')
+      return { pid: pid++, onExit: cb => { exits.set(spec.env.ROOM_TAG, cb) }, kill: () => true }
+    },
   })
   cleanups.push(() => leadTools.shutdown())
   const call = (tool: string, args: Record<string, unknown>) => leadTools.call(tool, args) as Promise<string>
@@ -112,7 +116,7 @@ function world() {
     exits.get(tag)!(0)
     await vi.waitFor(() => expect(a.workers.get(tag)).toMatchObject({ status: 'done', exitCode: 0 }))
   }
-  return { a, b, call, spawn, finish }
+  return { a, b, call, spawn, finish, prompts }
 }
 
 /** The files a collect reply says it wrote for the workers. */
@@ -144,6 +148,30 @@ function expectCarried(dir: string, tag: string, baseSha: string | undefined) {
 const CARRIED_LINE = /carried your (\d+) uncommitted changes? into its worktree \(commit ([0-9a-f]{10})\)/
 
 describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () => {
+  it('tells a worker which carried files belong to the lead', async () => {
+    leadWip()
+    const t = world()
+    await t.spawn('owned')
+    const prompt = t.prompts.get('owned')!
+    expect(prompt).toContain('Files carried from the lead\'s uncommitted work belong to the lead; do not edit them unless the task says so: gone.txt, notes.txt, run.sh, shared.txt, staged-new.txt, staged.txt.')
+    expect(prompt).not.toContain('secret.env')
+  })
+
+  it('names at most 20 carried paths and counts the rest', async () => {
+    for (let i = 0; i < 23; i++) put(repo, `many/${String(i).padStart(2, '0')}.txt`, `${i}\n`)
+    const t = world()
+    await t.spawn('many')
+    const prompt = t.prompts.get('many')!
+    expect(prompt).toContain(`${Array.from({ length: 20 }, (_, i) => `many/${String(i).padStart(2, '0')}.txt`).join(', ')}, and 3 more.`)
+    expect(prompt).not.toContain('many/20.txt')
+  })
+
+  it('does not mention carried files to a worker spawned from a clean lead', async () => {
+    const t = world()
+    await t.spawn('clean-prompt')
+    expect(t.prompts.get('clean-prompt')).not.toContain('Files carried from the lead\'s uncommitted work')
+  })
+
   it('(1) spawn carries tracked, staged, deleted and untracked WIP, never ignored or Room files, and reports it', async () => {
     leadWip()
     const before = leadState()

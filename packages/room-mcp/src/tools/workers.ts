@@ -100,7 +100,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
       try {
         let dir: string, branch: string, base: string | undefined, created = false, outside = false
-        let carried: { count: number; commit: string } | undefined, carryFailed = false
+        let carried: PreparedWorktree['carried'], carryFailed = false
         if (typeof a.dir === 'string' && a.dir) {
           dir = path.resolve(a.dir)
           if (!fs.existsSync(dir)) return `error: ${dir} does not exist`
@@ -147,7 +147,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try { link = prepareWorkerLinks(lead.dir, dir, a.link) }
         catch (e) { return `error: could not link inputs: ${e instanceof Error ? e.message : String(e)}` }
         const scheduling = workerPriority({ cmd: host, args: [] })
-        const prompt = workerPrompt(s.me.name, tag, task, { threads, memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort, link })
+        const prompt = workerPrompt(s.me.name, tag, task, { threads, memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort, link, carriedPaths: carried?.paths })
         const { cmd, args } = workerCommand(host, model, prompt, config.claudeChannel, effort)
         const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
         const priority = { cmd: scheduling.cmd, args: [...scheduling.args, ...args], nice: scheduling.nice }

@@ -233,6 +233,7 @@ Carrying applies to fresh worktrees on new branches; existing worktrees and recr
 worktrees on surviving branches keep their prior behavior.
 If a recorded worker base is unavailable or outside the common history, preview and collection
 fall back to the common ancestor; adjacent-line edits can still conflict.
+In 0.11.1, both remaining carry gaps are closed: carried files are named as the lead's in the worker prompt, and carried-base contract notices reach workers when the lead changes or removes definitions they use.
 
 ### From the carry-wip batch (four workers, two Codex and two Claude, 2026-09-23, open)
 

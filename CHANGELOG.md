@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1
+
+- When a worker starts with the lead's uncommitted work, its prompt names the carried files as the lead's and tells the worker not to edit them unless its task says so. The prompt lists up to 20 paths and counts any more; a clean spawn gets no carry warning.
+- For a worker with a carried base, contract checks compare the lead's live carried files with the worker's recorded base and inspect the worker's changed or claimed files for uses, including calls in the same file. Signature changes, removals and renames send a deduplicated `contract` notice; body-only changes do not.
+
 ## 0.11.0
 
 - A worker in a fresh worktree on a new branch starts with the lead's tracked changes, including staged changes and deletions, and non-ignored untracked files as one carried-in commit. Ignored files and `.room/` stay out. The first successful carry per lead session says `carried your N uncommitted changes into its worktree (commit <sha10>)`; a clean lead gets no carry commit or note.
