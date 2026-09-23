@@ -25791,17 +25791,32 @@ function claudeWakeUnavailable(dir, host = resolveSessionHost(dir), parentArgs) 
   if (channel && admitted.some((m) => m[1].split(",").includes(channel))) return false;
   return true;
 }
-function claudeWakeNote(session) {
-  if (process.env.ROOM_CLAUDE_CHANNEL === "" || wakeNoted.has(session) || !claudeWakeUnavailable(session.dir)) return "";
-  wakeNoted.add(session);
-  return "Wake-ups on Claude Code need the session started with claude-room (or the channels flag).";
+function claudeWakeText(shell) {
+  const rc = shell?.endsWith("bash") ? "~/.bashrc" : "~/.zshrc";
+  return [
+    "For your human: this Claude Code session can't be woken instantly. Everything still works; messages reach it on its next turn.",
+    `To turn wake-ups on, start Claude Code with \`claude-room\`. If that command is not found, add it: \`echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ${rc}\``,
+    "On a claude.ai Team or Enterprise account, an Owner must enable channels first."
+  ].join("\n");
 }
-var wakeNoted, AGENT_INSTRUCTIONS;
+function claudeWakeNote(session, moment, options = {}) {
+  if (moment === "alone" || process.env.ROOM_CLAUDE_CHANNEL === "" || !claudeWakeUnavailable(session.dir, options.host, options.parentArgs)) return "";
+  const forWorkers = moment === "spawn" && !workerWaitNoted.has(session);
+  if (forWorkers) workerWaitNoted.add(session);
+  const workerInstruction = "Block on room_wait in a loop to receive worker questions and completions.";
+  if (wakeNoted.has(session)) return forWorkers ? workerInstruction : "";
+  wakeNoted.add(session);
+  const humanNote = claudeWakeText(options.shell ?? process.env.SHELL);
+  return forWorkers ? `${workerInstruction}
+${humanNote}` : humanNote;
+}
+var wakeNoted, workerWaitNoted, AGENT_INSTRUCTIONS;
 var init_prompt = __esm({
   "packages/room-mcp/src/prompt.ts"() {
     "use strict";
     init_config();
     wakeNoted = /* @__PURE__ */ new WeakSet();
+    workerWaitNoted = /* @__PURE__ */ new WeakSet();
     AGENT_INSTRUCTIONS = (name2) => `You are ${name2 ? `${name2}'s` : "one person's"} coding agent in a room. Room never changes your files unless you ask it to bring in a worker's output; explicit exports also write files.
 
 1. While alone, work normally without room tools; the room announces company. Change local/team room only when your human asks.
@@ -43486,6 +43501,7 @@ import { resolve as resolve4 } from "node:path";
 
 // packages/room-mcp/src/tools/scope.ts
 init_config();
+init_prompt();
 init_connection();
 init_src();
 init_git();
@@ -43554,6 +43570,10 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       await loadAreas(s);
       const m = s.room.meta;
       const out2 = [s.local ? "local: nothing leaves this machine" : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${new Set(presences(s).filter((p) => p.user.name !== s.me.name && !isPrName(p.user.name)).map((p) => p.user.owner ?? p.user.name)).size} people`];
+      if (state.hasCompany(s).company) {
+        const wakeNote = claudeWakeNote(s, "company");
+        if (wakeNote) out2.unshift(wakeNote);
+      }
       if (typeof a.path === "string" && a.path) {
         out2.push(await pathState(a));
         if (a.link === true) out2.push(`browser view: ${await refreshBrowserUrl(s)}`);
@@ -44062,7 +44082,7 @@ function handlers4(state) {
       }
       out2.push(`browser view: ${await refreshBrowserUrl(s)}`);
       out2.push("next: room_scope(area, summary, paths) before you edit.");
-      const wakeNote = claudeWakeNote(s);
+      const wakeNote = here.length ? claudeWakeNote(s, "company") : "";
       if (wakeNote) out2.push(wakeNote);
       return out2.join("\n");
     },
@@ -45928,7 +45948,8 @@ function handlers8(state) {
         proc.onExit((code) => exited(code));
         s.room.post(s.me, { type: "note", text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ""}) as ${name2}: ${task.slice(0, 100)}` });
         const out2 = [`spawned ${tag}: ${name2} (${host}${model ? ` ${model}` : ""}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? " (new worktree)" : ""}`];
-        if (claudeWakeUnavailable(lead.dir)) out2.unshift("Lead wake-ups are not confirmed for this Claude session; block on room_wait in a loop to receive worker questions and completions.");
+        const wakeNote = claudeWakeNote(lead, "spawn");
+        if (wakeNote) out2.unshift(wakeNote);
         out2.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB \xB7 priority ${priority2.nice ? `nice ${priority2.nice}` : "normal"}${effort ? ` \xB7 effort ${effort}` : ""}${link.length ? ` \xB7 inputs ${link.join(", ")}` : ""}`);
         out2.push(`log: ${logFile}`);
         if (!spawnExplained.has(lead)) out2.push(`browser view: ${await refreshBrowserUrl(s)}`);
