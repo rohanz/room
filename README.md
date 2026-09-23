@@ -87,7 +87,16 @@ You do not need to know any tool names. For example:
 > Use a couple of subagents for this: add the endpoint in api.ts and its tests in api.test.ts.
 
 `room_spawn` creates a Git worktree at `.room/workers/<tag>` on branch `room/<tag>`.
-The worker starts from your code as it is now, including uncommitted work, and your own work is never reported as the worker's.
+Eligible tracked uncommitted changes are carried in a commit at the base of the
+worker's `room/<tag>` branch; `git push --all` can publish that tracked work until
+the worker is collected or discarded. Non-ignored untracked files are copied into
+the worker worktree, never committed to a branch. Their spawn-time contents live
+only under a private Git ref for merge and recovery; ordinary branch pushes do not
+include them.
+Files over 5 MB or beyond 50 MB total, nested repositories, escaping symlinks and
+linked inputs are not carried; the spawn reply names them. Carried files remain the
+lead's, so a worker coordinates with the lead before editing them. Room reports only
+the worker's own work as worker output.
 It uses the caller’s agent host unless you choose another. The worker joins as `<you>+<tag>`,
 declares its task, coordinates where work overlaps, previews the combined changes, and finishes
 with a one-line summary. Up to eight workers run at once (`ROOM_MAX_WORKERS`).
@@ -120,7 +129,11 @@ output changes project files when requested; exports write the room’s story to
 - The worktree’s Git directory holds `room.json` (migrated from the old root `.room.json`)
   and hook/session state.
 - The common Git directory holds `room-choice.json` (the remembered destination),
-  `room-local.json` and `room-local/*.ydoc` (local relay discovery and history).
+  `room-local.json` and `room-local/*.ydoc` (local relay discovery and history), and
+  `room-mcp.log`. The log records timestamped MCP events from sessions and workers,
+  including room selection, relay activity, join attempts and failures, readiness and
+  leaving. It is mode 0600 and rotates at 1 MB, keeping one older generation
+  (`room-mcp.log.1`); `ROOM_LOG_FILE` still overrides the location.
 - `.room/workers/` holds worker worktrees and logs until successful collection or clean-worktree dismissal cleans them up.
   Room adds `.room/` to Git’s private `info/exclude`; no tracked ignore-file edit is needed.
 

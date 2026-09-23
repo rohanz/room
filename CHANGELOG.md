@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.0
+
+- Worker spawn keeps the lead's untracked files outside branch history and ordinary pushes, retaining their contents under a private ref for merge and recovery, records content hashes to attribute carried files, and reports oversized, linked or unsafe paths it skipped. It retries when the lead's snapshot moves, bypasses Git config and hooks for internal snapshots, refuses occupied worktrees, and cleans up failed spawns. Carried counts now count files, and workers are asked to coordinate with the lead before editing carried files. Workers can spawn from detached HEAD with carry intact; the same lead can respawn into a kept worktree without losing its carry record, while other rooms remain excluded.
+- Merge previews reject unsafe symlink ancestors, replace final symlinks safely, and run tests on the same content and file modes that collection would write. Automatic retirement keeps workers with ignored output or failed cleanup. Spawn validates input links before carry, cleans new worktrees after startup errors, refuses cross-room tag collisions, and reports carried and skipped file counts. Collection preserves carried untracked ownership and CRLF checkouts.
+- Collect, preview and discard now use the same rule for worker changes to carried untracked files; discard recovery preserves a mode-only change such as `chmod +x`.
+- Joining now retries transient failures at startup and before Room tool calls, with a bounded deadline and a clear failure step; local-room failures offer an immediate `room_join` retry. Room logs MCP events to a bounded, rotated `<git common dir>/room-mcp.log`. Initial indexing reads changed files rather than every tracked file and batches base reads; unwatcheable clones fail promptly.
+- Local relay discovery verifies the clone and key, publishes atomically, and recovers from stale or foreign relays. Team workers publish against their lead's fetchable HEAD rather than a private carried base; teammates get an accurate explanation when a base exists only on the lead's machine.
+- After an explicit `room_join` or `room_create`, a lost connection is rejoined on the next Room tool call with the same room, identity and sharing level; `room_leave` and `room_close` remain deliberate exits.
+- Worker-side previews and both live conflict watchers compare a worker's own changes with its recorded base, avoiding false conflicts on carried lead lines. Graph observations and contract notices attribute carried signatures to the lead; the browser Merged tab uses each participant's base. Unchanged carried files under `core.autocrlf` are not worker edits. Carried contract checks are debounced and cached, detect a lead's revert to HEAD, cover same-file arrow functions and methods, and preserve import narrowing.
+
 ## 0.11.1
 
 - When a worker starts with the lead's uncommitted work, its prompt names the carried files as the lead's and tells the worker not to edit them unless its task says so. The prompt lists up to 20 paths and counts any more; a clean spawn gets no carry warning.

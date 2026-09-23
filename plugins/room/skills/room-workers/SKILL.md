@@ -13,7 +13,7 @@ description: Running editing work through other agents. Use when asked for anoth
 2. Call `room_spawn(tag, task, host?, model?)`. Host defaults to your own host; override
    only when requested. Give each worker a self-contained task, owned files and test command.
    Pass a model only when specified.
-   The worker starts from your code as it is now, including uncommitted work, and your own work is never reported as the worker's.
+   The worker starts with eligible uncommitted work. Tracked changes use a carry commit on the worker branch (`git push --all` can publish them); non-ignored untracked files are copied, never committed to a branch, with a private ref for merge and recovery. Files over 5 MB or beyond 50 MB total, nested repositories, escaping symlinks and linked inputs are skipped and named in the spawn reply. Carried files remain the lead's; coordinate with the lead before editing them.
 3. Briefly state what you dispatched. Answer workers' questions with
    `room_send(type="answer", inReplyTo=...)`; ask your human only for a decision that
    blocks the work. `room_wait` returns the event; read state only when more context is needed.
@@ -34,6 +34,8 @@ When you find workers stopped because the previous session ended, tell the human
 Respect `ROOM_MAX_WORKERS`. Do not join a team room just to dispatch workers.
 `where="local"` keeps workers local; a lead already in a team room still mirrors their
 scope and claims there. Otherwise omit `where` to use the current room.
+
+Room writes timestamped MCP events to the shared, 0600 `<git common dir>/room-mcp.log`; it rotates at 1 MB and keeps one older generation.
 
 Room caps math-library threads. Pass the spawn reply's budget to explicit parameters
 such as `n_jobs`, `num_threads` and `num_workers`; stagger heavy jobs.

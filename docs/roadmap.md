@@ -220,20 +220,25 @@ saved with a local room's memory.
 
 ### Uncommitted work and worker worktrees
 
-**Fixed in 0.11.0:** A worker's worktree was made from the lead's HEAD (`prepareWorktree`),
-so the lead's uncommitted work was absent from it. Observed 2026-09-22 in a website redesign: a whole day's rewrites were
-uncommitted and the human had asked not to commit, so the agent used built-in subagents in the
-dirty checkout instead of Room, and hand-wrote "these files are yours, those are off limits" into
-each brief. That is precisely what Room exists to do, and it lost the job on a mechanical detail.
-0.11.0 carries the lead's uncommitted work into a new worktree at spawn (tracked changes plus
-non-ignored untracked files, never ignored files or `.room/`). The carried-in commit is the
-worker's base, so previews and collection report only the worker's own changes. This happens by
-default; if carrying fails, the worker starts from HEAD and the spawn reply says so.
-Carrying applies to fresh worktrees on new branches; existing worktrees and recreated
-worktrees on surviving branches keep their prior behavior.
-If a recorded worker base is unavailable or outside the common history, preview and collection
-fall back to the common ancestor; adjacent-line edits can still conflict.
-In 0.11.1, both remaining carry gaps are closed: carried files are named as the lead's in the worker prompt, and carried-base contract notices reach workers when the lead changes or removes definitions they use.
+**Fixed in 0.11.0–0.11.1:** Workers start with the lead's eligible uncommitted work,
+and the worker prompt attributes carried paths to the lead. Lead-side previews and
+collection use the recorded worker base; contract notices reach workers when the lead
+changes or removes definitions they use.
+
+**Fixed in 0.12.0:** Carry skips and reports oversized or unsafe paths and linked inputs,
+keeps copied untracked files off ordinary worker branches, and retains a private base
+for merging them. Spawn handles moving HEAD, Git config and hooks, failed startup and
+occupied worktrees. Worker-side previews, live conflict checks, graph observations,
+contract notices and the browser Merged tab use the worker's own base, preserving
+the lead's carried ownership. Preview materialization no longer writes through an
+archived symlink. Retirement retains ignored output or failed cleanup. Local joins
+retry and explain failures, including after an explicit join; relay discovery
+validates identity; changed-file seeding
+and batch base reads remove the tracked-file join cost. Team workers publish a
+fetchable base instead of their local carried commit.
+
+Python dotted-import narrowing remains weak in carried contract checks. The broader
+orchestration and sharing work above remains open.
 
 ### From the carry-wip batch (four workers, two Codex and two Claude, 2026-09-23, open)
 
