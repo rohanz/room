@@ -16,7 +16,8 @@ import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { RoomDoc, colorFor, scopeCovers, type BaseMsg, type Kind, type Presence } from '@room/shared'
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
-import { git, gitBranch, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitSubject, gitTracked } from './git.js'
+import { baselineText, carriesWork, workerBaseline, type Baseline } from './baseline.js'
+import { git, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitShowMany, gitSubject, gitTracked } from './git.js'
 
 /**
  * How much of this clone the daemon publishes.
@@ -68,6 +69,8 @@ export interface RoomdOptions {
   onScanned?: (relpath: string) => void
   /** Max time to wait for the initial sync; default 15s. */
   connectTimeoutMs?: number
+  /** Max time for the whole startup (git reads, sync, seed, watcher); default 60s. */
+  startupTimeoutMs?: number
   /** Overrides for tests. */
   debounceMs?: number
   trackedRefreshMs?: number
@@ -139,14 +142,28 @@ export function splitRoomUrl(room: string): { serverUrl: string; roomName: strin
   return { serverUrl: url.toString().replace(/\/$/, ''), roomName }
 }
 
+/** Tag an error with the join step that threw it (relay, sync, git, seed, watch); the join failure line names it. */
+export async function inPhase<T>(phase: string, work: () => Promise<T>): Promise<T> {
+  try { return await work() } catch (error) {
+    if (error instanceof Error && !('phase' in error)) Object.assign(error, { phase })
+    throw error
+  }
+}
+
+export const DEFAULT_STARTUP_TIMEOUT_MS = 60_000
+
 export async function startRoomd(options: RoomdOptions): Promise<Roomd> {
   const daemon = new Daemon(options)
+  const limit = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS
+  let timer: NodeJS.Timeout | undefined
   try {
-    await daemon.start()
+    await Promise.race([daemon.start(), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new RoomdError(`startup did not finish within ${Math.round(limit / 1000)}s`, 1), { phase: daemon.phase })), limit)
+    })])
   } catch (error) {
     await daemon.stop(`startup failed: ${errMsg(error)}`).catch(() => {})
     throw error
-  }
+  } finally { clearTimeout(timer) }
   return daemon
 }
 
@@ -155,6 +172,13 @@ class Daemon implements Roomd {
   readonly provider: WebsocketProvider
   branch = ''
   base = ''
+  /**
+   * The commit this person's overlays are published against (baseOf): HEAD, except for a carried worker
+   * in a team room. Its HEAD is a commit of the lead's uncommitted work that exists only on the lead's
+   * machine, so it publishes against the lead's HEAD it was carried from, which teammates can fetch.
+   */
+  shared = ''
+  private readonly localRoom: boolean
 
   readonly dir: string
   readonly name: string
@@ -195,6 +219,8 @@ class Daemon implements Roomd {
   private diskWork = new Set<Promise<void>>()
   private stopped = false
   private lastActive = Date.now()
+  /** The startup step in progress, named in a startup failure. */
+  phase = 'git'
 
   constructor(options: RoomdOptions) {
     this.dir = path.resolve(options.dir)
@@ -203,6 +229,7 @@ class Daemon implements Roomd {
     this.owner = options.owner ?? options.name
     this.label = options.label
     this.roomUrl = options.room
+    this.localRoom = !!options.localKey
     this.log = options.log ?? (line => process.stderr.write(`[roomd] ${line}\n`))
     this.debounceMs = options.debounceMs ?? 300
     this.watchedDirectory = createHash('sha256').update(fs.realpathSync(this.dir)).digest('hex')
@@ -244,21 +271,23 @@ class Daemon implements Roomd {
       throw new RoomdError(`${this.dir} is not a git repository`, 1)
     }
 
-    const [branch, base, repo, tracked] = await Promise.all([
+    const [branch, base, repo, tracked] = await this.step('git', () => Promise.all([
       gitBranch(this.dir),
       gitHead(this.dir),
       gitOrigin(this.dir),
       gitTracked(this.dir),
-    ])
+    ]))
     this.branch = branch
     this.base = base
     this.tracked = tracked
 
-    await this.waitForSync()
+    await this.step('sync', () => this.waitForSync())
+    this.phase = 'base'
     this.choosePublisher()
     this.roomDoc.assignColor(this.name, this)
     this.setStatus(this.currentStatus())
-    this.roomDoc.setBaseOf(this.name, this.base, this)
+    await this.refreshShared()
+    this.roomDoc.setBaseOf(this.name, this.shared, this)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== this.base) {
       const rel = await gitRelation(this.dir, this.base, roomBase)
@@ -283,10 +312,10 @@ class Daemon implements Roomd {
     }
 
     this.loadRoomIgnore()
-    await this.seedLocalOverlay()
+    await this.step('seed', () => this.seedLocalOverlay())
     if (!this.publishUnder) this.writeRoomFile()
     this.excludeRoomFile()
-    await this.startWatcher()
+    await this.step('watch', () => this.startWatcher())
     this.trimBusIfLeader()
     if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader())
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
@@ -296,6 +325,11 @@ class Daemon implements Roomd {
     this.roomDoc.scopes.observe(ev => { if (ev.keysChanged.has(this.name) && this.share === 'declared' && !this.explicitScopePaths) void this.resharePaths() })
     await this.refreshBaseStatus()
     this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`)
+  }
+
+  private step<T>(phase: string, work: () => Promise<T>): Promise<T> {
+    this.phase = phase
+    return inPhase(phase, work)
   }
 
   skipped(): Skipped {
@@ -327,11 +361,11 @@ class Daemon implements Roomd {
     return this.explicitScopePaths ?? this.roomDoc.scope(this.name)?.paths ?? []
   }
 
-  /** Disk paths plus persisted state that may be left over from an earlier daemon session. */
+  /** Published state (possibly left over from an earlier daemon session), recorded skips, plus the given paths. */
   private pathsToReconcile(extra: Iterable<string> = []): Set<string> {
     return new Set([
-      ...this.tracked,
       ...this.roomDoc.changedPaths(this.name),
+      ...this.skips.size, ...this.skips.budget, ...this.skips.share,
       ...this.roomDoc.deletedFor(this.name).keys(),
       ...extra,
     ])
@@ -344,14 +378,10 @@ class Daemon implements Roomd {
     return this.retainedDeclaredPaths.has(relpath) || scopeCovers({ paths: this.scopePaths() }, relpath)
   }
 
-  /** Re-evaluate every tracked file against the current level: withdraw what is no longer allowed, publish what now is. */
+  /** Re-evaluate every changed file against the current level: withdraw what is no longer allowed, publish what now is. */
   private async resharePaths(): Promise<void> {
     if (this.stopped) return
-    for (const relpath of this.pathsToReconcile(this.skips.share)) {
-      if (this.stopped) return
-      if (this.isIgnoredPath(relpath)) continue
-      await this.publishDiskState(relpath)
-    }
+    await this.reconcile(await gitChanged(this.dir))
   }
 
   /** Withdraw a file from the room without touching disk; remembers it as withheld when it differs from base. */
@@ -557,7 +587,8 @@ class Daemon implements Roomd {
     this.base = head
     this.branch = await gitBranch(this.dir)
     this.tracked = await gitTracked(this.dir)
-    this.roomDoc.setBaseOf(this.name, head, this)
+    await this.refreshShared()
+    this.roomDoc.setBaseOf(this.name, this.shared, this)
     this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.maybeAdvance(roomBase, head)
@@ -568,6 +599,17 @@ class Daemon implements Roomd {
   private readonly unpushedPairs = new Set<string>()
 
   private isWorkerWorktree(): boolean { return !!this.label && this.branch === `room/${this.label}` }
+
+  /** The lead's work carried into this worker, while HEAD is still the worker's recorded base (baseline.ts). */
+  private carried(): Baseline | undefined {
+    if (!this.isWorkerWorktree()) return undefined
+    const baseline = workerBaseline(this.roomDoc.workerOf(this.name))
+    return baseline?.sha === this.base && carriesWork(baseline) ? baseline : undefined
+  }
+
+  private async refreshShared(): Promise<void> {
+    this.shared = !this.localRoom && this.carried()?.carriedCommit ? (await git(this.dir, ['rev-parse', `${this.base}^`])).trim() : this.base
+  }
 
   /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
   private async maybeAdvance(from: string, to: string): Promise<void> {
@@ -607,10 +649,22 @@ class Daemon implements Roomd {
     else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}${this.isWorkerWorktree() ? '' : ': git pull'}`)
   }
 
+  /** Publish what differs from HEAD: git's changed paths plus what this person already published, never every tracked file. */
   private async seedLocalOverlay(): Promise<void> {
-    for (const relpath of this.pathsToReconcile()) {
+    await this.reconcile(await gitChanged(this.dir))
+  }
+
+  /** Publish the disk state of these paths and the published ones, reading every base text in one git process. */
+  private async reconcile(extra: Iterable<string>): Promise<void> {
+    if (this.stopped) return
+    const paths = Array.from(this.pathsToReconcile(extra))
+    const base = this.base, shared = this.shared
+    const [texts, sharedTexts] = await Promise.all([gitShowMany(this.dir, base, paths), shared === base ? undefined : gitShowMany(this.dir, shared, paths)])
+    // One HEAD check per batch: a move since the read is left to pollHead, which reseeds against the new HEAD.
+    if (this.stopped || await gitHead(this.dir) !== base) return
+    for (const relpath of paths) {
       if (this.stopped) return
-      await this.publishDiskState(relpath)
+      await this.publishDiskState(relpath, { base, texts, shared, sharedTexts })
     }
   }
 
@@ -681,7 +735,8 @@ class Daemon implements Roomd {
     return true
   }
 
-  private async publishDiskState(relpath: string): Promise<void> {
+  /** `read`: base texts already read at `read.base` (and `read.shared`) with HEAD checked once for the batch (reconcile). */
+  private async publishDiskState(relpath: string, read?: { base: string; texts: Map<string, string | undefined>; shared: string; sharedTexts?: Map<string, string | undefined> }): Promise<void> {
     if (this.stopped) return
     this.choosePublisher()
     if (this.publishUnder) return
@@ -694,7 +749,20 @@ class Daemon implements Roomd {
       return
     }
     if (this.batch.deferHot(relpath)) return
-    const publishingBase = this.base
+    const publishingBase = this.base, sharedBase = this.shared
+    const batched = read?.base === publishingBase && read.shared === sharedBase && read.texts.has(relpath)
+    const headText = () => batched ? Promise.resolve(read!.texts.get(relpath)) : gitShow(this.dir, publishingBase, relpath)
+    const carried = this.carried()
+    const carriedFile = carried?.untracked.has(relpath) === true
+    /** What the disk is compared with: HEAD's text, or a carried untracked file's carried text (the lead's, not a worker change). */
+    const baseText = () => carriedFile ? baselineText(carried!, relpath, async () => undefined) : headText()
+    /** The base text published under baseOf: the compared text, unless baseOf is another commit or holds no carried text of its own. */
+    const publishedText = async (compared: string | undefined) => {
+      if (sharedBase !== publishingBase) return batched && read!.sharedTexts ? read!.sharedTexts.get(relpath) : gitShow(this.dir, sharedBase, relpath)
+      return carriedFile && !carried!.carriedCommit ? headText() : compared
+    }
+    const moved = () => publishingBase !== this.base || sharedBase !== this.shared
+    const headMoved = async () => !batched && await gitHead(this.dir) !== publishingBase
     const oversizedChanged = async () => {
       // Hash without loading an oversized file into this process.
       const [diskHash, baseHash] = await Promise.all([
@@ -711,9 +779,10 @@ class Daemon implements Roomd {
     let droppedStale = false
 
     if (!exists) {
-      const base = await gitShow(this.dir, publishingBase, relpath)
-      if (this.stopped || await gitHead(this.dir) !== publishingBase) { this.scheduleDisk(relpath, true); return }
-      if (base === undefined) {
+      const base = await baseText()
+      const published = base === undefined ? undefined : await publishedText(base)
+      if (this.stopped || moved() || await headMoved()) { this.scheduleDisk(relpath, true); return }
+      if (published === undefined) {
         this.roomDoc.doc.transact(() => {
           this.roomDoc.clearOverlay(this.name, relpath, this)
           this.roomDoc.unmarkDeleted(this.name, relpath, this)
@@ -734,7 +803,7 @@ class Daemon implements Roomd {
       // Withheld by the sharing level: publish nothing, but remember whether it differs from base.
       const disk = this.readText(relpath, true)
       const changed = disk === undefined && this.skips.size.has(relpath)
-        ? await oversizedChanged() : disk !== undefined && disk !== await gitShow(this.dir, this.base, relpath)
+        ? await oversizedChanged() : disk !== undefined && disk !== await baseText()
       this.withhold(relpath, changed)
       return
     } else {
@@ -748,9 +817,10 @@ class Daemon implements Roomd {
         this.retainedDeclaredPaths.delete(relpath)
         return
       }
-      const base = await gitShow(this.dir, this.base, relpath)
+      const base = await baseText()
+      const published = disk === base ? undefined : await publishedText(base)
       await this.beforePublishWrite?.(relpath)
-      if (this.stopped || this.publishUnder || !this.isSafeRoomPath(relpath) || publishingBase !== this.base || await gitHead(this.dir) !== publishingBase) { this.scheduleDisk(relpath, true); return }
+      if (this.stopped || this.publishUnder || !this.isSafeRoomPath(relpath) || moved() || await headMoved()) { this.scheduleDisk(relpath, true); return }
       // The level or scope may have changed while we waited on git: never write text the current level withholds.
       if (!this.isShared(relpath)) { this.withhold(relpath, disk !== base); return }
       if (disk !== base && this.sharedBytes(relpath) + disk.length > this.totalBudget) {
@@ -766,7 +836,7 @@ class Daemon implements Roomd {
         if (disk === base) this.roomDoc.clearOverlay(this.name, relpath, this)
         else {
           this.roomDoc.setOverlay(this.name, relpath, disk, this)
-          if (disk.length <= this.sizeCap) this.roomDoc.setBaseText(this.base, relpath, base ?? '', this)
+          if (disk.length <= this.sizeCap) this.roomDoc.setBaseText(sharedBase, relpath, published ?? '', this)
         }
       }, this)
     }
@@ -835,7 +905,17 @@ class Daemon implements Roomd {
       this.scheduleDisk(relpath, event === 'add')
     })
     watcher.on('error', error => this.log(`watcher error: ${errMsg(error)}`))
-    await new Promise<void>(resolve => watcher.on('ready', () => resolve()))
+    // Before ready, an error on the clone itself or running out of watches means nothing would be seen: fail the start.
+    // An unreadable subdirectory is only logged; the rest of the clone is still watched.
+    await new Promise<void>((resolve, reject) => {
+      const fatal = (error: unknown) => {
+        const e = error as NodeJS.ErrnoException
+        if (e?.path === this.dir || e?.code === 'EMFILE' || e?.code === 'ENOSPC') { watcher.off('ready', ready); reject(new RoomdError(`cannot watch ${this.dir}: ${errMsg(error)}`, 1)) }
+      }
+      const ready = () => { watcher.off('error', fatal); resolve() }
+      watcher.on('error', fatal)
+      watcher.once('ready', ready)
+    })
     for (const [dir, names] of Object.entries(watcher.getWatched())) for (const name of names) {
       const absolute = path.join(dir, name)
       try { if (fs.statSync(absolute).isFile()) countFile(absolute, true) } catch { /* raced with unlink */ }

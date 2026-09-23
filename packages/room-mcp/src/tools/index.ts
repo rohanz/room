@@ -1,7 +1,7 @@
 import { hookHealthNote } from '../hooks-bridge.js'
 import { hasCompany } from '../company.js'
 import { connectedBefore, trackConnection } from '../connection.js'
-import { NotLoggedIn, type Session } from '../session.js'
+import { LOCAL, NotLoggedIn, type Session } from '../session.js'
 import { createHandlerState, NeedFetch, NotJoined, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { defs as joinDefs, handlers as joinHandlers, install as installJoin, teamSharingNote } from './join.js'
 import { defs as scopeDefs, handlers as scopeHandlers, install as installScope } from './scope.js'
@@ -22,11 +22,18 @@ export interface Tools {
   shutdown(): Promise<void>
   /** For sessions joined outside room_join (auto-join): clear stale state under my name. */
   clearStale(s: Session): number
-  /** A join in progress at startup; tool calls wait for it before answering. */
-  setPendingJoin(p: Promise<void>): void
+  /** The automatic join: every tool call ensures it first; room_join/create/leave/close end it. */
+  setAutoJoin(a: AutoJoinHandle): void
+  /** Leave a session that can no longer reach its room, without dismissing workers. */
+  drop(s: Session, reason: string): Promise<void>
   /** Run any pending automatic conflict checks now (tests). */
   flushConflicts(): Promise<void>
 }
+
+/** What the tools need of the automatic join (auto-join.ts). */
+export interface AutoJoinHandle { ensure(): Promise<void>; settle(): Promise<void>; cancel(): void; readonly failure?: string }
+/** Tools that choose the room themselves: the automatic join stops once one is called. */
+const CHOOSES_ROOM = new Set(['room_join', 'room_create', 'room_leave', 'room_close'])
 
 const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...collectDefs, ...prDefs, ...shareDefs]
 const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect']
@@ -43,19 +50,25 @@ export function createTools(ctx: ToolCtx): Tools {
   installJoin(state)
   installWorkers(state)
   installShare(state)
+  let autoJoin: AutoJoinHandle | undefined
+  const notJoined = () => autoJoin?.failure ? `error: not in a room. ${autoJoin.failure}`
+    : ctx.config?.server === LOCAL ? 'error: not in the local room; room_join to join it.'
+    : 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
   const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), collectHandlers(state), prHandlers(state), shareHandlers(state))
 
   return {
     list: () => DEFS,
     attachHooks: state.attachHooks,
     clearStale: state.clearStale,
-    setPendingJoin(p) { state.pendingJoin = p.catch(() => {}) },
+    setAutoJoin(a) { autoJoin = a },
+    drop: state.drop,
     shutdown: state.shutdown,
     flushConflicts: state.flushConflicts,
     async call(name, args) {
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
-      if (state.pendingJoin) { await state.pendingJoin; state.pendingJoin = null }
+      if (autoJoin && CHOOSES_ROOM.has(name)) { await autoJoin.settle(); autoJoin.cancel() }
+      else if (autoJoin) await autoJoin.ensure()
       const current = ctx.getSession()
       current?.daemon.touch()
       const closed = current?.closed
@@ -79,9 +92,11 @@ export function createTools(ctx: ToolCtx): Tools {
         if (s2) delete s2.autoTagNote
         return prefix + (sharing ? sharing + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
       } catch (e) {
-        if (e instanceof NotJoined) return 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
+        if (e instanceof NotJoined) return notJoined()
         if (e instanceof NotLoggedIn) return `error: ${e.message}`
-        if (e instanceof NeedFetch) return `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry`
+        if (e instanceof NeedFetch) return e.lead
+          ? `error: ${e.person}'s base ${e.sha.slice(0, 10)} is ${e.lead}'s carried uncommitted work, which exists only on ${e.lead}'s machine; ${e.person}'s unchanged files cannot be read here, their changed files can`
+          : `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry; if it is still missing, ${e.person} has not pushed it yet`
         return `error: ${e instanceof Error ? e.message : String(e)}`
       }
     },

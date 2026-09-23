@@ -10,7 +10,7 @@ import { WebsocketProvider } from 'y-websocket'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
-import { startRoomd, RoomdError, clampShare, readRoomFile, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
+import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
 import { ensureLocalRelay, type LocalRelay } from '@room/relay'
 import { gitCommonDir, localRoomName } from '@room/roomd/local'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
@@ -287,14 +287,14 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
           params: { ...(options.token ? { token: options.token } : {}), ...(options.session ? { session: options.session } : {}), ...(options.localKey ? { key: options.localKey } : {}) },
         })
     try {
-      if (!provider.synced) await new Promise<void>((resolve, reject) => {
+      if (!provider.synced) await inPhase('sync', () => new Promise<void>((resolve, reject) => {
         const onSync = (synced: boolean) => { if (synced) { clearTimeout(timer); provider.off('sync', onSync); resolve() } }
         const timer = setTimeout(() => {
           provider.off('sync', onSync)
           reject(new RoomdError(`could not sync with ${options.room} within ${options.connectTimeoutMs ?? 15000}ms`, 1))
         }, options.connectTimeoutMs ?? 15000)
         provider.on('sync', onSync)
-      })
+      }))
       const now = Date.now()
       const names = new Set([...provider.awareness.getStates()]
         .filter(([id]) => id !== provider.awareness.clientID && isFresh(provider.awareness, id, now))
@@ -452,7 +452,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
   const name = label ? `${owner}+${label}` : owner
   const common = await gitCommonDir(dir)
-  const local = await ensureLocalRelay(common, roomName, { log: opts.log })
+  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log }))
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
   let daemon: Roomd, me: Identity, autoTagNote: string | undefined, refreshRuntime: () => void

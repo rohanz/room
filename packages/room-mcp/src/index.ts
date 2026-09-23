@@ -1,5 +1,6 @@
 #!/usr/bin/env tsx
 import fs from 'node:fs'
+import path from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
@@ -8,7 +9,9 @@ import type { Msg } from '@room/shared'
 import { createTools } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { LOCAL, NoRoom, NotLoggedIn, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
+import { LOCAL, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
+import { AutoJoin } from './auto-join.js'
+import { gitCommonDir } from '@room/roomd/local'
 import { consumeHookDisclosure, consumeHookNotice, syncHookSeen, writePendingHookContext } from './hooks-bridge.js'
 import { resolveConfig } from './config.js'
 import { pushChannelNotification } from './channel.js'
@@ -25,11 +28,25 @@ export type { Session, JoinOptions } from './session.js'
 export { resolveConfig } from './config.js'
 export type { ResolvedConfig, ConfigArgs, ConfigRule } from './config.js'
 
+/** Room's own log in the clone's git common dir, shared by every session and worker of the clone. */
+export const ROOM_LOG = 'room-mcp.log'
+export const ROOM_LOG_MAX_BYTES = 1024 * 1024
+/** Append one line; past maxBytes the file moves to <file>.1 (replacing the previous one), so it never exceeds twice the cap. */
+export function appendRoomLog(file: string, line: string, maxBytes = ROOM_LOG_MAX_BYTES): void {
+  try {
+    try { if (fs.statSync(file).size >= maxBytes) fs.renameSync(file, `${file}.1`) } catch { /* no log yet */ }
+    fs.appendFileSync(file, `${line}\n`, { mode: 0o600 })
+  } catch { /* best effort: never fail a session over its log */ }
+}
+
 // ROOM_LOG_FILE: also append every log line to a file (workers spawned by room_spawn get one per tag).
 let LOG_FILE: string | undefined = process.env.ROOM_LOG_FILE
+let ROOM_LOG_FILE: string | undefined
 const log = (s: string) => {
   try { fs.writeSync(2, `room-mcp: ${s}\n`) } catch { /* stderr may already be closed */ }
-  if (LOG_FILE) { try { fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${s}\n`) } catch { /* best effort */ } }
+  const at = new Date().toISOString()
+  if (LOG_FILE) { try { fs.appendFileSync(LOG_FILE, `${at} ${s}\n`) } catch { /* best effort */ } }
+  if (ROOM_LOG_FILE) appendRoomLog(ROOM_LOG_FILE, `${at} pid ${process.pid}${process.env.ROOM_TAG ? ` ${process.env.ROOM_TAG}` : ''}: ${s}`)
 }
 
 /** Where the user is working: the runner passes ROOM_DIR; the Codex plugin passes PWD through. */
@@ -44,6 +61,7 @@ async function main() {
   const dir = cwd()
   const startup = await resolveConfig({ dir, env: process.env })
   LOG_FILE = startup.logFile
+  ROOM_LOG_FILE = await gitCommonDir(dir).then(common => path.join(common, ROOM_LOG), () => undefined)
   // attachChannel is also handed to the tools so the workers room (opened by room_spawn next to a team session) pushes its wake-ups too.
   const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir, config: startup, attachChannel: s => attachChannel(s) })
   const adopt = async (s: Session) => {
@@ -57,15 +75,13 @@ async function main() {
     if (n) log(`cleared ${n} stale claim(s) from an earlier session`)
   }
 
-  let autoJoin: Promise<void> = Promise.resolve()
-
   const mcp = new Server(
     { name: 'room', version: '0.2.0' },
     { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: AGENT_INSTRUCTIONS() },
   )
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }))
   mcp.setRequestHandler(CallToolRequestSchema, async req => {
-    await autoJoin
+    await autoJoin.settle() // a join in progress decides which session the disclosure below is about
     let disclosure = ''
     if (session) {
       const sentence = pendingTeamSharingDisclosure(session)
@@ -105,41 +121,38 @@ async function main() {
   // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
   // simply a clone with a git origin. A repo nobody has opened waits for room_create.
   const prior = findRoomFile(dir)
-  autoJoin = (async () => {
-    try {
+  const chosen = startup.server
+  log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? (startup as typeof startup & { whereEnv?: string }).whereEnv ?? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
+  const autoJoin = new AutoJoin({
+    local: chosen === LOCAL,
+    log,
+    async attempt() {
+      // A session whose relay was taken by another clone's relay cannot reconnect on the same URL: leave it and join afresh.
+      if (session?.local?.lost) await tools.drop(session, session.local.lost)
       // The clone's origin + current branch always decides the room. ROOM_URL (runner) or a
       // prior .room.json only fill in when the clone has no origin.
+      if (chosen === LOCAL) return joinSession({ dir, room: startup.room, server: LOCAL, log }) // workers get the lead's room via ROOM_ROOM
+      if (startup.room) return joinSession({ dir, room: startup.room, server: chosen, log })
       const derived = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
-      const chosen = startup.server
-      log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? (startup as typeof startup & { whereEnv?: string }).whereEnv ?? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
-      if (chosen === LOCAL) {
-        // No server configured: a local room on this machine (workers get the lead's room via ROOM_ROOM).
-        await adopt(await joinSession({ dir, room: startup.room, server: LOCAL, log }))
-      } else if (startup.room) {
-        await adopt(await joinSession({ dir, room: startup.room, server: chosen, log }))
-      } else if (derived.roomName) {
-        await adopt(await joinSession({ dir, server: chosen, log }))
-      } else if (prior) {
+      if (derived.roomName) return joinSession({ dir, server: chosen, log })
+      if (prior) {
         const u = new URL(prior.room)
-        await adopt(await joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: chosen, log }))
-      } else { log(`ready; ${dir} has no git origin — call room_join with a room name`); return }
-      log('ready')
-    } catch (e) {
-      if (e instanceof NoRoom && startup.server === LOCAL && !startup.room) log(`ready; ${e.message}`)
-      else {
-        const expected = startup.server !== LOCAL || !!startup.room
-        const line = e instanceof NotLoggedIn
-          ? 'Room is not connected: not logged in; use room_login.'
-          : `Room could not join: ${e instanceof Error ? e.message : String(e)}; use room_join.`
-        if (expected) {
-          startupNotice = line
-          writePendingHookContext(dir, 'pendingNotice', line)
-        }
-        log(line)
+        return joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: chosen, log })
       }
-    }
-  })()
-  tools.setPendingJoin(autoJoin)
+      log(`ready; ${dir} has no git origin — call room_join with a room name`)
+      return undefined
+    },
+    async adopt(s) { await adopt(s); log('ready') },
+    discard: s => leaveSession(s),
+    joined: () => !!session && !session.local?.lost,
+    report(line) {
+      startupNotice = line
+      writePendingHookContext(dir, 'pendingNotice', line)
+      log(line)
+    },
+  })
+  tools.setAutoJoin(autoJoin)
+  void autoJoin.ensure()
 
   let closing = false
   const bye = async (reason: string) => {
@@ -147,7 +160,8 @@ async function main() {
     closing = true
     log(`stopping: ${reason}`)
     // A close/signal can race startup. Do not let a late auto-join create presence after shutdown.
-    try { await autoJoin } catch { /* startup already reported the error */ }
+    autoJoin.cancel()
+    await autoJoin.settle()
     try { await tools.shutdown() } catch { /* ignore */ }
     process.exit(0)
   }

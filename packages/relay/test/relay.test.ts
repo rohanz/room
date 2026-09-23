@@ -6,7 +6,7 @@ import path from 'node:path'
 import * as Y from 'yjs'
 import WebSocket from 'ws'
 import { WebsocketProvider } from 'y-websocket'
-import { deterministicPort, ensureLocalRelay, portAnswers, readRelayInfo, relayAnswers, startRelay } from '../src/index.js'
+import { deterministicPort, ensureLocalRelay, portAnswers, probeRelay, readRelayInfo, relayAnswers, startRelay } from '../src/index.js'
 import http from 'node:http'
 
 /** A stand-in for a clone's git common dir: the relay only needs a directory for its discovery file. */
@@ -175,4 +175,82 @@ it('restores memory in a new relay, excludes live state, and forgets through an 
     for (const doc of docs) doc.destroy()
     fs.rmSync(commonDir, { recursive: true, force: true })
   }
+})
+
+describe('relay discovery and takeover', () => {
+  it('a discovery file naming another clone\'s live relay is stale: the joiner runs this clone\'s relay instead', async () => {
+    const mine = await makeCommonDir(), other = await makeCommonDir()
+    const foreign = await ensureLocalRelay(other, 'local/other/main', { watchMs: 100 })
+    // e.g. the recorded port was reused by another clone's relay after this clone's owner exited
+    await fsp.writeFile(path.join(mine, 'room-local.json'), JSON.stringify({ port: foreign.port, pid: 999999, room: 'local/x/main', startedAt: Date.now(), key: 'stale-key' }))
+    const logs: string[] = []
+    const a = await ensureLocalRelay(mine, 'local/x/main', { watchMs: 100, log: l => logs.push(l) })
+    try {
+      expect(a.owned).toBe(true)
+      expect(a.port).not.toBe(foreign.port)
+      expect(readRelayInfo(mine)?.port).toBe(a.port)
+      expect(logs.join('\n')).toMatch(/does not serve this clone with its key; treating the file as stale/)
+      expect(await probeRelay(a.port, mine, a.key)).toBe('ours')
+      expect(await probeRelay(a.port, mine, 'wrong')).toBe('foreign')
+      expect(await probeRelay(a.port, other, a.key)).toBe('foreign')
+    } finally { await a.stop(); await foreign.stop() }
+  })
+
+  it('a live relay for this clone whose key differs from the discovery file is not adopted', async () => {
+    const common = await makeCommonDir()
+    const relay = await startRelay(0, { key: 'the-relays-key', commonDir: common })
+    await fsp.writeFile(path.join(common, 'room-local.json'), JSON.stringify({ port: relay.port, pid: process.pid, room: 'local/x/main', startedAt: Date.now(), key: 'another-key' }))
+    const a = await ensureLocalRelay(common, 'local/x/main', { watchMs: 100 })
+    try {
+      expect(a.port).not.toBe(relay.port)
+      expect(a.owned).toBe(true)
+    } finally { await a.stop(); await relay.close() }
+  })
+
+  it('publishes the discovery file by rename, leaving no partial or temporary file', async () => {
+    const common = await makeCommonDir()
+    const file = path.join(common, 'room-local.json')
+    await fsp.writeFile(file, 'partial{')
+    const before = (await fsp.stat(file)).ino
+    const a = await ensureLocalRelay(common, 'local/x/main', { watchMs: 100 })
+    try {
+      expect((await fsp.stat(file)).ino).not.toBe(before)
+      expect(readRelayInfo(common)?.port).toBe(a.port)
+      expect((await fsp.readdir(common)).filter(f => f.endsWith('.tmp'))).toEqual([])
+    } finally { await a.stop() }
+  })
+
+  it('a session whose relay port is taken over by another clone\'s relay is marked lost, so it joins afresh', async () => {
+    const common = await makeCommonDir(), other = await makeCommonDir()
+    const owner = await ensureLocalRelay(common, 'local/x/main', { watchMs: 30_000 })
+    const b = await ensureLocalRelay(common, 'local/x/main', { watchMs: 300 })
+    const port = owner.port
+    await owner.stop()
+    const foreign = await startRelay(port, { key: 'other-key', commonDir: other })
+    try {
+      await until(() => !!b.lost)
+      expect(b.lost).toMatch(/is now another clone's relay/)
+      expect(b.owned).toBe(false)
+    } finally { await b.stop(); await foreign.close() }
+  })
+
+  it('a stopped handle never starts a relay from a takeover attempt that was already in flight', async () => {
+    const common = await makeCommonDir()
+    const owner = await ensureLocalRelay(common, 'local/x/main', { watchMs: 30_000 })
+    const b = await ensureLocalRelay(common, 'local/x/main', { watchMs: 40 })
+    const port = owner.port
+    await owner.stop()
+    // The port now holds a dying owner: /health hangs, then the listener goes away without answering.
+    const sockets = new Set<import('node:net').Socket>()
+    const dying = http.createServer(() => { /* never answer */ })
+    dying.on('connection', s => { sockets.add(s) })
+    await new Promise<void>(r => dying.listen(port, '127.0.0.1', r))
+    await until(() => sockets.size > 0) // b's takeover probe is now waiting on the dying owner
+    const stopping = b.stop()
+    dying.close(); for (const s of sockets) s.destroy()
+    await stopping
+    await wait(300)
+    expect(b.owned).toBe(false)
+    expect(await portAnswers(port)).toBe(false)
+  })
 })

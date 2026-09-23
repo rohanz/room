@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 
 export const DEFAULT_GIT_TIMEOUT_MS = 30_000
 
@@ -67,15 +67,62 @@ export async function gitOrigin(dir: string): Promise<string | undefined> {
   }
 }
 
-/** UTF-8 blob at base, or undefined when the path did not exist at that commit. */
+/** UTF-8 blob at base, or undefined when the path did not exist at that commit. Throws when the commit itself is not in this clone. */
 export async function gitShow(dir: string, base: string, relpath: string): Promise<string | undefined> {
   try {
     return await git(dir, ['show', `${base}:${relpath}`])
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (/does not exist|exists on disk, but not in|path .* not in/i.test(message)) return undefined
-    throw error
+    if (!/does not exist|exists on disk, but not in|path .* not in/i.test(message)) throw error
+    // git words a path under an unknown commit the same way as a path the commit lacks.
+    try { await git(dir, ['cat-file', '-e', `${base}^{commit}`]) } catch { throw new Error(`commit ${base} is not in this clone`) }
+    return undefined
   }
+}
+
+/**
+ * UTF-8 blobs of many paths at one commit from a single `git cat-file --batch`; a path absent at
+ * that commit maps to undefined. Paths git's batch format cannot carry (newlines) are read one by one.
+ */
+export async function gitShowMany(dir: string, base: string, relpaths: Iterable<string>, configuredTimeoutMs?: number): Promise<Map<string, string | undefined>> {
+  const out = new Map<string, string | undefined>()
+  const batch: string[] = []
+  for (const p of relpaths) {
+    if (/[\r\n]/.test(p)) out.set(p, await gitShow(dir, base, p))
+    else batch.push(p)
+  }
+  if (!batch.length) return out
+  const timeout = timeoutMs(configuredTimeoutMs)
+  const raw = await new Promise<Buffer>((resolve, reject) => {
+    const child = spawn('git', ['cat-file', '--batch'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
+    const chunks: Buffer[] = []
+    let stderr = ''
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`git cat-file --batch failed: timed out after ${timeout}ms`)) }, timeout)
+    child.stdout.on('data', (c: Buffer) => chunks.push(c))
+    child.stderr.on('data', (c: Buffer) => { stderr += c })
+    child.on('error', e => { clearTimeout(timer); reject(e) })
+    child.on('close', code => { clearTimeout(timer); code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`git cat-file --batch failed: ${stderr.trim() || `exit ${code}`}`)) })
+    child.stdin.on('error', () => { /* reported by close */ })
+    child.stdin.end(batch.map(p => `${base}:${p}\n`).join(''))
+  })
+  let at = 0
+  for (const p of batch) {
+    const eol = raw.indexOf(0x0a, at)
+    const header = raw.subarray(at, eol).toString()
+    at = eol + 1
+    const [, type, size] = header.split(' ')
+    if (header.endsWith(' missing') || header.endsWith(' ambiguous') || size === undefined) { out.set(p, undefined); continue }
+    const n = Number(size)
+    out.set(p, type === 'blob' ? raw.subarray(at, at + n).toString('utf8') : undefined)
+    at += n + 1
+  }
+  return out
+}
+
+/** Paths whose worktree or index differs from HEAD, untracked non-ignored files included: what an overlay seed must look at. */
+export async function gitChanged(dir: string): Promise<string[]> {
+  const out = await git(dir, ['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all', '--no-renames', '--ignore-submodules=all'])
+  return out.split('\0').filter(Boolean).map(entry => entry.slice(3))
 }
 
 /**

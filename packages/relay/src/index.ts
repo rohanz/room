@@ -118,6 +118,8 @@ export interface LocalRelay {
   key: string
   /** True when this process runs the relay. */
   owned: boolean
+  /** Set when this clone's relay port is now served by another relay: the session must join afresh. */
+  readonly lost?: string
   /** Forget this room's saved memory until the relay next restarts. */
   forget?(): Promise<void>
   stop(): Promise<void>
@@ -156,15 +158,37 @@ export function portAnswers(port: number, timeoutMs = 500): Promise<boolean> {
 }
 
 /** Is a room relay (not some unrelated service) answering on 127.0.0.1:port? Probes /health for {"local":true}. */
-export function relayAnswers(port: number, timeoutMs = 800): Promise<boolean> {
+export async function relayAnswers(port: number, timeoutMs = 800): Promise<boolean> {
+  return (await health(port, undefined, timeoutMs))?.local === true
+}
+
+/** Which clone a relay serves: a hash of its git common dir (the path itself is never sent). */
+export function cloneId(commonDir: string): string {
+  let real = commonDir
+  try { real = fs.realpathSync.native(commonDir) } catch { /* use as given */ }
+  return crypto.createHash('sha256').update(real).digest('hex')
+}
+
+/**
+ * Who answers on 127.0.0.1:port: 'ours' is a relay for this clone that accepts `key`; 'foreign' is a
+ * room relay for another clone or with another key (a stale or inconsistent discovery file); 'none' is
+ * nothing, or something that is not a room relay.
+ */
+export async function probeRelay(port: number, commonDir: string, key: string, timeoutMs = 800): Promise<'ours' | 'foreign' | 'none'> {
+  const h = await health(port, key, timeoutMs)
+  if (h?.local !== true) return 'none'
+  return h.clone === cloneId(commonDir) && h.key === true ? 'ours' : 'foreign'
+}
+
+function health(port: number, key: string | undefined, timeoutMs: number): Promise<{ local?: unknown; clone?: unknown; key?: unknown } | undefined> {
   return new Promise(resolve => {
-    const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs }, res => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs, ...(key ? { headers: { authorization: `Bearer ${key}` } } : {}) }, res => {
       let body = ''
       res.on('data', c => { body += c })
-      res.on('end', () => { try { resolve(res.statusCode === 200 && JSON.parse(body).local === true) } catch { resolve(false) } })
+      res.on('end', () => { try { resolve(res.statusCode === 200 ? JSON.parse(body) : undefined) } catch { resolve(undefined) } })
     })
-    req.on('timeout', () => { req.destroy(); resolve(false) })
-    req.on('error', () => resolve(false))
+    req.on('timeout', () => { req.destroy(); resolve(undefined) })
+    req.on('error', () => resolve(undefined))
   })
 }
 
@@ -198,7 +222,13 @@ export function startRelay(port: number, opts: { staticDir?: string; key?: strin
     const staticDir = opts.staticDir ? path.resolve(opts.staticDir) : findWebDist()
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://x')
-      if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true,"local":true}'); return }
+      if (url.pathname === '/health') {
+        // Open to joiners; with the clone's key it also confirms the key, so a stale discovery file is never trusted.
+        const keyOk = !!opts.key && isLoopback(req.socket.remoteAddress) && req.headers.authorization === 'Bearer ' + opts.key
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, local: true, ...(opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}), ...(keyOk ? { key: true } : {}) }))
+        return
+      }
       if (req.method === 'DELETE' && url.pathname === '/memory') {
         if (!opts.key || req.headers.authorization !== 'Bearer ' + opts.key || !isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end(); return }
         try {
@@ -280,14 +310,25 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
   let owned: { port: number; close(): Promise<void> } | null = null
   let port = 0
   let key = ''
+  /** Publish the discovery file atomically: readers see the old file or the new one, never a partial one. */
   const write = () => {
-    try { fs.writeFileSync(relayFile(commonDir), JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key } satisfies LocalRelayInfo) + '\n', { mode: 0o600 }); fs.chmodSync(relayFile(commonDir), 0o600) }
-    catch (e) { log(`local relay: could not write ${relayFile(commonDir)}: ${e instanceof Error ? e.message : e}`) }
+    const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`
+    try {
+      fs.writeFileSync(tmp, JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key } satisfies LocalRelayInfo) + '\n', { mode: 0o600 })
+      fs.chmodSync(tmp, 0o600)
+      fs.renameSync(tmp, file)
+    } catch (e) {
+      try { fs.rmSync(tmp, { force: true }) } catch { /* nothing to clean */ }
+      log(`local relay: could not write ${file}: ${e instanceof Error ? e.message : e}`)
+    }
   }
-  /** A live relay recorded in the file, if any. */
+  /** The relay recorded in the file, if it serves this clone and accepts the recorded key; otherwise the file is stale. */
   const recorded = async (): Promise<LocalRelayInfo | undefined> => {
     const info = readRelayInfo(commonDir)
-    return info && (await relayAnswers(info.port)) ? info : undefined
+    if (!info) return undefined
+    const who = await probeRelay(info.port, commonDir, info.key)
+    if (who === 'foreign') log(`local room ${room}: ${relayFile(commonDir)} names a relay on 127.0.0.1:${info.port} that does not serve this clone with its key; treating the file as stale`)
+    return who === 'ours' ? info : undefined
   }
   const adopt = (info: LocalRelayInfo, how: string) => {
     port = info.port; key = info.key
@@ -316,7 +357,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
       // Another racer that also fell back to a free port may have written after us: keep one relay.
       await new Promise(r => setTimeout(r, 150))
       const other = readRelayInfo(commonDir)
-      if (other && other.port !== port && other.pid !== process.pid && (await relayAnswers(other.port))) {
+      if (other && other.port !== port && other.pid !== process.pid && (await probeRelay(other.port, commonDir, other.key)) === 'ours') {
         await owned.close(); owned = null
         adopt(other, 'two relays started together; closed ours and joined the')
       } else if (other?.port !== port) write()
@@ -324,17 +365,27 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
   }
 
   let stopped = false
+  let lost: string | undefined
+  let ticking: Promise<void> | null = null
   const tick = async () => {
-    if (stopped || owned) return
-    if (await relayAnswers(port)) return
+    if (stopped || owned || lost) return
+    const who = await probeRelay(port, commonDir, key)
+    if (stopped || who === 'ours') return
+    if (who === 'foreign') {
+      lost = `127.0.0.1:${port} is now another clone's relay`
+      log(`local room ${room}: ${lost}; the session will join afresh`)
+      return
+    }
     // Relay gone: race for its port. EADDRINUSE means another client won; we'll reconnect to it.
-    try {
-      owned = await startRelay(port, { key, staticDir: opts.staticDir, commonDir, log })
-      write()
-      log(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`)
-    } catch { /* someone else did */ }
+    let started: Awaited<ReturnType<typeof startRelay>>
+    try { started = await startRelay(port, { key, staticDir: opts.staticDir, commonDir, log }) } catch { return /* someone else did */ }
+    if (stopped) { await started.close(); return }
+    owned = started
+    write()
+    log(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`)
   }
-  const timer = setInterval(() => { void tick() }, opts.watchMs ?? 2000)
+  // One takeover attempt at a time; stop() waits for the one in flight.
+  const timer = setInterval(() => { ticking ??= tick().finally(() => { ticking = null }) }, opts.watchMs ?? 2000)
   timer.unref?.()
 
   return {
@@ -343,6 +394,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     port,
     key,
     get owned() { return owned !== null },
+    get lost() { return lost },
     async forget() {
       const response = await fetch('http://127.0.0.1:' + port + '/memory?room=' + encodeURIComponent(room), {
         method: 'DELETE', headers: { authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(5000),
@@ -352,6 +404,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     async stop() {
       stopped = true
       clearInterval(timer)
+      await ticking
       // The file stays: it records the port and key the survivors will take over with, and new
       // joiners probe the port before trusting it.
       if (owned) { await owned.close(); owned = null }

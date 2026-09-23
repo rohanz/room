@@ -4,6 +4,7 @@ import { Areas, CODEOWNERS_PATHS, RoomDoc, claimsOverlap, describeClaim, formatM
 import type { Claim, ConflictMsg, Msg, NoteMsg, Plan, PlanMsg, Presence, Priority, ReleaseMsg, Scope, Worker } from '@room/shared'
 import { type ShareLevel, type SharePresence } from '@room/roomd'
 import { git, gitShow } from '@room/roomd/git'
+import { workerBaseline } from '@room/roomd/baseline'
 import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
 import { ConflictWatcher } from '../conflicts.js'
@@ -126,10 +127,10 @@ export interface HandlerState {
   scheduleInboxWrite: () => void
   upgraded: Set<string>
   conflictPairs: Set<string>
-  pendingJoin: Promise<void> | null
   attachHooks: (s: Session) => void
   clearStale: (s: Session) => number
   shutdown: () => Promise<void>
+  drop: (s: Session, reason: string) => Promise<void>
   flushConflicts: () => Promise<void>
 }
 
@@ -151,7 +152,8 @@ export const PLANS = {
 export const SHARE = { type: 'string', enum: ['intent', 'declared', 'full'], description: 'intent: plans only; declared: scoped files; full: all changed files' }
 
 export class NotJoined extends Error {}
-export class NeedFetch extends Error { constructor(public person: string, public sha: string, public detail: string) { super(detail) } }
+/** A person's base is not in this clone; `lead` is set when it is a worker's carried commit, which only its lead's machine has. */
+export class NeedFetch extends Error { constructor(public person: string, public sha: string, public detail: string, public lead?: string) { super(detail) } }
 
 /** Only disconnected local workers may expose their worktree to the lead. */
 export function diskWorker(s: Session, person: string): Worker | undefined {
@@ -188,7 +190,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const seen = new Set<string>() // message ids already shown in the inbox (ids, not indexes: the bus is a concurrent array)
   const upgraded = new Set<string>() // "msgId:person" copies already posted
   const conflictPairs = new Set<string>() // sorted "a:b" claim-id pairs already reported
-  let pendingJoin: Promise<void> | null = null
   /** The lead-in-two-rooms bridge, while a workers room is open (owned by that session's attachment). */
   let roomBridge: Bridge | null = null
   /** The primary session's hooks bridge (state file); the inbox asks it to rewrite after marking messages seen. */
@@ -298,10 +299,15 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() })
   }
   const base = (s: Session) => s.room.meta.base ?? 'HEAD'
-  /** The commit a person's overlay is a delta from (their own HEAD), falling back to the room base. */
+  /** The commit a person's overlay is a delta from (their own HEAD), falling back to the room base. A carried worker in a
+   *  team room publishes its lead's HEAD, because only the lead's machine has the carried commit; that machine (the lead
+   *  and its workers) uses the carried commit itself. */
   const baseFor = (s: Session, person: string) => {
     const worker = diskWorker(s, person)
-    return worker ? worker.base ?? base(s) : s.room.baseOf(person) ?? base(s)
+    if (worker) return worker.base ?? base(s)
+    const record = s.room.workerOf(person)
+    if (workerBaseline(record)?.carriedCommit && (record!.lead === s.me.name || s.room.workerOf(s.me.name)?.lead === record!.lead)) return record!.base!
+    return s.room.baseOf(person) ?? base(s)
   }
   const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(diskWorker(s, person)?.dir ?? s.dir, baseFor(s, person), path)
   /** A person's HEAD + their overlay; undefined if the file exists nowhere; null if they deleted it.
@@ -313,7 +319,10 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     const ov = s.room.text(path, person)
     if (ov !== undefined) return ov
     try { return await baseText(s, path, person) }
-    catch (e) { throw new NeedFetch(person, baseFor(s, person), e instanceof Error ? e.message : String(e)) }
+    catch (e) {
+      const sha = baseFor(s, person), worker = s.room.workerOf(person), baseline = workerBaseline(worker)
+      throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker!.lead : undefined)
+    }
   }
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
@@ -385,8 +394,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite: () => primaryHooks?.scheduleWrite(),
     upgraded, conflictPairs,
-    get pendingJoin() { return pendingJoin },
-    set pendingJoin(value: Promise<void> | null) { pendingJoin = value },
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
     clearStale: (s: Session) => { runtime.evictStale(s); return runtime.cleanupMine(s, 'stale from an earlier session') },
     async shutdown() {
@@ -397,6 +404,12 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       } catch { /* best effort */ } }
       await runtime.closeWorkersRoom().catch(() => {})
       try { runtime.cleanupMine(s, 'session ended') } catch { /* best effort */ }
+      rooms.remove(s)
+      await doLeave(s)
+    },
+    async drop(s: Session, reason: string) {
+      log(`leaving ${s.roomName}: ${reason}`)
+      try { runtime.cleanupMine(s, reason) } catch { /* best effort */ }
       rooms.remove(s)
       await doLeave(s)
     },

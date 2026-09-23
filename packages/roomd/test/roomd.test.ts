@@ -512,6 +512,54 @@ describe('roomd v2 push-only overlays', () => {
     expect(worker.roomDoc.meta.base).toBe(sharedBase)
   })
 
+  /** A lead with uncommitted work and a worker spawned from it: carried commit C on top of the lead's HEAD P, plus a copied untracked file. */
+  const carriedWorker = async () => {
+    const source = await makeRepo({ 'app.py': 'base\n', 'other.py': 'other\n' })
+    const leadHead = sh(source, ['rev-parse', 'HEAD'])
+    const workerDir = path.join(source, '.room', 'workers', 'w')
+    sh(source, ['worktree', 'add', '-qb', 'room/w', workerDir])
+    await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\n')
+    sh(workerDir, ['-c', 'user.name=Room', '-c', 'user.email=room@localhost', 'commit', '-qam', 'room: carried-in uncommitted work from Alice'])
+    const carried = sh(workerDir, ['rev-parse', 'HEAD'])
+    await fsp.writeFile(path.join(workerDir, 'notes.txt'), 'lead notes\n')
+    const blob = execFileSync('git', ['hash-object', '-w', 'notes.txt'], { cwd: workerDir, encoding: 'utf8' }).trim()
+    const record = { id: 'Alice/w#1', tag: 'w', name: 'Alice+w', host: 'codex' as const, task: 't', dir: workerDir, branch: 'room/w', base: carried, carriedBase: carried, carriedUntracked: [{ path: 'notes.txt', sha: blob }], pid: 1, startedAt: Date.now(), status: 'running' as const, lead: 'Alice' }
+    return { source, leadHead, workerDir, carried, record }
+  }
+
+  it('a worker never publishes the lead\'s carried files as its own changes; an edited carried untracked file diffs against its carried text', async () => {
+    const { source, workerDir, carried, record } = await carriedWorker()
+    const roomUrl = room()
+    const lead = await start({ room: roomUrl, dir: source, name: 'Alice', localKey: 'k' })
+    lead.roomDoc.setWorker(record)
+    const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', localKey: 'k' })
+    expect(worker.roomDoc.baseOf('Alice+w')).toBe(carried)
+    expect(worker.roomDoc.changedPaths('Alice+w')).toEqual([])
+    await fsp.writeFile(path.join(workerDir, 'notes.txt'), 'lead notes\nworker line\n')
+    await waitFor(() => worker.roomDoc.changedPaths('Alice+w').includes('notes.txt'))
+    expect(worker.roomDoc.baseText(carried, 'notes.txt')).toBe('lead notes\n')
+  })
+
+  it('in a team room a carried worker publishes against the lead\'s base, which teammates have, without the carried files', async () => {
+    const { source, leadHead, workerDir, record } = await carriedWorker()
+    const roomUrl = room()
+    const lead = await start({ room: roomUrl, dir: source, name: 'Alice' })
+    lead.roomDoc.setWorker(record)
+    const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w' })
+    expect(worker.roomDoc.baseOf('Alice+w')).toBe(leadHead)
+    expect(worker.roomDoc.changedPaths('Alice+w')).toEqual([])
+    // A worker edit on top of a carried file: the full text, with the base text a teammate's clone has.
+    await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\nworker line\n')
+    await fsp.writeFile(path.join(workerDir, 'other.py'), 'other\nworker line\n')
+    await waitFor(() => worker.roomDoc.changedPaths('Alice+w').length === 2)
+    expect(worker.roomDoc.text('app.py', 'Alice+w')).toBe('lead WIP\nworker line\n')
+    expect(worker.roomDoc.baseText(leadHead, 'app.py')).toBe('base\n')
+    expect(worker.roomDoc.baseText(leadHead, 'other.py')).toBe('other\n')
+    // Reverting to the carried text withdraws the overlay again.
+    await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\n')
+    await waitFor(() => !worker.roomDoc.changedPaths('Alice+w').includes('app.py'))
+  })
+
   it('a clone behind the room base may join, is marked behind, and syncs after pulling', async () => {
     const source = await makeRepo({ 'app.py': 'base\n' })
     const behind = await cloneRepo(source)
