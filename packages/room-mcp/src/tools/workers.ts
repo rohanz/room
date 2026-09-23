@@ -1,4 +1,4 @@
-import { claudeWakeUnavailable } from '../prompt.js'
+import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
 import { pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree } from '../workers.js'
 import { releaseClaimsOnDone } from './claims.js'
@@ -181,7 +181,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         proc.onExit(code => exited(code))
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
-        if (claudeWakeUnavailable(lead.dir)) out.unshift('Lead wake-ups are not confirmed for this Claude session; block on room_wait in a loop to receive worker questions and completions.')
+        const wakeNote = claudeWakeNote(lead, 'spawn')
+        if (wakeNote) out.unshift(wakeNote)
         out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${priority.nice ? `nice ${priority.nice}` : 'normal'}${effort ? ` · effort ${effort}` : ''}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
         if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)

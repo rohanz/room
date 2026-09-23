@@ -1,4 +1,5 @@
 import { sharingDescription } from '../config.js'
+import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
@@ -62,6 +63,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await loadAreas(s)
       const m = s.room.meta
       const out: string[] = [s.local ? 'local: nothing leaves this machine' : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${new Set(presences(s).filter(p => p.user.name !== s.me.name && !isPrName(p.user.name)).map(p => p.user.owner ?? p.user.name)).size} people`]
+      if (state.hasCompany(s).company) {
+        const wakeNote = claudeWakeNote(s, 'company')
+        if (wakeNote) out.unshift(wakeNote)
+      }
       if (typeof a.path === 'string' && a.path) { out.push(await pathState(a)); if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`); return out.join('\n') }
       const wsRoom = rooms.workers()
       const since = offlineSince(s, now)

@@ -16,12 +16,28 @@ export function claudeWakeUnavailable(dir: string, host = resolveSessionHost(dir
 }
 
 const wakeNoted = new WeakSet<Session>()
+const workerWaitNoted = new WeakSet<Session>()
 
-/** A neutral reminder on join, once per session; an explicit opt-out stays quiet. */
-export function claudeWakeNote(session: Session): string {
-  if (process.env.ROOM_CLAUDE_CHANNEL === '' || wakeNoted.has(session) || !claudeWakeUnavailable(session.dir)) return ''
+/** Plain wording is separate from process detection so shell-specific setup can be checked. */
+export function claudeWakeText(shell?: string): string {
+  const rc = shell?.endsWith('bash') ? '~/.bashrc' : '~/.zshrc'
+  return [
+    "For your human: this Claude Code session can't be woken instantly. Everything still works; messages reach it on its next turn.",
+    `To turn wake-ups on, start Claude Code with \`claude-room\`. If that command is not found, add it: \`echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ${rc}\``,
+    'On a claude.ai Team or Enterprise account, an Owner must enable channels first.',
+  ].join('\n')
+}
+
+/** One human note per session; a later first spawn still gets its worker wait instruction. */
+export function claudeWakeNote(session: Session, moment: 'alone' | 'company' | 'spawn', options: { host?: string; parentArgs?: string; shell?: string } = {}): string {
+  if (moment === 'alone' || process.env.ROOM_CLAUDE_CHANNEL === '' || !claudeWakeUnavailable(session.dir, options.host, options.parentArgs)) return ''
+  const forWorkers = moment === 'spawn' && !workerWaitNoted.has(session)
+  if (forWorkers) workerWaitNoted.add(session)
+  const workerInstruction = 'Block on room_wait in a loop to receive worker questions and completions.'
+  if (wakeNoted.has(session)) return forWorkers ? workerInstruction : ''
   wakeNoted.add(session)
-  return 'Wake-ups on Claude Code need the session started with claude-room (or the channels flag).'
+  const humanNote = claudeWakeText(options.shell ?? process.env.SHELL)
+  return forWorkers ? `${workerInstruction}\n${humanNote}` : humanNote
 }
 
 /** Agent instructions: MCP `instructions` for Claude Code and the first-turn preamble for the Codex runner. The plugin's room-etiquette skill is the long form, loaded on demand. */

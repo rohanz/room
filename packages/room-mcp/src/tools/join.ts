@@ -207,7 +207,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       out.push('next: room_scope(area, summary, paths) before you edit.')
-      const wakeNote = claudeWakeNote(s)
+      const wakeNote = here.length ? claudeWakeNote(s, 'company') : ''
       if (wakeNote) out.push(wakeNote)
       return out.join('\n')
     },

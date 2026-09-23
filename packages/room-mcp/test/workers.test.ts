@@ -5,7 +5,7 @@ import fs, { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdir
 import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { Awareness } from 'y-protocols/awareness'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import { RoomDoc, shouldWakeOnMsg } from '@room/shared'
 import type { Identity, Msg } from '@room/shared'
 import { createTools } from '../src/tools.js'
@@ -628,7 +628,7 @@ function setupLead() {
     spawner: spec => { specs.push(spec); return { pid: 4242 + specs.length, onExit: cb => { exits.push(cb) }, kill: () => { killed.push(1); return true } } },
     worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
   })
-  return { a, b, leadTools, specs, exits, killed }
+  return { a, b, session: ls, leadTools, specs, exits, killed }
 }
 
 describe('worker safety', () => {
@@ -1197,17 +1197,40 @@ describe('spawn inputs and effort', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
-  it('warns conservatively for a Claude lead and puts the room_wait instruction first', async () => {
+  it('guides a Claude lead only on the first spawn, after a silent solo room_state', async () => {
     expect(claudeWakeUnavailable(dir, 'claude', 'claude')).toBe(true)
     expect(claudeWakeUnavailable(dir, 'codex', 'codex')).toBe(false)
     expect(claudeWakeUnavailable(dir, 'claude', 'claude --dangerously-load-development-channels plugin:room@room')).toBe(false)
     expect(claudeWakeUnavailable(dir, 'claude', 'claude --channels plugin:unrelated@other')).toBe(true)
     vi.stubEnv('ROOM_HOST', 'claude')
-    vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
+    vi.stubEnv('SHELL', '/bin/bash')
     const t = setupLead()
+    expect(await t.leadTools.call('room_state', {})).not.toContain('For your human:')
     const reply = await t.leadTools.call('room_spawn', { tag: 'warning', task: 'x' })
-    expect(reply.startsWith('Lead wake-ups are not confirmed')).toBe(true)
-    expect(reply.split('\n')[0]).toContain('room_wait in a loop')
+    expect(reply.split('\n')[0]).toBe('Block on room_wait in a loop to receive worker questions and completions.')
+    expect(reply.split('\n')[1]).toMatch(/^For your human:/)
+    expect(reply).toContain('>> ~/.bashrc')
+    const second = await t.leadTools.call('room_spawn', { tag: 'another', task: 'y' })
+    expect(second).not.toContain('For your human:')
+    expect(second).not.toContain('room_wait in a loop')
+    await t.leadTools.shutdown()
+  })
+
+  it('guides once when another participant is present on room_state', async () => {
+    vi.stubEnv('ROOM_HOST', 'claude')
+    const t = setupLead()
+    const peerDoc = new Y.Doc()
+    const peer = new Awareness(peerDoc)
+    peer.setLocalState({ user: { name: 'teammate', kind: 'agent' }, status: 'working' })
+    applyAwarenessUpdate(t.session!.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+    const first = await t.leadTools.call('room_state', {})
+    expect(first).toContain('For your human:')
+    expect(await t.leadTools.call('room_state', {})).not.toContain('For your human:')
+    const spawn = await t.leadTools.call('room_spawn', { tag: 'after-state', task: 'x' })
+    expect(spawn.split('\n')[0]).toBe('Block on room_wait in a loop to receive worker questions and completions.')
+    expect(spawn).not.toContain('For your human:')
+    peer.destroy()
+    peerDoc.destroy()
     await t.leadTools.shutdown()
   })
 })
