@@ -1,13 +1,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { git, gitShow } from '@room/roomd/git'
+import { git } from '@room/roomd/git'
 import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
 import { workerOwnedPaths } from '../workers.js'
+import { baselineText, checkoutText, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
 import { diskWorker, type HandlerState } from './context.js'
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
-export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; baseText?: typeof gitShow } = {}) {
+export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding } = {}) {
   const { rooms, liveText, baseFor, shareOf } = state
   const people = participants.map(p => p.person)
   // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
@@ -37,14 +38,14 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     try { ancestor = (await git(caller.dir, ['merge-base', ancestor, item.base])).trim() }
     catch { throw new Error(`${item.person}'s HEAD ${item.base.slice(0, 10)} is not in this clone; git fetch, then retry`) }
   }
-  // Each worker's delta is its tree against its own recorded base. When spawn carried the lead's uncommitted work in,
-  // that base is the carried commit; a shared merge-base would count the carried lines as the worker's.
-  const deltaBases = new Map<string, string>()
-  for (const { person, session } of participants) {
-    const own = session.room.workerOf(person)?.base
-    const usable = own && own !== ancestor && await git(caller.dir, ['merge-base', '--is-ancestor', ancestor, own]).then(() => true, () => false)
-    deltaBases.set(person, usable ? own : ancestor)
-  }
+  // A worker's own changes are its tree against its baseline (baseline.ts), whichever side calls:
+  // a shared merge-base would count the lead's carried work as the worker's.
+  const descends = (from: string, sha: string) => git(caller.dir, ['merge-base', '--is-ancestor', from, sha]).then(() => true, () => false)
+  const callerWorker = caller.room.workerOf(caller.me.name)
+  const callerBaseline = await pairBaseline(callerWorker, undefined, ancestor, descends)
+  const pairs = new Map<string, Baseline | undefined>()
+  for (const { person, session } of participants) pairs.set(person, await pairBaseline(callerWorker, session.room.workerOf(person), ancestor, descends))
+  const deltaBases = new Map([...pairs].map(([person, pair]) => [person, pair?.sha ?? ancestor]))
   const pathSet = new Set<string>()
   const ignoredNotes: string[] = []
   for (const item of [{ person: caller.me.name, session: caller }, ...participants]) {
@@ -58,7 +59,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       for (const p of (await git(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) pathSet.add(p)
       for (const p of (await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) pathSet.add(p)
     }
-    for (const base of new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? ancestor])) {
+    for (const base of new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? callerBaseline?.sha ?? ancestor])) {
       if (base !== ancestor) for (const p of (await git(caller.dir, ['diff', '--name-only', ancestor, base])).split('\n').filter(Boolean)) pathSet.add(p)
     }
   }
@@ -92,21 +93,28 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       ignoredNotes.push('NOT previewed (directory or nested repository): ' + p)
     }
   }
-  const paths = Array.from(pathSet).sort()
   const baseTexts = new Map<string, string | null>()
   const textAt = async (sha: string, p: string) => {
     const key = sha + ':' + p
-    if (!baseTexts.has(key)) baseTexts.set(key, (await (options.baseText ?? gitShow)(caller.dir, sha, p)) ?? null)
+    if (!baseTexts.has(key)) baseTexts.set(key, (await checkoutText(caller.dir, `${sha}:${p}`, p, options.encoding)) ?? null)
     return baseTexts.get(key)!
   }
+  const baseAt = async (pair: Baseline | undefined, p: string) => pair ? (await baselineText(pair, p, textAt, options.encoding)) ?? null : textAt(ancestor, p)
+  for (const pair of new Set([callerBaseline, ...pairs.values()])) for (const p of pair?.untracked.keys() ?? []) {
+    if (pathSet.has(p)) await baseAt(pair, p).catch(error => {
+      if (!(error instanceof MissingBaseBlob)) throw error
+      pathSet.delete(p)
+      ignoredNotes.push(error.message)
+    })
+  }
+  const paths = Array.from(pathSet).sort()
   const merged = new Map<string, string | null>()
   const owners = new Map<string, string[]>()
   for (const p of paths) {
-    const b = await textAt(ancestor, p)
     const mine = await previewText(caller, p, caller.me.name)
-    const text = mine === undefined ? b : mine
+    const text = mine === undefined ? await textAt(ancestor, p) : mine
     merged.set(p, text)
-    if (text !== b) owners.set(p, [caller.me.name])
+    if (text !== await baseAt(callerBaseline, p)) owners.set(p, [caller.me.name])
   }
   const initial = new Map(merged)
   const out = [`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: git):`]
@@ -119,11 +127,11 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   for (const [index, { person, session }] of participants.entries()) {
     const declaredNote = shareOf(session, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
     const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], resolvable: string[] = []
-    const deltaBase = deltaBases.get(person)!
+    const pair = pairs.get(person)
     for (const p of paths) {
-      const b = await textAt(deltaBase, p)
       const mine = merged.get(p)
       const theirsRaw = await previewText(session, p, person)
+      const b = await baseAt(pair, p)
       const mineT = mine ?? '', theirs = theirsRaw === undefined ? b : theirsRaw
       if (theirs === b) continue
       if (mine === b || mine === theirs) {
@@ -189,7 +197,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       } else hardCount++
       conflicts.push(`${p}${unresolved ? '' : ' (resolvable)'}\n${detail.join('\n')}`)
     }
-    out.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(' + ')}${deltaBase === ancestor ? '' : ` (${person}'s changes since its base ${deltaBase.slice(0, 10)})`}`)
+    out.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(' + ')}${pair && pair.sha !== ancestor ? ` (against ${pair.worker}'s base ${pair.sha.slice(0, 10)})` : ''}`)
     if (declaredNote) out.push(declaredNote)
     if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
     if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)

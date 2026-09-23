@@ -6,6 +6,7 @@ import { bareSymbol, observedContractChanges, SymbolGraph, type FileSymbols, typ
 import { git, gitShow } from '@room/roomd/git'
 import { parseFile, ensureLanguages } from './parse/engine.js'
 import { specForPath } from './parse/index.js'
+import { baselineText, workerBaseline } from '@room/roomd/baseline'
 
 const isSourcePath = (path: string): boolean => specForPath(path) !== undefined
 const MAX_FILES = 3000
@@ -23,24 +24,25 @@ export async function referencesSymbol(path: string, text: string, symbol: strin
   const parsed = parseFile(path, text)
   if (!parsed) return false
   const wanted = bareSymbol(symbol)
-  if (parsed.refs.some(ref => bareSymbol(ref) === wanted)) return true
-  // The parser removes local definitions from refs. Mask the declaration name and parse
-  // again so a worker call elsewhere in the same file remains visible.
-  const own = parsed.defs.filter(definition => bareSymbol(definition.name) === wanted)
-  if (!own.length) return false
-  const lines = text.split('\n')
-  let masked = false
-  for (const definition of own) {
-    const escaped = definition.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const namedDeclaration = new RegExp(`(\\b(?:async\\s+)?(?:def|function\\*?|class|interface|type|enum|fn|func)\\s+)${escaped}\\b`)
-    for (let line = definition.from - 1; line < Math.min(definition.to, lines.length); line++) {
-      if (!namedDeclaration.test(lines[line])) continue
-      lines[line] = lines[line].replace(namedDeclaration, '$1__room_definition__')
-      masked = true
-      break
-    }
-  }
-  return masked && (parseFile(path, lines.join('\n'))?.refs.some(ref => bareSymbol(ref) === wanted) ?? false)
+  return [...parsed.refs, ...parsed.ownRefs].some(ref => bareSymbol(ref) === wanted)
+}
+
+/**
+ * Whether a consumer uses `symbol` as defined in `provider`: a call in the provider's own file,
+ * or a reference the graph's import narrowing resolves to the provider rather than to another
+ * definer that `known` (the caller's symbol graph) has indexed.
+ */
+export async function consumesSymbol(consumer: string, text: string, provider: string, symbol: string, known?: SymbolGraph): Promise<boolean> {
+  if (!await referencesSymbol(consumer, text, symbol)) return false
+  if (consumer === provider) return true
+  const parsed = parseFile(consumer, text)!
+  const name = symbol.split(/[.:]+/).filter(Boolean).at(-1) ?? symbol
+  const files = new Map<string, FileSymbols>([[provider, { defs: [name], refs: [], imports: [] }]])
+  for (const path of known?.definersOf(name) ?? []) if (path !== provider && path !== consumer) files.set(path, known!.symbolsOf(path)!)
+  files.set(consumer, { defs: parsed.defs.map(definition => definition.name), refs: parsed.refs, imports: parsed.imports })
+  const graph = new SymbolGraph(path => files.get(path))
+  for (const path of files.keys()) graph.set(path, '')
+  return graph.dependenciesOf(consumer).some(dep => dep.symbol === name && dep.definedIn.includes(provider))
 }
 
 export class GraphIndex {
@@ -158,7 +160,10 @@ export class GraphIndex {
         } as FileSymbols & { imports?: string[] } : undefined
         const mine = this.room.text(path, this.me)
         const mineDeleted = this.room.deleted.get(this.me)?.has(path) ?? false
-        const baseText = mine !== undefined || mineDeleted ? await gitShow(this.dir, this.base, path) : undefined
+        // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
+        const own = workerBaseline(this.room.workerOf(this.me))
+        const read = (sha: string, file: string) => gitShow(this.dir, sha, file)
+        const baseText = mine !== undefined || mineDeleted ? await (own ? baselineText(own, path, read).catch(() => undefined) : read(this.base, path)) : undefined
         if (this.stopped) return
         if (generation !== this.generation || revision !== this.revisions.get(path)) continue
         if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }

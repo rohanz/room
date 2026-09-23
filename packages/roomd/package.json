@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./git": "./src/git.ts",
+    "./baseline": "./src/baseline.ts",
     "./local": "./src/local.ts"
   },
   "bin": {

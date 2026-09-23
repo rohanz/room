@@ -198,9 +198,13 @@ export const parseFile: FileParser = (path, text) => {
     }
     const own = new Set(defs.map(definition => definition.name))
     const keywords = new Set(loaded.spec.keywords ?? [])
-    for (const value of [...refs]) if ((own.has(value) && !externalRefs.has(value)) || keywords.has(value)) refs.delete(value)
+    const ownRefs = new Set<string>()
+    for (const value of [...refs]) {
+      if (keywords.has(value)) refs.delete(value)
+      else if (own.has(value) && !externalRefs.has(value)) { refs.delete(value); ownRefs.add(value) }
+    }
     defs.sort((a, b) => a.from - b.from || a.to - b.to || a.name.localeCompare(b.name))
-    return { defs, refs: [...refs].sort(), imports: [...imports].sort() } satisfies ParsedFile
+    return { defs, refs: [...refs].sort(), ownRefs: [...ownRefs].sort(), imports: [...imports].sort() } satisfies ParsedFile
   } catch (error) {
     warnOnce(`cannot parse ${loaded.spec.grammar}`, error)
     return undefined

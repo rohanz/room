@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { observedContractChanges, SymbolGraph, regexExtractor, symbolRange } from './graph.js'
 import type { FileParser, ParsedDef } from './parsed.js'
 
-const parsed = (defs: ParsedDef[]): ReturnType<FileParser> => ({ defs, refs: [], imports: [] })
+const parsed = (defs: ParsedDef[]): ReturnType<FileParser> => ({ defs, refs: [], ownRefs: [], imports: [] })
 
 describe('SymbolGraph', () => {
   it('extracts python defs and refs, ignoring keywords and self-defs', () => {

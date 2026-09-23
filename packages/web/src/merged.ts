@@ -66,21 +66,28 @@ export function unifiedDiffLines(before: string, after: string): UnifiedLine[] {
   }))
 }
 
-export interface MergeParticipant { name: string; text: string }
+/** `base` is the participant's own baseline text when it differs from the common base (a carried worker). */
+export interface MergeParticipant { name: string; text: string; base?: string }
 export interface NamedMergedLine extends MergedLine { changedBy: string[]; lineNumbers: Record<string, number> }
 
-/** Fold against the same base; expanded conflict alternatives retain their provenance. */
+/**
+ * Fold in order, like the tools' preview: the first participant's tree, then each other's changes
+ * against the pair's base, which is a participant's own base when either has one (a carried worker),
+ * else the common base. Lines are credited against each participant's own base; expanded conflict
+ * alternatives retain their provenance.
+ */
 export function classifyNWay(base: string, participants: readonly MergeParticipant[]): NamedMergedLine[] {
   base = asText(lines(base))
-  participants = participants.map(p => ({ ...p, text: asText(lines(p.text)) }))
+  participants = participants.map(p => ({ ...p, text: asText(lines(p.text)), ...(p.base === undefined ? {} : { base: asText(lines(p.base)) }) }))
   const O = lines(base)
+  const pairBase = (a: MergeParticipant | undefined, b: MergeParticipant) => lines(b.base ?? a?.base ?? base)
   let running: NamedMergedLine[] = O.map(text => ({ text, side: 'common', changedBy: [], conflict: false, lineNumbers: {} }))
   const prior: MergeParticipant[] = []
   for (const participant of participants) {
     const before = running
     const beforeText = asText(before.map(l => l.text))
     const next: NamedMergedLine[] = []
-    for (const region of boundedMerge(before.map(l => l.text), O, lines(participant.text))) {
+    for (const region of boundedMerge(before.map(l => l.text), prior.length ? pairBase(prior[0], participant) : O, lines(participant.text))) {
       if (region.ok) {
         next.push(...region.ok.map(text => ({ text, side: 'common' as const, changedBy: [], conflict: false, lineNumbers: {} })))
       } else if (region.conflict) {
@@ -88,7 +95,7 @@ export function classifyNWay(base: string, participants: readonly MergeParticipa
         const previous = before.slice(c.aIndex, c.aIndex + c.a.length)
         // Include deletion authors, which have no surviving line in the running result.
         const opponent = previous.flatMap(l => l.changedBy)[0] ?? prior.find(p =>
-          boundedMerge(lines(p.text), O, lines(participant.text)).some(r => r.conflict && r.conflict.oIndex <= c.oIndex + c.o.length && r.conflict.oIndex + r.conflict.o.length >= c.oIndex))?.name
+          boundedMerge(lines(p.text), pairBase(p, participant), lines(participant.text)).some(r => r.conflict && r.conflict.oIndex <= c.oIndex + c.o.length && r.conflict.oIndex + r.conflict.o.length >= c.oIndex))?.name
         const pair: [string, string] = [opponent ?? prior[0]?.name ?? participant.name, participant.name]
         next.push(...previous.map(l => ({ ...l, conflict: true, conflictPair: l.conflictPair ?? pair, conflictOwner: l.conflictOwner ?? l.changedBy[0] ?? pair[0] })))
         next.push(...c.b.map(text => ({ text, side: 'common' as const, changedBy: [], lineNumbers: {}, conflict: true, conflictPair: pair, conflictOwner: participant.name })))
@@ -96,7 +103,7 @@ export function classifyNWay(base: string, participants: readonly MergeParticipa
     }
     const text = asText(next.map(l => l.text))
     const previousMap = lineMap(beforeText, text)
-    const versions = [...prior, participant].map(p => ({ ...p, map: lineMap(p.text, text), added: markAdded(base, p.text) }))
+    const versions = [...prior, participant].map(p => ({ ...p, map: lineMap(p.text, text), added: markAdded(p.base ?? base, p.text) }))
     running = next.map((line, i) => {
       const old = previousMap[i] === undefined ? undefined : before[previousMap[i]! - 1]
       const lineNumbers: Record<string, number> = {}

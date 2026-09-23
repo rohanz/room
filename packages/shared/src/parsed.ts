@@ -17,6 +17,8 @@ export interface ParsedFile {
   defs: ParsedDef[]
   /** Identifiers used by the file, excluding its own definitions. */
   refs: string[]
+  /** Identifiers the file uses that it also defines, such as a call to its own function or method. */
+  ownRefs: string[]
   /** Imported names or paths as written in source. */
   imports: string[]
 }

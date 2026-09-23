@@ -199,6 +199,7 @@ export function install(state: HandlerState): void {
       baseText: (sha, p) => gitShow(s.dir, sha, p),
       baseFor: person => baseFor(s, person),
       mergeBase: async (a, b) => (await git(s.dir, ['merge-base', a, b])).trim(),
+      graph: () => s.graph?.graph,
       isPresent: person => Array.from(s.awareness.getStates().values()).some(state => state?.user?.name === person),
     })
     watcher.start()

@@ -96,6 +96,19 @@ describe('N-way merge', () => {
     expect(out[0].changedBy).toEqual(['Ada', 'Ben'])
     expect(out.some(l => l.text === 'seven')).toBe(false)
   })
+  it('measures a carried worker against its own base, in either order', () => {
+    const lead = { name: 'lead', text: 'carried\nkeep\n' }, worker = { name: 'worker', text: 'carried\nworker\n', base: 'carried\nkeep\n' }
+    for (const order of [[lead, worker], [worker, lead]]) {
+      const out = classifyNWay('base\nkeep\n', order)
+      expect(out.map(l => [l.text, l.changedBy, l.conflict])).toEqual([['carried', ['lead'], false], ['worker', ['worker'], false]])
+    }
+    expect(classifyNWay('base\nkeep\n', [worker]).map(l => [l.text, l.changedBy])).toEqual([['carried', []], ['worker', ['worker']]])
+    const far = { name: 'worker', text: 'carried\n1\n2\n3\nworker\n', base: 'carried\n1\n2\n3\nkeep\n' }
+    for (const order of [[{ name: 'lead', text: 'lead2\n1\n2\n3\nkeep\n' }, far], [far, { name: 'lead', text: 'lead2\n1\n2\n3\nkeep\n' }]]) {
+      const out = classifyNWay('base\n1\n2\n3\nkeep\n', order)
+      expect(out.filter(l => l.changedBy.length).map(l => [l.text, l.changedBy, l.conflict])).toEqual([['lead2', ['lead'], false], ['worker', ['worker'], false]])
+    }
+  })
   it('names the deletion author in a delete/modify conflict', () => {
     const out = classifyNWay(base, [{ name: 'Ada', text: base.replace('one\n', '') }, { name: 'Ben', text: people[0].text }])
     expect(out.filter(l => l.conflict)[0].conflictPair).toEqual(['Ada', 'Ben'])

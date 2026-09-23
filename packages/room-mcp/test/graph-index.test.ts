@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, type Worker } from '@room/shared'
 import { GraphIndex } from '../src/graph-index.js'
 
 let dir: string, base: string
@@ -116,6 +116,30 @@ describe('GraphIndex', () => {
     await eventually(() => room.graphs.get('Rohan')?.observed?.length === 200)
     expect(room.graphs.get('Rohan')?.observedTruncated).toBe(true)
     gi.stop(); room.doc.destroy()
+  })
+
+  it('observes a carried worker\'s changes against its own baseline, not the room base', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'room-graph-carried-')), wdir = join(repo, '.room', 'w')
+    const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, ...a], { stdio: 'pipe' }).toString().trim()
+    git(repo, 'init', '-q'); git(repo, 'config', 'user.email', 't@t'); git(repo, 'config', 'user.name', 't')
+    writeFileSync(join(repo, '.gitignore'), '.room/\n'); writeFileSync(join(repo, 'api.py'), 'def rate(x):\n    return x\n')
+    git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'init')
+    const head = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'worktree', 'add', '-q', '-b', 'room/w', wdir, head)
+    writeFileSync(join(wdir, 'api.py'), 'def rate(x, year):\n    return x\n'); git(wdir, 'commit', '-qam', 'carried')
+    const carried = git(wdir, 'rev-parse', 'HEAD')
+    const room = new RoomDoc(); room.setMeta({ base: head })
+    room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', host: 'codex', task: 't', dir: wdir, branch: 'room/w', base: carried, carriedBase: carried, pid: 1, startedAt: 1, status: 'running', lead: 'lead' } as Worker)
+    room.setOverlay('lead+w', 'api.py', 'def rate(x, year):\n    return x * 2\n')
+    const gi = new GraphIndex(room, 'lead+w', wdir, undefined, { random: () => 0, minPublishMs: 0 })
+    gi.start(); await gi.whenIdle()
+    await eventually(() => room.graphs.get('lead+w')?.status === 'ready')
+    expect(room.graphs.get('lead+w')?.observed).toEqual([])
+    room.setOverlay('lead+w', 'api.py', 'def rate(x, year, region):\n    return x * 2\n')
+    await gi.whenIdle()
+    await eventually(() => room.graphs.get('lead+w')?.observed?.length === 1)
+    expect(room.graphs.get('lead+w')?.observed?.[0].detail).toBe('was `def rate(x, year):` now `def rate(x, year, region):`')
+    gi.stop(); room.doc.destroy(); rmSync(repo, { recursive: true, force: true })
   })
 })
 

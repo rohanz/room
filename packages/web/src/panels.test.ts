@@ -263,3 +263,26 @@ it('shows annotations and details in Merged, Diff and File without floating code
     expect(last.nextElementSibling?.textContent).toContain('unchanged from base')
   } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
 })
+
+it('measures a carried worker in the Merged tab against its own base', () => {
+  const dom = new JSDOM('<body></body>')
+  vi.stubGlobal('document', dom.window.document)
+  vi.stubGlobal('window', dom.window)
+  const room = new RoomDoc()
+  room.setMeta({ base: 'head' })
+  room.setBaseText('head', 'a.ts', 'base\nkeep\n')
+  room.setBaseOf('lead+w', 'carried')
+  room.setBaseText('carried', 'a.ts', 'carried\nkeep\n')
+  room.setOverlay('lead+w', 'a.ts', 'carried\nworker\n')
+  room.setOverlay('lead', 'a.ts', 'carried\nkeep\n')
+  const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
+  try {
+    const panel = centrePanel(conn, createFocusState())
+    document.body.append(panel)
+    Array.from(panel.querySelectorAll<HTMLButtonElement>('.tab')).find(b => b.textContent === 'Merged')!.click()
+    const rows = Array.from(panel.querySelectorAll<HTMLElement>('.code-line'))
+    expect(rows.map(row => row.querySelector('code')?.textContent)).toEqual(['carried', 'worker'])
+    const notes = rows.map(row => { row.dispatchEvent(new dom.window.Event('pointerenter')); return row.querySelector('.line-annotation')?.textContent })
+    expect(notes).toEqual(['changed by lead', 'changed by lead+w'])
+  } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
+})

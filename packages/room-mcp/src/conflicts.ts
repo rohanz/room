@@ -1,4 +1,4 @@
-import { bareSymbol, claimsOverlap, displayName, observedContractChanges } from '@room/shared'
+import { bareSymbol, claimsOverlap, displayName, observedContractChanges, type SymbolGraph } from '@room/shared'
 /**
  * Conflicts the agents did not declare. Two watchers on the room doc:
  *  - overlap: my own edits landing inside someone else's open claim (I hold no claim there)
@@ -12,10 +12,9 @@ import { structuredPatch } from 'diff'
 import { createHash } from 'node:crypto'
 import type { Claim, ConflictMsg, MergeConflictMsg, ContractMsg, GraphSnapshot, Identity, NoteMsg, RoomDoc } from '@room/shared'
 import { gitMergeFile } from './merge.js'
-import { git } from '@room/roomd/git'
 import { ensureLanguages, parseFile } from './parse/engine.js'
-import { referencesSymbol } from './graph-index.js'
-import { carriedSubject } from './workers.js'
+import { consumesSymbol } from './graph-index.js'
+import { baselineText, carriedPaths, carriesWork, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
 
 export const ROOM: Identity = { name: 'room', kind: 'agent' }
 
@@ -42,6 +41,8 @@ export interface ConflictDeps {
   writeIntent?: (path: string) => boolean | undefined
   /** Participants watching the same physical directory share file changes. */
   coLocated?: (person: string) => boolean
+  /** This session's symbol graph: other definers narrow a carried definition's consumers by import. */
+  graph?: () => SymbolGraph | undefined
 }
 
 export interface Range { from: number; to: number }
@@ -68,15 +69,21 @@ export async function mergePath(d: ConflictDeps, person: string, path: string): 
   if (theirBase !== myBase) {
     try { ancestor = await d.mergeBase(myBase, theirBase) } catch { return { status: 'unknown', lines: [] } }
   }
-  const b = (await d.baseText(ancestor, path)) ?? ''
   let m: string | undefined | null, t: string | undefined | null
   try { m = await d.liveText(path, d.me.name); t = await d.liveText(path, person) } catch { return { status: 'unknown', lines: [] } }
+  const descends = async (from: string, sha: string) => (await d.mergeBase(from, sha).catch(() => '')) === from
+  const pair = await pairBaseline(d.room.workerOf(d.me.name), d.room.workerOf(person), ancestor, descends)
+  let b: string
+  try { b = (pair ? await baselineText(pair, path, d.baseText) : await d.baseText(ancestor, path)) ?? '' } catch { return { status: 'unknown', lines: [] } }
   const mineT = m === null ? '' : m ?? b, theirs = t === null ? '' : t ?? b
   if (mineT === b || theirs === b) return { status: 'one-side', lines: [] }
   const res = await gitMergeFile(b, mineT, theirs, { ours: d.me.name, base: 'base', theirs: person })
   const lines = res.conflicts.map(c => c.from)
   return { status: lines.length ? 'conflict' : 'clean', lines }
 }
+
+type ObservedChange = NonNullable<GraphSnapshot['observed']>[number]
+const hashText = (text: string) => createHash('sha256').update(text).digest('hex')
 
 export class ConflictWatcher {
   private stopFns: (() => void)[] = []
@@ -93,7 +100,11 @@ export class ConflictWatcher {
   private mergeHashes = new Map<string, string>()
   private observedReported = new Set<string>()
   private observedChecks = new Set<Promise<void>>()
-  private carriedBase = new Map<string, boolean>()
+  private observedTimers = new Map<string, NodeJS.Timeout>()
+  /** Last input hash per lead, so an unchanged lead costs nothing. */
+  private observedInputs = new Map<string, string>()
+  /** Contract changes by (baseline, path, before and live text): a text is parsed once. */
+  private observedCache = new Map<string, ObservedChange[]>()
   private integrated = new Map<string, Set<string>>()
   private integrationReported = new Set<string>()
   private integrationTimer: NodeJS.Timeout | null = null
@@ -134,8 +145,9 @@ export class ConflictWatcher {
   stop(): void {
     for (const f of this.stopFns) f()
     this.stopFns = []
-    for (const t of this.timers.values()) clearTimeout(t)
+    for (const t of [...this.timers.values(), ...this.observedTimers.values()]) clearTimeout(t)
     this.timers.clear()
+    this.observedTimers.clear()
     if (this.mergeTimer) clearTimeout(this.mergeTimer)
     this.mergeTimer = null
     this.mergeQueue.clear()
@@ -160,6 +172,7 @@ export class ConflictWatcher {
     this.timers.clear()
     for (const key of keys) { const [person, p] = key.split('|'); await this.check(person, p) }
     await this.drainMerges()
+    for (const [person, t] of this.observedTimers) { clearTimeout(t); this.observedTimers.delete(person); this.runObserved(person) }
     while (this.observedChecks.size) await Promise.all(this.observedChecks)
     this.reportIntegrations()
   }
@@ -175,21 +188,22 @@ export class ConflictWatcher {
       (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID))
   }
 
-  private async carriedWorkerFor(person: string) {
+  /** My worker record when `person` is my lead and spawn carried their uncommitted work into my base. */
+  private carriedWorkerFor(person: string) {
     const worker = this.workerRecord()
-    if (!worker?.base || worker.lead !== person || worker.base === this.d.room.meta.base) return undefined
-    let carried = this.carriedBase.get(worker.base)
-    if (carried === undefined) {
-      try {
-        const subject = (await git(worker.dir, ['log', '-1', '--format=%s', worker.base])).trim()
-        carried = subject === carriedSubject(person)
-      } catch { carried = false }
-      this.carriedBase.set(worker.base, carried)
-    }
-    return carried ? worker : undefined
+    const baseline = workerBaseline(worker)
+    return worker?.lead === person && carriesWork(baseline) ? baseline : undefined
   }
 
+  /** Debounced per person, like merge checks: a burst of overlay events becomes one check. */
   private queueObserved(person: string): void {
+    clearTimeout(this.observedTimers.get(person))
+    const t = setTimeout(() => { this.observedTimers.delete(person); this.runObserved(person) }, this.d.debounceMs ?? 2000)
+    t.unref?.()
+    this.observedTimers.set(person, t)
+  }
+
+  private runObserved(person: string): void {
     let work: Promise<void>
     work = Promise.resolve().then(() => this.checkObserved(person)).catch(error => {
       this.d.log?.(`contract check ${person}: ${error instanceof Error ? error.message : String(error)}`)
@@ -197,31 +211,55 @@ export class ConflictWatcher {
     this.observedChecks.add(work)
   }
 
+  /**
+   * The lead's contract changes against my carried baseline, over carried paths and the lead's
+   * changed paths, so a revert to HEAD or a commit still counts.
+   */
+  private async carriedChanges(baseline: Baseline, lives: Map<string, string | null | undefined>): Promise<ObservedChange[]> {
+    const out: ObservedChange[] = []
+    for (const [path, live] of lives) {
+      const before = await baselineText(baseline, path, this.d.baseText).catch(() => undefined)
+      if (before === undefined) continue
+      const key = `${baseline.sha}\0${path}\0${hashText(before)}\0${live === null ? '' : hashText(live ?? '')}`
+      let changes = this.observedCache.get(key)
+      if (!changes) {
+        await ensureLanguages([path])
+        changes = observedContractChanges(before, live ?? '', path, parseFile).map(change => ({ path, ...change }))
+        if (this.observedCache.size >= 1000) this.observedCache.delete(this.observedCache.keys().next().value!)
+        this.observedCache.set(key, changes)
+      }
+      out.push(...changes)
+    }
+    return out
+  }
+
   private async checkObserved(person: string): Promise<void> {
     const snapshot: GraphSnapshot | undefined = this.d.room.graphs.get(person)
-    const carried = await this.carriedWorkerFor(person)
+    const carried = this.carriedWorkerFor(person)
     if (!snapshot && !carried) return
     const mine = new Set([
       ...this.d.room.changedPaths(this.d.me.name),
       ...this.d.room.openClaims().filter(claim => claim.by === this.d.me.name).map(claim => claim.path),
     ])
     if (!mine.size) return
-    const carriedChanges = [] as NonNullable<GraphSnapshot['observed']>
-    if (carried) for (const path of this.d.room.changedPaths(person)) {
-      const before = await this.d.baseText(carried.base!, path)
-      if (before === undefined) continue
-      const live = await this.d.liveText(path, person)
-      if (live === undefined) continue
-      await ensureLanguages([path])
-      carriedChanges.push(...observedContractChanges(before, live ?? '', path, parseFile).map(change => ({ path, ...change })))
+    let changes = snapshot?.observed ?? []
+    const mineTexts = new Map<string, string | null | undefined>()
+    if (carried) {
+      const paths = new Set([...await carriedPaths(carried), ...this.d.room.changedPaths(person)])
+      const lives = new Map<string, string | null | undefined>()
+      // A path the lead no longer has (reverted to a HEAD without it, or deleted) is compared as empty; an unreadable one is skipped.
+      for (const path of [...paths].sort()) await this.d.liveText(path, person).then(live => lives.set(path, live), () => undefined)
+      for (const path of [...mine].sort()) mineTexts.set(path, await this.d.liveText(path, this.d.me.name).catch(() => undefined))
+      const input = hashText(JSON.stringify([carried.sha, [...lives], [...mineTexts]]))
+      if (this.observedInputs.get(person) === input) return
+      this.observedInputs.set(person, input)
+      changes = await this.carriedChanges(carried, lives)
     }
-    const changes = carried ? carriedChanges : snapshot?.observed ?? []
     for (const change of changes) {
       if (change.kind === 'add') continue
-      const uses = carried ? (await Promise.all([...mine].map(async path => {
-        const live = await this.d.liveText(path, this.d.me.name)
-        return live && await referencesSymbol(path, live, change.symbol) ? path : undefined
-      }))).filter((path): path is string => !!path).sort() : snapshot!.edges.filter(edge => edge.source === change.path && mine.has(edge.target) &&
+      const uses = carried ? (await Promise.all([...mineTexts].map(async ([path, live]) =>
+        live && await consumesSymbol(path, live, change.path, change.symbol, this.d.graph?.()) ? path : undefined
+      ))).filter((path): path is string => !!path).sort() : snapshot!.edges.filter(edge => edge.source === change.path && mine.has(edge.target) &&
         edge.symbols.some(symbol => bareSymbol(symbol) === bareSymbol(change.symbol))).map(edge => edge.target).sort()
       if (!uses.length) continue
       const key = `${person}\0${change.path}\0${change.symbol}\0${change.detail}`
