@@ -32,6 +32,7 @@ const IGNORED_DEPENDENCY_DIRS = new Set(['node_modules', '.venv', 'venv', 'vendo
 export async function ignoredWorkerArtifacts(w: Worker): Promise<string[]> {
   const raw = await git(w.dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', '--', '.', ...workerOwnedPaths(w).exclusions])
   return raw.split('\0').filter(Boolean)
+    .filter(p => p !== '.room' && p !== '.room/' && !p.startsWith('.room/'))
     .filter(p => !p.split('/').some(part => IGNORED_DEPENDENCY_DIRS.has(part)))
     .sort()
 }
@@ -151,6 +152,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
     `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process (you cannot answer afterwards).`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
+    `If you spawn workers, collect them before your own room_done.`,
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
       ...(context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(', ')}. Do not modify these paths or their contents; write outputs elsewhere.`] : []),
@@ -296,6 +298,27 @@ async function writeCarryRecord(repoDir: string, tag: string, record: CarryRecor
   const temp = file + '.' + process.pid + '.tmp'
   try { await fs.promises.writeFile(temp, JSON.stringify(record), { mode: 0o600 }); await fs.promises.rename(temp, file) }
   finally { await fs.promises.rm(temp, { force: true }) }
+}
+
+/** The relay can disappear with the lead; keep the intentional stop reason beside the carry record. */
+export function persistWorkerStopReason(repoDir: string, tag: string, reason: Worker['stopReason']): void {
+  const common = execFileSync('git', ['-C', repoDir, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim()
+  const file = path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  let record: CarryRecord & { stopReason?: Worker['stopReason'] } = {}
+  try { record = JSON.parse(fs.readFileSync(file, 'utf8')) }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+  const tmp = file + '.' + process.pid + '.tmp'
+  fs.writeFileSync(tmp, JSON.stringify({ ...record, stopReason: reason }), { mode: 0o600 })
+  fs.renameSync(tmp, file)
+}
+
+export function persistedWorkerStopReason(repoDir: string, tag: string): Worker['stopReason'] | undefined {
+  const common = execFileSync('git', ['-C', repoDir, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim()
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json'), 'utf8'))
+    return record.stopReason === 'lead-session-ended' ? record.stopReason : undefined
+  } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
 }
 
 /** Roll back only a newly prepared worktree; do not remove reused worker output. */
@@ -484,12 +507,31 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
   const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
   if (await common(leadDir) !== await common(w.dir) || fs.realpathSync(leadDir) === fs.realpathSync(w.dir)) return false
   if ((await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) return false
+  const nested = (await git(leadDir, ['worktree', 'list', '--porcelain'])).split('\n')
+    .filter(line => line.startsWith('worktree ')).map(line => line.slice('worktree '.length))
+    .filter(dir => dir !== w.dir && inside(fs.realpathSync(w.dir), dir))
+  if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(', ')}`)
   const head = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
   const recordFile = await carryRecordFile(leadDir, w.tag)
   const record = await fs.promises.readFile(recordFile).catch(e => { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e })
   const refs = new Map<string, string>()
   for (const ref of [carryRef(w.tag), carriedUntrackedRef(w.tag)]) {
     try { refs.set(ref, (await git(leadDir, ['rev-parse', '--verify', ref])).trim()) } catch { /* absent on older workers */ }
+  }
+  // A lead may have discarded a child earlier. Its recovery patches must outlive this worktree.
+  const nestedPatches = path.join(w.dir, '.room', 'discarded')
+  if (fs.existsSync(nestedPatches)) {
+    const dest = path.join(leadDir, '.room', 'discarded')
+    for (const name of fs.readdirSync(nestedPatches)) {
+      const source = path.join(nestedPatches, name)
+      if (!name.endsWith('.patch') || !fs.lstatSync(source).isFile()) continue
+      fs.mkdirSync(dest, { recursive: true })
+      let target = path.join(dest, name), suffix = 1
+      while (fs.existsSync(target)) target = path.join(dest, `${w.tag}-${suffix++}-${name}`)
+      fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL)
+      const stat = fs.statSync(source)
+      fs.utimesSync(target, stat.atime, stat.mtime)
+    }
   }
   try {
     await internalGit(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
@@ -520,10 +562,12 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
     } catch (restore) { throw new Error(`cleanup failed: ${(error as Error).message}; could not restore ${w.dir}: ${(restore as Error).message}`) }
     throw new Error(`cleanup failed: ${(error as Error).message}; restored ${w.dir}`)
   }
+  const parent = path.basename(path.dirname(w.dir)) === 'workers' && path.basename(path.dirname(path.dirname(w.dir))) === '.room'
+    ? path.resolve(w.dir, '../../..') : leadDir
   for (const suffix of ['.log', '.mcp.log']) {
-    try { fs.rmSync(path.join(leadDir, WORKERS_DIR, w.tag + suffix), { force: true }) } catch { /* keep the log if the OS locks it */ }
+    try { fs.rmSync(path.join(parent, WORKERS_DIR, w.tag + suffix), { force: true }) } catch { /* keep the log if the OS locks it */ }
   }
-  for (const dir of [path.join(leadDir, WORKERS_DIR), path.join(leadDir, '.room')]) {
+  for (const dir of [path.join(parent, WORKERS_DIR), path.join(parent, '.room')]) {
     try { fs.rmdirSync(dir) } catch { /* another worker or a locked log keeps the directory */ }
   }
   return true

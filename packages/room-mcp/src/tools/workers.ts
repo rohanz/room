@@ -10,7 +10,7 @@ import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { workerId, workerIdBase, finishWorkerProcess } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
-import { workerBudget, defaultSpawner, prepareWorktree, uncommittedCount, validTag, workerCommand, workerPrompt, type PreparedWorktree, type SpawnedProcess, type WorkerHost } from '../workers.js'
+import { workerBudget, defaultSpawner, prepareWorktree, uncommittedCount, validTag, workerCommand, workerPrompt, persistWorkerStopReason, type PreparedWorktree, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
@@ -82,7 +82,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const model = typeof a.model === 'string' && a.model.trim() ? a.model.trim() : undefined
       const idBase = workerIdBase(s.roomName, s.me.name, tag)
       const existing = s.room.workers.get(tag)
-      if (existing && existing.lead !== s.me.name && existing.status === 'running') return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; pick another tag`
+      if (existing && existing.lead !== s.me.name && existing.status === 'running') return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; ${workerAlive(s, existing) ? 'pick another tag' : 'its process is gone; its ancestor can use room_collect tag=' + tag + ' discard=true to free the tag'}`
       if (existing && (existing.status === 'running' || workerAlive(s, existing))) return `error: worker ${tag} is ${existing.status === 'running' ? 'already running' : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_collect discard=true for it first or pick another tag`
       if (existing) return `error: worker ${tag} is ${existing.status} and still holds its room state; room_collect discard=true for it before reusing the tag`
       const retired = s.room.retiredWorkers().filter(w => w.tag === tag && w.lead === s.me.name)
@@ -139,14 +139,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const memBytes = os.totalmem()
         const budget = workerBudget({ cores, memBytes, maxWorkers: max, running: count })
         const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS)
-        const threads = typeof a.threads === 'number' ? a.threads
-          : Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? inheritedThreads : budget.threads
+        const inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB)
+        const isWorker = !!process.env.ROOM_TAG || !!s.room.workerOf(s.me.name) || (!!s.me.owner && s.me.owner !== s.me.name)
+        const divisor = isWorker ? Math.max(2, max) : 1
+        const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads
+        const threads = typeof a.threads === 'number' ? Math.min(a.threads, threadShare) : threadShare
+        const memGb = Number.isFinite(inheritedMem) && inheritedMem >= 1 ? Math.max(1, Math.floor(inheritedMem / divisor)) : budget.memGb
         const caps: Record<string, string> = {}
         for (const key of ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS', 'LOKY_MAX_CPU_COUNT', 'RAYON_NUM_THREADS']) {
-          caps[key] = process.env[key] ?? String(threads)
+          const cap = Number(process.env[key])
+          caps[key] = isWorker ? String(Number.isSafeInteger(cap) && cap >= 1 ? Math.min(cap, threads) : threads) : process.env[key] ?? String(threads)
         }
         const env: Record<string, string> = {
-          ...caps, ROOM_WORKER_THREADS: String(threads), ROOM_WORKER_MEM_GB: process.env.ROOM_WORKER_MEM_GB ?? String(budget.memGb),
+          ...caps, ROOM_WORKER_THREADS: String(threads), ROOM_WORKER_MEM_GB: String(memGb),
           ROOM_WORKER_HOST: host, ...(model ? { ROOM_WORKER_MODEL: model } : {}), ...(effort ? { ROOM_WORKER_EFFORT: effort } : {}),
           ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_DIR: dir, PWD: dir, ROOM_TAG: tag, ROOM_LEAD: s.me.name, ROOM_OWNER: owner,
           ROOM_SHARE: share ?? s.daemon.share ?? 'full', ROOM_GEN: String(gen), ROOM_WORKER_ID: id,
@@ -251,8 +256,11 @@ export function install(state: HandlerState): void {
         how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`
       }
       // Keep an owned handle until exit confirms the process can no longer publish live state.
-      if (signalled) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
-      s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
+      if (stopReason) {
+        try { persistWorkerStopReason(s.dir, w.tag, stopReason) } catch (e) { state.log(`could not persist stop reason for ${w.tag}: ${e}`) }
+      }
+      if (signalled || stopReason) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
+      if (signalled || workerAlive(s, w)) s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
       return how
     }
 

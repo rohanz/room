@@ -12,7 +12,7 @@ import type { NoteMsg, Presence, Worker } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Session } from './session.js'
-import { cleanupWorker, ignoredWorkerArtifacts, pidIsOurWorker, shouldRetire, workerGitFacts, workerLogTail, workerOperationKey, type SpawnedProcess } from './workers.js'
+import { cleanupWorker, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, shouldRetire, workerGitFacts, workerLogTail, workerOperationKey, type SpawnedProcess } from './workers.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -47,10 +47,12 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
   const done = w.status === 'done'
   const exitCode = code ?? -1
   const tail = workerLogTail(path.join(s.dir, '.room', 'workers', `${w.tag}.log`))
+  const stopReason = w.stopReason ?? (unwitnessed ? persistedWorkerStopReason(s.dir, w.tag) : undefined)
   s.room.updateWorker(w.tag, {
     exitCode, finishedAt: w.finishedAt ?? at,
+    ...(stopReason ? { stopReason } : {}),
     ...(w.status !== 'running' ? {}
-      : unwitnessed ? { status: 'failed' as const, summary: `stopped while no session of yours was running; reason unknown; worktree: ${w.dir}; last lines of its log: ${tail || '(empty log)'}` }
+      : unwitnessed ? { status: stopReason ? 'dismissed' as const : 'failed' as const, summary: `stopped while no session of yours was running; ${stopReason ?? 'reason unknown'}; worktree: ${w.dir}; last lines of its log: ${tail || '(empty log)'}` }
       : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
   }, w.id)
   if (!done) {
@@ -114,6 +116,13 @@ export class Rooms {
   track(s: Session): void {
     if (this.tracked.has(s)) return
     this.tracked.add(s)
+    for (const w of s.room.workers.values()) {
+      if (w.stopReason) continue
+      try {
+        const reason = persistedWorkerStopReason(s.dir, w.tag)
+        if (reason) s.room.updateWorker(w.tag, { stopReason: reason, ...(w.status === 'running' ? { status: 'dismissed' as const } : {}) }, w.id)
+      } catch { /* an external checkout has no local carry record */ }
+    }
     this.o.observeClaims(s)
     const timer = setInterval(() => { void this.retireWorkers(s).catch(() => {}) }, 60_000)
     timer.unref()

@@ -12,7 +12,7 @@ import type { Session } from '../session.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
-  description: 'Collect all done workers (or tag) as unstaged edits, never commits. Any conflict writes nothing. Skips running/failed workers. copy takes named artifacts; discard dismisses one worker. Keeps worktrees with uncopied ignored artifacts.',
+  description: 'Collect finished or stopped workers (or tag) as unstaged edits, never commits. Any conflict writes nothing. Skips live running/failed workers. copy takes named artifacts; discard dismisses one worker and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.',
   inputSchema: { ...{ additionalProperties: false }, type: 'object', properties: {
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },
@@ -55,6 +55,25 @@ async function assertNoOperation(dir: string): Promise<void> {
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
+  const ownedBy = (s: Session, w: Worker): boolean => {
+    const known = [...s.room.workers.values(), ...s.room.retiredWorkers()]
+    const visited = new Set<string>()
+    let lead = w.lead
+    while (lead && !visited.has(lead)) {
+      if (lead === s.me.name) return true
+      visited.add(lead)
+      lead = known.find(parent => parent.name === lead)?.lead ?? ''
+    }
+    return false
+  }
+  const descendants = (s: Session, w: Worker): Worker[] => {
+    const out: Worker[] = []
+    const visit = (parent: Worker) => {
+      for (const child of s.room.workers.values()) if (child.lead === parent.name) { visit(child); out.push(child) }
+    }
+    visit(w)
+    return out
+  }
   const reserveWorker = async (s: Session, w: Worker): Promise<string | undefined> => {
     const lock = workerOperationKey(w)
     if (state.rooms.reserve(lock)) return lock
@@ -74,13 +93,22 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     if (a.discard) {
       const s = rooms.holdingWorker(a.tag as string, lead)
       const w = s.room.workers.get(a.tag as string)
-      if (!w || w.lead !== s.me.name) return 'error: no worker ' + a.tag + ' owned by you'
+      if (!w || !ownedBy(s, w)) return 'error: no worker ' + a.tag + ' owned by you'
       const intent = 'discard:' + s.roomName + ':' + w.name
       if (!rooms.reserve(intent)) return 'error: this worker is already being discarded'
       const lock = await reserveWorker(s, w)
       if (!lock) { rooms.unreserve(intent); return 'error: this worker is already being handled or retired' }
       try {
-        if (state.workerAlive(s, w) || w.status === 'running') {
+        const children = descendants(s, w)
+        if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map(c => c.tag).join(', ')}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`
+        const childResults: string[] = []
+        for (const child of children) {
+          if (!s.room.workers.has(child.tag)) continue
+          const result = await handlers(state).room_collect({ tag: child.tag, discard: true, force: true })
+          childResults.push(result)
+          if (!result.startsWith('discarded ')) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
+        }
+        if (state.workerAlive(s, w) || pidAlive(w.pid)) {
           const how = state.dismissWorker(s, w, 'discarded by the lead')
           if (s.room.workers.get(w.tag)?.status === 'running' && (state.workerAlive(s, w) || pidAlive(w.pid))) return 'could not discard ' + w.tag + ': ' + how
           const now = state.now ?? Date.now
@@ -110,12 +138,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           summary: 'discarded', files: [], fileCount: 0, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
         })
-        return 'discarded ' + w.tag + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '')
+        return [...childResults, 'discarded ' + w.tag + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '')].join('\n')
       } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
       finally { rooms.unreserve(lock); rooms.unreserve(intent) }
     }
     const sessions = a.tag ? [rooms.holdingWorker(a.tag as string, lead)] : rooms.all()
-    const candidates = sessions.flatMap(s => [...s.room.workers.values()].filter(w => w.lead === s.me.name && (!a.tag || w.tag === a.tag)).map(w => ({ s, w })))
+    const candidates = sessions.flatMap(s => [...s.room.workers.values()].filter(w => ownedBy(s, w) && (!a.tag || w.tag === a.tag)).map(w => ({ s, w })))
       .sort((a, b) => (a.w.finishedAt ?? 0) - (b.w.finishedAt ?? 0) || (a.w.tag < b.w.tag ? -1 : a.w.tag > b.w.tag ? 1 : 0))
     if (a.tag && !candidates.length) return 'error: no worker ' + a.tag + ' owned by you'
     const out: string[] = []
@@ -126,7 +154,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     try {
       for (const item of candidates) {
         const { s } = item; let { w } = item
-        if (w.status !== 'done') { out.push('skipped ' + w.tag + ': ' + w.status); continue }
+        const stopped = w.pid !== undefined && !state.workerAlive(s, w)
+        if (w.status !== 'done' && !(stopped && (w.status === 'running' || w.status === 'dismissed'))) { out.push('skipped ' + w.tag + ': ' + w.status); continue }
         const workerLock = await reserveWorker(s, w)
         if (!workerLock) continue
         workerLocks.push(workerLock)
@@ -136,10 +165,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         while (state.workerAlive(s, w) && now() < deadline) await sleep(Math.min(250, deadline - now()))
         if (state.workerAlive(s, w)) { out.push('skipped ' + w.tag + ': process has not exited after 15 s'); continue }
         const current = s.room.workers.get(w.tag)
-        if (!current || current.id !== w.id || current.startedAt !== w.startedAt || current.status !== 'done') {
+        if (!current || current.id !== w.id || current.startedAt !== w.startedAt || (current.status !== 'done' && !(stopped && (current.status === 'running' || current.status === 'dismissed')))) {
           out.push('skipped ' + w.tag + ': changed while waiting'); continue
         }
-        w = current
+        w = current.status === 'done' ? current : { ...current, status: 'done', exitCode: current.exitCode ?? 0 }
         if (w.exitCode !== undefined && w.exitCode !== 0) { out.push('skipped ' + w.tag + ': failed exit'); continue }
         if (fs.realpathSync(w.dir) === fs.realpathSync(lead.dir)) throw new Error('worker must have a separate worktree')
         await assertNoOperation(w.dir)
@@ -226,6 +255,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         releaseClaimsOnDone(s, () => false, w.name, false)
         if (state.workerAlive(s, w) || w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); continue }
         try {
+          const children = descendants(s, w)
+          if (children.length) { out.push('kept ' + w.tag + ': nested workers remain: ' + children.map(c => c.tag).join(', ')); continue }
           const ignored = await ignoredWorkerArtifacts(w)
           if (ignored.length) {
             out.push('kept ' + w.tag + ': uncopied ignored artifacts')
