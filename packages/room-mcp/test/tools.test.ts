@@ -96,6 +96,20 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('session gating', () => {
+  it('summarizes six or more changed paths but preserves short lists and path lookup', async () => {
+    const t = setup()
+    for (let i = 0; i < 6; i++) t.room.setOverlay('Kieran', `art/main-street/scene-${i}.md`, 'changed')
+    t.room.setOverlay('Kieran', 'README.md', 'changed')
+    try {
+      const compact = await t.tools.call('room_state', { all: true })
+      expect(compact).toContain('  - Kieran: 7 files, mostly art/main-street/ (6): README.md, scene-0.md, scene-1.md ...')
+      expect(await t.tools.call('room_state', { path: 'README.md' })).toContain('uncommitted changes by: Kieran')
+      for (let i = 1; i < 6; i++) t.room.clearOverlay('Kieran', `art/main-street/scene-${i}.md`)
+      const short = await t.tools.call('room_state', { all: true })
+      expect(short).toContain('  - Kieran: README.md, art/main-street/scene-0.md')
+      expect(short).not.toContain('Kieran: 2 files')
+    } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+  })
   it('touches before dispatch, including failed calls, and reports recent actions', async () => {
     const t = setup()
     const touch = vi.spyOn(t.session!.daemon, 'touch')

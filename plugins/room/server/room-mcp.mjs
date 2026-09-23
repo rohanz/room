@@ -17242,6 +17242,35 @@ function roomNameParts(roomName) {
 function formatCount(count, singular, plural = singular + "s") {
   return count + " " + (count === 1 ? singular : plural);
 }
+function summarizeFiles(paths, options = {}) {
+  const byPath = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  const sorted = [...paths].sort(byPath);
+  const folders = /* @__PURE__ */ new Map();
+  const immediate = /* @__PURE__ */ new Map();
+  for (const path20 of sorted) {
+    const parts2 = path20.split("/");
+    const folder = parts2.length > 1 ? parts2.slice(0, -1).join("/") + "/" : "./";
+    immediate.set(folder, [...immediate.get(folder) ?? [], path20]);
+    for (let i2 = 1; i2 < parts2.length; i2++) {
+      const prefix = parts2.slice(0, i2).join("/") + "/";
+      folders.set(prefix, (folders.get(prefix) ?? 0) + 1);
+    }
+  }
+  const majority = sorted.length > 5 ? [...folders].filter(([, count]) => count > sorted.length / 2) : [];
+  const winner = majority.sort(([a], [b]) => b.length - a.length || a.localeCompare(b))[0];
+  const dominant = winner ? { folder: winner[0], count: winner[1] } : void 0;
+  const ordered = [...sorted].sort((a, b) => Number(!!dominant && a.startsWith(dominant.folder)) - Number(!!dominant && b.startsWith(dominant.folder)) || byPath(a, b));
+  const selected = ordered.slice(0, options.namedLimit ?? 3);
+  const basename3 = (path20) => path20.slice(path20.lastIndexOf("/") + 1);
+  const counts = /* @__PURE__ */ new Map();
+  for (const path20 of selected) counts.set(basename3(path20), (counts.get(basename3(path20)) ?? 0) + 1);
+  return {
+    count: sorted.length,
+    dominant,
+    named: selected.map((path20) => ({ path: path20, label: counts.get(basename3(path20)) > 1 ? path20 : basename3(path20) })),
+    groups: [...immediate].sort(([a], [b]) => a.localeCompare(b)).map(([folder, groupPaths]) => ({ folder, paths: groupPaths }))
+  };
+}
 function activityLabel(lastActive, now = Date.now(), options = {}) {
   if (options.worker && stoppedWithSession(options.worker)) return STOPPED_WITH_SESSION;
   if (options.worker?.status === "running" && options.processGone) return STOPPED_UNWITNESSED;
@@ -17332,7 +17361,9 @@ function personLine(input) {
   else if (lastDone && (!p || p.status === "idle" || p.status === "synced")) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`;
   else what = p ? `${p.status && !["idle", "synced"].includes(p.status) ? p.status + ", " : ""}no task declared` : "offline";
   const share = input.share === "full" ? "" : `; shares ${input.share}${input.share === "intent" ? " (no file text)" : " (file text only under their scope paths)"}`;
-  return `${what}${share}${input.changedPaths.length ? `; uncommitted, not yet pushed: ${input.changedPaths.join(", ")}` : ""}`;
+  const files = summarizeFiles(input.changedPaths);
+  const changed = files.count > 5 ? `${files.count} files${files.dominant ? `, mostly ${files.dominant.folder} (${files.dominant.count})` : ""}: ${files.named.map((file) => file.label).join(", ")} ...` : input.changedPaths.join(", ");
+  return `${what}${share}${files.count ? `; uncommitted, not yet pushed: ${changed}` : ""}`;
 }
 function claimLine(claim2, options = {}) {
   return `  - ${claim2.id}: ${describeClaim(claim2)}${options.yours ? " (yours)" : ""}${options.stale ? " [stale: owner offline]" : ""}`;
@@ -43660,7 +43691,10 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       }
       out2.push(`uncommitted changes${all2 ? "" : " in your areas"}${hiddenChanged ? ` (${hiddenChanged} file${hiddenChanged === 1 ? "" : "s"} elsewhere)` : ""}:`);
       if (!changed.size) out2.push("  (none)");
-      for (const [person, ps2] of changed) out2.push(`  - ${person}: ${ps2.join(", ")}`);
+      for (const [person, ps2] of changed) {
+        const files = summarizeFiles(ps2);
+        out2.push(`  - ${person}: ${files.count > 5 ? `${files.count} files${files.dominant ? `, mostly ${files.dominant.folder} (${files.dominant.count})` : ""}: ${files.named.map((file) => file.label).join(", ")} ...` : ps2.join(", ")}`);
+      }
       const skipped = s.daemon.skipped?.() ?? { size: [], budget: [] };
       if (skipped.size.length) out2.push(`  ${skipped.size.length} of your changed files are not shared: too large`);
       if (skipped.budget.length) out2.push(`  ${skipped.budget.length} of your changed files are not shared: sharing budget exceeded`);

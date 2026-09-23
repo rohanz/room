@@ -1,7 +1,7 @@
 import { sharingDescription } from '../config.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
-import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
@@ -138,7 +138,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       out.push(`uncommitted changes${all ? '' : ' in your areas'}${hiddenChanged ? ` (${hiddenChanged} file${hiddenChanged === 1 ? '' : 's'} elsewhere)` : ''}:`)
       if (!changed.size) out.push('  (none)')
-      for (const [person, ps2] of changed) out.push(`  - ${person}: ${ps2.join(', ')}`)
+      for (const [person, ps2] of changed) {
+        const files = summarizeFiles(ps2)
+        out.push(`  - ${person}: ${files.count > 5
+          ? `${files.count} files${files.dominant ? `, mostly ${files.dominant.folder} (${files.dominant.count})` : ''}: ${files.named.map(file => file.label).join(', ')} ...`
+          : ps2.join(', ')}`)
+      }
       const skipped = s.daemon.skipped?.() ?? { size: [], budget: [] }
       if (skipped.size.length) out.push(`  ${skipped.size.length} of your changed files are not shared: too large`)
       if (skipped.budget.length) out.push(`  ${skipped.budget.length} of your changed files are not shared: sharing budget exceeded`)

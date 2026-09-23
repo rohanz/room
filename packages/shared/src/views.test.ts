@@ -1,6 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import type { Claim, Presence, Scope, Worker } from './types.js'
-import { lineDetail, areaMembershipSummary, claimLine, deriveParticipants, otherAreasLine, participantClaimLine, personLine, presentPeople, workerLine } from './views.js'
+import { lineDetail, areaMembershipSummary, claimLine, deriveParticipants, otherAreasLine, participantClaimLine, personLine, presentPeople, summarizeFiles, workerLine } from './views.js'
+
+describe('file summaries', () => {
+  const fortyEight = [...Array.from({ length: 44 }, (_, i) => `art/main-street/scene-${String(i).padStart(2, '0')}.md`), 'TOWN.md', 'README.md', 'TODO.md', 'src/app.ts']
+  it.each([0, 1, 5, 6, 48])('counts %i files', count => {
+    expect(summarizeFiles(fortyEight.slice(0, count)).count).toBe(count)
+  })
+  it('finds the deepest majority folder and names outside files first', () => {
+    const result = summarizeFiles(fortyEight)
+    expect(result.dominant).toEqual({ folder: 'art/main-street/', count: 44 })
+    expect(result.named.map(file => file.label)).toEqual(['README.md', 'TODO.md', 'TOWN.md'])
+    expect(result.groups.find(group => group.folder === 'art/main-street/')?.paths).toHaveLength(44)
+  })
+  it('omits a dominant folder when paths are spread out or few', () => {
+    expect(summarizeFiles(['a/1', 'b/2', 'c/3', 'd/4', 'e/5', 'f/6']).dominant).toBeUndefined()
+    expect(summarizeFiles(fortyEight.slice(0, 5)).dominant).toBeUndefined()
+  })
+  it('qualifies named basename collisions with their folders', () => {
+    expect(summarizeFiles(['a/README.md', 'b/README.md', 'c/TODO.md', 'd/other.md', 'e/other.md', 'f/end.md']).named.map(file => file.label))
+      .toEqual(['a/README.md', 'b/README.md', 'TODO.md'])
+  })
+})
 
 describe('shared room views', () => {
   const scope: Scope = { by: 'Kieran', byKind: 'agent', area: 'api', summary: 'handlers', paths: ['api/'], at: 1 }

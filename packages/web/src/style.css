@@ -58,6 +58,7 @@ h2 { margin: 0 0 10px; font-size: 17px; }
   background: #fafbfc; text-align: left;
 }
 .participant:hover { border-color: #b9c2cf; }
+.participant:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .participant.focused { border-color: #8db5dd; background: #f4f8fd; box-shadow: 0 0 0 2px #dfeefa; }
 .participant.offline { opacity: .72; }
 .participant-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
@@ -81,7 +82,15 @@ h2 { margin: 0 0 10px; font-size: 17px; }
 .person-claim.stale { border-color: var(--warn); }
 .micro { margin-top: 6px; font-size: 10px; }
 .files-summary { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; margin-top: 8px; font-size: 9.5px; }
-.files-summary .mono { overflow-wrap: anywhere; }
+.files-content { min-width: 0; }
+.files-head { overflow-wrap: anywhere; }
+.files-named { display: flex; flex-direction: column; gap: 1px; min-width: 0; margin-top: 3px; }
+.files-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-toggle { display: block; margin-top: 4px; padding-left: 0; font: inherit; }
+.files-groups { margin-top: 5px; min-width: 0; }
+.files-group { min-width: 0; margin: 3px 0; }
+.files-group > summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.files-group-list { display: flex; flex-direction: column; gap: 2px; padding: 4px 0 4px 12px; min-width: 0; }
 .micro-label { font: 500 8.5px/1.5 var(--mono); letter-spacing: .06em; color: var(--muted); }
 .card-foot { margin-top: 6px; text-align: right; font-size: 9px; }
 

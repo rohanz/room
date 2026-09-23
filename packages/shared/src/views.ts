@@ -20,6 +20,44 @@ export function formatCount(count: number, singular: string, plural = singular +
   return count + ' ' + (count === 1 ? singular : plural)
 }
 
+export interface FileSummaryOptions { namedLimit?: number }
+export interface FileSummary {
+  count: number
+  dominant?: { folder: string; count: number }
+  named: { path: string; label: string }[]
+  groups: { folder: string; paths: string[] }[]
+}
+
+/** Stable path summary; overlays have a timestamp per person, never per file. */
+export function summarizeFiles(paths: readonly string[], options: FileSummaryOptions = {}): FileSummary {
+  const byPath = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
+  const sorted = [...paths].sort(byPath)
+  const folders = new Map<string, number>()
+  const immediate = new Map<string, string[]>()
+  for (const path of sorted) {
+    const parts = path.split('/')
+    const folder = parts.length > 1 ? parts.slice(0, -1).join('/') + '/' : './'
+    immediate.set(folder, [...(immediate.get(folder) ?? []), path])
+    for (let i = 1; i < parts.length; i++) {
+      const prefix = parts.slice(0, i).join('/') + '/'
+      folders.set(prefix, (folders.get(prefix) ?? 0) + 1)
+    }
+  }
+  const majority = sorted.length > 5 ? [...folders].filter(([, count]) => count > sorted.length / 2) : []
+  const winner = majority.sort(([a], [b]) => b.length - a.length || a.localeCompare(b))[0]
+  const dominant = winner ? { folder: winner[0], count: winner[1] } : undefined
+  const ordered = [...sorted].sort((a, b) => Number(!!dominant && a.startsWith(dominant.folder)) - Number(!!dominant && b.startsWith(dominant.folder)) || byPath(a, b))
+  const selected = ordered.slice(0, options.namedLimit ?? 3)
+  const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+  const counts = new Map<string, number>()
+  for (const path of selected) counts.set(basename(path), (counts.get(basename(path)) ?? 0) + 1)
+  return {
+    count: sorted.length, dominant,
+    named: selected.map(path => ({ path, label: counts.get(basename(path))! > 1 ? path : basename(path) })),
+    groups: [...immediate].sort(([a], [b]) => a.localeCompare(b)).map(([folder, groupPaths]) => ({ folder, paths: groupPaths })),
+  }
+}
+
 const STOPPED_WITH_SESSION = 'stopped when your last session ended; its partial work is in its worktree'
 const STOPPED_UNWITNESSED = 'stopped while no session of yours was running; reason unknown'
 const stoppedWithSession = (w: Pick<Worker, 'stopReason'>): boolean => w.stopReason === 'lead-session-ended'
@@ -188,7 +226,11 @@ export function personLine(input: PersonLineInput): string {
   else if (lastDone && (!p || p.status === 'idle' || p.status === 'synced')) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`
   else what = p ? `${p.status && !['idle', 'synced'].includes(p.status) ? p.status + ', ' : ''}no task declared` : 'offline'
   const share = input.share === 'full' ? '' : `; shares ${input.share}${input.share === 'intent' ? ' (no file text)' : ' (file text only under their scope paths)'}`
-  return `${what}${share}${input.changedPaths.length ? `; uncommitted, not yet pushed: ${input.changedPaths.join(', ')}` : ''}`
+  const files = summarizeFiles(input.changedPaths)
+  const changed = files.count > 5
+    ? `${files.count} files${files.dominant ? `, mostly ${files.dominant.folder} (${files.dominant.count})` : ''}: ${files.named.map(file => file.label).join(', ')} ...`
+    : input.changedPaths.join(', ')
+  return `${what}${share}${files.count ? `; uncommitted, not yet pushed: ${changed}` : ''}`
 }
 
 export function claimLine(claim: Claim, options: { yours?: boolean; stale?: boolean } = {}): string {

@@ -9,6 +9,7 @@ import {
   areaMembershipSummary,
   colorFor,
   splitParticipants,
+  summarizeFiles,
   type ParticipantGroups,
   type RetiredWorker,
   describeClaim,
@@ -279,16 +280,46 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
   const list = h('div', { class: 'participant-list' })
   const element = h('aside', { class: 'participants scroll' }, h('div', { class: 'panel-title' }, 'People'), list)
   const expanded = new Set<string>()
+  const expandedFiles = new Set<string>()
   const offline = h('details', { class: 'offline-group' })
+  const pathNode = (path: string, label: string) => {
+    const parts = label.split('/')
+    const short = label.length > 30 && parts.length > 1 ? `${parts[0]}/…/${parts.at(-1)}` : label
+    return h('span', { class: 'files-name mono', title: path }, short)
+  }
+  const fileList = (paths: readonly { path: string; label: string }[]) => h('div', { class: 'files-named' }, ...paths.map(file => pathNode(file.path, file.label)))
+  const filesView = (person: Participant) => {
+    const files = summarizeFiles(person.files, { namedLimit: person.files.length <= 5 ? 5 : 3 })
+    const content = h('div', { class: 'files-content' })
+    if (!files.count) content.append(h('span', { class: 'mono muted' }, 'none'))
+    else if (files.count <= 5) content.append(fileList(files.named))
+    else {
+      content.append(h('div', { class: 'files-head', title: files.dominant?.folder }, `${files.count} changed${files.dominant ? ` · mostly ${files.dominant.folder} (${files.dominant.count})` : ''}`))
+      if (!expandedFiles.has(person.name)) content.append(fileList(files.named))
+      else content.append(h('div', { class: 'files-groups' }, ...files.groups.map(group => {
+        const detail = h('details', { class: 'files-group' },
+          h('summary', { title: group.folder }, `${group.folder === './' ? 'top level' : group.folder} (${group.paths.length})`),
+          h('div', { class: 'files-group-list' }, ...group.paths.map(path => pathNode(path, path.slice(path.lastIndexOf('/') + 1)))))
+        detail.onclick = event => event.stopPropagation()
+        return detail
+      })))
+      const toggle = h('button', { class: 'files-toggle more-chips', type: 'button' }, expandedFiles.has(person.name) ? 'Show less' : `Show all ${files.count}`)
+      toggle.ariaExpanded = String(expandedFiles.has(person.name))
+      toggle.onclick = event => { event.stopPropagation(); if (expandedFiles.has(person.name)) expandedFiles.delete(person.name); else expandedFiles.add(person.name); render() }
+      content.append(toggle)
+    }
+    return h('div', { class: 'files-summary' }, h('span', { class: 'micro-label' }, 'FILES'), content)
+  }
   const render = () => {
     const groups = participantGroups(conn)
     const cards = groupedPeople(groups, participant => {
       const worker = [...conn.room.workers.values()].find(w => w.name === participant.name)
       const state = worker?.status === 'failed' ? 'failed' : deriveStatePill(participant)
       const short = shortPill(state)
-      const card = h('button', {
+      const card = h('div', {
         class: `participant${participant.online ? '' : ' offline'}${focus.person === participant.name ? ' focused' : ''}`,
         title: focus.person === participant.name ? `Clear ${participant.name} focus` : `Focus on ${participant.name}`,
+        role: 'button', tabIndex: 0,
       },
       h('div', { class: 'participant-head' }, dot(participant.name, participant.name, conn.room), h('strong', {}, participant.name), h('span', { class: 'sp' }),
         h('span', { class: `state-pill ${state.split(' ')[0]}`, title: state }, short)),
@@ -303,10 +334,10 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
             title: describeClaim(claim),
           }, participantClaimLine(claim))))
         : h('div', { class: 'micro muted' }, 'no active claims'),
-      h('div', { class: 'files-summary' }, h('span', { class: 'micro-label' }, 'FILES'),
-        h('span', { class: `mono ${participant.files.length ? '' : 'muted'}` }, participant.files.join(', ') || 'none')),
+      filesView(participant),
       h('div', { class: 'card-foot muted', title: participant.online ? 'Online' : 'Offline' }, participant.online || worker ? `${participant.online ? 'Online' : 'Offline'} · ${activityLabel(participant.latestActive, Date.now(), { worker })}` : 'Offline'))
       card.onclick = () => focus.set(focus.person === participant.name ? null : participant.name)
+      card.onkeydown = event => { if (event.target === card && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); card.click() } }
       return card
     }, expanded)
     offline.replaceChildren(h('summary', {}, `${groups.offlineTeammates.length} offline · worker history`), ...cards.offline)
