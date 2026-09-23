@@ -22096,6 +22096,43 @@ async function gitShowMany(dir, base, relpaths, configuredTimeoutMs) {
   }
   return out2;
 }
+async function gitBlobInfoMany(dir, base, relpaths, configuredTimeoutMs) {
+  const paths = Array.from(relpaths);
+  const out2 = /* @__PURE__ */ new Map();
+  if (!paths.length) return out2;
+  const timeout = timeoutMs(configuredTimeoutMs);
+  const raw = await new Promise((resolve5, reject) => {
+    const child = spawn("git", ["cat-file", "--batch-check", "-Z"], { cwd: dir, stdio: ["pipe", "pipe", "pipe"] });
+    const chunks = [];
+    let stderr2 = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`git cat-file --batch-check failed: timed out after ${timeout}ms`));
+    }, timeout);
+    child.stdout.on("data", (c) => chunks.push(c));
+    child.stderr.on("data", (c) => {
+      stderr2 += c;
+    });
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      code === 0 ? resolve5(Buffer.concat(chunks).toString()) : reject(new Error(`git cat-file --batch-check failed: ${stderr2.trim() || `exit ${code}`}`));
+    });
+    child.stdin.on("error", () => {
+    });
+    child.stdin.end(paths.map((p) => `${base}:${p}\0`).join(""));
+  });
+  const headers = raw.split("\0");
+  if (headers.length !== paths.length + 1) throw new Error(`git cat-file --batch-check returned ${headers.length - 1} results for ${paths.length} paths`);
+  for (const [i2, p] of paths.entries()) {
+    const [hash, type, size2] = headers[i2].split(" ");
+    out2.set(p, type === "blob" ? { hash, size: Number(size2) } : void 0);
+  }
+  return out2;
+}
 async function gitChanged(dir) {
   const out2 = await git(dir, ["--no-optional-locks", "status", "--porcelain", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"]);
   return out2.split("\0").filter(Boolean).map((entry) => entry.slice(3));
@@ -24655,16 +24692,23 @@ async function startRoomd(options) {
   const daemon = new Daemon(options);
   const limit = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   let timer;
-  try {
-    await Promise.race([daemon.start(), new Promise((_, reject) => {
+  const deadline = new Promise((_, reject) => {
+    const reset = () => {
+      clearTimeout(timer);
       timer = setTimeout(() => reject(Object.assign(new RoomdError(`startup did not finish within ${Math.round(limit / 1e3)}s`, 1), { phase: daemon.phase })), limit);
-    })]);
+    };
+    daemon.onSeedProgress = reset;
+    reset();
+  });
+  try {
+    await Promise.race([daemon.start(), deadline]);
   } catch (error2) {
     await daemon.stop(`startup failed: ${errMsg(error2)}`).catch(() => {
     });
     throw error2;
   } finally {
     clearTimeout(timer);
+    daemon.onSeedProgress = void 0;
   }
   return daemon;
 }
@@ -24745,11 +24789,13 @@ var init_src3 = __esm({
       publisherChosen = false;
       symlinks = /* @__PURE__ */ new Set();
       loggedSkips = /* @__PURE__ */ new Set();
+      oversizedCache = /* @__PURE__ */ new Map();
       diskWork = /* @__PURE__ */ new Set();
       stopped = false;
       lastActive = Date.now();
       /** The startup step in progress, named in a startup failure. */
       phase = "git";
+      onSeedProgress;
       constructor(options) {
         this.dir = path5.resolve(options.dir);
         this.name = options.name;
@@ -24855,6 +24901,7 @@ var init_src3 = __esm({
       }
       step(phase, work) {
         this.phase = phase;
+        if (phase === "seed") this.onSeedProgress?.();
         return inPhase(phase, work);
       }
       skipped() {
@@ -25174,11 +25221,26 @@ var init_src3 = __esm({
         if (this.stopped) return;
         const paths = Array.from(this.pathsToReconcile(extra));
         const base = this.base, shared = this.shared;
-        const [texts, sharedTexts] = await Promise.all([gitShowMany(this.dir, base, paths), shared === base ? void 0 : gitShowMany(this.dir, shared, paths)]);
+        const oversized = paths.filter((p) => {
+          try {
+            const stat4 = fs6.lstatSync(this.abs(p));
+            return stat4.isFile() && stat4.size > this.sizeCap;
+          } catch {
+            return false;
+          }
+        });
+        const oversizedSet = new Set(oversized);
+        const ordinary = paths.filter((p) => !oversizedSet.has(p));
+        const [texts, sharedTexts, blobs] = await Promise.all([
+          gitShowMany(this.dir, base, ordinary),
+          shared === base ? void 0 : gitShowMany(this.dir, shared, ordinary),
+          gitBlobInfoMany(this.dir, base, oversized)
+        ]);
         if (this.stopped || await gitHead(this.dir) !== base) return;
         for (const relpath of paths) {
           if (this.stopped) return;
-          await this.publishDiskState(relpath, { base, texts, shared, sharedTexts });
+          await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs });
+          if (this.phase === "seed") this.onSeedProgress?.();
         }
       }
       abs(relpath) {
@@ -25278,11 +25340,18 @@ var init_src3 = __esm({
         const moved = () => publishingBase !== this.base || sharedBase !== this.shared;
         const headMoved = async () => !batched && await gitHead(this.dir) !== publishingBase;
         const oversizedChanged = async () => {
-          const [diskHash, baseHash] = await Promise.all([
-            git(this.dir, ["hash-object", "--no-filters", "--", relpath]),
-            git(this.dir, ["rev-parse", `${publishingBase}:${relpath}`]).catch(() => "")
-          ]);
-          const changed = diskHash.trim() !== baseHash.trim();
+          const stat4 = fs6.statSync(this.abs(relpath));
+          const cached2 = this.oversizedCache.get(relpath);
+          const sameFile = cached2?.size === stat4.size && cached2.mtimeMs === stat4.mtimeMs;
+          if (sameFile && cached2.base === publishingBase) {
+            if (!cached2.changed) this.skips.size.delete(relpath);
+            return cached2.changed;
+          }
+          const blob = read?.base === publishingBase && read.blobs?.has(relpath) ? read.blobs.get(relpath) : (await gitBlobInfoMany(this.dir, publishingBase, [relpath])).get(relpath);
+          let hash = sameFile ? cached2.hash : void 0;
+          if (blob?.size === stat4.size && !hash) hash = (await git(this.dir, ["hash-object", "--no-filters", "--", relpath])).trim();
+          const changed = !blob || blob.size !== stat4.size || hash !== blob.hash;
+          this.oversizedCache.set(relpath, { size: stat4.size, mtimeMs: stat4.mtimeMs, base: publishingBase, changed, ...hash ? { hash } : {} });
           if (!changed) this.skips.size.delete(relpath);
           return changed;
         };
