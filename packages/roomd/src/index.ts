@@ -17,7 +17,7 @@ import chokidar, { type FSWatcher } from 'chokidar'
 import { RoomDoc, colorFor, scopeCovers, type BaseMsg, type Kind, type Presence } from '@room/shared'
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { baselineText, carriesWork, workerBaseline, type Baseline } from './baseline.js'
-import { git, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitShowMany, gitSubject, gitTracked } from './git.js'
+import { git, gitBlobInfoMany, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitShowMany, gitSubject, gitTracked, type GitBlobInfo } from './git.js'
 
 /**
  * How much of this clone the daemon publishes.
@@ -156,14 +156,20 @@ export async function startRoomd(options: RoomdOptions): Promise<Roomd> {
   const daemon = new Daemon(options)
   const limit = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS
   let timer: NodeJS.Timeout | undefined
-  try {
-    await Promise.race([daemon.start(), new Promise<never>((_, reject) => {
+  const deadline = new Promise<never>((_, reject) => {
+    const reset = () => {
+      clearTimeout(timer)
       timer = setTimeout(() => reject(Object.assign(new RoomdError(`startup did not finish within ${Math.round(limit / 1000)}s`, 1), { phase: daemon.phase })), limit)
-    })])
+    }
+    daemon.onSeedProgress = reset
+    reset()
+  })
+  try {
+    await Promise.race([daemon.start(), deadline])
   } catch (error) {
     await daemon.stop(`startup failed: ${errMsg(error)}`).catch(() => {})
     throw error
-  } finally { clearTimeout(timer) }
+  } finally { clearTimeout(timer); daemon.onSeedProgress = undefined }
   return daemon
 }
 
@@ -216,11 +222,13 @@ class Daemon implements Roomd {
   private publisherChosen = false
   private symlinks = new Set<string>()
   private loggedSkips = new Set<string>()
+  private oversizedCache = new Map<string, { size: number; mtimeMs: number; base: string; changed: boolean; hash?: string }>()
   private diskWork = new Set<Promise<void>>()
   private stopped = false
   private lastActive = Date.now()
   /** The startup step in progress, named in a startup failure. */
   phase = 'git'
+  onSeedProgress?: () => void
 
   constructor(options: RoomdOptions) {
     this.dir = path.resolve(options.dir)
@@ -329,6 +337,7 @@ class Daemon implements Roomd {
 
   private step<T>(phase: string, work: () => Promise<T>): Promise<T> {
     this.phase = phase
+    if (phase === 'seed') this.onSeedProgress?.()
     return inPhase(phase, work)
   }
 
@@ -659,12 +668,22 @@ class Daemon implements Roomd {
     if (this.stopped) return
     const paths = Array.from(this.pathsToReconcile(extra))
     const base = this.base, shared = this.shared
-    const [texts, sharedTexts] = await Promise.all([gitShowMany(this.dir, base, paths), shared === base ? undefined : gitShowMany(this.dir, shared, paths)])
+    const oversized = paths.filter(p => {
+      try { const stat = fs.lstatSync(this.abs(p)); return stat.isFile() && stat.size > this.sizeCap } catch { return false }
+    })
+    const oversizedSet = new Set(oversized)
+    const ordinary = paths.filter(p => !oversizedSet.has(p))
+    const [texts, sharedTexts, blobs] = await Promise.all([
+      gitShowMany(this.dir, base, ordinary),
+      shared === base ? undefined : gitShowMany(this.dir, shared, ordinary),
+      gitBlobInfoMany(this.dir, base, oversized),
+    ])
     // One HEAD check per batch: a move since the read is left to pollHead, which reseeds against the new HEAD.
     if (this.stopped || await gitHead(this.dir) !== base) return
     for (const relpath of paths) {
       if (this.stopped) return
-      await this.publishDiskState(relpath, { base, texts, shared, sharedTexts })
+      await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs })
+      if (this.phase === 'seed') this.onSeedProgress?.()
     }
   }
 
@@ -736,7 +755,7 @@ class Daemon implements Roomd {
   }
 
   /** `read`: base texts already read at `read.base` (and `read.shared`) with HEAD checked once for the batch (reconcile). */
-  private async publishDiskState(relpath: string, read?: { base: string; texts: Map<string, string | undefined>; shared: string; sharedTexts?: Map<string, string | undefined> }): Promise<void> {
+  private async publishDiskState(relpath: string, read?: { base: string; texts: Map<string, string | undefined>; shared: string; sharedTexts?: Map<string, string | undefined>; blobs?: Map<string, GitBlobInfo | undefined> }): Promise<void> {
     if (this.stopped) return
     this.choosePublisher()
     if (this.publishUnder) return
@@ -764,12 +783,19 @@ class Daemon implements Roomd {
     const moved = () => publishingBase !== this.base || sharedBase !== this.shared
     const headMoved = async () => !batched && await gitHead(this.dir) !== publishingBase
     const oversizedChanged = async () => {
-      // Hash without loading an oversized file into this process.
-      const [diskHash, baseHash] = await Promise.all([
-        git(this.dir, ['hash-object', '--no-filters', '--', relpath]),
-        git(this.dir, ['rev-parse', `${publishingBase}:${relpath}`]).catch(() => ''),
-      ])
-      const changed = diskHash.trim() !== baseHash.trim()
+      const stat = fs.statSync(this.abs(relpath))
+      const cached = this.oversizedCache.get(relpath)
+      const sameFile = cached?.size === stat.size && cached.mtimeMs === stat.mtimeMs
+      if (sameFile && cached.base === publishingBase) {
+        if (!cached.changed) this.skips.size.delete(relpath)
+        return cached.changed
+      }
+      const blob = read?.base === publishingBase && read.blobs?.has(relpath)
+        ? read.blobs.get(relpath) : (await gitBlobInfoMany(this.dir, publishingBase, [relpath])).get(relpath)
+      let hash = sameFile ? cached.hash : undefined
+      if (blob?.size === stat.size && !hash) hash = (await git(this.dir, ['hash-object', '--no-filters', '--', relpath])).trim()
+      const changed = !blob || blob.size !== stat.size || hash !== blob.hash
+      this.oversizedCache.set(relpath, { size: stat.size, mtimeMs: stat.mtimeMs, base: publishingBase, changed, ...(hash ? { hash } : {}) })
       if (!changed) this.skips.size.delete(relpath)
       return changed
     }

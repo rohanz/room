@@ -119,6 +119,35 @@ export async function gitShowMany(dir: string, base: string, relpaths: Iterable<
   return out
 }
 
+export interface GitBlobInfo { hash: string; size: number }
+
+/** Blob ids and sizes at one commit, without reading the blobs. NUL framing also permits newline paths. */
+export async function gitBlobInfoMany(dir: string, base: string, relpaths: Iterable<string>, configuredTimeoutMs?: number): Promise<Map<string, GitBlobInfo | undefined>> {
+  const paths = Array.from(relpaths)
+  const out = new Map<string, GitBlobInfo | undefined>()
+  if (!paths.length) return out
+  const timeout = timeoutMs(configuredTimeoutMs)
+  const raw = await new Promise<string>((resolve, reject) => {
+    const child = spawn('git', ['cat-file', '--batch-check', '-Z'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
+    const chunks: Buffer[] = []
+    let stderr = ''
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`git cat-file --batch-check failed: timed out after ${timeout}ms`)) }, timeout)
+    child.stdout.on('data', (c: Buffer) => chunks.push(c))
+    child.stderr.on('data', (c: Buffer) => { stderr += c })
+    child.on('error', e => { clearTimeout(timer); reject(e) })
+    child.on('close', code => { clearTimeout(timer); code === 0 ? resolve(Buffer.concat(chunks).toString()) : reject(new Error(`git cat-file --batch-check failed: ${stderr.trim() || `exit ${code}`}`)) })
+    child.stdin.on('error', () => { /* reported by close */ })
+    child.stdin.end(paths.map(p => `${base}:${p}\0`).join(''))
+  })
+  const headers = raw.split('\0')
+  if (headers.length !== paths.length + 1) throw new Error(`git cat-file --batch-check returned ${headers.length - 1} results for ${paths.length} paths`)
+  for (const [i, p] of paths.entries()) {
+    const [hash, type, size] = headers[i].split(' ')
+    out.set(p, type === 'blob' ? { hash, size: Number(size) } : undefined)
+  }
+  return out
+}
+
 /** Paths whose worktree or index differs from HEAD, untracked non-ignored files included: what an overlay seed must look at. */
 export async function gitChanged(dir: string): Promise<string[]> {
   const out = await git(dir, ['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all', '--no-renames', '--ignore-submodules=all'])

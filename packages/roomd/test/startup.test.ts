@@ -46,4 +46,16 @@ describe('roomd startup', () => {
     expect(String(error)).toMatch(/startup did not finish within 1s|startup did not finish within 0s/)
     expect(Date.now() - started).toBeLessThan(5000)
   })
+
+  it('allows a seed to exceed the deadline while each path keeps making progress', async () => {
+    const dir = dirtyRepo()
+    for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(dir, `new-${i}.txt`), `new ${i}\n`)
+    const started = Date.now()
+    const d = await startRoomd({ dir, room: 'ws://memory/progress', name: 'T', providerFactory: (_s, _n, doc) => provider(doc), log: () => {}, startupTimeoutMs: 350,
+      beforePublishWrite: () => new Promise(resolve => setTimeout(resolve, 120)) })
+    try {
+      expect(Date.now() - started).toBeGreaterThan(350)
+      expect(d.roomDoc.changedPaths('T')).toHaveLength(7)
+    } finally { await d.stop() }
+  })
 })
