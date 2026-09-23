@@ -14,7 +14,7 @@ Summary
 
 ## Findings
 
-### 1. blocker: carried workers and their lead get false conflicts on carried lines
+### 1. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) blocker: carried workers and their lead get false conflicts on carried lines
 - **Where:** `packages/room-mcp/src/tools/combined-tree.ts:33-47`, `packages/room-mcp/src/conflicts.ts:65-71`
 - **Defect:** The carried base is applied only to *participants* in `buildCombinedTree`, never to the caller, and `mergePath` ignores it entirely. A worker's own merge and both live conflict watchers therefore use `merge-base(leadHEAD, carried) = leadHEAD` as the 3-way base.
 - **Scenario:**
@@ -29,7 +29,7 @@ Summary
   - Add one pair-base rule and use it in `mergePath`, in `buildCombinedTree`'s caller seed, and in the per-participant step. When one side is a worker whose recorded `base` descends from the ancestor, the 3-way base for that pair is that recorded base (the carried commit), for either direction.
   - Add worker-side preview and watcher tests.
 
-### 2. blocker: the carry commits untracked secrets and bulk data to a pushable branch
+### 2. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) blocker: the carry commits untracked secrets and bulk data to a pushable branch
 - **Where:** `packages/room-mcp/src/workers.ts:263-275`, `:152`
 - **Defect:** Every non-ignored untracked file is copied and committed to `refs/heads/room/<tag>`, with no size cap. roomd's default ignores (`*.npy`, `*.pt`, `*.zip`, `dist/`, `build/` …) are not applied, and there is no secret-name check. The worker is still told it may push when the task says so, and nothing tells it that its branch holds the lead's uncommitted work.
 - **Scenario:**
@@ -46,7 +46,7 @@ Summary
   - Name what was skipped in the spawn reply.
   - Add to the prompt: "the first commit on your branch is the lead's uncommitted work; never push this branch; the lead collects."
 
-### 3. should-fix: common user git configs make every carry fail
+### 3. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) should-fix: common user git configs make every carry fail
 - **Where:** `packages/room-mcp/src/workers.ts:261-262`
 - **Defect:** The carry patch comes from porcelain `git diff`, which honours user config (`diff.noprefix`, `color.ui=always`, `diff.external`). `git apply` then rejects it. `saveDiscardPatch` already passes `--no-ext-diff --no-textconv`; this call doesn't.
 - **Scenario:** A developer with `diff.noprefix=true` (a popular setting) or difftastic as `diff.external` never gets a carry. Every spawn says "could not carry" or "commit them first", and nothing explains why.
@@ -56,7 +56,7 @@ Summary
   - `diff.external=/bin/echo`: carry failed.
 - **Fix:** Use `git diff --binary --full-index --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ HEAD …`, or `-c diff.noprefix=false -c color.ui=never`.
 
-### 4. should-fix: a spawn that fails after carrying orphans the branch, and a retry drops the carried base
+### 4. FIXED in 0.12.0 (Carry untracked work privately and independently of git config); FIXED in 0.12.0 (Keep previews inside their scratch tree and retirement from deleting output) should-fix: a spawn that fails after carrying orphans the branch, and a retry drops the carried base
 - **Where:** `packages/room-mcp/src/tools/workers.ts:113-156`, `packages/room-mcp/src/workers.ts:248`
 - **Defect:** The returns after `prepareWorktree` (link failure `:148`, worker-count recount `:127`, spawner throw `:156`) leave the worktree and the `room/<tag>` branch with the carried commit, but no worker record. `room_collect discard` then answers "no worker w owned by you". Respawning the tag reuses the worktree with `created:false` and no `base`, so the carried lines count as the worker's.
 - **Scenario:**
@@ -69,7 +69,7 @@ Summary
   - Validate links before carrying, and exclude link paths from the carry.
   - When reusing a worktree, recover `base` if its first commit above HEAD has `carriedSubject`.
 
-### 5. should-fix: in team rooms, a carried worker's local-only base breaks teammates' previews
+### 5. FIXED in 0.12.0 (Rejoin the room after a failed start and join in time proportional to changes) should-fix: in team rooms, a carried worker's local-only base breaks teammates' previews
 - **Where:** `packages/room-mcp/src/tools/combined-tree.ts:37-38`, `packages/room-mcp/src/tools/context.ts:302-316`, `packages/room-mcp/src/conflicts.ts:69`, `packages/roomd/src/index.ts:261`
 - **Defect:** The default spawn is `where: 'here'`, which puts the worker in the team room. Its daemon publishes `baseOf = carried commit`, which exists only in the lead's clone.
 - **Scenario:**
@@ -84,7 +84,7 @@ Summary
   - When the lead is in a team room, publish a carried worker's base as the carried commit's parent, with the carried files folded into its overlay under the lead's sharing level. Alternatively, bridge carried workers through the local workers room.
   - At minimum, skip such participants with an honest line: "works on rohanz's local carried commit; not previewable here".
 
-### 6. should-fix: a failed automatic local join is silent and permanent (live failure, part 1)
+### 6. FIXED in 0.12.0 (Rejoin the room after a failed start and join in time proportional to changes); FIXED in 0.12.0 (Keep Room in the room a human joined after its connection is lost) should-fix: a failed automatic local join is silent and permanent (live failure, part 1)
 - **Where:** `packages/room-mcp/src/index.ts:128-138`, `packages/room-mcp/src/tools/index.ts:52,58,82`
 - **Defect:** `expected = startup.server !== LOCAL || !!startup.room` is false for the default local room, so a failed startup join sets no `startupNotice`, only `log(line)`. Nothing retries it, and `setPendingJoin` swallows the rejection.
 - **Scenario:**
@@ -98,7 +98,7 @@ Summary
   - If it still fails, say "not in the local room: the startup join failed (<cause>); retried now and failed; room_join where=local".
   - Drop the `expected` guard for non-`NoRoom` failures.
 
-### 7. should-fix: join time grows with every tracked file, repeats on every HEAD move, and explains the 86 s
+### 7. FIXED in 0.12.0 (Rejoin the room after a failed start and join in time proportional to changes) should-fix: join time grows with every tracked file, repeats on every HEAD move, and explains the 86 s
 - **Where:** `packages/roomd/src/index.ts:330-337` (`pathsToReconcile` includes `this.tracked`), `:610-615`, `:751-753`, `:563-564`
 - **Defect:** `seedLocalOverlay` runs sequentially over *every tracked and untracked file* and starts two git processes per file (`gitShow` base, then `gitHead`). It is awaited inside `start()`, and `pollHead` repeats it after every commit, pull or checkout. Each worker's daemon does the same on startup.
 - **Scenario:**
@@ -113,14 +113,14 @@ Summary
   - Check HEAD once per batch.
   - Return from `start()` after sync and seed in the background.
 
-### 8. should-fix: a stale discovery file can pin a client to a relay that refuses its key
+### 8. FIXED in 0.12.0 (Rejoin the room after a failed start and join in time proportional to changes) should-fix: a stale discovery file can pin a client to a relay that refuses its key
 - **Where:** `packages/relay/src/index.ts:159-169`, `:288-296`
 - **Defect:** `recorded()` adopts any process whose `/health` says `{"local":true}`, even after logging "pid gone but relay answers". The key and the clone are never checked.
 - **Scenario:** If the recorded port now belongs to another clone's relay, every upgrade gets 403 and y-websocket retries until the 15 s sync timeout. The watchdog never takes over, because that relay keeps answering, and the join fails the same way until the other process exits.
 - **REPRODUCED (subagent):** a discovery file pointing at a live relay with a different key produced "joined relay … (pid 999999, pid gone but relay answers)", then "join failed after 3042ms".
 - **Fix:** `/health` returns `sha256(realpath(commonDir))` and verifies a `key` query. `recorded()` adopts only on a match and otherwise treats the file as stale.
 
-### 9. should-fix: an untracked nested repository aborts the whole carry, with no reason given
+### 9. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) should-fix: an untracked nested repository aborts the whole carry, with no reason given
 - **Where:** `packages/room-mcp/src/workers.ts:263-272`, `:279`
 - **Defect:** `ls-files --others` lists a nested repo as `vendor/lib/`. `copyFileSync` on a directory throws EISDIR, the bare `catch {}` discards the reason, and nothing is carried.
 - **Scenario:** A lead with a cloned tool under `vendor/` loses the carry for every spawn and is told to "commit them first". The error is never shown.
@@ -129,7 +129,7 @@ Summary
   - Skip entries ending in `/`, and non-regular files, naming them in the reply.
   - Return the error text in `carryFailed` so the reply can say why.
 
-### 10. should-fix: carried contract checks reparse every lead file on every overlay event, unbounded
+### 10. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) should-fix: carried contract checks reparse every lead file on every overlay event, unbounded
 - **Where:** `packages/room-mcp/src/conflicts.ts:119`, `:167-171`, `:192-217`
 - **Defect:** Every overlay change by anyone runs `checkAllObserved`, which queues a fresh `checkObserved(lead)`. There is no debounce and no dedupe of in-flight work.
 - **Scenario:** For a carried worker, each check runs `git show` plus two tree-sitter parses for *every* lead changed path, and `referencesSymbol` over every worker path. With a 40-file lead and 4 workers, one save anywhere costs about 160 git processes and 320 parses, and checks pile up concurrently.
@@ -139,14 +139,14 @@ Summary
   - Skip when the lead's overlay texts are unchanged (hash).
   - Cache `observedContractChanges` by (base sha, text hash).
 
-### 11. should-fix: a carried definition the lead reverts is never reported
+### 11. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) should-fix: a carried definition the lead reverts is never reported
 - **Where:** `packages/room-mcp/src/conflicts.ts:210`
 - **Defect:** The check iterates `changedPaths(lead)`. Reverting, stashing or checking out a carried file removes it from that set, so a signature restored to HEAD is never compared with the carried commit.
 - **Scenario:** The worker builds on the carried `foo(a, b)`. The lead runs `git stash` or reverts `foo`. The worker is not told, and `room_collect` then applies calls to a signature that no longer exists.
 - **TRACED.**
 - **Fix:** Iterate `carried paths ∪ changedPaths(lead)`, where the carried paths come from `git diff-tree <base>`. A path with no overlay uses the lead's HEAD text, and a deleted one uses `null`.
 
-### 12. should-fix: "carried your N uncommitted changes" counts the wrong thing
+### 12. FIXED in 0.12.0 (Keep previews inside their scratch tree and retirement from deleting output) should-fix: "carried your N uncommitted changes" counts the wrong thing
 - **Where:** `packages/room-mcp/src/tools/workers.ts:182`, `packages/room-mcp/src/workers.ts:105-107`
 - **Defect:** N comes from `status --untracked-files=normal` lines, not from what was carried.
 - **Scenario:**
@@ -155,7 +155,7 @@ Summary
 - **REPRODUCED:** `carry.mts` cases `untracked-dir-count` (count=1, 30 paths) and `submodule-dirty` (count=2, paths=[a.txt]).
 - **Fix:** Report `carried.paths.length`.
 
-### 13. should-fix (product): the carried-files prompt rule works against the motivating use case
+### 13. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) should-fix (product): the carried-files prompt rule works against the motivating use case
 - **Where:** `packages/room-mcp/src/workers.ts:156`
 - **Defect:** "do not edit them unless the task says so" applies to every carried file, and only 20 are named.
 - **Scenario:** In the roadmap's own motivating case (a day of uncommitted rewrites), the worker's target files are carried. A brief that doesn't know it must grant permission gets a worker that refuses, or asks, about the files it was sent to change. Beyond 20 files the worker cannot tell which files the rule covers at all.
@@ -164,34 +164,34 @@ Summary
   - Reword: "these are the lead's uncommitted changes, already in your base; the lead may keep editing them; change them only where your task needs to".
   - Write the full list to a file in the worktree's git dir and name that file.
 
-### 14. later: absolute or escaping untracked symlinks point the worker into the lead's clone
+### 14. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) later: absolute or escaping untracked symlinks point the worker into the lead's clone
 - **Where:** `packages/room-mcp/src/workers.ts:268`
 - **Defect:** `readlink` is copied verbatim.
 - **Scenario:** An untracked `cfg -> /…/lead/real.txt` in the worker still points at the lead's file, so the worker's edits write the lead's clone directly. `room_collect` then refuses the whole worker ("symlink leaving the worktree" → "Nothing written; files need manual collection").
 - **REPRODUCED** that the link targets the lead's clone (`carry.mts` case `abs-symlink`). The collect refusal is TRACED (`combined-tree.ts:76-77`, `collect.ts:193-194`).
 - **Fix:** Skip symlinks whose target leaves the repo, and name them.
 
-### 15. later: a carry during a merge or rebase commits conflict markers as the worker's base
+### 15. FIXED in 0.12.0 (Carry untracked work privately and independently of git config); FIXED in 0.12.0 (Spawn from a detached HEAD and let a lead reuse its own kept worktree) later: a carry during a merge or rebase commits conflict markers as the worker's base
 - **Where:** `packages/room-mcp/src/workers.ts:258-278`
 - **Defect:** There is no check for an in-progress git operation.
 - **Scenario:** A lead mid-merge spawns a worker. The worker's base contains `<<<<<<<` markers, with no warning.
 - **REPRODUCED:** `carry.mts` case `mid-merge-conflict` carried `a.txt`.
 - **Fix:** Reuse `assertNoOperation` (`collect.ts:50`). Skip the carry and say "finish the merge first".
 
-### 16. later: the carry commit still runs post-commit and reference-transaction hooks
+### 16. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) later: the carry commit still runs post-commit and reference-transaction hooks
 - **Where:** `packages/room-mcp/src/workers.ts:275`
 - **Defect:** `--no-verify` skips only pre-commit and commit-msg. Repos with a post-commit hook (auto-push, notifications, LFS lock tooling) run it on the lead's WIP.
 - **TRACED.**
 - **Fix:** Add `-c core.hooksPath=/dev/null` to the commit.
 
-### 17. later: the browser's Merged tab attributes carried lines to the worker
+### 17. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) later: the browser's Merged tab attributes carried lines to the worker
 - **Where:** `packages/web/src/panels.ts:735-739`
 - **Defect:** One base (`baseOf(people[0])`) is used for all versions.
 - **Scenario:** With the lead first, a carried worker's overlay is diffed against the lead's HEAD, so the lead's carried lines appear as "lines by rohanz+w". The false `merge-conflict` spans from finding 1 are drawn on top.
 - **TRACED.**
 - **Fix:** Classify each version against its own `baseOf`, or against the pair base from finding 1.
 
-### 18. later: spawning in a repo with no commits throws a raw git error
+### 18. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) later: spawning in a repo with no commits throws a raw git error
 - **Where:** `packages/room-mcp/src/workers.ts:255`
 - **Scenario:** The reply is "could not create a worktree for w: git rev-parse HEAD failed: fatal: ambiguous argument 'HEAD'…".
 - **REPRODUCED:** `carry.mts` case `unborn`.

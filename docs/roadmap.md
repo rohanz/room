@@ -252,6 +252,20 @@ The busy-worker problem did not recur: every question was acknowledged within ab
 - **Broadcast rulings went out as `fyi`**, so the lead had to resend them as `notify`: a note to
   everyone from a lead should reach them.
 
+### From the carry-hardening batch (seven workers, 2026-09-23, open)
+
+- **A finished worker cannot take defects back.** `room_spawn` refuses a done tag until it is
+  discarded, so review findings went to a second wave of new workers instead of the authors.
+- **Answers did not reach a waiting worker.** The docs worker asked the same question three times;
+  only a `to`-addressed interrupt note arrived. A done worker whose worktree was later discarded
+  showed as "discarded", and a teammate read that as its work being dropped.
+- **Kept worktrees and recovery patches for build output** (above) recurred for every worker.
+- **Unhandled `EPIPE` in preview.** `materializeGitTree` pipes `git archive` into `tar` with no
+  error handler on `tar`'s stdin; one full-suite run reported it as an unhandled error.
+- **Full-suite runs hung twice when two suites ran on the machine at once** (a lead's and a
+  worker's); alone, the suite passes in about a minute.
+- **A restart while the old process lingers saves the tag `+agent`** permanently (`rememberTag`).
+
 ### From the review-fixes batch (eight Codex workers, 2026-09-21, open)
 
 Recurred from the tree-sitter batch: a busy worker left three questions unanswered until the lead

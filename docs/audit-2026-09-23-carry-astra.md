@@ -12,7 +12,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
 ## Findings
 
-1. **blocker — Preview can overwrite an external symlink target.** `packages/room-mcp/src/tools/files.ts:208`, `:214`; `packages/room-mcp/src/tools/combined-tree.ts:72`.
+1. FIXED in 0.12.0 (Keep previews inside their scratch tree and retirement from deleting output) **blocker — Preview can overwrite an external symlink target.** `packages/room-mcp/src/tools/files.ts:208`, `:214`; `packages/room-mcp/src/tools/combined-tree.ts:72`.
 
    **Defect:** Materialization checks current worktree symlinks but writes through symlinks restored from the ancestor archive.
 
@@ -22,7 +22,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Validate every scratch path component after extraction. Replace final symlinks without following them, and refuse or safely replace symlink ancestors before creating directories or writing merged files. Keep all writes within the resolved scratch root.
 
-2. **blocker — Automatic retirement bypasses the ignored-output protection.** `packages/room-mcp/src/registry.ts:166`, `:173`; `packages/room-mcp/src/workers.ts:64`, `:365`.
+2. FIXED in 0.12.0 (Keep previews inside their scratch tree and retirement from deleting output) **blocker — Automatic retirement bypasses the ignored-output protection.** `packages/room-mcp/src/registry.ts:166`, `:173`; `packages/room-mcp/src/workers.ts:64`, `:365`.
 
    **Defect:** A Git-clean completed worker is force-removed without checking its ignored artifacts.
 
@@ -32,7 +32,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Share one retention/cleanup decision between collect and retirement. Retain the worktree and actionable record when ignored output exists or cleanup fails; retire only after successful safe cleanup.
 
-3. **blocker — Carry puts otherwise private WIP on pushable branches.** `packages/room-mcp/src/workers.ts:256`, `:261`, `:263`, `:275`.
+3. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) **blocker — Carry puts otherwise private WIP on pushable branches.** `packages/room-mcp/src/workers.ts:256`, `:261`, `:263`, `:275`.
 
    **Defect:** Spawn automatically commits every Git-eligible dirty path, including untracked secrets, under `refs/heads/room/<tag>` without a separate publication boundary.
 
@@ -42,7 +42,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Keep carried snapshots and worker history off ordinary pushable branches, for example a detached worker plus privately managed recovery refs and explicit promotion when requested. Apply an explicit carry eligibility boundary, including Room exclusions, and disclose exclusions before dispatch. Merely suppressing the carry message or deleting the branch later does not protect `push --all`.
 
-4. **blocker — Separate rooms can run workers in the same worktree.** `packages/room-mcp/src/workers.ts:246`, `:248`; `packages/room-mcp/src/tools/workers.ts:85`, `:100`.
+4. FIXED in 0.12.0 (Keep previews inside their scratch tree and retirement from deleting output); FIXED in 0.12.0 (Spawn from a detached HEAD and let a lead reuse its own kept worktree) **blocker — Separate rooms can run workers in the same worktree.** `packages/room-mcp/src/workers.ts:246`, `:248`; `packages/room-mcp/src/tools/workers.ts:85`, `:100`.
 
    **Defect:** Worker isolation is keyed by repository/tag on disk but checked and reserved by room/lead in memory.
 
@@ -52,7 +52,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Reserve worktree ownership in the common Git directory across processes, keyed by canonical path, and verify it before reuse. Use unique per-worker paths/branches or refuse a tag occupied by another room/session.
 
-5. **should-fix — A failed spawn can lose the carried base on retry.** `packages/room-mcp/src/tools/workers.ts:147`, `:155`, `:158`; `packages/room-mcp/src/workers.ts:248`, `:255`; `packages/room-mcp/src/tools/combined-tree.ts:44`.
+5. FIXED in 0.12.0 (Carry untracked work privately and independently of git config); FIXED in 0.12.0 (Keep previews inside their scratch tree and retirement from deleting output) **should-fix — A failed spawn can lose the carried base on retry.** `packages/room-mcp/src/tools/workers.ts:147`, `:155`, `:158`; `packages/room-mcp/src/workers.ts:248`, `:255`; `packages/room-mcp/src/tools/combined-tree.ts:44`.
 
    **Defect:** Carry provenance exists only in the returned preparation result and later worker record, so reuse after an intervening failure forgets it.
 
@@ -62,7 +62,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Persist the immutable worker base and carry manifest before subsequent spawn steps; recover and validate them on reuse. Clean up newly prepared trees on pre-launch failures when safe, rather than silently adopting them without metadata.
 
-6. **should-fix — A moving lead HEAD creates a snapshot from incompatible moments.** `packages/room-mcp/src/workers.ts:255`, `:256`, `:261`.
+6. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) **should-fix — A moving lead HEAD creates a snapshot from incompatible moments.** `packages/room-mcp/src/workers.ts:255`, `:256`, `:261`.
 
    **Defect:** Worktree creation pins one HEAD, but the later carry diff uses the moving name `HEAD`.
 
@@ -72,7 +72,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Diff against the pinned commit and verify the lead's HEAD and selected inputs remained stable before accepting the snapshot; retry on movement. Do not silently certify a mixture of old committed state and newer dirty state.
 
-7. **should-fix — Internal carry commits still execute repository commit hooks.** `packages/room-mcp/src/workers.ts:275`; `packages/room-mcp/src/conflicts.ts:184`.
+7. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) **should-fix — Internal carry commits still execute repository commit hooks.** `packages/room-mcp/src/workers.ts:275`; `packages/room-mcp/src/conflicts.ts:184`.
 
    **Defect:** `commit --no-verify` does not suppress `prepare-commit-msg` or `post-commit` hooks.
 
@@ -82,7 +82,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Create internal snapshots through plumbing that does not execute commit hooks, and identify them through persisted structured carry metadata rather than a mutable commit subject.
 
-8. **should-fix — Carry copies the inputs that spawn intends to link.** `packages/room-mcp/src/tools/workers.ts:113`, `:147`; `packages/room-mcp/src/workers.ts:263`, `:200`.
+8. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) **should-fix — Carry copies the inputs that spawn intends to link.** `packages/room-mcp/src/tools/workers.ts:113`, `:147`; `packages/room-mcp/src/workers.ts:263`, `:200`.
 
    **Defect:** Link paths are resolved only after carry has populated their destinations.
 
@@ -92,7 +92,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Resolve and validate the requested/default input links first, exclude them from the snapshot, then install them. Persist those exclusions with the worker's provenance.
 
-9. **should-fix — Carry has no byte budget and blocks the MCP process while copying.** `packages/room-mcp/src/workers.ts:261`, `:264`, `:270`, `:274`.
+9. FIXED in 0.12.0 (Carry untracked work privately and independently of git config) **should-fix — Carry has no byte budget and blocks the MCP process while copying.** `packages/room-mcp/src/workers.ts:261`, `:264`, `:270`, `:274`.
 
    **Defect:** All non-ignored untracked bytes are copied synchronously and committed without a size or total-work bound.
 
@@ -102,7 +102,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Preflight total bytes and eligible file types, honor link/ignore exclusions, and use bounded asynchronous copying. Refuse or explicitly report an oversized carry before starting a worker that would otherwise have an incomplete baseline.
 
-10. **should-fix — Team participants cannot fetch another machine's carried base.** `packages/roomd/src/index.ts:261`; `packages/room-mcp/src/tools/context.ts:302`, `:316`; `packages/room-mcp/src/tools/combined-tree.ts:37`.
+10. FIXED in 0.12.0 (Rejoin the room after a failed start and join in time proportional to changes) **should-fix — Team participants cannot fetch another machine's carried base.** `packages/roomd/src/index.ts:261`; `packages/room-mcp/src/tools/context.ts:302`, `:316`; `packages/room-mcp/src/tools/combined-tree.ts:37`.
 
    **Defect:** Team workers advertise private carried commit IDs as ordinary participant bases, but remote peers have no way to obtain those commits.
 
@@ -112,7 +112,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Represent the private carried snapshot relative to an available shared commit, with the required per-file baseline data, so remote merge/read operations do not require a private commit. Until supported, exclude such a participant from remote previews with an honest local-only-base explanation; do not prescribe an impossible fetch or require publishing private WIP.
 
-11. **should-fix — Worker-initiated previews still count carried lead edits as worker edits.** `packages/room-mcp/src/tools/combined-tree.ts:43`, `:105`, `:109`; `packages/room-mcp/src/workers.ts:151`.
+11. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) **should-fix — Worker-initiated previews still count carried lead edits as worker edits.** `packages/room-mcp/src/tools/combined-tree.ts:43`, `:105`, `:109`; `packages/room-mcp/src/workers.ts:151`.
 
    **Defect:** The own-base adjustment applies only to merge participants, not to a worker that is the caller.
 
@@ -122,7 +122,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Normalize the computation around the destination lead's live tree and apply each worker's own-base delta regardless of who invoked the tool. Test the same scenario from both callers and require equivalent results.
 
-12. **should-fix — Automatic merge notices disagree with carried-base collection.** `packages/room-mcp/src/conflicts.ts:65`, `:71`, `:323`.
+12. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) **should-fix — Automatic merge notices disagree with carried-base collection.** `packages/room-mcp/src/conflicts.ts:65`, `:71`, `:323`.
 
    **Defect:** `mergePath` still merges both full versions against their common ancestor, ignoring the worker's carried delta base.
 
@@ -132,7 +132,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Use the same own-base delta semantics for automatic checks and explicit previews, including opposite caller directions, and deduplicate their shared verdict.
 
-13. **should-fix — Worker graph observations attribute carried signatures to the worker.** `packages/room-mcp/src/graph-index.ts:99`, `:161`, `:167`.
+13. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) **should-fix — Worker graph observations attribute carried signatures to the worker.** `packages/room-mcp/src/graph-index.ts:99`, `:161`, `:167`.
 
    **Defect:** Observed contracts compare a worker's overlay to the room base instead of the worker's baseline.
 
@@ -142,7 +142,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Separate the room-wide dependency projection from per-person observed-contract baselines; compute worker observations against its recorded carry/fork base and preserve that provenance after worker commits.
 
-14. **should-fix — The browser's merged view duplicates and misattributes carried lines.** `packages/web/src/panels.ts:735`, `:739`.
+14. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) **should-fix — The browser's merged view duplicates and misattributes carried lines.** `packages/web/src/panels.ts:735`, `:739`.
 
    **Defect:** The merged browser panel uses one participant's base for all versions and does not consume worker delta bases.
 
@@ -161,7 +161,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Feed the view explicit per-person baseline/provenance data and render the same combined delta result as the tools. Do not label a single-base approximation as the merged worker result.
 
-15. **should-fix — Preview tests do not run on the bytes and modes that collect applies.** `packages/room-mcp/src/tools/combined-tree.ts:27`; `packages/room-mcp/src/tools/files.ts:214`; `packages/room-mcp/src/tools/collect.ts:184`, `:198`.
+15. FIXED in 0.12.0 (Keep previews inside their scratch tree and retirement from deleting output) **should-fix — Preview tests do not run on the bytes and modes that collect applies.** `packages/room-mcp/src/tools/combined-tree.ts:27`; `packages/room-mcp/src/tools/files.ts:214`; `packages/room-mcp/src/tools/collect.ts:184`, `:198`.
 
    **Defect:** Preview decodes disk files as UTF-8 and materializes text without worker executable-mode changes, while collection uses lossless byte transport and mode merging.
 
@@ -171,7 +171,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Share a byte-and-mode tree representation and materializer between preview and collection. Only decode files for textual merging when valid text; preserve opaque bytes and executable metadata otherwise.
 
-16. **should-fix — CRLF checkouts make an unchanged carried file look like a worker delta.** `packages/room-mcp/src/tools/combined-tree.ts:125`, `:131`; `packages/room-mcp/src/tools/collect.ts:189`.
+16. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere); FIXED in 0.12.0 (Define an unchanged carried untracked file once) **should-fix — CRLF checkouts make an unchanged carried file look like a worker delta.** `packages/room-mcp/src/tools/combined-tree.ts:125`, `:131`; `packages/room-mcp/src/tools/collect.ts:189`.
 
    **Defect:** Collection compares raw checkout bytes to unfiltered Git blob bytes.
 
@@ -181,7 +181,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Compute deltas in Git's canonical representation, then materialize with the destination's checkout conversion, or consistently obtain equivalent checkout representations for all sides. Treat filter failures explicitly.
 
-17. **should-fix — Reverting a carried definition to HEAD produces no contract notice.** `packages/room-mcp/src/conflicts.ts:210`.
+17. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) **should-fix — Reverting a carried definition to HEAD produces no contract notice.** `packages/room-mcp/src/conflicts.ts:210`.
 
    **Defect:** Carried comparison enumerates only the lead's currently dirty paths, so a return to clean HEAD disappears from its candidate set.
 
@@ -191,7 +191,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Persist/enumerate the carried provider paths as well as current dirty paths, and compare them after overlay removal and lead-base movement. An unchanged new HEAD must not erase a change relative to the worker's snapshot.
 
-18. **should-fix — Same-file carried calls are missed for ordinary arrow functions and methods.** `packages/room-mcp/src/graph-index.ts:29`, `:35`, `:43`.
+18. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) **should-fix — Same-file carried calls are missed for ordinary arrow functions and methods.** `packages/room-mcp/src/graph-index.ts:29`, `:35`, `:43`.
 
    **Defect:** The workaround for references filtered as local definitions only masks a small set of keyword-prefixed declarations.
 
@@ -212,7 +212,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Preserve raw call/reference facts separately from external-only refs in parser output; use those facts for same-file consumption instead of rewriting source with a language-incomplete regex.
 
-19. **should-fix — Carried contract checks bypass the existing import narrowing.** `packages/room-mcp/src/conflicts.ts:221`; `packages/room-mcp/src/graph-index.ts:25`.
+19. FIXED in 0.12.0 (Judge a worker's own changes against its baseline everywhere) **should-fix — Carried contract checks bypass the existing import narrowing.** `packages/room-mcp/src/conflicts.ts:221`; `packages/room-mcp/src/graph-index.ts:25`.
 
    **Defect:** Once a worker has any carried commit, its lead-contract checks match bare symbol names without checking the provider module.
 
@@ -222,7 +222,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Match carried provider/consumer pairs through the same import-narrowing rules as the normal graph, while retaining the new same-file call support and worker-relative signature comparison.
 
-20. **should-fix — Failed default-local auto-join leaves the session disabled indefinitely.** `packages/room-mcp/src/index.ts:127`, `:130`, `:142`; `packages/room-mcp/src/index.ts:68`.
+20. FIXED in 0.12.0 (Rejoin the room after a failed start and join in time proportional to changes); FIXED in 0.12.0 (Keep Room in the room a human joined after its connection is lost) **should-fix — Failed default-local auto-join leaves the session disabled indefinitely.** `packages/room-mcp/src/index.ts:127`, `:130`, `:142`; `packages/room-mcp/src/index.ts:68`.
 
    **Defect:** Default-local startup errors are log-only, and the single failed auto-join promise is never retried.
 
@@ -232,7 +232,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Use a single-flight local connection state with bounded retry/backoff and a safe on-demand retry before room-dependent tools. Preserve and report one actionable local failure after retries, including its phase. Never interpret this failure as permission to join/create a team room. Cancel retries on explicit leave/shutdown.
 
-21. **should-fix — Relay discovery accepts the wrong relay as healthy.** `packages/relay/src/index.ts:159`, `:289`, `:294`, `:329`.
+21. FIXED in 0.12.0 (Rejoin the room after a failed start and join in time proportional to changes) **should-fix — Relay discovery accepts the wrong relay as healthy.** `packages/relay/src/index.ts:159`, `:289`, `:294`, `:329`.
 
    **Defect:** Discovery and takeover health checks establish only that the port serves some Room relay, not that it accepts this clone's key.
 
@@ -242,7 +242,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Authenticate the liveness probe with the discovery key and bind the response to the relay instance/clone. Atomically publish discovery data; on authentication/sync failure re-read discovery and re-enter the ownership election instead of repeatedly trusting the same open port.
 
-22. **should-fix — Local join has no total deadline and waits for a serial full-tree seed.** `packages/roomd/src/index.ts:247`, `:286`, `:610`, `:751`, `:838`; `packages/room-mcp/src/session.ts:290`, `:327`, `:469`.
+22. FIXED in 0.12.0 (Rejoin the room after a failed start and join in time proportional to changes) **should-fix — Local join has no total deadline and waits for a serial full-tree seed.** `packages/roomd/src/index.ts:247`, `:286`, `:610`, `:751`, `:838`; `packages/room-mcp/src/session.ts:290`, `:327`, `:469`.
 
    **Defect:** The connection deadlines bound individual sync phases, not initialization or the tool call; join remains pending through every tracked/untracked file and watcher readiness.
 
@@ -252,7 +252,7 @@ Validation: typecheck and 76 tests passed; this review used no network, changed 
 
    **Smallest clean fix:** Seed changed paths from Git status/diff rather than spawning Git per clean tracked file, batch base reads, and do bounded cancellable initialization with phase timings. Return connected/indexing status without blocking unrelated tools on the full scan, while accurately marking coordination coverage incomplete. Reject watcher startup on error and enforce an overall startup deadline. Pair this with the local retry state in finding 20.
 
-23. **later — A stopped relay handle can start a new listener after shutdown.** `packages/relay/src/index.ts:327`, `:329`, `:332`, `:353`.
+23. FIXED in 0.12.0 (Rejoin the room after a failed start and join in time proportional to changes) **later — A stopped relay handle can start a new listener after shutdown.** `packages/relay/src/index.ts:327`, `:329`, `:332`, `:353`.
 
    **Defect:** The asynchronous takeover tick checks `stopped` only before awaiting health and is not drained by `stop()`.
 
