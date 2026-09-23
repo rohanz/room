@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
 import { git } from '@room/roomd/git'
-import { DEFAULT_SERVER, NoRoom, NotLoggedIn, deriveRoomName, normalizeLocalRoomName, resolveServer, type Session } from '../session.js'
+import { DEFAULT_SERVER, NoRoom, NotLoggedIn, deriveRoomName, normalizeLocalRoomName, resolveServer, type JoinOptions, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { clearChoice, describeWhere, markWarned, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
@@ -73,6 +73,11 @@ export async function teamSharingNote(s: Session): Promise<string | undefined> {
   const note = pendingTeamSharingDisclosure(s)
   if (note) markTeamSharingDisclosureDelivered(s)
   return note
+}
+
+/** Join s's room again as s did, without opening the repo again. */
+export function rejoinOptions(s: Session, credentialsPath?: string): JoinOptions {
+  return { dir: s.dir, credentialsPath, name: s.me.owner ?? s.me.name, tag: s.me.label, room: s.roomName, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')), share: s.shareRequested, token: s.token }
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -276,7 +281,7 @@ export function install(state: HandlerState): void {
       const target = `${repo}/${branch}`
       log(`branch changed ${current} -> ${branch}; moving room`)
       try {
-        const n = await doJoin({ dir: s.dir, credentialsPath: ctx.config?.credentialsPath, name: s.me.owner ?? s.me.name, tag: s.me.label, room: target, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')), share: s.shareRequested, token: s.token })
+        const n = await doJoin({ ...rejoinOptions(s, ctx.config?.credentialsPath), room: target })
         delete n.pinnedRoom
         cleanupMine(s, `switched branch to ${branch}`)
         rooms.remove(s)

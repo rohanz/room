@@ -1,16 +1,17 @@
 /**
  * Being in the room this session is meant to be in: one step, used at startup and before every
  * room tool call. It is single-flight (concurrent callers share one run), retries transient
- * failures with backoff inside a total deadline, reports a failure once with its cause, and stops
- * for good when the human takes over (room_join, room_leave, room_close) or the process shuts down.
+ * failures with backoff inside a total deadline, and reports a failure once with its cause. The room
+ * meant is the startup choice until the human joins one (room_join, room_create), then that one; it
+ * stops for good when the human leaves (room_leave, room_close) or the process shuts down.
  */
 import type { Session } from './session.js'
 import { NoRoom, NotLoggedIn } from './session.js'
 import { RoomdError } from '@room/roomd'
 
 export interface AutoJoinOptions {
-  /** One join attempt: the session, or undefined when there is nothing to join (no retry). */
-  attempt(): Promise<Session | undefined>
+  /** One join attempt, of the room a human joined (target) or else the startup choice: the session, or undefined when there is nothing to join (no retry). */
+  attempt(target?: Session): Promise<Session | undefined>
   /** Make a joined session the current one. */
   adopt(s: Session): Promise<void>
   /** Leave a session that finished after the run gave up or was cancelled. */
@@ -20,7 +21,7 @@ export interface AutoJoinOptions {
   log(line: string): void
   /** Called once per failure streak with the line to show the agent. */
   report(line: string): void
-  /** Local room (no server): failures never suggest team rooms. */
+  /** The startup choice is a local room (no server): failures never suggest team rooms. */
   local: boolean
   /** Waits between attempts; the last one repeats. */
   delaysMs?: number[]
@@ -64,6 +65,7 @@ export class AutoJoin {
   /** Why the last run failed, while no session is present; undefined after a join. */
   failure: string | undefined
   private permanent = false
+  private target: Session | undefined
   private readonly delays: number[]
   private readonly deadlineMs: number
   private readonly retryAfterMs: number
@@ -88,6 +90,14 @@ export class AutoJoin {
   /** The run in progress, if any. */
   settle(): Promise<void> { return this.inflight ?? Promise.resolve() }
 
+  /** A human joined s: from now on s's room is the one meant, and a stopped automatic join resumes for it. */
+  retarget(s: Session): void {
+    this.target = s
+    this.cancelled = false
+    this.permanent = false
+    this.failure = undefined
+  }
+
   /** Stop joining for good: a late session is left, a pending wait ends now. */
   cancel(): void {
     this.cancelled = true
@@ -101,7 +111,7 @@ export class AutoJoin {
     for (;;) {
       attempts++
       try {
-        const s = await this.bounded(this.o.attempt(), deadline)
+        const s = await this.bounded(this.o.attempt(this.target), deadline)
         if (s === 'gave-up') return
         if (!s) { this.permanent = true; return }
         this.failure = undefined
@@ -120,7 +130,7 @@ export class AutoJoin {
     }
     this.o.log(`join attempt ${attempts} failed ${causeOf(last)}; giving up for now`)
     const first = this.failure === undefined
-    this.failure = joinFailureLine(last, this.o.local, attempts)
+    this.failure = joinFailureLine(last, this.target ? !!this.target.local : this.o.local, attempts)
     if (first) this.o.report(this.failure)
   }
 

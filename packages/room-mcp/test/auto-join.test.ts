@@ -10,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { RoomdError } from '@room/roomd'
+import { ensureLocalRelay, startRelay } from '@room/relay'
 import { AutoJoin } from '../src/auto-join.js'
 import { appendRoomLog } from '../src/index.js'
 import { LOCAL, NoRoom, type Session } from '../src/session.js'
@@ -95,11 +96,33 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(log).toMatch(/ready/)
     console.log(`joined ${joinedAfter}ms after the wedged owner left (${Date.now() - started}ms after start)`)
   }, 90_000)
+
+  it('after room_join, a session whose relay is lost rejoins the room it chose on the next tool call; room_leave keeps it out', async () => {
+    const dir = repo()
+    const commonDir = path.join(dir, '.git')
+    // The test runs the clone's relay, so the session is a client of it and can lose it.
+    const owner = await ensureLocalRelay(commonDir, 'local/x', { watchMs: 60_000, log: () => {} })
+    cleanups.push(() => owner.stop())
+    const mcp = await startMcp(dir)
+    await mcp.waitFor(/^room-mcp: ready$/, 30_000)
+    expect(await mcp.call('room_join', { room: 'picked' })).toContain('joined local/picked as Ada')
+    // Another clone's relay takes the port (what a host restart overnight can do).
+    const port = owner.port
+    await owner.stop()
+    const foreign = await startRelay(port, { key: 'other-key', commonDir: fs.mkdtempSync(path.join(os.tmpdir(), 'room-autojoin-other-')) })
+    cleanups.push(() => foreign.close())
+    await mcp.waitFor(/another clone's relay; the session will join afresh/, 20_000)
+    const lostAt = mcp.lines.length
+    expect(await mcp.call('room_state')).toContain('you: Ada')
+    expect(mcp.lines.slice(lostAt).join('\n')).toMatch(/Ada's agent joined local\/picked \(clone /)
+    expect(await mcp.call('room_leave')).toMatch(/^left local\/picked/)
+    expect(await mcp.call('room_state')).toBe('error: not in the local room; room_join to join it.')
+  }, 90_000)
 })
 
 describe('AutoJoin (the ensure step)', () => {
   const fakeSession = (name = 's') => ({ name }) as unknown as Session
-  const setup = (attempt: () => Promise<Session | undefined>, over: Partial<ConstructorParameters<typeof AutoJoin>[0]> = {}) => {
+  const setup = (attempt: (target?: Session) => Promise<Session | undefined>, over: Partial<ConstructorParameters<typeof AutoJoin>[0]> = {}) => {
     let current: Session | null = null
     const reports: string[] = [], logs: string[] = [], discarded: Session[] = []
     const a = new AutoJoin({ attempt, local: true, delaysMs: [10], deadlineMs: 2000, retryAfterMs: 50,
@@ -162,6 +185,29 @@ describe('AutoJoin (the ensure step)', () => {
     expect(t.current()).toBeNull()
   })
 
+  it('a room a human joined becomes the one meant: a stopped join resumes for it, and its failures are reported afresh', async () => {
+    const targets: (Session | undefined)[] = []
+    let fail = false
+    const t = setup(async target => { targets.push(target); if (fail) throw new RoomdError('relay gone', 1); return fakeSession('rejoined') }, { local: false, deadlineMs: 50, delaysMs: [1000] })
+    t.a.cancel()
+    await t.a.ensure()
+    expect(targets).toEqual([])
+    const chosen = { name: 'chosen', local: {} } as unknown as Session
+    t.a.retarget(chosen)
+    await t.a.ensure()
+    expect(targets).toEqual([chosen])
+    expect(t.current()).toMatchObject({ name: 'rejoined' })
+    // A retarget after a failed run clears it: the next call joins at once, and a new failure is reported with the chosen room's kind.
+    fail = true
+    const u = setup(async target => { targets.push(target); throw new RoomdError('relay gone', 1) }, { local: false, deadlineMs: 50, delaysMs: [1000], retryAfterMs: 60_000 })
+    await u.a.ensure()
+    expect(u.reports).toEqual(['Room could not join: relay gone; use room_join.'])
+    u.a.retarget(chosen)
+    expect(u.a.failure).toBeUndefined()
+    await u.a.ensure()
+    expect(u.reports[1]).toMatch(/^Room could not join the local room: relay gone\. Room tries again/)
+  })
+
   it('a join that overruns the total deadline fails with that cause, and its late session is left', async () => {
     let finish!: (s: Session) => void
     const t = setup(() => new Promise(r => { finish = r }), { deadlineMs: 50, delaysMs: [1000] })
@@ -177,9 +223,9 @@ describe('AutoJoin (the ensure step)', () => {
 describe('tools and the ensure step', () => {
   const handle = (failure?: string) => {
     const calls: string[] = []
-    return { calls, failure, ensure: async () => { calls.push('ensure') }, settle: async () => { calls.push('settle') }, cancel: () => { calls.push('cancel') } }
+    return { calls, failure, ensure: async () => { calls.push('ensure') }, settle: async () => { calls.push('settle') }, cancel: () => { calls.push('cancel') }, retarget: () => { calls.push('retarget') } }
   }
-  it('every room tool ensures the join first; choosing a room ends the automatic join', async () => {
+  it('every room tool ensures the join first; leaving ends the automatic join', async () => {
     const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: os.tmpdir(), config: { server: LOCAL } as ResolvedConfig })
     const h = handle()
     tools.setAutoJoin(h)

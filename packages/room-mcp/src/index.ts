@@ -15,7 +15,7 @@ import { gitCommonDir } from '@room/roomd/local'
 import { consumeHookDisclosure, consumeHookNotice, syncHookSeen, writePendingHookContext } from './hooks-bridge.js'
 import { resolveConfig } from './config.js'
 import { pushChannelNotification } from './channel.js'
-import { markTeamSharingDisclosureDelivered, pendingTeamSharingDisclosure, prepareTeamSharingDisclosure } from './tools/join.js'
+import { markTeamSharingDisclosureDelivered, pendingTeamSharingDisclosure, prepareTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
@@ -126,9 +126,15 @@ async function main() {
   const autoJoin = new AutoJoin({
     local: chosen === LOCAL,
     log,
-    async attempt() {
+    async attempt(target) {
       // A session whose relay was taken by another clone's relay cannot reconnect on the same URL: leave it and join afresh.
       if (session?.local?.lost) await tools.drop(session, session.local.lost)
+      // After room_join/room_create, the room the human chose; a room it did not pin still follows the branch.
+      if (target) {
+        const s = await joinSession({ ...rejoinOptions(target, startup.credentialsPath), log })
+        if (!target.pinnedRoom) delete s.pinnedRoom
+        return s
+      }
       // The clone's origin + current branch always decides the room. ROOM_URL (runner) or a
       // prior .room.json only fill in when the clone has no origin.
       if (chosen === LOCAL) return joinSession({ dir, room: startup.room, server: LOCAL, log }) // workers get the lead's room via ROOM_ROOM

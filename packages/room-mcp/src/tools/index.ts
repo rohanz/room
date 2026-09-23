@@ -22,7 +22,7 @@ export interface Tools {
   shutdown(): Promise<void>
   /** For sessions joined outside room_join (auto-join): clear stale state under my name. */
   clearStale(s: Session): number
-  /** The automatic join: every tool call ensures it first; room_join/create/leave/close end it. */
+  /** The automatic join: every tool call ensures it first; room_join/create retarget it, room_leave/close end it. */
   setAutoJoin(a: AutoJoinHandle): void
   /** Leave a session that can no longer reach its room, without dismissing workers. */
   drop(s: Session, reason: string): Promise<void>
@@ -31,8 +31,8 @@ export interface Tools {
 }
 
 /** What the tools need of the automatic join (auto-join.ts). */
-export interface AutoJoinHandle { ensure(): Promise<void>; settle(): Promise<void>; cancel(): void; readonly failure?: string }
-/** Tools that choose the room themselves: the automatic join stops once one is called. */
+export interface AutoJoinHandle { ensure(): Promise<void>; settle(): Promise<void>; cancel(): void; retarget(s: Session): void; readonly failure?: string }
+/** Tools that choose the room themselves: the automatic join pauses while one runs, and stays stopped unless it joined a room. */
 const CHOOSES_ROOM = new Set(['room_join', 'room_create', 'room_leave', 'room_close'])
 
 const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...collectDefs, ...prDefs, ...shareDefs]
@@ -84,6 +84,7 @@ export function createTools(ctx: ToolCtx): Tools {
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
         const s2 = ctx.getSession()
         if (s2 && s2 !== s) s2.refreshRuntime?.()
+        if (s2 && autoJoin && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)
         const prefix = moved ? `${moved}\n\n` : ''
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) : ''
         const sharing = s2 ? await teamSharingNote(s2) : ''
