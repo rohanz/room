@@ -101,3 +101,28 @@ it('refuses a second room that targets an occupied worktree tag', async () => {
   expect(await second.call({})).toMatch(/error:.*(?:owned|occupied|in use|another room)/i)
   expect(second.room.workers.has('w')).toBe(false)
 })
+
+it('respawns the same lead into a kept worktree and recovers its carry record', async () => {
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), 'lead WIP\n')
+  fs.writeFileSync(path.join(repo, 'untracked.txt'), 'untracked WIP\n')
+  const t = tool('local/a/main')
+  expect(await t.call({})).toContain('spawned w:')
+  const first = t.room.workers.get('w')!
+  expect(first.carriedUntracked?.map(f => f.path)).toContain('untracked.txt')
+  fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), 'ignored-output.txt\n')
+  fs.writeFileSync(path.join(first.dir, 'ignored-output.txt'), 'retained worker output')
+  t.room.updateWorker('w', { status: 'done', finishedAt: Date.now() })
+  t.room.retireParticipant(first.name, {
+    name: first.name, tag: first.tag, lead: first.lead, host: first.host, task: first.task,
+    summary: 'kept output', files: [], fileCount: 0, startedAt: first.startedAt,
+    finishedAt: Date.now(), retiredAt: Date.now(), outcome: 'dismissed',
+  })
+  expect(t.room.workers.has('w')).toBe(false)
+  expect(await t.call({})).toContain('spawned w:')
+  const second = t.room.workers.get('w')!
+  expect(second.gen).toBeGreaterThan(first.gen!)
+  expect(second).toMatchObject({ dir: first.dir, base: first.base, carriedUntracked: first.carriedUntracked })
+  expect(fs.readFileSync(path.join(second.dir, 'ignored-output.txt'), 'utf8')).toBe('retained worker output')
+  const otherRoom = tool('local/b/main')
+  expect(await otherRoom.call({})).toMatch(/error:.*(?:owned|another room)/i)
+})

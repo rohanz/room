@@ -281,9 +281,23 @@ describe('worker plumbing', () => {
     writeFileSync(join(repo, '.git', 'MERGE_HEAD'), 'f'.repeat(40) + '\n')
     await expect(prepareWorktree(repo, 'merging')).rejects.toThrow('finish the merge or rebase')
     expect(existsSync(join(repo, '.room', 'workers', 'merging'))).toBe(false)
-    rmSync(join(repo, '.git', 'MERGE_HEAD'))
+  })
+
+  it('spawns from detached HEAD and carries tracked and untracked work', async () => {
+    const { repo, git, head } = realRepo()
     git('checkout', '--detach', '-q')
-    await expect(prepareWorktree(repo, 'detached')).rejects.toThrow('switch to a branch')
+    writeFileSync(join(repo, 'modified.txt'), 'detached tracked WIP\n')
+    writeFileSync(join(repo, 'detached-new.txt'), 'detached untracked WIP\n')
+    const leadStatus = git('status', '--porcelain')
+    const prepared = await prepareWorktree(repo, 'detached', 'rohanz')
+    expect(prepared).toMatchObject({ branch: 'room/detached', created: true })
+    expect(git('rev-parse', 'HEAD')).toBe(head)
+    expect(() => git('symbolic-ref', '-q', 'HEAD')).toThrow()
+    expect(git('rev-parse', `${prepared.base}^`)).toBe(head)
+    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('detached tracked WIP\n')
+    expect(readFileSync(join(prepared.dir, 'detached-new.txt'), 'utf8')).toBe('detached untracked WIP\n')
+    expect(prepared.carriedUntracked?.map(f => f.path)).toContain('detached-new.txt')
+    expect(git('status', '--porcelain')).toBe(leadStatus)
   })
 
   it('commits carry without git identity and despite a failing pre-commit hook', async () => {

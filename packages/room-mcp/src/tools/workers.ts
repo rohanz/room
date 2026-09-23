@@ -119,7 +119,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           try { branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { branch = '?' }
         } else {
           try {
-            prepared = await (ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, linkPaths, `${s.roomName}|${s.me.name}|${id}`))
+            prepared = await (ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, linkPaths, `${s.roomName}|${s.me.name}`))
             dir = prepared.dir; branch = prepared.branch; base = prepared.base; created = prepared.created
             carried = prepared.carried; carryFailed = prepared.carryFailed ?? false; carryError = prepared.carryError
             carriedBase = prepared.carriedBase; carriedUntracked = prepared.carriedUntracked; skippedCarry = prepared.skippedCarry

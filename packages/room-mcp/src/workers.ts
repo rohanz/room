@@ -318,8 +318,6 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   const branch = `room/${tag}`
   const gitDir = (await git(repoDir, ['rev-parse', '--absolute-git-dir'])).trim()
   if (['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply'].some(p => fs.existsSync(path.join(gitDir, p)))) throw new Error('finish the merge or rebase before spawning workers')
-  try { await git(repoDir, ['symbolic-ref', '--quiet', 'HEAD']) }
-  catch { throw new Error('switch to a branch before spawning workers') }
   const record = await readCarryRecord(repoDir, tag)
   if (record?.ownerId && ownerId && record.ownerId !== ownerId) throw new Error(`worktree ${tag} is owned by another room or worker`)
   if (fs.existsSync(path.join(dir, '.git'))) {
