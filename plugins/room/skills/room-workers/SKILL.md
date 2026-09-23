@@ -5,6 +5,14 @@ description: Running editing work through other agents. Use when asked for anoth
 
 1. Split substantial work into independent parts with disjoint files where possible.
    For a few lines, do it yourself. Use built-in subagents for read-only research.
+   For one or two workers, lead them yourself. Before three or more workers or a long
+   batch, especially when this session cannot be woken, offer once: "I can hand this to a background lead that stays on it until it's done; you can keep talking to me."
+   If accepted, spawn one worker with a self-contained lead brief: the task, how to
+   split it into workers with owned files, the test command, and "collect your workers
+   before room_done". That lead spawns the workers, answers their questions in a
+   room_wait loop, previews and tests, collects their changes, then calls room_done.
+   Steer it with room_send to its full `<lead>+<tag>` name; collect it at the end like
+   any worker.
    A plan with sequential stages still parallelises within each stage: run each stage
    as a wave of workers. Workers do not share context; each needs its own brief. What
    Room does between them: shows who is near which file, warns before two edits collide,

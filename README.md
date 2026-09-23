@@ -89,6 +89,13 @@ You do not need to know any tool names. For example:
 
 > Use a couple of subagents for this: add the endpoint in api.ts and its tests in api.test.ts.
 
+For a long batch or three or more workers, you can hand coordination to a **background
+lead**. Your session spawns one lead worker, which dispatches the other workers, stays
+available for their questions, previews and tests their combined changes, and collects
+them before finishing. Your session can keep talking with you and can steer that lead
+by sending to its full `<lead>+<tag>` name. When it finishes, your session collects its
+work as uncommitted edits. For one or two workers, your session can lead directly.
+
 `room_spawn` creates a Git worktree at `.room/workers/<tag>` on branch `room/<tag>`.
 Eligible tracked uncommitted changes are carried in a commit at the base of the
 worker's `room/<tag>` branch; `git push --all` can publish that tracked work until
@@ -103,6 +110,11 @@ the worker's own work as worker output.
 It uses the caller’s agent host unless you choose another. The worker joins as `<you>+<tag>`,
 declares its task, coordinates where work overlaps, previews the combined changes, and finishes
 with a one-line summary. Up to eight workers run at once (`ROOM_MAX_WORKERS`).
+Room starts Claude workers it spawns with Claude Code's
+`--dangerously-load-development-channels plugin:room@room` flag so room events can
+wake them. Channel wake-ups are a research preview gated by that flag. Team and
+Enterprise organisation policy may block channels; those workers still run, but
+cannot be woken mid-task.
 
 The lead calls `room_collect()` once to collect all its finished workers, in finish-time order
 (with tag as the tie-breaker). An optional `tag` selects just one. Changes arrive in its working
