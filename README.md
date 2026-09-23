@@ -14,8 +14,8 @@ Start your agent as usual; by default nothing leaves your machine. Say **“join
 to work with teammates. **Team rooms are currently per branch: everyone in a trial must work
 on one shared branch.**
 
-For Claude Code, launch with `claude --dangerously-load-development-channels plugin:room@room`
-(or set up the `claude-room` launcher). [Why this flag is needed](#claude-code).
+Claude Code works with plain `claude` after installation. For instant wake-ups, use the
+[optional per-session channels setup](#claude-code).
 
 ## Getting started
 
@@ -185,21 +185,25 @@ stay on your machine; `room_state` shows both rooms.
 Claude Code 2.1 or later uses the same plugin as Codex. For a local checkout, install the
 marketplace with `claude plugin marketplace add /path/to/room`.
 
-Room wakes an idle Claude Code session through an MCP channel when a teammate asks a question,
-an interrupt arrives, or a worker finishes. Channels are a research preview: Room is not on
-Anthropic’s channel allowlist, so `--dangerously-load-development-channels plugin:room@room`
-admits this one plugin entry. Your organisation’s channel policy still applies. Channels need
-an Anthropic login and are unavailable on Bedrock, Vertex or Foundry. Without the flag, an idle
-session sees messages when you next talk to it; trusted hooks still show them before an edit.
-A dim “Channels (experimental)” line under the banner confirms registration. Codex uses
-`codex queue` and needs no extra launch flag.
+Plain `claude` works with Room after installation. Messages reach the session on its next turn.
+For instant wake-ups when a teammate asks a question, an interrupt arrives, or a worker finishes,
+start each Claude Code session with `claude --dangerously-load-development-channels plugin:room@room`.
+Channels are a research preview, and Claude Code requires command-line opt-in for every channel
+on every session. Room is not on Anthropic’s approved list, so it uses the development-channels
+flag; approved plugins use `--channels`.
 
-The plugin includes `bin/claude-room`. Add its installed directory
-(`~/.claude/plugins/cache/room/room/<version>/bin`) to your PATH, or put this alias in your shell profile:
+For a shorter command in zsh, add an optional alias (use `~/.bashrc` instead for bash), then
+open a new shell:
 
 ```sh
-alias claude-room='claude --dangerously-load-development-channels plugin:room@room'
+echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ~/.zshrc
 ```
+
+An installed plugin cannot add `claude-room` to your shell; the command exists only after you
+add the alias. Pro and Max accounts can use channels without an organisation. For claude.ai
+Team or Enterprise accounts, an Owner must enable channels first. Channels require an Anthropic
+login and are unavailable on Bedrock, Vertex or Foundry. A dim “Channels (experimental)” line
+under the banner confirms registration. Codex uses `codex queue` and needs no extra launch flag.
 
 ### Updating the plugin
 

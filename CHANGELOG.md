@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.1
+
+- A Claude Code session without instant wake-ups now says so once, to the human, only when it matters: at the first worker spawn, or when joining or checking a room with someone else present. It says everything still works (messages arrive on the next turn), gives the `claude-room` alias line for zsh or bash, and notes that Team and Enterprise accounts need an Owner to enable channels. It stays silent alone in a local room, with wake-ups on, with `ROOM_CLAUDE_CHANNEL=''`, and for Codex. The lead's "block on room_wait in a loop" instruction now appears once, on the first spawn, instead of on every spawn.
+- The README, onboarding page, join skill and trial checklist now explain plain `claude`, optional per-session channel opt-in, and the shell alias without a versioned plugin path. Plugin manifests and marketplace metadata are bumped to 0.12.1.
+
 ## 0.12.0
 
 - Worker spawn keeps the lead's untracked files outside branch history and ordinary pushes, retaining their contents under a private ref for merge and recovery, records content hashes to attribute carried files, and reports oversized, linked or unsafe paths it skipped. It retries when the lead's snapshot moves, bypasses Git config and hooks for internal snapshots, refuses occupied worktrees, and cleans up failed spawns. Carried counts now count files, and workers are asked to coordinate with the lead before editing carried files. Workers can spawn from detached HEAD with carry intact; the same lead can respawn into a kept worktree without losing its carry record, while other rooms remain excluded.

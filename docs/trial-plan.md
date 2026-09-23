@@ -61,8 +61,10 @@ Keep the room's exported ledger and each person's notes.
       waking from idle mid-session.
 - [ ] Fix only what the rehearsal or the readiness review finds, then the 48-hour quiet period.
 - [ ] Fly set to always-on the day before (`min_machines_running = 1`), back to stop-on-idle after.
-- [ ] Friend checklist sent: the two install commands per host, the `claude-room` launcher for
-      Claude Code users, trust the hooks in Codex when asked, "say: join the room", follow the login
+- [ ] Friend checklist sent: the two install commands per host; for Claude Code users, ask whether
+      you use Claude Code through a Team or Enterprise account and add the optional instant-wake-up alias
+      with `echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ~/.zshrc`
+      (use `~/.bashrc` for bash); trust the hooks in Codex when asked, "say: join the room", follow the login
       code, stay on `trial`, `uv run --group tests pytest -q tests/sansio tests/test_http.py tests/test_wrappers.py`.
 
 ## On the day

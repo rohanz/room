@@ -46,4 +46,7 @@ After joining, if the user has given you a task, immediately call
 
 `room_leave` when the user says they are done.
 
-For Claude Code wake-up setup, see [the canonical channels explanation](../../../../README.md#claude-code).
+Plain `claude` works after installation; messages arrive on the next turn. Instant Claude Code
+wake-ups need per-session channels opt-in. `claude-room` exists only if the user adds the optional
+shell alias. See [the canonical channels explanation](../../../../README.md#claude-code), including
+the alias command and Team or Enterprise account policy.
