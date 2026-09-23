@@ -12,7 +12,7 @@ import type { Session } from '../session.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
-  description: 'Collect finished or stopped workers (or tag) as unstaged edits, never commits. Any conflict writes nothing. Skips live running/failed workers. copy takes named artifacts; discard dismisses one worker and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.',
+  description: 'Collect finished workers as unstaged edits, never commits. Tag a stopped worker to take partial edits; collect-all skips it. Any conflict writes nothing. Skips live running/failed workers. copy takes named artifacts; discard dismisses one worker and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.',
   inputSchema: { ...{ additionalProperties: false }, type: 'object', properties: {
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },
@@ -55,16 +55,19 @@ async function assertNoOperation(dir: string): Promise<void> {
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const ownedBy = (s: Session, w: Worker): boolean => {
+  const ownership = (s: Session, w: Worker, discarding: Set<string>): { owned: boolean; liveLead?: string } => {
     const known = [...s.room.workers.values(), ...s.room.retiredWorkers()]
     const visited = new Set<string>()
     let lead = w.lead
+    let liveLead: string | undefined
     while (lead && !visited.has(lead)) {
-      if (lead === s.me.name) return true
+      if (lead === s.me.name) return { owned: true, liveLead }
       visited.add(lead)
+      const active = [...s.room.workers.values()].find(parent => parent.name === lead)
+      if (active && !discarding.has(lead) && !liveLead && (state.workerAlive(s, active) || pidAlive(active.pid))) liveLead = lead
       lead = known.find(parent => parent.name === lead)?.lead ?? ''
     }
-    return false
+    return { owned: false }
   }
   const descendants = (s: Session, w: Worker): Worker[] => {
     const out: Worker[] = []
@@ -81,7 +84,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const current = s.room.workers.get(w.tag)
     return current && current.id === w.id && current.startedAt === w.startedAt && state.rooms.reserve(lock) ? lock : undefined
   }
-  return { async room_collect(a) {
+  const roomCollect = async (a: Record<string, unknown>, discarding = new Set<string>()): Promise<string> => {
     const { rooms } = state, lead = state.S()
     const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'paths', 'force'].includes(key))
     if (unknown) return 'error: unknown argument ' + unknown
@@ -93,7 +96,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     if (a.discard) {
       const s = rooms.holdingWorker(a.tag as string, lead)
       const w = s.room.workers.get(a.tag as string)
-      if (!w || !ownedBy(s, w)) return 'error: no worker ' + a.tag + ' owned by you'
+      if (!w) return 'error: no worker ' + a.tag + ' owned by you'
+      const owner = ownership(s, w, discarding)
+      if (!owner.owned) return 'error: no worker ' + a.tag + ' owned by you'
+      if (owner.liveLead) return `error: ${w.tag} belongs to ${owner.liveLead}, which is still running; ask it with room_send, or discard ${owner.liveLead}'s worker first`
       const intent = 'discard:' + s.roomName + ':' + w.name
       if (!rooms.reserve(intent)) return 'error: this worker is already being discarded'
       const lock = await reserveWorker(s, w)
@@ -104,7 +110,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const childResults: string[] = []
         for (const child of children) {
           if (!s.room.workers.has(child.tag)) continue
-          const result = await handlers(state).room_collect({ tag: child.tag, discard: true, force: true })
+          const result = await roomCollect({ tag: child.tag, discard: true, force: true }, new Set([...discarding, w.name]))
           childResults.push(result)
           if (!result.startsWith('discarded ')) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
         }
@@ -143,9 +149,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       finally { rooms.unreserve(lock); rooms.unreserve(intent) }
     }
     const sessions = a.tag ? [rooms.holdingWorker(a.tag as string, lead)] : rooms.all()
-    const candidates = sessions.flatMap(s => [...s.room.workers.values()].filter(w => ownedBy(s, w) && (!a.tag || w.tag === a.tag)).map(w => ({ s, w })))
+    const candidates = sessions.flatMap(s => [...s.room.workers.values()].filter(w => {
+      if (a.tag && w.tag !== a.tag) return false
+      const owner = ownership(s, w, discarding)
+      return owner.owned && (!owner.liveLead || !!a.tag)
+    }).map(w => ({ s, w })))
       .sort((a, b) => (a.w.finishedAt ?? 0) - (b.w.finishedAt ?? 0) || (a.w.tag < b.w.tag ? -1 : a.w.tag > b.w.tag ? 1 : 0))
     if (a.tag && !candidates.length) return 'error: no worker ' + a.tag + ' owned by you'
+    if (a.tag) {
+      const { s, w } = candidates[0]
+      const owner = ownership(s, w, discarding)
+      if (owner.liveLead) return `error: ${w.tag} belongs to ${owner.liveLead}, which is still running; ask it with room_send, or discard ${owner.liveLead}'s worker first`
+    }
     const out: string[] = []
     const selected: typeof candidates = []
     const lock = 'collect:' + fs.realpathSync(lead.dir)
@@ -154,8 +169,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     try {
       for (const item of candidates) {
         const { s } = item; let { w } = item
-        const stopped = w.pid !== undefined && !state.workerAlive(s, w)
+        const stopped = w.pid !== undefined && !state.workerAlive(s, w) && !pidAlive(w.pid)
         if (w.status !== 'done' && !(stopped && (w.status === 'running' || w.status === 'dismissed'))) { out.push('skipped ' + w.tag + ': ' + w.status); continue }
+        if (!a.tag && stopped && w.status !== 'done') {
+          const why = w.stopReason === 'lead-session-ended' ? "the lead's session ended" : 'its process exited'
+          out.push(`skipped ${w.tag}: stopped before finishing (${why}); room_collect tag=${w.tag} to take its partial edits, mode=copy for named files, or discard=true`)
+          continue
+        }
         const workerLock = await reserveWorker(s, w)
         if (!workerLock) continue
         workerLocks.push(workerLock)
@@ -280,5 +300,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return out.join('\n')
     } catch (e) { return [...out, 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n') }
     finally { for (const workerLock of workerLocks) rooms.unreserve(workerLock); rooms.unreserve(lock) }
-  } }
+  }
+  return { room_collect: roomCollect }
 }

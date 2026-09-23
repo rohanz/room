@@ -19,14 +19,112 @@ const read = (dir: string, rel: string) => fs.readFileSync(path.join(dir, rel), 
 const temp: string[] = []
 afterEach(() => { for (const dir of temp.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 
-function collect(room: RoomDoc, dir: string, name: string) {
+function collect(room: RoomDoc, dir: string, name: string, workerAlive: (w: Worker) => boolean = () => false) {
   const s = { dir, me: { name, kind: 'agent' }, room, local: {}, roomName: 'local/shop', awareness: { getStates: () => new Map() } }
   const state = {
     S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers: async () => {}, handle: () => undefined },
-    workerAlive: () => false, now: Date.now, ctx: { sleep: async () => {} },
+    workerAlive: (_s: Session, w: Worker) => workerAlive(w), now: Date.now, ctx: { sleep: async () => {} },
   } as unknown as HandlerState
   return handlers(state).room_collect
 }
+
+async function batch() {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-collect-guard-'))); temp.push(root)
+  git(root, 'init', '-q', '-b', 'shop'); git(root, 'config', 'user.name', 'Human'); git(root, 'config', 'user.email', 'human@example.test')
+  put(root, '.gitignore', '.room/\n'); put(root, 'lead.txt', 'base lead\n'); put(root, 'cat.txt', 'base cat\n')
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
+  const lead = await prepareWorktree(root, 'lead', 'rohanz', [], 'local/shop|rohanz')
+  const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead', [], 'local/shop|rohanz+lead')
+  put(lead.dir, 'lead.txt', 'partial lead\n')
+  put(cat.dir, 'cat.txt', 'finished cat\n')
+  const room = new RoomDoc(new Y.Doc())
+  room.setMeta({ base: git(root, 'rev-parse', 'HEAD'), branch: 'shop', repo: 'shop' })
+  const worker = (tag: string, owner: string, prepared: typeof lead): Worker => ({
+    id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag,
+    dir: prepared.dir, branch: prepared.branch, base: prepared.base, pid: -1, startedAt: 1,
+    status: 'done', finishedAt: 2, exitCode: 0,
+  })
+  const leadWorker = worker('lead', 'rohanz', lead)
+  const catWorker = worker('cat', 'rohanz+lead', cat)
+  room.setWorker(leadWorker); room.setWorker(catWorker)
+  return { root, lead, cat, room, leadWorker, catWorker }
+}
+
+it('keeps a live lead-worker responsible for its finished grand-worker, including tagged apply, copy, and discard', async () => {
+  const { root, cat, room, leadWorker } = await batch()
+  leadWorker.status = 'running'; room.setWorker(leadWorker)
+  const humanCollect = collect(room, root, 'rohanz', w => w.tag === 'lead')
+  const all = await humanCollect({})
+  expect(all).not.toContain('Changes from cat:')
+  expect(read(root, 'cat.txt')).toBe('base cat\n')
+  expect(read(root, 'lead.txt')).toBe('base lead\n')
+  for (const args of [
+    { tag: 'cat' },
+    { tag: 'cat', mode: 'copy', paths: ['cat.txt'] },
+    { tag: 'cat', discard: true },
+  ]) {
+    const out = await humanCollect(args)
+    expect(out).toContain('cat belongs to rohanz+lead, which is still running')
+    expect(out).toContain('ask it with room_send, or discard rohanz+lead\'s worker first')
+  }
+  expect(read(root, 'cat.txt')).toBe('base cat\n')
+  expect(room.workers.has('cat')).toBe(true)
+  expect(fs.existsSync(cat.dir)).toBe(true)
+})
+
+it('lets the human collect an orphaned grand-worker after the intermediate lead process exits', async () => {
+  const { root, room, leadWorker } = await batch()
+  leadWorker.status = 'running'; room.setWorker(leadWorker)
+  const out = await collect(room, root, 'rohanz')({ tag: 'cat' })
+  expect(out).toContain('Changes from cat:')
+  expect(read(root, 'cat.txt')).toBe('finished cat\n')
+})
+
+it('uses the lead-worker PID when its process handle is unavailable', async () => {
+  const { root, room, leadWorker } = await batch()
+  leadWorker.status = 'running'
+  leadWorker.pid = process.pid
+  room.setWorker(leadWorker)
+  const humanCollect = collect(room, root, 'rohanz')
+  expect(await humanCollect({})).not.toContain('Changes from cat:')
+  expect(await humanCollect({ tag: 'cat' })).toContain('cat belongs to rohanz+lead, which is still running')
+  expect(read(root, 'cat.txt')).toBe('base cat\n')
+})
+
+it.each(['running', 'dismissed'] as const)('skips a %s worker stopped mid-task in collect-all, but accepts an explicit tag', async status => {
+  const { root, room, leadWorker } = await batch()
+  leadWorker.status = status
+  leadWorker.stopReason = 'lead-session-ended'
+  delete leadWorker.finishedAt
+  delete leadWorker.exitCode
+  room.setWorker(leadWorker)
+  const humanCollect = collect(room, root, 'rohanz')
+  const all = await humanCollect({})
+  expect(all).toContain('skipped lead: stopped before finishing')
+  expect(all).toContain('the lead\'s session ended')
+  expect(all).toContain('room_collect tag=lead')
+  expect(all).toContain('mode=copy')
+  expect(all).toContain('discard=true')
+  expect(all).toContain('Changes from cat:')
+  expect(read(root, 'cat.txt')).toBe('finished cat\n')
+  expect(read(root, 'lead.txt')).toBe('base lead\n')
+  expect(room.workers.has('lead')).toBe(true)
+  const named = await humanCollect({ tag: 'lead' })
+  expect(named).toContain('Changes from lead:')
+  expect(read(root, 'lead.txt')).toBe('partial lead\n')
+})
+
+it('copies named partial edits from a stopped worker when explicitly tagged', async () => {
+  const { root, room, leadWorker } = await batch()
+  room.workers.delete('cat')
+  leadWorker.status = 'dismissed'
+  leadWorker.stopReason = 'lead-session-ended'
+  room.setWorker(leadWorker)
+  const out = await collect(room, root, 'rohanz')({ tag: 'lead', mode: 'copy', paths: ['lead.txt'] })
+  expect(out).toContain('copied lead.txt')
+  expect(read(root, 'lead.txt')).toBe('partial lead\n')
+  expect(room.workers.has('lead')).toBe(true)
+})
 
 it('collects grand-worker edits through a lead once while preserving the human carry bytes and clearing both levels', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-nested-collect-'))); temp.push(root)
