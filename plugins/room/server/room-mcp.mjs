@@ -7321,7 +7321,7 @@ var init_messages = __esm({
       conflict: { priority: "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
       "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
       contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
-      note: { priority: "fyi", audience: "everyone", inbox: false, wakes: "interrupt", format: (m) => `${priority(m)}${who(m)}: ${m.text}` },
+      note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${m.to ? ` \u2192 ${m.to}` : ""}: ${m.text}` },
       done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
       base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up` },
       plan: { priority: "fyi", audience: "broadcast", wakes: "interrupt", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""}${m.text ? ` \u2014 ${m.text}` : ""}` },
@@ -17344,12 +17344,21 @@ function splitParticipants(input) {
   const offlineTeammates = participants.filter((p) => !p.online && !workers.has(p.name));
   const leads = new Set([...workers.values()].map((w) => w.lead));
   for (const w of retiredWorkers) leads.add(w.lead);
-  const workerGroups = [...leads].sort().map((lead) => ({
+  const allGroups = [...leads].sort().map((lead) => ({
     lead,
     active: active.filter((p) => workers.get(p.name)?.lead === lead),
     retiredWorkers: retiredWorkers.filter((w) => w.lead === lead),
-    running: [...workers.values()].filter((w) => w.lead === lead && w.status === "running").length
+    running: [...workers.values()].filter((w) => w.lead === lead && w.status === "running").length,
+    nested: []
   }));
+  const byLead = new Map(allGroups.map((group) => [group.lead, group]));
+  const workerGroups = [];
+  for (const group of allGroups) {
+    const parentLead = workers.get(group.lead)?.lead;
+    const parent = parentLead && parentLead !== group.lead ? byLead.get(parentLead) : void 0;
+    if (parent) parent.nested.push(group);
+    else workerGroups.push(group);
+  }
   return { active, offlineTeammates, retiredWorkers, workerGroups };
 }
 function personLine(input) {
@@ -25854,7 +25863,7 @@ var init_prompt = __esm({
 2. With company, declare scope once. Claim only where someone else is near the file; claim the files you will edit. Respect others' claims and declare public-symbol plans.
 3. With company, answer addressed questions promptly; ask the relevant agent and wait when unsure.
 4. With company, preview current overlapping work before finishing, then room_done releases claims. No release or changed-message ritual.
-5. Asked for another agent, agents in parallel, background work, or for codex/claude to take part of an editing task: use room_spawn (load room-workers), not a built-in subagent. For a few lines, just do it yourself.
+5. Asked for another agent, agents in parallel, background work or a background lead, or for codex/claude to take part of an editing task: use room_spawn (load room-workers), not a built-in subagent. For a few lines, just do it yourself.
    Before handing a multi-task plan to one other agent, say what Room adds: workers in their own worktrees, collisions surfaced before they land, changed definitions announced to the files that use them, and a merged, uncommitted result to review.
 6. Ask your human only when blocked on their decision. Never commit or push unless asked.
 
@@ -31471,7 +31480,7 @@ function workerOwnedPaths(w) {
 }
 async function ignoredWorkerArtifacts(w) {
   const raw = await git(w.dir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", ".", ...workerOwnedPaths(w).exclusions]);
-  return raw.split("\0").filter(Boolean).filter((p) => !p.split("/").some((part) => IGNORED_DEPENDENCY_DIRS.has(part))).sort();
+  return raw.split("\0").filter(Boolean).filter((p) => p !== ".room" && p !== ".room/" && !p.startsWith(".room/")).filter((p) => !p.split("/").some((part) => IGNORED_DEPENDENCY_DIRS.has(part))).sort();
 }
 function workerOperationKey(w) {
   return "worker:" + path11.resolve(w.dir);
@@ -31543,6 +31552,7 @@ function workerPrompt(lead, tag, task, context) {
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
     `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process (you cannot answer afterwards).`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
+    `If you spawn workers, collect them before your own room_done.`,
     ...context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : "normal"}; reasoning effort: ${context.effort ?? "host default"}. Stay within this budget and stagger heavy jobs.`,
       ...context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(", ")}. Do not modify these paths or their contents; write outputs elsewhere.`] : [],
@@ -31673,6 +31683,30 @@ async function writeCarryRecord(repoDir, tag, record2) {
     await fs12.promises.rename(temp, file);
   } finally {
     await fs12.promises.rm(temp, { force: true });
+  }
+}
+function persistWorkerStopReason(repoDir, tag, reason) {
+  const common = execFileSync5("git", ["-C", repoDir, "rev-parse", "--git-common-dir"], { encoding: "utf8" }).trim();
+  const file = path11.join(path11.resolve(repoDir, common), "room-carry", tag + ".json");
+  fs12.mkdirSync(path11.dirname(file), { recursive: true });
+  let record2 = {};
+  try {
+    record2 = JSON.parse(fs12.readFileSync(file, "utf8"));
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+  const tmp = file + "." + process.pid + ".tmp";
+  fs12.writeFileSync(tmp, JSON.stringify({ ...record2, stopReason: reason }), { mode: 384 });
+  fs12.renameSync(tmp, file);
+}
+function persistedWorkerStopReason(repoDir, tag) {
+  const common = execFileSync5("git", ["-C", repoDir, "rev-parse", "--git-common-dir"], { encoding: "utf8" }).trim();
+  try {
+    const record2 = JSON.parse(fs12.readFileSync(path11.join(path11.resolve(repoDir, common), "room-carry", tag + ".json"), "utf8"));
+    return record2.stopReason === "lead-session-ended" ? record2.stopReason : void 0;
+  } catch (e) {
+    if (e.code === "ENOENT") return void 0;
+    throw e;
   }
 }
 async function cleanupPreparedWorktree(repoDir, prepared) {
@@ -31879,6 +31913,8 @@ async function cleanupWorker(leadDir, w, collected = false, discarded = false) {
   const common = async (dir) => fs12.realpathSync(path11.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
   if (await common(leadDir) !== await common(w.dir) || fs12.realpathSync(leadDir) === fs12.realpathSync(w.dir)) return false;
   if ((await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) return false;
+  const nested = (await git(leadDir, ["worktree", "list", "--porcelain"])).split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length)).filter((dir) => dir !== w.dir && inside(fs12.realpathSync(w.dir), dir));
+  if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(", ")}`);
   const head = (await git(w.dir, ["rev-parse", "HEAD"])).trim();
   const recordFile = await carryRecordFile(leadDir, w.tag);
   const record2 = await fs12.promises.readFile(recordFile).catch((e) => {
@@ -31890,6 +31926,20 @@ async function cleanupWorker(leadDir, w, collected = false, discarded = false) {
     try {
       refs.set(ref, (await git(leadDir, ["rev-parse", "--verify", ref])).trim());
     } catch {
+    }
+  }
+  const nestedPatches = path11.join(w.dir, ".room", "discarded");
+  if (fs12.existsSync(nestedPatches)) {
+    const dest = path11.join(leadDir, ".room", "discarded");
+    for (const name2 of fs12.readdirSync(nestedPatches)) {
+      const source = path11.join(nestedPatches, name2);
+      if (!name2.endsWith(".patch") || !fs12.lstatSync(source).isFile()) continue;
+      fs12.mkdirSync(dest, { recursive: true });
+      let target = path11.join(dest, name2), suffix = 1;
+      while (fs12.existsSync(target)) target = path11.join(dest, `${w.tag}-${suffix++}-${name2}`);
+      fs12.copyFileSync(source, target, fs12.constants.COPYFILE_EXCL);
+      const stat4 = fs12.statSync(source);
+      fs12.utimesSync(target, stat4.atime, stat4.mtime);
     }
   }
   try {
@@ -31927,13 +31977,14 @@ async function cleanupWorker(leadDir, w, collected = false, discarded = false) {
     }
     throw new Error(`cleanup failed: ${error2.message}; restored ${w.dir}`);
   }
+  const parent = path11.basename(path11.dirname(w.dir)) === "workers" && path11.basename(path11.dirname(path11.dirname(w.dir))) === ".room" ? path11.resolve(w.dir, "../../..") : leadDir;
   for (const suffix of [".log", ".mcp.log"]) {
     try {
-      fs12.rmSync(path11.join(leadDir, WORKERS_DIR, w.tag + suffix), { force: true });
+      fs12.rmSync(path11.join(parent, WORKERS_DIR, w.tag + suffix), { force: true });
     } catch {
     }
   }
-  for (const dir of [path11.join(leadDir, WORKERS_DIR), path11.join(leadDir, ".room")]) {
+  for (const dir of [path11.join(parent, WORKERS_DIR), path11.join(parent, ".room")]) {
     try {
       fs12.rmdirSync(dir);
     } catch {
@@ -33449,10 +33500,12 @@ async function finishWorkerProcess(s, w, code, at = Date.now(), error2, unwitnes
   const done = w.status === "done";
   const exitCode = code ?? -1;
   const tail = workerLogTail(path13.join(s.dir, ".room", "workers", `${w.tag}.log`));
+  const stopReason = w.stopReason ?? (unwitnessed ? persistedWorkerStopReason(s.dir, w.tag) : void 0);
   s.room.updateWorker(w.tag, {
     exitCode,
     finishedAt: w.finishedAt ?? at,
-    ...w.status !== "running" ? {} : unwitnessed ? { status: "failed", summary: `stopped while no session of yours was running; reason unknown; worktree: ${w.dir}; last lines of its log: ${tail || "(empty log)"}` } : { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" }
+    ...stopReason ? { stopReason } : {},
+    ...w.status !== "running" ? {} : unwitnessed ? { status: stopReason ? "dismissed" : "failed", summary: `stopped while no session of yours was running; ${stopReason ?? "reason unknown"}; worktree: ${w.dir}; last lines of its log: ${tail || "(empty log)"}` } : { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" }
   }, w.id);
   if (!done) {
     const { releaseClaimsOnDone: releaseClaimsOnDone2 } = await Promise.resolve().then(() => (init_claims2(), claims_exports));
@@ -33529,6 +33582,14 @@ var init_registry = __esm({
       track(s) {
         if (this.tracked.has(s)) return;
         this.tracked.add(s);
+        for (const w of s.room.workers.values()) {
+          if (w.stopReason) continue;
+          try {
+            const reason = persistedWorkerStopReason(s.dir, w.tag);
+            if (reason) s.room.updateWorker(w.tag, { stopReason: reason, ...w.status === "running" ? { status: "dismissed" } : {} }, w.id);
+          } catch {
+          }
+        }
         this.o.observeClaims(s);
         const timer = setInterval(() => {
           void this.retireWorkers(s).catch(() => {
@@ -43555,6 +43616,17 @@ var defs2 = [
     inputSchema: { type: "object", properties: { all: { type: "boolean" }, path: str("file ownership"), from: int2("first line"), to: int2("last line"), link: { type: "boolean" } } }
   }
 ];
+async function workerChangedCount(s, worker, processGone) {
+  const overlayCount = s.room.changedPaths(worker.name).length;
+  if (!processGone && worker.status === "running" && s.room.overlays.has(worker.name)) return overlayCount;
+  try {
+    const excluded = [".room", ...(worker.carriedUntracked ?? []).map((entry) => entry.path)];
+    const status = await git(worker.dir, ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", ".", ...excluded.map((path20) => `:(exclude,literal)${path20}`)]);
+    return status.split("\0").filter(Boolean).length;
+  } catch {
+    return overlayCount;
+  }
+}
 function handlers2(state) {
   const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine: scopeLine2, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine: personLine2, claimLine: claimLine2, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines, shareOf } = state;
   const pathState = async (a) => {
@@ -43707,17 +43779,23 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       out2.push(`recent bus${all2 ? "" : " in your areas"} (${msgs.length}):`);
       for (const x of msgs) out2.push(`  - [${x.id}] ${formatMsg(x)}`);
       out2.push(...prLines(s));
-      out2.push(...workerLines(myWorkers(s).map((worker) => ({ worker, lastActive: presences(s).filter((p) => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone: worker.status === "running" && !state.workerAlive(s, worker), changedCount: s.room.changedPaths(worker.name).length, last: (() => {
-        const message = s.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
-        return message ? formatMsg(message) : void 0;
-      })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter((w) => w.lead === s.me.name) }));
+      out2.push(...workerLines(await Promise.all(myWorkers(s).map(async (worker) => {
+        const processGone = worker.status === "running" && !state.workerAlive(s, worker);
+        return { worker, lastActive: presences(s).filter((p) => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => {
+          const message = s.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
+          return message ? formatMsg(message) : void 0;
+        })(), now: now() };
+      })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter((w) => w.lead === s.me.name) }));
       const ws = wsRoom;
       if (ws) {
         out2.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`);
-        out2.push(...workerLines(myWorkers(ws).map((worker) => ({ worker, processGone: worker.status === "running" && !state.workerAlive(ws, worker), changedCount: ws.room.changedPaths(worker.name).length, last: (() => {
-          const message = ws.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
-          return message ? formatMsg(message) : void 0;
-        })(), now: now() })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter((w) => w.lead === ws.me.name) }));
+        out2.push(...workerLines(await Promise.all(myWorkers(ws).map(async (worker) => {
+          const processGone = worker.status === "running" && !state.workerAlive(ws, worker);
+          return { worker, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => {
+            const message = ws.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
+            return message ? formatMsg(message) : void 0;
+          })(), now: now() };
+        })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter((w) => w.lead === ws.me.name) }));
       }
       return a.all === true ? out2.join("\n") : compactState(out2, summarizedClaims);
     }
@@ -45212,7 +45290,7 @@ init_context();
 var defs7 = [{
   name: "room_collect",
   annotations: { ...RW, destructiveHint: true },
-  description: "Collect all done workers (or tag) as unstaged edits, never commits. Any conflict writes nothing. Skips running/failed workers. copy takes named artifacts; discard dismisses one worker. Keeps worktrees with uncopied ignored artifacts.",
+  description: "Collect finished workers as unstaged edits, never commits. Tag a stopped worker to take partial edits; collect-all skips it. Any conflict writes nothing. Skips live running/failed workers. copy takes named artifacts; discard dismisses one worker and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.",
   inputSchema: { ...{ additionalProperties: false }, type: "object", properties: {
     tag: str("worker tag"),
     mode: { type: "string", enum: ["apply", "copy"] },
@@ -45253,6 +45331,31 @@ async function assertNoOperation(dir) {
   }
 }
 function handlers7(state) {
+  const ownership = (s, w, discarding) => {
+    const known = [...s.room.workers.values(), ...s.room.retiredWorkers()];
+    const visited = /* @__PURE__ */ new Set();
+    let lead = w.lead;
+    let liveLead;
+    while (lead && !visited.has(lead)) {
+      if (lead === s.me.name) return { owned: true, liveLead };
+      visited.add(lead);
+      const active = [...s.room.workers.values()].find((parent) => parent.name === lead);
+      if (active && !discarding.has(lead) && !liveLead && (state.workerAlive(s, active) || pidAlive2(active.pid))) liveLead = lead;
+      lead = known.find((parent) => parent.name === lead)?.lead ?? "";
+    }
+    return { owned: false };
+  };
+  const descendants = (s, w) => {
+    const out2 = [];
+    const visit = (parent) => {
+      for (const child of s.room.workers.values()) if (child.lead === parent.name) {
+        visit(child);
+        out2.push(child);
+      }
+    };
+    visit(w);
+    return out2;
+  };
   const reserveWorker = async (s, w) => {
     const lock = workerOperationKey(w);
     if (state.rooms.reserve(lock)) return lock;
@@ -45260,7 +45363,7 @@ function handlers7(state) {
     const current = s.room.workers.get(w.tag);
     return current && current.id === w.id && current.startedAt === w.startedAt && state.rooms.reserve(lock) ? lock : void 0;
   };
-  return { async room_collect(a) {
+  const roomCollect = async (a, discarding = /* @__PURE__ */ new Set()) => {
     const { rooms } = state, lead = state.S();
     const unknown2 = Object.keys(a).find((key) => !["tag", "mode", "discard", "paths", "force"].includes(key));
     if (unknown2) return "error: unknown argument " + unknown2;
@@ -45272,7 +45375,10 @@ function handlers7(state) {
     if (a.discard) {
       const s = rooms.holdingWorker(a.tag, lead);
       const w = s.room.workers.get(a.tag);
-      if (!w || w.lead !== s.me.name) return "error: no worker " + a.tag + " owned by you";
+      if (!w) return "error: no worker " + a.tag + " owned by you";
+      const owner = ownership(s, w, discarding);
+      if (!owner.owned) return "error: no worker " + a.tag + " owned by you";
+      if (owner.liveLead) return `error: ${w.tag} belongs to ${owner.liveLead}, which is still running; ask it with room_send, or discard ${owner.liveLead}'s worker first`;
       const intent = "discard:" + s.roomName + ":" + w.name;
       if (!rooms.reserve(intent)) return "error: this worker is already being discarded";
       const lock2 = await reserveWorker(s, w);
@@ -45281,7 +45387,16 @@ function handlers7(state) {
         return "error: this worker is already being handled or retired";
       }
       try {
-        if (state.workerAlive(s, w) || w.status === "running") {
+        const children = descendants(s, w);
+        if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map((c) => c.tag).join(", ")}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`;
+        const childResults = [];
+        for (const child of children) {
+          if (!s.room.workers.has(child.tag)) continue;
+          const result = await roomCollect({ tag: child.tag, discard: true, force: true }, /* @__PURE__ */ new Set([...discarding, w.name]));
+          childResults.push(result);
+          if (!result.startsWith("discarded ")) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`;
+        }
+        if (state.workerAlive(s, w) || pidAlive2(w.pid)) {
           const how = state.dismissWorker(s, w, "discarded by the lead");
           if (s.room.workers.get(w.tag)?.status === "running" && (state.workerAlive(s, w) || pidAlive2(w.pid))) return "could not discard " + w.tag + ": " + how;
           const now = state.now ?? Date.now;
@@ -45320,7 +45435,7 @@ function handlers7(state) {
           retiredAt,
           outcome: "dismissed"
         });
-        return "discarded " + w.tag + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "");
+        return [...childResults, "discarded " + w.tag + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "")].join("\n");
       } catch (e) {
         return "error: " + (e instanceof Error ? e.message : String(e)) + "; retained " + w.dir;
       } finally {
@@ -45329,8 +45444,17 @@ function handlers7(state) {
       }
     }
     const sessions = a.tag ? [rooms.holdingWorker(a.tag, lead)] : rooms.all();
-    const candidates = sessions.flatMap((s) => [...s.room.workers.values()].filter((w) => w.lead === s.me.name && (!a.tag || w.tag === a.tag)).map((w) => ({ s, w }))).sort((a2, b) => (a2.w.finishedAt ?? 0) - (b.w.finishedAt ?? 0) || (a2.w.tag < b.w.tag ? -1 : a2.w.tag > b.w.tag ? 1 : 0));
+    const candidates = sessions.flatMap((s) => [...s.room.workers.values()].filter((w) => {
+      if (a.tag && w.tag !== a.tag) return false;
+      const owner = ownership(s, w, discarding);
+      return owner.owned && (!owner.liveLead || !!a.tag);
+    }).map((w) => ({ s, w }))).sort((a2, b) => (a2.w.finishedAt ?? 0) - (b.w.finishedAt ?? 0) || (a2.w.tag < b.w.tag ? -1 : a2.w.tag > b.w.tag ? 1 : 0));
     if (a.tag && !candidates.length) return "error: no worker " + a.tag + " owned by you";
+    if (a.tag) {
+      const { s, w } = candidates[0];
+      const owner = ownership(s, w, discarding);
+      if (owner.liveLead) return `error: ${w.tag} belongs to ${owner.liveLead}, which is still running; ask it with room_send, or discard ${owner.liveLead}'s worker first`;
+    }
     const out2 = [];
     const selected = [];
     const lock = "collect:" + fs18.realpathSync(lead.dir);
@@ -45340,8 +45464,14 @@ function handlers7(state) {
       for (const item of candidates) {
         const { s } = item;
         let { w } = item;
-        if (w.status !== "done") {
+        const stopped = w.pid !== void 0 && !state.workerAlive(s, w) && !pidAlive2(w.pid);
+        if (w.status !== "done" && !(stopped && (w.status === "running" || w.status === "dismissed"))) {
           out2.push("skipped " + w.tag + ": " + w.status);
+          continue;
+        }
+        if (!a.tag && stopped && w.status !== "done") {
+          const why = w.stopReason === "lead-session-ended" ? "the lead's session ended" : "its process exited";
+          out2.push(`skipped ${w.tag}: stopped before finishing (${why}); room_collect tag=${w.tag} to take its partial edits, mode=copy for named files, or discard=true`);
           continue;
         }
         const workerLock = await reserveWorker(s, w);
@@ -45356,11 +45486,11 @@ function handlers7(state) {
           continue;
         }
         const current = s.room.workers.get(w.tag);
-        if (!current || current.id !== w.id || current.startedAt !== w.startedAt || current.status !== "done") {
+        if (!current || current.id !== w.id || current.startedAt !== w.startedAt || current.status !== "done" && !(stopped && (current.status === "running" || current.status === "dismissed"))) {
           out2.push("skipped " + w.tag + ": changed while waiting");
           continue;
         }
-        w = current;
+        w = current.status === "done" ? current : { ...current, status: "done", exitCode: current.exitCode ?? 0 };
         if (w.exitCode !== void 0 && w.exitCode !== 0) {
           out2.push("skipped " + w.tag + ": failed exit");
           continue;
@@ -45454,6 +45584,11 @@ function handlers7(state) {
           continue;
         }
         try {
+          const children = descendants(s, w);
+          if (children.length) {
+            out2.push("kept " + w.tag + ": nested workers remain: " + children.map((c) => c.tag).join(", "));
+            continue;
+          }
           const ignored = await ignoredWorkerArtifacts(w);
           if (ignored.length) {
             out2.push("kept " + w.tag + ": uncopied ignored artifacts");
@@ -45492,7 +45627,8 @@ function handlers7(state) {
       for (const workerLock of workerLocks) rooms.unreserve(workerLock);
       rooms.unreserve(lock);
     }
-  } };
+  };
+  return { room_collect: roomCollect };
 }
 
 // packages/room-mcp/src/tools/workers.ts
@@ -45857,7 +45993,7 @@ function handlers8(state) {
       const model = typeof a.model === "string" && a.model.trim() ? a.model.trim() : void 0;
       const idBase = workerIdBase(s.roomName, s.me.name, tag);
       const existing = s.room.workers.get(tag);
-      if (existing && existing.lead !== s.me.name && existing.status === "running") return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; pick another tag`;
+      if (existing && existing.lead !== s.me.name && existing.status === "running") return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; ${workerAlive(s, existing) ? "pick another tag" : "its process is gone; its ancestor can use room_collect tag=" + tag + " discard=true to free the tag"}`;
       if (existing && (existing.status === "running" || workerAlive(s, existing))) return `error: worker ${tag} is ${existing.status === "running" ? "already running" : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_collect discard=true for it first or pick another tag`;
       if (existing) return `error: worker ${tag} is ${existing.status} and still holds its room state; room_collect discard=true for it before reusing the tag`;
       const retired = s.room.retiredWorkers().filter((w) => w.tag === tag && w.lead === s.me.name);
@@ -45927,15 +46063,21 @@ function handlers8(state) {
         const memBytes = os6.totalmem();
         const budget = workerBudget({ cores, memBytes, maxWorkers: max2, running: count });
         const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS);
-        const threads = typeof a.threads === "number" ? a.threads : Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? inheritedThreads : budget.threads;
+        const inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB);
+        const isWorker = !!process.env.ROOM_TAG || !!s.room.workerOf(s.me.name) || !!s.me.owner && s.me.owner !== s.me.name;
+        const divisor = isWorker ? Math.max(2, max2) : 1;
+        const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads;
+        const threads = typeof a.threads === "number" ? Math.min(a.threads, threadShare) : threadShare;
+        const memGb = Number.isFinite(inheritedMem) && inheritedMem >= 1 ? Math.max(1, Math.floor(inheritedMem / divisor)) : budget.memGb;
         const caps = {};
         for (const key of ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "LOKY_MAX_CPU_COUNT", "RAYON_NUM_THREADS"]) {
-          caps[key] = process.env[key] ?? String(threads);
+          const cap = Number(process.env[key]);
+          caps[key] = isWorker ? String(Number.isSafeInteger(cap) && cap >= 1 ? Math.min(cap, threads) : threads) : process.env[key] ?? String(threads);
         }
         const env = {
           ...caps,
           ROOM_WORKER_THREADS: String(threads),
-          ROOM_WORKER_MEM_GB: process.env.ROOM_WORKER_MEM_GB ?? String(budget.memGb),
+          ROOM_WORKER_MEM_GB: String(memGb),
           ROOM_WORKER_HOST: host,
           ...model ? { ROOM_WORKER_MODEL: model } : {},
           ...effort ? { ROOM_WORKER_EFFORT: effort } : {},
@@ -46051,8 +46193,15 @@ function install6(state) {
       signalled = false;
       how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`;
     }
-    if (signalled) s.room.updateWorker(w.tag, { ...w.status === "running" ? { status: "dismissed" } : {}, dismissedAt: state.now(), ...stopReason ? { stopReason } : {} }, w.id);
-    s.room.post(s.me, { type: "note", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
+    if (stopReason) {
+      try {
+        persistWorkerStopReason(s.dir, w.tag, stopReason);
+      } catch (e) {
+        state.log(`could not persist stop reason for ${w.tag}: ${e}`);
+      }
+    }
+    if (signalled || stopReason) s.room.updateWorker(w.tag, { ...w.status === "running" ? { status: "dismissed" } : {}, dismissedAt: state.now(), ...stopReason ? { stopReason } : {} }, w.id);
+    if (signalled || workerAlive(s, w)) s.room.post(s.me, { type: "note", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
     return how;
   };
   const startWorkersBridge = (lead, s) => {
