@@ -11,6 +11,7 @@ import {
   splitParticipants,
   summarizeFiles,
   type ParticipantGroups,
+  type WorkerParticipantGroup,
   type RetiredWorker,
   describeClaim,
   formatPlans,
@@ -176,17 +177,21 @@ function archiveCard(worker: RetiredWorker): HTMLElement {
 
 /** Nest workers once, even when their lead has disconnected or has no retained presence. */
 export function groupedPeople(groups: ParticipantGroups, card: (person: Participant) => HTMLElement, expanded: Set<string>): { active: HTMLElement[]; offline: HTMLElement[] } {
-  const workerNames = new Set(groups.workerGroups.flatMap(group => group.active.map(p => p.name)))
+  const allGroups = (group: WorkerParticipantGroup): WorkerParticipantGroup[] => [group, ...group.nested.flatMap(allGroups)]
+  const flattened = groups.workerGroups.flatMap(allGroups)
+  const workerNames = new Set(flattened.flatMap(group => group.active.map(p => p.name)))
   const people = [...groups.active, ...groups.offlineTeammates]
-  const grouped = new Set(groups.workerGroups.map(group => group.lead))
+  const grouped = new Set(flattened.map(group => group.lead))
   const active = groups.active.filter(p => !workerNames.has(p.name) && !grouped.has(p.name)).map(card)
   const offline = groups.offlineTeammates.filter(p => !grouped.has(p.name)).map(card)
-  for (const group of groups.workerGroups) {
+  const renderGroup = (group: WorkerParticipantGroup): HTMLElement => {
     const lead = people.find(p => p.name === group.lead)
+    const nested = new Map(group.nested.map(child => [child.lead, child]))
     const section = h('section', { class: 'worker-group' },
       h('div', { class: 'worker-group-heading' }, `${group.lead} · ${group.running} running · ${group.retiredWorkers.length} finished`),
       lead ? card(lead) : null,
-      h('div', { class: 'worker-children' }, ...group.active.map(card)))
+      h('div', { class: 'worker-children' }, ...group.active.map(person => nested.has(person.name) ? renderGroup(nested.get(person.name)!) : card(person)),
+        ...group.nested.filter(child => !group.active.some(person => person.name === child.lead)).map(renderGroup)))
     if (group.retiredWorkers.length) {
       const history = h('details', { class: 'finished-workers', open: expanded.has(group.lead) }, h('summary', {}, `${group.retiredWorkers.length} finished`))
       // Ignore delayed toggle events from nodes replaced by a scheduled render.
@@ -194,7 +199,12 @@ export function groupedPeople(groups: ParticipantGroups, card: (person: Particip
       history.append(...group.retiredWorkers.map(archiveCard))
       section.append(history)
     }
-    if (group.active.length || lead?.online) active.push(section); else offline.push(section)
+    return section
+  }
+  for (const group of groups.workerGroups) {
+    const lead = people.find(p => p.name === group.lead)
+    const section = renderGroup(group)
+    if (group.active.length || group.nested.some(child => child.active.length) || lead?.online) active.push(section); else offline.push(section)
   }
   return { active, offline }
 }

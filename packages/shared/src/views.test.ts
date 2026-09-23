@@ -113,6 +113,19 @@ it('splits active workers, offline teammates and retired history with shared lea
   expect(reused.retiredWorkers).toEqual([retired])
 })
 
+it('nests a worker lead under its human group once', async () => {
+  const { splitParticipants } = await import('./views.js')
+  const worker = (name: string, lead: string): Worker => ({ name, tag: name.split('+')[1], lead, host: 'codex', task: 'task', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'running' })
+  const groups = splitParticipants({
+    presences: [{ user: { name: 'rohanz', kind: 'agent', color: '#000' } }],
+    workers: [worker('rohanz+lead', 'rohanz'), worker('rohanz+cat', 'rohanz+lead')],
+    scopes: [], overlayPeople: [], changesByPerson: new Map(), claims: [], retiredWorkers: [],
+  })
+  expect(groups.workerGroups).toHaveLength(1)
+  expect(groups.workerGroups[0].lead).toBe('rohanz')
+  expect(groups.workerGroups[0].nested).toMatchObject([{ lead: 'rohanz+lead', active: [{ name: 'rohanz+cat' }] }])
+})
+
 it('keeps running and failed worker details while compacting finished history', async () => {
   const { workerLines } = await import('./views.js')
   const worker: Worker = { name: 'lead+run', tag: 'run', lead: 'lead', host: 'codex', task: 'task', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'running' }

@@ -33,14 +33,14 @@ describe('shouldWake', () => {
     expect(w.meta.path).toBe('a.py')
     expect(w.meta.type).toBe('changed')
   })
-  it('answer only when addressed to me; note never', () => {
+  it('answer only when addressed to me; broadcast note does not wake', () => {
     expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'answer', inReplyTo: 'x' } as any) })).toBeNull()
     expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'answer', to: 'Rohan', inReplyTo: 'x' } as any) })).not.toBeNull()
     expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'note', from: 'Kieran', fromKind: 'human' }) })).toBeNull()
   })
-  it('interrupts wake even when broadcast; fyi never wakes', () => {
+  it('interrupts wake even when broadcast; addressed notes wake even with an explicit fyi priority', () => {
     expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'note', text: 'stop', priority: 'interrupt' } as any) })).not.toBeNull()
-    expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'note', to: 'Rohan', text: 'x', priority: 'fyi' } as any) })).toBeNull()
+    expect(shouldWake(me, { kind: 'msg', msg: msg({ type: 'note', to: 'Rohan', text: 'x', priority: 'fyi' } as any) })).not.toBeNull()
   })
   it('wakes on overlapping claim by another party, not on disjoint or own', () => {
     const other: Claim = { ...mine, id: 'c_o', by: 'Kieran', from: 15, to: 30 }

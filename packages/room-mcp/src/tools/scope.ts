@@ -2,7 +2,7 @@ import { sharingDescription } from '../config.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
-import { gitShow } from '@room/roomd/git'
+import { git, gitShow } from '@room/roomd/git'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
@@ -16,6 +16,19 @@ export const defs: ToolDef[] = [
   { name: 'room_state', annotations: RO, description: 'Show sharing, participants and overlapping work. Use path for file ownership, link for the browser URL.',
     inputSchema: { type: 'object', properties: { all: { type: 'boolean' }, path: str('file ownership'), from: int('first line'), to: int('last line'), link: { type: 'boolean' } } } },
 ]
+
+/** A stopped worker may have lost its overlay while its worktree still holds edits. */
+async function workerChangedCount(s: Session, worker: import('@room/shared').Worker, processGone: boolean): Promise<number> {
+  const overlayCount = s.room.changedPaths(worker.name).length
+  if (!processGone && worker.status === 'running' && s.room.overlays.has(worker.name)) return overlayCount
+  try {
+    const excluded = ['.room', ...(worker.carriedUntracked ?? []).map(entry => entry.path)]
+    const status = await git(worker.dir, ['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--', '.', ...excluded.map(path => `:(exclude,literal)${path}`)])
+    return status.split('\0').filter(Boolean).length
+  } catch {
+    return overlayCount // A removed or inaccessible worktree is still shown from room state.
+  }
+}
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines, shareOf } = state
@@ -156,11 +169,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
-      out.push(...formatWorkerLines(myWorkers(s).map(worker => ({ worker, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone: worker.status === 'running' && !state.workerAlive(s, worker), changedCount: s.room.changedPaths(worker.name).length, last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
+      out.push(...formatWorkerLines(await Promise.all(myWorkers(s).map(async worker => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)
-        out.push(...formatWorkerLines(myWorkers(ws).map(worker => ({ worker, processGone: worker.status === 'running' && !state.workerAlive(ws, worker), changedCount: ws.room.changedPaths(worker.name).length, last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
+        out.push(...formatWorkerLines(await Promise.all(myWorkers(ws).map(async worker => { const processGone = worker.status === 'running' && !state.workerAlive(ws, worker); return { worker, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
       }
       return a.all === true ? out.join('\n') : compactState(out, summarizedClaims)
     },

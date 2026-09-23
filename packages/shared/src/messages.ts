@@ -39,7 +39,7 @@ const builtins = {
   conflict: { priority: 'interrupt', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
   'merge-conflict': { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
   contract: { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'always', format: m => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
-  note: { priority: 'fyi', audience: 'everyone', inbox: false, wakes: 'interrupt', format: m => `${priority(m)}${who(m)}: ${m.text}` },
+  note: { priority: m => m.to ? 'notify' : 'fyi', audience: 'everyone', inbox: false, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)}${m.to ? ` → ${m.to}` : ''}: ${m.text}` },
   done: { priority: 'fyi', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },
   base: { priority: 'notify', audience: 'everyone', wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: m => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — git pull to catch up` },
   plan: { priority: 'fyi', audience: 'broadcast', wakes: 'interrupt', format: m => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''}${m.text ? ` — ${m.text}` : ''}` },

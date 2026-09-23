@@ -175,6 +175,7 @@ export interface WorkerParticipantGroup {
   active: Participant[]
   retiredWorkers: RetiredWorker[]
   running: number
+  nested: WorkerParticipantGroup[]
 }
 
 export interface ParticipantGroups {
@@ -195,12 +196,22 @@ export function splitParticipants(input: ParticipantInput & { retiredWorkers: re
   const offlineTeammates = participants.filter(p => !p.online && !workers.has(p.name))
   const leads = new Set([...workers.values()].map(w => w.lead))
   for (const w of retiredWorkers) leads.add(w.lead)
-  const workerGroups = [...leads].sort().map(lead => ({
+  const allGroups = [...leads].sort().map(lead => ({
     lead,
     active: active.filter(p => workers.get(p.name)?.lead === lead),
     retiredWorkers: retiredWorkers.filter(w => w.lead === lead),
     running: [...workers.values()].filter(w => w.lead === lead && w.status === 'running').length,
+    nested: [] as WorkerParticipantGroup[],
   }))
+  const byLead = new Map(allGroups.map(group => [group.lead, group]))
+  const workerGroups: WorkerParticipantGroup[] = []
+  for (const group of allGroups) {
+    const parentLead = workers.get(group.lead)?.lead
+    // A worker that leads others belongs inside its own lead's group, once.
+    const parent = parentLead && parentLead !== group.lead ? byLead.get(parentLead) : undefined
+    if (parent) parent.nested.push(group)
+    else workerGroups.push(group)
+  }
   return { active, offlineTeammates, retiredWorkers, workerGroups }
 }
 

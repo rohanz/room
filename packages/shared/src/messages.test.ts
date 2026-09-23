@@ -3,6 +3,7 @@ import {
   MessageKinds,
   RoomDoc,
   formatMsg,
+  messageEndsWait,
   messageForMe,
   registerMessageKind,
   shouldWakeOnMsg,
@@ -62,6 +63,21 @@ describe('MessageKinds', () => {
     expect(shouldWakeOnMsg({ name: 'Ada', kind: 'agent' }, ping).wake).toBe(false)
     expect(formatMsg(ping)).toBe('[notify] ping from Kieran: please look')
   })
+})
+
+it('addresses a note as a waking notification while leaving broadcast notes as FYI', () => {
+  const room = new RoomDoc()
+  const from = { name: 'Kieran', kind: 'agent' } as const
+  const addressed = room.post<NoteMsg>(from, { type: 'note', to: 'Rohan', text: 'please also check the report' })
+  const broadcast = room.post<NoteMsg>(from, { type: 'note', text: 'progress update' })
+  expect(addressed.priority).toBe('notify')
+  expect(messageEndsWait(addressed, { me: 'Rohan' })).toBe(true)
+  expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, addressed).wake).toBe(true)
+  expect(formatMsg(addressed)).toBe("[notify] Kieran's agent → Rohan: please also check the report")
+  expect(broadcast.priority).toBe('fyi')
+  expect(messageEndsWait(broadcast, { me: 'Rohan' })).toBe(false)
+  expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, broadcast).wake).toBe(false)
+  room.doc.destroy()
 })
 
  it('never routes own messages, even human or explicitly addressed messages', () => {
