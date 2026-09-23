@@ -189,7 +189,7 @@ describe('nested lead: a worker that leads workers', () => {
     const panel = participantsPanel(conn, createFocusState())
     document.body.append(panel)
     // Live shape: two sibling groups, "rohanz · 1 running" and "rohanz+lead · 2 running", with rohanz+lead's card in both.
-    const names = [...panel.querySelectorAll('button.participant .participant-head strong')].map(el => el.textContent)
+    const names = [...panel.querySelectorAll('.participant .participant-head strong')].map(el => el.textContent)
     expect(names.filter(n => n === LEAD)).toHaveLength(1)
     const humanGroup = [...panel.querySelectorAll('.worker-group')].find(g => g.querySelector('.worker-group-heading')?.textContent?.startsWith(`${HUMAN} ·`))
     expect(humanGroup?.textContent).toContain('rohanz+cat')
