@@ -247,10 +247,12 @@ orchestration and sharing work above remains open.
 
 ### After 0.12.0 (2026-09-23, open)
 
-- **The full test suite occasionally freezes.** Seen twice by the batch lead and once in the final
+- **The full test suite occasionally freezes, and two timing-sensitive tests flake under load.** Seen twice by the batch lead and once in the final
   check: one vitest worker sits idle forever. The same suite then passes in about 70 s. Suspects:
   a child process (relay, preview `git archive | tar`, a worker's vitest) outliving its test.
-  Find it with `--reporter=verbose` the next time it happens, and give CI a global timeout.
+  Find it with `--reporter=verbose` the next time it happens, and give CI a global timeout. Seen again
+  2026-09-23 with the 0.13.0 merge; separately `workers.test.ts` "a finished worker whose process is
+  alive can still be stopped" failed once in a full run and passes alone.
 - **Measure on real repos, not only fixtures.** The batch's join benchmark used 5,000 tracked
   files; the real failing repo had 399 tracked and 13 GB of untracked art. Keep a copy-on-write
   clone (`cp -Rc`) of one real, messy repo as the standing join and carry benchmark.
