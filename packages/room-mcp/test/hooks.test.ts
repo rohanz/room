@@ -420,7 +420,7 @@ describe('hooks bridge + plugin hook scripts', () => {
     const k = { name: 'Kieran', kind: 'agent' as const }
     // remote inserts: apply from another doc so transaction.local is false
     const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u))
-    other.post(k, { type: 'note', to: 'Rohan', text: 'fyi only' } as never)
+    other.post(k, { type: 'note', text: 'fyi only' } as never) // broadcast; an addressed note wakes (nested-lead test 1)
     other.post(k, { type: 'question', to: 'Rohan', text: 'are you done?' } as never)
     other.post(k, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
     // a base move wakes only when I have uncommitted work
