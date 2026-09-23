@@ -13,6 +13,7 @@ description: Running editing work through other agents. Use when asked for anoth
 2. Call `room_spawn(tag, task, host?, model?)`. Host defaults to your own host; override
    only when requested. Give each worker a self-contained task, owned files and test command.
    Pass a model only when specified.
+   The worker starts from your code as it is now, including uncommitted work, and your own work is never reported as the worker's.
 3. Briefly state what you dispatched. Answer workers' questions with
    `room_send(type="answer", inReplyTo=...)`; ask your human only for a decision that
    blocks the work. `room_wait` returns the event; read state only when more context is needed.

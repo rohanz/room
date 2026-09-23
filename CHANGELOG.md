@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0
+
+- A worker in a fresh worktree on a new branch starts with the lead's tracked changes, including staged changes and deletions, and non-ignored untracked files as one carried-in commit. Ignored files and `.room/` stay out. The first successful carry per lead session says `carried your N uncommitted changes into its worktree (commit <sha10>)`; a clean lead gets no carry commit or note.
+- A carry copy, apply or commit failure resets the new worker to clean HEAD and every failed spawn reports that its uncommitted changes are absent; if the change count fails, the reply says `could not carry your uncommitted changes`. Existing worktrees and recreated worktrees on a surviving branch keep their prior behavior.
+- `room_collect` and `room_preview_merge` compare each worker with its own recorded base, including a carried-in commit, so the lead's later edits to carried lines survive and untouched carried files are neither reapplied nor reported as worker changes. File-mode changes use that base too. A preview names the worker's base when it differs from the common ancestor.
+- If a recorded worker base is unavailable or does not descend from the common ancestor, or an older worker has no base, previews and collection use the common ancestor. Adjacent-line edits can still conflict.
+- A worker's worktree, now ahead of the room base by its carried commit, is no longer told to `git push` or `git pull`.
+- `room_collect` no longer fails with `spawn git ENOENT` when it runs while a finished worker with no changes is being retired: collect, discard and retirement take turns on each worker.
+
 ## 0.10.2
 
 - `room_collect` keeps a worker's worktree when it holds ignored output that was not copied: ordinary changes are applied, each kept artifact and its location is named, and only `room_collect(tag, discard=true, force=true)` deletes them.

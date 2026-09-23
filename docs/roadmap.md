@@ -220,18 +220,19 @@ saved with a local room's memory.
 
 ### Uncommitted work and worker worktrees
 
-A worker's worktree is made from the lead's HEAD (`prepareWorktree`), so the lead's uncommitted
-work is absent from it. Observed 2026-09-22 in a website redesign: a whole day's rewrites were
+**Fixed in 0.11.0:** A worker's worktree was made from the lead's HEAD (`prepareWorktree`),
+so the lead's uncommitted work was absent from it. Observed 2026-09-22 in a website redesign: a whole day's rewrites were
 uncommitted and the human had asked not to commit, so the agent used built-in subagents in the
 dirty checkout instead of Room, and hand-wrote "these files are yours, those are off limits" into
 each brief. That is precisely what Room exists to do, and it lost the job on a mechanical detail.
-0.10.2 tells the truth at spawn time ("N uncommitted changes in your clone are not in this
-worktree"), which is honest but still a refusal. The fix: carry the lead's uncommitted work into a
-new worktree at spawn (tracked diff plus non-ignored untracked files, never ignored ones), so a
-worker starts from what the human can actually see. Then `room_collect`'s three-way merge must
-treat the carried-in changes as common, not as the worker's, so the lead's own edits are not
-re-applied or reported as the worker's work. Decide whether it is the default (probably: it matches
-what a human means by "work on this with me") or `room_spawn(from: 'working-tree')`.
+0.11.0 carries the lead's uncommitted work into a new worktree at spawn (tracked changes plus
+non-ignored untracked files, never ignored files or `.room/`). The carried-in commit is the
+worker's base, so previews and collection report only the worker's own changes. This happens by
+default; if carrying fails, the worker starts from HEAD and the spawn reply says so.
+Carrying applies to fresh worktrees on new branches; existing worktrees and recreated
+worktrees on surviving branches keep their prior behavior.
+If a recorded worker base is unavailable or outside the common history, preview and collection
+fall back to the common ancestor; adjacent-line edits can still conflict.
 
 ### From the review-fixes batch (eight Codex workers, 2026-09-21, open)
 

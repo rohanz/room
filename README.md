@@ -87,6 +87,7 @@ You do not need to know any tool names. For example:
 > Use a couple of subagents for this: add the endpoint in api.ts and its tests in api.test.ts.
 
 `room_spawn` creates a Git worktree at `.room/workers/<tag>` on branch `room/<tag>`.
+The worker starts from your code as it is now, including uncommitted work, and your own work is never reported as the worker's.
 It uses the caller’s agent host unless you choose another. The worker joins as `<you>+<tag>`,
 declares its task, coordinates where work overlaps, previews the combined changes, and finishes
 with a one-line summary. Up to eight workers run at once (`ROOM_MAX_WORKERS`).
