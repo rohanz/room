@@ -5,8 +5,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { RoomDoc, type Identity, type Worker } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
-import { carriedUnchanged, workerBaseline } from '@room/roomd/baseline'
+import { carriedUnchanged, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { mergePath, type ConflictDeps } from '../src/conflicts.js'
+import { addCarriedUntrackedModes, mergedFileMode } from '../src/tools/files.js'
+import { saveDiscardPatch } from '../src/workers.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
@@ -40,7 +42,7 @@ function spawn(files: Record<string, string>, wip: Record<string, string>, untra
   if (Object.keys(wip).length) { git(wdir, 'add', '-A'); git(wdir, '-c', 'user.name=Room', '-c', 'user.email=room@localhost', 'commit', '-qm', 'room: carried-in uncommitted work from lead') }
   const base = git(wdir, 'rev-parse', 'HEAD')
   for (const [file, body] of Object.entries(untracked)) put(wdir, file, body)
-  const carriedUntracked = Object.keys(untracked).map(file => ({ path: file, sha: git(lead, 'hash-object', '-w', `--path=${file}`, file) }))
+  const carriedUntracked = Object.keys(untracked).map(file => ({ path: file, sha: git(lead, 'hash-object', '-w', `--path=${file}`, file), mode: fs.statSync(path.join(wdir, file)).mode & 0o777 }))
   const room = new RoomDoc()
   room.setMeta({ repo: 'test', branch: 'main', base: head })
   const record = { id: 'lead/w#1', tag: 'w', name: WORKER, host: 'codex', task: 't', dir: wdir, branch: 'room/w', base, pid: 1, startedAt: 1, status: 'running', lead: LEAD, carriedUntracked, ...(base === head ? {} : { carriedBase: base }) } as Worker
@@ -126,9 +128,22 @@ describe('a carried worker\'s own changes', () => {
       expect((await mergePath(t.deps(me), other, 'both.txt')).status).toBe('clean')
     }
     const own = workerBaseline(t.room.workerOf(WORKER))!
-    expect(await carriedUnchanged(own, 'notes.txt', read(wdir, 'notes.txt')!)).toBe(true)
-    expect(await carriedUnchanged(own, 'mine.txt', read(wdir, 'mine.txt')!)).toBe(false)
-    expect(await carriedUnchanged(own, 'keep.txt', read(wdir, 'keep.txt')!)).toBe(false)
+    expect(carriedUnchanged(own, 'notes.txt')).toBe(true)
+    expect(carriedUnchanged(own, 'mine.txt')).toBe(false)
+    expect(carriedUnchanged(own, 'keep.txt')).toBe(false)
+  })
+
+  it('counts a carried untracked file\'s mode change as the worker\'s in collect, preview and discard alike', async () => {
+    const t = spawn({ 'keep.txt': 'keep\n' }, {}, { 'run.sh': 'echo hi\n', 'notes.txt': 'draft\n' })
+    fs.chmodSync(path.join(wdir, 'run.sh'), 0o755)
+    const w = t.room.workerOf(WORKER)!
+    const unchanged = carriedUnchangedPaths(workerBaseline(w))
+    expect([...unchanged]).toEqual(['notes.txt'])
+    const participant = { dir: wdir, baseModes: addCarriedUntrackedModes(new Map(), w), unchangedCarried: unchanged, carriedPaths: new Set(['run.sh', 'notes.txt']) }
+    expect(mergedFileMode('run.sh', 0o644, [participant])).toBe(0o755)
+    const patch = fs.readFileSync((await saveDiscardPatch(lead, w))!, 'utf8')
+    expect(patch).toContain('diff --git a/run.sh b/run.sh\nnew file mode 100755')
+    expect(patch).not.toContain('notes.txt')
   })
 
   it('refuses a carried untracked file whose private base blob is gone', async () => {

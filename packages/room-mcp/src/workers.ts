@@ -11,6 +11,7 @@ import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import type { Worker, RetiredWorker } from '@room/shared'
 import { git } from '@room/roomd/git'
+import { carriedContentHash, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 
@@ -264,11 +265,6 @@ const internalGit = (dir: string, args: string[]) => git(dir, ['-c', 'core.hooks
 const carryRef = (tag: string) => `refs/room/carry/${tag}`
 const carriedUntrackedRef = (tag: string) => `refs/room/carry-untracked/${tag}`
 const pathExcluded = (rel: string, exclusions: string[]) => exclusions.some(p => rel === p || rel.startsWith(p.replace(/\/$/, '') + '/'))
-function carriedContentHash(dir: string, rel: string, write = false): string {
-  const source = path.join(dir, rel), stat = fs.lstatSync(source)
-  const bytes = stat.isSymbolicLink() ? Buffer.from(fs.readlinkSync(source)) : fs.readFileSync(source)
-  return execFileSync('git', ['hash-object', ...(write ? ['-w'] : []), '--path=' + rel, '--stdin'], { cwd: dir, input: bytes }).toString().trim()
-}
 function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sha: string }[]): string | undefined {
   if (!paths.length) return undefined
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-index-'))
@@ -548,10 +544,8 @@ export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<stri
     const run = (args: string[]) => execFileSync('git', args, { cwd: w.dir, env: { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }, maxBuffer: 64 * 1024 * 1024 })
     const base = w.base ?? (await git(leadDir, ['merge-base', 'HEAD', w.branch])).trim()
     run(['read-tree', 'HEAD'])
-    const unchanged = (w.carriedUntracked ?? []).filter(({ path: rel, sha }) => {
-      try { return carriedContentHash(w.dir, rel) === sha } catch { return false }
-    }).map(x => x.path)
-    const exclusions = [...workerOwnedPaths(w).exclusions, ...unchanged.map(p => ':(exclude,literal)' + p)]
+    const unchanged = carriedUnchangedPaths(workerBaseline(w))
+    const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map(p => ':(exclude,literal)' + p)]
     run(['add', '-A', '--', '.', ...exclusions])
     const patch = run(['diff', '--cached', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', base, '--', '.', ...exclusions])
     if (!patch.length) return undefined

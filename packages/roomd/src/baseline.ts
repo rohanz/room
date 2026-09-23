@@ -3,15 +3,17 @@
  * notices and graph observations: its tree against its recorded base commit, with the lead's
  * carried untracked files counting as base (their spawn-time blobs, kept under a private ref).
  */
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import nodePath from 'node:path'
 import type { Worker } from '@room/shared'
 
 export interface Baseline {
   /** The worker whose own changes are measured from here. */
   worker: string
   sha: string
-  /** Carried untracked path -> blob id of its spawn-time content. */
-  untracked: ReadonlyMap<string, string>
+  /** Carried untracked path -> blob id of its spawn-time content and its spawn-time permission bits. */
+  untracked: ReadonlyMap<string, { sha: string; mode?: number }>
   /** A checkout of the repository that holds `sha` and the blobs (the worker's worktree). */
   dir: string
   /** Whether `sha` is spawn's commit of the lead's uncommitted work. */
@@ -20,10 +22,9 @@ export interface Baseline {
 
 export function workerBaseline(worker: Worker | undefined): Baseline | undefined {
   if (!worker?.base) return undefined
-  const record = worker as Worker & { carriedBase?: string; carriedUntracked?: { path: string; sha: string }[] }
   return {
-    worker: worker.name, sha: worker.base, dir: worker.dir, carriedCommit: !!record.carriedBase && record.carriedBase === worker.base,
-    untracked: new Map((record.carriedUntracked ?? []).map(file => [file.path, file.sha])),
+    worker: worker.name, sha: worker.base, dir: worker.dir, carriedCommit: !!worker.carriedBase && worker.carriedBase === worker.base,
+    untracked: new Map((worker.carriedUntracked ?? []).map(file => [file.path, { sha: file.sha, mode: file.mode }])),
   }
 }
 
@@ -82,13 +83,38 @@ export class MissingBaseBlob extends Error {
 
 /** The baseline text of `path`, reading the base commit's files with `read`. */
 export async function baselineText<T extends string | null | undefined>(baseline: Baseline, path: string, read: (sha: string, path: string) => Promise<T>, encoding: BufferEncoding = 'utf8'): Promise<T | string | undefined> {
-  const blob = baseline.untracked.get(path)
-  if (blob === undefined) return read(baseline.sha, path)
-  try { return await checkoutText(baseline.dir, blob, path, encoding) }
+  const carried = baseline.untracked.get(path)
+  if (carried === undefined) return read(baseline.sha, path)
+  try { return await checkoutText(baseline.dir, carried.sha, path, encoding) }
   catch { throw new MissingBaseBlob(path) }
 }
 
-/** Whether `text` is still the spawn-time content of carried untracked `path`: then it is the lead's, not the worker's change. */
-export async function carriedUnchanged(baseline: Baseline, path: string, text: string, encoding: BufferEncoding = 'utf8'): Promise<boolean> {
-  return baseline.untracked.has(path) && (await baselineText(baseline, path, async () => undefined, encoding)) === text
+/** The blob id Git gives the file or link at `path` in checkout `dir` (clean filters applied, as `git status` compares); `write` stores the blob. */
+export function carriedContentHash(dir: string, path: string, write = false): string {
+  const source = nodePath.join(dir, path), stat = fs.lstatSync(source)
+  const bytes = stat.isSymbolicLink() ? Buffer.from(fs.readlinkSync(source)) : fs.readFileSync(source)
+  return execFileSync('git', ['hash-object', ...(write ? ['-w'] : []), '--path=' + path, '--stdin'], { cwd: dir, input: bytes }).toString().trim()
+}
+
+/**
+ * Whether carried untracked `path` is, in the worker's tree, still what spawn carried: the same blob
+ * and, for a regular file, the same permission bits. Then it is the lead's, not the worker's change.
+ * A path that is missing, not carried, or reaches outside the tree is not unchanged.
+ */
+export function carriedUnchanged(baseline: Baseline, path: string): boolean {
+  const carried = baseline.untracked.get(path)
+  if (!carried || nodePath.isAbsolute(path) || path.includes('\\') || path.split('/').some(part => !part || part === '.' || part === '..')) return false
+  try {
+    const root = fs.realpathSync(baseline.dir), parent = fs.realpathSync(nodePath.dirname(nodePath.join(root, path)))
+    if (parent !== root && !parent.startsWith(root + nodePath.sep)) return false
+    const stat = fs.lstatSync(nodePath.join(root, path))
+    if (!stat.isFile() && !stat.isSymbolicLink()) return false
+    if (stat.isFile() && carried.mode !== undefined && (stat.mode & 0o777) !== carried.mode) return false
+    return carriedContentHash(root, path) === carried.sha
+  } catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return false; throw e }
+}
+
+/** The carried untracked paths the worker left as spawn carried them (carriedUnchanged). */
+export function carriedUnchangedPaths(baseline: Baseline | undefined): Set<string> {
+  return new Set([...baseline?.untracked.keys() ?? []].filter(path => carriedUnchanged(baseline!, path)))
 }

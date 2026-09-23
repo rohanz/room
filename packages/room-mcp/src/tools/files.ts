@@ -7,7 +7,7 @@ import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import { describeClaim, withLineNumbers, type NoteMsg, type Worker } from '@room/shared'
 import type { Session } from '../session.js'
-import { checkoutText, MissingBaseBlob } from '@room/roomd/baseline'
+import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { workerOwnedPaths } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -131,7 +131,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         else {
           const modeParticipants = (await Promise.all(participants.map(async ({ person, session }) => {
             const w = session.room.workerOf(person)
-            return w && fs.existsSync(w.dir) ? { dir: w.dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: await unchangedCarriedUntracked(w), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) } : undefined
+            return w && fs.existsSync(w.dir) ? { dir: w.dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) } : undefined
           }))).filter((x): x is NonNullable<typeof x> => !!x)
           const modes = new Map<string, number>()
           for (const p of merged.keys()) {
@@ -216,33 +216,11 @@ export async function gitTreeModes(dir: string, ref: string): Promise<Map<string
 }
 
 export function addCarriedUntrackedModes(modes: Map<string, number>, worker: Worker): Map<string, number> {
-  for (const entry of worker.carriedUntracked ?? []) {
-    const mode = (entry as { mode?: number }).mode
-    if (mode !== undefined) modes.set(entry.path, mode)
-  }
+  for (const entry of worker.carriedUntracked ?? []) if (entry.mode !== undefined) modes.set(entry.path, entry.mode)
   return modes
 }
 
-/** Carried untracked bytes unchanged by the worker cannot supply a worker mode change. */
-export async function unchangedCarriedUntracked(w: Worker): Promise<Set<string>> {
-  const unchanged = new Set<string>()
-  const root = fs.realpathSync(w.dir)
-  for (const entry of w.carriedUntracked ?? []) {
-    const rel = entry.path
-    if (path.isAbsolute(rel) || rel.includes('\\') || rel.split('/').some(part => !part || part === '.' || part === '..')) continue
-    const file = path.join(root, rel)
-    try {
-      const real = fs.realpathSync(file), stat = fs.lstatSync(file)
-      if (!real.startsWith(root + path.sep) || !stat.isFile()) continue
-      const baseMode = (entry as { mode?: number }).mode
-      if (baseMode !== undefined && (stat.mode & 0o777) !== baseMode) continue
-      if (await checkoutText(w.dir, entry.sha, rel, 'latin1') === fs.readFileSync(file).toString('latin1')) unchanged.add(rel)
-    } catch (e) { if (!(e instanceof MissingBaseBlob) && (e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
-  }
-  return unchanged
-}
-
-/** A mode change belongs to a worker only when it differs from that worker's carried base. */
+/** A mode change belongs to a worker only when it differs from that worker's carried base; carried files it left unchanged (baseline.ts) supply none. */
 export function mergedFileMode(rel: string, initialMode: number, participants: { dir: string; baseModes: ReadonlyMap<string, number>; ownedPaths?: { includes(rel: string): boolean }; unchangedCarried?: ReadonlySet<string>; carriedPaths?: ReadonlySet<string> }[]): number {
   let mode = initialMode
   for (const participant of participants) {

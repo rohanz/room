@@ -2,9 +2,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { claimsOverlap, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
+import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { cleanupWorker, ignoredWorkerArtifacts, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths, workerOperationKey } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
-import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode, unchangedCarriedUntracked } from './files.js'
+import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode } from './files.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import type { Session } from '../session.js'
@@ -195,7 +196,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const { w } of selected) {
         const base = result.deltaBases.get(w.name)!
         baseModes.set(w.name, addCarriedUntrackedModes(await gitTreeModes(lead.dir, base), w))
-        unchangedCarried.set(w.name, await unchangedCarriedUntracked(w))
+        unchangedCarried.set(w.name, carriedUnchangedPaths(workerBaseline(w)))
       }
       for (const [p, text] of result.merged) {
         const file = safePath(lead.dir, p)
