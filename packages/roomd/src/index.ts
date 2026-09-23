@@ -263,7 +263,7 @@ class Daemon implements Roomd {
     if (roomBase && roomBase !== this.base) {
       const rel = await gitRelation(this.dir, this.base, roomBase)
       if (rel === 'ahead') await this.maybeAdvance(roomBase, this.base)
-      else if (rel === 'behind') this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)}); git pull to catch up`)
+      else if (rel === 'behind') this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)})${this.isWorkerWorktree() ? '' : '; git pull to catch up'}`)
       else {
         const message = rel === 'unknown'
           ? `room base ${roomBase} is not in this clone (local HEAD ${this.base}) — git pull, then $room-join`
@@ -567,8 +567,11 @@ class Daemon implements Roomd {
 
   private readonly unpushedPairs = new Set<string>()
 
+  private isWorkerWorktree(): boolean { return !!this.label && this.branch === `room/${this.label}` }
+
   /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
   private async maybeAdvance(from: string, to: string): Promise<void> {
+    if (this.isWorkerWorktree()) { this.setStatus('worker worktree ahead of room base'); return }
     if (await gitIsOnRemote(this.dir, to)) await this.advanceBase(from, to)
     else {
       this.setStatus('ahead of base (unpushed): git push')
@@ -599,9 +602,9 @@ class Daemon implements Roomd {
     const rel = await gitRelation(this.dir, this.base, roomBase)
     if (rel === 'behind') {
       const n = await gitCountBetween(this.dir, this.base, roomBase).catch(() => 0)
-      this.setStatus(`behind base by ${n || '?'} commit${n === 1 ? '' : 's'}: git pull`)
+      this.setStatus(`${this.isWorkerWorktree() ? 'worker worktree behind room base' : 'behind base'} by ${n || '?'} commit${n === 1 ? '' : 's'}${this.isWorkerWorktree() ? '' : ': git pull'}`)
     } else if (rel === 'ahead') { await this.maybeAdvance(roomBase, this.base) }
-    else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}: git pull`)
+    else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}${this.isWorkerWorktree() ? '' : ': git pull'}`)
   }
 
   private async seedLocalOverlay(): Promise<void> {

@@ -1,7 +1,7 @@
 import { claudeWakeUnavailable } from '../src/prompt.js'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, symlinkSync, lstatSync, realpathSync } from 'node:fs'
+import fs, { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, symlinkSync, lstatSync, realpathSync, chmodSync } from 'node:fs'
 import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -25,6 +25,7 @@ vi.mock('../src/workers.js', async importOriginal => ({
 
 let dir: string
 let base: string
+const scratchRepos: string[] = []
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 const workerId: Identity = { name: 'rohanz+money', kind: 'agent', owner: 'rohanz', label: 'money' }
 
@@ -38,7 +39,26 @@ afterEach(() => {
   vi.unstubAllEnvs()
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
   Object.assign(process.env, roomEnv)
+  for (const repo of scratchRepos.splice(0)) rmSync(repo, { recursive: true, force: true })
 })
+
+function realRepo() {
+  const repo = mkdtempSync(join(tmpdir(), 'room-carry-'))
+  scratchRepos.push(repo)
+  const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()
+  git('init', '-q', '-b', 'main')
+  git('config', 'user.email', 'test@test')
+  git('config', 'user.name', 'tester')
+  writeFileSync(join(repo, '.gitignore'), '.room/\nignored.txt\n')
+  writeFileSync(join(repo, 'modified.txt'), 'before\n')
+  writeFileSync(join(repo, 'staged.txt'), 'before\n')
+  writeFileSync(join(repo, 'deleted.txt'), 'before\n')
+  writeFileSync(join(repo, 'renamed.txt'), 'before\n')
+  writeFileSync(join(repo, 'binary.bin'), Buffer.from([0, 1, 2, 3]))
+  writeFileSync(join(repo, 'executable.sh'), '#!/bin/sh\necho before\n', { mode: 0o755 })
+  git('add', '.'); git('commit', '-qm', 'initial')
+  return { repo, git, head: git('rev-parse', 'HEAD') }
+}
 
 function pair() {
   const a = new Y.Doc(), b = new Y.Doc()
@@ -101,10 +121,83 @@ describe('worker plumbing', () => {
     expect(recreated).toMatchObject({ dir: first.dir, branch: 'room/deleted', created: true })
     expect(existsSync(join(recreated.dir, 'app.py'))).toBe(true)
   })
+
+  it('carries tracked and non-ignored untracked work into a worker-local base commit', async () => {
+    const { repo, git, head } = realRepo()
+    writeFileSync(join(repo, 'modified.txt'), 'after\n')
+    writeFileSync(join(repo, 'staged.txt'), 'staged\n'); git('add', 'staged.txt')
+    rmSync(join(repo, 'deleted.txt'))
+    git('mv', 'renamed.txt', 'moved.txt')
+    writeFileSync(join(repo, 'binary.bin'), Buffer.from([0, 255, 1, 254, 0]))
+    writeFileSync(join(repo, 'executable.sh'), '#!/bin/sh\necho after\n'); chmodSync(join(repo, 'executable.sh'), 0o755)
+    writeFileSync(join(repo, 'new.sh'), '#!/bin/sh\necho new\n', { mode: 0o755 })
+    writeFileSync(join(repo, 'ignored.txt'), 'private')
+    mkdirSync(join(repo, '.room'), { recursive: true }); writeFileSync(join(repo, '.room', 'private'), 'private')
+    const leadStatus = git('status', '--porcelain')
+    const prepared = await prepareWorktree(repo, 'carry', 'rohanz')
+    expect(prepared.carried?.count).toBeGreaterThan(0)
+    expect(prepared.base).toBe(git('rev-parse', 'room/carry'))
+    expect(prepared.base).not.toBe(head)
+    expect(execFileSync('git', ['-C', prepared.dir, 'log', '-1', '--format=%s']).toString().trim()).toBe('room: carried-in uncommitted work from rohanz')
+    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('after\n')
+    expect(readFileSync(join(prepared.dir, 'staged.txt'), 'utf8')).toBe('staged\n')
+    expect(existsSync(join(prepared.dir, 'deleted.txt'))).toBe(false)
+    expect(existsSync(join(prepared.dir, 'moved.txt'))).toBe(true)
+    expect(existsSync(join(prepared.dir, 'renamed.txt'))).toBe(false)
+    expect(readFileSync(join(prepared.dir, 'binary.bin'))).toEqual(Buffer.from([0, 255, 1, 254, 0]))
+    expect(lstatSync(join(prepared.dir, 'new.sh')).mode & 0o111).toBeTruthy()
+    expect(existsSync(join(prepared.dir, 'ignored.txt'))).toBe(false)
+    expect(existsSync(join(prepared.dir, '.room', 'private'))).toBe(false)
+    expect(execFileSync('git', ['-C', prepared.dir, 'status', '--porcelain']).toString()).toBe('')
+    expect(git('status', '--porcelain')).toBe(leadStatus)
+  })
+
+  it('does not make a carry commit for a clean lead or a reused worktree', async () => {
+    const { repo, git, head } = realRepo()
+    const first = await prepareWorktree(repo, 'clean', 'rohanz')
+    expect(first).toMatchObject({ base: head, created: true })
+    expect(first.carried).toBeUndefined()
+    writeFileSync(join(repo, 'later.txt'), 'later')
+    const reused = await prepareWorktree(repo, 'clean', 'rohanz')
+    expect(reused.created).toBe(false)
+    expect(reused.carried).toBeUndefined()
+    expect(existsSync(join(first.dir, 'later.txt'))).toBe(false)
+    expect(git('rev-parse', 'room/clean')).toBe(head)
+  })
+
+  it('commits carry without git identity and despite a failing pre-commit hook', async () => {
+    const { repo, git } = realRepo()
+    git('config', '--unset', 'user.email'); git('config', '--unset', 'user.name')
+    const home = mkdtempSync(join(tmpdir(), 'room-empty-home-')); scratchRepos.push(home)
+    vi.stubEnv('HOME', home); vi.stubEnv('GIT_CONFIG_GLOBAL', join(home, 'empty')); vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1')
+    writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    writeFileSync(join(repo, 'modified.txt'), 'carried\n')
+    const prepared = await prepareWorktree(repo, 'hooked', 'rohanz')
+    expect(prepared.carried?.commit).toBe(prepared.base)
+    expect(execFileSync('git', ['-C', prepared.dir, 'log', '-1', '--format=%an <%ae>']).toString().trim()).toBe('Room <room@localhost>')
+  })
+
+  it('rolls back a partial carry and leaves a clean HEAD worktree when copying fails', async () => {
+    const { repo, git, head } = realRepo()
+    writeFileSync(join(repo, 'modified.txt'), 'after\n')
+    writeFileSync(join(repo, 'new.txt'), 'new\n')
+    const copy = fs.copyFileSync
+    vi.spyOn(fs, 'copyFileSync').mockImplementation((src, dest, mode) => {
+      if (String(src).endsWith('new.txt')) throw new Error('forced copy failure')
+      return copy(src, dest, mode)
+    })
+    const prepared = await prepareWorktree(repo, 'fallback', 'rohanz')
+    expect(prepared).toMatchObject({ base: head, carryFailed: true })
+    expect(prepared.carried).toBeUndefined()
+    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('before\n')
+    expect(existsSync(join(prepared.dir, 'new.txt'))).toBe(false)
+    expect(execFileSync('git', ['-C', prepared.dir, 'status', '--porcelain']).toString()).toBe('')
+    expect(git('rev-parse', 'room/fallback')).toBe(head)
+  })
 })
 
 describe('room_spawn / room_done / room_collect discard', () => {
-  function setup() {
+  function setup(worktree?: typeof prepareWorktree, maxWorkers = 2) {
     const { a, b } = pair()
     a.setMeta({ repo: 'x', branch: 'main', base })
     let ls: Session | null = fakeSession(a, lead)
@@ -112,9 +205,9 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const exits: ((code: number | null) => void)[] = []
     const killed: number[] = []
     const leadTools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2,
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers,
       spawner: spec => { specs.push(spec); return { pid: 4242 + specs.length, onExit: cb => { exits.push(cb) }, kill: () => { killed.push(1); return true } } },
-      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true, base }),
+      worktree: worktree ?? (async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true, base })),
     })
     let ws: Session | null = fakeSession(b, workerId)
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
@@ -151,17 +244,51 @@ describe('room_spawn / room_done / room_collect discard', () => {
     } finally { vi.unstubAllEnvs() }
   })
 
-  it('names uncommitted work that a new worker worktree cannot see, once per session', async () => {
-    const t = setup()
+  it('names the carried commit once per lead session', async () => {
+    const t = setup(prepareWorktree)
     writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
     try {
       const first = await t.leadTools.call('room_spawn', { tag: 'wip1', task: 'a' })
-      expect(first).toMatch(/\d+ uncommitted change/)
-      expect(first).toContain('starts from HEAD')
-      // The second worker starts from the same commit: the lead has been told.
-      expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).not.toMatch(/uncommitted change/)
+      expect(first).toMatch(/carried your 1 uncommitted change into its worktree \(commit [0-9a-f]{10}\)/)
+      expect(first).not.toContain('starts from HEAD')
+      expect(t.a.workers.get('wip1')?.base).toBe(execFileSync('git', ['-C', join(dir, '.room', 'workers', 'wip1'), 'rev-parse', 'HEAD']).toString().trim())
+      expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).not.toMatch(/carried your/)
+      expect(t.a.workers.get('wip2')?.base).not.toBe(base)
     } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
     expect(await setup().leadTools.call('room_spawn', { tag: 'wip3', task: 'c' })).not.toMatch(/uncommitted change/)
+  })
+
+  it('keeps the 0.10.2 missing-work note on every carry fallback', async () => {
+    const t = setup(async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true,
+      ...(tag === 'carried' ? { base: 'f'.repeat(40), carried: { count: 1, commit: 'f'.repeat(40) } } : { base, carryFailed: true }) }), 3)
+    writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
+    try {
+      expect(await t.leadTools.call('room_spawn', { tag: 'carried', task: 'first' })).toContain('carried your 1 uncommitted change')
+      const first = await t.leadTools.call('room_spawn', { tag: 'fallback1', task: 'a' })
+      expect(first).toContain('1 uncommitted change in your clone is not in this worktree, which starts from HEAD')
+      expect(first).not.toContain('carried your')
+      expect(await t.leadTools.call('room_spawn', { tag: 'fallback2', task: 'b' })).toContain('1 uncommitted change in your clone is not in this worktree')
+    } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
+  })
+
+  it('preserves a surviving worker branch without carrying lead WIP into it', async () => {
+    const initial = await prepareWorktree(dir, 'reusedbranch', 'rohanz')
+    writeFileSync(join(initial.dir, 'branch.txt'), 'old worker work')
+    execFileSync('git', ['-C', initial.dir, 'add', 'branch.txt'])
+    execFileSync('git', ['-C', initial.dir, 'commit', '-qm', 'old worker change'])
+    const oldHead = execFileSync('git', ['-C', initial.dir, 'rev-parse', 'HEAD']).toString().trim()
+    rmSync(initial.dir, { recursive: true, force: true })
+    writeFileSync(join(dir, 'wip.txt'), 'lead WIP')
+    try {
+      const t = setup(prepareWorktree)
+      const out = await t.leadTools.call('room_spawn', { tag: 'reusedbranch', task: 'resume' })
+      expect(out).not.toContain('carried your')
+      expect(out).toContain('1 uncommitted change in your clone is not in this worktree')
+      expect(t.a.workers.get('reusedbranch')?.base).toBeUndefined()
+      expect(execFileSync('git', ['-C', initial.dir, 'rev-parse', 'HEAD']).toString().trim()).toBe(oldHead)
+      expect(readFileSync(join(initial.dir, 'branch.txt'), 'utf8')).toBe('old worker work')
+      expect(existsSync(join(initial.dir, 'wip.txt'))).toBe(false)
+    } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
   })
 
   it('spawns a worker with the room passed through the environment, records it, and shows it in room_state', async () => {

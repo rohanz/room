@@ -492,6 +492,26 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.roomDoc.ledger({ path: 'app.py' }).some(m => m.type === 'base')).toBe(true)
   })
 
+  it('does not tell a worker on a carried commit to push its branch', async () => {
+    const source = await makeRepo({ 'app.py': 'base\n' })
+    const roomUrl = room()
+    const lead = await start({ room: roomUrl, dir: source, name: 'Alice' })
+    const sharedBase = lead.roomDoc.meta.base
+    const workerDir = path.join(source, '.room', 'workers', 'w')
+    sh(source, ['worktree', 'add', '-qb', 'room/w', workerDir])
+    await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\n')
+    sh(workerDir, ['-c', 'user.name=Room', '-c', 'user.email=room@localhost', 'commit', '-qam', 'room: carried-in uncommitted work from Alice'])
+    const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w' })
+    await waitFor(() => (worker.provider.awareness.getLocalState() as { status: string }).status !== 'syncing')
+    expect((worker.provider.awareness.getLocalState() as { status: string }).status).toBe('worker worktree ahead of room base')
+    expect(worker.roomDoc.meta.base).toBe(sharedBase)
+    await fsp.writeFile(path.join(workerDir, 'worker.txt'), 'worker change\n')
+    sh(workerDir, ['add', 'worker.txt']); sh(workerDir, ['commit', '-qm', 'worker change'])
+    await waitFor(() => worker.base === sh(workerDir, ['rev-parse', 'HEAD']))
+    expect((worker.provider.awareness.getLocalState() as { status: string }).status).toBe('worker worktree ahead of room base')
+    expect(worker.roomDoc.meta.base).toBe(sharedBase)
+  })
+
   it('a clone behind the room base may join, is marked behind, and syncs after pulling', async () => {
     const source = await makeRepo({ 'app.py': 'base\n' })
     const behind = await cloneRepo(source)

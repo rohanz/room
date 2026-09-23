@@ -11,7 +11,7 @@
 import type { NoteMsg, Presence, Worker } from '@room/shared'
 import path from 'node:path'
 import type { Session } from './session.js'
-import { cleanupWorker, pidIsOurWorker, shouldRetire, workerGitFacts, workerLogTail, type SpawnedProcess } from './workers.js'
+import { cleanupWorker, pidIsOurWorker, shouldRetire, workerGitFacts, workerLogTail, workerOperationKey, type SpawnedProcess } from './workers.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -152,30 +152,34 @@ export class Rooms {
       if (w.stopReason === 'lead-session-ended') continue
       if (this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
       if (w.lead !== s.me.name || this.hasHandle(s, w)) continue
-      const exited = w.exitCode !== undefined || !pidIsOurWorker(w.pid, w)
-      if (!exited) continue
-      if (w.status === 'running') {
-        await finishWorkerProcess(s, w, null, Date.now(), undefined, true)
-        continue
-      }
-      const facts = { exited, done: w.status === 'done', dismissed: w.dismissedAt !== undefined || w.status === 'dismissed', merged: false, clean: false, ahead: undefined as number | undefined, uncommitted: undefined as number | undefined }
-      if (!facts.done && !facts.dismissed) continue
-      Object.assign(facts, await workerGitFacts(s.dir, w))
-      const outcome = shouldRetire(facts)
-      // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
-      if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s) || this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
-      const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
-      const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
-      if (facts.clean && w.exitCode === 0) {
-        try { await cleanupWorker(s.dir, w, true) } catch { /* Retain artifacts when cleanup fails. */ }
-      }
-      const retiredAt = Date.now()
-      s.room.retireParticipant(w.name, {
-        name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
-        task: w.task, summary: w.summary ?? '', files, fileCount: files.length, startedAt: w.startedAt,
-        finishedAt: w.finishedAt ?? done?.at ?? retiredAt, retiredAt, outcome,
-        ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
-      })
+      const lock = workerOperationKey(w)
+      if (!this.reserve(lock)) continue
+      try {
+        const exited = w.exitCode !== undefined || !pidIsOurWorker(w.pid, w)
+        if (!exited) continue
+        if (w.status === 'running') {
+          await finishWorkerProcess(s, w, null, Date.now(), undefined, true)
+          continue
+        }
+        const facts = { exited, done: w.status === 'done', dismissed: w.dismissedAt !== undefined || w.status === 'dismissed', merged: false, clean: false, ahead: undefined as number | undefined, uncommitted: undefined as number | undefined }
+        if (!facts.done && !facts.dismissed) continue
+        Object.assign(facts, await workerGitFacts(s.dir, w))
+        const outcome = shouldRetire(facts)
+        // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
+        if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s) || this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
+        const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
+        const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
+        if (facts.clean && w.exitCode === 0) {
+          try { await cleanupWorker(s.dir, w, true) } catch { /* Retain artifacts when cleanup fails. */ }
+        }
+        const retiredAt = Date.now()
+        s.room.retireParticipant(w.name, {
+          name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
+          task: w.task, summary: w.summary ?? '', files, fileCount: files.length, startedAt: w.startedAt,
+          finishedAt: w.finishedAt ?? done?.at ?? retiredAt, retiredAt, outcome,
+          ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
+        })
+      } finally { this.unreserve(lock) }
     }
   }
 

@@ -10,7 +10,7 @@ import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { workerId, workerIdBase, finishWorkerProcess } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
-import { workerBudget, defaultSpawner, prepareWorktree, validTag, workerCommand, workerPrompt, type SpawnedProcess, type WorkerHost } from '../workers.js'
+import { workerBudget, defaultSpawner, prepareWorktree, uncommittedCount, validTag, workerCommand, workerPrompt, type PreparedWorktree, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
@@ -21,14 +21,6 @@ export const defs: ToolDef[] = [
   { name: 'room_spawn', annotations: RW, description: 'Start another agent (set host: claude or codex) on an editing task in its own worktree, in the background: you keep working and are told when it finishes. Use this, not a built-in subagent, when asked for another agent, agents in parallel, or for codex/claude to do part of the work. Finish with room_collect.',
     inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('self-contained task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'host (default: caller host)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('read-only input paths; default .roomlinks; [] disables'), threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default), or local workers bridged to this room' } }, required: ['tag', 'task'] } },
 ]
-
-/** Files a new worker worktree cannot see: Room's own directory is excluded, it is never the lead's work. */
-async function uncommittedCount(dir: string): Promise<number> {
-  try {
-    const out = await git(dir, ['status', '--porcelain', '--untracked-files=normal'])
-    return out.split('\n').filter(line => line.trim() && !/^..\s+"?\.room\//.test(line)).length
-  } catch { return 0 }
-}
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const spawnExplained = new WeakSet<Session>()
@@ -108,6 +100,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
       try {
         let dir: string, branch: string, base: string | undefined, created = false, outside = false
+        let carried: { count: number; commit: string } | undefined, carryFailed = false
         if (typeof a.dir === 'string' && a.dir) {
           dir = path.resolve(a.dir)
           if (!fs.existsSync(dir)) return `error: ${dir} does not exist`
@@ -116,7 +109,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
           try { branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { branch = '?' }
         } else {
-          try { ({ dir, branch, base, created } = await (ctx.worktree ?? prepareWorktree)(s.dir, tag)) }
+          try {
+            const prepared: PreparedWorktree = await (ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name))
+            dir = prepared.dir; branch = prepared.branch; base = prepared.base; created = prepared.created
+            carried = prepared.carried; carryFailed = prepared.carryFailed ?? false
+          }
           catch (e) { return `error: could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}` }
         }
         const owner = s.me.owner ?? s.me.name
@@ -180,14 +177,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`)
         spawnExplained.add(lead)
-        // A worktree is made from HEAD, so the lead's uncommitted work is not in it. Say so once: it decides
-        // whether the human commits first or gives the worker a task that does not build on that work.
-        if (created && !outside && !wipNoted.has(lead)) {
-          const pending = await uncommittedCount(lead.dir)
+        if (carried && !wipNoted.has(lead)) {
+          wipNoted.add(lead)
+          out.push(`carried your ${carried.count} uncommitted change${carried.count === 1 ? '' : 's'} into its worktree (commit ${carried.commit.slice(0, 10)})`)
+        } else if (created && !outside && (carryFailed || !wipNoted.has(lead)) && !carried) {
+          const pending = await uncommittedCount(lead.dir).catch(() => 0)
           if (pending) {
-            wipNoted.add(lead)
+            if (!carryFailed) wipNoted.add(lead)
             out.push(`note: ${pending} uncommitted change${pending === 1 ? '' : 's'} in your clone ${pending === 1 ? 'is' : 'are'} not in this worktree, which starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}. Commit them (locally is enough) first if the task builds on them.`)
-          }
+          } else if (carryFailed) out.push(`note: could not carry your uncommitted changes; this worktree starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}.`)
         }
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         return out.join('\n')

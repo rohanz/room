@@ -45,6 +45,9 @@ export interface RetirementFacts {
   uncommitted?: number
 }
 
+/** One worktree cannot be collected, discarded and auto-retired at the same time. */
+export function workerOperationKey(w: Pick<Worker, 'dir'>): string { return 'worker:' + path.resolve(w.dir) }
+
 /** Explicit dismissal also retires failures, but never a process that is still running. */
 export function shouldRetire(facts: RetirementFacts): RetiredWorker['outcome'] | undefined {
   if (!facts.exited) return undefined
@@ -63,9 +66,10 @@ export async function workerGitFacts(leadDir: string, w: Worker): Promise<Pick<R
     facts.clean = facts.uncommitted === 0
     const head = (await git(leadDir, ['rev-parse', 'HEAD'])).trim()
     const branch = `refs/heads/${w.branch}`
-    const count = (await git(w.dir, ['rev-list', '--count', `${head}..${branch}`])).trim()
+    const exclusions = [`^${head}`, ...(w.base ? [`^${w.base}`] : [])]
+    const count = (await git(w.dir, ['rev-list', '--count', branch, ...exclusions])).trim()
     // Also retain detached worktree commits that are not on the recorded branch.
-    const worktreeCount = (await git(w.dir, ['rev-list', '--count', `${head}..HEAD`])).trim()
+    const worktreeCount = (await git(w.dir, ['rev-list', '--count', 'HEAD', ...exclusions])).trim()
     if (/^\d+$/.test(count) && /^\d+$/.test(worktreeCount)) facts.ahead = Math.max(Number(count), Number(worktreeCount))
     if (w.base && facts.ahead === 0) {
       const own = (await git(w.dir, ['rev-list', '--count', `${w.base}..${branch}`])).trim()
@@ -96,6 +100,12 @@ export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 
 export const WORKERS_DIR = path.join('.room', 'workers')
 export const DEFAULT_MAX_WORKERS = 8
+
+/** Porcelain entries missing from a fresh worktree; Room's own directory is excluded. */
+export async function uncommittedCount(dir: string): Promise<number> {
+  const out = await git(dir, ['status', '--porcelain', '--untracked-files=normal'])
+  return out.split('\n').filter(line => line.trim() && !/^..\s+"?\.room\//.test(line)).length
+}
 
 let warnedMissingNice = false
 /** nice execs the command, preserving the pid used for liveness and dismissal. */
@@ -218,8 +228,17 @@ export function workerLogTail(logFile: string): string {
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
+export interface PreparedWorktree {
+  dir: string
+  branch: string
+  created: boolean
+  base?: string
+  carried?: { count: number; commit: string }
+  carryFailed?: boolean
+}
+
 /** A worktree for the worker, created from the lead's HEAD on branch room/<tag>; reused if it already exists. */
-export async function prepareWorktree(repoDir: string, tag: string): Promise<{ dir: string; branch: string; created: boolean; base?: string }> {
+export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead'): Promise<PreparedWorktree> {
   const dir = path.join(repoDir, WORKERS_DIR, tag)
   const branch = `room/${tag}`
   if (fs.existsSync(path.join(dir, '.git'))) return { dir, branch, created: false }
@@ -231,7 +250,38 @@ export async function prepareWorktree(repoDir: string, tag: string): Promise<{ d
   try { await git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); hasBranch = true } catch { /* new branch */ }
   const base = hasBranch ? undefined : (await git(repoDir, ['rev-parse', 'HEAD'])).trim()
   await git(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, base!])
-  return { dir, branch, created: true, ...(base ? { base } : {}) }
+  if (!base) return { dir, branch, created: true }
+  try {
+    const count = await uncommittedCount(repoDir)
+    if (!count) return { dir, branch, created: true, base }
+    const patch = await git(repoDir, ['diff', '--binary', 'HEAD', '--', '.', ':(exclude).room'])
+    if (patch) execFileSync('git', ['apply', '--index', '--binary'], { cwd: dir, input: patch, maxBuffer: 64 * 1024 * 1024 })
+    const untracked = (await git(repoDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ':(exclude).room'])).split('\0').filter(Boolean)
+    for (const rel of untracked) {
+      const source = path.join(repoDir, rel), target = path.join(dir, rel)
+      const stat = fs.lstatSync(source)
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      if (stat.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(source), target)
+      else {
+        fs.copyFileSync(source, target)
+        fs.chmodSync(target, stat.mode)
+      }
+    }
+    await git(dir, ['add', '-A', '--', '.', ':(exclude).room'])
+    await git(dir, ['-c', 'user.name=Room', '-c', 'user.email=room@localhost', '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', `room: carried-in uncommitted work from ${leadName}`])
+    const commit = (await git(dir, ['rev-parse', 'HEAD'])).trim()
+    return { dir, branch, created: true, base: commit, carried: { count, commit } }
+  } catch {
+    try {
+      await git(dir, ['reset', '--hard', base])
+      await git(dir, ['clean', '-fdx'])
+    } catch {
+      await git(repoDir, ['worktree', 'remove', '--force', dir])
+      await git(repoDir, ['branch', '-D', branch])
+      await git(repoDir, ['worktree', 'add', '-q', '-b', branch, dir, base])
+    }
+    return { dir, branch, created: true, base, carryFailed: true }
+  }
 }
 
 /**

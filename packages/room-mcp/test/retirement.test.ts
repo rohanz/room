@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, type Worker } from '@room/shared'
-import { shouldRetire, workerGitFacts, prepareWorktree, type RetirementFacts } from '../src/workers.js'
+import { shouldRetire, workerGitFacts, prepareWorktree, saveDiscardPatch, type RetirementFacts } from '../src/workers.js'
 import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
+import { handlers as collectHandlers } from '../src/tools/collect.js'
+import type { HandlerState } from '../src/tools/context.js'
 
 const facts: RetirementFacts = { exited: true, done: true, dismissed: false, merged: false, clean: false, ahead: 1 }
 const worker = (dir: string): Worker => ({ id: 'lead/w#1', name: 'lead+w', tag: 'w', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/w', pid: -1, startedAt: 1, status: 'done', summary: 'done', exitCode: 0 })
@@ -47,6 +49,70 @@ describe('shouldRetire', () => {
 })
 
 describe('git facts and lead evaluation', () => {
+  it('retires a carried worker that made no own changes and removes its worktree', async () => {
+    const { dir, git } = repo(), r = registry(dir)
+    writeFileSync(join(dir, 'a'), 'lead WIP')
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    expect(prepared.carried?.commit).toBe(prepared.base)
+    const w = { ...worker(prepared.dir), base: prepared.base }
+    expect(await workerGitFacts(dir, w)).toEqual({ merged: false, clean: true, ahead: 0, uncommitted: 0 })
+    r.room.setWorker(w)
+    await r.rooms.retireWorkers()
+    expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'clean' }])
+    expect(existsSync(prepared.dir)).toBe(false)
+    expect(git('rev-parse', 'HEAD')).not.toBe(prepared.base)
+    r.close()
+  })
+
+  it('saves only worker edits in a discard patch after a real carried commit', async () => {
+    const { dir } = repo()
+    writeFileSync(join(dir, 'a'), 'lead WIP')
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base }
+    expect(await saveDiscardPatch(dir, w)).toBeUndefined()
+    writeFileSync(join(w.dir, 'worker.txt'), 'worker output')
+    const patch = await saveDiscardPatch(dir, w)
+    expect(patch).toBeDefined()
+    const text = readFileSync(patch!, 'utf8')
+    expect(text).toContain('worker output')
+    expect(text).not.toContain('lead WIP')
+    expect(text).not.toContain('diff --git a/a b/a')
+  })
+
+  it('counts worker commits after the carried base and recognizes their merge', async () => {
+    const { dir, git } = repo()
+    writeFileSync(join(dir, 'a'), 'lead WIP')
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base }
+    writeFileSync(join(w.dir, 'worker.txt'), 'worker output')
+    execFileSync('git', ['-C', w.dir, 'add', 'worker.txt'])
+    execFileSync('git', ['-C', w.dir, 'commit', '-qm', 'worker output'])
+    expect(await workerGitFacts(dir, w)).toEqual({ merged: false, clean: true, ahead: 1, uncommitted: 0 })
+    git('restore', 'a')
+    git('merge', '--ff-only', w.branch)
+    expect(await workerGitFacts(dir, w)).toEqual({ merged: true, clean: true, ahead: 0, uncommitted: 0 })
+  })
+
+  it('does not retire a carried no-op worker while collection waits for its exit', async () => {
+    const { dir } = repo(), r = registry(dir)
+    appendFileSync(join(dir, '.git', 'info', 'exclude'), '.room/\n')
+    writeFileSync(join(dir, 'a'), 'lead WIP')
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base }
+    r.room.setWorker(w)
+    let alive = true
+    const state = {
+      S: () => r.s, rooms: r.rooms, now: Date.now, workerAlive: () => alive,
+      ctx: { sleep: async () => { await r.rooms.retireWorkers(r.s); alive = false } },
+    } as unknown as HandlerState
+    const reply = await collectHandlers(state).room_collect({})
+    expect(reply).toContain('Changes from w: already present. Nothing committed or staged.')
+    expect(reply).toContain('cleaned up w')
+    expect(r.room.retiredWorkers()).toMatchObject([{ files: [], fileCount: 0 }])
+    expect(existsSync(w.dir)).toBe(false)
+    r.close()
+  })
+
   it('retires a merged worker whose only untracked path is a Room-linked input', async () => {
     const { dir, git } = repo(), r = registry(dir)
     writeFileSync(join(dir, '.gitignore'), '.room/\ndata/\n')

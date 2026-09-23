@@ -2,12 +2,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { claimsOverlap } from '@room/shared'
+import { claimsOverlap, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
-import { cleanupWorker, ignoredWorkerArtifacts, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths } from '../workers.js'
+import { cleanupWorker, ignoredWorkerArtifacts, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths, workerOperationKey } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import type { Session } from '../session.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
@@ -54,6 +55,13 @@ async function assertNoOperation(dir: string): Promise<void> {
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
+  const reserveWorker = async (s: Session, w: Worker): Promise<string | undefined> => {
+    const lock = workerOperationKey(w)
+    if (state.rooms.reserve(lock)) return lock
+    await state.rooms.retireWorkers(s)
+    const current = s.room.workers.get(w.tag)
+    return current && current.id === w.id && current.startedAt === w.startedAt && state.rooms.reserve(lock) ? lock : undefined
+  }
   return { async room_collect(a) {
     const { rooms } = state, lead = state.S()
     const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'paths', 'force'].includes(key))
@@ -67,8 +75,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = rooms.holdingWorker(a.tag as string, lead)
       const w = s.room.workers.get(a.tag as string)
       if (!w || w.lead !== s.me.name) return 'error: no worker ' + a.tag + ' owned by you'
-      const lock = 'discard:' + s.roomName + ':' + w.name
-      if (!rooms.reserve(lock)) return 'error: this worker is already being discarded'
+      const intent = 'discard:' + s.roomName + ':' + w.name
+      if (!rooms.reserve(intent)) return 'error: this worker is already being discarded'
+      const lock = await reserveWorker(s, w)
+      if (!lock) { rooms.unreserve(intent); return 'error: this worker is already being handled or retired' }
       try {
         if (state.workerAlive(s, w) || w.status === 'running') {
           const how = state.dismissWorker(s, w, 'discarded by the lead')
@@ -102,7 +112,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         })
         return 'discarded ' + w.tag + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '')
       } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
-      finally { rooms.unreserve(lock) }
+      finally { rooms.unreserve(lock); rooms.unreserve(intent) }
     }
     const sessions = a.tag ? [rooms.holdingWorker(a.tag as string, lead)] : rooms.all()
     const candidates = sessions.flatMap(s => [...s.room.workers.values()].filter(w => w.lead === s.me.name && (!a.tag || w.tag === a.tag)).map(w => ({ s, w })))
@@ -112,10 +122,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const selected: typeof candidates = []
     const lock = 'collect:' + fs.realpathSync(lead.dir)
     if (!rooms.reserve(lock)) return 'error: another collection is in progress'
+    const workerLocks: string[] = []
     try {
       for (const item of candidates) {
         const { s } = item; let { w } = item
         if (w.status !== 'done') { out.push('skipped ' + w.tag + ': ' + w.status); continue }
+        const workerLock = await reserveWorker(s, w)
+        if (!workerLock) continue
+        workerLocks.push(workerLock)
         const now = state.now ?? Date.now
         const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
         const deadline = now() + 15_000
@@ -250,6 +264,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       return out.join('\n')
     } catch (e) { return [...out, 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n') }
-    finally { rooms.unreserve(lock) }
+    finally { for (const workerLock of workerLocks) rooms.unreserve(workerLock); rooms.unreserve(lock) }
   } }
 }
