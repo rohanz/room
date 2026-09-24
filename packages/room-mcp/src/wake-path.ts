@@ -121,10 +121,12 @@ export class SocketWakeRouter {
     const items = this.pending.splice(0)
     if (!items.length || this.closed) return
     const count = items.length
-    const phrases = items.slice(0, 5).map(w => `${(w.meta.from ?? 'someone').replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(w.meta.type)}`)
-    if (count > 5) phrases.push(`${count - 5} more`)
+    const shown = count > 5 ? 4 : 5
+    const phrases = items.slice(0, shown).map(w => `${(w.meta.from ?? 'someone').replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(w.meta.type)}`)
+    if (count > shown) phrases.push(`${count - shown} more`)
     // Sequence makes consecutive bursts distinct even when sender and kind are unchanged.
-    const content = `[room] ${count} ${count === 1 ? 'thing needs' : 'things need'} you: ${phrases.join('; ')}. Check the room. (#${++this.sequence})`
+    const collectHint = items.some(w => w.meta.type === 'done') ? ' (room_collect brings in finished workers)' : ''
+    const content = `[room] ${count} ${count === 1 ? 'thing needs' : 'things need'} you: ${phrases.join('; ')}. Use the room_state tool to read them${collectHint}. (#${++this.sequence})`
     const env = this.o.env ?? process.env
     try { await (this.o.post ?? postSocketWake)(env.CLAUDE_CODE_MESSAGING_SOCKET!, env.CLAUDE_CODE_MESSAGING_TOKEN, content) }
     catch (error) {

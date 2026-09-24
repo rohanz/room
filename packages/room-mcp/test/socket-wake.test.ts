@@ -34,16 +34,26 @@ describe('Claude socket wake', () => {
       const user = JSON.parse(lines[0][1])
       expect(user.type).toBe('user')
       expect(user.message.role).toBe('user')
-      expect(user.message.content).toContain('2 things need you')
-      expect(user.message.content).toContain('rohanz asked a question')
-      expect(user.message.content).toContain('cat sent a note')
+      expect(user.message.content).toBe('[room] 2 things need you: rohanz asked a question; cat sent a note. Use the room_state tool to read them. (#1)')
       expect(user.message.content).not.toContain('secret body')
       expect(notify).not.toHaveBeenCalled()
       router.push(wake(makeMsg('c', 'rohanz')))
       await pause()
       expect(lines).toHaveLength(2)
-      expect(lines[1][1]).not.toBe(lines[0][1])
+      expect(JSON.parse(lines[1][1]).message.content).toBe('[room] 1 thing needs you: rohanz asked a question. Use the room_state tool to read them. (#2)')
     } finally { router.close(); await new Promise<void>(resolve => server.close(() => resolve())); fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('mentions room_collect only for finished workers and limits the summary to five phrases', async () => {
+    const post = vi.fn(async () => {})
+    const router = new SocketWakeRouter({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, notify: vi.fn(async () => {}), post, host: 'claude', windowMs: 10 })
+    try {
+      for (let i = 0; i < 6; i++) router.push({ content: 'secret body must stay out of socket text', meta: { from: `worker${i}`, type: i === 5 ? 'done' : 'question' } })
+      await pause()
+      expect(post).toHaveBeenCalledOnce()
+      expect(post.mock.calls[0][2]).toBe('[room] 6 things need you: worker0 asked a question; worker1 asked a question; worker2 asked a question; worker3 asked a question; 2 more. Use the room_state tool to read them (room_collect brings in finished workers). (#1)')
+      expect(post.mock.calls[0][2]).not.toContain('secret body')
+    } finally { router.close() }
   })
 
   it('falls back only with the channel flag when the socket is missing', async () => {
@@ -84,7 +94,7 @@ describe('Claude socket wake', () => {
     await pause()
     expect(post).toHaveBeenCalledOnce()
     expect(notify).toHaveBeenCalledOnce()
-    expect(notify.mock.calls[0][0].params.content).toContain('2 things need you')
+    expect(notify.mock.calls[0][0].params.content).toBe('[room] 2 things need you: cat asked a question; dog asked a question. Use the room_state tool to read them. (#1)')
     router.push(wake(makeMsg('c', 'cat')))
     await pause()
     expect(log).toHaveBeenCalledOnce()
