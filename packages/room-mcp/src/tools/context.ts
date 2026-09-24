@@ -79,7 +79,7 @@ export interface HandlerState {
   closeWorkersRoom: () => Promise<void>
   runningWorkers: (s: Session) => { s: Session; w: Worker }[]
   hasCompany: (s: Session) => CompanyState
-  dismissWorker: (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason']) => string
+  dismissWorker: (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason']) => string | Promise<string>
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]
   shareOf: (s: Session, person: string) => ShareLevel
@@ -249,6 +249,10 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const S = (): Session => {
     const s = ctx.getSession()
     if (!s) throw new NotJoined()
+    for (const roomSession of new Set([s, ...rooms.all()])) {
+      const present = new Set(Array.from(roomSession.awareness?.getStates().values() ?? []).flatMap(p => p.user?.name ? [p.user.name] : []))
+      roomSession.room.sweepRetiredWorkers(present)
+    }
     return s
   }
   const isMe = (s: Session, p: { name: string; kind: string }) => p.name === s.me.name && p.kind === s.me.kind
@@ -400,9 +404,18 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     async shutdown() {
       const s = ctx.getSession()
       if (!s) return
-      for (const r of runtime.runningWorkers(s)) { try {
-        runtime.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended')
-      } catch { /* best effort */ } }
+      const stops = runtime.runningWorkers(s).map(async r => {
+        try { await runtime.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended') }
+        catch { /* best effort */ }
+      })
+      if (stops.length) {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        await Promise.race([Promise.all(stops), new Promise<void>(resolve => {
+          timer = setTimeout(resolve, 1800)
+          timer.unref()
+        })])
+        if (timer) clearTimeout(timer)
+      }
       await runtime.closeWorkersRoom().catch(() => {})
       try { runtime.cleanupMine(s, 'session ended') } catch { /* best effort */ }
       rooms.remove(s)

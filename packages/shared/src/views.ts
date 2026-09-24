@@ -192,7 +192,7 @@ export function splitParticipants(input: ParticipantInput & { retiredWorkers: re
   const retiredWorkers = [...input.retiredWorkers].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))
   const retiredNames = new Set(retiredWorkers.map(w => w.name))
   const participants = deriveParticipants(input).filter(p => !retiredNames.has(p.name) || workers.has(p.name))
-  const active = participants.filter(p => p.online || workers.has(p.name))
+  const active = participants.filter(p => p.online || ['running', 'failed'].includes(workers.get(p.name)?.status ?? ''))
   const offlineTeammates = participants.filter(p => !p.online && !workers.has(p.name))
   const leads = new Set([...workers.values()].map(w => w.lead))
   for (const w of retiredWorkers) leads.add(w.lead)
@@ -289,10 +289,10 @@ export function workerLine({ worker: w, processGone = false, lastActive, changed
 
 export function workerLines(inputs: readonly WorkerLineInput[], options: { all?: boolean; retiredWorkers?: readonly RetiredWorker[] } = {}): string[] {
   const retired = options.retiredWorkers ?? []
-  if (!inputs.length && !retired.length) return []
+  if (!inputs.length && (!options.all || !retired.length)) return []
   const visible = inputs.filter(i => options.all || i.worker.stopReason || i.worker.status === 'running' || i.worker.status === 'failed')
-  const finished = inputs.length - visible.length + retired.length
-  const out = [`workers (${inputs.length + retired.length}):`, ...[...visible]
+  const finished = inputs.length - visible.length
+  const out = [`workers (${inputs.length}):`, ...[...visible]
     .sort((a, b) => a.worker.startedAt - b.worker.startedAt)
     .flatMap(workerLine)]
   if (options.all) {

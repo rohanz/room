@@ -234,7 +234,7 @@ describe('session gating', () => {
       const compact = await t.tools.call('room_state', {})
       expect(compact).toContain('participants (2 active, 1 offline teammate):')
       expect(compact).toContain('failed (codex, failed')
-      expect(compact).toContain('finished: 1 (all=true lists them)')
+      expect(compact).not.toContain('finished:')
       expect(compact).not.toContain('Rohan+old ·')
       expect(compact).not.toContain('archived summary')
       const expanded = await t.tools.call('room_state', { all: true })

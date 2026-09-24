@@ -107,6 +107,13 @@ export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 export const WORKERS_DIR = path.join('.room', 'workers')
 export const DEFAULT_MAX_WORKERS = 8
 
+/** A small, predictable range makes simultaneous worker dev servers independent. */
+export function allocateWorkerPort(used: Iterable<number>): number {
+  const occupied = new Set(used)
+  for (let port = 4400; port <= 4499; port++) if (!occupied.has(port)) return port
+  throw new Error('all worker dev-server ports (4400-4499) are in use')
+}
+
 /** Porcelain entries missing from a fresh worktree; Room's own directory is excluded. */
 export async function uncommittedCount(dir: string): Promise<number> {
   const out = await git(dir, ['status', '--porcelain', '--untracked-files=normal'])
@@ -148,7 +155,7 @@ const WORKER_THREAD_CAPS = ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_
 export function workerProcessEnv(options: {
   threads: number; memGb: number; host: WorkerHost; model?: string; effort?: string
   server: string; room: string; dir: string; tag: string; lead: string; owner: string
-  share: string; gen: number; id: string; token?: string; logDir: string; isWorker: boolean
+  share: string; gen: number; id: string; token?: string; logDir: string; isWorker: boolean; port?: number
 }, inherited: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const caps: Record<string, string> = {}
   for (const key of WORKER_THREAD_CAPS) {
@@ -159,6 +166,7 @@ export function workerProcessEnv(options: {
     ...caps, ROOM_WORKER_THREADS: String(options.threads), ROOM_WORKER_MEM_GB: String(options.memGb),
     ROOM_WORKER_HOST: options.host, ...(options.model ? { ROOM_WORKER_MODEL: options.model } : {}), ...(options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {}),
     ROOM_SERVER: options.server, ROOM_ROOM: options.room, ROOM_DIR: options.dir, PWD: options.dir,
+    ...(options.port ? { PORT: String(options.port) } : {}),
     ROOM_TAG: options.tag, ROOM_LEAD: options.lead, ROOM_OWNER: options.owner, ROOM_SHARE: options.share,
     ROOM_GEN: String(options.gen), ROOM_WORKER_ID: options.id,
     ...(options.token ? { ROOM_TOKEN: options.token } : {}),
@@ -173,15 +181,17 @@ export function validTag(tag: unknown): string | undefined {
 }
 
 /** The fixed preamble every worker gets, then the task. */
-export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; link?: string[]; carriedPaths?: string[] }): string {
+export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; port?: number; link?: string[]; carriedPaths?: string[] }): string {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
     `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process. Your lead can resume this session for a later follow-up while the worktree remains.`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     `If you spawn workers, collect them before your own room_done.`,
+    `Report progress in room_done; send notes only when the lead must know before you finish.`,
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
+      ...(context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : []),
       ...(context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(', ')}. Do not modify these paths or their contents; write outputs elsewhere.`] : []),
       ...(context.carriedPaths?.length ? [`Files carried from the lead's uncommitted work belong to the lead; coordinate with the lead before editing these where your task needs to: ${context.carriedPaths.slice(0, 20).join(', ')}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ''}.`] : []),
     ] : []),
@@ -537,7 +547,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
  * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG, ROOM_LEAD,
  * ROOM_OWNER, ROOM_SHARE, ROOM_GEN, ROOM_LOG_FILE and, when the lead joined with one, ROOM_TOKEN).
  */
-export const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND'] as const
+export const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
 /** The environment a worker process starts with: the lead's, minus LEAD_ONLY_ENV, plus the spec's variables. */
 export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
@@ -545,11 +555,10 @@ export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>
   return { ...out, ...extra }
 }
 
-/** Signal a pid's process group, else the pid itself; true when either signal was delivered. */
-export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM'): boolean {
-  // Only ever signal a real pid: kill(-0) would hit our own process group.
-  if (!pid || pid <= 0) return false
-  try { process.kill(-pid, signal); return true } catch { /* not a group leader, or gone */ }
+/** Signal only the worker host pid. Its group may also contain processes outside the worktree. */
+export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', worktreeDir?: string, list: () => CwdProcess[] = listCwdProcesses): boolean {
+  if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false
+  if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false
   try { process.kill(pid, signal); return true } catch { return false }
 }
 
@@ -579,7 +588,7 @@ export const defaultSpawner: Spawner = spec => {
     onExit: cb => { child.once('close', code => { try { fs.closeSync(fd) } catch { /* closed */ } cb(code) }) },
     onError: cb => { child.once('error', err => { try { fs.closeSync(fd) } catch { /* closed */ } cb(err) }) },
     onSessionId: cb => { sessionIdCallback = cb; if (sessionId) cb(sessionId) },
-    kill: () => signalWorker(child.pid ?? -1),
+    kill: () => signalWorker(child.pid ?? -1, 'SIGTERM', spec.cwd),
   }
 }
 
@@ -614,8 +623,83 @@ export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string;
   return info.command.includes(w.tag) || info.command.includes(w.dir)
 }
 
+export interface CwdProcess { pid: number; cwd: string; command: string }
+
+export function pidHasWorkerCwd(pid: number, dir: string, list: () => CwdProcess[] = listCwdProcesses): boolean {
+  const resolved = (p: string) => { try { return fs.realpathSync(p) } catch { return path.resolve(p) } }
+  const root = resolved(dir)
+  return list().some(p => p.pid === pid && (resolved(p.cwd) === root || resolved(p.cwd).startsWith(root + path.sep)))
+}
+
+function processName(pid: number): string {
+  try { return path.basename(execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 }).trim()) || 'process' }
+  catch { return 'process' }
+}
+
+/** List processes by cwd. No process group is inferred: a dev server may have reparented itself. */
+export function listCwdProcesses(platform: NodeJS.Platform = process.platform): CwdProcess[] {
+  const result: CwdProcess[] = []
+  if (platform === 'linux') {
+    for (const entry of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(entry)) continue
+      const pid = Number(entry)
+      try {
+        const cwd = fs.realpathSync(`/proc/${pid}/cwd`)
+        result.push({ pid, cwd, command: '' })
+      } catch { /* process exited or is inaccessible */ }
+    }
+  } else if (platform === 'darwin') {
+    const output = execFileSync('lsof', ['-a', '-d', 'cwd', '-Fpn'], { encoding: 'utf8', timeout: 5000, maxBuffer: 8 * 1024 * 1024 })
+    let pid = 0
+    for (const line of output.split('\n')) {
+      if (line.startsWith('p')) pid = Number(line.slice(1))
+      else if (line.startsWith('n') && pid > 0) result.push({ pid, cwd: line.slice(1), command: '' })
+    }
+  }
+  return result
+}
+
+/** Signal only a process with a cwd at or below the resolved worktree root. */
+export async function terminateWorktreeProcesses(dir: string, options: {
+  list?: () => CwdProcess[]
+  signal?: (pid: number, signal: NodeJS.Signals) => void
+  alive?: (pid: number) => boolean
+  sleep?: (ms: number) => Promise<void>
+  protectedPids?: number[]
+} = {}): Promise<string[]> {
+  const root = fs.existsSync(dir) ? fs.realpathSync(dir) : path.resolve(dir)
+  const protectedPids = new Set([process.pid, process.ppid, ...(options.protectedPids ?? [])])
+  const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig))
+  const alive = options.alive ?? pidAlive
+  const sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
+  const resolved = (cwd: string) => { try { return fs.realpathSync(cwd) } catch { return path.resolve(cwd) } }
+  const list = options.list ?? listCwdProcesses
+  const insideWorktree = (p: CwdProcess) => {
+    const cwd = resolved(p.cwd)
+    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path.sep))
+  }
+  const targets = list().filter(insideWorktree)
+  if (!targets.length) return []
+  const beforeTerm = new Set(list().filter(insideWorktree).map(p => p.pid))
+  const named: string[] = []
+  for (const p of targets) {
+    if (!beforeTerm.has(p.pid)) continue
+    const name = p.command || processName(p.pid)
+    try { signal(p.pid, 'SIGTERM'); named.push(`${name} (pid ${p.pid})`) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+  }
+  if (!named.length) return []
+  await sleep(300)
+  const stillInside = new Set(list().filter(insideWorktree).map(p => p.pid))
+  for (const p of targets) if (stillInside.has(p.pid) && alive(p.pid)) {
+    try { signal(p.pid, 'SIGKILL') }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+  }
+  return named
+}
+
 /** Remove only owned Room worktrees; failures require explicit discard. */
-export async function cleanupWorker(leadDir: string, w: Worker, collected = false, discarded = false): Promise<boolean> {
+export async function cleanupWorker(leadDir: string, w: Worker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}): Promise<boolean> {
   if (w.branch !== 'room/' + w.tag || (!discarded && (w.status === 'failed' || w.exitCode !== 0))) return false
   const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
   if (await common(leadDir) !== await common(w.dir) || fs.realpathSync(leadDir) === fs.realpathSync(w.dir)) return false
@@ -631,6 +715,7 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
   for (const ref of [carryRef(w.tag), carriedUntrackedRef(w.tag)]) {
     try { refs.set(ref, (await git(leadDir, ['rev-parse', '--verify', ref])).trim()) } catch { /* absent on older workers */ }
   }
+  terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions))
   // A lead may have discarded a child earlier. Its recovery patches must outlive this worktree.
   const nestedPatches = path.join(w.dir, '.room', 'discarded')
   if (fs.existsSync(nestedPatches)) {

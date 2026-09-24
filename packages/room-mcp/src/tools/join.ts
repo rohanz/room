@@ -215,14 +215,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = S()
       const running = runningWorkers(s)
       if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map(r => r.w.tag).join(', ')}. Wait for them (room_wait), room_collect(discard=true) them, or room_leave force=true to dismiss them all and leave.`
-      for (const r of running) dismissWorker(r.s, r.w, 'the lead left the room')
+      const stopped = await Promise.all(running.map(r => dismissWorker(r.s, r.w, 'the lead left the room')))
       await closeWorkersRoom()
       const released = cleanupMine(s, 'left the room')
       rooms.remove(s)
       await doLeave(s)
       let forgot = ''
       if (a.forget === true) { const had = await clearChoice(s.dir).catch(() => false); forgot = had ? '; forgot the remembered room choice for this clone (next session starts local)' : '; nothing was remembered for this clone' }
-      return `left ${s.roomName}; released ${released} claim(s)${forgot}`
+      return `left ${s.roomName}; released ${released} claim(s)${stopped.length ? '; stopped workers: ' + stopped.join('; ') : ''}${forgot}`
     },
     async room_close(a) {
       const s = S()

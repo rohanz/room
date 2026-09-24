@@ -175,6 +175,9 @@ export class Rooms {
   }
 
   private async evaluateRetirement(s: Session): Promise<void> {
+    // Older releases archived workers without necessarily withdrawing their live overlays.
+    const present = new Set(Array.from(s.awareness?.getStates().values() ?? []).flatMap(p => p.user?.name ? [p.user.name] : []))
+    s.room.sweepRetiredWorkers(present)
     for (const w of s.room.workers.values()) {
       // The next lead must be able to explain and resume this intentionally stopped work.
       if (w.stopReason === 'lead-session-ended') continue
@@ -188,6 +191,7 @@ export class Rooms {
       try {
         const exited = w.exitCode !== undefined || !pidIsOurWorker(w.pid, w)
         if (!exited) continue
+        if (w.status !== 'done') s.room.clearWorkerCoordination(w.name)
         if (w.status === 'running') {
           await finishWorkerProcess(s, w, null, Date.now(), undefined, true)
           continue
@@ -338,7 +342,7 @@ export class Rooms {
       let launchReserved = true
       try {
         const { server, isWorker } = workerOrigin(s)
-        const env = workerProcessEnv({ ...budget, host: w.host, model: w.model, effort: w.effort, server,
+        const env = workerProcessEnv({ ...budget, host: w.host, model: w.model, effort: w.effort, port: w.port, server,
           room: s.roomName, dir: w.dir, tag: w.tag, lead: w.lead, owner: s.me.owner ?? s.me.name,
           share: w.share ?? 'intent', gen: w.gen ?? 1, id,
           token: s.local ? undefined : s.token, logDir: s.dir, isWorker })

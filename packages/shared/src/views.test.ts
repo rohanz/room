@@ -100,7 +100,7 @@ it('splits active workers, offline teammates and retired history with shared lea
   const retired = { name: 'lead+old', tag: 'old', lead: 'lead', host: 'codex' as const, task: 'task', summary: 'shipped', files: ['a.ts'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' as const }
   const input = {
     presences: [{ user: { name: 'lead', kind: 'agent' as const, color: '#000' } }, { user: { name: retired.name, kind: 'agent' as const, color: '#000' } }],
-    workers: [worker, { ...worker, name: 'lead+failed', tag: 'failed', status: 'failed' as const }],
+    workers: [worker, { ...worker, name: 'lead+failed', tag: 'failed', status: 'failed' as const }, { ...worker, name: 'lead+done', tag: 'done', status: 'done' as const }],
     scopes: [], overlayPeople: ['offline', retired.name], changesByPerson: new Map(), claims: [], retiredWorkers: [retired],
   }
   const groups = splitParticipants(input)
@@ -134,14 +134,16 @@ it('keeps running and failed worker details while compacting finished history', 
   const compact = workerLines(inputs, { retiredWorkers: [retired] }).join('\n')
   expect(compact).toContain('running (codex, running')
   expect(compact).toContain('failed (codex, failed')
-  expect(compact).toContain('finished: 3 (all=true lists them)')
+  expect(compact).toContain('workers (4):')
+  expect(compact).toContain('finished: 2 (all=true lists them)')
   expect(compact).not.toContain('done (codex')
   expect(compact).not.toContain('shipped')
   const expanded = workerLines(inputs, { all: true, retiredWorkers: [retired] }).join('\n')
   expect(expanded).toContain('done (codex, done')
   expect(expanded).toContain('old (merged, actual-model): shipped · 60 files')
   expect(expanded).not.toContain('all=true')
-  expect(workerLines([], { retiredWorkers: [retired] })).toEqual(['workers (1):', '  finished: 1 (all=true lists them)'])
+  expect(workerLines([], { retiredWorkers: [retired] })).toEqual([])
+  expect(workerLines([], { all: true, retiredWorkers: [retired] })).toContain('workers (0):')
 })
 
 it('uses consistent activity wording at the action and worker thresholds', async () => {

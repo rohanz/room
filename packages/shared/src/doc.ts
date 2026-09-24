@@ -98,7 +98,13 @@ export class RoomDoc {
   get ledgerArchives(): Y.Map<LedgerArchive> { return this.doc.getMap<LedgerArchive>('ledger') }
   /** Workers dispatched into this room by leads (room_spawn), keyed by tag. */
   get workers(): Y.Map<Worker> { return this.doc.getMap<Worker>('workers') }
-  setWorker(w: Worker): void { this.workers.set(w.tag, w) }
+  setWorker(w: Worker): void {
+    this.doc.transact(() => {
+      const prior = this.workers.get(w.tag)
+      if (prior && (prior.id !== w.id || prior.startedAt !== w.startedAt)) this.clearWorkerCoordination(prior.name)
+      this.workers.set(w.tag, w)
+    })
+  }
   /** Patch the record under `tag`; with `id`, only if that is still the record's identity (an older spawn must not touch a newer one). */
   updateWorker(tag: string, patch: Partial<Worker>, id?: string): Worker | undefined {
     const w = this.workers.get(tag)
@@ -111,6 +117,34 @@ export class RoomDoc {
   workerById(id: string): Worker | undefined { for (const w of this.workers.values()) if (w.id === id) return w; return undefined }
   retiredWorkers(): RetiredWorker[] { return this.doc.getArray<RetiredWorker>('retiredWorkers').toArray() }
 
+  /** Repair older archives that left live records behind; this is document-only and cheap for room_state. */
+  sweepRetiredWorkers(present: ReadonlySet<string> = new Set()): number {
+    const claims = new Set([...this.claims.values()].map(c => c.by))
+    let swept = 0
+    for (const retired of this.retiredWorkers()) {
+      if (present.has(retired.name)) continue
+      const current = this.workerOf(retired.name)
+      if (current && (current.startedAt !== retired.startedAt || current.lead !== retired.lead)) continue
+      if (!current && !this.overlays.has(retired.name) && !this.deleted.has(retired.name) && !claims.has(retired.name) && !this.scopes.has(retired.name)) continue
+      this.retireParticipant(retired.name, retired)
+      swept++
+    }
+    return swept
+  }
+
+  /** Remove coordination from a worker that can no longer act, including records from older releases. */
+  clearWorkerCoordination(name: string, reason = 'worker stopped'): void {
+    this.doc.transact(() => {
+      for (const claim of this.claims.values()) if (claim.by === name) {
+        this.claims.delete(claim.id)
+        this.post<ReleaseMsg>({ name, kind: claim.byKind }, { type: 'release', claimId: claim.id, path: claim.path, summary: reason })
+      }
+      this.clearOverlays(name)
+      this.scopes.delete(name)
+      this.graphs.delete(name)
+    })
+  }
+
   /** Atomically replace live worker state with a bounded archive entry. */
   retireParticipant(name: string, record: RetiredWorker): void {
     if (record.name !== name) throw new Error('retirement name does not match record')
@@ -118,21 +152,17 @@ export class RoomDoc {
     if (current && (current.startedAt !== record.startedAt || current.lead !== record.lead)) return
     this.doc.transact(() => {
       const archive = this.doc.getArray<RetiredWorker>('retiredWorkers')
-      if (archive.toArray().some(r => r.name === name && r.startedAt === record.startedAt && r.lead === record.lead)) return
-      for (const claim of this.claims.values()) if (claim.by === name) {
-        this.claims.delete(claim.id)
-        this.post<ReleaseMsg>({ name, kind: claim.byKind }, { type: 'release', claimId: claim.id, path: claim.path, summary: 'retired' })
-      }
-      this.clearOverlays(name)
-      this.scopes.delete(name)
-      this.graphs.delete(name)
+      this.clearWorkerCoordination(name, 'retired')
+      const archived = archive.toArray().some(r => r.name === name && r.startedAt === record.startedAt && r.lead === record.lead)
       this.colors.delete(name)
       this.bases.delete(name)
       this.seen(name).clear()
       const worker = this.workers.get(record.tag)
       if (worker?.name === name && worker.startedAt === record.startedAt) this.workers.delete(record.tag)
-      archive.push([compactRetiredWorker(record)])
-      if (archive.length > MAX_RETIRED_WORKERS) archive.delete(0, archive.length - MAX_RETIRED_WORKERS)
+      if (!archived) {
+        archive.push([compactRetiredWorker(record)])
+        if (archive.length > MAX_RETIRED_WORKERS) archive.delete(0, archive.length - MAX_RETIRED_WORKERS)
+      }
     })
   }
   get metaMap(): Y.Map<string | number> { return this.doc.getMap<string | number>('meta') }
