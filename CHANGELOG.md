@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.0
+
+- Worker progress notes stay queued without waking their own lead; questions, finishes, failures, interrupts and human messages still wake. `room_wait` is capped at 100 seconds to avoid Claude Code 2.1.212's automatic backgrounding threshold of 120 seconds. Answers crossing a wait are retained, `inReplyTo` addresses the asker automatically, worker questions surface first with reply instructions, and `room_send` accepts `message` as an alias for `text`.
+- Worker collection ignores regenerable build output. Parallel collects queue with the tag they follow; collect-all skips bad records with reasons, worktree reuse checks the Git common directory, and failed cleanup retains the worktree. `carry: false` starts a worker from HEAD, and spawn warns when its brief names a path absent from the worktree. Recovery patches use the local date. An early tar exit no longer stalls `materializeGitTree` until its timeout.
+- Collect, discard, stop and leave terminate processes running inside a worker worktree and name them. Workers receive distinct `PORT` values in their environment, brief and spawn reply.
+- A cancelled MCP call drops queued work, including a cancelled spawn. Room detects an updated bundle on disk once per session and asks the user to restart. Sessions in the same checkout appear as another session, without duplicate nearby work; concurrent automatic names are reserved atomically, and a named local room is rejoined after restart.
+- Collected, discarded and dead workers lose stale claims and overlays and leave active participant counts; merge preview can read the lead's own intent-only worker from its local worktree.
+- Skipped file logs are counted once per scan, and ignored build and test output is not watched unless it contains tracked files. The symbol graph reindexes only edited paths, reducing idle CPU on busy repositories.
+- `room_preview_merge` without a test command and `room_collect` skip files changed only by the lead; on a 13.7 GB repo, collection fell from 49 seconds to 0.4 seconds and preview from a 5.5 GB memory failure to 0.26 seconds.
+
 ## 0.15.2
 
 - The MCP handshake now reads the plugin release version; both plugin manifests and marketplace metadata are 0.15.2. Private workspace package versions remain separate.

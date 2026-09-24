@@ -16,8 +16,8 @@ While alone, work normally. With company:
    `room_impact` shows consumers before you change an interface.
 3. Answer addressed questions promptly with `room_send(type="answer", inReplyTo=...)`.
    Ask the relevant agent when uncertain; use `room_wait(questionId)` or
-   `room_wait(claimId)` for a dependency. On timeout, continue independent work or wait
-   again; ask your human only if their decision is actually needed. Offline sends are
+   `room_wait(claimId)` for a dependency. Loop short waits, at most 100 seconds each.
+   On timeout, continue independent work or wait again; ask your human only if their decision is actually needed. Offline sends are
    queued, so do not assume delivery.
 4. Inbox interrupts require replanning; notifications need a relevance check. A real
    merge conflict arrives as an addressed notification: coordinate before editing the
@@ -31,7 +31,9 @@ While alone, work normally. With company:
 7. Before finishing, preview the current work of participants touching the same files;
    do not wait for them to finish. Resolve conflicts and run relevant tests, then call
    `room_done(summary)` with one line. Report the result and any unresolved blocker.
-   Never commit or push unless asked; do not ask as a finishing ritual.
+   Never commit or push unless asked; do not ask as a finishing ritual. Workers report
+   progress in `room_done` and send notes only when the lead must know before they finish;
+   notes from your own workers do not wake you.
 
 Room never changes your files unless you ask it to bring in a worker's output; explicit
 exports write the ledger. `room_close` removes all branch rooms of a repo for everyone

@@ -28,6 +28,8 @@ while your workers are running; wait for them or use room_collect(discard=true) 
 Live sharing does not apply other participants' edits; collection and explicit exports can write files.
 
 If it fails:
+- "Room was updated on disk; restart this session to pick up fixes": restart this session to load the
+  updated plugin before retrying.
 - "not logged in": the server uses GitHub login. Preserve the server named in the error:
   call `room_login(server="…")`, show the user the code and URL it returns exactly as written,
   then call `room_login(server="…")` again with the same server to wait for GitHub to confirm.

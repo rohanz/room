@@ -87,6 +87,9 @@ flag. Set it on the lead before spawning workers.
 
 Ask in your own words: "use a couple of subagents for this" or "split this up".
 The agent loads the room-workers skill and handles dispatch, questions, preview and merge.
+Workers report progress when they finish; they send an early note only when their lead
+needs it to continue. Such progress notes do not wake the lead. A wait lasts at most
+100 seconds per call and can be repeated while work continues.
 You do not need to know any tool names. For example:
 
 > Use a couple of subagents for this: add the endpoint in api.ts and its tests in api.test.ts.
@@ -99,6 +102,8 @@ by sending to its full `<lead>+<tag>` name. When it finishes, your session colle
 work as uncommitted edits. For one or two workers, your session can lead directly.
 
 `room_spawn` creates a Git worktree at `.room/workers/<tag>` on branch `room/<tag>`.
+Set `carry: false` to start a worker from HEAD without the lead's uncommitted files.
+Each worker receives its own `PORT` for a development server.
 Eligible tracked uncommitted changes are carried in a commit at the base of the
 worker's `room/<tag>` branch; `git push --all` can publish that tracked work until
 the worker is collected or discarded. Non-ignored untracked files are copied into
@@ -126,7 +131,11 @@ untouched and names the paths and tags involved. Running and failed workers are 
 Collection never commits; when requested, the agent uses plain Git for one normal task commit.
 `mode: "copy"` with `tag` and `paths` collects named artifacts, including ignored files.
 Full successful collection removes the exited worker's temporary files, branch and logs.
-Failed or partial collection preserves recoverable work.
+Regenerable build output such as `dist/`, `.astro/`, `test-results/` and `node_modules/`
+does not keep a collected worktree. Failed or partial collection preserves recoverable work.
+Collect, discard and stop terminate processes running inside a worker worktree.
+Parallel collections queue and name the worker ahead of them; collect-all skips bad
+worker records and reports why.
 
 `discard: true` stops a worker without collecting output, saves tracked and non-ignored changes
 in a recovery patch for one week, then removes the worktree, branch and logs. If the worktree
@@ -244,7 +253,8 @@ claude plugin install room@room
 ```
 
 An update applies to **new sessions**. Start a new session after reinstalling; a session already
-running keeps its original tools and instructions. If a hook definition changes, trust it again
+running keeps its original tools and instructions. Room reports "Room was updated on disk;
+restart this session to pick up fixes" when it detects a newer plugin bundle. If a hook definition changes, trust it again
 when your host asks. `claude plugin validate plugins/room` checks a local manifest.
 
 ## Status

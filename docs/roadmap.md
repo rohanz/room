@@ -295,12 +295,16 @@ fetchable base instead of their local carried commit.
 Python dotted-import narrowing remains weak in carried contract checks. The broader
 orchestration and sharing work above remains open.
 
-### Found in real use, 2026-09-25 (open, next batch)
+### Found in real use, 2026-09-25 (fixed in 0.16.0)
 
-- **Concurrent sessions pick the same automatic name.** Six Codex sessions started at the same instant in
+**Fixed in 0.16.0:** skipped-file log spam, repeated symbol-graph indexing of untouched
+files, and large-repo collection and merge preview without a test command. Preview with
+`run` still needs the full tree.
+
+- **Fixed in 0.16.0: Concurrent sessions pick the same automatic name.** Six Codex sessions started at the same instant in
   linked worktrees of one repo (launched by hand, not by room_spawn) all joined as `rohanz+claude`, so their
   presence and overlays overwrote each other. The auto-tag probe must be race-free (claim the name atomically).
-- **A cancelled tool call keeps running inside Room.** Claude Code's TaskStop on a slow `room_spawn` stopped the
+- **Fixed in 0.16.0: A cancelled tool call keeps running inside Room.** Claude Code's TaskStop on a slow `room_spawn` stopped the
   call in the session, but the Room server still held the queued spawns and would have carried them out once
   unblocked. Room should notice the caller gave up (MCP cancellation) and drop queued work.
 - **Nobody outside a batch can talk to it cleanly.** The owner's session launched a detached batch lead
@@ -310,9 +314,13 @@ orchestration and sharing work above remains open.
   as "rohanz", the lead's own name, and the lead treated it as its own message. Wanted: join a room as an
   observer (distinct name, shares nothing, woken only by messages addressed to it), and a human-kind message
   must never be filtered as the same-named agent's own.
-- **Stale Room code goes unnoticed.** A session started on Wednesday ran pre-fix code until Friday and froze on
+- **Fixed in 0.16.0: Stale Room code goes unnoticed.** A session started on Wednesday ran pre-fix code until Friday and froze on
   the fixed stdin-pipe bug. Room should say once when the plugin on disk is newer than the running server:
-  "Room was updated; restart this session to pick up fixes".
+  "Room was updated on disk; restart this session to pick up fixes".
+
+Still open from this audit: `room_read` of one's own file can select an older
+same-checkout session as publisher; merge preview with `run` still materializes the
+lead's full tree.
 
 ### After 0.14.1 (2026-09-24, open)
 
@@ -359,7 +367,7 @@ orchestration and sharing work above remains open.
 ### From the carry-wip batch (four workers, two Codex and two Claude, 2026-09-23, open)
 
 The busy-worker problem did not recur: every question was acknowledged within about a minute.
-- **Kept worktrees for regenerable build output.** Collect kept three worktrees and listed about 35
+- **Fixed in 0.16.0: Kept worktrees for regenerable build output.** Collect kept three worktrees and listed about 35
   lines of ignored `dist/` and `*.tsbuildinfo` from the workers' own typechecks as artefacts worth
   keeping. The ignored-artefact rule should treat common build output like caches, or ask once.
 - **Recovery patches for work that already landed.** Discarding an already-collected worktree still
@@ -372,11 +380,11 @@ The busy-worker problem did not recur: every question was acknowledged within ab
 
 - **Fixed in 0.15.0: a finished worker can take defects back.** Review findings can reach
   the author's retained session before collection or discard.
-- **Answers did not reach a waiting worker.** The docs worker asked the same question three times;
+- **Fixed in 0.16.0: Answers did not reach a waiting worker.** The docs worker asked the same question three times;
   only a `to`-addressed interrupt note arrived. A done worker whose worktree was later discarded
   showed as "discarded", and a teammate read that as its work being dropped.
-- **Kept worktrees and recovery patches for build output** (above) recurred for every worker.
-- **Unhandled `EPIPE` in preview.** `materializeGitTree` pipes `git archive` into `tar` with no
+- **Fixed in 0.16.0: Kept worktrees and recovery patches for build output** (above) recurred for every worker.
+- **Fixed in 0.16.0: Unhandled `EPIPE` in preview.** `materializeGitTree` pipes `git archive` into `tar` with no
   error handler on `tar`'s stdin; one full-suite run reported it as an unhandled error.
 - **Full-suite runs hung twice when two suites ran on the machine at once** (a lead's and a
   worker's); alone, the suite passes in about a minute.
