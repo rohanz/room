@@ -333,7 +333,12 @@ export async function materializeGitTree(cloneDir: string, ref: string, destinat
     archive.stderr.setEncoding('utf8'); archive.stderr.on('data', chunk => { archiveError += String(chunk).slice(0, 4096) })
     extract.stderr.setEncoding('utf8'); extract.stderr.on('data', chunk => { extractError += String(chunk).slice(0, 4096) })
     archive.on('error', fail); extract.on('error', fail)
-    archive.stdout.on('error', fail); extract.stdin.on('error', fail)
+    const streamError = (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EPIPE') { fail(error); return }
+      archive.stdout.unpipe(extract.stdin)
+      archive.stdout.resume()
+    }
+    archive.stdout.on('error', streamError); extract.stdin.on('error', streamError)
     archive.on('close', code => { archiveCode = code; finish() })
     extract.on('close', code => { extractCode = code; finish() })
     archive.stdout.pipe(extract.stdin)

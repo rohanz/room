@@ -378,7 +378,7 @@ export function persistedWorkerStopReason(repoDir: string, tag: string, workerId
   const common = boundedGitSync(repoDir, ['rev-parse', '--git-common-dir']).toString().trim()
   try {
     const record = JSON.parse(fs.readFileSync(path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json'), 'utf8'))
-    if (workerId && record.stopWorkerId !== workerId) return undefined
+    if (workerId && record.stopWorkerId && record.stopWorkerId !== workerId) return undefined
     return record.stopReason === 'lead-session-ended' ? record.stopReason : undefined
   } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
 }
@@ -390,7 +390,7 @@ export function clearWorkerStopState(repoDir: string, tag: string, workerId?: st
   let record: CarryRecord & { stopReason?: Worker['stopReason']; stopWorkerId?: string }
   try { record = JSON.parse(fs.readFileSync(file, 'utf8')) }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
-  if (workerId && record.stopWorkerId !== workerId) return
+  if (workerId && record.stopWorkerId && record.stopWorkerId !== workerId) return
   delete record.stopReason
   delete record.stopWorkerId
   const tmp = file + '.' + process.pid + '.tmp'

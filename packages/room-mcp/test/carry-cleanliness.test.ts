@@ -102,6 +102,13 @@ describe('carry and discard safety', () => {
     expect(persistedWorkerStopReason(root, 'later')).toBeUndefined()
   })
 
+  it('honours and clears a stop reason recorded without a worker id', () => {
+    persistWorkerStopReason(root, 'legacy', 'lead-session-ended')
+    expect(persistedWorkerStopReason(root, 'legacy', 'worker#1')).toBe('lead-session-ended')
+    clearWorkerStopState(root, 'legacy', 'worker#1')
+    expect(persistedWorkerStopReason(root, 'legacy')).toBeUndefined()
+  })
+
   it('counts worker edits against its recorded base and excludes unchanged carried files', async () => {
     fs.writeFileSync(path.join(root, 'lead.txt'), 'lead input\n')
     const prepared = await prepareWorktree(root, 'owned', 'lead')

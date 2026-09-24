@@ -19,3 +19,19 @@ it('contains an early tar exit while git archive is piping', async () => {
   try { await expect(materializeGitTree(repo, ref, destination)).rejects.toThrow() }
   finally { vi.unstubAllEnvs(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
+
+it('accepts a successful consumer that closes the archive pipe early', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-archive-early-success-'))
+  const bin = path.join(dir, 'bin'), repo = path.join(dir, 'repo'), destination = path.join(dir, 'out')
+  fs.mkdirSync(bin); fs.mkdirSync(repo); fs.mkdirSync(destination)
+  fs.writeFileSync(path.join(bin, 'tar'), '#!/bin/sh\ndd bs=1024 count=1 of=/dev/null 2>/dev/null\nexit 0\n', { mode: 0o755 })
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nif [ "$3" = archive ]; then /usr/bin/git "$@" || :; exit 0; fi\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+  execFileSync('git', ['init', '-q', repo])
+  fs.writeFileSync(path.join(repo, 'large.txt'), 'x'.repeat(1024 * 1024))
+  execFileSync('git', ['-C', repo, 'add', 'large.txt'])
+  execFileSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'fixture'])
+  const ref = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+  vi.stubEnv('PATH', `${bin}:${process.env.PATH}`)
+  try { await expect(materializeGitTree(repo, ref, destination)).resolves.toBeUndefined() }
+  finally { vi.unstubAllEnvs(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
