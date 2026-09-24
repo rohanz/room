@@ -143,7 +143,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (m.type === 'answer') return `answered: ${formatMsg(m)}`
           if (m.type === 'done') return `worker done: ${formatMsg(m)}`
           if (m.type === 'merge-conflict') return formatMsg(m)
-          return `${workersRoom ? 'question from a worker' : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`
+          if (m.type === 'question') return `${workersRoom ? 'question from a worker' : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`
+          return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`
         }
         if (m.priority === 'interrupt' && forMe(x, m)) { received(x, m); return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}` }
       }

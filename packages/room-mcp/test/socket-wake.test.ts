@@ -35,11 +35,46 @@ describe('Claude socket wake', () => {
       expect(post.mock.calls[1][2]).toContain('(#2)')
       router.push(wake(makeMsg('after', 'cat')))
       await Promise.resolve()
-      expect(post).toHaveBeenCalledTimes(3)
-      expect(post.mock.calls[2][2]).toContain('(#3)')
+      expect(post).toHaveBeenCalledTimes(2)
       await vi.advanceTimersByTimeAsync(5_000)
       expect(post).toHaveBeenCalledTimes(3)
+      expect(post.mock.calls[2][2]).toContain('(#3)')
     } finally { router.close(); vi.useRealTimers() }
+  })
+
+  it('summarizes only events still unread at send time and skips an empty follow-up', async () => {
+    vi.useFakeTimers()
+    const seen = new Set<string>()
+    const post = vi.fn(async () => {})
+    const router = new SocketWakeRouter({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, notify: vi.fn(async () => {}), post, host: 'claude', isUnread: w => !seen.has(w.meta.msg_id), windowMs: 10 })
+    try {
+      router.push(wake(makeMsg('first', 'cat')))
+      await Promise.resolve()
+      router.push(wake(makeMsg('answered', 'bridge')))
+      router.push(wake(makeMsg('unread', 'Ada', 'note')))
+      seen.add('answered')
+      await vi.advanceTimersByTimeAsync(10)
+      expect(post).toHaveBeenCalledTimes(2)
+      expect(post.mock.calls[1][2]).toContain('Ada sent a note')
+      expect(post.mock.calls[1][2]).not.toContain('bridge')
+      router.push(wake(makeMsg('read-too', 'bridge')))
+      seen.add('read-too')
+      await vi.advanceTimersByTimeAsync(10)
+      expect(post).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(10)
+      router.push(wake(makeMsg('later', 'Ada')))
+      await Promise.resolve()
+      expect(post).toHaveBeenCalledTimes(3)
+    } finally { router.close(); vi.useRealTimers() }
+  })
+
+  it('sends nothing when an event has already been read before the first post', async () => {
+    const post = vi.fn(async () => {})
+    const router = new SocketWakeRouter({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, notify: vi.fn(async () => {}), post, host: 'claude', isUnread: () => false, windowMs: 1 })
+    router.push(wake(makeMsg('read', 'bridge')))
+    await pause(10)
+    expect(post).not.toHaveBeenCalled()
+    router.close()
   })
 
   it('writes auth then user JSON lines on the immediate and follow-up wakes', async () => {

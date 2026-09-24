@@ -77,6 +77,8 @@ export function postSocketWake(socketPath: string, token: string | undefined, co
 
 export interface SocketWakeOptions extends WakeAvailability {
   notify: (notification: Notification) => Promise<unknown>
+  /** Checked immediately before sending, since room_wait may consume a queued event. */
+  isUnread?: (wake: WakeEvent) => boolean
   windowMs?: number
   post?: typeof postSocketWake
   log?: (line: string) => void
@@ -87,6 +89,7 @@ export class SocketWakeRouter {
   private pending: WakeEvent[] = []
   private timer: ReturnType<typeof setTimeout> | undefined
   private sequence = 0
+  private lastSentAt: number | undefined
   private loggedError = false
   private loggedFlushError = false
   private closed = false
@@ -97,16 +100,17 @@ export class SocketWakeRouter {
     const env = this.o.env ?? process.env
     const selected = mode(env)
     if (selected === 'off') return
-    if (selected === 'channels') { void this.channel(wake); return }
+    if (selected === 'channels') { if (this.unread(wake)) void this.channel(wake); return }
     if (!env.CLAUDE_CODE_MESSAGING_SOCKET) {
-      if (selected === 'auto' && this.channelAdmitted()) void this.channel(wake)
+      if (selected === 'auto' && this.channelAdmitted() && this.unread(wake)) void this.channel(wake)
       return
     }
-    if (!this.timer) {
-      this.pending.push(wake)
-      this.timer = setTimeout(() => { this.timer = undefined; this.flushSafely() }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS)
-      this.flushSafely()
-    } else this.pending.push(wake)
+    this.pending.push(wake)
+    if (this.timer) return
+    const windowMs = this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS
+    const elapsed = this.lastSentAt === undefined ? windowMs : Date.now() - this.lastSentAt
+    this.timer = setTimeout(() => { this.timer = undefined; this.flushSafely() }, elapsed < windowMs ? windowMs - elapsed : windowMs)
+    if (elapsed >= windowMs) this.flushSafely()
   }
 
   close(): void { this.closed = true; if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.pending = [] }
@@ -121,6 +125,8 @@ export class SocketWakeRouter {
     return channelAdmitted(env, this.o.parentArgs ?? claudeParentArgs(), this.o.channel)
   }
 
+  private unread(wake: WakeEvent): boolean { return this.o.isUnread?.(wake) ?? true }
+
   private flushSafely(): void {
     void this.flush().catch(error => {
       if (this.loggedFlushError) return
@@ -130,8 +136,9 @@ export class SocketWakeRouter {
   }
 
   private async flush(): Promise<void> {
-    const items = this.pending.splice(0)
+    const items = this.pending.splice(0).filter(w => this.unread(w))
     if (!items.length || this.closed) return
+    this.lastSentAt = Date.now()
     const count = items.length
     const shown = count > 5 ? 4 : 5
     const phrases = items.slice(0, shown).map(w => `${(w.meta.from ?? 'someone').replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(w.meta.type)}`)

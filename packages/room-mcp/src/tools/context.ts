@@ -21,6 +21,7 @@ export interface ToolDef {
   inputSchema: { type: 'object'; properties: Record<string, unknown>; required?: string[] }
   /** MCP tool annotations; Codex uses these to decide whether a call needs approval. */
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean }
+  _meta?: { 'anthropic/requiresUserInteraction'?: true }
 }
 
 export interface ToolCtx {

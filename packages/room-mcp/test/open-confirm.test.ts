@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createTools } from '../src/tools.js'
+import { createTools, DEFS } from '../src/tools.js'
 vi.mock('@room/roomd', async original => ({
   ...await original<typeof import('@room/roomd')>(),
   startRoomd: vi.fn(async () => { throw new Error('reached daemon') }),
@@ -19,6 +19,11 @@ function server(open: boolean) {
 }
 const args = { where: 'team', room: 'o/r/main', name: 'test' }
 describe('opening requires user consent', () => {
+  it('asks the Claude host to confirm create and close on every call', () => {
+    for (const name of ['room_create', 'room_close']) {
+      expect(DEFS.find(d => d.name === name)?._meta).toEqual({ 'anthropic/requiresUserInteraction': true })
+    }
+  })
   it('offers an unopened team repo without opening it', async () => {
     const { tools, posts } = server(false)
     expect(await tools.call('room_join', args)).toBe('No room for o/r on wss://room-rohanz.fly.dev yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.')

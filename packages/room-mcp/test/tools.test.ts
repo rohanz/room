@@ -610,6 +610,15 @@ describe('inbox', () => {
 })
 
 describe('wait', () => {
+  it('presents an addressed note as a note, without asking for an answer', async () => {
+    const t = setup()
+    t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'FYI: tests passed', to: 'Rohan' } as never)
+    const out = await t.tools.call('room_wait', { timeoutMs: 100 })
+    expect(out).toContain('FYI: tests passed')
+    expect(out).not.toContain('question for you')
+    expect(out).not.toContain('answer it')
+  })
+
   it('returns immediately for a wait-ending unread message already in the inbox', async () => {
     const t = setup()
     const k = { name: 'Kieran', kind: 'agent' as const }
