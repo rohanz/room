@@ -117,6 +117,8 @@ describe('room_collect', () => {
     const reply = await t.call({ tag: 'test' })
     expect(reply).toContain('cleaned up test')
     expect(reply).not.toContain('uncopied ignored artifacts')
+    expect(reply).not.toContain('dist/app.js')
+    expect(fs.existsSync(path.join(lead, 'dist/app.js'))).toBe(false)
     expect(fs.existsSync(worker)).toBe(false)
 
     const other = path.join(root, 'other')
@@ -126,6 +128,33 @@ describe('room_collect', () => {
     const kept = await t.call({ tag: 'other' })
     expect(kept).toContain('kept .venv/')
     expect(fs.existsSync(other)).toBe(true)
+  })
+
+  it('names a worktree server before the worker host exits during collect', async () => {
+    const t = setup()
+    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'file.txt', 'worker edit\n')
+    const child = await startWorktreeProcess()
+    let live = true
+    t.state.workerAlive = () => live
+    t.state.ctx = { sleep: async () => { child.kill('SIGTERM'); live = false } } as never
+    try {
+      const reply = await t.call({ tag: 'test' })
+      expect(reply).toMatch(new RegExp(`stopped processes from test: [^\\n]+ \\(pid ${child.pid}\\)`))
+    } finally { child.kill('SIGKILL') }
+  })
+
+  it('names a worktree server before dismissing the host during discard', async () => {
+    const t = setup('running')
+    put(worker, 'file.txt', 'worker edit\n')
+    const child = await startWorktreeProcess()
+    let live = true
+    t.state.workerAlive = () => live
+    t.state.dismissWorker = async () => { child.kill('SIGTERM'); live = false; return 'worker signalled' }
+    try {
+      const reply = await t.call({ tag: 'test', discard: true })
+      expect(reply).toMatch(new RegExp(`stopped processes: [^\\n]+ \\(pid ${child.pid}\\)`))
+    } finally { child.kill('SIGKILL') }
   })
 
   it('discards ignored output from a retired collected worker with force', async () => {

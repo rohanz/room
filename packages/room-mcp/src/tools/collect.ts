@@ -156,6 +156,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           childResults.push(result)
           if (!result.startsWith('discarded ')) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
         }
+        // A headless host can take its child server down as it exits. Record and stop
+        // worktree processes while they are still observable, before dismissing it.
+        const terminated = await stopOwnedWorktreeProcesses(s.dir, w)
         if (state.workerAlive(s, w) || pidAlive(w.pid)) {
           const how = await state.dismissWorker(s, w, 'discarded by the lead')
           if (s.room.workers.get(w.tag)?.status === 'running' && (state.workerAlive(s, w) || pidAlive(w.pid))) return 'could not discard ' + w.tag + ': ' + how
@@ -168,7 +171,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep(50)
           if (state.workerAlive(s, w)) throw new Error('worker process has not stopped')
         }
-        const terminated = await stopOwnedWorktreeProcesses(s.dir, w)
+        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w))
         const ignored = await ignoredWorkerArtifacts(w)
         if (ignored.length && a.force !== true) {
           return [
@@ -224,6 +227,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!workerLock) continue
         workerLocks.push(workerLock)
         try {
+        if (fs.realpathSync(w.dir) === fs.realpathSync(lead.dir)) throw new Error('worker must have a separate worktree')
+        await assertNoOperation(w.dir)
+        const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
+        if (await common(lead.dir) !== await common(w.dir)) throw new Error('worker is not a worktree of this repository')
+        if (w.branch !== 'room/' + w.tag || (await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) throw new Error('worker must be on branch room/' + w.tag)
+        await git(w.dir, ['ls-files', '-z'])
+        const terminated = await stopOwnedWorktreeProcesses(lead.dir, w)
+        if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
         const now = state.now ?? Date.now
         const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
         const deadline = now() + 15_000
@@ -235,14 +246,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         w = current.status === 'done' ? current : { ...current, status: 'done', exitCode: current.exitCode ?? 0 }
         if (w.exitCode !== undefined && w.exitCode !== 0) { out.push('skipped ' + w.tag + ': failed exit (' + failureReason(w) + ')'); continue }
-        if (fs.realpathSync(w.dir) === fs.realpathSync(lead.dir)) throw new Error('worker must have a separate worktree')
-        await assertNoOperation(w.dir)
-        const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
-        if (await common(lead.dir) !== await common(w.dir)) throw new Error('worker is not a worktree of this repository')
-        if (w.branch !== 'room/' + w.tag || (await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) throw new Error('worker must be on branch room/' + w.tag)
-        await git(w.dir, ['ls-files', '-z'])
-        const terminated = await stopOwnedWorktreeProcesses(lead.dir, w)
-        if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
         selected.push({ s, w })
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e)

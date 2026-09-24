@@ -256,8 +256,11 @@ export function install(state: HandlerState): void {
     }
   const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason']): Promise<string> => {
       const proc = rooms.handle(s, w.id)
+      // The host's exit can also take down its dev-server children. Name and stop
+      // those while they are still visible, but leave the host pid for its own handle.
+      const protectedPids = w.pid ? [w.pid] : []
+      const stopped = await terminateWorktreeProcesses(w.dir, { protectedPids })
       if (proc && w.dismissedAt !== undefined) {
-        const stopped = await terminateWorktreeProcesses(w.dir)
         return `pid ${w.pid} already signalled; waiting for exit${stopped.length ? `; stopped processes: ${stopped.join(', ')}` : ''}`
       }
       let how: string, signalled: boolean
@@ -277,7 +280,7 @@ export function install(state: HandlerState): void {
       }
       if (signalled || stopReason) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
       if (signalled || workerAlive(s, w)) s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
-      const stopped = await terminateWorktreeProcesses(w.dir)
+      stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids }))
       return how + (stopped.length ? `; stopped processes: ${stopped.join(', ')}` : '')
     }
 

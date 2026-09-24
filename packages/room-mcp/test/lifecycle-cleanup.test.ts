@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { allocateWorkerPort, cleanupWorker, signalWorker, terminateWorktreeProcesses, workerEnv, workerProcessEnv, workerPrompt } from '../src/workers.js'
@@ -8,6 +8,7 @@ import { Rooms } from '../src/registry.js'
 import { RoomDoc, type RetiredWorker } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { handlers as joinHandlers } from '../src/tools/join.js'
+import { install as installWorkerHandlers } from '../src/tools/workers.js'
 import type { HandlerState } from '../src/tools/context.js'
 
 describe('worker lifecycle cleanup', () => {
@@ -78,6 +79,27 @@ describe('worker lifecycle cleanup', () => {
       expect(names).toEqual(['astro dev (pid 12345)'])
       expect(signal).toHaveBeenCalledWith(12345, 'SIGTERM')
     } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('dismissWorker names a worktree server before signalling its host', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'room-stop-order-'))
+    const ready = join(tmpdir(), `room-stop-ready-${process.pid}-${Date.now()}`)
+    const child = spawn(process.execPath, ['-e', 'require("fs").writeFileSync(process.argv[1], "ready"); setInterval(() => {}, 1000)', ready], { cwd: root, stdio: 'ignore' })
+    try {
+      for (let i = 0; i < 100 && !existsSync(ready); i++) await new Promise(resolve => setTimeout(resolve, 10))
+      expect(existsSync(ready)).toBe(true)
+      const room = new RoomDoc()
+      const worker = { tag: 'a', name: 'lead+a', lead: 'lead', host: 'codex', task: 'task', dir: root, branch: 'room/a', id: 'id', pid: 999999, startedAt: Date.now(), status: 'running' } as const
+      room.workers.set('a', worker as never)
+      const s = { room, dir: root, me: { name: 'lead', kind: 'agent' } } as Session
+      const kill = vi.fn(() => { child.kill('SIGTERM'); return true })
+      const state = { ctx: {}, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
+      installWorkerHandlers(state)
+      const reply = await state.dismissWorker(s, worker as never, 'stop')
+      expect(reply).toMatch(new RegExp(`stopped processes: [^\\n]+ \\(pid ${child.pid}\\)`))
+      expect(kill).toHaveBeenCalledOnce()
+      room.doc.destroy()
+    } finally { child.kill('SIGKILL'); rmSync(root, { recursive: true, force: true }); rmSync(ready, { force: true }) }
   })
 
   it('allocates a distinct port from the bounded worker range', () => {
