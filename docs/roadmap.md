@@ -325,6 +325,18 @@ Still open from this audit: merge preview with `run` still materializes the lead
 tree. Fixed in 0.16.1: `*.tsbuildinfo` at a package root is regenerable output and no
 longer keeps a collected worktree.
 
+### Wording and bookkeeping seen in the 0.16.x checks (2026-09-25, open, small)
+
+- Stopping or discarding a worker spawned with `dir` stops it but replies "Error: worker is not an owned
+  Room worktree; retained …"; that worker's entry shows the lead's model and "uncommitted files left in its
+  worktree" (the lead's own edits).
+- room_state says "workers (0):" and then lists dismissed workers.
+- A merge preview line named a worker "b" instead of "rohanz+b".
+- The resume reply does not say the worker had finished and was restarted.
+- Plain room_leave stops running workers; room_preview_merge refuses a list that includes the lead.
+- After a branch switch the "you switched" note lands in the room the session just left, so the agent
+  sees it late (Room has already moved the session to the new branch's room).
+
 ### After 0.14.1 (2026-09-24, open)
 
 - **Fixed in 0.15.0: wake text and note wording.** Claude wakes summarize unread events,
