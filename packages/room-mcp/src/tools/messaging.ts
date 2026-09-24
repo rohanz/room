@@ -6,6 +6,8 @@ import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef }
 
 const WAIT_DEFAULT = 30_000
 const WAIT_MAX = 100_000
+/** Internal argument supplied by the tool wrapper, never by MCP callers. */
+export const WAIT_SIGNAL = Symbol('room_wait request signal')
 
 const pendingWaits = new WeakMap<Session, Set<(m: Msg) => boolean>>()
 
@@ -145,6 +147,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes, ...(offline(s) ? ['offline: queued/not delivered'] : [])].join('\n')
     },
     async room_wait(a) {
+      const signal = (a as Record<PropertyKey, unknown>)[WAIT_SIGNAL] as AbortSignal | undefined
       const s = S()
       const claimId = typeof a.claimId === 'string' && a.claimId ? a.claimId : undefined
       const questionId = typeof a.questionId === 'string' && a.questionId ? a.questionId : undefined
@@ -192,7 +195,22 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
       const result = await new Promise<string>(resolve => {
-        const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); ws?.room.bus.unobserve(onWorkersBus); qRoom.room.doc.off('update', onRecipient); resolve(r) }
+        let finished = false
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const finish = (r: string) => {
+          if (finished) return
+          finished = true
+          if (timer) clearTimeout(timer)
+          s.room.claims.unobserve(onClaims)
+          s.room.bus.unobserve(onBus)
+          ws?.room.bus.unobserve(onWorkersBus)
+          if (questionId) qRoom.room.doc.off('update', onRecipient)
+          signal?.removeEventListener('abort', onAbort)
+          for (const [x, ends] of waiting) pendingWaits.get(x)?.delete(ends)
+          setPresence(s, { status: 'idle' })
+          resolve(r)
+        }
+        const onAbort = () => finish('error: tool call cancelled')
         const onRecipient = () => {
           if (!questionId) return
           const notice = unavailableQuestion(qRoom, questionId)
@@ -205,7 +223,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             if (ended) return finish(ended)
           }
         }
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap(room => myWorkers(room)).filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
           finish(capNotice + (running.length
             ? `nothing yet; ${running.length} worker${running.length === 1 ? '' : 's'} still running (${running.map(w => w.tag).join(', ')}); nothing needs you`
@@ -219,10 +237,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
         }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)
-        if (questionId) { qRoom.room.doc.on('update', onRecipient); onRecipient() }
+        if (questionId) qRoom.room.doc.on('update', onRecipient)
+        signal?.addEventListener('abort', onAbort, { once: true })
+        if (signal?.aborted) onAbort()
+        else if (questionId) onRecipient()
       })
-      for (const [x, ends] of waiting) pendingWaits.get(x)?.delete(ends)
-      setPresence(s, { status: 'idle' })
       return result
     }
   }

@@ -7,7 +7,7 @@ import { createHandlerState, NeedFetch, NotJoined, type HandlerState, type ToolC
 import { defs as joinDefs, handlers as joinHandlers, install as installJoin, teamSharingNote } from './join.js'
 import { defs as scopeDefs, handlers as scopeHandlers, install as installScope } from './scope.js'
 import { defs as claimDefs, handlers as claimHandlers, install as installClaims } from './claims.js'
-import { defs as messagingDefs, handlers as messagingHandlers, install as installMessaging } from './messaging.js'
+import { defs as messagingDefs, handlers as messagingHandlers, install as installMessaging, WAIT_SIGNAL } from './messaging.js'
 import { defs as collectDefs, handlers as collectHandlers } from './collect.js'
 import { defs as fileDefs, handlers as fileHandlers } from './files.js'
 import { defs as workerDefs, handlers as workerHandlers, install as installWorkers } from './workers.js'
@@ -85,7 +85,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && (s.closed || connectedBefore(s)))) return 'error: room not synced yet, retry'
       if (s) { trackConnection(s, state.now); state.rooms.track(s) }
       try {
-        const body = await h(args ?? {})
+        const body = await h(name === 'room_wait' ? { ...(args ?? {}), [WAIT_SIGNAL]: signal } : args ?? {})
         if (toolCallAborted()) return 'error: tool call cancelled'
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
         const s2 = ctx.getSession()
