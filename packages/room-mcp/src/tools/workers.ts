@@ -9,17 +9,12 @@ import path from 'node:path'
 import { type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
-import { workerId, workerIdBase, workerOrigin } from '../registry.js'
-import * as registryRuntime from '../registry.js'
+import { toolCallAborted, workerId, workerIdBase, workerOrigin } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
 import { workerBudget, workerMaxBudget, workerProcessEnv, hostWorkerEffort, defaultSpawner, prepareWorktree, uncommittedCount, validTag, workerCommand, workerPrompt, persistWorkerStopReason, type PreparedWorktree, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
-const callAborted = 'toolCallAborted' in registryRuntime
-  ? (registryRuntime as unknown as { toolCallAborted: () => boolean }).toolCallAborted
-  : () => false
-
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
   const paths = new Set<string>()
   for (const match of task.matchAll(/(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
@@ -148,7 +143,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
           catch (e) { return `error: could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}` }
         }
-        if (callAborted()) return abortPrepared('error: tool call cancelled')
+        if (toolCallAborted()) return abortPrepared('error: tool call cancelled')
         const owner = s.me.owner ?? s.me.name
         const name = `${owner}+${tag}`
         // The worker's room variables are set here in full; defaultSpawner strips the lead's own ROOM_* first
@@ -188,7 +183,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
         const priority = { cmd: scheduling.cmd, args: [...scheduling.args, ...args], nice: scheduling.nice }
         let proc: SpawnedProcess
-        if (callAborted()) return abortPrepared('error: tool call cancelled')
+        if (toolCallAborted()) return abortPrepared('error: tool call cancelled')
         try { proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args, cwd: dir, env, logFile, captureCodexSession: host === 'codex' }) }
         catch (e) { return abortPrepared(`error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`) }
         rooms.setHandle(s, id, proc)

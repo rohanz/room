@@ -129,13 +129,12 @@ async function main() {
     attachedWakeSessions.add(s)
     const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: notification => mcp.notification(notification), isUnread: wake => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: wake => !!s.room.messages().find(m => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log })
     const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
-    const wakeWithWorkers = shouldWake as (me: typeof s.me, ev: { kind: 'msg'; msg: Msg }, claims: ReturnType<typeof myClaims>, hasUncommitted: boolean, ownWorkers: Set<string>) => ReturnType<typeof shouldWake>
     s.room.bus.observe(ev => {
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
         // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
         syncHookSeen(s)
         if (m.from === s.me.name || s.room.seen(s.me.name).has(m.id)) continue
-        router.push(wakeWithWorkers(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0,
+        router.push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0,
           new Set(Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name).map(w => w.name))))
       }
     })
