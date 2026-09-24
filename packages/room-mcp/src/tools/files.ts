@@ -120,13 +120,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (held && !(held.startsWith(`${person} shares intent only;`) && ownLocalWorker?.lead === caller.me.name && fs.existsSync(ownLocalWorker.dir))) return held
       }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
-      const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : {}) })
+      const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
       const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out } = result
-      if (!paths.length && result.ignoredNotes.length) return ['no mergeable changes', ...result.ignoredNotes].join('\n')
-      if (!paths.length) return [`none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
+      if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return ['no mergeable changes', ...result.ignoredNotes].join('\n')
+      if (!paths.length && !result.callerOnly) return [`none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
       if (skippedNote) out.push(skippedNote)
       for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
-      out.push(`final combined tree: ${merged.size} path(s) applied over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
+      out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
       let ranOk = !run
       if (run) {
         if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)

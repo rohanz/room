@@ -14,7 +14,7 @@ import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, colorFor, scopeCovers, type BaseMsg, type Kind, type Presence } from '@room/shared'
+import { RoomDoc, colorFor, isRegenerableBuildPath, scopeCovers, type BaseMsg, type Kind, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { baselineText, carriesWork, workerBaseline, type Baseline } from './baseline.js'
@@ -95,6 +95,8 @@ export interface RoomdOptions {
   /** Rolling bus size and maintenance interval. Defaults: ROOM_BUS_KEEP/2000 and 60s. */
   busKeep?: number
   busTrimMs?: number
+  /** After startup, skipped files are logged as one count per this window; default 10s. */
+  skipLogMs?: number
 }
 
 export interface Skipped { size: string[]; budget: string[]; ignore: string[]; share: string[] }
@@ -228,6 +230,12 @@ class Daemon implements Roomd {
   private publisherChosen = false
   private symlinks = new Set<string>()
   private loggedSkips = new Set<string>()
+  /** Skips not yet logged: reason -> count, with one example path; logged as one line per window. */
+  private pendingSkips = new Map<string, number>()
+  private pendingSkipExample = ''
+  private skipLogTimer?: NodeJS.Timeout
+  private readonly skipLogMs: number
+  private started = false
   private oversizedCache = new Map<string, { size: number; mtimeMs: number; base: string; changed: boolean; hash?: string }>()
   private diskWork = new Set<Promise<void>>()
   private stopped = false
@@ -266,6 +274,7 @@ class Daemon implements Roomd {
     const envKeep = Number.parseInt(process.env.ROOM_BUS_KEEP ?? '', 10)
     this.busKeep = Math.max(0, options.busKeep ?? (Number.isFinite(envKeep) ? envKeep : 2000))
     this.busTrimMs = options.busTrimMs ?? 60_000
+    this.skipLogMs = options.skipLogMs ?? 10_000
     this.share = options.share ?? 'full'
     this.explicitScopePaths = options.scopePaths
     this.onScanned = options.onScanned
@@ -338,6 +347,8 @@ class Daemon implements Roomd {
     // Under 'declared' the published set follows the person's scope; re-evaluate when it changes.
     this.roomDoc.scopes.observe(ev => { if (ev.keysChanged.has(this.name) && this.share === 'declared' && !this.explicitScopePaths) observeCallback(() => this.resharePaths(), error => this.log(`warn: ${errMsg(error)}`)) })
     await this.refreshBaseStatus()
+    this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
+    this.started = true
     this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`)
   }
 
@@ -440,6 +451,7 @@ class Daemon implements Roomd {
   async stop(reason = 'requested'): Promise<void> {
     if (this.stopped) return
     this.stopped = true
+    this.flushSkipLog()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
     for (const timer of this.timers) clearInterval(timer)
     this.batch.stop()
@@ -704,7 +716,7 @@ class Daemon implements Roomd {
       if (!this.isSafeRoomPath(relpath) || stat.isSymbolicLink()) return undefined
       if (!stat.isFile()) return undefined
       if (stat.size > this.sizeCap) {
-        if (!this.skips.size.has(relpath) && !quiet) this.log(`skip ${relpath}: ${stat.size} bytes > cap`)
+        if (!this.skips.size.has(relpath) && !quiet) this.noteSkip(relpath, 'over size cap')
         this.skips.size.add(relpath)
         return undefined
       }
@@ -736,7 +748,25 @@ class Daemon implements Roomd {
 
   private skipIgnored(relpath: string, reason: string): void {
     this.skips.ignore.add(relpath)
-    if (!this.loggedSkips.has(relpath)) { this.loggedSkips.add(relpath); this.log(`skip ${relpath}: ${reason}`) }
+    if (!this.loggedSkips.has(relpath)) { this.loggedSkips.add(relpath); this.noteSkip(relpath, reason) }
+  }
+
+  /** Count a skip for the next summary line: a test run can write thousands of ignored files. */
+  private noteSkip(relpath: string, reason: string): void {
+    if (!this.pendingSkips.size) this.pendingSkipExample = relpath
+    this.pendingSkips.set(reason, (this.pendingSkips.get(reason) ?? 0) + 1)
+    if (this.skipLogTimer || !this.started) return
+    this.skipLogTimer = setTimeout(() => this.flushSkipLog(), this.skipLogMs)
+    this.skipLogTimer.unref?.()
+  }
+
+  private flushSkipLog(): void {
+    clearTimeout(this.skipLogTimer)
+    this.skipLogTimer = undefined
+    if (!this.pendingSkips.size) return
+    const n = Array.from(this.pendingSkips.values()).reduce((a, b) => a + b, 0)
+    this.log(`skipped ${n} file(s) (${Array.from(this.pendingSkips, ([reason, count]) => `${count} ${reason}`).join(', ')}), e.g. ${this.pendingSkipExample}`)
+    this.pendingSkips.clear()
   }
 
   private isSafeRoomPath(relpath: string, applyIgnore = true): boolean {
@@ -856,7 +886,7 @@ class Daemon implements Roomd {
       // The level or scope may have changed while we waited on git: never write text the current level withholds.
       if (!this.isShared(relpath)) { this.withhold(relpath, disk !== base); return }
       if (disk !== base && this.sharedBytes(relpath) + disk.length > this.totalBudget) {
-        if (!this.skips.budget.has(relpath)) { this.skips.budget.add(relpath); this.log(`skip ${relpath}: sharing it would exceed the ${Math.round(this.totalBudget / 1024)} KB total budget`) }
+        if (!this.skips.budget.has(relpath)) { this.skips.budget.add(relpath); this.noteSkip(relpath, `over the ${Math.round(this.totalBudget / 1024)} KB total budget`) }
         this.roomDoc.clearOverlay(this.name, relpath, this)
         this.roomDoc.unmarkDeleted(this.name, relpath, this)
         this.retainedDeclaredPaths.delete(relpath)
@@ -920,6 +950,8 @@ class Daemon implements Roomd {
       ignored: (absolute: string) => {
         const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
         if (relpath === '') return false
+        // Build and test output (test-results/, .astro/, ...) can hold thousands of files per run; watch it only when git tracks or offers something in it.
+        if (isRegenerableBuildPath(relpath.slice(relpath.lastIndexOf('/') + 1)) && !this.holdsTracked(relpath)) return true
         if (defaultIgnoredPath(relpath)) return this.isIgnoredPath(relpath)
         return !this.isSafeRoomPath(relpath, false)
       },
@@ -992,6 +1024,13 @@ class Daemon implements Roomd {
     await this.publishDiskState(relpath)
   }
 
+  /** Does git track (or offer as untracked) any file under this directory? */
+  private holdsTracked(dir: string): boolean {
+    const prefix = `${dir}/`
+    for (const relpath of this.tracked) if (relpath.startsWith(prefix)) return true
+    return false
+  }
+
   private async refreshTracked(): Promise<void> {
     if (this.stopped) return
     try {
@@ -1000,7 +1039,10 @@ class Daemon implements Roomd {
       const removed = Array.from(new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter(relpath => !next.has(relpath))
       this.tracked = next
       for (const relpath of added) {
-        if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) this.scheduleDisk(relpath, true)
+        if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) {
+          this.scheduleDisk(relpath, true)
+          if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath))
+        }
       }
       // Untracked files disappear from ls-files when deleted, so polling must
       // publish their deletion even if the platform watcher misses the unlink.

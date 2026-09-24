@@ -8,7 +8,7 @@ import { baselineText, checkoutText, MissingBaseBlob, pairBaseline, type Baselin
 import { diskWorker, type HandlerState } from './context.js'
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
-export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding } = {}) {
+export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean } = {}) {
   const { rooms, liveText, baseFor, shareOf } = state
   const people = participants.map(p => p.person)
   // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
@@ -50,20 +50,23 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   for (const { person, session } of participants) pairs.set(person, await pairBaseline(callerWorker, session.room.workerOf(person), ancestor, descends))
   const deltaBases = new Map([...pairs].map(([person, pair]) => [person, pair?.sha ?? ancestor]))
   const pathSet = new Set<string>()
+  /** Paths a participant may have changed; the rest only the caller changed. */
+  const theirPaths = new Set<string>()
   const ignoredNotes: string[] = []
-  for (const item of [{ person: caller.me.name, session: caller }, ...participants]) {
+  for (const [index, item] of [{ person: caller.me.name, session: caller }, ...participants].entries()) {
+    const add = (p: string) => { pathSet.add(p); if (index > 0) theirPaths.add(p) }
     const worker = previewWorker(item.session, item.person)
     const dir = worker?.dir ?? (item.person === caller.me.name ? caller.dir : undefined)
     const ignored = dir ? (await git(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
     const visibleIgnored = ignored.filter(p => !/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/.test(p))
     if (visibleIgnored.length) ignoredNotes.push('NOT previewed (gitignored, ' + item.person + '): ' + visibleIgnored.join(', '))
-    if (!options.diskOnly) for (const p of item.session.room.changedPaths(item.person)) if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) pathSet.add(p)
+    if (!options.diskOnly) for (const p of item.session.room.changedPaths(item.person)) if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) add(p)
     if (dir) {
-      for (const p of (await git(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) pathSet.add(p)
-      for (const p of (await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) pathSet.add(p)
+      for (const p of (await git(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) add(p)
+      for (const p of (await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) add(p)
     }
     for (const base of new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? callerBaseline?.sha ?? ancestor])) {
-      if (base !== ancestor) for (const p of (await git(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean)) pathSet.add(p)
+      if (base !== ancestor) for (const p of (await git(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean)) add(p)
     }
   }
   // ls-files represents nested repositories/submodules as directory entries.
@@ -96,6 +99,10 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       ignoredNotes.push('NOT previewed (directory or nested repository): ' + p)
     }
   }
+  // A path only the caller changed cannot conflict and keeps the caller's text. Skipping it avoids reading
+  // gigabytes of a lead's untracked art when only the participants' changes matter (collect, preview without a run).
+  let callerOnly = 0
+  if (options.skipCallerOnly) for (const p of pathSet) if (!theirPaths.has(p)) { pathSet.delete(p); callerOnly++ }
   const baseTexts = new Map<string, string | null>()
   const textAt = async (sha: string, p: string) => {
     const key = sha + ':' + p
@@ -216,7 +223,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   }
 
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
-  return { ancestor, deltaBases, paths, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes }
+  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {

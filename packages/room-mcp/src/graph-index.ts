@@ -3,6 +3,7 @@
  * For each path the indexed text is: my overlay, else another person's overlay, else base.
  */
 import { bareSymbol, observedContractChanges, SymbolGraph, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
+import type * as Y from 'yjs'
 import { git, gitShow } from '@room/roomd/git'
 import { parseFile, ensureLanguages } from './parse/engine.js'
 import { specForPath } from './parse/index.js'
@@ -76,7 +77,7 @@ export class GraphIndex {
       for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) this.previousChanged.add(p)
     }
     this.ready = this.initialBuild()
-    const onOverlays = () => { if (!this.stopped) this.refreshChanged() }
+    const onOverlays = (events: Y.YEvent<any>[]) => { if (!this.stopped) this.refreshChanged(touchedPaths(events)) }
     this.room.overlays.observeDeep(onOverlays)
     this.room.deleted.observeDeep(onOverlays)
     this.unobserve.push(() => { this.room.overlays.unobserveDeep(onOverlays); this.room.deleted.unobserveDeep(onOverlays) })
@@ -127,11 +128,13 @@ export class GraphIndex {
     this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`)
   }
 
-  private refreshChanged(): void {
+  /** Refresh the paths an overlay event touched (all changed paths when a whole person's map changed) and any that left the changed set. */
+  private refreshChanged(touched?: Set<string>): void {
     if (!this.base) return
     const changed = new Set<string>()
     for (const person of new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) changed.add(p)
-    for (const p of new Set([...changed, ...this.previousChanged])) void this.refresh(p)
+    const left = [...this.previousChanged].filter(p => !changed.has(p))
+    for (const p of new Set([...(touched ? [...touched].filter(isSourcePath) : changed), ...left])) void this.refresh(p)
     this.previousChanged = changed
   }
 
@@ -245,6 +248,24 @@ export class GraphIndex {
     this.lastPublished = { at: now, key, status }
     this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, observed, observedTruncated, truncated })
   }
+}
+
+/**
+ * Paths named by observeDeep events on overlays or deleted (person -> path -> text): a text edit, a
+ * path set or removed, or every path of a person whose map arrived. Undefined when a person's whole
+ * map left, since their paths are gone from the doc and others' or base text may now apply.
+ */
+function touchedPaths(events: Y.YEvent<any>[]): Set<string> | undefined {
+  const paths = new Set<string>()
+  for (const event of events) {
+    if (event.path.length >= 2) paths.add(String(event.path[1]))
+    else if (event.path.length === 1) for (const key of event.changes.keys.keys()) paths.add(key)
+    else for (const [person, change] of event.changes.keys) {
+      if (change.action !== 'add') return undefined
+      for (const key of (event.target as Y.Map<Y.Map<unknown>>).get(person)?.keys() ?? []) paths.add(key)
+    }
+  }
+  return paths
 }
 
 function hashOf(text: string): number {

@@ -157,7 +157,8 @@ describe('roomd v2 push-only overlays', () => {
       const daemon = await start({ room: room(), dir, name: 'Ann', log: line => logs.push(line) })
       await daemon.setShare('full')
       expect(reader.mock.calls.some(([p]) => String(p) === path.join(dir, 'a.npy'))).toBe(false)
-      expect(logs.filter(line => line.startsWith('skip a.npy:'))).toHaveLength(1)
+      expect(logs.filter(line => line.startsWith('skip'))).toEqual([])
+      expect(logs.filter(line => line.startsWith('synced ') && line.includes('skipped 1 file(s) (1 ignore)'))).toHaveLength(1)
     } finally { reader.mockRestore() }
   })
 
