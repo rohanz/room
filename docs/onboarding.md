@@ -3,8 +3,9 @@
 ## Start locally
 
 1. [Install Room](../README.md#getting-started) for your agent and trust its hooks when asked.
-2. Start Codex or plain `claude` in your clone as usual. For instant Claude Code wake-ups,
-   use the [optional channels setup](../README.md#claude-code).
+2. Start Codex or plain `claude` in your clone as usual. Claude Code 2.1.224 or later
+   wakes through its messaging inbox with no launch flag (2.1.234 on native Windows).
+   See [Claude Code wake-ups](../README.md#claude-code).
    With no server configured or team choice remembered, nothing leaves your machine.
 3. Ask for your feature. To split a substantial task, try:
 

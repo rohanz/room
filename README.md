@@ -14,8 +14,8 @@ Start your agent as usual; by default nothing leaves your machine. Say **“join
 to work with teammates. **Team rooms are currently per branch: everyone in a trial must work
 on one shared branch.**
 
-Claude Code works with plain `claude` after installation. For instant wake-ups, use the
-[optional per-session channels setup](#claude-code).
+Claude Code 2.1.224 or later wakes with plain `claude` after installation (2.1.234 on
+native Windows). See [Claude Code wake-ups](#claude-code).
 
 ## Getting started
 
@@ -110,11 +110,8 @@ the worker's own work as worker output.
 It uses the caller’s agent host unless you choose another. The worker joins as `<you>+<tag>`,
 declares its task, coordinates where work overlaps, previews the combined changes, and finishes
 with a one-line summary. Up to eight workers run at once (`ROOM_MAX_WORKERS`).
-Room starts Claude workers it spawns with Claude Code's
-`--dangerously-load-development-channels plugin:room@room` flag so room events can
-wake them. Channel wake-ups are a research preview gated by that flag. Team and
-Enterprise organisation policy may block channels; those workers still run, but
-cannot be woken mid-task.
+On Claude Code 2.1.224 or later, Room wakes idle Claude workers through their
+cross-session messaging inbox. No launch flag is needed. Native Windows needs 2.1.234.
 
 The lead calls `room_collect()` once to collect all its finished workers, in finish-time order
 (with tag as the tie-breaker). An optional `tag` selects just one. Changes arrive in its working
@@ -197,25 +194,30 @@ stay on your machine; `room_state` shows both rooms.
 Claude Code 2.1 or later uses the same plugin as Codex. For a local checkout, install the
 marketplace with `claude plugin marketplace add /path/to/room`.
 
-Plain `claude` works with Room after installation. Messages reach the session on its next turn.
-For instant wake-ups when a teammate asks a question, an interrupt arrives, or a worker finishes,
-start each Claude Code session with `claude --dangerously-load-development-channels plugin:room@room`.
-Channels are a research preview, and Claude Code requires command-line opt-in for every channel
-on every session. Room is not on Anthropic’s approved list, so it uses the development-channels
-flag; approved plugins use `--channels`.
+Claude Code 2.1.224 or later on macOS, Linux or WSL 2 wakes with plain `claude` after
+installation; native Windows needs 2.1.234. Check with `claude --version`. Room sends
+a short wake to the session's cross-session messaging inbox for interrupts and messages
+addressed to you, such as a question or a worker finishing. Five seconds of events are
+coalesced into one line, for example: `[room] 2 things need you: rohanz+ship asked a
+question; rohanz+cat finished. Use the room_state tool to read them (room_collect brings
+in finished workers). (#3)`. Background chatter stays in the room. Claude Code frames
+the wake as “Another Claude session sent a message” with a
+safety preamble. The wake is a prompt to check Room, not user authority, and does not
+mark the room message read.
 
-For a shorter command in zsh, add an optional alias (use `~/.bashrc` instead for bash), then
-open a new shell:
+`ROOM_WAKE=socket|channels|off` selects one wake path for the process. By default, Room
+uses the socket when available and falls back to an admitted channel if the socket is
+absent or a send fails. `ROOM_WAKE=channels` forces channel notifications;
+`ROOM_WAKE=off` disables wakes for this process. On older
+Claude Code, `plugins/room/bin/claude-room` starts the optional channels fallback with
+`--dangerously-load-development-channels plugin:room@room`; it can also be run through
+your own shell alias. Channels are a research preview and require that per-session flag.
 
-```sh
-echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ~/.zshrc
-```
-
-An installed plugin cannot add `claude-room` to your shell; the command exists only after you
-add the alias. Pro and Max accounts can use channels without an organisation. For claude.ai
-Team or Enterprise accounts, an Owner must enable channels first. Channels require an Anthropic
-login and are unavailable on Bedrock, Vertex or Foundry. A dim “Channels (experimental)” line
-under the banner confirms registration. Codex uses `codex queue` and needs no extra launch flag.
+If `crossSessionInbound` is `hold`, Claude Code holds the socket wake until the setting
+allows it; `refuse` drops the wake. Room messages remain available on the next Room turn. An
+organisation can disable cross-session messaging for claude.ai Team or Enterprise
+accounts. Update Claude Code first if Room says a session cannot be woken, then use
+`claude-room` as the older-version fallback. Codex uses `codex queue`.
 
 ### Updating the plugin
 

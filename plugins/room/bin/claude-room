@@ -1,5 +1,6 @@
 #!/bin/sh
-# claude-room: start Claude Code with Room's wake-up channel registered.
-# Setup and channel explanation: https://github.com/rohanz/room#claude-code
+# claude-room: optional channels fallback for older Claude Code.
+# Claude Code 2.1.224+ wakes with plain claude via its messaging socket.
+# Wake setup: https://github.com/rohanz/room#claude-code
 # Override the entry with ROOM_CLAUDE_CHANNEL; other arguments pass through to claude.
 exec claude --dangerously-load-development-channels "${ROOM_CLAUDE_CHANNEL:-plugin:room@room}" "$@"

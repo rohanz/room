@@ -46,7 +46,8 @@ After joining, if the user has given you a task, immediately call
 
 `room_leave` when the user says they are done.
 
-Plain `claude` works after installation; messages arrive on the next turn. Instant Claude Code
-wake-ups need per-session channels opt-in. `claude-room` exists only if the user adds the optional
-shell alias. See [the canonical channels explanation](../../../../README.md#claude-code), including
-the alias command and Team or Enterprise account policy.
+Plain `claude` on Claude Code 2.1.224 or later wakes through its messaging inbox with
+no launch flag (2.1.234 on native Windows). `ROOM_WAKE=socket|channels|off` selects
+the process wake path; automatic selection uses the socket first. `claude-room` is an
+optional channels fallback for older Claude Code. If inbound messages are held or
+refused, room messages remain for the next turn. See [Claude Code wake-ups](../../../../README.md#claude-code).

@@ -105,7 +105,7 @@ wakes idle sessions with no flag, had shipped (Claude Code 2.1.224, 2026-08-07).
 
 Hook definitions (`plugins/room/hooks.json`, `plugins/room/hooks/claude.json` — event, matcher, command) are frozen. Codex trusts each by content hash (`[hooks.state]` in `~/.codex/config.toml`), and any change un-trusts it for every user. Change behavior in the hook scripts instead.
 
-- Claude Code sessions in a room must be started with `claude --dangerously-load-development-channels plugin:room@room` for channel wake-ups (research preview allowlist; the flag admits this one plugin entry). `plugins/room/bin/claude-room` is that command; keep the explanation in README, onboarding and the join skill whenever it changes.
+- Claude Code 2.1.224+ wakes through its cross-session messaging inbox with plain `claude` (2.1.234+ on native Windows). `plugins/room/bin/claude-room` is an optional channels fallback for older versions. Keep README, onboarding and the join skill aligned when wake behavior changes.
 - Hosted server operations (deploy, secrets, opening/closing repos, incidents): `deploy/DEPLOYING.md`.
   Deploy with `--depot=false`; only server/web changes need a deploy, plugin changes need a bundle rebuild + push.
 

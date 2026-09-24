@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0
+
+- Claude Code 2.1.224+ on macOS and Linux wakes through its cross-session messaging socket with plain `claude`; native Windows needs 2.1.234+. Room detects the bound inbox through `CLAUDE_CODE_MESSAGING_SOCKET`, not a version string. `ROOM_WAKE=socket|channels|off` selects a process path; automatic selection prefers the socket and falls back to an admitted channel if absent or a send fails. `channels` forces channel notifications; `off` disables wakes and gives a specific note. Channels remain an optional fallback for older Claude Code. Codex keeps `codex queue`.
+- Room sends a coalesced wake after a five-second quiet window for interrupts and addressed messages: `[room] 2 things need you: rohanz+ship asked a question; rohanz+cat finished. Use the room_state tool to read them (room_collect brings in finished workers). (#3)` The collection hint appears only when a worker finished. It includes up to five short sender and event phrases; beyond five, it shows four plus a count for more, without message bodies. Claude Code frames it as a message from another Claude session with its safety preamble. A successful socket write has no delivery acknowledgment and never marks room messages read. Background chatter does not wake anyone.
+- Claude Code's inbound `hold` setting holds the wake; `refuse` drops it. The room message remains for the next turn.
+- Live end-to-end checks passed on Claude Code 2.1.281 (macOS) with plain `claude` and no channel flag: an idle session woke 5.0 seconds after a worker finished, including a real `room_spawn` worker; five completions within one second produced one wake. A busy session absorbed the wake into its running turn, and the hook inbox showed the question at the next tool call. `crossSessionInbound: refuse` prevented the wake while leaving the message in the room for the next turn. Forced `channels` woke a flagged session without a socket post; `ROOM_WAKE=off` sent nothing.
+- The README, onboarding, join skill and trial checklist now start Claude Code with plain `claude`; the friend checklist asks for Claude Code 2.1.224+ instead of a shell alias. Plugin manifests and marketplace metadata are at 0.14.0.
+
 ## 0.13.0
 
 - The workers skill offers once to hand a batch of three or more workers, or a long batch, to a background lead: “I can hand this to a background lead that stays on it until it's done; you can keep talking to me.” For one or two workers, the session leads itself. A worker that spawns workers is prompted to collect them before its own `room_done`.
