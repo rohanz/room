@@ -57,7 +57,7 @@ it('renders the shared model line with ellipsis styling and full title/tooltip o
   const conn = { room, provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
   const people = participantsPanel(conn, createFocusState()) as unknown as Element
   const board = boardPanel(conn, vi.fn()) as unknown as Element
-  const line = 'agent · codex · ' + model + ' · medium'
+  const line = 'codex · ' + model + ' · medium'
   expect(people.find('participant-identity')?.textContent).toBe(line)
   expect(people.find('participant-identity')?.title).toBe(line)
   expect(board.find('participant-identity')?.textContent).toBe(line)

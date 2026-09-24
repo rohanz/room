@@ -1,5 +1,5 @@
 import { subscribeRender } from './scheduler.ts'
-import { activityLabel, formatCount, areaMembershipSummary, participantClaimLine, personLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
+import { activityLabel, displayName, formatCount, areaMembershipSummary, participantClaimLine, personLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
 import type { Conn } from './conn.ts'
 import { h as element, conflictCard, messageBody, participantInput, participantGroups, groupedPeople, compactChips, timelinePeople, TIMELINE_WINDOW, relativeTime } from './panels.ts'
 import { collapseConflictTimeline } from './timeline.ts'
@@ -35,6 +35,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     const input = participantInput(conn)
     const groups = participantGroups(conn)
     const messages = conn.room.messages()
+    const named = (name: string) => displayName({ name, kind: (input.presences.find(p => p.user.name === name && p.user.kind === 'agent') ?? input.presences.find(p => p.user.name === name))?.user.kind ?? messages.find(m => m.from === name)?.fromKind ?? 'agent' })
     const lastMessage = (name: string) => [...messages].reverse().find(m => m.from === name)
     const card = (person: Participant): HTMLElement => {
       const raw = [...conn.provider.awareness.getStates().values()].filter(p => p?.user?.name === person.name)
@@ -42,7 +43,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
       const share: ShareLevel = ['intent', 'declared', 'full'].includes(presence?.share) ? presence.share : 'full'
       const worker = [...conn.room.workers.values()].find(w => w.name === person.name)
       const label = worker?.status === 'failed' ? 'failed' : personLine({ name: person.name, scope: person.scope, presences: input.presences, changedPaths: person.files, messages: messages.filter((m): m is NoteMsg => m.type === 'note'), share })
-      const name = h('button', { class: 'person-open mono', title: `Inspect ${person.name}'s files`, onclick: () => inspect(person.name) }, person.name)
+      const name = h('button', { class: 'person-open mono', title: `Inspect ${named(person.name)}'s files`, onclick: () => inspect(person.name) }, named(person.name))
       const areas = [...new Set([...(person.scope?.areas ?? []), ...(person.scope ? [person.scope.area] : [])])]
       const last = lastMessage(person.name)
       const el = h('article', { class: `board-card${person.online ? '' : ' offline'}` },
@@ -75,13 +76,13 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     const areas = [...new Set([...events.map(e => areaOf(e.message)), ...prominentAreas])].sort()
     filters.replaceChildren(chip('All', !personFilter && !areaFilter, () => { personFilter = areaFilter = null; windowSize = TIMELINE_WINDOW; render() }),
       ...compactChips([
-        ...names.map(name => ({ key: name, selected: personFilter === name, node: chip(name, personFilter === name, () => { personFilter = personFilter === name ? null : name; windowSize = TIMELINE_WINDOW; render() }) })),
+        ...names.map(name => ({ key: name, selected: personFilter === name, node: chip(named(name), personFilter === name, () => { personFilter = personFilter === name ? null : name; windowSize = TIMELINE_WINDOW; render() }) })),
         ...areas.map(area => ({ key: 'area:' + area, selected: areaFilter === area, node: chip(`Area: ${area}`, areaFilter === area, () => { areaFilter = areaFilter === area ? null : area; windowSize = TIMELINE_WINDOW; render() }) })),
       ], new Set([...prominent, ...[...prominentAreas].map(a => 'area:' + a), ...(personFilter ? [personFilter] : []), ...(areaFilter ? ['area:' + areaFilter] : [])]), showMoreFilters, open => { showMoreFilters = open }))
     feed.replaceChildren(...visible.map(({ message: m, conflict }) => {
       if (conflict) return conflictCard(conflict, expandedConflicts)
       const kind = m.type === 'done' || (m.type === 'note' && m.text.startsWith('done')) ? 'done' : m.priority
-      return h('article', { class: 'feed-event' }, h('time', { title: new Date(m.at).toLocaleString() }, relativeTime(m.at)), h('div', {}, h('div', { class: 'feed-meta' }, h('strong', { class: 'mono' }, m.from), h('span', { class: 'area-chip' }, areaOf(m))), h('div', {}, ...messageBody(m))), h('span', { class: `priority ${kind}` }, kind))
+      return h('article', { class: 'feed-event' }, h('time', { title: new Date(m.at).toLocaleString() }, relativeTime(m.at)), h('div', {}, h('div', { class: 'feed-meta' }, h('strong', { class: 'mono' }, displayName({ name: m.from, kind: m.fromKind })), h('span', { class: 'area-chip' }, areaOf(m))), h('div', {}, ...messageBody(m))), h('span', { class: `priority ${kind}` }, kind))
     }))
     if (matching.length > visible.length) feed.append(h('button', { class: 'timeline-more', onclick: () => { windowSize += TIMELINE_WINDOW; render() } }, 'Show older events'))
     if (!visible.length) feed.append(h('p', { class: 'muted' }, 'No events yet — room activity will appear here.'))

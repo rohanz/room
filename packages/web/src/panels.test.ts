@@ -179,7 +179,7 @@ describe('merged pane participant choices', () => {
   it('defaults all chips on when no participant with file changes is online', () => {
     const s = setup(['Unrelated'])
     try {
-      expect(s.selected()).toEqual(['Ada', 'Ben', 'Cy'])
+      expect(s.selected()).toEqual(["Ada's agent", "Ben's agent", "Cy's agent"])
       expect(s.panel.find('merge-hint muted')?.textContent).toBe("Showing 3 participants' changes")
       expect(s.panel.find('editor-wrap')?.textContent).toContain('Ada')
     } finally { s.room.doc.destroy() }
@@ -188,7 +188,7 @@ describe('merged pane participant choices', () => {
   it('defaults two online participants on and the offline participant off', () => {
     const s = setup(['Ada', 'Ben'])
     try {
-      expect(s.selected()).toEqual(['Ada', 'Ben'])
+      expect(s.selected()).toEqual(["Ada's agent", "Ben's agent"])
       expect(s.panel.find('merge-hint muted')?.textContent).toBe('1 offline participants hidden — toggle their chips to include them')
     } finally { s.room.doc.destroy() }
   })
@@ -199,13 +199,13 @@ describe('merged pane participant choices', () => {
       s.chips()[0].onclick()
       s.chips()[2].onclick()
       s.presence(['Ada', 'Cy'])
-      expect(s.selected()).toEqual(['Ben', 'Cy'])
+      expect(s.selected()).toEqual(["Ben's agent", "Cy's agent"])
       s.panel.querySelectorAll('.file-item')[1].onclick()
-      expect(s.selected()).toEqual(['Ada', 'Cy'])
+      expect(s.selected()).toEqual(["Ada's agent", "Cy's agent"])
       s.presence([])
-      expect(s.selected()).toEqual(['Ada', 'Cy'])
+      expect(s.selected()).toEqual(["Ada's agent", "Cy's agent"])
       s.panel.querySelectorAll('.file-item')[0].onclick()
-      expect(s.selected()).toEqual(['Ben', 'Cy'])
+      expect(s.selected()).toEqual(["Ben's agent", "Cy's agent"])
     } finally { s.room.doc.destroy() }
   })
 

@@ -13,7 +13,7 @@ import { normalizeGitOrigin, gitIgnored } from '../src/git.js'
 vi.setConfig({ testTimeout: 30_000 })
 // Use real chokidar polling consistently: native events can be lost in sandboxes.
 // Each mutation below waits for its effect before a subsequent mutation.
-beforeAll(() => { vi.stubEnv('CHOKIDAR_USEPOLLING', '1') })
+beforeAll(() => { vi.stubEnv('CHOKIDAR_USEPOLLING', '1'); vi.stubEnv('ROOM_MACHINE_ID', 'test-machine') })
 afterAll(() => { vi.unstubAllEnvs() })
 
 function sh(dir: string, args: string[]): string {
@@ -180,6 +180,74 @@ describe('roomd v2 push-only overlays', () => {
       && secondary.roomDoc.text('app.py', 'Amy') === 'x = 2\n')
     await secondary.stop('test complete'); await secondary.stop('again')
     expect(logs.filter(line => line.startsWith('stopped:'))).toEqual(['stopped: test complete'])
+  })
+
+  it('distinguishes equal checkout paths on different machines', async () => {
+    const dir = await makeRepo({ 'app.py': 'x = 1\n' }), url = room()
+    const previous = process.env.ROOM_MACHINE_ID
+    try {
+      process.env.ROOM_MACHINE_ID = 'machine-a'
+      const a = await start({ room: url, dir, name: 'Ada' })
+      process.env.ROOM_MACHINE_ID = 'machine-b'
+      const b = await start({ room: url, dir, name: 'Bea' })
+      expect(a.provider.awareness.getLocalState()!.watchedDirectory)
+        .not.toBe(b.provider.awareness.getLocalState()!.watchedDirectory)
+      expect(b.provider.awareness.getLocalState()!.publishUnder).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.ROOM_MACHINE_ID
+      else process.env.ROOM_MACHINE_ID = previous
+    }
+  })
+
+  it('persists its machine id once in the XDG config directory with private permissions', async () => {
+    const dir = await makeRepo({ 'app.py': 'x = 1\n' })
+    const configDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'room-config-'))
+    const oldConfig = process.env.XDG_CONFIG_HOME, oldId = process.env.ROOM_MACHINE_ID
+    const link = vi.spyOn(fs, 'linkSync')
+    try {
+      process.env.XDG_CONFIG_HOME = configDir
+      delete process.env.ROOM_MACHINE_ID
+      const a = await start({ room: room(), dir, name: 'Ada' })
+      const file = path.join(configDir, 'room', 'machine-id')
+      const id = await fsp.readFile(file, 'utf8')
+      expect(id.trim()).toMatch(/^[a-f0-9]{64}$/)
+      expect((await fsp.stat(file)).mode & 0o777).toBe(0o600)
+      const b = await start({ room: room(), dir, name: 'Bea' })
+      expect(b.provider.awareness.getLocalState()!.watchedDirectory).toBe(a.provider.awareness.getLocalState()!.watchedDirectory)
+      expect(await fsp.readFile(file, 'utf8')).toBe(id)
+      expect(link).toHaveBeenCalledTimes(1)
+    } finally {
+      link.mockRestore()
+      if (oldConfig === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = oldConfig
+      if (oldId === undefined) delete process.env.ROOM_MACHINE_ID
+      else process.env.ROOM_MACHINE_ID = oldId
+      await fsp.rm(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it('joins with a stable checkout id when XDG config storage is unavailable', async () => {
+    const dir = await makeRepo({ 'app.py': 'x = 1\n' })
+    const configDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'room-config-blocked-'))
+    const blocker = path.join(configDir, 'not-a-directory')
+    await fsp.writeFile(blocker, 'blocked')
+    const oldConfig = process.env.XDG_CONFIG_HOME, oldId = process.env.ROOM_MACHINE_ID
+    const logs: string[] = []
+    try {
+      process.env.XDG_CONFIG_HOME = blocker
+      delete process.env.ROOM_MACHINE_ID
+      const a = await start({ room: room(), dir, name: 'Ada', log: line => logs.push(line) })
+      const b = await start({ room: room(), dir, name: 'Bea', log: line => logs.push(line) })
+      expect(a.provider.awareness.getLocalState()!.watchedDirectory).toMatch(/^[a-f0-9]{64}$/)
+      expect(b.provider.awareness.getLocalState()!.watchedDirectory).toBe(a.provider.awareness.getLocalState()!.watchedDirectory)
+      expect(logs.filter(line => line.includes('machine id'))).toHaveLength(1)
+    } finally {
+      if (oldConfig === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = oldConfig
+      if (oldId === undefined) delete process.env.ROOM_MACHINE_ID
+      else process.env.ROOM_MACHINE_ID = oldId
+      await fsp.rm(configDir, { recursive: true, force: true })
+    }
   })
 
   it('checks HEAD before publishing a watcher batch after a commit', async () => {

@@ -525,7 +525,7 @@ describe('hooks bridge + plugin hook scripts', () => {
     addPresence(s, 'Kieran')
     await new Promise(r => setTimeout(r, 200))
     expect(queued).toEqual([])
-    expect(JSON.parse(readFileSync(join(dir, '.git/room-state.json'), 'utf8'))).toMatchObject({ company: true, others: ['Kieran'] })
+    expect(JSON.parse(readFileSync(join(dir, '.git/room-state.json'), 'utf8'))).toMatchObject({ company: true, others: ["Kieran's agent"] })
     b.stop()
   })
 
@@ -1007,18 +1007,21 @@ it('tells agents to claim the files they will edit, not an overbroad directory',
 it('company includes who and their scope; nearby claims are needed only for overlapping writes', async () => {
   const s = session(new RoomDoc())
   const peer = addPresence(s, 'Ada')
+  const human = addPresence(s, 'Cy', 'human', 'idle')
   s.room.setScope({ by: 'Ada', byKind: 'agent', area: 'orders', summary: 'pricing', paths: ['api/'], at: Date.now() })
   s.room.setOverlay('Bea', 'other.py', 'changed')
   const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
   writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'near', at: Date.now(), cwd: dir }))
   b.write()
+  expect(JSON.parse(readFileSync(b.stateFile(), 'utf8')).others).toEqual(["Ada's agent", 'Cy'])
   const announce = await runHook('session-start.mjs', { cwd: dir, session_id: 'near' })
-  expect(announce).toContain('Ada is here, on orders: api/')
+  expect(announce).toContain("Ada's agent is here, on orders: api/")
+  expect(announce).toContain('Cy is here')
   const edit = (file_path: string) => runHook('before-edit.mjs', { cwd: dir, session_id: 'near', tool_name: 'Write', tool_input: { file_path } })
   expect(await edit('api/tax.py')).toContain('Claim before editing: Ada has scope on api/')
   expect(await edit('other.py')).toContain('Bea has changed on other.py')
   expect(await edit('api-other/new.py')).toBe('')
-  b.stop(); peer.destroy(); s.awareness.destroy()
+  b.stop(); peer.destroy(); human.destroy(); s.awareness.destroy()
 })
 
 it('announces unchanged near evidence once and stays silent with an adequate own claim', async () => {

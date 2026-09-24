@@ -143,14 +143,14 @@ describe('automatic conflict notices', () => {
     watcher.stop()
   })
 
-  it('keeps alarms without hook evidence and skips colocated claim/merge checks', async () => {
+  it('keeps explicit claim alarms without hook evidence or checkout separation while deduping colocated merge checks', async () => {
     for (const colocated of [false, true]) {
       const room = new RoomDoc()
       room.addClaim({ path: 'a.txt', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'implement' })
       room.setOverlay('Kieran', 'a.txt', 'theirs\n')
       const watcher = watcherFor(room, { coLocated: () => colocated, writeIntent: () => undefined })
       room.setOverlay(me.name, 'a.txt', 'mine\n'); await watcher.flush()
-      expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(colocated ? 0 : 2)
+      expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
       expect(room.messages().filter(m => m.type === 'merge-conflict')).toHaveLength(colocated ? 0 : 1)
       watcher.stop()
     }
@@ -208,7 +208,7 @@ describe('automatic conflict notices', () => {
     const msgs = t.room.messages().filter(m => m.type === 'conflict')
     expect(msgs).toHaveLength(2)
     expect(msgs[0].to).toBe('Rohan'); expect(msgs[0].priority).toBe('interrupt')
-    expect(msgs[0].type === 'conflict' && msgs[0].text).toContain("you edited app.py:5-5 inside Kieran's claim")
+    expect(msgs[0].type === 'conflict' && msgs[0].text).toContain("you edited app.py:5-5 inside Kieran's agent's claim")
     expect(msgs[1].to).toBe('Kieran'); expect(msgs[1].priority).toBe('notify')
     // and it reaches my inbox on the next call
     expect(await t.tools.call('room_state', {})).toContain('CONFLICT on app.py: you edited')
@@ -323,6 +323,27 @@ describe('room lifecycle', () => {
     const reply = await tools.call('room_join', {})
     expect(reply.match(/another session in this checkout/g)).toHaveLength(1)
     expect(reply).not.toContain('Your file changes are published under')
+    peer.destroy()
+  })
+
+  it('shows a live same-checkout session’s explicit declarations on join even without company', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ repo: 'r', branch: 'main', base })
+    const joined = fakeSession(room)
+    joined.awareness.setLocalStateField('watchedDirectory', dir)
+    const peer = addPresence(joined.awareness, 'Kieran')
+    peer.setLocalStateField('watchedDirectory', dir)
+    applyAwarenessUpdate(joined.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+    room.setScope({ by: 'Kieran', byKind: 'agent', area: 'api', summary: 'editing app', paths: ['app.py'] })
+    room.addClaim({ by: 'Kieran', byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'change parser' })
+    let current: Session | null = null
+    const tools = createTools({ getSession: () => current, setSession: s => { current = s }, cwd: dir, join: async () => joined, log: () => {} })
+    activeTools.add(tools)
+    const reply = await tools.call('room_join', {})
+    expect(reply).toContain('alone here')
+    expect(reply).toContain("scope: Kieran's agent")
+    expect(reply).toContain('claim')
+    expect(reply).toContain('change parser')
     peer.destroy()
   })
 

@@ -188,10 +188,10 @@ describe('nested lead: a worker that leads workers', () => {
     const conn = { room, displayRoomName: 'local/top/shop', onStatus: vi.fn(), provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
     const panel = participantsPanel(conn, createFocusState())
     document.body.append(panel)
-    // Live shape: two sibling groups, "rohanz · 1 running" and "rohanz+lead · 2 running", with rohanz+lead's card in both.
+    // Live shape: two sibling groups, "rohanz's agent · 1 running" and "rohanz+lead · 2 running", with rohanz+lead's card in both.
     const names = [...panel.querySelectorAll('.participant .participant-head strong')].map(el => el.textContent)
     expect(names.filter(n => n === LEAD)).toHaveLength(1)
-    const humanGroup = [...panel.querySelectorAll('.worker-group')].find(g => g.querySelector('.worker-group-heading')?.textContent?.startsWith(`${HUMAN} ·`))
+    const humanGroup = [...panel.querySelectorAll('.worker-group')].find(g => g.querySelector('.worker-group-heading')?.textContent?.startsWith(`${HUMAN}'s agent ·`))
     expect(humanGroup?.textContent).toContain('rohanz+cat')
     dom.window.close(); room.doc.destroy()
   })

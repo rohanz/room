@@ -1,5 +1,5 @@
 import { describeClaim } from './claims.js'
-import { describeIdentity, displayName, isAgentic } from './identity.js'
+import { describeIdentity, isAgentic } from './identity.js'
 import type { Claim, Kind, NoteMsg, Presence, RetiredWorker, Scope, ShareLevel, Worker } from './types.js'
 
 /** Split a room identity while preserving slashes within its branch. */
@@ -111,11 +111,11 @@ export interface ParticipantInput {
 }
 
 /** Shared identity text for browser cards and room_state, using only reported runtime facts. */
-export function participantIdentityLine(current: readonly Presence[], name: string, worker?: Worker): string {
+export function participantIdentityLine(current: readonly Presence[], name: string, worker?: Worker, fallbackKind?: Kind): string {
   const p = [...current].filter(p => p.user.name === name).sort((a, b) => Number(isAgentic(b.user.kind)) - Number(isAgentic(a.user.kind)) || (b.lastActive ?? 0) - (a.lastActive ?? 0))[0]
-  const id = p?.user ?? (worker ? { name, kind: 'agent' as const, owner: worker.name.split('+')[0], label: worker.tag } : undefined)
+  const id = p?.user ?? (worker ? { name, kind: 'agent' as const, owner: worker.name.split('+')[0], label: worker.tag } : fallbackKind ? { name, kind: fallbackKind } : undefined)
   if (!id) return name
-  const parts = [describeIdentity(id).replace(id.name, displayName(id))]
+  const parts = [describeIdentity(id)]
   const host = p?.host ?? worker?.host
   if (host && host !== 'agent' && host !== id.label) parts.push(host)
   const model = p?.model ?? worker?.model
@@ -157,7 +157,7 @@ export function deriveParticipants(input: ParticipantInput): Participant[] {
       behindBase: Boolean(input.roomBase && ownBase && ownBase !== input.roomBase),
       latestActive,
       kinds: Array.from(kinds).sort((a, b) => a.localeCompare(b)),
-      identity: participantIdentityLine(current, name, input.workers?.find(w => w.name === name)).slice(name.length + 3),
+      identity: participantIdentityLine(current, name, input.workers?.find(w => w.name === name), kinds.has('agent') ? 'agent' : scope?.byKind ?? input.claims.find(c => c.by === name)?.byKind).split(' · ').slice(1).join(' · '),
       statuses: Array.from(latest.entries())
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([kind, presence]) => ({ kind, status: presence.status ?? 'online' })),

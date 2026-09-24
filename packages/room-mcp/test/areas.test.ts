@@ -108,9 +108,9 @@ describe('areas from CODEOWNERS', () => {
     const mine = await t.rohan.tools.call('room_state', {})
     expect(mine).toContain('your areas: web/')
     expect(mine).toContain('participants overlapping your work (1 active):')
-    expect(mine).toContain('Rohan · agent (you)')
+    expect(mine).toContain("Rohan's agent (you)")
     expect(mine).not.toContain('Kieran · agent')
-    expect(mine).toContain('1 others: Kieran (all:true for detail)')
+    expect(mine).toContain("1 others: Kieran's agent (all:true for detail)")
     expect(mine).toContain('open claims (1):')
     expect(mine).toContain('Kieran: 1 claim(s) · api/')
     expect(mine).not.toContain('tune a')
@@ -119,7 +119,7 @@ describe('areas from CODEOWNERS', () => {
     expect(mine).not.toContain('Kieran · agent · areas api/')
     const all = await t.rohan.tools.call('room_state', { all: true })
     expect(all).toContain('participants (2 active):')
-    expect(all).toMatch(/Kieran · agent: working on api: handlers \(api\/\).* · areas api\//)
+    expect(all).toMatch(/Kieran's agent: working on api: handlers \(api\/\).* · areas api\//)
     expect(all).toContain('tune a')
     expect(all).toContain('Kieran: api/a.py')
     // Someone in my area is listed without all=true.
@@ -169,7 +169,7 @@ describe('areas without CODEOWNERS', () => {
     t.sync()
     const st = await t.rohan.tools.call('room_state', {})
     expect(st).toContain('your areas: /, api/')
-    expect(st).toContain('1 others: Kieran (all:true for detail)')
+    expect(st).toContain("1 others: Kieran's agent (all:true for detail)")
   })
 
   it('with no scope and no changes you see everything', async () => {

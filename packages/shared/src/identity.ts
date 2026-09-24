@@ -23,9 +23,10 @@ export function isAgentic(kind: Kind | undefined): boolean {
 }
 
 export function displayName(id: Identity | { name: string; kind: Kind }): string {
+  const owner = 'owner' in id ? id.owner : undefined
   const label = 'label' in id ? id.label : undefined
   switch (id.kind) {
-    case 'agent': return id.name
+    case 'agent': return id.name.includes('+') ? id.name : `${owner ?? id.name}'s agent`
     case 'bot': return `${label ?? id.name} [bot]`
     case 'ci': return `${label ?? id.name} [ci]`
     default: return id.name
@@ -34,8 +35,8 @@ export function displayName(id: Identity | { name: string; kind: Kind }): string
 
 /** One line for participant lists: "rohanz+codex · agent of rohanz · codex". */
 export function describeIdentity(id: Identity): string {
-  const parts = [id.name]
-  if (id.kind !== 'human') parts.push(id.owner && id.owner !== id.name ? `${id.kind} of ${id.owner}` : id.kind)
+  const parts = [displayName(id)]
+  if (id.kind !== 'human' && !(id.kind === 'agent' && !id.name.includes('+'))) parts.push(id.owner && id.owner !== id.name ? `${id.kind} of ${id.owner}` : id.kind)
   if (id.label) parts.push(id.label)
   return parts.join(' · ')
 }

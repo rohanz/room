@@ -14,7 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { randomUUID } from 'node:crypto'
-import { BASE_CATCH_UP, formatMsg, formatPlans, shouldWakeOnMsg, type Msg, isAgentic } from '@room/shared'
+import { BASE_CATCH_UP, displayName, formatMsg, formatPlans, shouldWakeOnMsg, type Msg, type Presence, isAgentic } from '@room/shared'
 import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
 import { claudeWakeUnavailable } from './prompt.js'
@@ -255,6 +255,8 @@ export class HooksBridge {
         .flatMap(by => this.s.room.changedPaths(by).map(path => ({ by, path, reason: 'changed' }))),
     ]
     const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now())
+    const presences = [...this.s.awareness.getStates().values()] as Partial<Presence>[]
+    const others = company.others.map(name => displayName({ name, kind: (presences.find(p => p.user?.name === name && p.user.kind === 'agent') ?? presences.find(p => p.user?.name === name))?.user?.kind ?? this.s.room.scope(name)?.byKind ?? 'agent' }))
     const sessionId = this.freshSession()?.id
     const held = acquireNoticeLock(this.stateFile())
     if (!held) { this.scheduleWrite(); return }
@@ -265,7 +267,7 @@ export class HooksBridge {
         typeof previous.at === 'number' && previous.at <= at && at - previous.at < 60_000
         ? Object.fromEntries(['pendingDisclosure', 'deliveredDisclosure', 'pendingNotice', 'deliveredNotice']
             .filter(key => typeof previous[key] === 'string').map(key => [key, previous[key]])) : {}
-      fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, ...(sessionId ? { sessionId } : {}), at, company: company.company, others: company.others, companyLine: describeCompany(this.s, company), unread, claims, ownClaims, near, ...carry }, null, 1) + '\n')
+      fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, ...(sessionId ? { sessionId } : {}), at, company: company.company, others, companyLine: describeCompany(this.s, company), unread, claims, ownClaims, near, ...carry }, null, 1) + '\n')
     } catch (e) {
       this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`)
     } finally {

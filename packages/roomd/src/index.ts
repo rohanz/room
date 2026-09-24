@@ -8,7 +8,8 @@ import { readRoomFile, roomFilePath } from './room-file.js'
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
 import fs from 'node:fs'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
+import os from 'node:os'
+import { createHash, randomBytes } from 'node:crypto'
 import { DiskBatch } from './disk-batch.js'
 import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
@@ -45,6 +46,41 @@ export function clampShare(level: ShareLevel, max: ShareLevel): ShareLevel {
 }
 /** Presence as this daemon publishes it: the shared Presence plus the sharing level. */
 export type SharePresence = Presence & { share?: ShareLevel }
+
+const machineHostname = os.hostname()
+const machineIdentities = new Map<string, string>()
+let machineIdentityWarningLogged = false
+
+/** Stable per-machine salt; an override keeps tests away from the user's config dir. */
+function machineIdentity(log: (line: string) => void): string {
+  if (process.env.ROOM_MACHINE_ID) return process.env.ROOM_MACHINE_ID
+  const file = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'room', 'machine-id')
+  const cached = machineIdentities.get(file)
+  if (cached) return cached
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    // Publish the fully written file atomically so racing daemons never read a blank id.
+    const temporary = `${file}.${process.pid}.${randomBytes(8).toString('hex')}`
+    try {
+      fs.writeFileSync(temporary, randomBytes(32).toString('hex') + '\n', { flag: 'wx', mode: 0o600 })
+      try { fs.linkSync(temporary, file) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    } finally {
+      try { fs.rmSync(temporary, { force: true }) } catch { /* best effort */ }
+    }
+    const id = fs.readFileSync(file, 'utf8').trim()
+    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('invalid machine-id file')
+    machineIdentities.set(file, id)
+    return id
+  } catch (error) {
+    machineIdentities.set(file, machineHostname)
+    if (!machineIdentityWarningLogged) {
+      machineIdentityWarningLogged = true
+      try { log(`machine id unavailable (${error instanceof Error ? error.message : String(error)}); using hostname for checkout identity`) } catch { /* logging must not break join */ }
+    }
+    return machineHostname
+  }
+}
 
 export interface RoomdOptions {
   /** Full room URL, e.g. ws://host:1234/my-room */
@@ -256,7 +292,7 @@ class Daemon implements Roomd {
     this.localRoom = !!options.localKey
     this.log = options.log ?? (line => process.stderr.write(`[roomd] ${line}\n`))
     this.debounceMs = options.debounceMs ?? 300
-    this.watchedDirectory = createHash('sha256').update(fs.realpathSync(this.dir)).digest('hex')
+    this.watchedDirectory = createHash('sha256').update(machineHostname).update('\0').update(machineIdentity(this.log)).update('\0').update(fs.realpathSync(this.dir)).digest('hex')
     this.batch = new DiskBatch(paths => {
       const work = this.enqueue(async () => {
         await this.pollHead()

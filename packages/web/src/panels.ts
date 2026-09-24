@@ -14,6 +14,7 @@ import {
   type WorkerParticipantGroup,
   type RetiredWorker,
   describeClaim,
+  displayName,
   formatPlans,
   participantClaimLine,
   presentPeople,
@@ -166,6 +167,15 @@ export function participantGroups(conn: Conn): ParticipantGroups {
   return splitParticipants({ ...participantInput(conn), retiredWorkers: conn.room.retiredWorkers() })
 }
 
+function participantLabel(conn: Conn, name: string): string {
+  const current = presences(conn.provider, conn.room).filter(p => p.user.name === name)
+  const kind = (current.find(p => p.user.kind === 'agent') ?? current[0])?.user.kind
+    ?? conn.room.scope(name)?.byKind
+    ?? conn.room.messages().find(m => m.from === name)?.fromKind
+    ?? 'agent'
+  return displayName({ name, kind })
+}
+
 function archiveCard(worker: RetiredWorker): HTMLElement {
   return h('article', { class: 'archive-worker' },
     h('strong', { class: 'mono' }, worker.tag),
@@ -188,7 +198,7 @@ export function groupedPeople(groups: ParticipantGroups, card: (person: Particip
     const lead = people.find(p => p.name === group.lead)
     const nested = new Map(group.nested.map(child => [child.lead, child]))
     const section = h('section', { class: 'worker-group' },
-      h('div', { class: 'worker-group-heading' }, `${group.lead} · ${group.running} running · ${group.retiredWorkers.length} finished`),
+      h('div', { class: 'worker-group-heading' }, `${displayName({ name: group.lead, kind: 'agent' })} · ${group.running} running · ${group.retiredWorkers.length} finished`),
       lead ? card(lead) : null,
       h('div', { class: 'worker-children' }, ...group.active.map(person => nested.has(person.name) ? renderGroup(nested.get(person.name)!) : card(person)),
         ...group.nested.filter(child => !group.active.some(person => person.name === child.lead)).map(renderGroup)))
@@ -328,10 +338,10 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
       const short = shortPill(state)
       const card = h('div', {
         class: `participant${participant.online ? '' : ' offline'}${focus.person === participant.name ? ' focused' : ''}`,
-        title: focus.person === participant.name ? `Clear ${participant.name} focus` : `Focus on ${participant.name}`,
+        title: focus.person === participant.name ? `Clear ${participantLabel(conn, participant.name)} focus` : `Focus on ${participantLabel(conn, participant.name)}`,
         role: 'button', tabIndex: 0,
       },
-      h('div', { class: 'participant-head' }, dot(participant.name, participant.name, conn.room), h('strong', {}, participant.name), h('span', { class: 'sp' }),
+      h('div', { class: 'participant-head' }, dot(participant.name, participant.name, conn.room), h('strong', {}, displayName({ name: participant.name, kind: participant.kinds.includes('agent') ? 'agent' : participant.kinds[0] ?? 'agent' })), h('span', { class: 'sp' }),
         h('span', { class: `state-pill ${state.split(' ')[0]}`, title: state }, short)),
       participant.identity ? h('div', { class: 'micro muted participant-identity', title: participant.identity }, participant.identity) : null,
       participant.scope
@@ -725,7 +735,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     if (!selectedPerson || !people.includes(selectedPerson)) selectedPerson = people[0]
     const key = `${selectedPath}\0${tab}\0${selectedPerson}`
     if (key !== windowKey) { windowState = {}; windowKey = key }
-    personSelect.replaceChildren(...people.map(person => h('option', { value: person, selected: person === selectedPerson }, person)))
+    personSelect.replaceChildren(...people.map(person => h('option', { value: person, selected: person === selectedPerson }, participantLabel(conn, person))))
     personSelect.hidden = tab === 'Merged'
     compareLabel.hidden = tab !== 'Diff'
 
@@ -758,7 +768,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const active = included(selected.path, people)
       const prominent = new Set([...participantGroups(conn).active.map(p => p.name), ...focus.timelinePeople, ...(focus.person ? [focus.person] : [])])
       chips.replaceChildren(...compactChips(people.map(person => {
-        const button = h('button', { class: 'merge-chip', ariaPressed: String(active.includes(person)) }, dot(person, person, conn.room), person)
+        const button = h('button', { class: 'merge-chip', ariaPressed: String(active.includes(person)) }, dot(person, person, conn.room), participantLabel(conn, person))
         button.onclick = () => {
           const off = excluded.get(selected.path) ?? new Set<string>()
           if (off.has(person)) off.delete(person); else off.add(person)
@@ -844,7 +854,7 @@ function priorityBadge(message: Msg): HTMLElement | null {
 }
 
 function copyChips(names: readonly string[]): HTMLElement[] {
-  return names.map(name => h('span', { class: 'link-chip' }, `→ also sent to ${name}`))
+  return names.map(name => h('span', { class: 'link-chip' }, `→ also sent to ${displayName({ name, kind: 'agent' })}`))
 }
 
 export function messageBody(message: Msg): (Node | string | null)[] {
@@ -858,7 +868,7 @@ export function messageBody(message: Msg): (Node | string | null)[] {
     case 'note': return [message.text]
     case 'question': return [h('strong', {}, 'asked '), message.text]
     case 'answer': return [h('strong', {}, 'answered '), message.text]
-    case 'base': return [`${message.from} pushed ${message.commits} commit${message.commits === 1 ? '' : 's'}: ${message.summary} (base → ${message.base.slice(0, 7)})`]
+    case 'base': return [`${displayName({ name: message.from, kind: message.fromKind })} pushed ${message.commits} commit${message.commits === 1 ? '' : 's'}: ${message.summary} (base → ${message.base.slice(0, 7)})`]
     case 'plan': return [h('strong', {}, `${message.status} plan `), formatPlans([message.plan]), message.replacedBy ? ` → now ${formatPlans([message.replacedBy])}` : '', ` · ${message.text}`]
     case 'scope': return [message.summary]
     case 'done': return [h('strong', {}, `worker ${message.tag} finished `), message.summary, message.changed.length ? h('span', { class: 'mono' }, ` · ${message.changed.join(', ')}`) : null]
@@ -872,7 +882,7 @@ function timelineItem(item: TimelineItem): HTMLElement {
   return h('div', { class: `timeline-item ${message.type} priority-${message.priority}` },
     h('div', { class: 'item-main' },
       h('time', { title: absoluteTime(message.at) }, clockTime(message.at)),
-      h('div', { class: 'item-copy' }, item.addressed ? h('span', { class: 'link-chip' }, `${message.from} → ${message.to}`) : null, ...messageBody(message), other ? h('span', { class: 'link-chip' }, `↗ ${other}`) : null, ...copyChips(item.alsoSentTo)),
+      h('div', { class: 'item-copy' }, item.addressed ? h('span', { class: 'link-chip' }, `${displayName({ name: message.from, kind: message.fromKind })} → ${displayName({ name: message.to!, kind: 'agent' })}`) : null, ...messageBody(message), other ? h('span', { class: 'link-chip' }, `↗ ${displayName({ name: other, kind: 'agent' })}`) : null, ...copyChips(item.alsoSentTo)),
       priorityBadge(message)),
     item.replies.length ? h('div', { class: 'thread-replies' }, ...item.replies.map(timelineItem)) : null)
 }
@@ -881,7 +891,7 @@ function timelineItem(item: TimelineItem): HTMLElement {
 function episodeCard(episode: Episode, seen?: Set<string>, room?: RoomDoc): HTMLElement {
   const fresh = (id: string) => { if (!seen) return false; if (seen.has(id)) return false; seen.add(id); return true }
   const card = h('article', { class: `episode${fresh(`ep:${episode.id}`) ? ' enter' : ''}` },
-    h('div', { class: 'episode-head' }, dot(episode.person, episode.person, room), h('strong', {}, episode.person), h('span', { class: 'area-chip' }, episode.area),
+    h('div', { class: 'episode-head' }, dot(episode.person, episode.person, room), h('strong', {}, displayName({ name: episode.person, kind: episode.items[0]?.message.fromKind ?? 'agent' })), h('span', { class: 'area-chip' }, episode.area),
       h('span', { class: `episode-status ${episode.status === 'done' ? 'done' : ''}` }, episode.status)),
     h('div', { class: 'episode-summary' }, episode.summary, ...copyChips(episode.alsoSentTo)),
     h('div', { class: 'episode-items' }, ...episode.items.map(item => {
@@ -940,7 +950,7 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
       chip('All', !areaFilter && !focus.person, () => { areaFilter = null; windowSize = TIMELINE_WINDOW; focus.set(null); render() }),
       ...compactChips([
         ...areas.map(area => ({ key: 'area:' + area, selected: areaFilter === area && !focus.person, node: chip(area, areaFilter === area && !focus.person, () => { areaFilter = area; windowSize = TIMELINE_WINDOW; focus.set(null); render() }) })),
-        ...people.map(person => ({ key: person, selected: focus.person === person, node: chip(person, focus.person === person, () => { areaFilter = null; windowSize = TIMELINE_WINDOW; focus.set(focus.person === person ? null : person) }) })),
+        ...people.map(person => ({ key: person, selected: focus.person === person, node: chip(participantLabel(conn, person), focus.person === person, () => { areaFilter = null; windowSize = TIMELINE_WINDOW; focus.set(focus.person === person ? null : person) }) })),
       ], new Set([...prominentPeople, ...[...prominentAreas].map(a => 'area:' + a)]), moreFilters, open => { moreFilters = open }),
     )
     priorityFilters.replaceChildren(...TIMELINE_PRIORITIES.map(priority => {

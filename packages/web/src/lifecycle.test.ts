@@ -28,6 +28,23 @@ function retired(tag: string): RetiredWorker {
   return { name: `Lead+${tag}`, tag, lead: 'Lead', host: 'codex', model: 'model', task: 'Task', summary: 'Finished the task', files: ['a.ts'], fileCount: 61, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' }
 }
 
+it('labels an untagged agent separately from a human in both participant and timeline views', () => {
+  const { room, conn } = setup()
+  room.bus.push([
+    { id: 'scope', type: 'scope', from: 'Lead', fromKind: 'agent', at: 0, priority: 'fyi', area: 'api', summary: 'agent scope', paths: ['a.ts'] },
+    { id: 'agent', type: 'note', from: 'Lead', fromKind: 'agent', at: 1, priority: 'fyi', text: 'agent note' },
+    { id: 'human', type: 'note', from: 'Lead', fromKind: 'human', at: 2, priority: 'fyi', text: 'human note' },
+  ])
+  const focus = createFocusState()
+  const people = participantsPanel(conn, focus), board = boardPanel(conn, vi.fn()), timeline = timelinePanel(conn, focus)
+  document.body.append(people, board, timeline)
+  expect(people.querySelector('.participant-head strong')?.textContent).toBe("Lead's agent")
+  expect(board.querySelector('.person-open')?.textContent).toBe("Lead's agent")
+  expect(board.querySelectorAll('.feed-meta strong')[0]?.textContent).toBe('Lead')
+  expect([...board.querySelectorAll('.feed-meta strong')].some(node => node.textContent === "Lead's agent")).toBe(true)
+  expect(timeline.querySelector('.episode-head strong')?.textContent).toBe("Lead's agent")
+})
+
 it('nests active and failed workers, collapses archives, and counts active in both presentations', () => {
   const { room, conn, dom } = setup()
   room.workers.set('running', worker('running'))
@@ -39,7 +56,7 @@ it('nests active and failed workers, collapses archives, and counts active in bo
   document.body.append(people, board, top)
   expect(top.textContent).toContain('3 active')
   for (const panel of [people, board]) {
-    expect(panel.textContent).toContain('Lead · 1 running · 1 finished')
+    expect(panel.textContent).toContain("Lead's agent · 1 running · 1 finished")
     expect(panel.querySelector('.worker-children')!.textContent).toContain('failed')
     expect(panel.querySelector('.offline-group')!.textContent).toContain('Away')
     const details = panel.querySelector<HTMLDetailsElement>('.finished-workers')!
@@ -53,7 +70,7 @@ it('nests active and failed workers, collapses archives, and counts active in bo
   room.retireParticipant('Lead+running', retired('running'))
   renderScheduler.flushNow()
   expect(top.textContent).toContain('2 active')
-  expect(people.textContent).toContain('Lead · 0 running · 2 finished')
+  expect(people.textContent).toContain("Lead's agent · 0 running · 2 finished")
   expect(people.querySelector<HTMLDetailsElement>('.finished-workers')!.open).toBe(true)
 })
 
@@ -81,8 +98,8 @@ it('bounds timeline and merge controls while retaining older filters and scope c
     more.click()
     expect(extra().every(chip => chip.hidden)).toBe(true)
   }
-  expect([...center.querySelectorAll<HTMLElement>('.merge-chips > .merge-chip')].filter(chip => chip.hidden).map(chip => chip.textContent)).toContain('Old')
-  expect([...center.querySelectorAll<HTMLElement>('.merge-chips > .merge-chip')].filter(chip => !chip.hidden).map(node => node.textContent)).toEqual(['Lead', 'Recent'])
+  expect([...center.querySelectorAll<HTMLElement>('.merge-chips > .merge-chip')].filter(chip => chip.hidden).map(chip => chip.textContent)).toContain("Old's agent")
+  expect([...center.querySelectorAll<HTMLElement>('.merge-chips > .merge-chip')].filter(chip => !chip.hidden).map(node => node.textContent)).toEqual(["Lead's agent", "Recent's agent"])
   timeline.querySelector<HTMLButtonElement>('.timeline-more')!.click()
   expect(timeline.querySelector('.timeline-list')!.textContent).toContain('Old task')
   expect(center.querySelector('.more-chips')).toBeNull()

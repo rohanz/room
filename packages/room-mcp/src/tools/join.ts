@@ -1,6 +1,6 @@
 import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
-import { roomNameParts, type Claim, type NoteMsg } from '@room/shared'
+import { roomNameParts, scopeLine, type Claim, type NoteMsg } from '@room/shared'
 import { resolve } from 'node:path'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
@@ -187,23 +187,28 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (note) out.push(note)
       if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)
       if (presences(s).some(p => sameCheckoutSession(s, p.user.name))) out.push('another session in this checkout')
+      const sameCheckoutNames = new Set(presences(s).filter(p => sameCheckoutSession(s, p.user.name)).map(p => p.user.name))
+      for (const scope of s.room.allScopes()) if (sameCheckoutNames.has(scope.by)) out.push(`  scope: ${displayName({ name: scope.by, kind: scope.byKind })} is on ${scopeLine(scope)}`)
+      const sameCheckoutClaims = s.room.openClaims().filter(c => sameCheckoutNames.has(c.by))
       const company = hasCompany(s)
       if (!company.company) {
+        if (sameCheckoutClaims.length) out.push(`open claims in this checkout (${sameCheckoutClaims.length}):`, ...sameCheckoutClaims.map(c => claimLine(s, c)))
         out.push(shareLine(s))
         out.push('alone here; the room stays quiet until someone joins')
         return out.join('\n')
       }
       out.push(shareLine(s))
       const here = others(s).filter(n => !sameCheckoutSession(s, n) && presences(s).some(p => p.user.name === n))
+      const label = (name: string) => displayName({ name, kind: (presences(s).find(p => p.user.name === name && p.user.kind === 'agent') ?? presences(s).find(p => p.user.name === name))?.user.kind ?? s.room.scope(name)?.byKind ?? s.room.openClaims().find(c => c.by === name)?.byKind ?? 'human' })
       const mineA = myAreas(s)
       setPresence(s, { areas: mineA })
       out.push(...areaLines(s, mineA))
-      out.push(here.length ? `here now: ${here.join(', ')}` : 'nobody else is here yet')
-      for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`)
+      out.push(here.length ? `here now: ${here.map(label).join(', ')}` : 'nobody else is here yet')
+      for (const n of here) out.push(`  ${label(n)}: ${personLine(s, n)}`)
       const away = others(s).filter(n => !sameCheckoutSession(s, n) && !here.includes(n) && s.room.changedPaths(n).length)
-      for (const n of away) out.push(`  ${n} (offline): ${personLine(s, n)}`)
+      for (const n of away) out.push(`  ${label(n)} (offline): ${personLine(s, n)}`)
       if (s.autoTagNote) { out.push(s.autoTagNote); delete s.autoTagNote }
-      const cs = s.room.openClaims().filter(c => !sameCheckoutSession(s, c.by))
+      const cs = s.room.openClaims()
       if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       out.push('next: room_scope(area, summary, paths) before you edit.')

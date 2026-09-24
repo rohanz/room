@@ -27,15 +27,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         ...s.room.openClaims().map(c => ({ by: c.by, path: c.path, reason: 'claim' as const })),
         ...[...new Set([...s.room.overlays.keys(), ...s.room.deleted.keys()])].flatMap(by => s.room.changedPaths(by).map(path => ({ by, path, reason: 'changed' as const }))),
       ]
-      if (!nearPath(p, nearby.filter(entry => entry.by !== s.me.name && !sameCheckoutSession(s, entry.by))).length) return `${p}: no claim needed; nobody else is near this path`
+      if (!nearPath(p, nearby.filter(entry => entry.by !== s.me.name && (entry.reason !== 'changed' || !sameCheckoutSession(s, entry.by)))).length) return `${p}: no claim needed; nobody else is near this path`
       const plans = parsePlans(a.plans)
       if (typeof plans === 'string') return plans
       const directory = p.endsWith('/')
       if (directory && a.symbol) return 'error: directory claims do not take a symbol'
       if (directory) {
-        const scopeHits = s.room.allScopes().flatMap(sc => sc.by === s.me.name || sameCheckoutSession(s, sc.by) ? [] : sc.paths
+        const scopeHits = s.room.allScopes().flatMap(sc => sc.by === s.me.name ? [] : sc.paths
           .filter(path => coversPath(p, path)).map(path => `${sc.by}'s scope includes ${path}`))
-        const claimHits = s.room.openClaims().flatMap(c => isMe(s, { name: c.by, kind: c.byKind }) || sameCheckoutSession(s, c.by) || !coversPath(p, c.path)
+        const claimHits = s.room.openClaims().flatMap(c => isMe(s, { name: c.by, kind: c.byKind }) || !coversPath(p, c.path)
           ? [] : [`${c.by}'s claim includes ${c.path}`])
         const hits = [...scopeHits, ...claimHits]
         if (hits.length) return `cannot claim ${p}: it would cover another participant's declared work (${hits.join('; ')}). Claim narrower files instead.`
@@ -58,7 +58,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const r = directory ? range : clampRange(range.from, range.to, n)
       const intentFull = symbol ? `${symbol}: ${intent}` : intent
-      const overl = s.room.openClaims().filter(c => !isMe(s, { name: c.by, kind: c.byKind }) && !sameCheckoutSession(s, c.by) && claimsOverlap(c, { path: p, ...r }))
+      const overl = s.room.openClaims().filter(c => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }))
       let claim!: Claim
       let msg!: ClaimMsg
       s.room.doc.transact(() => {
@@ -172,7 +172,7 @@ export function install(state: HandlerState): void {
         for (const [id, ch] of ev.changes.keys) {
           if (ch.action !== 'add') continue
           const arrived = s.room.openClaims().find(c => c.id === id)
-          if (!arrived || (arrived.by === s.me.name && arrived.byKind === s.me.kind) || sameCheckoutSession(s, arrived.by)) continue
+          if (!arrived || (arrived.by === s.me.name && arrived.byKind === s.me.kind)) continue
           for (const m of mine(s)) {
             if (!claimsOverlap(m, arrived)) continue
             const key = [m.id, arrived.id].sort().join(':')

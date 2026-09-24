@@ -119,13 +119,15 @@ export class RoomDoc {
 
   /** Repair older archives that left live records behind; this is document-only and cheap for room_state. */
   sweepRetiredWorkers(present: ReadonlySet<string> = new Set()): number {
-    const claims = new Set([...this.claims.values()].map(c => c.by))
     let swept = 0
     for (const retired of this.retiredWorkers()) {
       if (present.has(retired.name)) continue
-      const current = this.workerOf(retired.name)
-      if (current && (current.startedAt !== retired.startedAt || current.lead !== retired.lead)) continue
-      if (!current && !this.overlays.has(retired.name) && !this.deleted.has(retired.name) && !claims.has(retired.name) && !this.scopes.has(retired.name)) continue
+      const currentWorkers = [...this.workers.values()].filter(w => w.name === retired.name)
+      // A name can later belong to a standalone participant. Only the matching live
+      // worker record proves that coordination under it belongs to this retirement.
+      if (currentWorkers.length !== 1) continue
+      const current = currentWorkers[0]
+      if (current.startedAt !== retired.startedAt || current.lead !== retired.lead || current.tag !== retired.tag) continue
       this.retireParticipant(retired.name, retired)
       swept++
     }

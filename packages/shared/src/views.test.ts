@@ -51,7 +51,7 @@ describe('shared room views', () => {
     expect(personLine({ name: 'Kieran', scope, presences: [], changedPaths: ['api/a.py'], messages: [], share: 'intent' }))
       .toBe('working on api: handlers (api/); shares intent (no file text); uncommitted, not yet pushed: api/a.py')
     expect(claimLine(claim, { yours: true, stale: true }))
-      .toBe('  - c1: Kieran · api/a.py:1-2 · tune a (yours) [stale: owner offline]')
+      .toBe("  - c1: Kieran's agent · api/a.py:1-2 · tune a (yours) [stale: owner offline]")
     expect(participantClaimLine({ ...claim, plans: [{ kind: 'rename', symbol: 'a', detail: 'b' }] }))
       .toBe('api/a.py:1-2 · tune a → rename a to b')
   })
@@ -88,6 +88,7 @@ it('uses the same reported runtime line online and for recorded offline workers'
   expect(participantIdentityLine([p], p.user.name)).toBe('rohanz+codex · agent of rohanz · codex')
   expect(participantIdentityLine([{ ...p, host: 'codex', model: 'gpt-6-astra', effort: 'medium' }], p.user.name)).toBe('rohanz+codex · agent of rohanz · codex · gpt-6-astra · medium')
   expect(participantIdentityLine([], 'unknown')).toBe('unknown')
+  expect(participantIdentityLine([], 'Ada', undefined, 'agent')).toBe("Ada's agent")
   const worker = { name: p.user.name, tag: 'codex', host: 'codex' as const, model: 'gpt-6-astra', effort: 'medium', task: 'test', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'done' as const, lead: 'rohanz' }
   const input = { presences: [], workers: [worker], scopes: [], overlayPeople: [], changesByPerson: new Map(), claims: [] }
   expect(deriveParticipants(input)[0]).toMatchObject({ online: false, identity: 'agent of rohanz · codex · gpt-6-astra · medium' })

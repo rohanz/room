@@ -92,7 +92,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const out = [`${p} as ${person} sees it (${lines(t)} lines${edited ? ', uncommitted edits' : diskWorker(s, person) ? ', worktree file' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`]
       const who = s.room.whoChanged(p).filter(x => x !== person && !sameCheckoutSession(s, x))
       if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(', ')} — room_read with person= to see theirs`)
-      for (const c of s.room.claimsFor(p)) if (!sameCheckoutSession(s, c.by)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
+      for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
       out.push(withLineNumbers(t))
       out.push(...ledgerLines(s, { path: p, limit: 10 }, p))
       return out.join('\n')

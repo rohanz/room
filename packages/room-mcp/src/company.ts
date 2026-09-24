@@ -14,10 +14,8 @@ export interface CompanyState {
 export function sameCheckoutSession(s: Session, name: string): boolean {
   const mine = s.awareness.getLocalState()?.watchedDirectory
   if (!mine || name === s.me.name) return false
-  return [...s.awareness.getStates().values()].some(value => {
-    const p = value as Partial<Presence>
-    return p.user?.name === name && p.watchedDirectory === mine
-  })
+  const peers = [...s.awareness.getStates()].filter(([id, value]) => id !== s.awareness.clientID && (value as Partial<Presence>).user?.name === name && isFresh(s.awareness, id, Date.now()))
+  return peers.length > 0 && peers.every(([, value]) => (value as Partial<Presence>).watchedDirectory === mine)
 }
 
 /** Company means another participant present now (fresh awareness, excluding browser viewers),
@@ -40,9 +38,12 @@ export function hasCompany(s: Session, runningWorkers: readonly Worker[] = [], n
 /** One announcement carries the work that makes company relevant. */
 export function describeCompany(s: Session, company: CompanyState): string {
   const scopes = s.room.allScopes()
+  const current = [...s.awareness.getStates().values()] as Partial<Presence>[]
   const entries = company.others.map(name => {
-    const scope = scopes.find(sc => name === sc.by || name === displayName({ name: sc.by, kind: sc.byKind }))
-    return scope ? `${scope.by} is here, on ${scope.area}: ${scope.paths.join(', ')}` : `${name} is here`
+    const scope = scopes.find(sc => name === sc.by)
+    const presence = current.find(p => p.user?.name === name && p.user.kind === 'agent') ?? current.find(p => p.user?.name === name)
+    const who = displayName({ name, kind: presence?.user?.kind ?? scope?.byKind ?? 'agent' })
+    return scope ? `${who} is here, on ${scope.area}: ${scope.paths.join(', ')}` : `${who} is here`
   })
   return '[room] ' + entries.join('; ') + '.'
 }

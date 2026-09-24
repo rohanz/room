@@ -45,3 +45,29 @@ it('does not clear a currently active participant who reused an archived name', 
   expect(room.sweepRetiredWorkers(new Set([record.name]))).toBe(0)
   expect(room.changedPaths(record.name)).toEqual(['new.ts'])
 })
+
+it('keeps a newer standalone participant’s state after it disconnects with an archived worker name', () => {
+  const room = new RoomDoc()
+  const record: RetiredWorker = { name: 'lead+codex', tag: 'codex', lead: 'lead', host: 'codex', task: 'old task', summary: '', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' }
+  room.retireParticipant(record.name, record)
+  room.setOverlay(record.name, 'new.ts', 'new work')
+  room.setScope({ by: record.name, byKind: 'agent', area: 'new', summary: 'new session', paths: ['new.ts'] })
+  room.addClaim({ path: 'new.ts', from: 1, to: 1, by: record.name, byKind: 'agent', intent: 'new work' })
+  room.setBaseOf(record.name, 'new-base')
+  expect(room.sweepRetiredWorkers(new Set())).toBe(0)
+  expect(room.changedPaths(record.name)).toEqual(['new.ts'])
+  expect(room.scope(record.name)?.area).toBe('new')
+  expect(room.openClaims().map(c => c.by)).toEqual([record.name])
+  expect(room.baseOf(record.name)).toBe('new-base')
+})
+
+it('leaves reused-name state when worker records disagree about its generation', () => {
+  const room = new RoomDoc()
+  const record: RetiredWorker = { name: 'lead+codex', tag: 'codex', lead: 'lead', host: 'codex', task: 'old', summary: '', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' }
+  room.retireParticipant(record.name, record)
+  room.workers.set('codex', { tag: 'codex', name: record.name, lead: record.lead, host: 'codex', task: 'old', dir: '/old', branch: 'old', pid: -1, startedAt: 1, status: 'done' })
+  room.workers.set('new', { tag: 'new', name: record.name, lead: record.lead, host: 'codex', task: 'new', dir: '/new', branch: 'new', pid: -1, startedAt: 4, status: 'running' })
+  room.setOverlay(record.name, 'new.ts', 'new work')
+  expect(room.sweepRetiredWorkers()).toBe(0)
+  expect(room.changedPaths(record.name)).toEqual(['new.ts'])
+})

@@ -315,7 +315,6 @@ export class ConflictWatcher {
     const mine = claims.filter(c => c.by === me.name && c.byKind === me.kind)
     for (const c of claims) {
       if (c.by === me.name && c.byKind === me.kind) continue
-      if (this.d.coLocated?.(c.by)) continue
       const hit = ranges.find(r => claimsOverlap(c, { path: p, ...r }) && !mine.some(m => covers(m, p, r)))
       if (!hit) continue
       // An overlay is authoritative; the resolver also handles local workers whose
@@ -350,7 +349,7 @@ export class ConflictWatcher {
       this.d.room.post<ConflictMsg>(ROOM, { type: 'conflict', claimId: c.id, otherClaimId: '', path: p, to: me.name, priority: 'interrupt',
         text: `you edited ${p}:${hit.from}-${hit.to} inside ${who}'s claim ${c.id} (${c.intent}); claim it or room_wait(${c.id})` })
       this.d.room.post<ConflictMsg>(ROOM, { type: 'conflict', claimId: c.id, otherClaimId: '', path: p, to: c.by, priority: 'notify',
-        text: `${me.name}'s agent edited ${p}:${hit.from}-${hit.to} inside your claim ${c.id} (${c.intent}) without claiming` })
+        text: `${displayName(me)} edited ${p}:${hit.from}-${hit.to} inside your claim ${c.id} (${c.intent}) without claiming` })
       this.d.log?.(`overlap: my edit ${p}:${hit.from}-${hit.to} inside ${c.by}'s claim ${c.id}`)
     }
   }

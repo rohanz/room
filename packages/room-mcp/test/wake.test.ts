@@ -19,7 +19,7 @@ describe('shouldWake', () => {
   it('wakes on a question to me, with meta and content', () => {
     const w = shouldWake(me, { kind: 'msg', msg: msg({ type: 'question', to: 'Rohan', text: 'ok?' }) })!
     expect(w).not.toBeNull()
-    expect(w.content.split('\n')[0]).toBe('[notify] Kieran → Rohan asks: ok?')
+    expect(w.content.split('\n')[0]).toBe("[notify] Kieran's agent → Rohan's agent asks: ok?")
     expect(JSON.parse(w.content.split('\n')[1]).id).toBe('m_1')
     expect(w.meta).toEqual({ type: 'question', from: 'Kieran', from_kind: 'agent', msg_id: 'm_1' })
     for (const k of Object.keys(w.meta)) expect(k).toMatch(/^[a-z0-9_]+$/)

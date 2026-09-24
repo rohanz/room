@@ -114,7 +114,7 @@ describe('automatic join (real room-mcp processes)', () => {
     await mcp.waitFor(/another clone's relay; the session will join afresh/, 20_000)
     const lostAt = mcp.lines.length
     expect(await mcp.call('room_state')).toContain('you: Ada')
-    expect(mcp.lines.slice(lostAt).join('\n')).toMatch(/Ada joined local\/picked \(clone /)
+    expect(mcp.lines.slice(lostAt).join('\n')).toMatch(/Ada's agent joined local\/picked \(clone /)
     expect(await mcp.call('room_leave')).toMatch(/^left local\/picked/)
     expect(await mcp.call('room_state')).toBe('error: not in the local room; room_join to join it.')
   }, 90_000)

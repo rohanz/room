@@ -72,7 +72,7 @@ describe('timeline priority chips', () => {
       scope('ada-scope', 'Ada', 'api', 1), note('ada-fyi', 'Ada', 2, 'fyi'),
       scope('ben-scope', 'Ben', 'web', 3), note('ben-interrupt', 'Ben', 4, 'interrupt'),
     ])
-    s.filter('Ada').click()
+    s.filter("Ada's agent").click()
     expect(TIMELINE_PRIORITIES.map(level => s.priority(level).textContent)).toEqual(['interrupt 0', 'notify 1', 'fyi 1'])
     s.priority('fyi').click()
     s.filter('All').click()
@@ -88,7 +88,7 @@ describe('timeline priority chips', () => {
     const s = setup([scope('s-old', 'Old', 'legacy', 0, 'fyi'), ...Array.from({ length: 5 }, (_, i) => note(`old-${i}`, 'Old', i + 1, 'fyi')), scope('s-ada', 'Ada', 'api', 9), ...Array.from({ length: 35 }, (_, i) => note(`new-${i}`, 'Ada', i + 10, 'notify'))])
     const row = () => [...s.panel.querySelectorAll<HTMLElement>('.timeline-head > .filter-chips > *')].map(node => `${node.textContent}${node.hidden ? ' (hidden)' : ''}`)
     const before = row()
-    expect(before).toContain('Old (hidden)') // Old is outside the window, so it sits behind "Show all"
+    expect(before).toContain("Old's agent (hidden)") // Old is outside the window, so it sits behind "Show all"
     s.priority('notify').click()             // only Old's fyi notes are left in the list
     expect(s.panel.textContent).toContain('old-0')
     expect(row()).toEqual(before)

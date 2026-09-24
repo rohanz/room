@@ -74,7 +74,7 @@ it('addresses a note as a waking notification while leaving broadcast notes as F
   expect(addressed.priority).toBe('notify')
   expect(messageEndsWait(addressed, { me: 'Rohan' })).toBe(true)
   expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, addressed).wake).toBe(true)
-  expect(formatMsg(addressed)).toBe('[notify] Kieran → Rohan: please also check the report')
+  expect(formatMsg(addressed)).toBe("[notify] Kieran's agent → Rohan's agent: please also check the report")
   expect(broadcast.priority).toBe('fyi')
   expect(messageEndsWait(broadcast, { me: 'Rohan' })).toBe(false)
   expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, broadcast).wake).toBe(false)
@@ -150,6 +150,6 @@ it('addresses merge conflicts to the affected participant as a waking notificati
 it('formats a tagged question recipient by its Room name', () => {
   const room = new RoomDoc()
   const question = room.post<QuestionMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'rohanz+codex', text: 'which lines?' })
-  expect(formatMsg(question)).toBe('[notify] Rohan → rohanz+codex asks: which lines?')
+  expect(formatMsg(question)).toBe("[notify] Rohan's agent → rohanz+codex asks: which lines?")
   room.doc.destroy()
 })
