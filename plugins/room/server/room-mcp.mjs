@@ -7238,11 +7238,10 @@ function isAgentic(kind) {
   return kind !== void 0 && kind !== "human";
 }
 function displayName(id2) {
-  const owner = "owner" in id2 ? id2.owner : void 0;
   const label = "label" in id2 ? id2.label : void 0;
   switch (id2.kind) {
     case "agent":
-      return label || id2.name.includes("+") ? id2.name : `${owner ?? id2.name}'s agent`;
+      return id2.name;
     case "bot":
       return `${label ?? id2.name} [bot]`;
     case "ci":
@@ -7281,7 +7280,7 @@ function holdsClaim(me, m, claims) {
   return "path" in m && claims.some((c) => c.by === me && isAgentic(c.byKind) && claimsOverlap(c, { path: m.path, from: 1, to: Number.MAX_SAFE_INTEGER }));
 }
 function messageForMe(me, m, context = {}) {
-  if (m.from === me.name) return false;
+  if (m.from === me.name && m.fromKind !== "human") return false;
   if (m.type === "plan" && m.priority === "fyi") return false;
   if (m.to === me.name) return true;
   if (m.to) return false;
@@ -7303,7 +7302,7 @@ function formatMsg(m) {
 function formatPlans(plans) {
   return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
 }
-var who, to, priority, builtins, MessageKinds;
+var who, to, priority, BASE_CATCH_UP, builtins, MessageKinds;
 var init_messages = __esm({
   "packages/shared/src/messages.ts"() {
     "use strict";
@@ -7312,6 +7311,7 @@ var init_messages = __esm({
     who = (m) => displayName({ name: m.from, kind: m.fromKind });
     to = (m) => m.to ? ` \u2192 ${displayName({ name: m.to, kind: "agent" })}` : "";
     priority = (m) => `[${m.priority}] `;
+    BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.";
     builtins = {
       claim: { priority: "fyi", audience: "claim-holders", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
       release: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
@@ -7323,7 +7323,7 @@ var init_messages = __esm({
       contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
       note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${m.to ? ` \u2192 ${m.to}` : ""}: ${m.text}` },
       done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
-      base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 git pull to catch up` },
+      base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => (m.fromKind === "human" || m.from !== ctx.me.name) && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 ${BASE_CATCH_UP}` },
       plan: { priority: "fyi", audience: "broadcast", wakes: "interrupt", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""}${m.text ? ` \u2014 ${m.text}` : ""}` },
       scope: { priority: "notify", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` }
     };
@@ -16785,7 +16785,7 @@ var init_doc = __esm({
 // packages/shared/src/wake.ts
 function shouldWakeOnMsg(me, m, myClaims = [], hasUncommitted = false, ownWorkerNames) {
   if (m.type === "plan" && m.priority === "fyi") return { wake: false, mustAnswer: false, reason: "ended plan" };
-  if (m.from === me.name && isAgentic(m.fromKind)) return { wake: false, mustAnswer: false, reason: "own message" };
+  if (m.from === me.name && m.fromKind !== "human") return { wake: false, mustAnswer: false, reason: "own message" };
   const addressed = m.to === me.name;
   const kind = messageKind(m);
   if (kind.wakes === "never") return { wake: false, mustAnswer: false, reason: "feed-only event" };
@@ -17348,7 +17348,7 @@ function participantIdentityLine(current, name2, worker) {
   const p = [...current].filter((p2) => p2.user.name === name2).sort((a, b) => Number(isAgentic(b.user.kind)) - Number(isAgentic(a.user.kind)) || (b.lastActive ?? 0) - (a.lastActive ?? 0))[0];
   const id2 = p?.user ?? (worker ? { name: name2, kind: "agent", owner: worker.name.split("+")[0], label: worker.tag } : void 0);
   if (!id2) return name2;
-  const parts2 = [describeIdentity(id2)];
+  const parts2 = [describeIdentity(id2).replace(id2.name, displayName(id2))];
   const host = p?.host ?? worker?.host;
   if (host && host !== "agent" && host !== id2.label) parts2.push(host);
   const model = p?.model ?? worker?.model;
@@ -17531,7 +17531,7 @@ var init_parsed = __esm({
 
 // packages/shared/src/build-output.ts
 function isRegenerableBuildPath(rel) {
-  return rel.split("/").some((part) => buildDirs.has(part));
+  return rel.endsWith(".tsbuildinfo") || rel.split("/").some((part) => buildDirs.has(part));
 }
 var REGENERABLE_BUILD_DIRS, buildDirs;
 var init_build_output = __esm({
@@ -22291,11 +22291,13 @@ async function gitRelation(dir, head, base) {
   if (await isAncestor(head, base)) return "behind";
   return "diverged";
 }
-async function gitIsOnRemote(dir, sha) {
+async function gitPushedRoomHead(dir, head, branch) {
+  const ref = `refs/remotes/origin/${branch}`;
   try {
-    return (await git(dir, ["branch", "-r", "--contains", sha])).trim().length > 0;
+    await git(dir, ["rev-parse", "--verify", `${ref}^{commit}`]);
+    return (await git(dir, ["merge-base", head, ref])).trim() || void 0;
   } catch {
-    return false;
+    return void 0;
   }
 }
 var DEFAULT_GIT_TIMEOUT_MS, gitHead, gitBranch, gitCountBetween, gitPathsBetween, gitSubject;
@@ -24922,6 +24924,8 @@ var init_src3 = __esm({
        */
       shared = "";
       localRoom;
+      namedRoomBranch;
+      notifiedSwitch;
       dir;
       name;
       kind;
@@ -25009,6 +25013,12 @@ var init_src3 = __esm({
         this.onScanned = options.onScanned;
         this.beforePublishWrite = options.beforePublishWrite;
         const { serverUrl, roomName } = splitRoomUrl(options.room);
+        let decodedRoomName = roomName;
+        try {
+          decodedRoomName = decodeURIComponent(roomName);
+        } catch {
+        }
+        this.namedRoomBranch = roomNameParts(decodedRoomName).branch;
         this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
           WebSocketPolyfill: import_websocket.default,
           params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.localKey ? { key: options.localKey } : {}, ...options.session ? { session: options.session } : {} }
@@ -25039,9 +25049,9 @@ var init_src3 = __esm({
         if (roomBase && roomBase !== this.base) {
           const rel = await gitRelation(this.dir, this.base, roomBase);
           if (rel === "ahead") await this.maybeAdvance(roomBase, this.base);
-          else if (rel === "behind") this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)})${this.isWorkerWorktree() ? "" : "; git pull to catch up"}`);
+          else if (rel === "behind") this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)})${this.isWorkerWorktree() ? "" : `; ${BASE_CATCH_UP}`}`);
           else {
-            const message = rel === "unknown" ? `room base ${roomBase} is not in this clone (local HEAD ${this.base}) \u2014 git pull, then $room-join` : `local HEAD ${this.base} has diverged from room base ${roomBase} \u2014 rebase or merge onto the room base, then $room-join`;
+            const message = rel === "unknown" ? `room base ${roomBase} is not in this clone (local HEAD ${this.base}) \u2014 ${BASE_CATCH_UP} Then $room-join` : `local HEAD ${this.base} has diverged from room base ${roomBase} \u2014 stop and tell your human; never merge another branch into this one`;
             this.setStatus(`error: ${message}`);
             throw new RoomdError(message, 2);
           }
@@ -25049,7 +25059,7 @@ var init_src3 = __esm({
         if (!roomBase) {
           this.roomDoc.setMeta({
             ...repo ? { repo } : {},
-            branch: this.branch,
+            branch: this.roomBranch(),
             base: this.base,
             createdAt: Date.now(),
             seededBy: this.name
@@ -25312,25 +25322,49 @@ var init_src3 = __esm({
         const wasSecondary = !!this.publishUnder;
         this.choosePublisher();
         if (wasSecondary && !this.publishUnder) await this.seedLocalOverlay();
-        const head = await gitHead(this.dir);
-        if (head === this.base) {
+        const [head, branch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)]);
+        if (head === this.base && branch === this.branch) {
           const roomBase2 = this.roomDoc.meta.base;
           if (roomBase2 && roomBase2 !== head) await this.refreshBaseStatus();
           return;
         }
         const prev = this.base;
         this.base = head;
-        this.branch = await gitBranch(this.dir);
+        this.branch = branch;
         this.tracked = await gitTracked(this.dir);
         await this.refreshShared();
         this.roomDoc.setBaseOf(this.name, this.shared, this);
-        this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
+        if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
         const roomBase = this.roomDoc.meta.base;
         if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === "ahead") await this.maybeAdvance(roomBase, head);
         await this.seedLocalOverlay();
         await this.refreshBaseStatus();
       }
       unpushedPairs = /* @__PURE__ */ new Set();
+      roomBranch() {
+        return this.namedRoomBranch || this.roomDoc.meta.branch || this.branch;
+      }
+      /** Address the branch warning to this agent; a self-authored message is filtered from its inbox. */
+      warnBranchSwitch() {
+        const roomBranch = this.roomBranch();
+        if (this.branch === "HEAD") {
+          this.notifiedSwitch = void 0;
+          this.setStatus(`detached HEAD; room base waits until you return to ${roomBranch}`);
+          return true;
+        }
+        if (this.branch === roomBranch) {
+          this.notifiedSwitch = void 0;
+          return false;
+        }
+        const text = `you switched to ${this.branch}; the room is for ${roomBranch}; commits here are not the room's base until they are pushed to ${roomBranch}`;
+        this.setStatus(text);
+        if (this.notifiedSwitch !== this.branch) {
+          this.notifiedSwitch = this.branch;
+          this.roomDoc.post({ name: "room", kind: "bot" }, { type: "note", to: this.name, priority: "notify", text }, this);
+          this.log(text);
+        }
+        return true;
+      }
       isWorkerWorktree() {
         return !!this.label && this.branch === `room/${this.label}`;
       }
@@ -25349,8 +25383,11 @@ var init_src3 = __esm({
           this.setStatus("worker worktree ahead of room base");
           return;
         }
-        if (await gitIsOnRemote(this.dir, to2)) await this.advanceBase(from2, to2);
-        else {
+        if (this.warnBranchSwitch()) return;
+        const pushed = await gitPushedRoomHead(this.dir, to2, this.roomBranch());
+        if (pushed && pushed !== from2 && await gitRelation(this.dir, pushed, from2) === "ahead") {
+          await this.advanceBase(from2, pushed);
+        } else {
           this.setStatus("ahead of base (unpushed): git push");
           const pair = `${to2}:${from2}`;
           if (!this.unpushedPairs.has(pair)) {
@@ -25366,7 +25403,7 @@ var init_src3 = __esm({
           gitSubject(this.dir, to2)
         ]);
         this.roomDoc.doc.transact(() => {
-          this.roomDoc.setMeta({ base: to2, branch: this.branch }, this);
+          this.roomDoc.setMeta({ base: to2, branch: this.roomBranch() }, this);
           this.roomDoc.post({ name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {} }, { type: "base", base: to2, prev: from2, commits, paths, summary }, this);
         }, this);
         this.log(`advanced room base to ${to2.slice(0, 10)} (+${commits})`);
@@ -25374,6 +25411,7 @@ var init_src3 = __esm({
       /** Presence status reflects where this clone stands relative to the room base. */
       async refreshBaseStatus() {
         if (this.stopped) return;
+        if (!this.isWorkerWorktree() && this.warnBranchSwitch()) return;
         const roomBase = this.roomDoc.meta.base;
         if (!roomBase || roomBase === this.base) {
           this.setStatus("synced");
@@ -25382,10 +25420,10 @@ var init_src3 = __esm({
         const rel = await gitRelation(this.dir, this.base, roomBase);
         if (rel === "behind") {
           const n = await gitCountBetween(this.dir, this.base, roomBase).catch(() => 0);
-          this.setStatus(`${this.isWorkerWorktree() ? "worker worktree behind room base" : "behind base"} by ${n || "?"} commit${n === 1 ? "" : "s"}${this.isWorkerWorktree() ? "" : ": git pull"}`);
+          this.setStatus(`${this.isWorkerWorktree() ? "worker worktree behind room base" : "behind base"} by ${n || "?"} commit${n === 1 ? "" : "s"}${this.isWorkerWorktree() ? "" : `: ${BASE_CATCH_UP}`}`);
         } else if (rel === "ahead") {
           await this.maybeAdvance(roomBase, this.base);
-        } else this.setStatus(`${rel === "unknown" ? "behind base (fetch)" : "diverged from base"}${this.isWorkerWorktree() ? "" : ": git pull"}`);
+        } else this.setStatus(`${rel === "unknown" ? "behind base (fetch)" : "diverged from base"}${this.isWorkerWorktree() ? "" : `: ${BASE_CATCH_UP}`}`);
       }
       /** Publish what differs from HEAD: git's changed paths plus what this person already published, never every tracked file. */
       async seedLocalOverlay() {
@@ -25965,7 +26003,7 @@ function resolveSessionRuntime(dir, env = process.env) {
   if (env.CLAUDE_CODE_SESSION_ID && resolveSessionHost(dir, env) === "claude" && session.session_id !== env.CLAUDE_CODE_SESSION_ID && session.host !== "claude") session = {};
   return { model: clean(session.model) ?? clean(env.ROOM_WORKER_MODEL), effort: effort(session.effort) ?? effort(env.ROOM_WORKER_EFFORT) };
 }
-var DEFAULT_SERVER, LOCAL, DEFAULT_CLAUDE_CHANNEL, DEFAULT_MAX_WORKERS, DEFAULT_STALE_DAYS, value, positive;
+var DEFAULT_SERVER, LOCAL, DEFAULT_CLAUDE_CHANNEL, DEFAULT_MAX_WORKERS, DEFAULT_STALE_DAYS, value, positive, sharingHumanChoices;
 var init_config = __esm({
   "packages/room-mcp/src/config.ts"() {
     "use strict";
@@ -25982,6 +26020,7 @@ var init_config = __esm({
       const n = Number(v);
       return Number.isFinite(n) && n > 0 ? n : fallback2;
     };
+    sharingHumanChoices = "to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.";
   }
 });
 
@@ -26197,6 +26236,7 @@ var init_prompt = __esm({
     "use strict";
     init_config();
     init_wake_path();
+    init_src();
     wakeNoted = /* @__PURE__ */ new WeakSet();
     workerWaitNoted = /* @__PURE__ */ new WeakSet();
     AGENT_INSTRUCTIONS = (name2) => `You are ${name2 ? `${name2}'s` : "one person's"} coding agent in a room. Room never changes your files unless you ask it to bring in a worker's output; explicit exports also write files.
@@ -26208,7 +26248,7 @@ var init_prompt = __esm({
 4. With company, preview current overlapping work before finishing, then room_done releases claims. No release or changed-message ritual.
 5. Asked for another agent, agents in parallel, background work or a background lead, or for codex/claude to take part of an editing task: use room_spawn (load room-workers), not a built-in subagent. For a few lines, just do it yourself.
    Before handing a multi-task plan to one other agent, say what Room adds: workers in their own worktrees, collisions surfaced before they land, changed definitions announced to the files that use them, and a merged, uncommitted result to review.
-6. Ask your human only when blocked on their decision. Never commit or push unless asked.
+6. Ask your human only when blocked on their decision. Never commit or push unless asked. In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. ${BASE_CATCH_UP}
 
 Load room-etiquette for coordination details.`;
   }
@@ -26581,7 +26621,7 @@ var init_hooks_bridge = __esm({
         }
         const onBus = (ev) => {
           for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-            if (ev.transaction.local && m.from === this.s.me.name) continue;
+            if (ev.transaction.local && m.from === this.s.me.name && m.fromKind !== "human") continue;
             void this.maybeWake(m);
           }
         };
@@ -26708,8 +26748,8 @@ var init_hooks_bridge = __esm({
           this.o.log?.(`claude host: ${m.type} ${m.id} handled via channel`);
           return;
         }
-        const text = m.type === "base" ? `[room] ${formatMsg(m)}
-You have uncommitted work. Run git pull --ff-only, handle Git's actual result, re-run room_preview_merge with the test command against anyone who changed the same files, then continue.` : `[room] ${formatMsg(m)}
+        const text = m.type === "base" ? `[room] ${formatMsg(m).replace(` \u2014 ${BASE_CATCH_UP}`, "")}
+You have uncommitted work. ${BASE_CATCH_UP} Re-run room_preview_merge with the test command against anyone who changed the same files, then continue.` : `[room] ${formatMsg(m)}
 Call room_state, then react per the room-etiquette skill.`;
         const delays = this.o.retryDelaysMs ?? [1e3, 3e3, 8e3];
         for (let attempt = 0; ; attempt++) {
@@ -32432,7 +32472,7 @@ function pidIsOurWorker(pid, w, probe = probeProcess) {
   if (!info2?.start || !info2.command) return false;
   if (Math.abs(info2.start - w.startedAt) > 5e3) return false;
   if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info2.command)) return false;
-  return info2.command.includes(w.tag) || info2.command.includes(w.dir);
+  return info2.command.includes(w.tag) || info2.command.includes(w.dir) || !!w.hostSessionId && info2.command.includes(w.hostSessionId);
 }
 function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
   const resolved = (p) => {
@@ -34009,7 +34049,7 @@ function exportRoomLedger(s, opts = {}) {
   const timestamp = new Date(now).toISOString().replace(/[:.]/g, "-");
   const defaultPath = path12.join(s.dir, ".room", "ledger", `${s.roomName.replaceAll("/", "_")}-${timestamp}.md`);
   const outputPath = opts.path ? path12.resolve(s.dir, opts.path) : defaultPath;
-  const markdown = renderPrNote(s.room, { roomName: s.roomName, now });
+  const markdown = renderPrNote(s.room, { roomName: s.roomName, now, history: true });
   fs13.mkdirSync(path12.dirname(outputPath), { recursive: true });
   fs13.writeFileSync(outputPath, markdown);
   return { path: outputPath, lines: markdown.trimEnd().split("\n").length };
@@ -34054,7 +34094,7 @@ function renderPrNote(room, opts) {
         lines.push(`- ${t(m.at)} ${who2(m)} changed ${m.paths.map((p) => `\`${p}\``).join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}`);
         break;
       case "question": {
-        lines.push(`- ${t(m.at)} ${who2(m)} asked ${m.to ? `${m.to}'s agent` : "the room"}: ${m.text}`);
+        lines.push(`- ${t(m.at)} ${who2(m)} asked ${m.to ? displayName({ name: m.to, kind: "agent" }) : "the room"}: ${m.text}`);
         for (const a of answers.get(m.id) ?? []) lines.push(`  - ${t(a.at)} ${who2(a)} answered: ${a.text}`);
         if (!(answers.get(m.id) ?? []).length) lines.push("  - (unanswered)");
         break;
@@ -34075,8 +34115,8 @@ function renderPrNote(room, opts) {
   }
   const stillOpen = Array.from(open3.values()).filter((c) => !isPrName(c.by));
   const out2 = [
-    `### Room ledger for \`${branchOf(opts.roomName)}\``,
-    `_Generated by the room at ${t(now)} UTC from ${opts.roomName}. One comment per PR, updated in place._`,
+    `### Room ${opts.history ? "history" : "ledger"} for \`${branchOf(opts.roomName)}\``,
+    `_Generated by the room at ${t(now)} UTC from ${opts.roomName}.${opts.history ? "" : " One comment per PR, updated in place."}_`,
     "",
     ...lines.length ? lines : ["- (nothing recorded on the bus yet)"]
   ];
@@ -44936,7 +44976,7 @@ var defs3 = [
   {
     name: "room_share",
     annotations: RW,
-    description: "Report or change sharing live; narrower levels withdraw file text. The server ceiling always applies.",
+    description: 'Report or change sharing live. "share plans only" and "only my declared files" narrow file text; the server ceiling applies.',
     inputSchema: { type: "object", properties: { level: SHARE } }
   }
 ];
@@ -45022,7 +45062,7 @@ function sharingSentence(s) {
   const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server;
   const parts2 = roomNameParts(s.roomName);
   const repo = parts2.branch ? s.roomName.slice(0, -(parts2.branch.length + 1)) : s.roomName;
-  return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? "intent")} with members of ${repo} on ${server}; use room_share level=intent for plans only or level=declared to limit files to your declared area.`;
+  return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? "intent")} with members of ${repo} on ${server}; ${sharingHumanChoices}`;
 }
 async function prepareTeamSharingDisclosure(s) {
   let state = disclosures.get(s);
@@ -45961,7 +46001,7 @@ ${detail.join("\n")}`);
     }
     out2.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(" + ")}${pair && pair.sha !== ancestor ? ` (against ${pair.worker}'s base ${pair.sha.slice(0, 10)})` : ""}`);
     if (declaredNote) out2.push(declaredNote);
-    if (onlyOne.length) out2.push(`touched by one side only (merge trivially): ${onlyOne.join(", ")}`);
+    if (onlyOne.length) out2.push(pair?.carriedCommit ? `touched by one side only since ${person}'s base ${pair.sha.slice(0, 10)} (merge trivially; the lead's carried edits are in that base): ${onlyOne.join(", ")}` : `touched by one side only (merge trivially): ${onlyOne.join(", ")}`);
     if (clean.length) out2.push(`both changed, merge cleanly: ${clean.join(", ")}`);
     if (conflicts.length) out2.push(`CONFLICTS:
 ${conflicts.join("\n")}`);
@@ -47077,7 +47117,7 @@ var Bridge = class {
    *  moves as interrupts, the rest at notify. One per worker, path and type per minute. */
   relayDown(m) {
     if (this.relayed.includes(m.id) || !RELAY_TYPES.has(m.type)) return;
-    if (m.from === this.team.me.name) return;
+    if (m.from === this.team.me.name && m.fromKind !== "human") return;
     const paths = msgPaths(m);
     if (!paths.length) return;
     const now = Date.now();
@@ -47847,7 +47887,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.0",
+  version: "0.16.1",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
@@ -47991,7 +48031,7 @@ async function main() {
     s.room.bus.observe((ev) => {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
         syncHookSeen(s);
-        if (m.from === s.me.name || s.room.seen(s.me.name).has(m.id)) continue;
+        if (m.from === s.me.name && m.fromKind !== "human" || s.room.seen(s.me.name).has(m.id)) continue;
         router.push(shouldWake(
           s.me,
           { kind: "msg", msg: m },
