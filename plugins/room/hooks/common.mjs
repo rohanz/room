@@ -113,7 +113,7 @@ export function recordWriteIntents(stateDir, sessionId, root, paths, now = Date.
 // Both hook manifests include shell tools. Bash is Codex's documented canonical name;
 // the remaining aliases cover host/version differences (exec is also a display name).
 export function isShellTool(name) {
-  return /^(?:Bash|shell|local_shell|exec|exec_command|unified_exec)$/.test(name)
+  return /^(?:Bash|PowerShell|shell|local_shell|exec|exec_command|unified_exec)$/.test(name)
 }
 
 function* inputStrings(value) {
@@ -129,7 +129,8 @@ export function shellLooksLikeWrite(input) {
     ? [command.reduce((s, v) => s.length > 20_000 ? s : s + ' ' + v, '')] : inputStrings(command)
   for (const text of strings) {
     if (text.length > 20_000) continue
-    if (/>|(?:^|[\s;|&()])(?:\S*\/)?(?:sed\s+[^\n;|&]*?-[^\s]*i|perl\s+[^\n;|&]*?-[^\s]*i|(?:tee|mv|cp|rm|apply_patch)(?=\s|$)|git\s+(?:apply|checkout|restore|stash|merge|rebase)(?=\s|$)|(?:python[\d.]*|node)\s+[^\n;|&]*?(?:-[ce](?=\s|['"]|$)|<<))/.test(text)) return true
+    if (/>|(?:^|[\s;|&()])(?:\S*\/)?(?:sed\s+[^\n;|&]*?-[^\s]*i|perl\s+[^\n;|&]*?-[^\s]*i|(?:tee|mv|cp|rm|apply_patch)(?=\s|$)|git\s+(?:apply|checkout|restore|stash|merge|rebase)(?=\s|$)|(?:python[\d.]*|node)\s+[^\n;|&]*?(?:-[ce](?=\s|['"]|$)|<<))/.test(text)
+      || /(?:^|[;|&(){}\n])\s*(?:set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item|sc|ac|ni|ri|del|mv|cp|ren)(?=\s|$)/i.test(text)) return true
   }
   return false
 }
@@ -140,7 +141,14 @@ export function pathsOf(toolName, input, root) {
   const out = new Set()
   const shell = isShellTool(toolName)
   let candidates = 0
-  const rel = p => { const abs = path.isAbsolute(p) ? p : path.resolve(root, p); const r = path.relative(root, abs); return r && r !== '..' && !r.startsWith('..' + path.sep) ? r.split(path.sep).join('/') : undefined }
+  const rel = p => {
+    const windows = /^(?:[a-z]:[\\/]|\\\\)/i.test(root)
+    const lib = windows ? path.win32 : path
+    const value = windows ? p.replaceAll('/', '\\') : p.replaceAll('\\', '/')
+    const abs = lib.isAbsolute(value) ? value : lib.resolve(root, value)
+    const r = lib.relative(root, abs)
+    return r && r !== '..' && !r.startsWith('..' + lib.sep) ? r.split(lib.sep).join('/') : undefined
+  }
   if (!shell && input && typeof input === 'object') {
     for (const key of ['file_path', 'path', 'filePath']) if (typeof input[key] === 'string') {
       const r = rel(input[key]); if (r) out.add(r)
@@ -153,7 +161,9 @@ export function pathsOf(toolName, input, root) {
     }
     // Keep whole values for edit tools (including paths containing spaces). Shell
     // punctuation separates tokens so redirects and quoted arguments work too.
-    const tokens = shell ? text.matchAll(/[^\s'"\x60;|&<>()]+/g) : [[text.trim()]]
+    const tokens = toolName === 'PowerShell'
+      ? Array.from(text.matchAll(/"(?:\x60.|[^"\x60])*"|'(?:''|[^'])*'|[^\s'"\x60;|&<>()]+/g), m => [m[0].replace(/^(?:"|')|(?:"|')$/g, '')])
+      : shell ? text.matchAll(/[^\s'"\x60;|&<>()]+/g) : [[text.trim()]]
     for (const [token] of tokens) {
       if (shell && candidates++ >= 200) return Array.from(out)
       if (!token || token.length >= 400 || token.includes('\n')) continue

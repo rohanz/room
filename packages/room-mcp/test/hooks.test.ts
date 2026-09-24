@@ -142,6 +142,40 @@ describe('shell edit hooks', () => {
     expect(peer('app.py')).toBe(false)
   })
 
+  it('records PowerShell write targets but not read-only commands', async () => {
+    state()
+    const id = 'intent-powershell'
+    await runHook('session-start.mjs', { session_id: id, cwd: dir })
+    const read = createWriteIntentReader(dir)
+    await runHook('before-edit.mjs', { session_id: id, cwd: dir, tool_name: 'PowerShell', tool_input: { command: 'Get-Content -LiteralPath api/tax.py', description: 'Read tax rules' } })
+    expect(read('api/tax.py')).toBe(false)
+    await runHook('before-edit.mjs', { session_id: id, cwd: dir, tool_name: 'PowerShell', tool_input: { command: 'sEt-CoNtEnT -LiteralPath api\\tax.py -Value "x = 2"', description: 'Edit tax rules' } })
+    expect(read('api/tax.py')).toBe(true)
+  })
+
+  it('finds PowerShell write destinations, including aliases and parameter paths', async () => {
+    const { pathsOf, shellLooksLikeWrite } = await import(join(HOOKS, 'common.mjs'))
+    const commands = [
+      'Add-Content -Path api/tax.py -Value x', 'Out-File -FilePath api/tax.py',
+      'New-Item -Path api/tax.py', 'Remove-Item -LiteralPath api/tax.py',
+      'Move-Item -Path app.py -Destination api/tax.py',
+      'Copy-Item -Path app.py -Destination api/tax.py',
+      'Rename-Item -Path app.py -NewName api/tax.py',
+      'sc api/tax.py x', 'ac api/tax.py x', 'ni api/tax.py',
+      'ri api/tax.py', 'del api/tax.py', 'mv app.py api/tax.py',
+      'CP app.py api/tax.py', 'ReN app.py api/tax.py',
+    ]
+    for (const command of commands) {
+      expect(shellLooksLikeWrite({ command }), command).toBe(true)
+      expect(pathsOf('PowerShell', { command }, dir), command).toContain('api/tax.py')
+    }
+    for (const command of ['Get-Content api/tax.py', 'Select-String sc api/tax.py', 'Get-ChildItem api']) {
+      expect(shellLooksLikeWrite({ command }), command).toBe(false)
+    }
+    expect(pathsOf('PowerShell', { command: 'Set-Content -Path C:\\repo\\api\\tax.py -Value x' }, 'C:\\repo')).toEqual(['api/tax.py'])
+    expect(pathsOf('PowerShell', { command: 'Copy-Item -Path app.py -Destination "api/new tax.py"' }, dir)).toContain('api/new tax.py')
+  })
+
   it('bounds intents to 200 entries, expires at two minutes, and drops ten-minute history', async () => {
     const { recordWriteIntents } = await import(join(HOOKS, 'common.mjs'))
     let clock = 1_000_000
