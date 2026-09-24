@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.0
+
+- Finished workers can receive `room_send` follow-ups in their retained worktree and Claude Code or Codex session; collection and discard end that option. Claude workers use documented effort, name, session and budget flags; `ROOM_WORKER_MAX_BUDGET_USD` sets the budget cap, and channel loading is opt-in with `ROOM_WAKE=channels` (Claude Code 2.1.281 CLI and session docs; Codex CLI 0.155.1 `exec resume --help`).
+- Room uses host-provided Claude session, model and effort data and Codex hook thread IDs. Claude session attribution checks the parent command before using `CLAUDE_CODE_SESSION_ID` (exposed to MCP servers in Claude Code 2.1.154); bounded transcript and Codex rollout scans remain fallbacks when hook data is missing or stale. The before-edit hook records receipts while a session is alone so hook coverage is accurate.
+- Claude wakes summarize only unread events and batch arrivals after follow-up wakes; `room_wait` labels addressed notes without asking for an answer. `room_create` and `room_close` request per-call host confirmation (Claude Code 2.1.199+), and the MCP SDK stays on 1.x to preserve the channel fallback.
+- A `claude plugin eval` suite in `evals/` (Claude Code 2.1.269+) replaces the manual routing phrasing check. Six routing and three solo cases use mocks from Room's real `tools/list`; in validation every plugin case scored 1.00, routing cases without Room scored 0.00–0.67, and solo cases made no Room calls in either run.
+- Claude's before-edit hook matcher includes `PowerShell`, and the hook records repo-relative write intents from its commands, including case-insensitive aliases and quoted Windows paths (PowerShell tool: Claude Code 2.1.84). Claude Code 2.1.281 ran the changed plugin hook without reapproval, while Codex 0.155.1 still reads only `hooks.json` and kept its hash trust. Codex 0.155.1 routed all seven tested parallel-worker phrasings to `room_spawn` with native subagents enabled, and Room worker worktrees loaded the repository's `AGENTS.md`.
+- Plugin manifests and marketplace metadata are at 0.15.0.
+
 ## 0.14.1
 
 - Claude socket wakes now post the first event immediately. Events arriving within the next five seconds produce at most one follow-up wake; a quiet window resets batching for the next immediate wake. Numbered wake texts remain distinct.

@@ -123,8 +123,8 @@ Origin: an untracked 31,871-line CSV in a repo with no ignore rules hung the cod
 Seen in a real 17-worker session on 2026-09-21: the lead spawned, broadcast and answered well,
 but never called `room_wait`, never previewed a merge and integrated by copying folders. The
 `room-workers` skill (0.7.0) now spells out the finish. Beyond what a skill can fix:
-- **A finished worker cannot take new instructions.** Headless workers are one-shot; the lead
-  spawns a follow-up. A `room_spawn` that resumes a worker's session in its worktree would fix it.
+- **Done in 0.15.0: finished-worker follow-ups.** An addressed message resumes a finished
+  worker's retained session in its worktree. Collection or discard ends that option.
 - **Quiet workers require a status check.** State already labels workers quiet after five minutes
   without activity. Proactive detection of a worker needing intervention remains open.
 - **No lead summary.** `room_state` lists everything; a lead wants "3 done, 2 waiting on you,
@@ -218,8 +218,8 @@ saved with a local room's memory.
 - **A clean merge preview hid a semantic break.** Two workers shared `graph.ts` by region; the
   text merged cleanly, Room raised nothing, and one worker's change broke the other's tests.
   Preview should run typecheck and tests by default and report them next to "merges cleanly".
-- **A collected worker cannot take a fix-up.** Cleanup removes it, so a defect found afterwards
-  goes to the lead. Same root as "a finished worker cannot take new instructions" above.
+- **A collected worker cannot take a fix-up.** Collection removes its session and worktree.
+  Send review findings before collection, while the finished worker can resume.
 - **Noise:** fyi messages about cancelled plans while a claim is being narrowed; the sharing
   banner prepended to tool output when tools are driven from a script.
 
@@ -247,20 +247,33 @@ orchestration and sharing work above remains open.
 
 ### After 0.14.1 (2026-09-24, open)
 
-- **Wake text can lag one event behind.** The lead of the 0.14.1 batch saw a wake naming the event
-  `room_wait` had already returned ("bridge asked a question" after it had been answered).
-- **Plain notes arrive through `room_wait` as "question for you… answer it".**
-- **An event just after a follow-up wake gets its own immediate wake**, so two wakes can land close
-  together; batch it into the next window instead.
-- **Hook receipt check may miss real hook runs.** The before-edit hook fired on a Bash call, yet the
-  session still had no receipt; D2 no longer shows the warning without changed files, but the
-  receipt path itself needs checking.
-- **Host alignment** (docs/host-survey-2026-09-24-*.md): worker follow-ups via `codex exec resume`
-  and Claude `--resume` (the most recurring batch problem), session identity from the host instead of
-  transcript and rollout scraping, `--effort`/`--name`/`--max-budget-usd` for Claude workers,
-  `claude plugin eval` for routing, checks on Codex native subagents competing with `room_spawn`,
-  Codex worker worktrees and project `AGENTS.md`, and whether Claude Code hash-trusts plugin hooks.
-  Then Codex mid-turn messages through the app-server (0.155.0, experimental).
+- **Fixed in 0.15.0: wake text and note wording.** Claude wakes summarize unread events,
+  arrivals after follow-up wakes stay batched, and `room_wait` names notes as notes.
+- **Fixed in 0.15.0: hook receipts while alone.** The before-edit hook now records a receipt
+  before returning when no room state or company is present.
+- **Host alignment in 0.15.0** (docs/host-survey-2026-09-24-*.md): finished-worker
+  follow-ups, host-provided session identity, Claude worker flags and a `claude plugin eval`
+  routing suite. Codex 0.155.1 routed seven tested parallel-worker phrasings to `room_spawn`
+  with native subagents enabled, and Room worker worktrees loaded project `AGENTS.md`.
+  Claude Code 2.1.281 ran a changed plugin hook without reapproval; Codex's separate
+  `hooks.json` hash trust was unaffected. Testing Codex worker Git-directory sandbox access
+  remains open. The Claude `PowerShell` matcher and before-edit command handling landed,
+  including repo-relative write intents from aliases and quoted Windows paths.
+- **Next experiment: Codex mid-turn messages through the app-server.** External messages
+  arrived in Codex Python SDK 0.155.0; test delivery to a busy Room session before
+  replacing the `codex queue` path. The app-server is experimental.
+
+### From the host-alignment batch (0.15.0, 2026-09-24, open)
+
+- **Three workers finished before the lead's review reached them** (identity, followup, checks),
+  so each fix went to a new fix-up worker carrying the collected work. 0.15.0's resume removes
+  that, but only once the lead runs a 0.15.0 bundle.
+- **The merge preview corrupted a UTF-8 em dash** in `hooks.test.ts` (U+2014 became U+0014), so
+  an assertion failed in the preview but passed on the real tree.
+- **Every wake arrived twice** for a headless lead: once as a cross-session message and again
+  from `room_wait`. The lead could not tell a new event from a repeat.
+- **The eval mocks copy `tools/list`** and nothing checks them, so a description change
+  leaves the evals grading against stale text.
 
 ### After 0.12.0 (2026-09-23, open)
 
@@ -288,8 +301,8 @@ The busy-worker problem did not recur: every question was acknowledged within ab
 
 ### From the carry-hardening batch (seven workers, 2026-09-23, open)
 
-- **A finished worker cannot take defects back.** `room_spawn` refuses a done tag until it is
-  discarded, so review findings went to a second wave of new workers instead of the authors.
+- **Fixed in 0.15.0: a finished worker can take defects back.** Review findings can reach
+  the author's retained session before collection or discard.
 - **Answers did not reach a waiting worker.** The docs worker asked the same question three times;
   only a `to`-addressed interrupt note arrived. A done worker whose worktree was later discarded
   showed as "discarded", and a teammate read that as its work being dropped.

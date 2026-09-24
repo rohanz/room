@@ -82,6 +82,8 @@ exports the ledger and forgets the local room’s saved memory; `room_leave` pre
 ### Dispatching workers
 
 Room caps math-library threads per worker; include the spawn reply’s budget in compute-heavy tasks, use `threads` (or `ROOM_WORKER_THREADS` on the lead) to override it, and stagger heavy jobs.
+`ROOM_WORKER_MAX_BUDGET_USD` caps each Claude worker with the documented `--max-budget-usd`
+flag. Set it on the lead before spawning workers.
 
 Ask in your own words: "use a couple of subagents for this" or "split this up".
 The agent loads the room-workers skill and handles dispatch, questions, preview and merge.
@@ -112,6 +114,10 @@ declares its task, coordinates where work overlaps, previews the combined change
 with a one-line summary. Up to eight workers run at once (`ROOM_MAX_WORKERS`).
 On Claude Code 2.1.224 or later, Room wakes idle Claude workers through their
 cross-session messaging inbox. No launch flag is needed. Native Windows needs 2.1.234.
+Claude workers load the optional channels fallback only with `ROOM_WAKE=channels`.
+Send a message to a finished worker's full `<you>+<tag>` name to resume its retained
+session in the same worktree. It can address review findings with its prior context.
+A collected or discarded worker cannot resume.
 
 The lead calls `room_collect()` once to collect all its finished workers, in finish-time order
 (with tag as the tie-breaker). An optional `tag` selects just one. Changes arrive in its working
@@ -131,6 +137,14 @@ discard knowingly deletes them and reports what was removed. Room excludes
 
 Workers of one lead see each other, so two of them touching the same function get the
 same claims and conflict notices as two teammates would.
+
+Room's Claude Code routing evals live under repo-root `evals/`. From the repository root,
+run `claude plugin eval . --scaffold --allow-tools Edit Write` with Claude Code 2.1.269 or
+later. The suite clones a pinned demo repository, so it needs network access, and it makes
+model calls. Add `--trust-plugin` in a noninteractive runner and `-j 3` for parallel cases.
+The nine-case suite took about 12 minutes and reported a $12 list-price estimate with
+`-j 3` in the 2026-09-24 validation run.
+See the [plugin eval guide](https://code.claude.com/docs/en/plugin-evals).
 
 ### What Room writes
 

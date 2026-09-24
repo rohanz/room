@@ -103,7 +103,10 @@ wakes idle sessions with no flag, had shipped (Claude Code 2.1.224, 2026-08-07).
 
 ## Running and testing
 
-Hook definitions (`plugins/room/hooks.json`, `plugins/room/hooks/claude.json` — event, matcher, command) are frozen. Codex trusts each by content hash (`[hooks.state]` in `~/.codex/config.toml`), and any change un-trusts it for every user. Change behavior in the hook scripts instead.
+`plugins/room/hooks.json` is frozen: Codex trusts its hooks by content hash (`[hooks.state]`
+in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude Code alone reads
+`plugins/room/hooks/claude.json` and does not hash-trust plugin hooks (verified on 2.1.281);
+0.15.0 adds `PowerShell` to its before-edit matcher. Keep behavior changes in hook scripts where possible.
 
 - Claude Code 2.1.224+ wakes through its cross-session messaging inbox with plain `claude` (2.1.234+ on native Windows). `plugins/room/bin/claude-room` is an optional channels fallback for older versions. Keep README, onboarding and the join skill aligned when wake behavior changes.
 - Hosted server operations (deploy, secrets, opening/closing repos, incidents): `deploy/DEPLOYING.md`.
@@ -119,16 +122,24 @@ Hook definitions (`plugins/room/hooks.json`, `plugins/room/hooks/claude.json` �
   only the server bundle (for sandboxes that cannot build the web view); never commit from it.
 - Tool descriptions are how a human's plain words reach the right tool. Keep the routing words
   ("another agent", "in parallel", "in the background", "codex/claude to do part of it") when
-  trimming, stay under the budget in `packages/room-mcp/test/tool-budget.test.ts`, and rerun a
-  human-phrasing check after any description change: a trim once sent "get codex to do half" to
-  a built-in subagent.
-- Implementation work goes to Codex (model 5.6 Sol at medium, or 6 Astra at low): either the
+  trimming, stay under the budget in `packages/room-mcp/test/tool-budget.test.ts`, and rerun the
+  `claude plugin eval` suite in `evals/` after routing changes: a trim once sent "get codex to do half" to
+  a built-in subagent. From the repo root, run `claude plugin eval . --scaffold --allow-tools Edit Write`
+  (Claude Code 2.1.269+; [eval docs](https://code.claude.com/docs/en/plugin-evals)). Add
+  `--trust-plugin` for noninteractive runs. It clones a pinned demo repo and makes model calls.
+- A message to a finished worker resumes its retained session in its worktree. A collected or
+  discarded worker cannot be resumed. `ROOM_WORKER_MAX_BUDGET_USD` sets the Claude worker
+  `--max-budget-usd` cap (documented in the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)).
+- Implementation work goes to Codex (GPT-6 Sol at medium by default): either the
   codex:codex-rescue subagent or room workers with `host: 'codex'`. Claude plans, writes briefs,
   leads room batches, reviews, integrates and deploys. Codex's sandbox cannot write a git dir
   outside its cwd and cannot listen on sockets: give it a standalone clone (`git clone … /tmp/room-x`,
   `npm install`), expect the socket suites to fail there, and run the full suite yourself before
   merging. Room batches: one lead (`claude -p` with the room plugin, no ROOM_SERVER) spawns
   Codex workers into worktrees, commits their worktrees itself, previews and octopus-merges.
+  The [2026-09-24 Codex host survey](docs/host-survey-2026-09-24-codex.md) reports that
+  Codex 0.156.1 (2026-09-23) lists GPT-6 Sol and GPT-6 Luna (the 2026-09-24 batch ran
+  codex-cli 0.155.1). Check `model/list` before choosing a model on a different installation.
 - Reviews alternate Fable and Codex; six rounds on 2026-09-15 found ~60 issues, none repeated.
 - `scripts/demo.sh` brings up a server and two clones and prints the join commands. Join
   from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex`, then `$room-join`) or
