@@ -419,7 +419,15 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     }
     const excluded = ['.room', ...exclusions].map(p => `:(exclude,literal)${p.replace(/\/$/, '')}`)
     const patch = await internalGit(repoDir, ['diff', '--binary', '--full-index', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', base, '--', '.', ...excluded])
-    if (patch) execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', 'apply', '--index', '--binary'], { cwd: dir, input: patch, maxBuffer: 64 * 1024 * 1024 })
+    if (patch) {
+      // Applied from a file, not stdin: a synchronous child fed a multi-megabyte patch can wait for EOF forever.
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-patch-'))
+      try {
+        const file = path.join(scratch, 'carry.patch')
+        fs.writeFileSync(file, patch, { mode: 0o600 })
+        execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', 'apply', '--index', '--binary', file], { cwd: dir, maxBuffer: 64 * 1024 * 1024 })
+      } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
+    }
     const untracked = (await git(repoDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ':(exclude).room'])).split('\0').filter(Boolean)
     const carriedUntracked: { path: string; sha: string; mode?: number }[] = []
     const skippedCarry: { path: string; reason: string }[] = []

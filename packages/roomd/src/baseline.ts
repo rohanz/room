@@ -92,8 +92,13 @@ export async function baselineText<T extends string | null | undefined>(baseline
 /** The blob id Git gives the file or link at `path` in checkout `dir` (clean filters applied, as `git status` compares); `write` stores the blob. */
 export function carriedContentHash(dir: string, path: string, write = false): string {
   const source = nodePath.join(dir, path), stat = fs.lstatSync(source)
-  const bytes = stat.isSymbolicLink() ? Buffer.from(fs.readlinkSync(source)) : fs.readFileSync(source)
-  return execFileSync('git', ['hash-object', ...(write ? ['-w'] : []), '--path=' + path, '--stdin'], { cwd: dir, input: bytes }).toString().trim()
+  const args = ['hash-object', ...(write ? ['-w'] : []), '--path=' + path]
+  // A file is hashed by name: a synchronous child fed megabytes on stdin can leave git waiting for EOF forever
+  // (Node 22 on macOS, 1 call in ~150). A link's target is a few bytes and is only hashable as stdin text.
+  const out = stat.isSymbolicLink()
+    ? execFileSync('git', [...args, '--stdin'], { cwd: dir, input: Buffer.from(fs.readlinkSync(source)) })
+    : execFileSync('git', [...args, '--', path], { cwd: dir })
+  return out.toString().trim()
 }
 
 /**

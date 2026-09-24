@@ -24657,8 +24657,9 @@ async function baselineText(baseline, path20, read, encoding = "utf8") {
 }
 function carriedContentHash(dir, path20, write2 = false) {
   const source = nodePath2.join(dir, path20), stat4 = fs5.lstatSync(source);
-  const bytes = stat4.isSymbolicLink() ? Buffer.from(fs5.readlinkSync(source)) : fs5.readFileSync(source);
-  return execFileSync2("git", ["hash-object", ...write2 ? ["-w"] : [], "--path=" + path20, "--stdin"], { cwd: dir, input: bytes }).toString().trim();
+  const args3 = ["hash-object", ...write2 ? ["-w"] : [], "--path=" + path20];
+  const out2 = stat4.isSymbolicLink() ? execFileSync2("git", [...args3, "--stdin"], { cwd: dir, input: Buffer.from(fs5.readlinkSync(source)) }) : execFileSync2("git", [...args3, "--", path20], { cwd: dir });
+  return out2.toString().trim();
 }
 function carriedUnchanged(baseline, path20) {
   const carried = baseline.untracked.get(path20);
@@ -32025,7 +32026,16 @@ async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions =
     }
     const excluded = [".room", ...exclusions].map((p) => `:(exclude,literal)${p.replace(/\/$/, "")}`);
     const patch = await internalGit(repoDir, ["diff", "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", base, "--", ".", ...excluded]);
-    if (patch) execFileSync5("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "apply", "--index", "--binary"], { cwd: dir, input: patch, maxBuffer: 64 * 1024 * 1024 });
+    if (patch) {
+      const scratch = fs12.mkdtempSync(path11.join(os3.tmpdir(), "room-carry-patch-"));
+      try {
+        const file = path11.join(scratch, "carry.patch");
+        fs12.writeFileSync(file, patch, { mode: 384 });
+        execFileSync5("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "apply", "--index", "--binary", file], { cwd: dir, maxBuffer: 64 * 1024 * 1024 });
+      } finally {
+        fs12.rmSync(scratch, { recursive: true, force: true });
+      }
+    }
     const untracked = (await git(repoDir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ":(exclude).room"])).split("\0").filter(Boolean);
     const carriedUntracked = [];
     const skippedCarry = [];
