@@ -71,6 +71,47 @@ set them up, and the design above replaces them with no configuration.
 appears in `room_state` and who counts as company; scaling later then means moving that rule to
 the server, not redesigning Room.
 
+## More harnesses (surveyed 2026-09-24, after the trial)
+
+Room runs on Claude Code and Codex. Its core (the MCP server, the git-watching daemon, the shared
+room, claims, previews, collect) is host-independent; each harness needs glue for instructions,
+packaging, a before-edit hook, waking an idle session, and headless workers with resume. Surveys:
+[OpenCode and Gemini CLI](host-survey-2026-09-24-gemini-opencode.md), [Cursor and Pi](host-survey-2026-09-24-cursor-pi.md),
+[the wider field](host-survey-2026-09-24-landscape.md). Adoption (JetBrains, Aug 2026, 15k devs): Claude Code 39%,
+Copilot 21%, Codex 16%, Cursor 12%, OpenCode 7%.
+
+**First, one refactor:** a host adapter interface in room-mcp (identify the session, wake it, spawn and resume a
+worker, install) so each harness is one small module, not scattered conditionals. Claude Code's hook format is
+a de facto standard (Copilot, Factory, Continue accept it) and AGENTS.md covers instructions almost everywhere,
+so most of the glue is shared.
+
+In order:
+1. **OpenCode** (anomalyco/opencode, MIT, 210k stars, releases every few days). Strongest fit after Claude Code:
+   it reads AGENTS.md, CLAUDE.md and `.claude/skills` already; a plugin's SDK client can wake an idle session
+   (`session.promptAsync`) and a system-prompt hook runs before every model call; workers via
+   `opencode run --format json`, resume with `-s`. No OS sandbox. Minimum ~1 day, full ~4-6 days. Kilo, a fork,
+   comes nearly free.
+2. **Pi** (earendil-works/pi, MIT, 109k stars). No MCP by design: Room ships a native TypeScript extension that
+   registers its tools. Best waking of any host (an extension can steer mid-turn or start a turn); workers via
+   `pi -p`/`--mode json`/`--mode rpc` with session resume; no sandbox. Pin the version (0.87.0 broke its API).
+   Minimum ~2 days, full ~4-5.
+3. **GitHub Copilot** (CLI and VS Code agent mode, one Agent Plugin). Biggest reach after Claude Code. Claude-format
+   hooks; the CLI has `-p`, `--resume`, a server mode, ACP, and session messaging an extension can join. Survey it
+   in depth before building.
+4. **ACP for workers.** The Agent Client Protocol registry lists 60+ agents (Copilot CLI, Gemini CLI, OpenCode,
+   Cline, Factory, Kiro, Goose). Room as an ACP client could spawn and resume workers on any of them through one
+   code path. Interactive sessions still need per-host glue until ACP proxy chains ship in editors.
+5. **Cursor**, minimum only: a Cursor plugin (rules, skills, MCP, hooks) and `agent -p --output-format stream-json`
+   workers (worktree, sandbox, resume flags). Nothing can wake an idle Cursor session, and its before-edit hook
+   can only allow or deny, so warnings arrive after an edit or as a refusal. Minimum ~2 days.
+6. Later: **Cline** (Claude-like hooks with different names), **Factory Droid** (mirrors Claude Code; likely cheap),
+   **Antigravity CLI** (reported successor to Gemini CLI: survey it from official docs first), **Amp** (excellent
+   steering, small audience).
+
+Skip: **Gemini CLI** (reportedly replaced by Antigravity CLI and closed to consumers since 2026-06-18; cannot be
+woken), Roo Code (shut down 2026-05-15), Aider (no MCP), Windsurf/Devin Desktop (no headless, hooks cannot add
+context), Warp (already runs Claude Code, Codex and OpenCode), Zed's own agent (reach it through ACP).
+
 ## Structural gaps
 
 1. **Rooms are per branch; real teams work one branch per person.** A session joins
