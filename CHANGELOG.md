@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.1
+
+- Claude socket wakes now post the first event immediately. Events arriving within the next five seconds produce at most one follow-up wake; a quiet window resets batching for the next immediate wake. Numbered wake texts remain distinct.
+- Collecting a worker clears its overlays, claims and scope and retires it from live room state even when ignored output keeps the worktree. The retired record says `kept for ignored output at <path>`; `room_collect(tag, discard=true, force=true)` can still remove that worktree.
+- A pending hook-bridge write no longer crashes the MCP server with an uncaught `ENOENT` when the repo directory is removed; the timers in `conflicts.ts`, `bridge.ts` and `graph-index.ts` are guarded the same way, and tests stop their sessions before removing temp dirs.
+- Claude sessions are told the before-edit hook may not be running only when their own tree has changed with no hook receipt since session start, and at most once; room-tool-only sessions no longer get the false warning. The Codex up-front note is unchanged.
+- Plugin manifests and marketplace metadata are at 0.14.1.
+
 ## 0.14.0
 
 - Claude Code 2.1.224+ on macOS and Linux wakes through its cross-session messaging socket with plain `claude`; native Windows needs 2.1.234+. Room detects the bound inbox through `CLAUDE_CODE_MESSAGING_SOCKET`, not a version string. `ROOM_WAKE=socket|channels|off` selects a process path; automatic selection prefers the socket and falls back to an admitted channel if absent or a send fails. `channels` forces channel notifications; `off` disables wakes and gives a specific note. Channels remain an optional fallback for older Claude Code. Codex keeps `codex queue`.

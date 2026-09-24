@@ -18,7 +18,30 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'room-socket-wake-'))
 afterEach(() => vi.unstubAllEnvs())
 
 describe('Claude socket wake', () => {
-  it('writes auth then user JSON lines and coalesces a burst', async () => {
+  it('posts the first event immediately, one follow-up for five events, then resets after quiet', async () => {
+    vi.useFakeTimers()
+    const post = vi.fn(async () => {})
+    const router = new SocketWakeRouter({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, notify: vi.fn(async () => {}), post, host: 'claude' })
+    try {
+      router.push(wake(makeMsg('first', 'cat')))
+      await Promise.resolve()
+      expect(post).toHaveBeenCalledTimes(1)
+      for (let i = 0; i < 4; i++) router.push(wake(makeMsg(String(i), 'cat')))
+      expect(post).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(post).toHaveBeenCalledTimes(2)
+      expect(post.mock.calls[0][2]).toContain('(#1)')
+      expect(post.mock.calls[1][2]).toContain('(#2)')
+      router.push(wake(makeMsg('after', 'cat')))
+      await Promise.resolve()
+      expect(post).toHaveBeenCalledTimes(3)
+      expect(post.mock.calls[2][2]).toContain('(#3)')
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(post).toHaveBeenCalledTimes(3)
+    } finally { router.close(); vi.useRealTimers() }
+  })
+
+  it('writes auth then user JSON lines on the immediate and follow-up wakes', async () => {
     const dir = tmp(); const socketPath = path.join(dir, 'inbox.sock'); const lines: string[][] = []
     const server = net.createServer(c => { let data = ''; c.on('data', chunk => { data += chunk }); c.on('end', () => lines.push(data.trim().split('\n'))) })
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve) })
@@ -28,19 +51,20 @@ describe('Claude socket wake', () => {
       router.push(wake(makeMsg('a', 'rohanz')))
       router.push(wake(makeMsg('b', 'cat', 'note')))
       await pause()
-      expect(lines).toHaveLength(1)
+      expect(lines).toHaveLength(2)
       expect(lines[0]).toHaveLength(2)
       expect(JSON.parse(lines[0][0])).toEqual({ type: 'auth', token: 'token' })
       const user = JSON.parse(lines[0][1])
       expect(user.type).toBe('user')
       expect(user.message.role).toBe('user')
-      expect(user.message.content).toBe('[room] 2 things need you: rohanz asked a question; cat sent a note. Use the room_state tool to read them. (#1)')
+      expect(user.message.content).toBe('[room] 1 thing needs you: rohanz asked a question. Use the room_state tool to read them. (#1)')
       expect(user.message.content).not.toContain('secret body')
       expect(notify).not.toHaveBeenCalled()
       router.push(wake(makeMsg('c', 'rohanz')))
       await pause()
-      expect(lines).toHaveLength(2)
-      expect(JSON.parse(lines[1][1]).message.content).toBe('[room] 1 thing needs you: rohanz asked a question. Use the room_state tool to read them. (#2)')
+      expect(JSON.parse(lines[1][1]).message.content).toBe('[room] 1 thing needs you: cat sent a note. Use the room_state tool to read them. (#2)')
+      expect(lines).toHaveLength(3)
+      expect(JSON.parse(lines[2][1]).message.content).toBe('[room] 1 thing needs you: rohanz asked a question. Use the room_state tool to read them. (#3)')
     } finally { router.close(); await new Promise<void>(resolve => server.close(() => resolve())); fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
@@ -50,9 +74,10 @@ describe('Claude socket wake', () => {
     try {
       for (let i = 0; i < 6; i++) router.push({ content: 'secret body must stay out of socket text', meta: { from: `worker${i}`, type: i === 5 ? 'done' : 'question' } })
       await pause()
-      expect(post).toHaveBeenCalledOnce()
-      expect(post.mock.calls[0][2]).toBe('[room] 6 things need you: worker0 asked a question; worker1 asked a question; worker2 asked a question; worker3 asked a question; 2 more. Use the room_state tool to read them (room_collect brings in finished workers). (#1)')
-      expect(post.mock.calls[0][2]).not.toContain('secret body')
+      expect(post).toHaveBeenCalledTimes(2)
+      expect(post.mock.calls[0][2]).toBe('[room] 1 thing needs you: worker0 asked a question. Use the room_state tool to read them. (#1)')
+      expect(post.mock.calls[1][2]).toBe('[room] 5 things need you: worker1 asked a question; worker2 asked a question; worker3 asked a question; worker4 asked a question; worker5 finished. Use the room_state tool to read them (room_collect brings in finished workers). (#2)')
+      expect(post.mock.calls[1][2]).not.toContain('secret body')
     } finally { router.close() }
   })
 
@@ -92,9 +117,10 @@ describe('Claude socket wake', () => {
     router.push(wake(makeMsg('a', 'cat')))
     router.push(wake(makeMsg('b', 'dog')))
     await pause()
-    expect(post).toHaveBeenCalledOnce()
-    expect(notify).toHaveBeenCalledOnce()
-    expect(notify.mock.calls[0][0].params.content).toBe('[room] 2 things need you: cat asked a question; dog asked a question. Use the room_state tool to read them. (#1)')
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(notify).toHaveBeenCalledTimes(2)
+    expect(notify.mock.calls[0][0].params.content).toBe('[room] 1 thing needs you: cat asked a question. Use the room_state tool to read them. (#1)')
+    expect(notify.mock.calls[1][0].params.content).toBe('[room] 1 thing needs you: dog asked a question. Use the room_state tool to read them. (#2)')
     router.push(wake(makeMsg('c', 'cat')))
     await pause()
     expect(log).toHaveBeenCalledOnce()

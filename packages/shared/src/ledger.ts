@@ -4,6 +4,7 @@ export const MAX_RETIRED_WORKERS = 200
 
 export function compactRetiredWorker(record: RetiredWorker): RetiredWorker {
   const files = [...new Set(record.files)]
+  // Keep keptWorktree in the archive so a later explicit discard can clean it up.
   return { ...record, task: record.task.slice(0, 200), summary: record.summary.slice(0, 400),
     files: files.slice(0, 50), fileCount: Math.max(record.fileCount, files.length) }
 }

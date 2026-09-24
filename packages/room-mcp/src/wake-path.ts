@@ -8,7 +8,7 @@ type Notification = { method: 'notifications/claude/channel'; params: { content:
 type WakeEnv = NodeJS.ProcessEnv
 type Mode = 'auto' | 'socket' | 'channels' | 'off'
 
-/** Wait for the trailing edge of a burst so nearby questions and completions share one wake. */
+/** Wake immediately, then gather events during this window into one follow-up. */
 export const SOCKET_WAKE_WINDOW_MS = 5_000
 const SOCKET_POST_TIMEOUT_MS = 1_500
 
@@ -82,7 +82,7 @@ export interface SocketWakeOptions extends WakeAvailability {
   log?: (line: string) => void
 }
 
-/** One router per joined session; one socket post per pending burst. */
+/** One router per joined session; at most one immediate and one follow-up post per window. */
 export class SocketWakeRouter {
   private pending: WakeEvent[] = []
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -101,8 +101,11 @@ export class SocketWakeRouter {
       if (selected === 'auto' && this.channelAdmitted()) void this.channel(wake)
       return
     }
-    this.pending.push(wake)
-    if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; void this.flush() }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS)
+    if (!this.timer) {
+      this.pending.push(wake)
+      this.timer = setTimeout(() => { this.timer = undefined; void this.flush() }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS)
+      void this.flush()
+    } else this.pending.push(wake)
   }
 
   close(): void { this.closed = true; if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.pending = [] }

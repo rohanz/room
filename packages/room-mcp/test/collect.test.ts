@@ -7,7 +7,7 @@ import { handlers } from '../src/tools/collect.js'
 import { handlers as fileHandlers, linkSharedDirs, materializeMergedFile } from '../src/tools/files.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { signalWorker, pidAlive } from '../src/workers.js'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, splitParticipants, workerLines } from '@room/shared'
 import * as Y from 'yjs'
 
 const release = vi.hoisted(() => vi.fn())
@@ -54,6 +54,61 @@ function carry(t: ReturnType<typeof setup>, dir: string, tag: string, files: Rec
 }
 
 describe('room_collect', () => {
+  function seedPresence(t: ReturnType<typeof setup>) {
+    const name = t.w.name
+    t.s.room.setOverlay(name, 'new.txt', 'worker change')
+    t.s.room.setScope({ by: name, byKind: 'agent', area: 'test', summary: 'editing', paths: ['new.txt'] })
+    t.s.room.addClaim({ by: name, byKind: 'agent', path: 'new.txt', from: 1, to: 1, intent: 'editing' })
+  }
+
+  function expectRetired(t: ReturnType<typeof setup>) {
+    const room = t.s.room, name = t.w.name
+    expect(room.changedPaths(name)).toEqual([])
+    expect(room.overlays.has(name)).toBe(false)
+    expect(room.scopes.has(name)).toBe(false)
+    expect(room.openClaims().filter(c => c.by === name)).toEqual([])
+    expect(room.workers.has(t.w.tag)).toBe(false)
+    const groups = splitParticipants({ presences: [], workers: [...room.workers.values()], retiredWorkers: room.retiredWorkers(), scopes: [...room.scopes.entries()], overlayPeople: [...room.overlays.keys()], changesByPerson: new Map(), claims: room.openClaims(), now: Date.now() })
+    expect([...groups.active, ...groups.offlineTeammates].map(p => p.name)).not.toContain(name)
+  }
+
+  it('retires collected worker with ignored output and shows only its kept worktree', async () => {
+    const t = setup()
+    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'new.txt', 'worker change')
+    put(worker, 'artifact.bin', 'ignored output')
+    seedPresence(t)
+    expect(await t.call({ tag: 'test' })).toContain(`kept artifact.bin at ${path.join(worker, 'artifact.bin')}`)
+    expect(fs.existsSync(worker)).toBe(true)
+    expectRetired(t)
+    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+    const lines = workerLines([], { all: true, retiredWorkers: t.s.room.retiredWorkers() }).join('\n')
+    expect(lines).toContain(`kept for ignored output at ${worker}`)
+    expect(lines).not.toContain('uncommitted')
+  })
+
+  it('discards ignored output from a retired collected worker with force', async () => {
+    const t = setup()
+    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'new.txt', 'worker change')
+    put(worker, 'artifact.bin', 'ignored output')
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt')
+    expect(t.s.room.workers.has('test')).toBe(false)
+    expect(await t.call({ tag: 'test', discard: true })).toContain('discard refused; ignored artifacts')
+    expect(fs.existsSync(worker)).toBe(true)
+    expect(await t.call({ tag: 'test', discard: true, force: true })).toContain('discarded test')
+    expect(fs.existsSync(worker)).toBe(false)
+    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
+    expectRetired(t)
+  })
+
+  it('discards worker and clears its overlay, claims, scope and presence', async () => {
+    const t = setup('failed')
+    seedPresence(t)
+    expect(await t.call({ tag: 'test', discard: true })).toBe('discarded test')
+    expectRetired(t)
+  })
+
   function second(t: ReturnType<typeof setup>, status = 'done') {
     const dir = path.join(root, 'second')
     git(lead, 'worktree', 'add', '-qb', 'room/second', dir)
@@ -273,8 +328,8 @@ describe('room_collect', () => {
     expect(result).not.toContain('cleaned up test')
     expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('new')
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('diagnostic output')
-    expect(t.s.room.workers.has('test')).toBe(true)
-    expect(await t.call({ tag: 'test', force: true })).toContain(`retained worktree: ${worker}`)
+    expect(t.s.room.workers.has('test')).toBe(false)
+    expect(t.s.room.retiredWorkers()[0].summary).toBe(`kept for ignored output at ${worker}`)
     expect(fs.existsSync(worker)).toBe(true)
   })
 

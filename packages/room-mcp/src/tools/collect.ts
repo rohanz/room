@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { claimsOverlap, type Worker } from '@room/shared'
+import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { cleanupWorker, ignoredWorkerArtifacts, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths, workerOperationKey } from '../workers.js'
@@ -94,6 +94,31 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     if ((a.discard || a.mode === 'copy') && !a.tag) return 'error: tag required for copy or discard'
     if (a.paths !== undefined && a.mode !== 'copy') return 'error: paths is only supported in copy mode'
     if (a.discard) {
+      const kept = rooms.all().flatMap(s => s.room.retiredWorkers()
+        .filter(r => r.tag === a.tag && r.keptWorktree)
+        .map(r => ({ s, r }))).find(({ s, r }) => ownership(s, {
+          ...r, dir: r.keptWorktree!, branch: 'room/' + r.tag, status: 'done', exitCode: 0, pid: 0,
+        } as Worker, discarding).owned)
+      if (kept && !kept.s.room.workers.has(a.tag as string)) {
+        const { s, r } = kept
+        const w = { ...r, dir: r.keptWorktree!, branch: 'room/' + r.tag, status: 'done', exitCode: 0, pid: 0 } as Worker
+        const lock = workerOperationKey(w)
+        if (!rooms.reserve(lock)) return 'error: this worker is already being handled or retired'
+        try {
+          const ignored = await ignoredWorkerArtifacts(w)
+          if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
+          if (!await cleanupWorker(s.dir, w, true, true)) throw new Error('worker is not an owned Room worktree')
+          const archive = s.room.doc.getArray<RetiredWorker>('retiredWorkers')
+          const index = archive.toArray().findIndex(item => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead)
+          if (index >= 0) s.room.doc.transact(() => {
+            archive.delete(index)
+            const { keptWorktree: _keptWorktree, ...cleared } = r
+            archive.insert(index, [{ ...cleared, summary: 'discarded' }])
+          })
+          return 'discarded ' + r.tag + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '')
+        } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
+        finally { rooms.unreserve(lock) }
+      }
       const s = rooms.holdingWorker(a.tag as string, lead)
       const w = s.room.workers.get(a.tag as string)
       if (!w) return 'error: no worker ' + a.tag + ' owned by you'
@@ -273,29 +298,32 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push('Changes from ' + selected.map(x => x.w.tag).join(', ') + ': ' + (changes.map(x => x.p).join(', ') || 'already present') + '. Nothing committed or staged.')
       for (const { s, w } of selected) {
         releaseClaimsOnDone(s, () => false, w.name, false)
-        if (state.workerAlive(s, w) || w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); continue }
+        const retire = (summary: string, keptWorktree?: string) => {
+          const retiredAt = Date.now()
+          const files = result.paths.filter(p => result.owners.get(p)?.includes(w.name))
+          s.room.retireParticipant(w.name, {
+            name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
+            task: w.task, summary, ...(keptWorktree ? { keptWorktree } : {}), files, fileCount: files.length,
+            startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
+          })
+        }
+        if (state.workerAlive(s, w) || w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); retire(w.summary ?? '', w.dir); continue }
         try {
           const children = descendants(s, w)
-          if (children.length) { out.push('kept ' + w.tag + ': nested workers remain: ' + children.map(c => c.tag).join(', ')); continue }
+          if (children.length) { out.push('kept ' + w.tag + ': nested workers remain: ' + children.map(c => c.tag).join(', ')); retire(w.summary ?? '', w.dir); continue }
           const ignored = await ignoredWorkerArtifacts(w)
           if (ignored.length) {
             out.push('kept ' + w.tag + ': uncopied ignored artifacts')
             out.push(...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`))
             out.push(`retained worktree: ${w.dir}`)
+            retire(`kept for ignored output at ${w.dir}`, w.dir)
             continue
           }
           if (await cleanupWorker(s.dir, w, true)) {
-            const retiredAt = Date.now()
-            const files = result.paths.filter(p => result.owners.get(p)?.includes(w.name))
-            // Retire only collected workers; a global sweep could alter skipped workers.
-            s.room.retireParticipant(w.name, {
-              name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
-              task: w.task, summary: w.summary ?? '', files, fileCount: files.length,
-              startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
-            })
+            retire(w.summary ?? '')
             out.push('cleaned up ' + w.tag + ': temporary files, branch and logs')
-          } else out.push('kept ' + w.tag + ': cleanup incomplete')
-        } catch (e) { out.push('cleanup incomplete for ' + w.tag + ': ' + (e instanceof Error ? e.message : String(e))) }
+          } else { out.push('kept ' + w.tag + ': cleanup incomplete'); retire(w.summary ?? '', w.dir) }
+        } catch (e) { out.push('cleanup incomplete for ' + w.tag + ': ' + (e instanceof Error ? e.message : String(e))); retire(w.summary ?? '', w.dir) }
       }
       return out.join('\n')
     } catch (e) { return [...out, 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n') }

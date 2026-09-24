@@ -172,6 +172,8 @@ export interface RetiredWorker {
   outcome: 'merged' | 'dismissed' | 'clean'
   /** Uncommitted/untracked files left on disk when explicitly dismissed. */
   uncommitted?: number
+  /** Collected worktree retained for later explicit cleanup, usually because it has ignored output. */
+  keptWorktree?: string
 }
 
 export interface Meta {
