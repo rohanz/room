@@ -6,8 +6,8 @@
 //
 // Prereqs: `claude` on PATH and logged in (checked with 2.1.281), tmux, git, network access to GitHub,
 // `npm ci` in this repo and `npm run build:plugin` so plugins/room/server is the code under test.
-// Cost/time: every case starts a fresh interactive Claude Code session on Haiku; 20-40 s per case,
-// ~3 min for a-f, ~1 min more for a2; a few cents. The session also loads your other user plugins and hooks.
+// Cost/time: every case starts a fresh interactive Claude Code session on Haiku; 20-60 s per case,
+// ~4 min for a-f, ~1 min more for a2; a few cents. The session also loads your other user plugins and hooks.
 //
 // Env:
 //   E2E_PLUGIN_DIR  plugin under test (default: <this repo>/plugins/room), loaded with --plugin-dir.
@@ -18,7 +18,7 @@
 // Isolation: sessions start from `env -i` (no ROOM_SERVER/ROOM_TAG/ROOM_OWNER, so each is in a LOCAL room),
 // on a private tmux server (-L wake-e2e-<stamp>), with a --settings file in the scratch dir that turns the
 // installed room@room plugin off so only --plugin-dir's copy loads (the script checks the MCP server path),
-// and allows the room tools so no permission prompt blocks a turn. The script edits nothing under ~/.claude;
+// and allows the room tools and runs in dontAsk mode (anything else is denied) so no permission prompt blocks a turn. The script edits nothing under ~/.claude;
 // Claude Code itself still writes transcripts there and records folder trust per scratch clone in ~/.claude.json.
 // The folder-trust prompt (and the development-channels warning in case e) are answered; nothing else.
 //
@@ -33,7 +33,8 @@
 // lines are Claude Code's own record of every post Room made to the inbox socket (and any refusal).
 //
 // Cases:
-//   a  idle session, one worker done addressed to it          -> one wake within 20s (socket window is 5 s)
+//   a  idle session, one worker done addressed to it          -> one wake within 30s (socket window is 5 s) and the
+//      woken turn ends (within 120 s; it calls room tools). c and e wait for their woken turn the same way.
 //   b  busy session (mid-turn, sleeping in Bash), worker question -> seen before the turn ends (hook inbox,
 //      socket message absorbed mid-turn, or channel)
 //   c  five worker dones within ~1s                             -> exactly one socket post and one wake
@@ -111,7 +112,8 @@ async function startSession(name: string, opts: { settings?: Record<string, unkn
   const settingsFile = path.join(SCRATCH, name, 'settings.json')
   fs.writeFileSync(settingsFile, JSON.stringify({
     enabledPlugins: { 'room@room': false },
-    permissions: { allow: ['mcp__plugin_room_room__*', 'Read', 'Glob', 'Grep', 'Bash(sleep:*)'] },
+    // dontAsk denies anything else instead of prompting, so a woken turn cannot hang on a permission dialog.
+    permissions: { allow: ['mcp__plugin_room_room__*', 'Read', 'Glob', 'Grep', 'Bash(sleep:*)'], defaultMode: 'dontAsk' },
     ...opts.settings,
   }, null, 2))
   const env = { HOME: os.homedir(), USER: os.userInfo().username, PATH: process.env.PATH ?? '/usr/bin:/bin', TERM: 'xterm-256color', LANG: 'en_US.UTF-8', SHELL: process.env.SHELL ?? '/bin/zsh', ...opts.env }
@@ -237,6 +239,23 @@ function uds(s: Session, t: number): string[] {
 }
 const posts = (s: Session, t: number) => uds(s, t).filter(l => l.includes('Client connected')).length
 const show = (e: Entry) => `${clock(e.at)} ${e.kind}: ${e.text.replace(/\s+/g, ' ').slice(0, 220)}`
+const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`
+
+/**
+ * Wait for the first wake of `kinds` after `t` (30 s: the 5 s socket coalescing window plus margin), then for the
+ * woken turn to end (120 s: the woken session now does real work, ToolSearch, room_state, room_collect). Then keep
+ * watching until at least `minWindow` after `t` and 6 s past the turn end, so a second wake would still be seen.
+ * Returns undefined times when either wait times out; the caller's assertions then fail with the evidence.
+ */
+async function wokenTurn(s: Session, t: number, kinds: Entry['kind'][], minWindow: number): Promise<{ wakeAt?: number; endAt?: number; timing: string }> {
+  const wake = await waitFor(`${s.name} wake`, 30_000, () => since(s, t).find(e => kinds.includes(e.kind))).catch(() => undefined)
+  const end = wake && await waitFor(`${s.name} woken turn end`, 120_000, () => since(s, wake.at, 'turn-end')[0]).catch(() => undefined)
+  await sleep(Math.max(t + minWindow - Date.now(), (end ? end.at + 6000 : 0) - Date.now(), 0))
+  const stuck = wake && !end ? `; pane: ${capture(s.name).trim().split('\n').slice(-8).join(' | ').replace(/\s+/g, ' ')}` : ''
+  const timing = !wake ? 'no wake within 30s of the post' : `post->wake ${secs(wake.at - t)}, wake->turn end ${end ? secs(end.at - wake.at) : `none within 120s${stuck}`}`
+  log(`${s.name}: ${timing}`)
+  return { wakeAt: wake?.at, endAt: end?.at, timing }
+}
 
 /** a: an idle session is woken by one worker done. */
 async function caseA(env: Record<string, string> = {}): Promise<Result> {
@@ -245,11 +264,10 @@ async function caseA(env: Record<string, string> = {}): Promise<Result> {
   await sleep(3000)
   const t = Date.now(); const m = postDone(c.room, c.lead, 1)
   log(`a: posted done ${m.id} from ${m.from} to ${c.lead}`)
-  await sleep(20_000)
+  const w = await wokenTurn(s, t, ['socket-wake', 'channel-wake'], 20_000)
   const wakes = since(s, t).filter(e => e.kind === 'socket-wake' || e.kind === 'channel-wake')
-  const ends = since(s, t, 'turn-end')
   c.close()
-  return { pass: wakes.length === 1 && ends.length >= 1, evidence: [`${clock(t)} done posted; woken turn called: ${toolsCalled(s, t)}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result').map(show)] }
+  return { pass: wakes.length === 1 && !!w.endAt, evidence: [`${clock(t)} done posted; ${w.timing}; wakes=${wakes.length}; woken turn called: ${toolsCalled(s, t)}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result').map(show)] }
 }
 
 /** a2 (opt-in): like a, with a real Haiku worker that the session starts itself through room_spawn. */
@@ -294,10 +312,10 @@ async function caseC(): Promise<Result> {
   const t = Date.now()
   for (let n = 1; n <= 5; n++) { postDone(c.room, c.lead, n); await sleep(200) }
   log('c: posted five dones over ~1s')
-  await sleep(30_000)
+  const w = await wokenTurn(s, t, ['socket-wake', 'channel-wake'], 30_000)
   const wakes = since(s, t).filter(e => e.kind === 'socket-wake' || e.kind === 'channel-wake')
   c.close()
-  return { pass: wakes.length === 1 && posts(s, t) <= 1, evidence: [`${clock(t)} five dones posted; socket posts=${posts(s, t)} wakes=${wakes.length} turns=${since(s, t, 'turn-end').length}; woken turn called: ${toolsCalled(s, t)}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result').map(show)] }
+  return { pass: wakes.length === 1 && posts(s, t) <= 1, evidence: [`${clock(t)} five dones posted; ${w.timing}; socket posts=${posts(s, t)} wakes=${wakes.length} turns=${since(s, t, 'turn-end').length}; woken turn called: ${toolsCalled(s, t)}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result').map(show)] }
 }
 
 /** d: crossSessionInbound refuse — no wake, nothing breaks, message there on the next turn. */
@@ -324,10 +342,10 @@ async function caseE(): Promise<Result> {
   const c = await connect(s)
   await sleep(3000)
   const t = Date.now(); postDone(c.room, c.lead, 5)
-  await sleep(20_000)
+  const w = await wokenTurn(s, t, ['channel-wake'], 20_000)
   const ch = since(s, t, 'channel-wake'), so = since(s, t, 'socket-wake')
   c.close()
-  return { pass: ch.length >= 1 && so.length === 0 && posts(s, t) === 0, evidence: [`${clock(t)} done posted; channel wakes=${ch.length} socket posts=${posts(s, t)} socket wakes=${so.length}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result').map(show)] }
+  return { pass: ch.length >= 1 && so.length === 0 && posts(s, t) === 0, evidence: [`${clock(t)} done posted; ${w.timing}; channel wakes=${ch.length} socket posts=${posts(s, t)} socket wakes=${so.length}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result').map(show)] }
 }
 
 /** f: ROOM_WAKE=off — nothing wakes. */
