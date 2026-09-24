@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -34,10 +34,16 @@ function repo(): string {
 describe('carry never pipes file-sized input into a synchronous git call', () => {
   it('carries a large untracked file and large tracked changes without stdin input', async () => {
     const dir = repo()
-    writeFileSync(join(dir, 'untracked.bin'), Buffer.alloc(4 * 1024 * 1024, 3))
-    writeFileSync(join(dir, 'big.txt'), 'y\n'.repeat(2 * 1024 * 1024))
+    const untracked = Buffer.alloc(4 * 1024 * 1024, 3)
+    const tracked = Buffer.from('y\n'.repeat(2 * 1024 * 1024))
+    writeFileSync(join(dir, 'untracked.bin'), untracked)
+    writeFileSync(join(dir, 'big.txt'), tracked)
     const prepared = await prepareWorktree(dir, 'nopipe')
+    expect(prepared.carryFailed).toBeFalsy()
+    expect(prepared.carried?.paths).toContain('big.txt')
     expect(prepared.carriedUntracked?.map(c => c.path)).toContain('untracked.bin')
+    expect(readFileSync(join(prepared.dir, 'big.txt'))).toEqual(tracked)
+    expect(readFileSync(join(prepared.dir, 'untracked.bin'))).toEqual(untracked)
     expect(calls.filter(c => c.input).map(c => c.args.slice(0, 4).join(' '))).toEqual([])
   })
 

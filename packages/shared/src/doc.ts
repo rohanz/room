@@ -456,7 +456,3 @@ function makeAnchor(text: Y.Text, from: number, to: number): ClaimAnchor {
     to: Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(text, lineStart(text.toString(), to))) as ClaimAnchor['to'],
   }
 }
-
-export function isMsgType(value: string): value is MsgType {
-  return ['claim', 'release', 'changed', 'question', 'answer', 'conflict', 'contract', 'note', 'scope', 'base', 'plan', 'done'].includes(value)
-}

@@ -11,22 +11,11 @@ import path from 'node:path'
 import { git } from '@room/roomd/git'
 import { gitCommonDir } from '@room/roomd/local'
 import type { ShareLevel } from '@room/roomd'
-import { DEFAULT_SERVER, LOCAL, normaliseWhere, resolveConfig } from './config.js'
+import { DEFAULT_SERVER, LOCAL, normaliseWhere } from './config.js'
 
 export const CHOICE_FILE = 'room-choice.json'
 
 export interface RoomChoice { where: string; at: number; by?: string; share?: ShareLevel; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree/destination keys already told what they share */ warned?: string[]; /** most recently disclosed level for each warning key */ warnedLevels?: Record<string, ShareLevel> }
-
-export type ChoiceRule = 'argument' | 'env' | 'remembered' | 'default'
-
-export interface ServerChoice {
-  /** `local`, or a ws(s) server URL. */
-  server: string
-  /** What decided it. */
-  rule: ChoiceRule
-  /** The normalised `where` word: local | team | <url>. */
-  where: string
-}
 
 /** "team"/"hosted" → the hosted server; "local" or empty → local; anything else is a server URL. */
 export { normaliseWhere }
@@ -103,12 +92,6 @@ export async function markWarned(dir: string, worktree: string, destination?: st
 
 export async function clearChoice(dir: string): Promise<boolean> {
   try { fs.rmSync(await choiceFile(dir)); return true } catch { return false }
-}
-
-/** Decide the server for a join. `where` is the tool argument; `env` is ROOM_SERVER. */
-export async function chooseServer(dir: string, where?: string, env?: string): Promise<ServerChoice> {
-  const c = await resolveConfig({ dir, args: { where }, env: { ROOM_SERVER: env } })
-  return { server: c.server, rule: c.whereRule, where: c.where }
 }
 
 /** One word for humans: "local" or "team", else the URL. */

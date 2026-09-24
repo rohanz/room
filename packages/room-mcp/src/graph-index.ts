@@ -67,7 +67,7 @@ export class GraphIndex {
   /** Resolves when the initial build is done. */
   ready: Promise<void> = Promise.resolve()
 
-  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number; present?: () => string[] } = {}) {
+  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number } = {}) {
     this.graph = new SymbolGraph(path => this.cache.get(path))
   }
 

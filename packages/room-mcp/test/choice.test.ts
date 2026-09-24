@@ -3,10 +3,22 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync, mkdirSync, symlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { chooseServer, choiceFile, clearChoice, normaliseWhere, readChoice, writeChoice, describeWhere, markWarned, rememberTag, worktreePath } from '../src/choice.js'
+import { choiceFile, clearChoice, normaliseWhere, readChoice, writeChoice, describeWhere, markWarned, rememberTag, worktreePath } from '../src/choice.js'
+import { resolveConfig } from '../src/config.js'
 import { DEFAULT_SERVER, LOCAL } from '../src/session.js'
+import { RELEASE_VERSION } from '../src/index.js'
+
+it('advertises the plugin release version in the MCP handshake', () => {
+  const plugin = JSON.parse(readFileSync(new URL('../../../plugins/room/.claude-plugin/plugin.json', import.meta.url), 'utf8'))
+  const codex = JSON.parse(readFileSync(new URL('../../../plugins/room/.codex-plugin/plugin.json', import.meta.url), 'utf8'))
+  const marketplace = JSON.parse(readFileSync(new URL('../../../.claude-plugin/marketplace.json', import.meta.url), 'utf8'))
+  expect(RELEASE_VERSION).toBe(plugin.version)
+  expect(RELEASE_VERSION).toBe(codex.version)
+  expect(RELEASE_VERSION).toBe(marketplace.plugins[0].version)
+})
 
 let dir: string
+const configured = (where?: string, server?: string) => resolveConfig({ dir, args: { where }, env: { ROOM_SERVER: server } })
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'room-choice-'))
   execFileSync('git', ['-C', dir, 'init', '-q', '-b', 'main'], { stdio: 'pipe' })
@@ -22,18 +34,18 @@ describe('room choice', () => {
   })
 
   it('defaults to local, remembers an explicit choice per clone, and lets env and arguments override it', async () => {
-    expect(await chooseServer(dir)).toMatchObject({ server: LOCAL, rule: 'default', where: LOCAL })
-    expect(await chooseServer(dir, 'team')).toMatchObject({ server: DEFAULT_SERVER, rule: 'argument', where: 'team' })
+    expect(await configured()).toMatchObject({ server: LOCAL, whereRule: 'default', where: LOCAL })
+    expect(await configured('team')).toMatchObject({ server: DEFAULT_SERVER, whereRule: 'argument', where: 'team' })
     expect(await readChoice(dir)).toBeUndefined() // choosing does not remember; the join does, on success
     await writeChoice(dir, 'team', 'rohanz')
     expect(existsSync(await choiceFile(dir))).toBe(true)
     expect((await choiceFile(dir)).endsWith('/.git/room-choice.json')).toBe(true)
-    expect(await chooseServer(dir)).toMatchObject({ server: DEFAULT_SERVER, rule: 'remembered', where: 'team' })
-    expect(await chooseServer(dir, undefined, 'local')).toMatchObject({ server: LOCAL, rule: 'env' })
-    expect(await chooseServer(dir, 'wss://own.example', 'local')).toMatchObject({ server: 'wss://own.example', rule: 'argument' })
+    expect(await configured()).toMatchObject({ server: DEFAULT_SERVER, whereRule: 'remembered', where: 'team' })
+    expect(await configured(undefined, 'local')).toMatchObject({ server: LOCAL, whereRule: 'env' })
+    expect(await configured('wss://own.example', 'local')).toMatchObject({ server: 'wss://own.example', whereRule: 'argument' })
     expect(await clearChoice(dir)).toBe(true)
     expect(await clearChoice(dir)).toBe(false)
-    expect(await chooseServer(dir)).toMatchObject({ rule: 'default' })
+    expect(await configured()).toMatchObject({ whereRule: 'default' })
   })
 
   it('describes the room in one word for humans', () => {
@@ -97,7 +109,7 @@ it('remembers disclosure per destination without opting an environment-only clon
   expect(await markWarned(dir, dir, 'wss://one')).toBe(true)
   expect(await markWarned(dir, dir, 'wss://one')).toBe(false)
   expect(await markWarned(dir, dir, 'wss://two')).toBe(true)
-  expect((await chooseServer(dir)).server).toBe(LOCAL)
+  expect((await configured()).server).toBe(LOCAL)
   await clearChoice(dir)
 })
 

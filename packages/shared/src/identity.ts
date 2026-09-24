@@ -41,10 +41,6 @@ export function describeIdentity(id: Identity): string {
   return parts.join(' · ')
 }
 
-export function sameParty(a: Identity, b: Identity): boolean {
-  return a.name === b.name
-}
-
 export function newId(prefix = ''): string {
   const r = Math.random().toString(36).slice(2, 8)
   return `${prefix}${Date.now().toString(36)}${r}`

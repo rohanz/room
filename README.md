@@ -211,7 +211,8 @@ marketplace with `claude plugin marketplace add /path/to/room`.
 Claude Code 2.1.224 or later on macOS, Linux or WSL 2 wakes with plain `claude` after
 installation; native Windows needs 2.1.234. Check with `claude --version`. Room sends
 a short wake to the session's cross-session messaging inbox for interrupts and messages
-addressed to you, such as a question or a worker finishing. Five seconds of events are
+addressed to you, such as a question or a worker finishing. The first event wakes the
+session immediately; events in the next five seconds produce at most one follow-up wake,
 coalesced into one line, for example: `[room] 2 things need you: rohanz+ship asked a
 question; rohanz+cat finished. Use the room_state tool to read them (room_collect brings
 in finished workers). (#3)`. Background chatter stays in the room. Claude Code frames

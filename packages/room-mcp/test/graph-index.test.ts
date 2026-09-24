@@ -192,27 +192,6 @@ describe('shared graph startup', () => {
     } finally { gi.stop(); room.doc.destroy() }
   })
 
-  it('does not reuse a three-edge peer snapshot that would invent a dependency', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
-    room.graphs.set('Peer', {
-      version: 1, base, at: Date.now(), status: 'ready', truncated: false,
-      paths: ['a.py', 'b.py', 'c.py', 'd.py'],
-      edges: [
-        { source: 'a.py', target: 'c.py', symbols: ['Config'] },
-        { source: 'b.py', target: 'c.py', symbols: ['Token'] },
-        { source: 'b.py', target: 'd.py', symbols: ['Config'] },
-      ],
-    })
-    const logs: string[] = []
-    const gi = new GraphIndex(room, 'New', dir, s => logs.push(s), { random: () => 0, minPublishMs: 0, present: () => ['Peer'] })
-    try {
-      gi.start(); await gi.whenIdle()
-      expect(logs.some(s => s.includes('reused'))).toBe(false)
-      expect(gi.graph.dependenciesOf('c.py')).toEqual([])
-      expect(gi.graph.has('utils.py')).toBe(true)
-    } finally { gi.stop(); room.doc.destroy() }
-  })
-
   it('builds locally despite a present peer snapshot and computes its own contract changes', async () => {
     const room = new RoomDoc(); room.setMeta({ base })
     room.graphs.set('Peer', {
@@ -223,7 +202,7 @@ describe('shared graph startup', () => {
     })
     room.setOverlay('New', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
     const logs: string[] = []
-    const gi = new GraphIndex(room, 'New', dir, s => logs.push(s), { random: () => 0, minPublishMs: 0, present: () => ['Peer'] })
+    const gi = new GraphIndex(room, 'New', dir, s => logs.push(s), { random: () => 0, minPublishMs: 0 })
     try {
       gi.start(); await gi.whenIdle()
       expect(logs.some(s => s.includes('reused'))).toBe(false)
@@ -246,7 +225,7 @@ describe('shared graph startup', () => {
         { source: 'b.py', target: 'use-b.py', symbols: ['Config'] },
       ],
     })
-    const gi = new GraphIndex(room, 'New', dir, undefined, { random: () => 0, minPublishMs: 0, present: () => ['Peer'] })
+    const gi = new GraphIndex(room, 'New', dir, undefined, { random: () => 0, minPublishMs: 0 })
     try {
       gi.start(); await gi.whenIdle()
       expect(gi.graph.dependenciesOf('use-a.py')).toEqual([])
@@ -261,21 +240,4 @@ describe('shared graph startup', () => {
     } finally { gi.stop(); room.doc.destroy() }
   })
 
-  it.each(['offline', 'stale', 'wrong base', 'indexing'])('does not reuse a %s snapshot', async reason => {
-    const room = new RoomDoc(); room.setMeta({ base })
-    room.graphs.set('Peer', {
-      version: 1, base: reason === 'wrong base' ? 'old' : base,
-      at: Date.now() - (reason === 'stale' ? 60_001 : 0),
-      status: reason === 'indexing' ? 'indexing' : 'ready', truncated: false,
-      paths: ['fake.py'], edges: [],
-    })
-    const logs: string[] = []
-    const gi = new GraphIndex(room, 'New', dir, s => logs.push(s), { random: () => 0, present: () => reason === 'offline' ? [] : ['Peer'] })
-    try {
-      gi.start(); await gi.whenIdle()
-      expect(gi.graph.has('fake.py')).toBe(false)
-      expect(gi.graph.has('utils.py')).toBe(true)
-      expect(logs.some(s => s.includes('reused'))).toBe(false)
-    } finally { gi.stop(); room.doc.destroy() }
-  })
 })

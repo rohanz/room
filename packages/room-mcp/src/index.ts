@@ -17,6 +17,10 @@ import { resolveConfig, resolveSessionHost } from './config.js'
 import { SocketWakeRouter } from './wake-path.js'
 import { waitConsumesMessage } from './tools/messaging.js'
 import { markTeamSharingDisclosureDelivered, pendingTeamSharingDisclosure, prepareTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
+import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
+
+/** Plugin release, also advertised in the MCP handshake. Package versions are private. */
+export const RELEASE_VERSION = pluginManifest.version
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { shouldWake } from './wake.js'
@@ -77,7 +81,7 @@ async function main() {
   }
 
   const mcp = new Server(
-    { name: 'room', version: '0.2.0' },
+    { name: 'room', version: RELEASE_VERSION },
     { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: AGENT_INSTRUCTIONS() },
   )
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }))

@@ -133,6 +133,15 @@ context), Warp (already runs Claude Code, Codex and OpenCode), Zed's own agent (
    are matched by method name. A large repository can still need an existing index such as SCIP
    and an index scoped to the declared area rather than the whole repo.
 
+### Deferred from the 2026-09-24 cleanliness audit, after the trial
+
+- **14:** Unify repo-relative path validation and containment policies across read, carry, recovery and write paths.
+- **16:** Build proximity evidence once for claim guidance, hook snapshots and room-state visibility.
+- **17:** Centralize worktree-private and common Git-directory resolution, including carry records and hook parity.
+- **18:** Beyond one spawn/resume launch path, consolidate the remaining worker lifecycle callback, logging and policy assembly.
+- **21:** Refresh only affected graph paths through a bounded queue when an overlay changes.
+- **28:** Replace ordered service-locator initialization with typed services and split worker Git recovery from process lifecycle in small steps.
+
 ## Sharing rules (smaller, can ship before the structural work)
 
 Deferred from the 2026-09-22 readiness review:

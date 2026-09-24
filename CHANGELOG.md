@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.2
+
+- The MCP handshake now reads the plugin release version; both plugin manifests and marketplace metadata are 0.15.2. Private workspace package versions remain separate.
+- Claude wake guidance now says the first socket wake is immediate, with at most one follow-up wake for events in the next five seconds, and names the 2.1.234 minimum on native Windows. The graph index no longer advertises unused peer-presence selection; its tests retain local-build and import-update regressions.
+- Removed unused configuration, identity and message-predicate helpers. The large-carry regression now checks tracked and untracked bytes in the worker worktree as well as the no-stdin rule. Deferred cleanup tasks are recorded in the roadmap.
+- Resumed workers keep their spawn-time sharing level. Workers recorded before 0.15.2 resume at `intent`, with that choice stated in the reply. Resume clears the saved stop reason on disk, counts live and in-flight starts against `ROOM_MAX_WORKERS`, and logs exit errors like a fresh spawn.
+- Carry and discard now generate recovery patches with one policy: no colour or external diff/textconv, and fixed `a/` and `b/` prefixes. Discard verifies its patch against a fresh checkout before removing anything and keeps the worktree if verification fails. Synchronous Git calls in carry and recovery use `ROOM_GIT_TIMEOUT_MS` (30 seconds by default); a timed-out carry starts the worker from HEAD as before. If late cleanup fails after removal, the error says the base was reconstructed and identifies where the actual edits remain.
+- Stopped-worker file counts and retirement now measure the worker's own changes from its recorded base. `link: []` fully disables `.roomlinks`. An unreadable baseline reports degraded contract coverage instead of treating the old file as empty; the carried-path cache is bounded and retries failed reads. Machine-read Git path lists use NUL framing so tabs and newlines in filenames survive. Merge previews identify the algorithm used and any fallback reason.
+- Abandoned sharing-notice locks are recovered using their owner PID and a 10-second stale limit; lock contention no longer counts as delivery. Stopping the hook bridge cancels in-flight wakes. Claude sessions no longer scan Codex rollouts, and Codex fallback discovery is capped and cached. Relay takeover, daemon observer and archive-pipe failures are reported instead of crashing the MCP process.
+- Scope, claim and proximity checks now share path normalization. A declared `.` scope covers the whole repository: under `share=declared`, it shares all changed files (before 0.15.2 it shared none). Empty and absolute scope paths cover nothing.
+
 ## 0.15.1
 
 - `room_preview_merge` with `run` no longer mangles characters above U+00FF in live, uncommitted edits: an em dash (U+2014) became the control character U+0014, so a test could fail in the preview and pass on the real tree. Live text now enters the merge as UTF-8 bytes. A test covers previews and `room_collect` with an em dash, a CJK character and an emoji.

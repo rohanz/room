@@ -407,9 +407,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const { daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag)
   const view = await viewToken(server, roomName, creds)
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
-  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log, {
-    present: () => Array.from(daemon.provider.awareness.getStates().values()).flatMap(state => typeof state?.user?.name === 'string' ? [state.user.name] : []),
-  })
+  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
   const session: Session = {
     graph,
@@ -463,9 +461,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, '')
   // The link carries the relay key: it is machine-local, and anyone holding it can read the room.
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&key=${encodeURIComponent(local.key)}`
-  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log, {
-    present: () => Array.from(daemon.provider.awareness.getStates().values()).flatMap(state => typeof state?.user?.name === 'string' ? [state.user.name] : []),
-  })
+  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
   const session: Session = {
     graph,
