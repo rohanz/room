@@ -6,7 +6,7 @@ import type { Session } from '../session.js'
 import { SHARE, RW, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_share', annotations: RW, description: 'Report or change sharing live; narrower levels withdraw file text. The server ceiling always applies.',
+  { name: 'room_share', annotations: RW, description: 'Report or change sharing live. "share plans only" and "only my declared files" narrow file text; the server ceiling applies.',
     inputSchema: { type: 'object', properties: { level: SHARE } } }
 ]
 

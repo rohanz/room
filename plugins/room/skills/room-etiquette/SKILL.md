@@ -27,7 +27,7 @@ While alone, work normally. With company:
    Validate dependent work with `room_preview_merge(people=[...], run="<tests>")` in a
    scratch tree. If adjacent edits need a shared line, preserve their version exactly;
    `resolve=true` can return a superset resolution for inspection.
-6. If the base moves and your clone is behind, `git pull --ff-only` before further edits.
+6. In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.
 7. Before finishing, preview the current work of participants touching the same files;
    do not wait for them to finish. Resolve conflicts and run relevant tests, then call
    `room_done(summary)` with one line. Report the result and any unresolved blocker.

@@ -12,7 +12,7 @@ import { clearChoice, describeWhere, markWarned, writeChoice } from '../choice.j
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
 import { LOCAL, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
-import { resolveConfig, sharingDescription } from '../config.js'
+import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
 import { handlers as shareHandlers } from './share.js'
 import { exportRoomLedger } from '../prs.js'
 
@@ -37,7 +37,7 @@ function sharingSentence(s: Session): string {
   const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
   const parts = roomNameParts(s.roomName)
   const repo = parts.branch ? s.roomName.slice(0, -(parts.branch.length + 1)) : s.roomName
-  return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? 'intent')} with members of ${repo} on ${server}; use room_share level=intent for plans only or level=declared to limit files to your declared area.`
+  return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? 'intent')} with members of ${repo} on ${server}; ${sharingHumanChoices}`
 }
 
 /** Establish whether this session has a disclosure pending without consuming its one delivery. */

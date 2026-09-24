@@ -1,6 +1,7 @@
 import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
 import { claudeWakeAvailable } from './wake-path.js'
+import { BASE_CATCH_UP } from '@room/shared'
 
 /** The exported inbox socket (Claude Code 2.1.224+) or an admitted channel enables wakes. */
 export function claudeWakeUnavailable(dir: string, host = resolveSessionHost(dir), parentArgs?: string): boolean {
@@ -45,6 +46,6 @@ export const AGENT_INSTRUCTIONS = (name?: string) => `You are ${name ? `${name}'
 4. With company, preview current overlapping work before finishing, then room_done releases claims. No release or changed-message ritual.
 5. Asked for another agent, agents in parallel, background work or a background lead, or for codex/claude to take part of an editing task: use room_spawn (load room-workers), not a built-in subagent. For a few lines, just do it yourself.
    Before handing a multi-task plan to one other agent, say what Room adds: workers in their own worktrees, collisions surfaced before they land, changed definitions announced to the files that use them, and a merged, uncommitted result to review.
-6. Ask your human only when blocked on their decision. Never commit or push unless asked.
+6. Ask your human only when blocked on their decision. Never commit or push unless asked. In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. ${BASE_CATCH_UP}
 
 Load room-etiquette for coordination details.`

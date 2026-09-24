@@ -590,7 +590,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Report or change sharing live; narrower levels withdraw file text. The server ceiling always applies.",
+      "description": "Report or change sharing live. \"share plans only\" and \"only my declared files\" narrow file text; the server ceiling applies.",
       "inputSchema": {
         "type": "object",
         "properties": {

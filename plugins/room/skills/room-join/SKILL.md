@@ -26,6 +26,7 @@ only when the user asks for a separate, named room; it becomes `local/<name>`.
 Re-joining the same room prints its current state and browser link. Moving rooms is refused
 while your workers are running; wait for them or use room_collect(discard=true) first. The join reply includes the new browser link.
 Live sharing does not apply other participants' edits; collection and explicit exports can write files.
+In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.
 
 If it fails:
 - "Room was updated on disk; restart this session to pick up fixes": restart this session to load the
@@ -40,7 +41,7 @@ If it fails:
   `room_create(where="team", confirm=true)`. Once per repo; every branch then has a room and
   teammates join automatically.
 - "no origin remote" when joining a team/server room: ask the user for a room name and call `room_join` with `room`. A local room needs no name and no origin; its name is derived from the clone.
-- "room base is X; local HEAD is Y": run `git pull --ff-only` if appropriate and try again; ask your human only if a branch decision blocks you. Do not work in the room on a different base.
+- "room base is X; local HEAD is Y": run `git pull --ff-only --autostash` and try again; if it refuses, stop and tell your human; never merge another branch into this one. Do not work in the room on a different base.
 - "could not sync with wss://...": the server is not reachable. Continue independent work, and ask your human only if choosing another destination blocks the task.
 
 After joining, if the user has given you a task, immediately call

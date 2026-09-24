@@ -50,7 +50,7 @@ describe('Runner', () => {
     const inp = s.backend.inputs[0]
     expect(inp).toContain('PREAMBLE')
     expect(inp).toContain('<room-event type="question" from="Kieran" from_kind="agent" path="">')
-    expect(inp).toContain("Kieran's agent → Rohan's agent asks: changing payload?")
+    expect(inp).toContain('Kieran → Rohan asks: changing payload?')
     expect(inp).toContain('"type":"question"')
     const roles = s.room.chat('Rohan').toArray().map(i => i.role)
     expect(roles).toContain('event')

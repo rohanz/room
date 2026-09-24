@@ -17,8 +17,8 @@ describe('identity', () => {
     expect(colorFor('Rohan')).not.toBe(colorFor('Kieran'))
   })
 
-  it('names agents after their owner', () => {
-    expect(displayName({ name: 'Kieran', kind: 'agent' })).toBe("Kieran's agent")
+  it('shows the same agent name as the participant list', () => {
+    expect(displayName({ name: 'Kieran', kind: 'agent' })).toBe('Kieran')
     expect(displayName({ name: 'Kieran', kind: 'human' })).toBe('Kieran')
   })
 
@@ -82,7 +82,7 @@ describe('RoomDoc overlays', () => {
 
     b.post<QuestionMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'changing payload?' })
     expect(a.lastMessages(1)[0]).toMatchObject({ type: 'question', priority: 'notify', from: 'Kieran' })
-    expect(formatMsg(a.lastMessages(1)[0])).toBe("[notify] Kieran's agent → Rohan's agent asks: changing payload?")
+    expect(formatMsg(a.lastMessages(1)[0])).toBe('[notify] Kieran → Rohan asks: changing payload?')
 
     a.setMeta({ base: 'abc123', branch: 'main' })
     expect(b.meta.base).toBe('abc123')

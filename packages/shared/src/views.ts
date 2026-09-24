@@ -1,5 +1,5 @@
 import { describeClaim } from './claims.js'
-import { describeIdentity, isAgentic } from './identity.js'
+import { describeIdentity, displayName, isAgentic } from './identity.js'
 import type { Claim, Kind, NoteMsg, Presence, RetiredWorker, Scope, ShareLevel, Worker } from './types.js'
 
 /** Split a room identity while preserving slashes within its branch. */
@@ -115,7 +115,7 @@ export function participantIdentityLine(current: readonly Presence[], name: stri
   const p = [...current].filter(p => p.user.name === name).sort((a, b) => Number(isAgentic(b.user.kind)) - Number(isAgentic(a.user.kind)) || (b.lastActive ?? 0) - (a.lastActive ?? 0))[0]
   const id = p?.user ?? (worker ? { name, kind: 'agent' as const, owner: worker.name.split('+')[0], label: worker.tag } : undefined)
   if (!id) return name
-  const parts = [describeIdentity(id)]
+  const parts = [describeIdentity(id).replace(id.name, displayName(id))]
   const host = p?.host ?? worker?.host
   if (host && host !== 'agent' && host !== id.label) parts.push(host)
   const model = p?.model ?? worker?.model

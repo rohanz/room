@@ -208,7 +208,7 @@ describe('automatic conflict notices', () => {
     const msgs = t.room.messages().filter(m => m.type === 'conflict')
     expect(msgs).toHaveLength(2)
     expect(msgs[0].to).toBe('Rohan'); expect(msgs[0].priority).toBe('interrupt')
-    expect(msgs[0].type === 'conflict' && msgs[0].text).toContain("you edited app.py:5-5 inside Kieran's agent's claim")
+    expect(msgs[0].type === 'conflict' && msgs[0].text).toContain("you edited app.py:5-5 inside Kieran's claim")
     expect(msgs[1].to).toBe('Kieran'); expect(msgs[1].priority).toBe('notify')
     // and it reaches my inbox on the next call
     expect(await t.tools.call('room_state', {})).toContain('CONFLICT on app.py: you edited')

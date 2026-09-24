@@ -282,7 +282,7 @@ describe('session gating', () => {
     const t = setup({ joined: false })
     const out = await t.tools.call('room_join', {})
     expect(t.joined).toEqual([dir])
-    expect(out).toContain("joined r as Rohan's agent")
+    expect(out).toContain('joined r as Rohan')
     expect(out).not.toContain('browser view:')
     expect(await t.tools.call('room_state', { link: true })).toContain('browser view: http://x')
     expect(await t.tools.call('room_join', {})).not.toContain('browser view:')
@@ -310,7 +310,7 @@ describe('session gating', () => {
 
   it('room_create opens the repo then joins; room_join never opens', async () => {
     const t = setup({ joined: false })
-    expect(await t.tools.call('room_create', {})).toContain("opened and joined r as Rohan's agent")
+    expect(await t.tools.call('room_create', {})).toContain('opened and joined r as Rohan')
     expect(t.created).toEqual([true])
     await t.tools.call('room_leave', {})
     await t.tools.call('room_join', {})

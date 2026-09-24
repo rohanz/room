@@ -51,6 +51,9 @@ export function sharingDescription(level: ShareLevel): string {
   return level === 'full' ? 'the full text of files you change' : level === 'declared' ? 'only the files in your declared area' : 'only your plans, no file text'
 }
 
+/** Spoken choices in disclosures; keep tool syntax out of notes relayed to a person. */
+export const sharingHumanChoices = 'to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.'
+
 /** Missing means the default; an invalid supplied value can never widen sharing. */
 export function resolveShare(raw: unknown, source = 'share'): { level: ShareLevel; warning?: string } {
   if (raw === undefined) return { level: 'full' }

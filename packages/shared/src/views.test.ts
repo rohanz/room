@@ -51,7 +51,7 @@ describe('shared room views', () => {
     expect(personLine({ name: 'Kieran', scope, presences: [], changedPaths: ['api/a.py'], messages: [], share: 'intent' }))
       .toBe('working on api: handlers (api/); shares intent (no file text); uncommitted, not yet pushed: api/a.py')
     expect(claimLine(claim, { yours: true, stale: true }))
-      .toBe("  - c1: Kieran's agent · api/a.py:1-2 · tune a (yours) [stale: owner offline]")
+      .toBe('  - c1: Kieran · api/a.py:1-2 · tune a (yours) [stale: owner offline]')
     expect(participantClaimLine({ ...claim, plans: [{ kind: 'rename', symbol: 'a', detail: 'b' }] }))
       .toBe('api/a.py:1-2 · tune a → rename a to b')
   })
