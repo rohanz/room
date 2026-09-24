@@ -46016,16 +46016,36 @@ var defs6 = [
     inputSchema: { type: "object", properties: { people: strs("participants in merge order; default all"), person: str("one participant"), includeOffline: { type: "boolean", description: "include offline overlays" }, run: str("test command"), resolve: { type: "boolean", description: "resolve superset conflicts" } } }
   }
 ];
+function ownUnpublishedCheckout(s, person) {
+  const publisher = s.awareness.getLocalState()?.publishUnder;
+  return person === s.me.name && !!publisher && sameCheckoutSession(s, publisher);
+}
+function ownDiskText(dir, rel) {
+  if (!rel || path16.isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) throw new Error("unsafe room path: " + rel);
+  const root = fs17.realpathSync(dir);
+  const candidate = path16.resolve(root, rel);
+  if (!candidate.startsWith(root + path16.sep)) throw new Error("unsafe room path: " + rel);
+  try {
+    const real = fs17.realpathSync(candidate);
+    if (!real.startsWith(root + path16.sep)) throw new Error("unsafe room symlink: " + rel);
+    if (!fs17.statSync(real).isFile()) throw new Error("not a file: " + rel);
+    return fs17.readFileSync(real, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw e;
+  }
+}
 function handlers6(state) {
   const { S, rooms, others, presences, withheld, liveText, lines, baseFor, ledgerLines, baseText, shareOf, describeUsers } = state;
   const readDiff = async (a) => {
     const person = typeof a.person === "string" && a.person ? a.person : S().me.name;
     const s = rooms.holding(person, S());
     const worker = diskWorker(s, person);
+    const ownDisk = ownUnpublishedCheckout(s, person);
     const label = (text) => worker ? `${WORKTREE_NOTE}
 ${text}` : text;
     const one = async (p) => {
-      const l = await liveText(s, p, person);
+      const l = ownDisk ? ownDiskText(s.dir, p) : await liveText(s, p, person);
       const b = await baseText(s, p, worker ? person : void 0) ?? "";
       const live = l === null ? "" : l ?? b;
       return live === b ? "" : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, "base", person, { context: 3 });
@@ -46034,9 +46054,9 @@ ${text}` : text;
     if (held) return held;
     if (typeof a.path === "string" && a.path) return label(await one(a.path) || `${a.path}: no difference between base and ${person}'s version`);
     const parts2 = [];
-    const paths = worker ? new Set([
-      ...(await git(worker.dir, ["diff", "--name-only", "-z", baseFor(s, person), "--"])).split("\0"),
-      ...(await git(worker.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
+    const paths = worker || ownDisk ? new Set([
+      ...(await git(worker?.dir ?? s.dir, ["diff", "--name-only", "-z", baseFor(s, person), "--"])).split("\0"),
+      ...(await git(worker?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
     ].filter(Boolean)) : s.room.changedPaths(person);
     for (const p of paths) {
       const d = await one(p);
@@ -46056,10 +46076,15 @@ ${text}` : text;
       const held = withheld(s, person, p);
       if (held) return held;
       const note = diskWorker(s, person) ? ` ${WORKTREE_NOTE}` : "";
-      const t = await liveText(s, p, person);
-      if (t === null) return `${p}: deleted by ${person} (uncommitted)${note}`;
+      const ownDisk = ownUnpublishedCheckout(s, person);
+      const t = ownDisk ? ownDiskText(s.dir, p) : await liveText(s, p, person);
+      if (t === null) {
+        if (ownDisk && await baseText(s, p, person) === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`;
+        return `${p}: deleted by ${person} (uncommitted)${note}`;
+      }
       if (t === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`;
-      const out2 = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== void 0 ? ", uncommitted edits" : diskWorker(s, person) ? ", worktree file" : ", unchanged"} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`];
+      const edited = ownDisk ? t !== await baseText(s, p, person) : s.room.text(p, person) !== void 0;
+      const out2 = [`${p} as ${person} sees it (${lines(t)} lines${edited ? ", uncommitted edits" : diskWorker(s, person) ? ", worktree file" : ", unchanged"} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`];
       const who2 = s.room.whoChanged(p).filter((x) => x !== person && !sameCheckoutSession(s, x));
       if (who2.length) out2.push(`! also changed (uncommitted) by: ${who2.join(", ")} \u2014 room_read with person= to see theirs`);
       for (const c of s.room.claimsFor(p)) if (!sameCheckoutSession(s, c.by)) out2.push(`! claim ${c.id}: ${describeClaim(c)}`);
@@ -46526,6 +46551,7 @@ repeat with force=true to delete them`;
           childResults.push(result);
           if (!result.startsWith("discarded ")) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`;
         }
+        const terminated = await stopOwnedWorktreeProcesses(s.dir, w);
         if (state.workerAlive(s, w) || pidAlive2(w.pid)) {
           const how = await state.dismissWorker(s, w, "discarded by the lead");
           if (s.room.workers.get(w.tag)?.status === "running" && (state.workerAlive(s, w) || pidAlive2(w.pid))) return "could not discard " + w.tag + ": " + how;
@@ -46538,7 +46564,7 @@ repeat with force=true to delete them`;
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep2(50);
           if (state.workerAlive(s, w)) throw new Error("worker process has not stopped");
         }
-        const terminated = await stopOwnedWorktreeProcesses(s.dir, w);
+        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w));
         const ignored = await ignoredWorkerArtifacts(w);
         if (ignored.length && a.force !== true) {
           return [
@@ -46610,6 +46636,14 @@ repeat with force=true to delete them`;
         if (!workerLock) continue;
         workerLocks.push(workerLock);
         try {
+          if (fs18.realpathSync(w.dir) === fs18.realpathSync(lead.dir)) throw new Error("worker must have a separate worktree");
+          await assertNoOperation(w.dir);
+          const common = async (dir) => fs18.realpathSync(path17.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
+          if (await common(lead.dir) !== await common(w.dir)) throw new Error("worker is not a worktree of this repository");
+          if (w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) throw new Error("worker must be on branch room/" + w.tag);
+          await git(w.dir, ["ls-files", "-z"]);
+          const terminated = await stopOwnedWorktreeProcesses(lead.dir, w);
+          if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
           const now = state.now ?? Date.now;
           const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
           const deadline = now() + 15e3;
@@ -46628,14 +46662,6 @@ repeat with force=true to delete them`;
             out2.push("skipped " + w.tag + ": failed exit (" + failureReason(w) + ")");
             continue;
           }
-          if (fs18.realpathSync(w.dir) === fs18.realpathSync(lead.dir)) throw new Error("worker must have a separate worktree");
-          await assertNoOperation(w.dir);
-          const common = async (dir) => fs18.realpathSync(path17.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
-          if (await common(lead.dir) !== await common(w.dir)) throw new Error("worker is not a worktree of this repository");
-          if (w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) throw new Error("worker must be on branch room/" + w.tag);
-          await git(w.dir, ["ls-files", "-z"]);
-          const terminated = await stopOwnedWorktreeProcesses(lead.dir, w);
-          if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
           selected.push({ s, w });
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
@@ -47393,9 +47419,10 @@ function install6(state) {
   };
   const dismissWorker = async (s, w, why, stopReason) => {
     const proc = rooms.handle(s, w.id);
+    const protectedPids = w.pid ? [w.pid] : [];
+    const stopped = await terminateWorktreeProcesses(w.dir, { protectedPids });
     if (proc && w.dismissedAt !== void 0) {
-      const stopped2 = await terminateWorktreeProcesses(w.dir);
-      return `pid ${w.pid} already signalled; waiting for exit${stopped2.length ? `; stopped processes: ${stopped2.join(", ")}` : ""}`;
+      return `pid ${w.pid} already signalled; waiting for exit${stopped.length ? `; stopped processes: ${stopped.join(", ")}` : ""}`;
     }
     let how, signalled;
     if (proc) {
@@ -47417,7 +47444,7 @@ function install6(state) {
     }
     if (signalled || stopReason) s.room.updateWorker(w.tag, { ...w.status === "running" ? { status: "dismissed" } : {}, dismissedAt: state.now(), ...stopReason ? { stopReason } : {} }, w.id);
     if (signalled || workerAlive(s, w)) s.room.post(s.me, { type: "note", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
-    const stopped = await terminateWorktreeProcesses(w.dir);
+    stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids }));
     return how + (stopped.length ? `; stopped processes: ${stopped.join(", ")}` : "");
   };
   const startWorkersBridge = (lead, s) => {

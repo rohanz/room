@@ -318,9 +318,9 @@ files, and large-repo collection and merge preview without a test command. Previ
   the fixed stdin-pipe bug. Room should say once when the plugin on disk is newer than the running server:
   "Room was updated on disk; restart this session to pick up fixes".
 
-Still open from this audit: `room_read` of one's own file can select an older
-same-checkout session as publisher; merge preview with `run` still materializes the
-lead's full tree.
+Still open from this audit: merge preview with `run` still materializes the lead's full
+tree; `*.tsbuildinfo` at a package root is ignored output outside the regenerable build
+directories, so it still keeps a collected worktree.
 
 ### After 0.14.1 (2026-09-24, open)
 
