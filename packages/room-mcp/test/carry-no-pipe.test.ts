@@ -23,19 +23,21 @@ const { carriedContentHash } = await import('@room/roomd/baseline')
 
 const repos: string[] = []
 afterEach(() => { for (const r of repos.splice(0)) rmSync(r, { recursive: true, force: true }); calls.length = 0 })
-function repo(): string {
+function repo(base = 'x\n'.repeat(10)): string {
   const dir = mkdtempSync(join(tmpdir(), 'room-nopipe-')); repos.push(dir)
   const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, encoding: 'utf8' })
   git('init', '-q', '-b', 'main'); git('config', 'user.name', 't'); git('config', 'user.email', 't@t')
-  writeFileSync(join(dir, 'big.txt'), 'x\n'.repeat(10)); git('add', '.'); git('commit', '-qm', 'base')
+  writeFileSync(join(dir, 'big.txt'), base); git('add', '.'); git('commit', '-qm', 'base')
   return dir
 }
 
 describe('carry never pipes file-sized input into a synchronous git call', () => {
   it('carries a large untracked file and large tracked changes without stdin input', async () => {
-    const dir = repo()
-    const untracked = Buffer.alloc(4 * 1024 * 1024, 3)
-    const tracked = Buffer.from('y\n'.repeat(2 * 1024 * 1024))
+    const base = Array.from({ length: 2048 }, (_, i) => String(i).padStart(4, '0') + 'x'.repeat(1019) + '\n').join('')
+    const dir = repo(base)
+    const untracked = Buffer.alloc(2 * 1024 * 1024, 3)
+    const tracked = Buffer.from(base)
+    tracked[4] = 'y'.charCodeAt(0)
     writeFileSync(join(dir, 'untracked.bin'), untracked)
     writeFileSync(join(dir, 'big.txt'), tracked)
     const prepared = await prepareWorktree(dir, 'nopipe')

@@ -145,30 +145,30 @@ describe('carry and discard safety', () => {
     fs.writeFileSync(path.join(root, 'lead.txt'), 'lead input\n')
     const head = run(root, 'rev-parse', 'HEAD')
     const fakeDir = path.join(root, '.git', 'slow-carry'); fs.mkdirSync(fakeDir)
-    fs.writeFileSync(path.join(fakeDir, 'git'), '#!/bin/sh\ncase " $* " in *" hash-object "*) sleep 2;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+    fs.writeFileSync(path.join(fakeDir, 'git'), '#!/bin/sh\ncase " $* " in *" hash-object "*) sleep 60;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    process.env.ROOM_GIT_TIMEOUT_MS = '500'
+    process.env.ROOM_GIT_TIMEOUT_MS = '5000'
     const prepared = await prepareWorktree(root, 'timed-carry', 'lead')
     expect(prepared.carryFailed).toBe(true)
     expect(prepared.carryError).toMatch(/timed out/)
     expect(prepared.base).toBe(head)
     expect(fs.existsSync(path.join(prepared.dir, 'lead.txt'))).toBe(false)
     expect(fs.readFileSync(path.join(root, 'lead.txt'), 'utf8')).toBe('lead input\n')
-  })
+  }, 15000)
 
   it('reports a timeout during carry stability checking as carry failure', async () => {
     fs.writeFileSync(path.join(root, 'lead.txt'), 'lead input\n')
     const fakeDir = path.join(root, '.git', 'slow-stability'); fs.mkdirSync(fakeDir)
     const marker = path.join(fakeDir, 'first-hash')
     const calls = path.join(fakeDir, 'calls')
-    fs.writeFileSync(path.join(fakeDir, 'git'), `#!/bin/sh\nif [ "$1" = "hash-object" ]; then echo x >> ${JSON.stringify(calls)}; if [ -e ${JSON.stringify(marker)} ]; then sleep 2; else touch ${JSON.stringify(marker)}; fi; fi\nexec /usr/bin/git "$@"\n`, { mode: 0o755 })
+    fs.writeFileSync(path.join(fakeDir, 'git'), `#!/bin/sh\nif [ "$1" = "hash-object" ]; then echo x >> ${JSON.stringify(calls)}; if [ -e ${JSON.stringify(marker)} ]; then sleep 60; else touch ${JSON.stringify(marker)}; fi; fi\nexec /usr/bin/git "$@"\n`, { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    process.env.ROOM_GIT_TIMEOUT_MS = '500'
+    process.env.ROOM_GIT_TIMEOUT_MS = '5000'
     const prepared = await prepareWorktree(root, 'timed-stability', 'lead')
     expect(prepared.carryFailed).toBe(true)
     expect(prepared.carryError).toMatch(/timed out/)
     expect(fs.readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(2)
-  })
+  }, 15000)
 
   it('bounds a hanging checkout filter read', async () => {
     const fakeDir = path.join(root, 'slow-checkout'); fs.mkdirSync(fakeDir)

@@ -771,8 +771,10 @@ describe('review fixes: workers', () => {
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
     await workerTools.call('room_done', { summary: 'done but still running' })
     expect(t.a.workers.get('money')!.status).toBe('done')
-    setTimeout(() => t.exits[0](0), 10)
-    expect(await t.leadTools.call('room_collect', { discard: true, tag: 'money' })).toContain('discarded money')
+    const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
+    await vi.waitFor(() => expect(t.killed).toHaveLength(1))
+    t.exits[0](0)
+    expect(await discarding).toContain('discarded money')
     expect(t.killed).toHaveLength(1)
     expect(t.a.workers.has('money')).toBe(false)
     // shutdown with a live process behind a done record signals it as well
@@ -790,7 +792,7 @@ describe('review fixes: workers', () => {
     expect(t.a.workers.get('money')!.gen).toBe(1)
     // Discard must not report success until its process exits.
     const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
-    await new Promise(resolve => setTimeout(resolve, 1))
+    await vi.waitFor(() => expect(t.a.workers.get('money')?.dismissedAt).toBeDefined())
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('process is still alive')
     t.exits[0](1)
     expect(await discarding).toContain('discarded money')
