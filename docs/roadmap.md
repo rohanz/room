@@ -245,6 +245,23 @@ fetchable base instead of their local carried commit.
 Python dotted-import narrowing remains weak in carried contract checks. The broader
 orchestration and sharing work above remains open.
 
+### After 0.14.1 (2026-09-24, open)
+
+- **Wake text can lag one event behind.** The lead of the 0.14.1 batch saw a wake naming the event
+  `room_wait` had already returned ("bridge asked a question" after it had been answered).
+- **Plain notes arrive through `room_wait` as "question for you… answer it".**
+- **An event just after a follow-up wake gets its own immediate wake**, so two wakes can land close
+  together; batch it into the next window instead.
+- **Hook receipt check may miss real hook runs.** The before-edit hook fired on a Bash call, yet the
+  session still had no receipt; D2 no longer shows the warning without changed files, but the
+  receipt path itself needs checking.
+- **Host alignment** (docs/host-survey-2026-09-24-*.md): worker follow-ups via `codex exec resume`
+  and Claude `--resume` (the most recurring batch problem), session identity from the host instead of
+  transcript and rollout scraping, `--effort`/`--name`/`--max-budget-usd` for Claude workers,
+  `claude plugin eval` for routing, checks on Codex native subagents competing with `room_spawn`,
+  Codex worker worktrees and project `AGENTS.md`, and whether Claude Code hash-trusts plugin hooks.
+  Then Codex mid-turn messages through the app-server (0.155.0, experimental).
+
 ### After 0.12.0 (2026-09-23, open)
 
 - **The full test suite occasionally freezes, and two timing-sensitive tests flake under load.** Seen twice by the batch lead and once in the final
