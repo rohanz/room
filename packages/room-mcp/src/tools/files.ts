@@ -22,15 +22,38 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { people: strs('participants in merge order; default all'), person: str('one participant'), includeOffline: { type: 'boolean', description: 'include offline overlays' }, run: str('test command'), resolve: { type: 'boolean', description: 'resolve superset conflicts' } } } }
 ]
 
+/** A secondary Room process has no overlay of its own, but still reads this checkout's files. */
+function ownUnpublishedCheckout(s: Session, person: string): boolean {
+  const publisher = s.awareness.getLocalState()?.publishUnder
+  return person === s.me.name && !!publisher && sameCheckoutSession(s, publisher)
+}
+
+function ownDiskText(dir: string, rel: string): string | null {
+  if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) throw new Error('unsafe room path: ' + rel)
+  const root = fs.realpathSync(dir)
+  const candidate = path.resolve(root, rel)
+  if (!candidate.startsWith(root + path.sep)) throw new Error('unsafe room path: ' + rel)
+  try {
+    const real = fs.realpathSync(candidate)
+    if (!real.startsWith(root + path.sep)) throw new Error('unsafe room symlink: ' + rel)
+    if (!fs.statSync(real).isFile()) throw new Error('not a file: ' + rel)
+    return fs.readFileSync(real, 'utf8')
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw e
+  }
+}
+
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, rooms, others, presences, withheld, liveText, lines, baseFor, ledgerLines, baseText, shareOf, describeUsers } = state
   const readDiff: Handler = async a => {
       const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
       const s = rooms.holding(person, S())
       const worker = diskWorker(s, person)
+      const ownDisk = ownUnpublishedCheckout(s, person)
       const label = (text: string) => worker ? `${WORKTREE_NOTE}\n${text}` : text
       const one = async (p: string) => {
-        const l = await liveText(s, p, person)
+        const l = ownDisk ? ownDiskText(s.dir, p) : await liveText(s, p, person)
         const b = (await baseText(s, p, worker ? person : undefined)) ?? ''
         const live = l === null ? '' : l ?? b
         return live === b ? '' : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, 'base', person, { context: 3 })
@@ -39,9 +62,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (held) return held
       if (typeof a.path === 'string' && a.path) return label((await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`)
       const parts: string[] = []
-      const paths = worker ? new Set([
-        ...(await git(worker.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
-        ...(await git(worker.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
+      const paths = worker || ownDisk ? new Set([
+        ...(await git(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
+        ...(await git(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
       ].filter(Boolean)) : s.room.changedPaths(person)
       for (const p of paths) { const d = await one(p); if (d) parts.push(d) }
       const level = shareOf(s, person)
@@ -58,10 +81,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const held = withheld(s, person, p)
       if (held) return held
       const note = diskWorker(s, person) ? ` ${WORKTREE_NOTE}` : ''
-      const t = await liveText(s, p, person)
-      if (t === null) return `${p}: deleted by ${person} (uncommitted)${note}`
+      const ownDisk = ownUnpublishedCheckout(s, person)
+      const t = ownDisk ? ownDiskText(s.dir, p) : await liveText(s, p, person)
+      if (t === null) {
+        if (ownDisk && await baseText(s, p, person) === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`
+        return `${p}: deleted by ${person} (uncommitted)${note}`
+      }
       if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`
-      const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== undefined ? ', uncommitted edits' : diskWorker(s, person) ? ', worktree file' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`]
+      const edited = ownDisk ? t !== await baseText(s, p, person) : s.room.text(p, person) !== undefined
+      const out = [`${p} as ${person} sees it (${lines(t)} lines${edited ? ', uncommitted edits' : diskWorker(s, person) ? ', worktree file' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`]
       const who = s.room.whoChanged(p).filter(x => x !== person && !sameCheckoutSession(s, x))
       if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(', ')} — room_read with person= to see theirs`)
       for (const c of s.room.claimsFor(p)) if (!sameCheckoutSession(s, c.by)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)

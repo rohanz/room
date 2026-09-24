@@ -498,6 +498,37 @@ describe('reading', () => {
     expect(d).toContain('+    return 22')
     expect(await t.tools.call('room_read', { diff: true, person: 'Kieran' })).toBe('Kieran has no uncommitted changes')
   })
+
+  it('room_read shows my disk edit when another session publishes this checkout', async () => {
+    const t = setup()
+    const s = t.session!
+    const publisher = addPresence(s.awareness, 'Rohan+old')
+    const edited = COMMITTED.replace('return 2', 'return 33')
+    try {
+      s.awareness.setLocalStateField('watchedDirectory', 'same-checkout')
+      s.awareness.setLocalStateField('publishUnder', 'Rohan+old')
+      publisher.setLocalStateField('watchedDirectory', 'same-checkout')
+      applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(publisher, [publisher.clientID]), 'test')
+      t.room.clearOverlay('Rohan', 'app.py')
+      t.other.setOverlay('Rohan+old', 'app.py', edited)
+      writeFileSync(join(dir, 'app.py'), edited)
+
+      for (const args of [{ path: 'app.py' }, { path: 'app.py', person: 'Rohan' }]) {
+        const read = await t.tools.call('room_read', args)
+        expect(read).toContain('app.py as Rohan sees it (5 lines, uncommitted edits')
+        expect(read).toContain('5|     return 33')
+        expect(read).not.toContain('also changed (uncommitted) by: Rohan+old')
+      }
+      const diff = await t.tools.call('room_read', { path: 'app.py', diff: true })
+      expect(diff).toContain('+    return 33')
+      expect(await t.tools.call('room_read', { path: 'nope.py' })).toMatch(/^error:/)
+    } finally {
+      writeFileSync(join(dir, 'app.py'), COMMITTED)
+      publisher.destroy()
+      await t.tools.shutdown()
+      s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
+    }
+  })
 })
 
 describe('scope, claims, plans, ledger', () => {
