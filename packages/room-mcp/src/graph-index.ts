@@ -6,7 +6,7 @@ import { bareSymbol, observedContractChanges, SymbolGraph, type FileSymbols, typ
 import { git, gitShow } from '@room/roomd/git'
 import { parseFile, ensureLanguages } from './parse/engine.js'
 import { specForPath } from './parse/index.js'
-import { baselineText, workerBaseline } from '@room/roomd/baseline'
+import { readBaseline, workerBaseline, type BaselineRead } from '@room/roomd/baseline'
 
 const isSourcePath = (path: string): boolean => specForPath(path) !== undefined
 const MAX_FILES = 3000
@@ -52,6 +52,7 @@ export class GraphIndex {
   private revisions = new Map<string, number>()
   private previousChanged = new Set<string>()
   private observedByPath = new Map<string, ObservedContractChange[]>()
+  private degradedPaths = new Set<string>()
   private generation = 0
   private truncated = false
   private publishing?: ReturnType<typeof setTimeout>
@@ -100,12 +101,13 @@ export class GraphIndex {
     this.phase = 'indexing'
     this.base = this.room.meta.base ?? ''
     this.observedByPath.clear()
+    this.degradedPaths.clear()
     for (const p of this.cache.keys()) this.graph.remove(p)
     this.cache.clear()
     if (!this.base) return
     this.publish('indexing')
     let paths: string[] = []
-    try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', this.base])).split('\n').filter(isSourcePath) }
+    try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', '-z', this.base])).split('\0').filter(isSourcePath) }
     catch (e) { if (generation === this.generation) { this.phase = 'error'; this.publish('error') }; this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`); return }
     if (generation !== this.generation || this.stopped) return
     this.truncated = paths.length > MAX_FILES
@@ -163,16 +165,27 @@ export class GraphIndex {
         // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
         const own = workerBaseline(this.room.workerOf(this.me))
         const read = (sha: string, file: string) => gitShow(this.dir, sha, file)
-        const baseText = mine !== undefined || mineDeleted ? await (own ? baselineText(own, path, read).catch(() => undefined) : read(this.base, path)) : undefined
+        const baseRead: BaselineRead | undefined = mine !== undefined || mineDeleted
+          ? own ? await readBaseline(own, path, read) : await read(this.base, path).then(
+            text => text === undefined ? { kind: 'absent' as const } : { kind: 'available' as const, text },
+            error => ({ kind: 'unavailable' as const, error: error instanceof Error ? error : new Error(String(error)) }),
+          ) : undefined
         if (this.stopped) return
         if (generation !== this.generation || revision !== this.revisions.get(path)) continue
         if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
         else { this.cache.set(path, symbols); this.graph.set(path, text) }
         if (mine !== undefined || mineDeleted) {
-          const changes = observedContractChanges(baseText ?? '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
+          if (baseRead?.kind === 'unavailable') {
+            this.degradedPaths.add(path)
+            this.observedByPath.delete(path)
+            this.log(`graph: baseline unavailable for ${path}; observed contract coverage degraded: ${baseRead.error.message}`)
+            break
+          }
+          this.degradedPaths.delete(path)
+          const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
           if (changes.length) this.observedByPath.set(path, changes)
           else this.observedByPath.delete(path)
-        } else this.observedByPath.delete(path)
+        } else { this.observedByPath.delete(path); this.degradedPaths.delete(path) }
         break
       }
     })().catch(e => this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`)).finally(() => {
@@ -196,6 +209,7 @@ export class GraphIndex {
 
   private publish(status: 'ready' | 'indexing' | 'error'): void {
     if (this.stopped) return
+    if (this.degradedPaths.size) status = 'error'
     const paths = Array.from(this.cache.keys()).sort()
     const edges = new Map<string, { source: string; target: string; symbols: string[] }>()
     let truncated = this.truncated

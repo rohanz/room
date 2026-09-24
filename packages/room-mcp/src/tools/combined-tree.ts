@@ -63,7 +63,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       for (const p of (await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) pathSet.add(p)
     }
     for (const base of new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? callerBaseline?.sha ?? ancestor])) {
-      if (base !== ancestor) for (const p of (await git(caller.dir, ['diff', '--name-only', ancestor, base])).split('\n').filter(Boolean)) pathSet.add(p)
+      if (base !== ancestor) for (const p of (await git(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean)) pathSet.add(p)
     }
   }
   // ls-files represents nested repositories/submodules as directory entries.
@@ -120,7 +120,8 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     if (text !== await baseAt(callerBaseline, p)) owners.set(p, [caller.me.name])
   }
   const initial = new Map(merged)
-  const out = [`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: git):`]
+  const out: string[] = []
+  const fallbacks = new Set<string>()
 
   out.push(...ignoredNotes)
   let hardCount = 0
@@ -152,6 +153,8 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
         continue
       }
       const res = await gitMergeFile(b ?? '', mineT, theirs ?? '', { ours: 'combined', base: 'base', theirs: person })
+      const mergeInfo = res as typeof res & { algorithm?: 'git' | 'fallback'; fallbackReason?: string }
+      if (mergeInfo.algorithm === 'fallback') fallbacks.add(mergeInfo.fallbackReason ?? 'git merge-file unavailable')
       const hunks = res.conflicts
       if (!hunks.length) {
         clean.push(p)
@@ -167,7 +170,10 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
         const ownerSession = owner === caller.me.name ? caller : rooms.holding(owner, caller)
         const ownerRaw = await previewText(ownerSession, p, owner)
         const ownerText = ownerRaw === null ? '' : ownerRaw ?? b
-        if ((await gitMergeFile(b ?? '', ownerText ?? '', theirs ?? '', { ours: owner, base: 'base', theirs: person })).status === 'conflict') pairNames.push(owner)
+        const pairResult = await gitMergeFile(b ?? '', ownerText ?? '', theirs ?? '', { ours: owner, base: 'base', theirs: person })
+        const pairInfo = pairResult as typeof pairResult & { algorithm?: 'git' | 'fallback'; fallbackReason?: string }
+        if (pairInfo.algorithm === 'fallback') fallbacks.add(pairInfo.fallbackReason ?? 'git merge-file unavailable')
+        if (pairResult.status === 'conflict') pairNames.push(owner)
       }
       const conflictsWith = pairNames.length ? pairNames : [prior[prior.length - 1]]
       for (const r of res.chunks) {
@@ -209,6 +215,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     if (resolvable.length && options.resolve !== true) out.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone.`)
   }
 
+  out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
   return { ancestor, deltaBases, paths, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */

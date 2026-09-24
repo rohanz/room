@@ -1,12 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { boundedGitSync } from './baseline.js'
 
 export interface RoomFile { room?: string; name?: string; dir?: string }
 
 /** The current worktree's private metadata, never the shared Git directory. */
 export function roomFilePath(dir: string): string {
-  const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  const gitDir = boundedGitSync(dir, ['rev-parse', '--absolute-git-dir']).toString().trim()
   return path.join(gitDir, 'room.json')
 }
 
@@ -24,5 +24,8 @@ export function readRoomFile(dir: string): RoomFile | undefined {
     fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 })
     fs.unlinkSync(legacy)
     return value
-  } catch { return undefined }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('timed out')) throw error
+    return undefined
+  }
 }

@@ -191,7 +191,7 @@ export async function gitRelation(dir: string, head: string, base: string): Prom
 export const gitCountBetween = (dir: string, from: string, to: string) =>
   git(dir, ['rev-list', '--count', `${from}..${to}`]).then(s => Number(s.trim()) || 0)
 export const gitPathsBetween = (dir: string, from: string, to: string) =>
-  git(dir, ['diff', '--name-only', from, to]).then(s => s.split('\n').filter(Boolean))
+  git(dir, ['diff', '--name-only', '-z', from, to]).then(s => s.split('\0').filter(Boolean))
 export const gitSubject = (dir: string, rev: string) =>
   git(dir, ['log', '-1', '--format=%s', rev]).then(s => s.trim())
 

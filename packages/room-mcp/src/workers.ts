@@ -11,7 +11,7 @@ import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import type { Worker, RetiredWorker } from '@room/shared'
 import { git } from '@room/roomd/git'
-import { carriedContentHash, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
+import { boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline, workerChangedPaths } from '@room/roomd/baseline'
 
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 
@@ -63,8 +63,11 @@ export function shouldRetire(facts: RetirementFacts): RetiredWorker['outcome'] |
 export async function workerGitFacts(leadDir: string, w: Worker): Promise<Pick<RetirementFacts, 'merged' | 'clean' | 'ahead' | 'uncommitted'>> {
   const facts: Pick<RetirementFacts, 'merged' | 'clean' | 'ahead' | 'uncommitted'> = { merged: false, clean: false, ahead: undefined }
   try {
-    const status = await git(w.dir, ['status', '--porcelain', '--untracked-files=all', '--', '.', ...workerOwnedPaths(w).exclusions])
-    facts.uncommitted = status.split('\n').filter(Boolean).length
+    const owned = new Set(await workerChangedPaths(w))
+    const status = await git(w.dir, ['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--', '.'])
+    const uncommitted = new Set(status.split('\0').filter(Boolean).map(entry => entry.slice(3)).filter(p => owned.has(p)))
+    for (const p of w.carriedUntracked ?? []) if (owned.has(p.path) && !fs.existsSync(path.join(w.dir, p.path))) uncommitted.add(p.path)
+    facts.uncommitted = uncommitted.size
     facts.clean = facts.uncommitted === 0
     const head = (await git(leadDir, ['rev-parse', 'HEAD'])).trim()
     const branch = `refs/heads/${w.branch}`
@@ -321,11 +324,15 @@ const internalGit = (dir: string, args: string[]) => git(dir, ['-c', 'core.hooks
 const carryRef = (tag: string) => `refs/room/carry/${tag}`
 const carriedUntrackedRef = (tag: string) => `refs/room/carry-untracked/${tag}`
 const pathExcluded = (rel: string, exclusions: string[]) => exclusions.some(p => rel === p || rel.startsWith(p.replace(/\/$/, '') + '/'))
+/** Stable, apply-compatible patch policy for both carry and discard. */
+function patchArgs(base: string, exclusions: string[], staged = false): string[] {
+  return ['diff', ...(staged ? ['--cached'] : []), '--binary', '--full-index', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', base, '--', '.', ...exclusions]
+}
 function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sha: string }[]): string | undefined {
   if (!paths.length) return undefined
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-index-'))
   const env = { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }
-  const run = (args: string[]) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: dir, env, encoding: 'utf8' }).trim()
+  const run = (args: string[]) => boundedGitSync(dir, ['-c', 'core.hooksPath=/dev/null', ...args], { env }).toString().trim()
   try {
     for (const entry of paths) {
       const stat = fs.lstatSync(path.join(dir, entry.path))
@@ -355,25 +362,42 @@ async function writeCarryRecord(repoDir: string, tag: string, record: CarryRecor
 }
 
 /** The relay can disappear with the lead; keep the intentional stop reason beside the carry record. */
-export function persistWorkerStopReason(repoDir: string, tag: string, reason: Worker['stopReason']): void {
-  const common = execFileSync('git', ['-C', repoDir, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim()
+export function persistWorkerStopReason(repoDir: string, tag: string, reason: Worker['stopReason'], workerId?: string): void {
+  const common = boundedGitSync(repoDir, ['rev-parse', '--git-common-dir']).toString().trim()
   const file = path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json')
   fs.mkdirSync(path.dirname(file), { recursive: true })
   let record: CarryRecord & { stopReason?: Worker['stopReason'] } = {}
   try { record = JSON.parse(fs.readFileSync(file, 'utf8')) }
   catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
   const tmp = file + '.' + process.pid + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify({ ...record, stopReason: reason }), { mode: 0o600 })
+  fs.writeFileSync(tmp, JSON.stringify({ ...record, stopReason: reason, stopWorkerId: workerId }), { mode: 0o600 })
   fs.renameSync(tmp, file)
 }
 
-export function persistedWorkerStopReason(repoDir: string, tag: string): Worker['stopReason'] | undefined {
-  const common = execFileSync('git', ['-C', repoDir, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim()
+export function persistedWorkerStopReason(repoDir: string, tag: string, workerId?: string): Worker['stopReason'] | undefined {
+  const common = boundedGitSync(repoDir, ['rev-parse', '--git-common-dir']).toString().trim()
   try {
     const record = JSON.parse(fs.readFileSync(path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json'), 'utf8'))
+    if (workerId && record.stopWorkerId !== workerId) return undefined
     return record.stopReason === 'lead-session-ended' ? record.stopReason : undefined
   } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
 }
+
+/** Clear only the stop state for this process generation after resume has started successfully. */
+export function clearWorkerStopState(repoDir: string, tag: string, workerId?: string): void {
+  const common = boundedGitSync(repoDir, ['rev-parse', '--git-common-dir']).toString().trim()
+  const file = path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json')
+  let record: CarryRecord & { stopReason?: Worker['stopReason']; stopWorkerId?: string }
+  try { record = JSON.parse(fs.readFileSync(file, 'utf8')) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+  if (workerId && record.stopWorkerId !== workerId) return
+  delete record.stopReason
+  delete record.stopWorkerId
+  const tmp = file + '.' + process.pid + '.tmp'
+  try { fs.writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 }); fs.renameSync(tmp, file) }
+  finally { try { fs.rmSync(tmp, { force: true }) } catch { /* rename already succeeded */ } }
+}
+
 
 /** Roll back only a newly prepared worktree; do not remove reused worker output. */
 export async function cleanupPreparedWorktree(repoDir: string, prepared: PreparedWorktree): Promise<void> {
@@ -386,7 +410,7 @@ export async function cleanupPreparedWorktree(repoDir: string, prepared: Prepare
 }
 
 /** A worktree for the worker, with tracked WIP in its base and untracked bytes outside Git. */
-export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', linkExclusions: string[] = [], ownerId?: string, retry = 0): Promise<PreparedWorktree> {
+export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', linkExclusions?: string[], ownerId?: string, retry = 0): Promise<PreparedWorktree> {
   const dir = path.join(repoDir, WORKERS_DIR, tag)
   const branch = `room/${tag}`
   const gitDir = (await git(repoDir, ['rev-parse', '--absolute-git-dir'])).trim()
@@ -412,20 +436,20 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   await internalGit(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, base!])
   if (!base) return { dir, branch, created: true, ...record }
   try {
-    const exclusions = [...linkExclusions]
-    if (!exclusions.length) {
+    const exclusions = [...linkExclusions ?? []]
+    if (linkExclusions === undefined) {
       try { exclusions.push(...fs.readFileSync(path.join(repoDir, '.roomlinks'), 'utf8').split(/\r?\n/).map(l => l.replace(/#.*/, '').trim()).filter(Boolean)) }
       catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
     }
     const excluded = ['.room', ...exclusions].map(p => `:(exclude,literal)${p.replace(/\/$/, '')}`)
-    const patch = await internalGit(repoDir, ['diff', '--binary', '--full-index', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', base, '--', '.', ...excluded])
+    const patch = await internalGit(repoDir, patchArgs(base, excluded))
     if (patch) {
       // Applied from a file, not stdin: a synchronous child fed a multi-megabyte patch can wait for EOF forever.
       const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-patch-'))
       try {
         const file = path.join(scratch, 'carry.patch')
         fs.writeFileSync(file, patch, { mode: 0o600 })
-        execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', 'apply', '--index', '--binary', file], { cwd: dir, maxBuffer: 64 * 1024 * 1024 })
+        boundedGitSync(dir, ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', 'apply', '--index', '--binary', file])
       } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
     }
     const untracked = (await git(repoDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ':(exclude).room'])).split('\0').filter(Boolean)
@@ -458,10 +482,11 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
       carriedUntracked.push({ path: rel, sha, mode: stat.mode & 0o777 })
     }
     const snapshotStable = async () => {
-      const latestPatch = await internalGit(repoDir, ['diff', '--binary', '--full-index', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', base, '--', '.', ...excluded])
+      const latestPatch = await internalGit(repoDir, patchArgs(base, excluded))
       const latestUntracked = (await git(repoDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ':(exclude).room'])).split('\0').filter(Boolean)
       const copiedStable = carriedUntracked.every(({ path: rel, sha }) => {
-        try { return carriedContentHash(repoDir, rel) === sha } catch { return false }
+        try { return carriedContentHash(repoDir, rel) === sha }
+        catch (error) { if (error instanceof Error && error.message.includes('timed out')) throw error; return false }
       })
       return (await git(repoDir, ['rev-parse', 'HEAD'])).trim() === base && latestPatch === patch && latestUntracked.join('\0') === untracked.join('\0') && copiedStable
     }
@@ -528,7 +553,8 @@ export const defaultSpawner: Spawner = spec => {
   if (spec.captureCodexSession && child.stdout) {
     let pending = ''
     child.stdout.on('data', (chunk: Buffer) => {
-      fs.writeSync(fd, chunk)
+      try { fs.writeSync(fd, chunk) }
+      catch (error) { try { fs.writeSync(2, `room worker: could not write Codex log: ${error instanceof Error ? error.message : String(error)}\n`) } catch { /* event callback must not throw */ } }
       pending += chunk.toString('utf8')
       const lines = pending.split('\n')
       pending = lines.pop()!.slice(-64 * 1024)
@@ -617,6 +643,11 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
     for (const ref of refs.keys()) await internalGit(leadDir, ['update-ref', '-d', ref])
     await fs.promises.rm(recordFile, { force: true })
   } catch (error) {
+    const recoveryDir = path.join(leadDir, '.room', 'discarded')
+    const recovery = discarded && fs.existsSync(recoveryDir)
+      ? fs.readdirSync(recoveryDir).filter(name => name.startsWith(w.tag + '-') && name.endsWith('.patch')).sort().at(-1)
+      : undefined
+    const recoveryNote = recovery ? `actual worker edits are in ${path.join(recoveryDir, recovery)}` : `collected edits are in ${leadDir}`
     try {
       let branchExists = true
       try { await git(leadDir, ['rev-parse', '--verify', `refs/heads/${w.branch}`]) } catch { branchExists = false }
@@ -630,15 +661,15 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
         if (fs.existsSync(file)) continue
         fs.mkdirSync(path.dirname(file), { recursive: true })
         const mode = (await git(leadDir, ['ls-tree', carriedUntrackedRef(w.tag), '--', entry.path])).split(' ')[0]
-        if (mode === '120000') fs.symlinkSync(execFileSync('git', ['cat-file', 'blob', entry.sha], { cwd: leadDir }).toString(), file)
+        if (mode === '120000') fs.symlinkSync(boundedGitSync(leadDir, ['cat-file', 'blob', entry.sha]).toString(), file)
         else {
-          const bytes = execFileSync('git', ['cat-file', '--filters', '--path=' + entry.path, entry.sha], { cwd: leadDir })
+          const bytes = boundedGitSync(leadDir, ['cat-file', '--filters', '--path=' + entry.path, entry.sha])
           fs.writeFileSync(file, bytes, { mode: entry.mode ?? 0o644 })
           fs.chmodSync(file, entry.mode ?? 0o644)
         }
       }
-    } catch (restore) { throw new Error(`cleanup failed: ${(error as Error).message}; could not restore ${w.dir}: ${(restore as Error).message}`) }
-    throw new Error(`cleanup failed: ${(error as Error).message}; restored ${w.dir}`)
+    } catch (restore) { throw new Error(`cleanup failed: ${(error as Error).message}; could not restore ${w.dir}: ${(restore as Error).message}; ${recoveryNote}`) }
+    throw new Error(`cleanup failed: ${(error as Error).message}; reconstructed base at ${w.dir}; ${recoveryNote}`)
   }
   const parent = path.basename(path.dirname(w.dir)) === 'workers' && path.basename(path.dirname(path.dirname(w.dir))) === '.room'
     ? path.resolve(w.dir, '../../..') : leadDir
@@ -663,14 +694,21 @@ export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<stri
   }
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-discard-'))
   try {
-    const run = (args: string[]) => execFileSync('git', args, { cwd: w.dir, env: { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }, maxBuffer: 64 * 1024 * 1024 })
+    const run = (args: string[]) => boundedGitSync(w.dir, args, { env: { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') } })
     const base = w.base ?? (await git(leadDir, ['merge-base', 'HEAD', w.branch])).trim()
     run(['read-tree', 'HEAD'])
     const unchanged = carriedUnchangedPaths(workerBaseline(w))
     const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map(p => ':(exclude,literal)' + p)]
     run(['add', '-A', '--', '.', ...exclusions])
-    const patch = run(['diff', '--cached', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', base, '--', '.', ...exclusions])
+    const patch = run(patchArgs(base, exclusions, true))
     if (!patch.length) return undefined
+    // The recovery artifact is useful only if it applies to a fresh checkout of this base.
+    const verifyDir = path.join(scratch, 'verify')
+    const verifyPatch = path.join(scratch, 'verify.patch')
+    fs.writeFileSync(verifyPatch, patch, { mode: 0o600 })
+    await internalGit(leadDir, ['worktree', 'add', '-q', '--detach', verifyDir, base])
+    try { boundedGitSync(verifyDir, ['apply', '--binary', verifyPatch]) }
+    finally { await internalGit(leadDir, ['worktree', 'remove', '--force', verifyDir]) }
     fs.mkdirSync(dir, { recursive: true })
     const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
     const file = path.join(dir, `${w.tag}-${stamp}.patch`)

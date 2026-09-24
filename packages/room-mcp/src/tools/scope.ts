@@ -3,6 +3,7 @@ import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, participantIdentityLine, splitParticipants, displayName, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
+import { workerChangedPaths } from '@room/roomd/baseline'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
@@ -22,10 +23,9 @@ async function workerChangedCount(s: Session, worker: import('@room/shared').Wor
   const overlayCount = s.room.changedPaths(worker.name).length
   if (!processGone && worker.status === 'running' && s.room.overlays.has(worker.name)) return overlayCount
   try {
-    const excluded = ['.room', ...(worker.carriedUntracked ?? []).map(entry => entry.path)]
-    const status = await git(worker.dir, ['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--', '.', ...excluded.map(path => `:(exclude,literal)${path}`)])
-    return status.split('\0').filter(Boolean).length
-  } catch {
+    return (await workerChangedPaths(worker)).length
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('timed out')) throw new Error(`worker ${worker.tag} changed-file count unavailable: ${error.message}`)
     return overlayCount // A removed or inaccessible worktree is still shown from room state.
   }
 }

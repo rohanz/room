@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import { readRoomFile } from '@room/roomd'
-import { execFileSync } from 'node:child_process'
+import { boundedGitSync } from '@room/roomd/baseline'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, dirname } from 'node:path'
@@ -32,7 +32,10 @@ if (args.help) {
 const dir = resolve(args.dir ?? process.cwd())
 const cfg = readRoomFile(dir) ?? {}
 const workDir = resolve(cfg.dir ?? dir)
-const gitName = () => { try { return execFileSync('git', ['-C', workDir, 'config', 'user.name'], { encoding: 'utf8' }).trim() || undefined } catch { return undefined } }
+const gitName = () => { try { return boundedGitSync(workDir, ['config', 'user.name']).toString().trim() || undefined } catch (error) {
+  if (error instanceof Error && error.message.includes('timed out')) console.error(`[roomagent] ${error.message}`)
+  return undefined
+} }
 const serverChoice = args.room ? undefined : args.server ?? process.env.ROOM_SERVER
 let roomUrl = args.room ?? (serverChoice ? undefined : process.env.ROOM_URL ?? cfg.room)
 if (serverChoice) {

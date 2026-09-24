@@ -8,6 +8,23 @@ import fs from 'node:fs'
 import nodePath from 'node:path'
 import type { Worker } from '@room/shared'
 
+/** Bounded binary Git reads used by the few synchronous carry/recovery operations. */
+function deadlineMs(): number {
+  const configured = Number(process.env.ROOM_GIT_TIMEOUT_MS)
+  return Number.isFinite(configured) && configured > 0 ? configured : 30_000
+}
+
+export function boundedGitSync(dir: string, args: string[], options: { input?: Buffer; env?: NodeJS.ProcessEnv; maxBuffer?: number } = {}): Buffer {
+  const timeout = deadlineMs()
+  try {
+    return execFileSync('git', args, { cwd: dir, encoding: 'buffer', stdio: ['pipe', 'pipe', 'pipe'], timeout, maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024, ...options })
+  } catch (error) {
+    const stopped = error as Error & { signal?: string; killed?: boolean }
+    if (stopped.signal === 'SIGTERM' || stopped.killed) throw new Error(`git ${args.join(' ')} timed out after ${timeout}ms`, { cause: error })
+    throw error
+  }
+}
+
 export interface Baseline {
   /** The worker whose own changes are measured from here. */
   worker: string
@@ -32,12 +49,17 @@ export function workerBaseline(worker: Worker | undefined): Baseline | undefined
 export const carriesWork = (baseline: Baseline | undefined): baseline is Baseline => !!baseline && (baseline.carriedCommit || baseline.untracked.size > 0)
 
 const committedPaths = new Map<string, Promise<string[]>>()
+const MAX_COMMITTED_PATHS = 128
 /** Paths the lead's carried work touched: the carried commit's own changes and carried untracked files. */
 export async function carriedPaths(baseline: Baseline): Promise<string[]> {
   let tracked: Promise<string[]> = Promise.resolve([])
   if (baseline.carriedCommit) {
     tracked = committedPaths.get(baseline.sha) ?? run(baseline.dir, ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', baseline.sha]).then(out => out.toString().split('\0').filter(Boolean))
-    committedPaths.set(baseline.sha, tracked)
+    if (!committedPaths.has(baseline.sha)) {
+      committedPaths.set(baseline.sha, tracked)
+      void tracked.catch(() => { if (committedPaths.get(baseline.sha) === tracked) committedPaths.delete(baseline.sha) })
+      if (committedPaths.size > MAX_COMMITTED_PATHS) committedPaths.delete(committedPaths.keys().next().value!)
+    }
   }
   return [...await tracked, ...baseline.untracked.keys()]
 }
@@ -55,9 +77,14 @@ export async function pairBaseline(me: Worker | undefined, other: Worker | undef
 }
 
 function run(dir: string, args: string[]): Promise<Buffer> {
+  const timeout = deadlineMs()
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd: dir, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: 30_000 }, (error, stdout, stderr) => {
-      if (error) reject(Object.assign(new Error(`git ${args.join(' ')} failed: ${String(stderr).trim() || error.message}`), { stderr: String(stderr) }))
+    execFile('git', args, { cwd: dir, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout }, (error, stdout, stderr) => {
+      if (error) {
+        const stopped = error as Error & { killed?: boolean; signal?: string }
+        const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr).trim() || error.message
+        reject(Object.assign(new Error(`git ${args.join(' ')} failed: ${detail}`), { stderr: String(stderr) }))
+      }
       else resolve(stdout)
     })
   })
@@ -89,6 +116,17 @@ export async function baselineText<T extends string | null | undefined>(baseline
   catch { throw new MissingBaseBlob(path) }
 }
 
+/** A missing path is known empty; a failed read is unknown and cannot support semantic claims. */
+export type BaselineRead = { kind: 'available'; text: string } | { kind: 'absent' } | { kind: 'unavailable'; error: Error }
+export async function readBaseline(baseline: Baseline, path: string, read: (sha: string, path: string) => Promise<string | null | undefined>, encoding: BufferEncoding = 'utf8'): Promise<BaselineRead> {
+  try {
+    const text = await baselineText(baseline, path, read, encoding)
+    return text == null ? { kind: 'absent' } : { kind: 'available', text }
+  } catch (error) {
+    return { kind: 'unavailable', error: error instanceof Error ? error : new Error(String(error)) }
+  }
+}
+
 /** The blob id Git gives the file or link at `path` in checkout `dir` (clean filters applied, as `git status` compares); `write` stores the blob. */
 export function carriedContentHash(dir: string, path: string, write = false): string {
   const source = nodePath.join(dir, path), stat = fs.lstatSync(source)
@@ -96,8 +134,8 @@ export function carriedContentHash(dir: string, path: string, write = false): st
   // A file is hashed by name: a synchronous child fed megabytes on stdin can leave git waiting for EOF forever
   // (Node 22 on macOS, 1 call in ~150). A link's target is a few bytes and is only hashable as stdin text.
   const out = stat.isSymbolicLink()
-    ? execFileSync('git', [...args, '--stdin'], { cwd: dir, input: Buffer.from(fs.readlinkSync(source)) })
-    : execFileSync('git', [...args, '--', path], { cwd: dir })
+    ? boundedGitSync(dir, [...args, '--stdin'], { input: Buffer.from(fs.readlinkSync(source)) })
+    : boundedGitSync(dir, [...args, '--', path])
   return out.toString().trim()
 }
 
@@ -122,4 +160,14 @@ export function carriedUnchanged(baseline: Baseline, path: string): boolean {
 /** The carried untracked paths the worker left as spawn carried them (carriedUnchanged). */
 export function carriedUnchangedPaths(baseline: Baseline | undefined): Set<string> {
   return new Set([...baseline?.untracked.keys() ?? []].filter(path => carriedUnchanged(baseline!, path)))
+}
+
+/** Paths changed by a worker from its own recorded base, excluding unchanged carried inputs. */
+export async function workerChangedPaths(worker: Worker): Promise<string[]> {
+  const baseline = workerBaseline(worker)
+  const base = baseline?.sha ?? 'HEAD'
+  const exclusions = ['.room', ...(worker.link ?? [])].map(p => `:(exclude,literal)${p}`)
+  const tracked = (await run(worker.dir, ['diff', '--name-only', '-z', base, '--', '.', ...exclusions])).toString().split('\0').filter(Boolean)
+  const untracked = (await run(worker.dir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ...exclusions])).toString().split('\0').filter(Boolean)
+  return [...new Set([...tracked, ...untracked, ...baseline?.untracked.keys() ?? []])].filter(p => !baseline || !carriedUnchanged(baseline, p)).sort()
 }
