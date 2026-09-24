@@ -11,7 +11,8 @@ import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, type Session } from '../src/session.js'
 import { resolveConfig, type ResolvedConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { pushChannelNotification } from '../src/channel.js'
+import { sendChannelNotification } from '../src/channel.js'
+import { SocketWakeRouter } from '../src/wake-path.js'
 import { shouldWake } from '../src/wake.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
@@ -70,13 +71,52 @@ it.each(['room_wait', 'room_state'])('a successful Claude push leaves the messag
   try {
     const msg = t.other.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'channel delivery regression' })
     const notify = vi.fn(async () => {})
-    await pushChannelNotification(s, shouldWake(me, { kind: 'msg', msg }, [], false), notify, undefined, 'claude')
+    await sendChannelNotification(shouldWake(me, { kind: 'msg', msg }, [], false)!, notify)
     expect(notify).toHaveBeenCalledOnce()
     expect(s.room.seen(me.name).has(msg.id)).toBe(false)
     const result = await t.tools.call(tool, { timeoutMs: 1 })
     expect(result).toContain('channel delivery regression')
     if (tool === 'room_state') expect(result).toContain('[inbox')
     expect(s.room.seen(me.name).has(msg.id)).toBe(true)
+  } finally {
+    peer.destroy(); peer.doc.destroy()
+    await t.tools.shutdown()
+    s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
+  }
+})
+
+it('a socket wake leaves the message unread until a Room tool delivers it', async () => {
+  const t = setup()
+  const s = t.session!
+  const peer = addPresence(s.awareness, 'Kieran')
+  const post = vi.fn(async () => {})
+  const router = new SocketWakeRouter({ host: 'claude', env: { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/test.sock', CLAUDE_CODE_MESSAGING_TOKEN: 't' }, parentArgs: 'claude', notify: vi.fn(async () => {}), post, windowMs: 1 })
+  try {
+    const msg = t.other.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'socket delivery regression' })
+    router.push(shouldWake(me, { kind: 'msg', msg }, [], false))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(post).toHaveBeenCalledOnce()
+    expect(s.room.seen(me.name).has(msg.id)).toBe(false)
+    expect(await t.tools.call('room_state', {})).toContain('socket delivery regression')
+    expect(s.room.seen(me.name).has(msg.id)).toBe(true)
+  } finally {
+    router.close(); peer.destroy(); peer.doc.destroy()
+    await t.tools.shutdown()
+    s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
+  }
+})
+
+it('room_send warns only when the recipient presence says wake is unavailable', async () => {
+  const t = setup()
+  const s = t.session!
+  const peer = addPresence(s.awareness, 'Kieran')
+  try {
+    peer.setLocalStateField('wakeUnavailable', false)
+    applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+    expect(await t.tools.call('room_send', { type: 'question', to: 'Kieran', text: 'first' })).not.toContain('cannot be woken')
+    peer.setLocalStateField('wakeUnavailable', true)
+    applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+    expect(await t.tools.call('room_send', { type: 'question', to: 'Kieran', text: 'second' })).toContain('cannot be woken in this session')
   } finally {
     peer.destroy(); peer.doc.destroy()
     await t.tools.shutdown()

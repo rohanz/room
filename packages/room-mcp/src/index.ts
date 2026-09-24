@@ -13,8 +13,8 @@ import { LOCAL, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSess
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd/local'
 import { consumeHookDisclosure, consumeHookNotice, syncHookSeen, writePendingHookContext } from './hooks-bridge.js'
-import { resolveConfig } from './config.js'
-import { pushChannelNotification } from './channel.js'
+import { resolveConfig, resolveSessionHost } from './config.js'
+import { SocketWakeRouter } from './wake-path.js'
 import { markTeamSharingDisclosureDelivered, pendingTeamSharingDisclosure, prepareTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
@@ -100,15 +100,19 @@ async function main() {
     return { content: [{ type: 'text', text: (notice ? notice + '\n\n' : '') + (disclosure ? disclosure + '\n\n' : '') + body }] }
   })
 
-  // Claude Code channel: push interrupts and addressed notifies as they arrive.
+  // Claude Code: push interrupts and addressed notifies over the selected wake path.
+  const attachedWakeSessions = new WeakSet<Session>()
   const attachChannel = (s: Session) => {
+    if (attachedWakeSessions.has(s)) return
+    attachedWakeSessions.add(s)
+    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: notification => mcp.notification(notification), log })
     const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
     s.room.bus.observe(ev => {
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
         // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
         syncHookSeen(s)
         if (m.from === s.me.name || s.room.seen(s.me.name).has(m.id)) continue
-        void pushChannelNotification(s, shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0), notification => mcp.notification(notification), startup.claudeChannel)
+        router.push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0))
       }
     })
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)

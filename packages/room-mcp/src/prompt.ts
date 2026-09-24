@@ -1,42 +1,37 @@
-import { execFileSync } from 'node:child_process'
-import { DEFAULT_CLAUDE_CHANNEL, resolveSessionHost } from './config.js'
+import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
+import { claudeWakeAvailable } from './wake-path.js'
 
-/** Claude host detection alone cannot prove channels are enabled. Never promise a wake-up. */
+/** The exported inbox socket (Claude Code 2.1.224+) or an admitted channel enables wakes. */
 export function claudeWakeUnavailable(dir: string, host = resolveSessionHost(dir), parentArgs?: string): boolean {
   if (host !== 'claude') return false
-  if (parentArgs === undefined) {
-    try { parentArgs = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() }
-    catch { /* unknown: warn conservatively */ }
-  }
-  const channel = process.env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL
-  const admitted = [...(parentArgs ?? '').matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)]
-  if (channel && admitted.some(m => m[1].split(',').includes(channel))) return false
-  return true
+  return !claudeWakeAvailable({ host, parentArgs })
 }
 
 const wakeNoted = new WeakSet<Session>()
 const workerWaitNoted = new WeakSet<Session>()
 
 /** Plain wording is separate from process detection so shell-specific setup can be checked. */
-export function claudeWakeText(shell?: string): string {
+export function claudeWakeText(shell?: string, off = false): string {
+  if (off) return 'For your human: wake-ups are off in this process (ROOM_WAKE=off). Set ROOM_WAKE=auto to enable them.'
   const rc = shell?.endsWith('bash') ? '~/.bashrc' : '~/.zshrc'
   return [
     "For your human: this Claude Code session can't be woken instantly. Everything still works; messages reach it on its next turn.",
-    `To turn wake-ups on, start Claude Code with \`claude-room\`. If that command is not found, add it: \`echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ${rc}\``,
-    'On a claude.ai Team or Enterprise account, an Owner must enable channels first.',
+    'First update Claude Code to 2.1.224 or later so it can bind an inbox socket. Check /status for its Peer address.',
+    `If a socket is unavailable, start Claude Code with \`claude-room\`. If that command is not found, add it: \`echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ${rc}\``,
+    'For claude-room channels on a claude.ai Team or Enterprise account, an Owner must enable channels; organization settings can also turn cross-session messaging off.',
   ].join('\n')
 }
 
 /** One human note per session; a later first spawn still gets its worker wait instruction. */
 export function claudeWakeNote(session: Session, moment: 'alone' | 'company' | 'spawn', options: { host?: string; parentArgs?: string; shell?: string } = {}): string {
-  if (moment === 'alone' || process.env.ROOM_CLAUDE_CHANNEL === '' || !claudeWakeUnavailable(session.dir, options.host, options.parentArgs)) return ''
+  if (moment === 'alone' || !claudeWakeUnavailable(session.dir, options.host, options.parentArgs)) return ''
   const forWorkers = moment === 'spawn' && !workerWaitNoted.has(session)
   if (forWorkers) workerWaitNoted.add(session)
   const workerInstruction = 'Block on room_wait in a loop to receive worker questions and completions.'
   if (wakeNoted.has(session)) return forWorkers ? workerInstruction : ''
   wakeNoted.add(session)
-  const humanNote = claudeWakeText(options.shell ?? process.env.SHELL)
+  const humanNote = claudeWakeText(options.shell ?? process.env.SHELL, process.env.ROOM_WAKE === 'off')
   return forWorkers ? `${workerInstruction}\n${humanNote}` : humanNote
 }
 

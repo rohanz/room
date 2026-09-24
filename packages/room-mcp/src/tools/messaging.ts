@@ -48,7 +48,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const verb = retired || exited ? 'finished' : `reported ${worker!.status}`
       return { text: `${name} ${verb}${ago} and will not answer; its summary: ${summary}`, terminal: true }
     }
-    if (presences(s).some(p => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken; it will see this at its next turn`, terminal: false }
+    if (presences(s).some(p => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken in this session; it will see this at its next turn`, terminal: false }
     if (present || worker) return undefined
     const known = knownNames(s)
     if (known.has(name)) return { text: `${name} is offline; it will see this when it returns`, terminal: false }

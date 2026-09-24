@@ -1,0 +1,146 @@
+import net from 'node:net'
+import { execFileSync } from 'node:child_process'
+import type { WakeEvent } from './wake.js'
+import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
+import { sendChannelNotification } from './channel.js'
+
+type Notification = { method: 'notifications/claude/channel'; params: { content: string; meta: Record<string, string> } }
+type WakeEnv = NodeJS.ProcessEnv
+type Mode = 'auto' | 'socket' | 'channels' | 'off'
+
+/** Wait for the trailing edge of a burst so nearby questions and completions share one wake. */
+export const SOCKET_WAKE_WINDOW_MS = 5_000
+const SOCKET_POST_TIMEOUT_MS = 1_500
+
+let parentArgsCache: string | undefined
+export function claudeParentArgs(): string {
+  if (parentArgsCache !== undefined) return parentArgsCache
+  try { parentArgsCache = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() }
+  catch { parentArgsCache = '' }
+  return parentArgsCache
+}
+
+function mode(env: WakeEnv): Mode {
+  const value = env.ROOM_WAKE
+  return value === 'socket' || value === 'channels' || value === 'off' ? value : 'auto'
+}
+
+function channelAdmitted(env: WakeEnv, parentArgs: string, channel: string | undefined): boolean {
+  const entry = channel ?? env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL
+  if (!entry) return false
+  const admitted = [...parentArgs.matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)]
+  return admitted.some(m => m[1].split(',').includes(entry))
+}
+
+export interface WakeAvailability {
+  host: string
+  env?: WakeEnv
+  parentArgs?: string
+  channel?: string
+}
+
+/** Claude Code exports the socket only after binding its inbox (v2.1.224+); env-vars.md has no version variable. */
+export function claudeWakeAvailable(o: WakeAvailability): boolean {
+  if (o.host !== 'claude') return false
+  const env = o.env ?? process.env
+  const selected = mode(env)
+  if (selected === 'off') return false
+  const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET
+  if (selected === 'socket') return socket
+  if (selected === 'auto' && socket) return true
+  const channel = channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)
+  return selected === 'channels' ? channel : socket || channel
+}
+
+/** The inbox protocol is newline-delimited JSON. No acknowledgement exists, so a clean close means only that bytes were handed to the socket. */
+export function postSocketWake(socketPath: string, token: string | undefined, content: string, timeoutMs = SOCKET_POST_TIMEOUT_MS): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath)
+    let settled = false
+    let flushed = false
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      if (error) reject(error); else resolve()
+    }
+    socket.setTimeout(timeoutMs, () => finish(new Error('Claude inbox socket timed out')))
+    socket.once('error', finish)
+    socket.once('close', () => { if (!settled) finish(flushed ? undefined : new Error('Claude inbox socket closed before write')) })
+    socket.once('connect', () => {
+      const lines = token ? [{ type: 'auth', token }, { type: 'user', message: { role: 'user', content } }]
+        : [{ type: 'user', message: { role: 'user', content } }]
+      socket.end(lines.map(line => JSON.stringify(line)).join('\n') + '\n', () => { flushed = true })
+    })
+  })
+}
+
+export interface SocketWakeOptions extends WakeAvailability {
+  notify: (notification: Notification) => Promise<unknown>
+  windowMs?: number
+  post?: typeof postSocketWake
+  log?: (line: string) => void
+}
+
+/** One router per joined session; one socket post per pending burst. */
+export class SocketWakeRouter {
+  private pending: WakeEvent[] = []
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private sequence = 0
+  private loggedError = false
+  private closed = false
+  constructor(private o: SocketWakeOptions) {}
+
+  push(wake: WakeEvent | null): void {
+    if (!wake || this.closed || this.o.host !== 'claude') return
+    const env = this.o.env ?? process.env
+    const selected = mode(env)
+    if (selected === 'off') return
+    if (selected === 'channels') { void this.channel(wake); return }
+    if (!env.CLAUDE_CODE_MESSAGING_SOCKET) {
+      if (selected === 'auto' && this.channelAdmitted()) void this.channel(wake)
+      return
+    }
+    this.pending.push(wake)
+    if (!this.timer) this.timer = setTimeout(() => { this.timer = undefined; void this.flush() }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS)
+  }
+
+  close(): void { this.closed = true; if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.pending = [] }
+
+  private async channel(wake: WakeEvent): Promise<void> {
+    if (this.o.channel === '') return
+    await sendChannelNotification(wake, this.o.notify)
+  }
+
+  private channelAdmitted(): boolean {
+    const env = this.o.env ?? process.env
+    return channelAdmitted(env, this.o.parentArgs ?? claudeParentArgs(), this.o.channel)
+  }
+
+  private async flush(): Promise<void> {
+    const items = this.pending.splice(0)
+    if (!items.length || this.closed) return
+    const count = items.length
+    const phrases = items.slice(0, 5).map(w => `${(w.meta.from ?? 'someone').replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(w.meta.type)}`)
+    if (count > 5) phrases.push(`${count - 5} more`)
+    // Sequence makes consecutive bursts distinct even when sender and kind are unchanged.
+    const content = `[room] ${count} ${count === 1 ? 'thing needs' : 'things need'} you: ${phrases.join('; ')}. Check the room. (#${++this.sequence})`
+    const env = this.o.env ?? process.env
+    try { await (this.o.post ?? postSocketWake)(env.CLAUDE_CODE_MESSAGING_SOCKET!, env.CLAUDE_CODE_MESSAGING_TOKEN, content) }
+    catch (error) {
+      if (!this.loggedError) { this.loggedError = true; this.o.log?.(`Claude socket wake failed: ${error instanceof Error ? error.message : String(error)}`) }
+      if (mode(env) === 'auto' && this.channelAdmitted()) await this.channel({ content, meta: { type: 'room_wake', count: String(count) } })
+    }
+  }
+}
+
+function kindPhrase(type: string | undefined): string {
+  switch (type) {
+    case 'question': return 'asked a question'
+    case 'answer': return 'answered'
+    case 'changed': return 'reported a change'
+    case 'note': return 'sent a note'
+    case 'done': return 'finished'
+    default: return 'has an update'
+  }
+}

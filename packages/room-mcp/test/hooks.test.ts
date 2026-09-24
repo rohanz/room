@@ -812,11 +812,29 @@ it('announces unchanged near evidence once and stays silent with an adequate own
 it('publishes known unavailable Claude wake capability', () => {
   vi.stubEnv('ROOM_HOST', 'claude')
   vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
+  vi.stubEnv('CLAUDE_CODE_MESSAGING_SOCKET', undefined)
   const s = session(new RoomDoc())
   const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
   b.start()
   expect(s.awareness.getLocalState()).toMatchObject({ wakeUnavailable: true })
   b.stop(); s.awareness.destroy()
+})
+
+it('publishes socket wake capability and honors ROOM_WAKE=off', () => {
+  vi.stubEnv('ROOM_HOST', 'claude')
+  vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
+  vi.stubEnv('CLAUDE_CODE_MESSAGING_SOCKET', '/tmp/claude-inbox.sock')
+  const s = session(new RoomDoc())
+  const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
+  b.start()
+  expect(s.awareness.getLocalState()).toMatchObject({ wakeUnavailable: false })
+  b.stop(); s.awareness.destroy()
+  vi.stubEnv('ROOM_WAKE', 'off')
+  const off = session(new RoomDoc())
+  const offBridge = new HooksBridge(off, { forMe: () => false, isSeen: () => false })
+  offBridge.start()
+  expect(off.awareness.getLocalState()).toMatchObject({ wakeUnavailable: true })
+  offBridge.stop(); off.awareness.destroy()
 })
 
 it('matches the shared overlap rule on exact files, directory boundaries and normalized paths', async () => {
