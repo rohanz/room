@@ -50,7 +50,7 @@ Room 0.16.0 on the hosted server (Fly release v62).
 
 ## Findings
 
-1. **A commit on another local branch was announced as the room's new base (bug).** Ana's agent ran
+1. **A commit on another local branch was announced as the room's new base (bug) — FIXED in 0.16.1 (fc45d16).** Ana's agent ran
    `git checkout -b deprecate-content-md5`, committed and pushed that branch, while its session stayed
    in the `rehearsal` room. roomd saw HEAD ahead of the room base and advanced it
    (`packages/roomd/src/index.ts`, `maybeAdvance`), so Ben and Cy were told "rohanz's agent moved the
@@ -59,25 +59,25 @@ Room 0.16.0 on the hosted server (Fly release v62).
    here only because Ana later pushed that same commit to `rehearsal`. A base should advance only
    while the member's checkout is on the room's branch, and a switch to another branch should be
    visible to the room (and to the agent that switched).
-2. **Ana's agent would not push to the shared branch.** It pushed a new branch instead, reasoning that
+2. **Ana's agent would not push to the shared branch — FIXED in 0.16.1 (eba8df3).** It pushed a new branch instead, reasoning that
    "moving it would have shifted the base under the other two agents". In a shared-branch room that
    is exactly Room's job; the join and etiquette text should say that pushing finished work to the
    room's branch is the normal flow and that Room tells the others to catch up.
-3. **"git pull to catch up" is not always the right instruction.** With overlapping uncommitted
+3. **"git pull to catch up" is not always the right instruction — FIXED in 0.16.1 (fc45d16, eba8df3).** With overlapping uncommitted
    edits, Cy's plain pull was refused and it had to discover `--autostash` itself. The base message
    and the etiquette rule should give the command that works with uncommitted work, or say what to
    do when pull refuses.
-4. **The sharing note shown on join is in tool jargon.** Every agent relayed "use room_share
+4. **The sharing note shown on join is in tool jargon — FIXED in 0.16.1 (eba8df3).** Every agent relayed "use room_share
    level=intent for plans only or level=declared to limit files to your declared area" to its human.
    It should be plain words a person can say back ("say 'share plans only' to keep file contents on
    this machine").
-5. **The export reads as a PR comment.** `room-history.md` starts "One comment per PR, updated in
+5. **The export reads as a PR comment — FIXED in 0.16.1 (eba8df3).** `room-history.md` starts "One comment per PR, updated in
    place", which is the PR-note format, not a history file.
-6. **Names are asymmetric.** The first session is "rohanz's agent" in the timeline and "rohanz" in
+6. **Names are asymmetric — FIXED in 0.16.1 (eba8df3).** The first session is "rohanz's agent" in the timeline and "rohanz" in
    the participant list; the others are "rohanz+claude" and "rohanz+codex". With one login per
    person this matters less, but the first joiner should read the same way everywhere.
-7. **An agent mislabelled a teammate's task** (Ben: "rohanz on issue #3's deprecation work"). The
-   room's scopes were right; the agent misread them. Watch for it on the day.
+7. **An agent mislabelled a teammate's task — NOT DONE: agent behaviour; watch for it on the day.**
+   Ben said "rohanz on issue #3's deprecation work". The room's scopes were right; the agent misread them.
 
 ## Before the trial
 

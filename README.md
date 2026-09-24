@@ -39,10 +39,14 @@ Explicit destination arguments take precedence over `ROOM_SERVER`, then legacy `
 then the remembered choice, then local. Environment overrides are not saved as your choice.
 An agent never switches to a team room on its own initiative.
 
+On a shared branch, ask your agent to commit and push finished work to that branch. Room tells
+the others to catch up. To catch up with uncommitted edits, use `git pull --ff-only --autostash`;
+if it refuses, stop and ask for help; never merge another branch into this one.
+
 On the first join to each server from a worktree, the agent relays one disclosure, including
 when you are alone or the destination came from an environment variable:
 
-> This clone now shares {sharing level} with members of {repo} on {server}; use room_share level=intent for plans only or level=declared to limit files to your declared area.
+> This clone now shares {sharing level} with members of {repo} on {server}; to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.
 
 The sharing level is stated plainly: “the full text of files you change”, “only the files in
 your declared area”, or “only your plans, no file text”.

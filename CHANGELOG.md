@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.1
+
+- Room advances its base only from pushed commits on the room's branch and warns an agent that switches branches; a detached HEAD (mid-rebase) neither moves the base nor warns. Base notices and join guidance show `git pull --ff-only --autostash` for catching up with uncommitted edits and tell the agent to stop if it cannot fast-forward.
+- Agent instructions now make pushing finished work to the shared room branch the normal flow when the human asks to push. Join disclosures use plain phrases people can say to share plans only or limit shared file text.
+- Exported room history has a history heading instead of PR comment text, and the first agent's name appears the same way in the timeline and participant list.
+- Merge previews describe trivial results relative to a worker's carried base. Collected workers no longer keep worktrees for `*.tsbuildinfo` output, and resumed Codex workers are recognized by their host session ID.
+- Human messages using the same name as an agent now reach that agent's inbox and wake paths. A regression check covers answers between workers.
+
 ## 0.16.0
 
 - Worker progress notes stay queued without waking their own lead; questions, finishes, failures, interrupts and human messages still wake. `room_wait` is capped at 100 seconds to avoid Claude Code 2.1.212's automatic backgrounding threshold of 120 seconds. Answers crossing a wait are retained, `inReplyTo` addresses the asker automatically, worker questions surface first with reply instructions, and `room_send` accepts `message` as an alias for `text`.

@@ -307,20 +307,20 @@ files, and large-repo collection and merge preview without a test command. Previ
 - **Fixed in 0.16.0: A cancelled tool call keeps running inside Room.** Claude Code's TaskStop on a slow `room_spawn` stopped the
   call in the session, but the Room server still held the queued spawns and would have carried them out once
   unblocked. Room should notice the caller gave up (MCP cancellation) and drop queued work.
-- **Nobody outside a batch can talk to it cleanly.** The owner's session launched a detached batch lead
+- **Nobody outside a batch can talk to it cleanly — partly fixed in 0.16.1.** The owner's session launched a detached batch lead
   (its own local room in its own clone) and later needed to tell one worker a root cause. Joining that room
   from the launching session would have made it a second participant in the lead's checkout (finding 4 of
   docs/audit-2026-09-25-website-logs.md), so a script posted straight into the doc instead; the note was sent
   as "rohanz", the lead's own name, and the lead treated it as its own message. Wanted: join a room as an
-  observer (distinct name, shares nothing, woken only by messages addressed to it), and a human-kind message
-  must never be filtered as the same-named agent's own.
+  observer (distinct name, shares nothing, woken only by messages addressed to it). Same-named
+  human messages now reach the agent inbox and wake paths; the observer join remains open.
 - **Fixed in 0.16.0: Stale Room code goes unnoticed.** A session started on Wednesday ran pre-fix code until Friday and froze on
   the fixed stdin-pipe bug. Room should say once when the plugin on disk is newer than the running server:
   "Room was updated on disk; restart this session to pick up fixes".
 
 Still open from this audit: merge preview with `run` still materializes the lead's full
-tree; `*.tsbuildinfo` at a package root is ignored output outside the regenerable build
-directories, so it still keeps a collected worktree.
+tree. Fixed in 0.16.1: `*.tsbuildinfo` at a package root is regenerable output and no
+longer keeps a collected worktree.
 
 ### After 0.14.1 (2026-09-24, open)
 

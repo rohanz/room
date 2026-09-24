@@ -1,6 +1,8 @@
 # First trial with real users: plan
 
-Status 2026-09-22: repo and tasks chosen, fork not created yet, date not set. Build under test: 0.10.2.
+Status 2026-09-25: first hosted rehearsal completed with three agents on one shared branch
+([results](rehearsal-2026-09-25.md)); findings 1–6 are fixed in 0.16.1. A second rehearsal
+with an idle Fly machine and a second GitHub login is still to do. Trial date is not set.
 Rule: nothing big merges within 48 hours of the trial.
 
 ## What it tests
@@ -55,16 +57,17 @@ Keep the room's exported ledger and each person's notes.
 
 - [ ] Rohan confirms the repo choice and creates the fork (public, under rohanz); `trial` branch at
       the base; three issues filed; Kieran and Hrishi added as collaborators (Room admits by push access).
-- [ ] Dress rehearsal on the hosted server: one Claude and one Codex agent, two clones, cards A and
-      C at the same time. Never yet exercised together: 0.10.2 on the hosted server under a real
-      GitHub login, the identity guard with the real flow, Codex and Claude in one team room, Fly
-      waking from idle mid-session.
+- [x] First hosted rehearsal: two Claude Code agents and one Codex agent, three clones, cards A–C
+      at the same time. All used the owner's GitHub login; see the [results](rehearsal-2026-09-25.md).
+- [ ] Second hosted rehearsal: let the Fly machine idle first, then join with at least one other
+      GitHub login to check wake-up and first-login behaviour.
 - [ ] Fix only what the rehearsal or the readiness review finds, then the 48-hour quiet period.
 - [ ] Fly set to always-on the day before (`min_machines_running = 1`), back to stop-on-idle after.
 - [ ] Friend checklist sent: the two install commands per host; Claude Code 2.1.224 or later
       (`claude --version`; 2.1.234 on native Windows); trust the hooks in Codex when asked,
       "say: join the room", follow the login
-      code, stay on `trial`, `uv run --group tests pytest -q tests/sansio tests/test_http.py tests/test_wrappers.py`.
+      code, stay on `trial`, `uv run --group tests pytest -q tests/sansio tests/test_http.py tests/test_wrappers.py`;
+      when your task is done, say: **“commit and push it to trial”**.
 
 ## On the day
 
