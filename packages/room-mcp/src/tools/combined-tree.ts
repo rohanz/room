@@ -215,7 +215,9 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     }
     out.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(' + ')}${pair && pair.sha !== ancestor ? ` (against ${pair.worker}'s base ${pair.sha.slice(0, 10)})` : ''}`)
     if (declaredNote) out.push(declaredNote)
-    if (onlyOne.length) out.push(`touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
+    if (onlyOne.length) out.push(pair?.carriedCommit
+      ? `touched by one side only since ${person}'s base ${pair.sha.slice(0, 10)} (merge trivially; the lead's carried edits are in that base): ${onlyOne.join(', ')}`
+      : `touched by one side only (merge trivially): ${onlyOne.join(', ')}`)
     if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
     if (conflicts.length) out.push(`CONFLICTS:\n${conflicts.join('\n')}`)
     else out.push('no conflicts')

@@ -130,7 +130,7 @@ function collected(reply: string): string[] {
 function previewed(reply: string): string[] {
   const out = new Set<string>()
   for (const line of reply.split('\n')) {
-    const only = /^touched by one side only \(merge trivially\): (.*)$/.exec(line)
+    const only = /^touched by one side only (?:\(merge trivially\)|since .* \(merge trivially; the lead's carried edits are in that base\)): (.*)$/.exec(line)
     if (only) for (const item of only[1].split(', ')) out.add(item.replace(/ \([^)]*\)$/, ''))
     const both = /^both changed, merge cleanly: (.*)$/.exec(line)
     if (both) for (const item of both[1].split(', ')) out.add(item)
@@ -389,11 +389,22 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const preview = await t.call('room_preview_merge', { person: 'rohanz+six' })
     expect(preview).not.toContain('CONFLICTS')
     expect(preview).toContain('no conflicts')
+    expect(preview).toMatch(/touched by one side only since rohanz\+six's base .*lead's carried edits are in that base/)
     const files = previewed(preview)
     expect(files).toEqual(['keep.txt', 'shared.txt'])
     const reply = await t.call('room_collect', {})
     expect(collected(reply)).toEqual(files)
     expect(read(repo, 'shared.txt')).toBe(lines([2, 'W2'], [9, 'X9']))
+  })
+
+  it('names the carried base when the lead edited the same file before spawn', async () => {
+    put(repo, 'shared.txt', lines([2, 'lead edit']))
+    const t = world()
+    const { dir } = await t.spawn('carried-line')
+    put(dir, 'shared.txt', lines([2, 'lead edit'], [9, 'worker edit']))
+    await t.finish('carried-line')
+    const preview = await t.call('room_preview_merge', { person: 'rohanz+carried-line' })
+    expect(preview).toMatch(/touched by one side only since rohanz\+carried-line's base [0-9a-f]{10} \(merge trivially; the lead's carried edits are in that base\): shared\.txt \(rohanz\+carried-line only\)/)
   })
 
   it('(7) a clean lead behaves exactly as 0.10.2: base is HEAD, no carried commit, no carried line', async () => {

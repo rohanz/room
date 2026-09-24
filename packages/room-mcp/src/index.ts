@@ -133,7 +133,7 @@ async function main() {
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
         // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
         syncHookSeen(s)
-        if (m.from === s.me.name || s.room.seen(s.me.name).has(m.id)) continue
+        if ((m.from === s.me.name && m.fromKind !== 'human') || s.room.seen(s.me.name).has(m.id)) continue
         router.push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0,
           new Set(Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name).map(w => w.name))))
       }

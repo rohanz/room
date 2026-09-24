@@ -236,7 +236,7 @@ export class Bridge {
    *  moves as interrupts, the rest at notify. One per worker, path and type per minute. */
   private relayDown(m: Msg): void {
     if (this.relayed.includes(m.id) || !RELAY_TYPES.has(m.type)) return
-    if (m.from === this.team.me.name) return
+    if (m.from === this.team.me.name && m.fromKind !== 'human') return
     const paths = msgPaths(m)
     if (!paths.length) return
     const now = Date.now()

@@ -74,7 +74,7 @@ function holdsClaim(me: string, m: Msg, claims: readonly Claim[]): boolean {
 
 /** Shared inbox routing. Priority controls urgency; the kind controls its natural audience. */
 export function messageForMe(me: { name: string }, m: Msg, context: MessageRouteContext = {}): boolean {
-  if (m.from === me.name) return false
+  if (m.from === me.name && m.fromKind !== 'human') return false
   if (m.type === 'plan' && m.priority === 'fyi') return false
   if (m.to === me.name) return true
   if (m.to) return false

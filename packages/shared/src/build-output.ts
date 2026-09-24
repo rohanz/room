@@ -9,5 +9,5 @@ const buildDirs = new Set<string>(REGENERABLE_BUILD_DIRS)
 
 /** Accepts a repo-relative path from Git, including directory entries ending in `/`. */
 export function isRegenerableBuildPath(rel: string): boolean {
-  return rel.split('/').some(part => buildDirs.has(part))
+  return rel.endsWith('.tsbuildinfo') || rel.split('/').some(part => buildDirs.has(part))
 }

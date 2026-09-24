@@ -206,7 +206,7 @@ export class HooksBridge {
     // process wrote on someone else's behalf (a worker's synthetic done on exit): that one must.
     const onBus = (ev: { changes: { delta: { insert?: unknown }[] }; transaction: { local: boolean } }) => {
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-        if (ev.transaction.local && m.from === this.s.me.name) continue
+        if (ev.transaction.local && m.from === this.s.me.name && m.fromKind !== 'human') continue
         void this.maybeWake(m)
       }
     }

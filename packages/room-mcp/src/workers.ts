@@ -611,16 +611,18 @@ export function probeProcess(pid: number): ProcessInfo | undefined {
 
 /**
  * May this session signal `pid` as this worker? Only when it is alive, started within 5 s of the recorded
- * spawn, and its command line is a claude/codex invocation mentioning the worker's tag or worktree.
+ * spawn, and its command line is a claude/codex invocation mentioning the worker's tag,
+ * worktree, or retained host session id (used by `codex exec resume`).
  * A recycled pid after a lead restart fails at least one of these.
  */
-export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string; dir: string }, probe: (pid: number) => ProcessInfo | undefined = probeProcess): boolean {
+export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string; dir: string; hostSessionId?: string }, probe: (pid: number) => ProcessInfo | undefined = probeProcess): boolean {
   if (!pidAlive(pid)) return false
   const info = probe(pid)
   if (!info?.start || !info.command) return false
   if (Math.abs(info.start - w.startedAt) > 5000) return false
   if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info.command)) return false
   return info.command.includes(w.tag) || info.command.includes(w.dir)
+    || (!!w.hostSessionId && info.command.includes(w.hostSessionId))
 }
 
 export interface CwdProcess { pid: number; cwd: string; command: string }

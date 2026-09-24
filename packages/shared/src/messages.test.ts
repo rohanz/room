@@ -101,11 +101,11 @@ it('does not treat an answer to someone else as the answer to my wait', () => {
   expect(messageEndsWait(answer, { questionId: 'm_question', me: 'Ada' })).toBe(true)
 })
 
- it('never routes own messages, even human or explicitly addressed messages', () => {
+ it('filters own agentic messages but keeps an explicitly addressed same-named human message', () => {
    const room = new RoomDoc()
    for (const kind of ['human', 'agent', 'bot', 'ci'] as const) {
      const m = room.post<NoteMsg>({ name: 'Rohan', kind }, { type: 'note', text: 'own', priority: 'interrupt', to: 'Rohan' })
-     expect(messageForMe({ name: 'Rohan' }, m)).toBe(false)
+     expect(messageForMe({ name: 'Rohan' }, m)).toBe(kind === 'human')
    }
    room.doc.destroy()
  })
