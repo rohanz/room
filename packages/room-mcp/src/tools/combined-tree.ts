@@ -19,7 +19,10 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   const previewText = async (s: Session, p: string, person: string) => {
     const w = previewWorker(s, person)
     const dir = w?.dir ?? (person === caller.me.name && s === caller ? caller.dir : undefined)
-    if (!dir || (!options.diskOnly && !w && (s.room.text(p, person) !== undefined || s.room.deleted.get(person)?.has(p)))) return liveText(s, p, person)
+    if (!dir || (!options.diskOnly && !w && (s.room.text(p, person) !== undefined || s.room.deleted.get(person)?.has(p)))) {
+      const live = await liveText(s, p, person)
+      return options.encoding === 'latin1' && typeof live === 'string' ? Buffer.from(live, 'utf8').toString('latin1') : live
+    }
     if (path.isAbsolute(p) || p.split(/[\\/]/).includes('..')) throw new Error('unsafe preview path: ' + p)
     const root = fs.realpathSync(dir)
     try {

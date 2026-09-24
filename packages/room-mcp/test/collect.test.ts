@@ -566,6 +566,14 @@ describe('worker preview', () => {
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'test "$(od -An -tu1 fixture.bin | tr -s " " | xargs)" = "0 255 1" && test -x run.sh && echo "1 passed"' })
     expect(result).toContain('tests: PASSED (exit 0)')
   })
+  it('collects Unicode UTF-8 bytes unchanged from a worker worktree', async () => {
+    const t = setup()
+    const value = Buffer.from('em dash —, CJK 漢, emoji 😀\n', 'utf8')
+    fs.writeFileSync(path.join(worker, 'unicode.txt'), value)
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test: unicode.txt')
+    expect(fs.readFileSync(path.join(lead, 'unicode.txt'))).toEqual(value)
+  })
+
   it.each([true, false])('skips linked and escaping symlinks from both sides (record=%s)', async recorded => {
     put(lead, 'data/input', 'private input')
     put(worker, '.gitignore', 'artifact.bin\ndata/\n')

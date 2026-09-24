@@ -659,6 +659,20 @@ describe('wait', () => {
 })
 
 describe('preview merge', () => {
+  it('preserves live Unicode UTF-8 bytes with and without a run command', async () => {
+    const t = setup()
+    const value = 'em dash —, CJK 漢, emoji 😀\n'
+    t.room.setOverlay('Rohan', 'unicode-mine.txt', value)
+    t.other.setOverlay('Kieran', 'unicode.txt', value)
+    const textOnly = await t.tools.call('room_preview_merge', { person: 'Kieran' })
+    expect(textOnly).toContain('unicode.txt (Kieran only)')
+    expect(textOnly).toContain('final combined tree:')
+    const hex = Buffer.from(value, 'utf8').toString('hex')
+    const command = `python3 -c 'from pathlib import Path; expected = bytes.fromhex("${hex}"); assert all(Path(p).read_bytes() == expected for p in ("unicode.txt", "unicode-mine.txt")); print("1 passed")'`
+    const run = await t.tools.call('room_preview_merge', { person: 'Kieran', run: command })
+    expect(run).toContain('tests: PASSED (exit 0)')
+  })
+
   it('defaults to present participants, reports offline overlays, and supports both opt-ins', async () => {
     const t = setup()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
