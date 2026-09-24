@@ -79,6 +79,8 @@ export interface SocketWakeOptions extends WakeAvailability {
   notify: (notification: Notification) => Promise<unknown>
   /** Checked immediately before sending, since room_wait may consume a queued event. */
   isUnread?: (wake: WakeEvent) => boolean
+  /** A pending room_wait will deliver this event itself. */
+  isPendingWait?: (wake: WakeEvent) => boolean
   windowMs?: number
   post?: typeof postSocketWake
   log?: (line: string) => void
@@ -97,6 +99,7 @@ export class SocketWakeRouter {
 
   push(wake: WakeEvent | null): void {
     if (!wake || this.closed || this.o.host !== 'claude') return
+    if (this.o.isPendingWait?.(wake)) return
     const env = this.o.env ?? process.env
     const selected = mode(env)
     if (selected === 'off') return
@@ -136,7 +139,7 @@ export class SocketWakeRouter {
   }
 
   private async flush(): Promise<void> {
-    const items = this.pending.splice(0).filter(w => this.unread(w))
+    const items = this.pending.splice(0).filter(w => !this.o.isPendingWait?.(w) && this.unread(w))
     if (!items.length || this.closed) return
     this.lastSentAt = Date.now()
     const count = items.length

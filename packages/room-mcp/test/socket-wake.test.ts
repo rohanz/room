@@ -213,4 +213,25 @@ describe('Claude socket wake', () => {
     expect(claudeWakeAvailable({ host: 'claude', env: {}, parentArgs: 'claude' })).toBe(false)
     expect(claudeWakeAvailable({ host: 'claude', env: { ROOM_WAKE: 'off', CLAUDE_CODE_MESSAGING_SOCKET: '/x' }, parentArgs: flag })).toBe(false)
   })
+
+  it('skips a pending wait event but still posts unrelated events, without marking either seen', async () => {
+    const pending = new Set(['answer'])
+    const seen = new Set<string>()
+    const post = vi.fn(async () => {})
+    const router = new SocketWakeRouter({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, host: 'claude', notify: vi.fn(async () => {}), post, windowMs: 10,
+      isPendingWait: w => pending.has(w.meta.msg_id), isUnread: w => !seen.has(w.meta.msg_id) })
+    try {
+      router.push(wake(makeMsg('answer', 'Ada', 'answer')))
+      router.push(wake(makeMsg('unrelated', 'Kieran', 'note')))
+      await pause(30)
+      expect(post).toHaveBeenCalledOnce()
+      expect(post.mock.calls[0][2]).toContain('Kieran sent a note')
+      expect(seen.size).toBe(0)
+      seen.add('answer') // room_wait delivered it; a queued follow-up must omit it.
+      pending.clear()
+      router.push(wake(makeMsg('answer', 'Ada', 'answer')))
+      await pause(30)
+      expect(post).toHaveBeenCalledOnce()
+    } finally { router.close() }
+  })
 })

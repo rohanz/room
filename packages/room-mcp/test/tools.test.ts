@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import net from 'node:net'
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +14,7 @@ import { resolveConfig, type ResolvedConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { sendChannelNotification } from '../src/channel.js'
 import { SocketWakeRouter } from '../src/wake-path.js'
+import { waitConsumesMessage } from '../src/tools/messaging.js'
 import { shouldWake } from '../src/wake.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
@@ -103,6 +105,60 @@ it('a socket wake leaves the message unread until a Room tool delivers it', asyn
     router.close(); peer.destroy(); peer.doc.destroy()
     await t.tools.shutdown()
     s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
+  }
+})
+
+it('a pending room_wait consumes its answer without a socket wake, while unrelated events still wake', async () => {
+  const t = setup()
+  const s = t.session!
+  const peer = addPresence(s.awareness, 'Kieran')
+  const socketDir = mkdtempSync(join(tmpdir(), 'room-wait-wake-'))
+  const socketPath = join(socketDir, 'inbox.sock')
+  const posts: string[] = []
+  const server = net.createServer(c => { let body = ''; c.on('data', chunk => { body += chunk }); c.on('end', () => posts.push(body)) })
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve) })
+  const router = new SocketWakeRouter({ host: 'claude', env: { CLAUDE_CODE_MESSAGING_SOCKET: socketPath }, notify: vi.fn(async () => {}), windowMs: 20,
+    isUnread: wake => !s.room.seen(me.name).has(wake.meta.msg_id),
+    isPendingWait: wake => !!s.room.messages().find(m => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)),
+  })
+  s.room.bus.observe(ev => { for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as NoteMsg[]) router.push(shouldWake(me, { kind: 'msg', msg: m })) })
+  try {
+    const question = t.room.post(me, { type: 'question', to: 'Kieran', text: 'ready?' } as never)
+    const waiting = t.tools.call('room_wait', { questionId: question.id, timeoutMs: 2000 })
+    await vi.waitFor(() => expect(s.awareness.getLocalState()?.status).toBe(`waiting for answer to ${question.id}`))
+    const unrelated = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: 'another-question', to: me.name, text: 'other update' } as never)
+    await vi.waitFor(() => expect(posts).toHaveLength(1))
+    expect(s.room.seen(me.name).has(unrelated.id)).toBe(false)
+    const answer = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: question.id, to: me.name, text: 'yes' } as never)
+    expect(await waiting).toContain('answered:')
+    expect(s.room.seen(me.name).has(answer.id)).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(posts).toHaveLength(1)
+    expect(posts[0]).toContain('Kieran answered')
+  } finally {
+    router.close(); peer.destroy(); peer.doc.destroy()
+    await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
+    await new Promise<void>(resolve => server.close(() => resolve())); rmSync(socketDir, { recursive: true, force: true })
+  }
+})
+
+it('tracks only messages an active room_wait will deliver', async () => {
+  const t = setup()
+  const s = t.session!
+  const peer = addPresence(s.awareness, 'Kieran')
+  try {
+    const question = t.room.post(me, { type: 'question', to: 'Kieran', text: 'ready?' } as never)
+    const waiting = t.tools.call('room_wait', { questionId: question.id, timeoutMs: 2000 })
+    await vi.waitFor(() => expect(s.awareness.getLocalState()?.status).toBe(`waiting for answer to ${question.id}`))
+    const unrelated = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: 'another-question', to: me.name, text: 'other' } as never)
+    expect(waitConsumesMessage(s, unrelated)).toBe(false)
+    expect(s.room.seen(me.name).has(unrelated.id)).toBe(false)
+    const answer = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: question.id, to: me.name, text: 'yes' } as never)
+    expect(await waiting).toContain('answered:')
+    expect(s.room.seen(me.name).has(answer.id)).toBe(true)
+    expect(waitConsumesMessage(s, answer)).toBe(false)
+  } finally {
+    peer.destroy(); peer.doc.destroy(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
   }
 })
 

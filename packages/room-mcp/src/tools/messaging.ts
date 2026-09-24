@@ -7,6 +7,13 @@ import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef }
 const WAIT_DEFAULT = 30_000
 const WAIT_MAX = 120_000
 
+const pendingWaits = new WeakMap<Session, Set<(m: Msg) => boolean>>()
+
+/** The wake router skips messages that an active room_wait will return. */
+export function waitConsumesMessage(s: Session, m: Msg): boolean {
+  return [...(pendingWaits.get(s) ?? [])].some(ends => ends(m))
+}
+
 export const defs: ToolDef[] = [
   { name: 'room_send', annotations: RW, description: 'Ask an agent (to), answer (inReplyTo), or post a note. Changes are detected automatically.',
     inputSchema: { type: 'object', properties: {
@@ -166,9 +173,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       if (offline(s)) return 'offline: queued/not delivered; room_wait cannot observe new messages until reconnected'
+      const ws = rooms.all().find(x => x !== s) ?? null
+      const waiting = new Map<Session, (m: Msg) => boolean>()
+      for (const x of ws ? [s, ws] : [s]) {
+        const workersRoom = x !== s
+        const ends = (m: Msg) => messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom }) || (m.priority === 'interrupt' && forMe(x, m))
+        let callbacks = pendingWaits.get(x)
+        if (!callbacks) { callbacks = new Set(); pendingWaits.set(x, callbacks) }
+        callbacks.add(ends)
+        waiting.set(x, ends)
+      }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
       const result = await new Promise<string>(resolve => {
-        const ws = rooms.all().find(x => x !== s) ?? null
         const finish = (r: string) => { clearTimeout(timer); s.room.claims.unobserve(onClaims); s.room.bus.unobserve(onBus); ws?.room.bus.unobserve(onWorkersBus); qRoom.room.doc.off('update', onRecipient); resolve(r) }
         const onRecipient = () => {
           if (!questionId) return
@@ -198,6 +214,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)
         if (questionId) { qRoom.room.doc.on('update', onRecipient); onRecipient() }
       })
+      for (const [x, ends] of waiting) pendingWaits.get(x)?.delete(ends)
       setPresence(s, { status: 'idle' })
       return result
     }

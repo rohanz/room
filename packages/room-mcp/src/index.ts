@@ -15,6 +15,7 @@ import { gitCommonDir } from '@room/roomd/local'
 import { consumeHookDisclosure, consumeHookNotice, syncHookSeen, writePendingHookContext } from './hooks-bridge.js'
 import { resolveConfig, resolveSessionHost } from './config.js'
 import { SocketWakeRouter } from './wake-path.js'
+import { waitConsumesMessage } from './tools/messaging.js'
 import { markTeamSharingDisclosureDelivered, pendingTeamSharingDisclosure, prepareTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
@@ -105,7 +106,7 @@ async function main() {
   const attachChannel = (s: Session) => {
     if (attachedWakeSessions.has(s)) return
     attachedWakeSessions.add(s)
-    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: notification => mcp.notification(notification), isUnread: wake => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), log })
+    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: notification => mcp.notification(notification), isUnread: wake => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: wake => !!s.room.messages().find(m => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log })
     const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
     s.room.bus.observe(ev => {
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
