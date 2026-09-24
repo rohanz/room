@@ -5,7 +5,7 @@ import { isPrName } from '../prs.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 const WAIT_DEFAULT = 30_000
-const WAIT_MAX = 120_000
+const WAIT_MAX = 100_000
 
 const pendingWaits = new WeakMap<Session, Set<(m: Msg) => boolean>>()
 
@@ -19,14 +19,15 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: {
       type: { type: 'string', enum: ['changed', 'question', 'answer', 'note'] },
       to: str('recipient; omit to broadcast'),
-      text: str('message text / change summary'),
+      text: str('message text / change summary; or use message'),
+      message: str('alias for text'),
       paths: strs('paths touched (changed)'),
       symbols: strs('changed symbols'),
       inReplyTo: str('question id (answer)'),
       priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'urgency override' },
-    }, required: ['type', 'text'] } },
-  { name: 'room_wait', annotations: RO, description: 'Wait for an answer, claim release, worker completion or interrupt; returns the event or timeout.',
-    inputSchema: { type: 'object', properties: { claimId: str('claim id'), questionId: str('question id'), timeoutMs: int('default 30000, max 120000') } } }
+    }, required: ['type'] } },
+  { name: 'room_wait', annotations: RO, description: 'Wait for an answer, claim release, worker completion or interrupt; returns the event or timeout. Loop short waits until the answer or completion arrives.',
+    inputSchema: { type: 'object', properties: { claimId: str('claim id'), questionId: str('question id'), timeoutMs: int('default 30000, max 100000') } } }
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -76,10 +77,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const handlers: Record<string, Handler> = {
     async room_send(a) {
       const lead = S()
-      const requestedTo = typeof a.to === 'string' && a.to ? a.to : undefined
+      const byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
+      const question = byQuestion?.room.messages().find(m => m.id === a.inReplyTo && m.type === 'question')
+      // A reply belongs to the asker. A stray `to` must never redirect the answer.
+      const requestedTo = a.type === 'answer' && question ? question.from : typeof a.to === 'string' && a.to ? a.to : undefined
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
       const wsr = rooms.workers()
-      const byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
       const workerMatches = requestedTo ? rooms.all().flatMap(room => myWorkers(room)
         .filter(w => w.tag === requestedTo).map(worker => ({ room, worker }))) : []
       const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap(room => room.room.retiredWorkers()
@@ -93,7 +96,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const to = resolvedWorker?.worker.name ?? requestedTo
       const exactWorkerRoom = to && wsr && wsr !== lead && (myWorkers(wsr).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : undefined
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead
-      const text = typeof a.text === 'string' ? a.text : ''
+      const text = typeof a.text === 'string' && a.text ? a.text : typeof a.message === 'string' ? a.message : ''
       if (!text) return 'error: text is required'
       if (to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
       if (to && !rooms.all().some(room => knownNames(room).has(to))) {
@@ -120,8 +123,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           break
         case 'answer': {
           if (typeof a.inReplyTo !== 'string' || !a.inReplyTo) return 'error: answer requires inReplyTo'
-          const orig = s.room.messages().find(m => m.id === a.inReplyTo)
-          const dest = to ?? orig?.from
+          const dest = question?.from ?? to
           if (!dest) return 'error: answer requires to (could not infer from inReplyTo)'
           msg = s.room.post<AnswerMsg>(s.me, withPr({ type: 'answer', to: dest, inReplyTo: a.inReplyTo, text }))
           break
@@ -146,12 +148,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = S()
       const claimId = typeof a.claimId === 'string' && a.claimId ? a.claimId : undefined
       const questionId = typeof a.questionId === 'string' && a.questionId ? a.questionId : undefined
-      const timeoutMs = Math.min(WAIT_MAX, Math.max(0, Number(a.timeoutMs ?? WAIT_DEFAULT) || WAIT_DEFAULT))
+      const requestedMs = Math.max(0, Number(a.timeoutMs ?? WAIT_DEFAULT) || WAIT_DEFAULT)
+      const timeoutMs = Math.min(WAIT_MAX, requestedMs)
+      const capNotice = requestedMs > WAIT_MAX ? 'waited 100 s (the most per call); call again. ' : ''
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`
       const qRoom = (questionId && rooms.holdingQuestion(questionId, s)) || s
-      const answered = (id: string) => qRoom.room.messages().find(m => messageEndsWait(m, { questionId: id, me: qRoom.me.name, answersOnly: true }))
       const received = (x: Session, m: Msg) => { seen.add(m.id); x.room.markSeen(x.me.name, [m.id]); state.scheduleInboxWrite() }
-      if (questionId) { const an = answered(questionId); if (an) { received(qRoom, an); return `answered: ${formatMsg(an)}` } }
+      if (questionId) for (const x of [qRoom, ...rooms.all().filter(x => x !== qRoom)]) {
+        const an = x.room.messages().find(m => messageEndsWait(m, { questionId, me: x.me.name, answersOnly: true }))
+        if (an) { received(x, an); return `answered: ${formatMsg(an)}` }
+      }
       if (questionId) { const notice = unavailableQuestion(qRoom, questionId); if (notice) return notice }
       const waitResult = (x: Session, m: Msg, workersRoom = false): string | undefined => {
         if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
@@ -159,18 +165,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (m.type === 'answer') return `answered: ${formatMsg(m)}`
           if (m.type === 'done') return `worker done: ${formatMsg(m)}`
           if (m.type === 'merge-conflict') return formatMsg(m)
-          if (m.type === 'question') return `${workersRoom ? 'question from a worker' : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`
+          if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`
           return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`
         }
         if (m.priority === 'interrupt' && forMe(x, m)) { received(x, m); return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}` }
       }
-      for (const x of [s, ...rooms.all().filter(x => x !== s)]) {
-        const workersRoom = x !== s
-        for (const m of x.room.messages()) {
-          if (seen.has(m.id) || x.room.seen(x.me.name).has(m.id)) continue
-          const ended = waitResult(x, m, workersRoom)
-          if (ended) return ended
-        }
+      const candidates = [s, ...rooms.all().filter(x => x !== s)].flatMap(x => x.room.messages()
+        .filter(m => !seen.has(m.id) && !x.room.seen(x.me.name).has(m.id))
+        .map(m => ({ x, m })))
+      candidates.sort((a, b) => (a.m.priority === 'interrupt' ? 0 : a.m.type === 'question' ? 1 : 2)
+        - (b.m.priority === 'interrupt' ? 0 : b.m.type === 'question' ? 1 : 2) || a.m.at - b.m.at)
+      for (const { x, m } of candidates) {
+        const ended = waitResult(x, m, x !== s)
+        if (ended) return ended
       }
       if (offline(s)) return 'offline: queued/not delivered; room_wait cannot observe new messages until reconnected'
       const ws = rooms.all().find(x => x !== s) ?? null
@@ -200,9 +207,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap(room => myWorkers(room)).filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
-          finish(running.length
+          finish(capNotice + (running.length
             ? `nothing yet; ${running.length} worker${running.length === 1 ? '' : 's'} still running (${running.map(w => w.tag).join(', ')}); nothing needs you`
-            : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Continue independent work or wait again.`)
+            : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Continue independent work or wait again.`))
         }, timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
@@ -245,10 +252,13 @@ export function install(state: HandlerState): void {
       if (seen.size > 5000) { const keep = s.room.lastMessages(2000).map(m => m.id); seen.clear(); for (const k of keep) seen.add(k) }
       if (!fresh.length) return ''
       const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
-      fresh.sort((a, b) => rank[a.priority] - rank[b.priority] || a.at - b.at)
+      const order = (m: Msg) => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2 + rank[m.priority]
+      fresh.sort((a, b) => order(a) - order(b) || a.at - b.at)
       for (const m of fresh) log(`inbox → ${s.me.name}: ${formatMsg(m)}`)
       scheduleInboxWrite()
-      return `[inbox ${fresh.length}]\n${fresh.map(m => `  [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
+      return `[inbox ${fresh.length}]\n${fresh.map(m => m.type === 'question'
+        ? `  [${m.id}] QUESTION FOR YOU: ${formatMsg(m)} (reply with room_send type=answer inReplyTo=${m.id})`
+        : `  [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
     }
   const affected = async (s: Session, paths: string[], symbols: string[]): Promise<Map<string, string>> => {
       const out = new Map<string, string>()

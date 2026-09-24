@@ -17,6 +17,7 @@ vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return { ...actual, execFile: vi.fn(actual.execFile) }
 })
+
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks() })
 
 const HOOKS = resolve(__dirname, '../../../plugins/room/hooks')
@@ -1081,4 +1082,24 @@ it('matches the shared overlap rule on exact files, directory boundaries and nor
   for (const parent of ['', '  ', '/', '/..', 'C:\\..', '.', './']) {
     expect(hook.containsPath(parent, 'src/a.ts')).toBe(shared.containsPath(parent, 'src/a.ts'))
   }
+})
+
+it('Codex hook wakes for own worker questions and failures, but not progress notes', async () => {
+  await runHook('session-start.mjs', { session_id: 'own-worker-wakes', cwd: dir })
+  const s = session(new RoomDoc())
+  s.room.setWorker({ tag: 'money', name: 'Rohan+money', lead: 'Rohan', host: 'codex', task: 'fix',
+    dir: join(dir, '.room', 'workers', 'money'), branch: 'room/money', pid: 1, startedAt: 1, status: 'running' })
+  const queue = vi.fn(async () => {})
+  const b = new HooksBridge(s, { forMe: m => m.to === s.me.name, isSeen: () => false, queue })
+  const from = { name: 'Rohan+money', kind: 'agent' } as const
+  const note = s.room.post(from, { type: 'note', to: 'Rohan', text: 'halfway' })
+  await b.maybeWake(note)
+  expect(queue).not.toHaveBeenCalled()
+  const question = s.room.post(from, { type: 'question', to: 'Rohan', text: 'which field?' })
+  await b.maybeWake(question)
+  expect(queue).toHaveBeenCalledTimes(1)
+  const failed = s.room.post(from, { type: 'note', priority: 'interrupt', to: 'Rohan', text: 'failed' })
+  await b.maybeWake(failed)
+  expect(queue).toHaveBeenCalledTimes(2)
+  b.stop(); s.awareness.destroy(); s.room.doc.destroy()
 })

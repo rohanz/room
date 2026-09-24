@@ -11,12 +11,18 @@ export interface WakeDecision {
 }
 
 /** Shared bus wake policy for both reactive runners and MCP channel notifications. */
-export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = [], hasUncommitted = false): WakeDecision {
+export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = [], hasUncommitted = false, ownWorkerNames?: ReadonlySet<string>): WakeDecision {
   if (m.type === 'plan' && m.priority === 'fyi') return { wake: false, mustAnswer: false, reason: 'ended plan' }
   if (m.from === me.name && isAgentic(m.fromKind)) return { wake: false, mustAnswer: false, reason: 'own message' }
   const addressed = m.to === me.name
   const kind = messageKind(m)
   if (kind.wakes === 'never') return { wake: false, mustAnswer: false, reason: 'feed-only event' }
+  // Routine progress from this lead's own workers belongs in the inbox / next wait.
+  // Keep interrupts, questions and completion events on the normal wake path.
+  if (m.type === 'note' && m.priority !== 'interrupt' && addressed && m.fromKind === 'agent' && ownWorkerNames?.has(m.from)) {
+    return { wake: false, mustAnswer: false, reason: 'own worker progress note' }
+  }
+  if ((m.type === 'done' || m.type === 'question') && addressed) return { wake: true, mustAnswer: true, reason: `${m.type} addressed to me` }
   if ((!m.to || addressed) && typeof kind.wakes === 'function' && kind.wakes(m, { me, hasUncommitted, myClaims })) {
     return { wake: true, mustAnswer: addressed, reason: 'message wake rule' }
   }

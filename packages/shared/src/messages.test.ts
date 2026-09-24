@@ -80,6 +80,26 @@ it('addresses a note as a waking notification while leaving broadcast notes as F
   room.doc.destroy()
 })
 
+it('keeps a lead asleep for its own worker progress notes, but wakes for actionable worker events', () => {
+  const me = { name: 'Rohan', kind: 'agent' } as const
+  const ownWorkers = new Set(['Rohan+money'])
+  const base = { id: 'm_worker', at: 1, from: 'Rohan+money', fromKind: 'agent', to: 'Rohan' } as const
+  const wake = (m: import('./types.js').Msg) => shouldWakeOnMsg(me, m, [], false, ownWorkers).wake
+  expect(wake({ ...base, type: 'note', priority: 'notify', text: 'progress' })).toBe(false)
+  expect(wake({ ...base, type: 'question', priority: 'notify', text: 'which field?' })).toBe(true)
+  expect(wake({ ...base, type: 'done', priority: 'fyi', tag: 'money', summary: 'finished', changed: [] })).toBe(true)
+  expect(wake({ ...base, type: 'note', priority: 'interrupt', text: 'failed' })).toBe(true)
+  expect(wake({ ...base, type: 'note', priority: 'notify', from: 'Ada+worker', text: 'other agent' })).toBe(true)
+  expect(wake({ ...base, type: 'note', priority: 'notify', fromKind: 'human', text: 'human' })).toBe(true)
+})
+
+it('does not treat an answer to someone else as the answer to my wait', () => {
+  const answer = { id: 'm_answer', at: 1, type: 'answer', priority: 'notify', from: 'worker', fromKind: 'agent',
+    to: 'Ada', inReplyTo: 'm_question', text: 'yes' } as const
+  expect(messageEndsWait(answer, { questionId: 'm_question', me: 'Rohan' })).toBe(false)
+  expect(messageEndsWait(answer, { questionId: 'm_question', me: 'Ada' })).toBe(true)
+})
+
  it('never routes own messages, even human or explicitly addressed messages', () => {
    const room = new RoomDoc()
    for (const kind of ['human', 'agent', 'bot', 'ci'] as const) {

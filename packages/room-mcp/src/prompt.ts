@@ -41,6 +41,7 @@ export const AGENT_INSTRUCTIONS = (name?: string) => `You are ${name ? `${name}'
 1. While alone, work normally without room tools; the room announces company. Change local/team room only when your human asks.
 2. With company, declare scope once. Claim only where someone else is near the file; claim the files you will edit. Respect others' claims and declare public-symbol plans.
 3. With company, answer addressed questions promptly; ask the relevant agent and wait when unsure.
+   Workers report progress in room_done. Send a note only when the lead must know before finishing; ask a question when blocked.
 4. With company, preview current overlapping work before finishing, then room_done releases claims. No release or changed-message ritual.
 5. Asked for another agent, agents in parallel, background work or a background lead, or for codex/claude to take part of an editing task: use room_spawn (load room-workers), not a built-in subagent. For a few lines, just do it yourself.
    Before handing a multi-task plan to one other agent, say what Room adds: workers in their own worktrees, collisions surfaced before they land, changed definitions announced to the files that use them, and a merged, uncommitted result to review.
