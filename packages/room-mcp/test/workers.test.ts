@@ -29,15 +29,16 @@ const scratchRepos: string[] = []
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 const workerId: Identity = { name: 'rohanz+money', kind: 'agent', owner: 'rohanz', label: 'money' }
 
+const isRoomTestEnv = (key: string) => key.startsWith('ROOM_') || key === 'CLAUDE_CODE_MESSAGING_SOCKET' || key === 'CLAUDE_CODE_MESSAGING_TOKEN'
 let roomEnv: Record<string, string | undefined>
 beforeEach(() => {
-  roomEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('ROOM_')))
+  roomEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => isRoomTestEnv(key)))
   for (const key of Object.keys(roomEnv)) delete process.env[key]
 })
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
-  for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
+  for (const key of Object.keys(process.env)) if (isRoomTestEnv(key)) delete process.env[key]
   Object.assign(process.env, roomEnv)
   for (const repo of scratchRepos.splice(0)) rmSync(repo, { recursive: true, force: true })
 })
