@@ -13,7 +13,8 @@
     "roomd": "tsx packages/roomd/src/cli.ts",
     "mcp": "tsx packages/room-mcp/src/index.ts",
     "web": "npm run dev -w @room/web",
-    "build:plugin": "node scripts/build-plugin.mjs"
+    "build:plugin": "node scripts/build-plugin.mjs",
+    "eval:mocks": "node --import tsx scripts/eval-mocks.mts"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

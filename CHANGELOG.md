@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.1
+
+- `room_preview_merge` with `run` no longer mangles characters above U+00FF in live, uncommitted edits: an em dash (U+2014) became the control character U+0014, so a test could fail in the preview and pass on the real tree. Live text now enters the merge as UTF-8 bytes. A test covers previews and `room_collect` with an em dash, a CJK character and an emoji.
+- A session blocked in `room_wait` no longer also gets a socket wake for the event the wait returns (sent at once since 0.14.1). Events that do not end the wait still wake, and a sent wake still marks nothing seen.
+- The plugin eval mock tool list was already current. `npm run eval:mocks` now regenerates it from Room's `DEFS`, and a test checks tool names, descriptions, annotations and input schemas against the source definitions.
+
 ## 0.15.0
 
 - Finished workers can receive `room_send` follow-ups in their retained worktree and Claude Code or Codex session; collection and discard end that option. Claude workers use documented effort, name, session and budget flags; `ROOM_WORKER_MAX_BUDGET_USD` sets the budget cap, and channel loading is opt-in with `ROOM_WAKE=channels` (Claude Code 2.1.281 CLI and session docs; Codex CLI 0.155.1 `exec resume --help`).
