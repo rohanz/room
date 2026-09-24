@@ -25920,6 +25920,7 @@ var init_wake_path = __esm({
       timer;
       sequence = 0;
       loggedError = false;
+      loggedFlushError = false;
       closed = false;
       push(wake) {
         if (!wake || this.closed || this.o.host !== "claude") return;
@@ -25934,11 +25935,14 @@ var init_wake_path = __esm({
           if (selected === "auto" && this.channelAdmitted()) void this.channel(wake);
           return;
         }
-        this.pending.push(wake);
-        if (!this.timer) this.timer = setTimeout(() => {
-          this.timer = void 0;
-          void this.flush();
-        }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS);
+        if (!this.timer) {
+          this.pending.push(wake);
+          this.timer = setTimeout(() => {
+            this.timer = void 0;
+            this.flushSafely();
+          }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS);
+          this.flushSafely();
+        } else this.pending.push(wake);
       }
       close() {
         this.closed = true;
@@ -25953,6 +25957,13 @@ var init_wake_path = __esm({
       channelAdmitted() {
         const env = this.o.env ?? process.env;
         return channelAdmitted(env, this.o.parentArgs ?? claudeParentArgs(), this.o.channel);
+      }
+      flushSafely() {
+        void this.flush().catch((error2) => {
+          if (this.loggedFlushError) return;
+          this.loggedFlushError = true;
+          this.o.log?.(`Claude wake fallback failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        });
       }
       async flush() {
         const items = this.pending.splice(0);
@@ -26257,10 +26268,16 @@ function hookHealthNote(s, expected, now = Date.now(), tool, team = !s.local) {
     health2 = newHookHealth(now);
     hookHealth.set(s, health2);
   }
+  let sessionStartedAt = health2.since;
+  try {
+    const session = JSON.parse(fs8.readFileSync(gitStatePath(s.dir, "room-session.json"), "utf8"));
+    if (typeof session.at === "number" && Number.isFinite(session.at) && session.at <= now) sessionStartedAt = session.at;
+  } catch {
+  }
   try {
     const activity = JSON.parse(fs8.readFileSync(gitStatePath(s.dir, "room-hook-activity.json"), "utf8"));
     const session = JSON.parse(fs8.readFileSync(gitStatePath(s.dir, "room-session.json"), "utf8"));
-    if (activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at <= now && activity.session_id === session.session_id) health2.observed = true;
+    if (activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at <= now && (resolveSessionHost(s.dir) !== "claude" || activity.at >= sessionStartedAt) && activity.session_id === session.session_id) health2.observed = true;
   } catch {
   }
   if (!expected || health2.observed || health2.noted) return "";
@@ -26277,6 +26294,7 @@ function hookHealthNote(s, expected, now = Date.now(), tool, team = !s.local) {
   if (!health2.calls) health2.since = now;
   health2.calls++;
   if (health2.calls < 2 || now - health2.since < 3e4) return "";
+  if (resolveSessionHost(s.dir) === "claude" && !(s.room.changedPaths(s.me.name).length && (s.room.overlayAt.get(s.me.name) ?? -Infinity) >= sessionStartedAt)) return "";
   health2.noted = true;
   return missingPreEditGuidance(s);
 }
@@ -26355,7 +26373,11 @@ var init_hooks_bridge = __esm({
         if (this.timer) return;
         this.timer = setTimeout(() => {
           this.timer = null;
-          this.write();
+          try {
+            this.write();
+          } catch (e) {
+            this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }, 150);
         this.timer.unref?.();
       }
@@ -26470,7 +26492,7 @@ Call room_state, then react per the room-etiquette skill.`;
         if (this.pendingTimer || !this.pending.size) return;
         this.pendingTimer = setTimeout(() => {
           this.pendingTimer = null;
-          void this.retryPending();
+          void this.retryPending().catch((e) => this.o.log?.(`hooks: could not retry pending wakes: ${e instanceof Error ? e.message : String(e)}`));
         }, this.o.pendingPollMs ?? 5e3);
         this.pendingTimer.unref?.();
       }
@@ -30724,7 +30746,13 @@ var init_graph_index = __esm({
           this.pending.delete(path20);
           if (!this.stopped && !this.pending.size) {
             clearTimeout(this.publishing);
-            this.publishing = setTimeout(() => this.publish(this.phase), 100);
+            this.publishing = setTimeout(() => {
+              try {
+                this.publish(this.phase);
+              } catch (e) {
+                this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            }, 100);
           }
         });
         this.pending.set(path20, p);
@@ -30772,7 +30800,13 @@ var init_graph_index = __esm({
         const minMs = this.opts.minPublishMs ?? MIN_PUBLISH_MS;
         if (status === this.lastPublished.status && now - this.lastPublished.at < minMs) {
           clearTimeout(this.publishing);
-          this.publishing = setTimeout(() => this.publish(this.phase), minMs - (now - this.lastPublished.at));
+          this.publishing = setTimeout(() => {
+            try {
+              this.publish(this.phase);
+            } catch (e) {
+              this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }, minMs - (now - this.lastPublished.at));
           return;
         }
         this.lastPublished = { at: now, key, status };
@@ -33149,7 +33183,7 @@ var init_conflicts = __esm({
         if (prev) clearTimeout(prev);
         const t = setTimeout(() => {
           this.timers.delete(key);
-          void this.check(person, p);
+          void this.check(person, p).catch((e) => this.d.log?.(`conflict check ${person}/${p}: ${e instanceof Error ? e.message : String(e)}`));
         }, this.d.debounceMs ?? 2e3);
         t.unref?.();
         this.timers.set(key, t);
@@ -33301,7 +33335,13 @@ var init_conflicts = __esm({
               paths.add(p);
               this.integrated.set(c.by, paths);
               if (!this.integrationTimer) {
-                this.integrationTimer = setTimeout(() => this.reportIntegrations(), this.d.debounceMs ?? 2e3);
+                this.integrationTimer = setTimeout(() => {
+                  try {
+                    this.reportIntegrations();
+                  } catch (e) {
+                    this.d.log?.(`integration report: ${e instanceof Error ? e.message : String(e)}`);
+                  }
+                }, this.d.debounceMs ?? 2e3);
                 this.integrationTimer.unref?.();
               }
             }
@@ -33397,7 +33437,7 @@ var init_conflicts = __esm({
                 const delay = Math.max(1, this.mergeStarts[0] + windowMs - at);
                 this.mergeTimer = setTimeout(() => {
                   this.mergeTimer = null;
-                  void this.drainMerges();
+                  void this.drainMerges().catch((e) => this.d.log?.(`merge preview: ${e instanceof Error ? e.message : String(e)}`));
                 }, delay);
                 this.mergeTimer.unref?.();
               }
@@ -45528,6 +45568,39 @@ function handlers7(state) {
     if ((a.discard || a.mode === "copy") && !a.tag) return "error: tag required for copy or discard";
     if (a.paths !== void 0 && a.mode !== "copy") return "error: paths is only supported in copy mode";
     if (a.discard) {
+      const kept = rooms.all().flatMap((s2) => s2.room.retiredWorkers().filter((r) => r.tag === a.tag && r.keptWorktree).map((r) => ({ s: s2, r }))).find(({ s: s2, r }) => ownership(s2, {
+        ...r,
+        dir: r.keptWorktree,
+        branch: "room/" + r.tag,
+        status: "done",
+        exitCode: 0,
+        pid: 0
+      }, discarding).owned);
+      if (kept && !kept.s.room.workers.has(a.tag)) {
+        const { s: s2, r } = kept;
+        const w2 = { ...r, dir: r.keptWorktree, branch: "room/" + r.tag, status: "done", exitCode: 0, pid: 0 };
+        const lock3 = workerOperationKey(w2);
+        if (!rooms.reserve(lock3)) return "error: this worker is already being handled or retired";
+        try {
+          const ignored = await ignoredWorkerArtifacts(w2);
+          if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}
+retained worktree: ${w2.dir}
+repeat with force=true to delete them`;
+          if (!await cleanupWorker(s2.dir, w2, true, true)) throw new Error("worker is not an owned Room worktree");
+          const archive = s2.room.doc.getArray("retiredWorkers");
+          const index = archive.toArray().findIndex((item) => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead);
+          if (index >= 0) s2.room.doc.transact(() => {
+            archive.delete(index);
+            const { keptWorktree: _keptWorktree, ...cleared } = r;
+            archive.insert(index, [{ ...cleared, summary: "discarded" }]);
+          });
+          return "discarded " + r.tag + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "");
+        } catch (e) {
+          return "error: " + (e instanceof Error ? e.message : String(e)) + "; retained " + w2.dir;
+        } finally {
+          rooms.unreserve(lock3);
+        }
+      }
       const s = rooms.holdingWorker(a.tag, lead);
       const w = s.room.workers.get(a.tag);
       if (!w) return "error: no worker " + a.tag + " owned by you";
@@ -45734,14 +45807,40 @@ function handlers7(state) {
       out2.push("Changes from " + selected.map((x) => x.w.tag).join(", ") + ": " + (changes.map((x) => x.p).join(", ") || "already present") + ". Nothing committed or staged.");
       for (const { s, w } of selected) {
         releaseClaimsOnDone(s, () => false, w.name, false);
-        if (state.workerAlive(s, w) || w.exitCode !== 0) {
+        const retire = (summary, keptWorktree) => {
+          const retiredAt = Date.now();
+          const files = result.paths.filter((p) => result.owners.get(p)?.includes(w.name));
+          s.room.retireParticipant(w.name, {
+            name: w.name,
+            tag: w.tag,
+            lead: w.lead,
+            host: w.host,
+            ...w.model ? { model: w.model } : {},
+            task: w.task,
+            summary,
+            ...keptWorktree ? { keptWorktree } : {},
+            files,
+            fileCount: files.length,
+            startedAt: w.startedAt,
+            finishedAt: w.finishedAt ?? retiredAt,
+            retiredAt,
+            outcome: "dismissed"
+          });
+        };
+        if (state.workerAlive(s, w)) {
           out2.push("kept " + w.tag + ": clean exit not confirmed");
+          continue;
+        }
+        if (w.exitCode !== 0) {
+          out2.push("kept " + w.tag + ": clean exit not confirmed");
+          retire(w.summary ?? "", w.dir);
           continue;
         }
         try {
           const children = descendants(s, w);
           if (children.length) {
             out2.push("kept " + w.tag + ": nested workers remain: " + children.map((c) => c.tag).join(", "));
+            retire(w.summary ?? "", w.dir);
             continue;
           }
           const ignored = await ignoredWorkerArtifacts(w);
@@ -45749,30 +45848,19 @@ function handlers7(state) {
             out2.push("kept " + w.tag + ": uncopied ignored artifacts");
             out2.push(...ignored.map((p) => `kept ${p} at ${path17.join(w.dir, p)}`));
             out2.push(`retained worktree: ${w.dir}`);
+            retire(`kept for ignored output at ${w.dir}`, w.dir);
             continue;
           }
           if (await cleanupWorker(s.dir, w, true)) {
-            const retiredAt = Date.now();
-            const files = result.paths.filter((p) => result.owners.get(p)?.includes(w.name));
-            s.room.retireParticipant(w.name, {
-              name: w.name,
-              tag: w.tag,
-              lead: w.lead,
-              host: w.host,
-              ...w.model ? { model: w.model } : {},
-              task: w.task,
-              summary: w.summary ?? "",
-              files,
-              fileCount: files.length,
-              startedAt: w.startedAt,
-              finishedAt: w.finishedAt ?? retiredAt,
-              retiredAt,
-              outcome: "dismissed"
-            });
+            retire(w.summary ?? "");
             out2.push("cleaned up " + w.tag + ": temporary files, branch and logs");
-          } else out2.push("kept " + w.tag + ": cleanup incomplete");
+          } else {
+            out2.push("kept " + w.tag + ": cleanup incomplete");
+            retire(w.summary ?? "", w.dir);
+          }
         } catch (e) {
           out2.push("cleanup incomplete for " + w.tag + ": " + (e instanceof Error ? e.message : String(e)));
+          retire(w.summary ?? "", w.dir);
         }
       }
       return out2.join("\n");
@@ -45951,7 +46039,11 @@ var Bridge = class {
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.syncScope();
+      try {
+        this.syncScope();
+      } catch (e) {
+        this.o.log?.(`bridge: could not sync scope: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }, ms);
     this.timer.unref?.();
   }
@@ -46432,11 +46524,12 @@ function install7(state) {
     stopPrSync();
     prSyncedSession = s;
     const every2 = ctx.prs?.intervalMs ?? 2 * 6e4;
-    void refreshPrs(s);
+    const refresh = () => {
+      void refreshPrs(s).catch((e) => log2(`pull requests: ${e instanceof Error ? e.message : String(e)}`));
+    };
+    refresh();
     if (every2 > 0) {
-      prTimer = setInterval(() => {
-        void refreshPrs(s);
-      }, every2);
+      prTimer = setInterval(refresh, every2);
       prTimer.unref?.();
     }
   };
