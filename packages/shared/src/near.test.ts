@@ -1,5 +1,15 @@
 import { expect, it } from 'vitest'
-import { coversPath, nearPath } from './near.js'
+import { containsPath, coversPath, nearPath } from './near.js'
+
+it('contains only explicit repo-relative root declarations', () => {
+  expect(containsPath('', 'src/a.ts')).toBe(false)
+  expect(containsPath('  ', 'src/a.ts')).toBe(false)
+  expect(containsPath('/', 'src/a.ts')).toBe(false)
+  expect(containsPath('/..', 'src/a.ts')).toBe(false)
+  expect(containsPath('C:\\..', 'src/a.ts')).toBe(false)
+  expect(containsPath('.', 'src/a.ts')).toBe(true)
+  expect(containsPath('./', 'src/a.ts')).toBe(true)
+})
 
 it.each([
   ['src/', 'src/a.ts', true], ['src/a.ts', 'src/', true],

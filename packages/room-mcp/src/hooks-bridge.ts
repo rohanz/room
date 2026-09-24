@@ -13,6 +13,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { formatMsg, formatPlans, shouldWakeOnMsg, type Msg, isAgentic } from '@room/shared'
 import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
@@ -54,37 +55,61 @@ export function writePendingHookContext(dir: string, field: PendingHookField, te
 }
 
 /** Arbitrate the hook and tool delivery paths for the same sharing sentence. */
-export function consumeHookDisclosure(s: Session, sentence: string): 'hook' | 'tool' | undefined {
+export function consumeHookDisclosure(s: Session, sentence: string): 'hook' | 'tool' | 'pending' | undefined {
   return consumeHookContext(s.dir, 'pendingDisclosure', sentence)
 }
 
 /** The same once-only arbitration for startup connection notices, before a Session exists. */
-export function consumeHookNotice(dir: string, sentence: string): 'hook' | 'tool' | undefined {
+export function consumeHookNotice(dir: string, sentence: string): 'hook' | 'tool' | 'pending' | undefined {
   return consumeHookContext(dir, 'pendingNotice', sentence)
 }
 
-function consumeHookContext(dir: string, field: PendingHookField, sentence: string): 'hook' | 'tool' | undefined {
+function consumeHookContext(dir: string, field: PendingHookField, sentence: string): 'hook' | 'tool' | 'pending' | undefined {
   const file = gitStatePath(dir, 'room-state.json')
-  const lock = file + '.notice-lock'
-  let fd: number | undefined
+  const delivered = field === 'pendingDisclosure' ? 'deliveredDisclosure' : 'deliveredNotice'
+  const held = acquireNoticeLock(file)
+  if (!held) return readHookState(dir)[delivered] === sentence ? 'hook' : 'pending'
   try {
-    fd = fs.openSync(lock, 'wx', 0o600)
     const state = readHookState(dir)
-    const delivered = field === 'pendingDisclosure' ? 'deliveredDisclosure' : 'deliveredNotice'
     if (state[delivered] === sentence) return 'hook'
     if (state[field] !== sentence) return undefined
     state[delivered] = sentence
     delete state[field]
     fs.writeFileSync(file, JSON.stringify(state, null, 1) + '\n')
     return 'tool'
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EEXIST' ? 'hook' : undefined
+  } catch {
+    return undefined
   } finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd) } catch { /* best effort */ }
-      try { fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
+    held()
+  }
+}
+
+/** Same tiny process-owner protocol as the dependency-free hook in common.mjs. */
+function acquireNoticeLock(file: string): (() => void) | undefined {
+  const lock = file + '.notice-lock'
+  const owner = { pid: process.pid, startedAt: Date.now() - process.uptime() * 1000, token: randomUUID() }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lock, 'wx', 0o600)
+      try { fs.writeFileSync(fd, JSON.stringify(owner)) } finally { fs.closeSync(fd) }
+      return () => {
+        try { if (JSON.parse(fs.readFileSync(lock, 'utf8')).token === owner.token) fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return undefined
+      try {
+        const stat = fs.statSync(lock)
+        const prior = JSON.parse(fs.readFileSync(lock, 'utf8')) as Partial<typeof owner>
+        let alive = typeof prior.pid === 'number' && Number.isInteger(prior.pid)
+        if (alive) { try { process.kill(prior.pid!, 0) } catch (e) { alive = (e as NodeJS.ErrnoException).code === 'EPERM' } }
+        if (prior.pid === process.pid && Math.abs((prior.startedAt ?? 0) - owner.startedAt) > 5000) alive = false
+        if (alive && Date.now() - stat.mtimeMs < 10_000) return undefined
+        if (fs.readFileSync(lock, 'utf8') === JSON.stringify(prior)) fs.rmSync(lock, { force: true })
+      } catch { /* another process may have replaced it */ }
+      try { if (Date.now() - fs.statSync(lock).mtimeMs >= 10_000) fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
     }
   }
+  return undefined
 }
 
 /** Pin the host session before another session can replace the clone's hint. */
@@ -156,11 +181,15 @@ export class HooksBridge {
   private startedAt = Date.now()
   private unobserve: (() => void)[] = []
   private delivering = new Set<string>()
+  private generation = 0
+  private stopped = false
   constructor(private s: Session, private o: HooksBridgeOptions) {
     hookHealth.set(s, newHookHealth(this.now()))
   }
 
   start(): void {
+    this.stopped = false
+    this.generation++
     this.s.awareness.setLocalStateField('wakeUnavailable', claudeWakeUnavailable(this.s.dir))
     const kick = () => this.scheduleWrite()
     if (this.o.writeState !== false) {
@@ -187,6 +216,8 @@ export class HooksBridge {
   }
 
   stop(): void {
+    this.stopped = true
+    this.generation++
     for (const u of this.unobserve) u()
     this.unobserve = []
     if (this.timer) clearTimeout(this.timer)
@@ -200,7 +231,7 @@ export class HooksBridge {
 
   /** Debounced: many small doc updates become one file write. */
   scheduleWrite(): void {
-    if (this.o.writeState === false) return
+    if (this.o.writeState === false || this.stopped) return
     if (this.timer) return
     this.timer = setTimeout(() => {
       this.timer = null
@@ -210,6 +241,7 @@ export class HooksBridge {
   }
 
   write(): void {
+    if (this.stopped) return
     syncHookSeen(this.s)
     const me = this.s.me.name
     const unread = this.s.room.messages().filter(m => !this.isSeen(m.id) && this.o.forMe(m)).map(m => ({ id: m.id, priority: m.priority, line: formatMsg(m) }))
@@ -224,10 +256,9 @@ export class HooksBridge {
     ]
     const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now())
     const sessionId = this.freshSession()?.id
-    const lock = this.stateFile() + '.notice-lock'
-    let fd: number | undefined
+    const held = acquireNoticeLock(this.stateFile())
+    if (!held) { this.scheduleWrite(); return }
     try {
-      fd = fs.openSync(lock, 'wx', 0o600)
       const previous = readHookState(this.s.dir)
       const at = this.now()
       const carry = (!previous.sessionId || !sessionId || previous.sessionId === sessionId) &&
@@ -236,18 +267,16 @@ export class HooksBridge {
             .filter(key => typeof previous[key] === 'string').map(key => [key, previous[key]])) : {}
       fs.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, ...(sessionId ? { sessionId } : {}), at, company: company.company, others: company.others, companyLine: describeCompany(this.s, company), unread, claims, ownClaims, near, ...carry }, null, 1) + '\n')
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'EEXIST') this.scheduleWrite()
-      else this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`)
+      this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`)
     } finally {
-      if (fd !== undefined) {
-        try { fs.closeSync(fd) } catch { /* best effort */ }
-        try { fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
-      }
+      held()
     }
   }
 
   /** Interrupts, questions addressed to me, and a base move while I have uncommitted work wake the idle Codex thread, once per message. */
   async maybeWake(m: Msg): Promise<void> {
+    if (this.stopped) return
+    const generation = this.generation
     syncHookSeen(this.s)
     if (this.isSeen(m.id)) return
     if (!this.o.forMe(m)) return
@@ -258,30 +287,36 @@ export class HooksBridge {
     if (!session) {
       // Nothing to wake yet (hook not run, or a stale file from an earlier thread). Keep the
       // message and try again when a session file shows up.
+      if (this.stopped || generation !== this.generation) return
       this.pending.set(m.id, { msg: m, since: this.now() })
       this.o.log?.(`cannot wake yet: no fresh session id for this clone; will retry for ${m.type} ${m.id}`)
       this.schedulePending()
       return
     }
+    if (this.stopped || generation !== this.generation) return
     this.delivering.add(m.id)
-    try { await this.deliver(m, session) } finally { this.delivering.delete(m.id) }
+    try { await this.deliver(m, session, generation) } finally { this.delivering.delete(m.id) }
   }
 
   /** The thread recorded by the SessionStart hook, if it is recent and for this clone; else a rollout scan. */
   freshSession(): { id: string; host: 'codex' | 'claude' } | undefined {
+    const host = resolveSessionHost(this.s.dir)
     let file: SessionFile | undefined
     try { file = JSON.parse(fs.readFileSync(this.sessionFile(), 'utf8')) } catch { /* fall back below */ }
     if (file?.session_id) {
       const fresh = typeof file.at !== 'number' || file.at >= this.startedAt - SESSION_FRESH_MS
       const here = !file.cwd || sameDir(file.cwd, this.s.dir)
-      if (fresh && here) return { id: file.session_id, host: resolveSessionHost(this.s.dir) === 'claude' ? 'claude' : 'codex' }
+      if (fresh && here) return { id: file.session_id, host: host === 'claude' ? 'claude' : 'codex' }
       this.o.log?.(`ignoring ${fresh ? 'foreign' : 'stale'} session file ${this.sessionFile()}`)
     }
+    if (host === 'claude') return undefined
     const id = findThreadForDir(this.s.dir, this.startedAt)
     return id ? { id, host: 'codex' } : undefined
   }
 
-  private async deliver(m: Msg, session: { id: string; host: 'codex' | 'claude' }): Promise<void> {
+  private async deliver(m: Msg, session: { id: string; host: 'codex' | 'claude' }, generation: number): Promise<void> {
+    const active = () => !this.stopped && generation === this.generation
+    if (!active()) return
     if (session.host === 'claude') {
       // The MCP channel notification (index.ts attachChannel) reaches a live Claude Code session.
       this.woken.add(m.id)
@@ -293,16 +328,20 @@ export class HooksBridge {
       : `[room] ${formatMsg(m)}\nCall room_state, then react per the room-etiquette skill.`
     const delays = this.o.retryDelaysMs ?? [1000, 3000, 8000]
     for (let attempt = 0; ; attempt++) {
+      if (!active()) return
       syncHookSeen(this.s)
+      if (!active()) return
       if (this.isSeen(m.id)) return
       try {
         await (this.o.queue ?? defaultQueue)(session.id, text)
+        if (!active()) return
         this.woken.add(m.id)
         this.s.room.markSeen(this.s.me.name, [m.id])
         if (this.o.writeState !== false) this.write()
         this.o.log?.(`woke session ${session.id.slice(0, 8)} for ${m.type} ${m.id}${attempt ? ` (attempt ${attempt + 1})` : ''}`)
         return
       } catch (e) {
+        if (!active()) return
         const why = e instanceof Error ? e.message : String(e)
         if (attempt >= delays.length) { this.o.log?.(`could not wake session ${session.id.slice(0, 8)} for ${m.type} ${m.id} after ${attempt + 1} attempts: ${why}`); return }
         this.o.log?.(`wake attempt ${attempt + 1} failed (${why}); retrying in ${delays[attempt]}ms`)
@@ -312,7 +351,7 @@ export class HooksBridge {
   }
 
   private schedulePending(): void {
-    if (this.pendingTimer || !this.pending.size) return
+    if (this.stopped || this.pendingTimer || !this.pending.size) return
     this.pendingTimer = setTimeout(() => {
       this.pendingTimer = null
       void this.retryPending().catch(e => this.o.log?.(`hooks: could not retry pending wakes: ${e instanceof Error ? e.message : String(e)}`))
@@ -322,9 +361,12 @@ export class HooksBridge {
 
   /** Re-check for a session file; deliver what we can, drop what is too old. */
   async retryPending(): Promise<void> {
+    if (this.stopped) return
+    const generation = this.generation
     const maxAge = this.o.pendingMaxMs ?? 10 * 60 * 1000
     const session = this.freshSession()
     for (const [id, p] of Array.from(this.pending)) {
+      if (this.stopped || generation !== this.generation) return
       syncHookSeen(this.s)
       if (this.isSeen(id)) { this.pending.delete(id); continue }
       if (this.now() - p.since > maxAge) { this.pending.delete(id); this.o.log?.(`gave up waking for ${p.msg.type} ${id}: no session for ${Math.round(maxAge / 60000)} min`); continue }
@@ -353,14 +395,23 @@ function defaultQueue(threadId: string, text: string): Promise<void> {
 }
 
 /** Find a Codex thread in rollout storage when the SessionStart hook ID is unavailable. */
+const rolloutCache = new Map<string, { at: number; id?: string }>()
 export function findThreadForDir(dir: string, since: number): string | undefined {
   const root = path.join(os.homedir(), '.codex', 'sessions')
-  const want = [path.resolve(dir), fs.realpathSync.native(path.resolve(dir))]
+  const key = `${root}\0${path.resolve(dir)}\0${since}`
+  const cached = rolloutCache.get(key)
+  if (cached && Date.now() - cached.at < 5000) return cached.id
+  const want = [path.resolve(dir)]
+  try { want.push(fs.realpathSync.native(path.resolve(dir))) } catch { /* clone may have gone */ }
   let best: { id: string; mtime: number } | undefined
+  let remaining = 500
+  const deadline = Date.now() + 50
   const walk = (d: string, depth: number) => {
+    if (remaining <= 0 || Date.now() >= deadline) return
     let entries: fs.Dirent[] = []
     try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
     for (const e of entries) {
+      if (--remaining < 0 || Date.now() >= deadline) return
       const p = path.join(d, e.name)
       if (e.isDirectory() && depth < 3) { walk(p, depth + 1); continue }
       const m = e.name.match(/^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/)
@@ -369,12 +420,16 @@ export function findThreadForDir(dir: string, since: number): string | undefined
       try { st = fs.statSync(p) } catch { continue }
       if (st.mtimeMs < since - 5 * 60 * 1000 || (best && st.mtimeMs <= best.mtime)) continue
       let head = ''
-      try { const fd = fs.openSync(p, 'r'); const buf = Buffer.alloc(4096); const n = fs.readSync(fd, buf, 0, 4096, 0); fs.closeSync(fd); head = buf.toString('utf8', 0, n) } catch { continue }
+      let fd: number | undefined
+      try { fd = fs.openSync(p, 'r'); const buf = Buffer.alloc(4096); const n = fs.readSync(fd, buf, 0, 4096, 0); head = buf.toString('utf8', 0, n) } catch { continue }
+      finally { if (fd !== undefined) try { fs.closeSync(fd) } catch { /* best effort */ } }
       const cwd = head.match(/"cwd":"([^"]+)"/)?.[1]?.replace(/^file:\/\//, '')
       if (cwd && want.includes(path.resolve(cwd))) best = { id: m[1], mtime: st.mtimeMs }
     }
   }
   walk(root, 0)
+  rolloutCache.set(key, { at: Date.now(), id: best?.id })
+  if (rolloutCache.size > 100) rolloutCache.delete(rolloutCache.keys().next().value!)
   return best?.id
 }
 

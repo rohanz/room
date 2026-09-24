@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { execFileSync, execFile } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
+import fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
@@ -327,6 +328,19 @@ describe('hooks bridge + plugin hook scripts', () => {
     b.stop(); s.awareness.destroy()
   })
 
+  it('stop cancels an in-flight queue attempt before recording a receipt', async () => {
+    await runHook('session-start.mjs', { session_id: 'stop-thread', cwd: dir })
+    const s = session(new RoomDoc())
+    let release!: () => void
+    const queued = new Promise<void>(resolve => { release = resolve })
+    const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false, queue: () => queued })
+    const msg = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'still there?' })
+    const delivery = b.maybeWake(msg)
+    b.stop(); release(); await delivery
+    expect(s.room.seen(s.me.name).has(msg.id)).toBe(false)
+    s.awareness.destroy(); s.room.doc.destroy()
+  })
+
   it('document receipts remove stale hook snapshots synchronously', () => {
     const s = session(new RoomDoc())
     const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false })
@@ -393,6 +407,29 @@ describe('hooks bridge + plugin hook scripts', () => {
     expect(await runHook('before-edit.mjs', input)).toContain(hookFirst)
     expect(consumeHookDisclosure(s, hookFirst)).toBe('hook')
     s.awareness.destroy(); s.room.doc.destroy()
+  })
+
+  it('recovers a stale notice lock and does not mistake a live lock for delivery', () => {
+    const s = session(new RoomDoc())
+    const lock = join(dir, '.git/room-state.json.notice-lock')
+    writePendingHookContext(dir, 'pendingDisclosure', 'notice', s.roomName)
+    writeFileSync(lock, JSON.stringify({ pid: 99999999, startedAt: 1, token: 'dead' }))
+    expect(consumeHookDisclosure(s, 'notice')).toBe('tool')
+    writePendingHookContext(dir, 'pendingDisclosure', 'next', s.roomName)
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: Date.now() - process.uptime() * 1000, token: 'live' }))
+    expect(consumeHookDisclosure(s, 'next')).toBe('pending')
+    expect(JSON.parse(readFileSync(join(dir, '.git/room-state.json'), 'utf8')).deliveredDisclosure).not.toBe('next')
+    rmSync(lock, { force: true })
+    s.awareness.destroy(); s.room.doc.destroy()
+  })
+
+  it('hook delivers after the previous lock owner died before acknowledgement', async () => {
+    await runHook('session-start.mjs', { session_id: 'crashed-hook', cwd: dir })
+    const notice = 'sharing notice after crash'
+    writePendingHookContext(dir, 'pendingDisclosure', notice)
+    writeFileSync(join(dir, '.git/room-state.json.notice-lock'), JSON.stringify({ pid: 99999999, startedAt: 1, token: 'dead' }))
+    expect(await runHook('before-edit.mjs', { session_id: 'crashed-hook', cwd: dir, tool_name: 'Read' })).toContain(notice)
+    expect(JSON.parse(readFileSync(join(dir, '.git/room-state.json'), 'utf8')).deliveredDisclosure).toBe(notice)
   })
 
   it('SessionStart resets company delivery for a new session without forgetting seen inbox ids', async () => {
@@ -805,6 +842,64 @@ it.each(['stale', 'foreign'])('uses the Codex rollout when the hook session file
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
+it('does not discover Codex rollouts for a Claude host without hook metadata', () => {
+  const home = mkdtempSync(join(tmpdir(), 'room-claude-home-'))
+  const id = '12345678-1234-1234-1234-123456789abc'
+  const sessions = join(home, '.codex', 'sessions')
+  mkdirSync(sessions, { recursive: true })
+  writeFileSync(join(sessions, `rollout-test-${id}.jsonl`), JSON.stringify({ cwd: dir }) + '\n')
+  vi.stubEnv('HOME', home); vi.stubEnv('ROOM_HOST', 'claude')
+  try { expect(new HooksBridge(session(new RoomDoc()), { forMe: () => false, isSeen: () => false }).freshSession()).toBeUndefined() }
+  finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+it('discovers a Codex rollout when the host is unknown and hook metadata is missing', () => {
+  const home = mkdtempSync(join(tmpdir(), 'room-unknown-host-home-'))
+  const id = '12345678-1234-1234-1234-123456789abc'
+  const sessions = join(home, '.codex', 'sessions')
+  mkdirSync(sessions, { recursive: true })
+  writeFileSync(join(sessions, `rollout-test-${id}.jsonl`), JSON.stringify({ cwd: dir }) + '\n')
+  vi.stubEnv('HOME', home); vi.stubEnv('ROOM_HOST', '')
+  try { expect(new HooksBridge(session(new RoomDoc()), { forMe: () => false, isSeen: () => false }).freshSession()).toEqual({ id, host: 'codex' }) }
+  finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+it('caches rollout discovery per directory and start identity', () => {
+  const home = mkdtempSync(join(tmpdir(), 'room-rollout-cache-'))
+  const sessions = join(home, '.codex', 'sessions'), since = Date.now()
+  mkdirSync(sessions, { recursive: true }); vi.stubEnv('HOME', home)
+  const id = '12345678-1234-1234-1234-123456789abc'
+  try {
+    expect(findThreadForDir(dir, since)).toBeUndefined()
+    writeFileSync(join(sessions, `rollout-test-${id}.jsonl`), JSON.stringify({ cwd: dir }) + '\n')
+    expect(findThreadForDir(dir, since)).toBeUndefined()
+    expect(findThreadForDir(dir, since + 1)).toBe(id)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+it('closes a rollout fd when its head read fails', () => {
+  const home = mkdtempSync(join(tmpdir(), 'room-rollout-fd-'))
+  const sessions = join(home, '.codex', 'sessions'), since = Date.now()
+  mkdirSync(sessions, { recursive: true }); vi.stubEnv('HOME', home)
+  const id = '12345678-1234-1234-1234-123456789abc'
+  writeFileSync(join(sessions, `rollout-test-${id}.jsonl`), JSON.stringify({ cwd: dir }) + '\n')
+  const realClose = fs.closeSync
+  const closed = vi.spyOn(fs, 'closeSync').mockImplementation(fd => realClose(fd))
+  const read = vi.spyOn(fs, 'readSync').mockImplementation(() => { throw new Error('read failed') })
+  try { expect(findThreadForDir(dir, since)).toBeUndefined(); expect(closed).toHaveBeenCalled() }
+  finally { read.mockRestore(); closed.mockRestore(); rmSync(home, { recursive: true, force: true }) }
+})
+
+it('caps rollout inspection when session storage is large', () => {
+  const home = mkdtempSync(join(tmpdir(), 'room-rollout-cap-'))
+  const sessions = join(home, '.codex', 'sessions'), since = Date.now()
+  mkdirSync(sessions, { recursive: true }); vi.stubEnv('HOME', home)
+  for (let i = 0; i < 600; i++) writeFileSync(join(sessions, `rollout-${String(i).padStart(4, '0')}-12345678-1234-1234-1234-123456789abc.jsonl`), '{}\n')
+  const stat = vi.spyOn(fs, 'statSync')
+  try { findThreadForDir(dir, since); expect(stat.mock.calls.length).toBeLessThanOrEqual(500) }
+  finally { stat.mockRestore(); rmSync(home, { recursive: true, force: true }) }
+})
+
 it('contains a scheduled hook-state write failure and logs it once', () => {
   const s = session(new RoomDoc())
   const log = vi.fn()
@@ -978,5 +1073,12 @@ it('matches the shared overlap rule on exact files, directory boundaries and nor
     ['api', 'api-other/a'], ['./api/tax.py', 'api/'], ['api\\tax.py', 'api'],
     ['.', 'api/tax.py'], ['./', 'api/tax.py'], ['', 'api/tax.py'], ['api///', 'api/a'],
     ['src/a', 'src/b'], ['././src/a', 'src/a'], ['src/../api', 'api/a'],
-  ]) expect(hook.coversPath(a, b), `${a} vs ${b}`).toBe(covers(a, b))
+  ]) {
+    expect(hook.coversPath(a, b), `${a} vs ${b}`).toBe(covers(a, b))
+    expect(hook.containsPath(a, b), `${a} contains ${b}`).toBe(shared.containsPath(a, b))
+    expect(hook.normalizeCoordinationPath(a)).toBe(shared.normalizeCoordinationPath(a))
+  }
+  for (const parent of ['', '  ', '/', '/..', 'C:\\..', '.', './']) {
+    expect(hook.containsPath(parent, 'src/a.ts')).toBe(shared.containsPath(parent, 'src/a.ts'))
+  }
 })

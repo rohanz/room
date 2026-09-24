@@ -4,7 +4,7 @@
 // Reads .git/room-state.json, which the room MCP server keeps current.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, takePendingContext, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, newestModelInTranscriptTail } from './common.mjs'
+import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, takePendingContext, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, containsPath, newestModelInTranscriptTail } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -72,7 +72,7 @@ const fresh = (state.unread ?? []).filter(m => !seen.has(m.id))
 if (typeof state.name === 'string' && fresh.length) {
   hookSeen.shown = { ...hookSeen.shown, ...Object.fromEntries(fresh.map(m => [m.id, state.name])) }
 }
-const claims = (state.claims ?? []).filter(c => paths.some(p => c.path.endsWith('/') ? p.startsWith(c.path) : p === c.path))
+const claims = (state.claims ?? []).filter(c => paths.some(p => /[\\/]$/.test(c.path) ? containsPath(c.path, p) : containsPath(c.path, p) && containsPath(p, c.path)))
 
 const nearby = (state.near ?? []).filter(n => paths.some(p => coversPath(p, n.path)))
 const lines = [...pending]
@@ -85,7 +85,7 @@ if (fresh.length) {
   for (const m of fresh) lines.push(`  ${m.line}`)
 }
 const nearEvidence = [...new Set(nearby.map(n => `${n.by} has ${n.reason} on ${n.path}`))].sort()
-const adequateClaim = paths.length > 0 && paths.every(p => (state.ownClaims ?? []).some(c => coversPath(p, c.path)))
+const adequateClaim = paths.length > 0 && paths.every(p => (state.ownClaims ?? []).some(c => containsPath(c.path, p)))
 const nearKey = JSON.stringify(nearEvidence)
 const previousNear = hookSeen.near ?? {}
 const nearChanged = paths.some(p => nearby.length

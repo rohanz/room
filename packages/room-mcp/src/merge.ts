@@ -17,6 +17,8 @@ export type MergeChunk = { ok: string[]; conflict?: never } | { ok?: never; conf
 
 export interface GitMergeResult {
   status: 'clean' | 'conflict'
+  algorithm: 'git' | 'fallback'
+  fallbackReason?: string
   /** Exact stdout from `git merge-file -p --diff3`. */
   text: string
   chunks: MergeChunk[]
@@ -32,7 +34,7 @@ export async function gitMergeFile(
   theirs: string,
   labels: { ours: string; base: string; theirs: string },
 ): Promise<GitMergeResult> {
-  const clean = (text: string): GitMergeResult => ({ status: 'clean', text, chunks: [{ ok: text.split('\n') }], conflicts: [] })
+  const clean = (text: string): GitMergeResult => ({ status: 'clean', algorithm: 'git', text, chunks: [{ ok: text.split('\n') }], conflicts: [] })
   if (ours === theirs || theirs === base) return clean(ours)
   if (ours === base) return clean(theirs)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-file-'))
@@ -43,7 +45,7 @@ export async function gitMergeFile(
     fs.writeFileSync(theirsPath, theirs)
     const result = await new Promise<{ code: number; stdout: string; unavailable: boolean; error?: Error }>(resolve => {
       execFile('git', ['merge-file', '-p', '--diff3', '-L', labels.ours, '-L', labels.base, '-L', labels.theirs, oursPath, basePath, theirsPath],
-        { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
+        { maxBuffer: 16 * 1024 * 1024, timeout: 10_000 }, (error, stdout) => {
           const raw = error && (error as NodeJS.ErrnoException & { code?: unknown }).code
           resolve({
             code: typeof raw === 'number' ? raw : error ? -1 : 0,
@@ -53,17 +55,17 @@ export async function gitMergeFile(
           })
         })
     })
-    if (result.unavailable) return fallback(base, ours, theirs, labels)
+    if (result.unavailable) return fallback(base, ours, theirs, labels, 'git unavailable')
     // Git setup failures and binary inputs may produce no markers.
-    if (result.code < 0 || (result.code > 0 && !result.stdout.includes('<<<<<<< ' + labels.ours))) return fallback(base, ours, theirs, labels)
+    if (result.code < 0 || (result.code > 0 && !result.stdout.includes('<<<<<<< ' + labels.ours))) return fallback(base, ours, theirs, labels, result.error?.message ?? `git exited ${result.code} without conflict markers`)
     try { return parseGitMerge(result.stdout, labels, result.code) }
-    catch { return fallback(base, ours, theirs, labels) }
+    catch (error) { return fallback(base, ours, theirs, labels, `could not parse git output: ${String(error)}`) }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 }
 
-function fallback(base: string, ours: string, theirs: string, labels: { ours: string; base: string; theirs: string }): GitMergeResult {
+function fallback(base: string, ours: string, theirs: string, labels: { ours: string; base: string; theirs: string }, fallbackReason: string): GitMergeResult {
   if (!warnedFallback) {
     warnedFallback = true
     console.error('room: git could not render this preview; falling back to node-diff3')
@@ -87,11 +89,11 @@ function fallback(base: string, ours: string, theirs: string, labels: { ours: st
     rendered.push(`<<<<<<< ${labels.ours}`, ...conflict.a, `||||||| ${labels.base}`, ...conflict.o, '=======', ...conflict.b, `>>>>>>> ${labels.theirs}`)
     line += conflict.o.length
   }
-  return { status: conflicts.length ? 'conflict' : 'clean', text: rendered.join('\n'), chunks, conflicts }
+  return { status: conflicts.length ? 'conflict' : 'clean', algorithm: 'fallback', fallbackReason, text: rendered.join('\n'), chunks, conflicts }
 }
 
 function parseGitMerge(text: string, labels: { ours: string; base: string; theirs: string }, exitCode: number): GitMergeResult {
-  if (exitCode === 0) return { status: 'clean', text, chunks: [{ ok: text.split('\n') }], conflicts: [] }
+  if (exitCode === 0) return { status: 'clean', algorithm: 'git', text, chunks: [{ ok: text.split('\n') }], conflicts: [] }
   const lines = text.split('\n')
   const chunks: MergeChunk[] = []
   const conflicts: MergeConflict[] = []
@@ -119,5 +121,5 @@ function parseGitMerge(text: string, labels: { ours: string; base: string; their
   }
   flush()
   if (!conflicts.length) throw new Error(`git merge-file exited ${exitCode} without conflict markers`)
-  return { status: 'conflict', text, chunks, conflicts }
+  return { status: 'conflict', algorithm: 'git', text, chunks, conflicts }
 }

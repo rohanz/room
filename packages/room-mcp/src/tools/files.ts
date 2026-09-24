@@ -212,7 +212,7 @@ function ensureMergedDirectory(root: string, rel: string): string {
 
 export async function gitTreeModes(dir: string, ref: string): Promise<Map<string, number>> {
   const entries = (await git(dir, ['ls-tree', '-rz', ref])).split('\0').filter(Boolean)
-  return new Map(entries.map(entry => { const [meta, rel] = entry.split('\t'); return [rel, parseInt(meta.split(' ')[0], 8) & 0o777] }))
+  return new Map(entries.map(entry => { const tab = entry.indexOf('\t'); const meta = entry.slice(0, tab), rel = entry.slice(tab + 1); return [rel, parseInt(meta.split(' ')[0], 8) & 0o777] }))
 }
 
 export function addCarriedUntrackedModes(modes: Map<string, number>, worker: Worker): Map<string, number> {
@@ -308,7 +308,7 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
 }
 
 /** Extract one verified commit without placing a clone path or ref in a shell program. */
-async function materializeGitTree(cloneDir: string, ref: string, destination: string): Promise<void> {
+export async function materializeGitTree(cloneDir: string, ref: string, destination: string): Promise<void> {
   if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`)
   await git(cloneDir, ['cat-file', '-e', `${ref}^{commit}`])
   await new Promise<void>((resolve, reject) => {
@@ -333,6 +333,7 @@ async function materializeGitTree(cloneDir: string, ref: string, destination: st
     archive.stderr.setEncoding('utf8'); archive.stderr.on('data', chunk => { archiveError += String(chunk).slice(0, 4096) })
     extract.stderr.setEncoding('utf8'); extract.stderr.on('data', chunk => { extractError += String(chunk).slice(0, 4096) })
     archive.on('error', fail); extract.on('error', fail)
+    archive.stdout.on('error', fail); extract.stdin.on('error', fail)
     archive.on('close', code => { archiveCode = code; finish() })
     extract.on('close', code => { extractCode = code; finish() })
     archive.stdout.pipe(extract.stdin)

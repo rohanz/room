@@ -88,7 +88,7 @@ async function main() {
       const sentence = pendingTeamSharingDisclosure(session)
       if (sentence) {
         const delivery = consumeHookDisclosure(session, sentence)
-        if (delivery) {
+        if (delivery === 'hook' || delivery === 'tool') {
           markTeamSharingDisclosureDelivered(session)
           if (delivery === 'tool') disclosure = sentence
         }
@@ -96,8 +96,8 @@ async function main() {
     }
     const body = await tools.call(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>)
     const delivery = startupNotice ? consumeHookNotice(dir, startupNotice) : undefined
-    const notice = session || delivery === 'hook' ? '' : startupNotice
-    startupNotice = ''
+    const notice = session || delivery === 'hook' || delivery === 'pending' ? '' : startupNotice
+    if (delivery !== 'pending') startupNotice = ''
     return { content: [{ type: 'text', text: (notice ? notice + '\n\n' : '') + (disclosure ? disclosure + '\n\n' : '') + body }] }
   })
 

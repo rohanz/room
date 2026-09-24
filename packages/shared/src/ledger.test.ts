@@ -13,6 +13,11 @@ describe('ledger', () => {
     expect(scopeCovers({ paths: ['auth'] }, 'auth/session.py')).toBe(true)
     expect(scopeCovers({ paths: ['auth/login.py'] }, 'auth/login.py')).toBe(true)
     expect(scopeCovers({ paths: ['auth'] }, 'authz/x.py')).toBe(false)
+    expect(scopeCovers({ paths: ['.'] }, 'src/a.ts')).toBe(true)
+    expect(scopeCovers({ paths: [''] }, 'a')).toBe(false)
+    expect(scopeCovers({ paths: ['/'] }, 'a')).toBe(false)
+    expect(scopeCovers({ paths: ['src\\'] }, './src/a.ts')).toBe(true)
+    expect(scopeCovers({ paths: ['src/a.ts'] }, 'src')).toBe(false)
   })
 
   it('filters by area through scopes and by path, ignoring chatter', () => {

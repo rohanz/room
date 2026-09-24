@@ -1,15 +1,16 @@
 import { displayName } from './identity.js'
 import type { Claim, Cursor } from './types.js'
 import { formatPlans } from './format.js'
+import { containsPath, normalizeCoordinationPath } from './near.js'
 
 export function rangesOverlap(aFrom: number, aTo: number, bFrom: number, bTo: number): boolean {
   return aFrom <= bTo && bFrom <= aTo
 }
 
 export function claimsOverlap(a: Pick<Claim, 'path' | 'from' | 'to'>, b: Pick<Claim, 'path' | 'from' | 'to'>): boolean {
-  if (a.path.endsWith('/') && b.path.startsWith(a.path)) return true
-  if (b.path.endsWith('/') && a.path.startsWith(b.path)) return true
-  return a.path === b.path && rangesOverlap(a.from, a.to, b.from, b.to)
+  if (/[\\/]$/.test(a.path) && containsPath(a.path, b.path)) return true
+  if (/[\\/]$/.test(b.path) && containsPath(b.path, a.path)) return true
+  return normalizeCoordinationPath(a.path) === normalizeCoordinationPath(b.path) && rangesOverlap(a.from, a.to, b.from, b.to)
 }
 
 export function cursorInClaim(c: Cursor, claim: Claim): boolean {

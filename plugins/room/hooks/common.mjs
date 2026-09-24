@@ -1,7 +1,7 @@
 // Shared helpers for the room hooks. No dependencies: hooks run from the plugin cache.
 import fs from 'node:fs'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 export function readStdinJson() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8') || '{}') } catch { return {} }
@@ -76,10 +76,9 @@ export function writeHookSeen(file, value) {
 /** Consume hook context under a tiny cross-process lock. The delivered value remains as
  * an acknowledgement so the MCP process cannot restore or repeat it through a tool reply. */
 export function takePendingContext(file, state, fields = ['pendingDisclosure', 'pendingNotice']) {
-  const lock = file + '.notice-lock'
-  let fd
+  const release = acquireNoticeLock(file)
+  if (!release) return []
   try {
-    fd = fs.openSync(lock, 'wx', 0o600)
     const current = readJson(file, state)
     const lines = []
     for (const field of fields) {
@@ -91,12 +90,35 @@ export function takePendingContext(file, state, fields = ['pendingDisclosure', '
     if (lines.length) fs.writeFileSync(file, JSON.stringify(current, null, 1) + '\n')
     return lines
   } catch { return [] }
-  finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd) } catch { /* best effort */ }
-      try { fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
+  finally { release() }
+}
+
+/** Mirrored in hooks-bridge.ts; hooks cannot import package dependencies. */
+function acquireNoticeLock(file) {
+  const lock = file + '.notice-lock'
+  const owner = { pid: process.pid, startedAt: Date.now() - process.uptime() * 1000, token: randomUUID() }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lock, 'wx', 0o600)
+      try { fs.writeFileSync(fd, JSON.stringify(owner)) } finally { fs.closeSync(fd) }
+      return () => {
+        try { if (JSON.parse(fs.readFileSync(lock, 'utf8')).token === owner.token) fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
+      }
+    } catch (error) {
+      if (error.code !== 'EEXIST') return undefined
+      try {
+        const stat = fs.statSync(lock)
+        const prior = JSON.parse(fs.readFileSync(lock, 'utf8'))
+        let alive = typeof prior.pid === 'number' && Number.isInteger(prior.pid)
+        if (alive) { try { process.kill(prior.pid, 0) } catch (e) { alive = e.code === 'EPERM' } }
+        if (prior.pid === process.pid && Math.abs((prior.startedAt ?? 0) - owner.startedAt) > 5000) alive = false
+        if (alive && Date.now() - stat.mtimeMs < 10_000) return undefined
+        if (fs.readFileSync(lock, 'utf8') === JSON.stringify(prior)) fs.rmSync(lock, { force: true })
+      } catch { /* another process may have replaced it */ }
+      try { if (Date.now() - fs.statSync(lock).mtimeMs >= 10_000) fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
     }
   }
+  return undefined
 }
 
 /** Keep evidence separate for two agent sessions using the same worktree. */
@@ -181,17 +203,25 @@ export function companyLine(state) {
   return '[room] ' + names.join(', ') + (names.length > 1 ? ' are here.' : ' is here.')
 }
 
-/** Same segment-boundary overlap as shared coversPath; parity-tested. */
-export function coversPath(a, b) {
-  const normalize = p => {
-    const parts = []
-    for (const part of p.replaceAll('\\', '/').split('/')) {
-      if (!part || part === '.') continue
-      if (part === '..' && parts.length && parts.at(-1) !== '..') parts.pop()
-      else parts.push(part)
-    }
-    return parts.join('/') || '.'
+/** Dependency-free mirrors of shared near.ts; parity-tested. */
+export function normalizeCoordinationPath(p) {
+  const parts = []
+  for (const part of p.replaceAll('\\', '/').split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..' && parts.length && parts.at(-1) !== '..') parts.pop()
+    else parts.push(part)
   }
-  const left = normalize(a), right = normalize(b)
-  return left === '.' || right === '.' || left === right || left.startsWith(right + '/') || right.startsWith(left + '/')
+  return parts.join('/') || '.'
+}
+
+export function containsPath(parent, child) {
+  const valid = p => p.trim().length > 0 && !/^(?:[\\/]|[a-z]:)/i.test(p) &&
+    (normalizeCoordinationPath(p) !== '.' || p === '.' || p === './')
+  if (!valid(parent) || !valid(child)) return false
+  const a = normalizeCoordinationPath(parent), b = normalizeCoordinationPath(child)
+  return a === '.' || a === b || b.startsWith(a + '/')
+}
+
+export function coversPath(a, b) {
+  return containsPath(a, b) || containsPath(b, a)
 }

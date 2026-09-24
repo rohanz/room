@@ -6,7 +6,8 @@ import path from 'node:path'
 import * as Y from 'yjs'
 import WebSocket from 'ws'
 import { WebsocketProvider } from 'y-websocket'
-import { deterministicPort, ensureLocalRelay, portAnswers, probeRelay, readRelayInfo, relayAnswers, startRelay } from '../src/index.js'
+import { deterministicPort, ensureLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
+import { portAnswers, relayAnswers } from './probes.js'
 import http from 'node:http'
 
 /** A stand-in for a clone's git common dir: the relay only needs a directory for its discovery file. */

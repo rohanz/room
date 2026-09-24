@@ -15,9 +15,15 @@ import { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { RoomDoc, colorFor, scopeCovers, type BaseMsg, type Kind, type Presence } from '@room/shared'
+
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { baselineText, carriesWork, workerBaseline, type Baseline } from './baseline.js'
 import { git, gitBlobInfoMany, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitShowMany, gitSubject, gitTracked, type GitBlobInfo } from './git.js'
+
+/** Keep event emitters and timers from leaking both sync throws and rejected promises. */
+export function observeCallback(fn: () => unknown, report: (error: unknown) => void): void {
+  void Promise.resolve().then(fn).catch(report)
+}
 
 /**
  * How much of this clone the daemon publishes.
@@ -328,9 +334,9 @@ class Daemon implements Roomd {
     if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader())
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
     this.every(this.basePollMs, () => this.enqueue(() => this.pollHead()))
-    this.roomDoc.metaMap.observe(() => { void this.refreshBaseStatus() })
+    this.roomDoc.metaMap.observe(() => observeCallback(() => this.refreshBaseStatus(), error => this.log(`warn: ${errMsg(error)}`)))
     // Under 'declared' the published set follows the person's scope; re-evaluate when it changes.
-    this.roomDoc.scopes.observe(ev => { if (ev.keysChanged.has(this.name) && this.share === 'declared' && !this.explicitScopePaths) void this.resharePaths() })
+    this.roomDoc.scopes.observe(ev => { if (ev.keysChanged.has(this.name) && this.share === 'declared' && !this.explicitScopePaths) observeCallback(() => this.resharePaths(), error => this.log(`warn: ${errMsg(error)}`)) })
     await this.refreshBaseStatus()
     this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`)
   }
@@ -452,7 +458,7 @@ class Daemon implements Roomd {
 
   private every(ms: number, fn: () => unknown): void {
     const timer = setInterval(() => {
-      Promise.resolve(fn()).catch(error => this.log(`warn: ${errMsg(error)}`))
+      observeCallback(fn, error => this.log(`warn: ${errMsg(error)}`))
     }, ms)
     timer.unref?.()
     this.timers.add(timer)

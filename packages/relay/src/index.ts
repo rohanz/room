@@ -14,7 +14,6 @@ export { RoomMemory, memoryFile, loadMemory, saveMemory } from './memory.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
-import net from 'node:net'
 import path from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import * as Y from 'yjs'
@@ -22,6 +21,11 @@ import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
+
+/** Convert a takeover failure into a reported, settled operation for the interval owner. */
+export async function observeTakeover(work: () => Promise<void>, report: (error: unknown) => void): Promise<void> {
+  try { await work() } catch (error) { try { report(error) } catch { /* reporting must not reject the interval */ } }
+}
 
 // ---- a minimal y-websocket relay (the wire protocol of y-websocket 3.x; private memory persistence) ----
 const MSG_SYNC = 0, MSG_AWARENESS = 1
@@ -144,22 +148,6 @@ export function deterministicPort(commonDir: string): number {
   try { real = fs.realpathSync.native(commonDir) } catch { /* use as given */ }
   const h = crypto.createHash('sha1').update(real).digest()
   return 40000 + (h.readUInt32BE(0) % 20000)
-}
-
-/** Does something accept TCP connections on 127.0.0.1:port? (Any listener counts; see relayAnswers.) */
-export function portAnswers(port: number, timeoutMs = 500): Promise<boolean> {
-  return new Promise(resolve => {
-    const sock = net.connect({ host: '127.0.0.1', port })
-    const done = (ok: boolean) => { sock.destroy(); resolve(ok) }
-    sock.once('connect', () => done(true))
-    sock.once('error', () => done(false))
-    sock.setTimeout(timeoutMs, () => done(false))
-  })
-}
-
-/** Is a room relay (not some unrelated service) answering on 127.0.0.1:port? Probes /health for {"local":true}. */
-export async function relayAnswers(port: number, timeoutMs = 800): Promise<boolean> {
-  return (await health(port, undefined, timeoutMs))?.local === true
 }
 
 /** Which clone a relay serves: a hash of its git common dir (the path itself is never sent). */
@@ -385,7 +373,12 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     log(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`)
   }
   // One takeover attempt at a time; stop() waits for the one in flight.
-  const timer = setInterval(() => { ticking ??= tick().finally(() => { ticking = null }) }, opts.watchMs ?? 2000)
+  const timer = setInterval(() => {
+    if (ticking) return
+    const work = observeTakeover(tick, error => log(`local room ${room}: relay takeover failed: ${error instanceof Error ? error.message : String(error)}`))
+    ticking = work
+    void work.then(() => { if (ticking === work) ticking = null })
+  }, opts.watchMs ?? 2000)
   timer.unref?.()
 
   return {

@@ -14,7 +14,7 @@ import type { Claim, ConflictMsg, MergeConflictMsg, ContractMsg, GraphSnapshot, 
 import { gitMergeFile } from './merge.js'
 import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
-import { baselineText, carriedPaths, carriesWork, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
+import { baselineText, readBaseline, carriedPaths, carriesWork, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
 
 export const ROOM: Identity = { name: 'room', kind: 'agent' }
 
@@ -105,6 +105,7 @@ export class ConflictWatcher {
   private observedInputs = new Map<string, string>()
   /** Contract changes by (baseline, path, before and live text): a text is parsed once. */
   private observedCache = new Map<string, ObservedChange[]>()
+  private degradedBaseline = new Set<string>()
   private integrated = new Map<string, Set<string>>()
   private integrationReported = new Set<string>()
   private integrationTimer: NodeJS.Timeout | null = null
@@ -221,8 +222,19 @@ export class ConflictWatcher {
   private async carriedChanges(baseline: Baseline, lives: Map<string, string | null | undefined>): Promise<ObservedChange[]> {
     const out: ObservedChange[] = []
     for (const [path, live] of lives) {
-      const before = await baselineText(baseline, path, this.d.baseText).catch(() => undefined)
-      if (before === undefined) continue
+      const read = await readBaseline(baseline, path, this.d.baseText)
+      const degradedKey = `${baseline.sha}\0${path}`
+      if (read.kind === 'unavailable') {
+        this.d.log?.(`contract coverage degraded for ${path}: ${read.error.message}`)
+        if (!this.degradedBaseline.has(degradedKey)) {
+          this.degradedBaseline.add(degradedKey)
+          this.d.room.post<NoteMsg>(ROOM, { type: 'note', to: this.d.me.name, priority: 'notify',
+            text: `contract coverage degraded for ${path}: carried baseline unavailable; changes in this file cannot be checked` })
+        }
+        continue
+      }
+      this.degradedBaseline.delete(degradedKey)
+      const before = read.kind === 'absent' ? '' : read.text
       const key = `${baseline.sha}\0${path}\0${hashText(before)}\0${live === null ? '' : hashText(live ?? '')}`
       let changes = this.observedCache.get(key)
       if (!changes) {

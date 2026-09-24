@@ -13,6 +13,7 @@ describe('directory claims', () => {
   it('respects directory boundaries and file line ranges', () => {
     expect(claimsOverlap(directory, { path: 'src-other/a.ts', from: 1, to: 1 })).toBe(false)
     expect(claimsOverlap({ path: 'a.ts', from: 1, to: 2 }, { path: 'a.ts', from: 3, to: 4 })).toBe(false)
+    expect(claimsOverlap({ path: './src\\', from: 1, to: 1 }, { path: 'src/a.ts', from: 10, to: 10 })).toBe(true)
   })
   it('covers cursors in descendant files', () => {
     expect(cursorInClaim({ path: 'src/a.ts', from: 10, to: 10 }, { ...directory, by: 'A', byKind: 'agent', id: 'c', at: 1, intent: 'own src' })).toBe(true)

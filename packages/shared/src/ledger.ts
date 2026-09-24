@@ -1,4 +1,5 @@
 import type { Msg, Plan, ReleaseMsg, Scope, RetiredWorker } from './types.js'
+import { containsPath } from './near.js'
 
 export const MAX_RETIRED_WORKERS = 200
 
@@ -34,7 +35,7 @@ export function msgPaths(m: Msg): string[] {
 
 /** A scope covers a path when the path equals a scope path or lives under a scope directory. */
 export function scopeCovers(scope: Pick<Scope, 'paths'>, path: string): boolean {
-  return scope.paths.some(p => path === p || path.startsWith(p.replace(/\/?$/, '/')))
+  return scope.paths.some(p => containsPath(p, path))
 }
 
 export interface LedgerQuery { area?: string; path?: string; since?: number; limit?: number }

@@ -76,6 +76,8 @@ it('recovers from git merge-file exiting 128 without markers', async () => {
   try {
     const result = await gitMergeFile('', 'ours\n', 'theirs\n', { ours: 'ours', base: 'base', theirs: 'theirs' })
     expect(result.status).toBe('conflict')
+    expect(result.algorithm).toBe('fallback')
+    expect(result.fallbackReason).toMatch(/git|exit/i)
     expect(result.conflicts[0]).toMatchObject({ a: ['ours'], b: ['theirs'] })
   } finally { vi.unstubAllEnvs(); fs.rmSync(bin, { recursive: true, force: true }) }
 })
