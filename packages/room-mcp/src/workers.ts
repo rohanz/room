@@ -48,6 +48,48 @@ export interface RetirementFacts {
 /** One worktree cannot be collected, discarded and auto-retired at the same time. */
 export function workerOperationKey(w: Pick<Worker, 'dir'>): string { return 'worker:' + path.resolve(w.dir) }
 
+type WorktreeOwnershipRecord = Pick<Worker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'>
+  | Pick<RetiredWorker, 'name' | 'tag' | 'lead' | 'keptWorktree'>
+
+/** Cwd-wide cleanup requires a canonical Room worktree at every level back to this lead. */
+export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<Worker, 'name' | 'dir' | 'branch' | 'tag' | 'lead'>, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
+  const byName = new Map([...workers].map(record => [record.name, record]))
+  const chain = [w]
+  const seen = new Set([w.name])
+  let owner = w.lead
+  while (leadName && owner !== leadName) {
+    const record = byName.get(owner)
+    if (!record || seen.has(record.name)) return false
+    // An archived lead may still have a live nested worktree. Its child path
+    // identifies the candidate parent; the checks below must prove every link.
+    const parent = {
+      name: record.name, tag: record.tag, lead: record.lead,
+      dir: 'dir' in record ? record.dir : record.keptWorktree ?? path.dirname(path.dirname(path.dirname(chain[0].dir))),
+      branch: 'branch' in record ? record.branch : `room/${record.tag}`,
+    }
+    chain.unshift(parent)
+    seen.add(parent.name)
+    owner = parent.lead
+  }
+  try {
+    let parentDir = leadDir, parentName = leadName
+    const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
+    for (const record of chain) {
+      if (parentName && record.lead !== parentName) return false
+      if (!fs.existsSync(record.dir) || record.branch !== `room/${record.tag}`) return false
+      const parentRoot = fs.realpathSync(parentDir), workerRoot = fs.realpathSync(record.dir)
+      if (workerRoot === parentRoot) return false
+      const expected = path.join(parentRoot, '.room', 'workers', record.tag)
+      if (!fs.existsSync(expected) || workerRoot !== fs.realpathSync(expected)) return false
+      if (await common(parentDir) !== await common(record.dir)) return false
+      if ((await git(record.dir, ['branch', '--show-current'])).trim() !== record.branch) return false
+      parentDir = record.dir
+      parentName = record.name
+    }
+    return true
+  } catch { return false }
+}
+
 /** Explicit dismissal also retires failures, but never a process that is still running. */
 export function shouldRetire(facts: RetirementFacts): RetiredWorker['outcome'] | undefined {
   if (!facts.exited) return undefined
@@ -701,11 +743,9 @@ export async function terminateWorktreeProcesses(dir: string, options: {
 }
 
 /** Remove only owned Room worktrees; failures require explicit discard. */
-export async function cleanupWorker(leadDir: string, w: Worker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}): Promise<boolean> {
+export async function cleanupWorker(leadDir: string, w: Worker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
   if (w.branch !== 'room/' + w.tag || (!discarded && (w.status === 'failed' || w.exitCode !== 0))) return false
-  const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
-  if (await common(leadDir) !== await common(w.dir) || fs.realpathSync(leadDir) === fs.realpathSync(w.dir)) return false
-  if ((await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) return false
+  if (!await isOwnedWorkerWorktree(leadDir, w, leadName, workers)) return false
   const nested = (await git(leadDir, ['worktree', 'list', '--porcelain'])).split('\n')
     .filter(line => line.startsWith('worktree ')).map(line => line.slice('worktree '.length))
     .filter(dir => dir !== w.dir && inside(fs.realpathSync(w.dir), dir))

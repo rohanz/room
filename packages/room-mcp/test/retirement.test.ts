@@ -176,7 +176,7 @@ describe('git facts and lead evaluation', () => {
   })
 
   it('retires only this lead’s exited done workers; failures need dismissal; handles block retirement', async () => {
-    const { dir, git } = repo(), r = registry(dir), work = join(dir, 'work')
+    const { dir, git } = repo(), r = registry(dir), work = join(dir, '.room', 'workers', 'w')
     git('worktree', 'add', '-qb', 'room/w', work)
     const w = worker(work)
     r.room.setWorker(w)

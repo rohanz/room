@@ -211,7 +211,7 @@ export class Rooms {
         const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
         const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
         if (facts.clean && w.exitCode === 0) {
-          try { if (!await cleanupWorker(s.dir, w, true)) continue }
+          try { if (!await cleanupWorker(s.dir, w, true, false, [], {}, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue }
           catch { continue }
         }
         const retiredAt = Date.now()

@@ -19,9 +19,9 @@ const put = (dir: string, p: string, text: string) => { fs.mkdirSync(path.dirnam
 beforeEach(() => {
   release.mockReset()
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-collect-'))
-  lead = path.join(root, 'lead'); worker = path.join(root, 'worker'); fs.mkdirSync(lead)
+  lead = path.join(root, 'lead'); worker = path.join(lead, '.room', 'workers', 'test'); fs.mkdirSync(lead)
   git(lead, 'init', '-q'); git(lead, 'config', 'user.name', 'Lead'); git(lead, 'config', 'user.email', 'lead@example.test')
-  put(lead, 'file.txt', 'base\n'); put(lead, '.gitignore', 'artifact.bin\nnode_modules/\n')
+  put(lead, 'file.txt', 'base\n'); put(lead, '.gitignore', 'artifact.bin\nnode_modules/\n.room/\n')
   git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'base'); base = git(lead, 'rev-parse', 'HEAD')
   git(lead, 'worktree', 'add', '-qb', 'room/test', worker)
 })
@@ -121,7 +121,7 @@ describe('room_collect', () => {
     expect(fs.existsSync(path.join(lead, 'dist/app.js'))).toBe(false)
     expect(fs.existsSync(worker)).toBe(false)
 
-    const other = path.join(root, 'other')
+    const other = path.join(lead, '.room', 'workers', 'other')
     git(lead, 'worktree', 'add', '-qb', 'room/other', other)
     t.s.room.workers.set('other', { ...t.w, tag: 'other', name: 'lead+other', dir: other, branch: 'room/other', exitCode: 0 } as never)
     put(other, '.venv/lib.py', 'unrecoverable')
@@ -192,7 +192,7 @@ describe('room_collect', () => {
   })
 
   function second(t: ReturnType<typeof setup>, status = 'done') {
-    const dir = path.join(root, 'second')
+    const dir = path.join(lead, '.room', 'workers', 'second')
     git(lead, 'worktree', 'add', '-qb', 'room/second', dir)
     t.s.room.workers.set('second', { ...t.w, tag: 'second', name: 'lead+second', dir, branch: 'room/second', status, exitCode: 0, finishedAt: 1 } as never)
     t.s.room.workers.set('test', { ...t.w, exitCode: 0, finishedAt: 2 } as never)

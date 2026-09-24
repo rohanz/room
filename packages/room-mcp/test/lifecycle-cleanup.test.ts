@@ -78,18 +78,35 @@ describe('worker lifecycle cleanup', () => {
       })).toBe(true)
       expect(names).toEqual(['astro dev (pid 12345)'])
       expect(signal).toHaveBeenCalledWith(12345, 'SIGTERM')
+      const explicit = join(root, 'existing-checkout')
+      git('worktree', 'add', '-qb', 'room/explicit', explicit)
+      signal.mockClear()
+      expect(await cleanupWorker(root, { tag: 'explicit', name: 'lead+explicit', lead: 'lead', host: 'codex', task: 'task', dir: explicit, branch: 'room/explicit', pid: -1, startedAt: 1, status: 'done', exitCode: 0 }, true, false, [], {
+        list: () => [{ pid: 12345, cwd: explicit, command: 'editor' }], signal, alive: () => false, sleep: async () => {},
+      }, 'lead')).toBe(false)
+      expect(signal).not.toHaveBeenCalled()
+      expect(existsSync(explicit)).toBe(true)
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
   it('dismissWorker names a worktree server before signalling its host', async () => {
     const root = mkdtempSync(join(tmpdir(), 'room-stop-order-'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { stdio: 'pipe' })
+    git('init', '-q', '-b', 'main')
+    git('config', 'user.email', 'test@test')
+    git('config', 'user.name', 'test')
+    writeFileSync(join(root, 'base'), 'base')
+    git('add', 'base')
+    git('commit', '-qm', 'base')
+    const dir = join(root, '.room', 'workers', 'a')
+    git('worktree', 'add', '-qb', 'room/a', dir)
     const ready = join(tmpdir(), `room-stop-ready-${process.pid}-${Date.now()}`)
-    const child = spawn(process.execPath, ['-e', 'require("fs").writeFileSync(process.argv[1], "ready"); setInterval(() => {}, 1000)', ready], { cwd: root, stdio: 'ignore' })
+    const child = spawn(process.execPath, ['-e', 'require("fs").writeFileSync(process.argv[1], "ready"); setInterval(() => {}, 1000)', ready], { cwd: dir, stdio: 'ignore' })
     try {
       for (let i = 0; i < 100 && !existsSync(ready); i++) await new Promise(resolve => setTimeout(resolve, 10))
       expect(existsSync(ready)).toBe(true)
       const room = new RoomDoc()
-      const worker = { tag: 'a', name: 'lead+a', lead: 'lead', host: 'codex', task: 'task', dir: root, branch: 'room/a', id: 'id', pid: 999999, startedAt: Date.now(), status: 'running' } as const
+      const worker = { tag: 'a', name: 'lead+a', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/a', id: 'id', pid: 999999, startedAt: Date.now(), status: 'running' } as const
       room.workers.set('a', worker as never)
       const s = { room, dir: root, me: { name: 'lead', kind: 'agent' } } as Session
       const kill = vi.fn(() => { child.kill('SIGTERM'); return true })

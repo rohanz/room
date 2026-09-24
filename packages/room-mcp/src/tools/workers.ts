@@ -1,6 +1,6 @@
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses, allocateWorkerPort } from '../workers.js'
+import { pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses, allocateWorkerPort, isOwnedWorkerWorktree } from '../workers.js'
 import { releaseClaimsOnDone } from './claims.js'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -259,9 +259,18 @@ export function install(state: HandlerState): void {
       // The host's exit can also take down its dev-server children. Name and stop
       // those while they are still visible, but leave the host pid for its own handle.
       const protectedPids = w.pid ? [w.pid] : []
-      const stopped = await terminateWorktreeProcesses(w.dir, { protectedPids })
+      const ownedWorktree = await isOwnedWorkerWorktree(s.dir, w, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])
+      const stopped: string[] = []
+      let cleanupError: string | undefined
+      const stopCwdProcesses = async () => {
+        if (!ownedWorktree || cleanupError) return
+        try { stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids })) }
+        catch (e) { cleanupError = `cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}` }
+      }
+      const cleanupText = () => (stopped.length ? `; stopped processes: ${stopped.join(', ')}` : '') + (cleanupError ? `; ${cleanupError}` : '')
+      await stopCwdProcesses()
       if (proc && w.dismissedAt !== undefined) {
-        return `pid ${w.pid} already signalled; waiting for exit${stopped.length ? `; stopped processes: ${stopped.join(', ')}` : ''}`
+        return `pid ${w.pid} already signalled; waiting for exit${cleanupText()}`
       }
       let how: string, signalled: boolean
       if (proc) {
@@ -280,8 +289,8 @@ export function install(state: HandlerState): void {
       }
       if (signalled || stopReason) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
       if (signalled || workerAlive(s, w)) s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
-      stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids }))
-      return how + (stopped.length ? `; stopped processes: ${stopped.join(', ')}` : '')
+      await stopCwdProcesses()
+      return how + cleanupText()
     }
 
   const startWorkersBridge = (lead: import('../session.js').Session, s: import('../session.js').Session): Bridge => {
