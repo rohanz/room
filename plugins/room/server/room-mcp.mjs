@@ -25933,6 +25933,7 @@ var init_wake_path = __esm({
       closed = false;
       push(wake) {
         if (!wake || this.closed || this.o.host !== "claude") return;
+        if (this.o.isPendingWait?.(wake)) return;
         const env = this.o.env ?? process.env;
         const selected = mode(env);
         if (selected === "off") return;
@@ -25979,7 +25980,7 @@ var init_wake_path = __esm({
         });
       }
       async flush() {
-        const items = this.pending.splice(0).filter((w) => this.unread(w));
+        const items = this.pending.splice(0).filter((w) => !this.o.isPendingWait?.(w) && this.unread(w));
         if (!items.length || this.closed) return;
         this.lastSentAt = Date.now();
         const count = items.length;
@@ -44693,6 +44694,10 @@ init_prs();
 init_context();
 var WAIT_DEFAULT = 3e4;
 var WAIT_MAX = 12e4;
+var pendingWaits = /* @__PURE__ */ new WeakMap();
+function waitConsumesMessage(s, m) {
+  return [...pendingWaits.get(s) ?? []].some((ends) => ends(m));
+}
 var defs5 = [
   {
     name: "room_send",
@@ -44878,9 +44883,21 @@ function handlers5(state) {
         }
       }
       if (offline(s)) return "offline: queued/not delivered; room_wait cannot observe new messages until reconnected";
+      const ws = rooms.all().find((x) => x !== s) ?? null;
+      const waiting = /* @__PURE__ */ new Map();
+      for (const x of ws ? [s, ws] : [s]) {
+        const workersRoom = x !== s;
+        const ends = (m) => messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom }) || m.priority === "interrupt" && forMe(x, m);
+        let callbacks = pendingWaits.get(x);
+        if (!callbacks) {
+          callbacks = /* @__PURE__ */ new Set();
+          pendingWaits.set(x, callbacks);
+        }
+        callbacks.add(ends);
+        waiting.set(x, ends);
+      }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
       const result = await new Promise((resolve5) => {
-        const ws = rooms.all().find((x) => x !== s) ?? null;
         const finish = (r) => {
           clearTimeout(timer);
           s.room.claims.unobserve(onClaims);
@@ -44922,6 +44939,7 @@ function handlers5(state) {
           onRecipient();
         }
       });
+      for (const [x, ends] of waiting) pendingWaits.get(x)?.delete(ends);
       setPresence(s, { status: "idle" });
       return result;
     }
@@ -45086,7 +45104,10 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
   const previewText = async (s, p, person) => {
     const w = previewWorker(s, person);
     const dir = w?.dir ?? (person === caller.me.name && s === caller ? caller.dir : void 0);
-    if (!dir || !options.diskOnly && !w && (s.room.text(p, person) !== void 0 || s.room.deleted.get(person)?.has(p))) return liveText(s, p, person);
+    if (!dir || !options.diskOnly && !w && (s.room.text(p, person) !== void 0 || s.room.deleted.get(person)?.has(p))) {
+      const live = await liveText(s, p, person);
+      return options.encoding === "latin1" && typeof live === "string" ? Buffer.from(live, "utf8").toString("latin1") : live;
+    }
     if (path15.isAbsolute(p) || p.split(/[\\/]/).includes("..")) throw new Error("unsafe preview path: " + p);
     const root = fs16.realpathSync(dir);
     try {
@@ -47118,7 +47139,7 @@ async function main() {
   const attachChannel = (s) => {
     if (attachedWakeSessions.has(s)) return;
     attachedWakeSessions.add(s);
-    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), log });
+    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: (wake) => !!s.room.messages().find((m) => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log });
     const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
     s.room.bus.observe((ev) => {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
