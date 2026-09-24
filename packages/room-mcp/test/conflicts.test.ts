@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -7,13 +7,14 @@ import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import { RoomDoc, shouldWakeOnMsg } from '@room/shared'
 import type { Identity } from '@room/shared'
-import { createTools } from '../src/tools.js'
+import { createTools, type Tools } from '../src/tools.js'
 import { changedRanges, ConflictWatcher, type ConflictDeps } from '../src/conflicts.js'
 import type { Session } from '../src/session.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const me: Identity = { name: 'Rohan', kind: 'agent' }
 let dir: string, base: string
+const activeTools = new Set<Tools>()
 
 function pair() {
   const a = new Y.Doc(), b = new Y.Doc()
@@ -47,6 +48,7 @@ function setup(opts: { now?: () => number; joined?: boolean; session?: Partial<S
     join: async () => fakeSession(a), leave: async () => {}, close: async s => { closed.push(s.roomName); return ['github.com/o/r/main', 'github.com/o/r/dev'] },
     log: () => {},
   })
+  activeTools.add(tools)
   if (session) tools.attachHooks(session)
   return { room: a, other: b, tools, closed, get session() { return session } }
 }
@@ -60,7 +62,10 @@ beforeAll(() => {
   git('add', '.'); git('commit', '-qm', 'init')
   base = git('rev-parse', 'HEAD').trim()
 })
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+afterAll(async () => {
+  for (const tools of activeTools) await tools.shutdown()
+  rmSync(dir, { recursive: true, force: true })
+})
 
 describe('changedRanges', () => {
   it('reports live line ranges that differ from the base', () => {
@@ -71,6 +76,26 @@ describe('changedRanges', () => {
 })
 
 describe('automatic conflict notices', () => {
+  it('logs a rejected debounced conflict check instead of leaving it unhandled', async () => {
+    const log = vi.fn()
+    const room = new RoomDoc()
+    const watcher = new ConflictWatcher({ room, me, debounceMs: 1, log,
+      liveText: async () => undefined, baseText: async () => undefined,
+      baseFor: () => base, mergeBase: async () => base })
+    const internal = watcher as unknown as { schedule(person: string, path: string): void; check(person: string, path: string): Promise<void> }
+    vi.spyOn(internal, 'check').mockRejectedValue(new Error('ENOENT: repo disappeared'))
+    vi.useFakeTimers()
+    try {
+      internal.schedule('Kieran', 'app.py')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(log).toHaveBeenCalledOnce()
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('ENOENT: repo disappeared'))
+    } finally {
+      watcher.stop()
+      vi.useRealTimers()
+    }
+  })
+
   function watcherFor(room: RoomDoc, extra: Partial<ConflictDeps> = {}) {
     const watcher = new ConflictWatcher({ room, me, debounceMs: 10_000,
       liveText: async (p, person) => room.text(p, person), baseText: async () => 'base\n',
@@ -291,6 +316,7 @@ describe('room lifecycle', () => {
     const peer = addPresence(joined.awareness, 'Kieran')
     let current: Session | null = null
     const tools = createTools({ getSession: () => current, setSession: s => { current = s }, cwd: dir, join: async () => joined, log: () => {} })
+    activeTools.add(tools)
     const reply = await tools.call('room_join', {})
     expect(reply).toContain("Your file changes are published under Kieran's name because both sessions watch this folder; claims say which lines are whose.")
     peer.destroy()

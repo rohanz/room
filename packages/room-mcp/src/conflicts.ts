@@ -160,7 +160,10 @@ export class ConflictWatcher {
     const key = `${person}|${p}`
     const prev = this.timers.get(key)
     if (prev) clearTimeout(prev)
-    const t = setTimeout(() => { this.timers.delete(key); void this.check(person, p) }, this.d.debounceMs ?? 2000)
+    const t = setTimeout(() => {
+      this.timers.delete(key)
+      void this.check(person, p).catch(e => this.d.log?.(`conflict check ${person}/${p}: ${e instanceof Error ? e.message : String(e)}`))
+    }, this.d.debounceMs ?? 2000)
     t.unref?.()
     this.timers.set(key, t)
   }
@@ -311,7 +314,9 @@ export class ConflictWatcher {
           const paths = this.integrated.get(c.by) ?? new Set<string>()
           paths.add(p); this.integrated.set(c.by, paths)
           if (!this.integrationTimer) {
-            this.integrationTimer = setTimeout(() => this.reportIntegrations(), this.d.debounceMs ?? 2000)
+            this.integrationTimer = setTimeout(() => {
+              try { this.reportIntegrations() } catch (e) { this.d.log?.(`integration report: ${e instanceof Error ? e.message : String(e)}`) }
+            }, this.d.debounceMs ?? 2000)
             this.integrationTimer.unref?.()
           }
         }
@@ -386,7 +391,10 @@ export class ConflictWatcher {
         if (this.mergeStarts.length >= budget) {
           if (!this.mergeTimer) {
             const delay = Math.max(1, this.mergeStarts[0] + windowMs - at)
-            this.mergeTimer = setTimeout(() => { this.mergeTimer = null; void this.drainMerges() }, delay)
+            this.mergeTimer = setTimeout(() => {
+              this.mergeTimer = null
+              void this.drainMerges().catch(e => this.d.log?.(`merge preview: ${e instanceof Error ? e.message : String(e)}`))
+            }, delay)
             this.mergeTimer.unref?.()
           }
           break

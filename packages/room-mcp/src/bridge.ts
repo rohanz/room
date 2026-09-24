@@ -159,7 +159,10 @@ export class Bridge {
     const ms = this.o.debounceMs ?? 300
     if (ms === 0) { this.syncScope(); return }
     if (this.timer) clearTimeout(this.timer)
-    this.timer = setTimeout(() => { this.timer = null; this.syncScope() }, ms)
+    this.timer = setTimeout(() => {
+      this.timer = null
+      try { this.syncScope() } catch (e) { this.o.log?.(`bridge: could not sync scope: ${e instanceof Error ? e.message : String(e)}`) }
+    }, ms)
     this.timer.unref?.()
   }
 

@@ -202,7 +202,10 @@ export class HooksBridge {
   scheduleWrite(): void {
     if (this.o.writeState === false) return
     if (this.timer) return
-    this.timer = setTimeout(() => { this.timer = null; this.write() }, 150)
+    this.timer = setTimeout(() => {
+      this.timer = null
+      try { this.write() } catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`) }
+    }, 150)
     this.timer.unref?.()
   }
 
@@ -310,7 +313,10 @@ export class HooksBridge {
 
   private schedulePending(): void {
     if (this.pendingTimer || !this.pending.size) return
-    this.pendingTimer = setTimeout(() => { this.pendingTimer = null; void this.retryPending() }, this.o.pendingPollMs ?? 5000)
+    this.pendingTimer = setTimeout(() => {
+      this.pendingTimer = null
+      void this.retryPending().catch(e => this.o.log?.(`hooks: could not retry pending wakes: ${e instanceof Error ? e.message : String(e)}`))
+    }, this.o.pendingPollMs ?? 5000)
     this.pendingTimer.unref?.()
   }
 
@@ -390,15 +396,22 @@ function missingPreEditGuidance(s: Session): string {
   return 'Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.'
 }
 
-/** Tool calls are evidence that hooks should have run; don't diagnose idle or solo sessions. */
+/** Diagnose Claude only after this host session has actually changed its own tree. */
 export function hookHealthNote(s: Session, expected: boolean, now = Date.now(), tool?: string, team = !s.local): string {
   let health = hookHealth.get(s)
   if (!health) { health = newHookHealth(now); hookHealth.set(s, health) }
+  let sessionStartedAt = health.since
+  try {
+    const session = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-session.json'), 'utf8'))
+    if (typeof session.at === 'number' && Number.isFinite(session.at) && session.at <= now) sessionStartedAt = session.at
+  } catch { /* use the first room-tool call as the session boundary */ }
   try {
     const activity = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-hook-activity.json'), 'utf8'))
     const session = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-session.json'), 'utf8'))
-    if (activity.event === 'PreToolUse' && typeof activity.at === 'number' && activity.at <= now && activity.session_id === session.session_id) health.observed = true
-  } catch { /* no evidence yet */ }
+    if (activity.event === 'PreToolUse' && typeof activity.at === 'number' && activity.at <= now &&
+        (resolveSessionHost(s.dir) !== 'claude' || activity.at >= sessionStartedAt) &&
+        activity.session_id === session.session_id) health.observed = true
+  } catch { /* no receipt yet */ }
   if (!expected || health.observed || health.noted) return ''
   // Only Codex can skip an unapproved hook silently, so only Codex is told up front. Elsewhere the hook is silent
   // while the agent is alone, which an agent cannot tell from a missing hook: wait for the evidence below instead.
@@ -415,6 +428,8 @@ export function hookHealthNote(s: Session, expected: boolean, now = Date.now(), 
   if (!health.calls) health.since = now
   health.calls++
   if (health.calls < 2 || now - health.since < 30_000) return ''
+  if (resolveSessionHost(s.dir) === 'claude' &&
+      !(s.room.changedPaths(s.me.name).length && (s.room.overlayAt.get(s.me.name) ?? -Infinity) >= sessionStartedAt)) return ''
   health.noted = true
   return missingPreEditGuidance(s)
 }

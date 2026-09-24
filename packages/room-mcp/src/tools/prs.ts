@@ -55,8 +55,9 @@ export function install(state: HandlerState): void {
       stopPrSync()
       prSyncedSession = s
       const every = ctx.prs?.intervalMs ?? 2 * 60_000
-      void refreshPrs(s)
-      if (every > 0) { prTimer = setInterval(() => { void refreshPrs(s) }, every); prTimer.unref?.() }
+      const refresh = () => { void refreshPrs(s).catch(e => log(`pull requests: ${e instanceof Error ? e.message : String(e)}`)) }
+      refresh()
+      if (every > 0) { prTimer = setInterval(refresh, every); prTimer.unref?.() }
     }
   const stopPrSync = () => { if (prTimer) clearInterval(prTimer); prTimer = null; prSyncedSession = null }
   const prLines = (s: Session): string[] => {

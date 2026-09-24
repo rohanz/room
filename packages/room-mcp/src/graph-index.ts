@@ -179,7 +179,9 @@ export class GraphIndex {
       this.pending.delete(path)
       if (!this.stopped && !this.pending.size) {
         clearTimeout(this.publishing)
-        this.publishing = setTimeout(() => this.publish(this.phase), 100)
+        this.publishing = setTimeout(() => {
+          try { this.publish(this.phase) } catch (e) { this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`) }
+        }, 100)
       }
     })
     this.pending.set(path, p)
@@ -221,7 +223,9 @@ export class GraphIndex {
     const minMs = this.opts.minPublishMs ?? MIN_PUBLISH_MS
     if (status === this.lastPublished.status && now - this.lastPublished.at < minMs) {
       clearTimeout(this.publishing)
-      this.publishing = setTimeout(() => this.publish(this.phase), minMs - (now - this.lastPublished.at))
+      this.publishing = setTimeout(() => {
+        try { this.publish(this.phase) } catch (e) { this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`) }
+      }, minMs - (now - this.lastPublished.at))
       return
     }
     this.lastPublished = { at: now, key, status }

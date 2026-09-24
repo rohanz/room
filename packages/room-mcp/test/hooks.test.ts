@@ -724,6 +724,24 @@ it('tracks SessionStart and PreToolUse receipts separately', async () => {
   expect(JSON.parse(readFileSync(join(dir, '.git/room-hook-activity.json'), 'utf8'))).toMatchObject({ session_id: 'separate', event: 'PreToolUse' })
 })
 
+it('contains a scheduled hook-state write failure and logs it once', () => {
+  const s = session(new RoomDoc())
+  const log = vi.fn()
+  const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false, log })
+  vi.spyOn(b, 'write').mockImplementation(() => { throw new Error('ENOENT: repo disappeared') })
+  vi.useFakeTimers()
+  try {
+    b.scheduleWrite()
+    expect(() => vi.advanceTimersByTime(150)).not.toThrow()
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('ENOENT: repo disappeared'))
+  } finally {
+    b.stop()
+    s.awareness.destroy()
+    vi.useRealTimers()
+  }
+})
+
 it('reports unverified pre-edit coverage on team join and first scope only', () => {
   vi.stubEnv('ROOM_HOST', 'codex')
   const s = session(new RoomDoc())
@@ -742,9 +760,7 @@ it('reports unverified pre-edit coverage on team join and first scope only', () 
   expect(hookHealthNote(claude, true, now + 1, 'room_join')).toBe('')
   expect(hookHealthNote(claude, true, now + 2, 'room_scope')).toBe('')
   expect(hookHealthNote(claude, true, now + 3, 'room_state')).toBe('')
-  const late = hookHealthNote(claude, true, now + 60_000, 'room_state')
-  expect(late).toContain('has not seen its before-edit hook run')
-  expect(late).not.toContain('if your next edit')
+  expect(hookHealthNote(claude, true, now + 60_000, 'room_state')).toBe('')
   expect(hookHealthNote(claude, true, now + 120_000, 'room_state')).toBe('')
   claude.awareness.destroy()
   vi.stubEnv('ROOM_HOST', 'codex')
@@ -762,16 +778,46 @@ it('reports unverified pre-edit coverage on team join and first scope only', () 
   s.awareness.destroy(); sessionOnly.awareness.destroy(); healthy.awareness.destroy()
 })
 
-it('uses the detected host in missing-hook guidance', () => {
+it('warns Claude once after its own tree changed without a PreToolUse receipt', () => {
   vi.stubEnv('ROOM_HOST', 'claude')
   const s = session(new RoomDoc())
   const now = Date.now()
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-edit', at: now }))
   expect(hookHealthNote(s, true, now, 'room_join')).toBe('') // nothing up front: see the coverage test
+  s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
   hookHealthNote(s, true, now + 1, 'room_state')
   const note = hookHealthNote(s, true, now + 60_000, 'room_state')
   expect(note).toContain("plugin's hooks may not be running")
   expect(note).toContain('reinstall or re-enable the plugin')
   expect(note).not.toContain('Codex')
+  expect(hookHealthNote(s, true, now + 120_000, 'room_state')).toBe('')
+  s.awareness.destroy()
+})
+
+it('does not warn Claude when a PreToolUse receipt follows its edit', () => {
+  vi.stubEnv('ROOM_HOST', 'claude')
+  const s = session(new RoomDoc())
+  const now = Date.now()
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-receipt', at: now }))
+  hookHealthNote(s, true, now, 'room_join')
+  s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'claude-receipt', event: 'PreToolUse', at: now + 1 }))
+  expect(hookHealthNote(s, true, now + 60_000, 'room_state')).toBe('')
+  s.awareness.destroy()
+})
+
+it('ignores an edit and receipt from before this Claude session started', () => {
+  vi.stubEnv('ROOM_HOST', 'claude')
+  const s = session(new RoomDoc())
+  const now = Date.now()
+  s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+  s.room.overlayAt.set('Rohan', now - 60_000)
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-current', at: now }))
+  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'claude-current', event: 'PreToolUse', at: now - 60_000 }))
+  expect(hookHealthNote(s, true, now, 'room_join')).toBe('')
+  expect(hookHealthNote(s, true, now + 60_000, 'room_state')).toBe('')
+  s.room.setOverlay('Rohan', 'app.py', 'x = 3\n')
+  expect(hookHealthNote(s, true, now + 61_000, 'room_state')).toContain('before-edit hook')
   s.awareness.destroy()
 })
 
