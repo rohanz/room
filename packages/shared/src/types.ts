@@ -132,6 +132,8 @@ export interface Worker {
   /** Host conversation to resume for a follow-up in this worktree. */
   hostSessionId?: string
   budget?: { threads: number; memGb: number; nice: number }
+  /** Effective sharing level at spawn; older records omit it and resume conservatively at intent. */
+  share?: ShareLevel
   /** Repo-relative inputs linked from the lead's clone; read-only by worker instruction. */
   link?: string[]
   task: string

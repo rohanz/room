@@ -12,8 +12,8 @@ import type { NoteMsg, Presence, Worker } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
 import { LOCAL, type Session } from './session.js'
-import { cleanupWorker, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, shouldRetire, workerCommand, workerGitFacts, workerLogTail, workerMaxBudget, workerOperationKey, workerPriority, workerProcessEnv, type SpawnedProcess, type Spawner } from './workers.js'
-import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
+import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, shouldRetire, workerCommand, workerGitFacts, workerLogTail, workerMaxBudget, workerOperationKey, workerPriority, workerProcessEnv, type SpawnedProcess, type Spawner } from './workers.js'
+import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -55,7 +55,7 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
   const done = w.status === 'done'
   const exitCode = code ?? -1
   const tail = workerLogTail(path.join(s.dir, '.room', 'workers', `${w.tag}.log`))
-  const stopReason = w.stopReason ?? (unwitnessed ? persistedWorkerStopReason(s.dir, w.tag) : undefined)
+  const stopReason = w.stopReason ?? (unwitnessed ? persistedWorkerStopReason(s.dir, w.tag, w.id) : undefined)
   s.room.updateWorker(w.tag, {
     exitCode, finishedAt: w.finishedAt ?? at,
     ...(stopReason ? { stopReason } : {}),
@@ -87,6 +87,8 @@ export class Rooms {
   private handles = new Map<string, { proc: SpawnedProcess; session: Session }>()
   /** Tags whose worktree is being prepared, so two concurrent room_spawn calls cannot both pass the tag check. */
   private reserving = new Set<string>()
+  /** Starts awaiting worktree preparation count against the same limit as live workers. */
+  private launching = 0
   private retirementTimers = new Map<Session, ReturnType<typeof setInterval>>()
   private retiring = new Map<Session, Promise<void>>()
 
@@ -127,7 +129,7 @@ export class Rooms {
     for (const w of s.room.workers.values()) {
       if (w.stopReason) continue
       try {
-        const reason = persistedWorkerStopReason(s.dir, w.tag)
+        const reason = persistedWorkerStopReason(s.dir, w.tag, w.id)
         if (reason) s.room.updateWorker(w.tag, { stopReason: reason, ...(w.status === 'running' ? { status: 'dismissed' as const } : {}) }, w.id)
       } catch { /* an external checkout has no local carry record */ }
     }
@@ -248,6 +250,21 @@ export class Rooms {
   // ---- worker processes ---------------------------------------------------------
   reserve(base: string): boolean { if (this.reserving.has(base)) return false; this.reserving.add(base); return true }
   unreserve(base: string): void { this.reserving.delete(base) }
+  reserveLaunch(max: number, running: number): boolean {
+    if (this.launchUsage(running) >= max) return false
+    this.launching++
+    return true
+  }
+  releaseLaunch(): void { this.launching-- }
+  launchUsage(running: number): number { return running + this.launching }
+  runningWorkerCount(s: Session): number {
+    const sessions = [s, ...this.all().filter(x => x !== s)]
+    let count = 0
+    for (const sess of sessions) for (const w of sess.room.workers.values()) {
+      if (w.lead === s.me.name && (w.status === 'running' || this.hasHandle(sess, w) || pidIsOurWorker(w.pid, w))) count++
+    }
+    return count
+  }
   /** A worker id is unique per lead and tag, but the same lead may spawn the same tag in its own room and in the workers room: handles are keyed per room. */
   private static hkey(s: Session, id: string): string { return `${s.roomName}|${id}` }
   setHandle(s: Session, id: string, proc: SpawnedProcess): void { this.handles.set(Rooms.hkey(s, id), { proc, session: s }) }
@@ -261,8 +278,22 @@ export class Rooms {
   }
   hasHandle(s: Session, w: Worker): boolean { return !!w.id && this.handles.has(Rooms.hkey(s, w.id)) }
 
+  /** Spawn and resume share the same process-exit accounting and error reporting. */
+  watchWorkerProcess(s: Session, id: string, proc: SpawnedProcess, errorPrefix: string, log: (line: string) => void, at: () => number = Date.now): void {
+    const exited = (code: number | null, error?: string) => {
+      this.dropHandle(s, id, proc)
+      const current = s.room.workerById(id)
+      if (!current || current.pid !== proc.pid) return
+      void finishWorkerProcess(s, current, code, at(), error)
+        .then(() => this.retireWorkers(s))
+        .catch(e => log(`worker exit: ${e}`))
+    }
+    proc.onError?.(err => exited(-1, `${errorPrefix}: ${err.message}`))
+    proc.onExit(code => exited(code))
+  }
+
   /** Continue an exited, retained worker in its original checkout and host conversation. */
-  async resumeWorker(s: Session, w: Worker, message: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, at = Date.now()): Promise<string> {
+  async resumeWorker(s: Session, w: Worker, message: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at = Date.now()): Promise<string> {
     // An exit callback starts retirement asynchronously. Let that check finish before competing
     // for the same worktree lock; it retains any worker with work to collect.
     await this.retiring.get(s)
@@ -285,31 +316,43 @@ export class Rooms {
       if (!w.id) return `error: ${w.tag} has no stable worker id; it cannot be resumed`
       const budget = w.budget
       if (!budget) return `error: ${w.tag} has no recorded compute budget; it cannot be resumed`
-      const { server, isWorker } = workerOrigin(s)
-      const env = workerProcessEnv({ ...budget, host: w.host, model: w.model, effort: w.effort, server,
-        room: s.roomName, dir: w.dir, tag: w.tag, lead: w.lead, owner: s.me.owner ?? s.me.name,
-        share: s.daemon.share ?? 'full', gen: w.gen ?? 1, id: w.id,
-        token: s.local ? undefined : s.token, logDir: s.dir, isWorker })
-      let maxBudgetUsd: string | undefined
-      try { maxBudgetUsd = workerMaxBudget() } catch (e) { return `error: ${e instanceof Error ? e.message : String(e)}` }
-      const command = workerCommand(w.host, w.model, message, claudeChannel, w.effort, { tag: w.tag, sessionId: w.hostSessionId, resume: true, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels' })
-      const priority = workerPriority(command, { ...process.env, ROOM_WORKER_NICE: String(budget.nice) })
-      const logFile = path.join(s.dir, '.room', 'workers', `${w.tag}.log`)
-      let proc: SpawnedProcess
-      try { proc = spawner({ cmd: priority.cmd, args: priority.args, cwd: w.dir, env, logFile, captureCodexSession: w.host === 'codex' }) }
-      catch (e) { return `error: could not resume ${w.tag}: ${e instanceof Error ? e.message : String(e)}` }
-      this.setHandle(s, w.id, proc)
-      s.room.updateWorker(w.tag, { pid: proc.pid, status: 'running', startedAt: at, summary: undefined, exitCode: undefined, finishedAt: undefined, dismissedAt: undefined, stopReason: undefined }, w.id)
-      const exited = (code: number | null, error?: string) => {
-        this.dropHandle(s, w.id, proc)
-        const current = s.room.workerById(w.id!)
-        if (!current || current.pid !== proc.pid) return
-        void finishWorkerProcess(s, current, code, Date.now(), error)
-          .then(() => this.retireWorkers(s)).catch(() => {})
-      }
-      proc.onError?.(err => exited(-1, `could not resume ${w.tag}: ${err.message}`))
-      proc.onExit(code => exited(code))
-      return `resumed ${w.tag} with your message`
+      const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers } })
+      const latest = s.room.workers.get(w.tag)
+      if (!latest || latest.id !== w.id || latest.gen !== w.gen || latest.status === 'running') return `error: ${w.tag} changed while you were sending; retry`
+      w = latest
+      const id = w.id
+      if (!id) return `error: ${w.tag} has no stable worker id; it cannot be resumed`
+      const running = this.runningWorkerCount(s)
+      if (!this.reserveLaunch(config.maxWorkers, running)) return `error: ${this.launchUsage(running)} workers already running or starting (max ${config.maxWorkers}, ROOM_MAX_WORKERS); wait for one to finish`
+      let launchReserved = true
+      try {
+        const { server, isWorker } = workerOrigin(s)
+        const env = workerProcessEnv({ ...budget, host: w.host, model: w.model, effort: w.effort, server,
+          room: s.roomName, dir: w.dir, tag: w.tag, lead: w.lead, owner: s.me.owner ?? s.me.name,
+          share: w.share ?? 'intent', gen: w.gen ?? 1, id,
+          token: s.local ? undefined : s.token, logDir: s.dir, isWorker })
+        let maxBudgetUsd: string | undefined
+        try { maxBudgetUsd = workerMaxBudget() } catch (e) { return `error: ${e instanceof Error ? e.message : String(e)}` }
+        const command = workerCommand(w.host, w.model, message, claudeChannel, w.effort, { tag: w.tag, sessionId: w.hostSessionId, resume: true, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels' })
+        const priority = workerPriority(command, { ...process.env, ROOM_WORKER_NICE: String(budget.nice) })
+        const logFile = path.join(s.dir, '.room', 'workers', `${w.tag}.log`)
+        let proc: SpawnedProcess
+        try { proc = spawner({ cmd: priority.cmd, args: priority.args, cwd: w.dir, env, logFile, captureCodexSession: w.host === 'codex' }) }
+        catch (e) { return `error: could not resume ${w.tag}: ${e instanceof Error ? e.message : String(e)}` }
+        this.setHandle(s, id, proc)
+        const resumed = s.room.updateWorker(w.tag, { pid: proc.pid, status: 'running', startedAt: at, summary: undefined, exitCode: undefined, finishedAt: undefined, dismissedAt: undefined, stopReason: undefined }, id)
+        if (!resumed) {
+          this.dropHandle(s, id, proc)
+          try { proc.kill() } catch (e) { log(`worker resume: could not stop stale ${w.tag}: ${e}`) }
+          return `error: ${w.tag} changed during resume; attempted to stop the new process`
+        }
+        let stopWarning = ''
+        try { clearWorkerStopState(s.dir, w.tag, id) }
+        catch (e) { stopWarning = `; warning: could not clear saved stop reason: ${e instanceof Error ? e.message : String(e)}`; log(`worker resume:${stopWarning}`) }
+        this.releaseLaunch(); launchReserved = false
+        this.watchWorkerProcess(s, id, proc, `could not resume ${w.tag}`, log)
+        return `resumed ${w.tag} with your message${w.share ? '' : ' (legacy worker has no saved sharing level; using intent)'}${stopWarning}`
+      } finally { if (launchReserved) this.releaseLaunch() }
     } finally { this.unreserve(key) }
   }
 }

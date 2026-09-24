@@ -9,7 +9,7 @@ import path from 'node:path'
 import { type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
-import { workerId, workerIdBase, workerOrigin, finishWorkerProcess } from '../registry.js'
+import { workerId, workerIdBase, workerOrigin } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
 import { workerBudget, workerMaxBudget, workerProcessEnv, hostWorkerEffort, defaultSpawner, prepareWorktree, uncommittedCount, validTag, workerCommand, workerPrompt, persistWorkerStopReason, type PreparedWorktree, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
@@ -90,15 +90,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const retired = s.room.retiredWorkers().filter(w => w.tag === tag && w.lead === s.me.name)
       const gen = Math.max(0, ...retired.map(w => w.retiredAt)) + 1
       const id = workerId(s.me.name, tag, gen)
-      const running = myWorkers(s).filter(w => w.status === 'running')
       const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers: ctx.maxWorkers } })
       const max = config.maxWorkers
-      if (running.length >= max) return `error: ${running.length} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`
       const share = typeof a.share === 'string' && a.share ? parseShare(a.share) : undefined
       if (typeof a.share === 'string' && a.share && !share) return 'error: share must be intent, declared or full'
       // The tag is reserved from here until the process record exists (or this call fails): the worktree
       // preparation below awaits git, and a second room_spawn for the same tag must not slip in meanwhile.
       if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
+      const starting = runningWorkers(lead).length
+      if (!rooms.reserveLaunch(max, starting)) {
+        rooms.unreserve(idBase)
+        return `error: ${rooms.launchUsage(starting)} workers already running or starting (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`
+      }
+      let launchReserved = true
       try {
         let dir: string, branch: string, base: string | undefined, created = false, outside = false
         let carried: PreparedWorktree['carried'], carryFailed = false, carryError: string | undefined
@@ -134,9 +138,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // (ROOM_URL/ROOM_NAME/ROOM_DIR from a runner would otherwise send it into the lead's room as the lead).
         // The server URL is passed without its query: a shared token travels only as ROOM_TOKEN.
         const { server, isWorker } = workerOrigin(s)
-        // Recount after async worktree preparation: another spawn may have completed meanwhile.
         const count = runningWorkers(lead).length
-        if (count >= max) return abortPrepared(`error: ${count} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`)
         const cores = Math.max(1, os.availableParallelism?.() ?? os.cpus().length)
         const memBytes = os.totalmem()
         const budget = workerBudget({ cores, memBytes, maxWorkers: max, running: count })
@@ -146,8 +148,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads
         const threads = typeof a.threads === 'number' ? Math.min(a.threads, threadShare) : threadShare
         const memGb = Number.isFinite(inheritedMem) && inheritedMem >= 1 ? Math.max(1, Math.floor(inheritedMem / divisor)) : budget.memGb
+        const effectiveShare = share ?? s.daemon.share ?? 'full'
         const env = workerProcessEnv({ threads, memGb, host, model, effort, server, room: s.roomName, dir, tag,
-          lead: s.me.name, owner, share: share ?? s.daemon.share ?? 'full', gen, id,
+          lead: s.me.name, owner, share: effectiveShare, gen, id,
           token: s.local ? undefined : s.token, logDir: s.dir, isWorker })
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
@@ -164,24 +167,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try { proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args, cwd: dir, env, logFile, captureCodexSession: host === 'codex' }) }
         catch (e) { return abortPrepared(`error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`) }
         rooms.setHandle(s, id, proc)
-        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(hostSessionId ? { hostSessionId } : {}), budget: { threads, memGb, nice: scheduling.nice }, ...(link.length ? { link } : {}), task, dir, branch, ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}), ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
+        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(hostSessionId ? { hostSessionId } : {}), budget: { threads, memGb, nice: scheduling.nice }, share: effectiveShare, ...(link.length ? { link } : {}), task, dir, branch, ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}), ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
         s.room.setWorker(w)
+        rooms.releaseLaunch(); launchReserved = false
         if (host === 'codex') proc.onSessionId?.(sessionId => {
           const current = s.room.workerById(id)
           if (current && current.pid === proc.pid && !current.hostSessionId) s.room.updateWorker(tag, { hostSessionId: sessionId }, id)
         })
-        // Callbacks resolve the record by this spawn's id: a reused tag has a new id, so an older process
-        // (or another lead's record under the same tag) is simply not found and touches nothing.
-        const exited = (code: number | null, error?: string) => {
-          rooms.dropHandle(s, id, proc)
-          const cur = s.room.workerById(id)
-          if (!cur || cur.pid !== proc.pid) return
-          void finishWorkerProcess(s, cur, code, now(), error)
-            .then(() => rooms.retireWorkers(s))
-            .catch(e => state.log(`worker exit: ${e}`))
-        }
-        proc.onError?.(err => exited(-1, `could not start ${cmd}: ${err.message}`))
-        proc.onExit(code => exited(code))
+        rooms.watchWorkerProcess(s, id, proc, `could not start ${cmd}`, state.log, now)
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid}) in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
         const wakeNote = claudeWakeNote(lead, 'spawn')
@@ -204,6 +197,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         return out.join('\n')
       } finally {
+        if (launchReserved) rooms.releaseLaunch()
         rooms.unreserve(idBase)
       }
     },
@@ -255,7 +249,7 @@ export function install(state: HandlerState): void {
       }
       // Keep an owned handle until exit confirms the process can no longer publish live state.
       if (stopReason) {
-        try { persistWorkerStopReason(s.dir, w.tag, stopReason) } catch (e) { state.log(`could not persist stop reason for ${w.tag}: ${e}`) }
+        try { persistWorkerStopReason(s.dir, w.tag, stopReason, w.id) } catch (e) { state.log(`could not persist stop reason for ${w.tag}: ${e}`) }
       }
       if (signalled || stopReason) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
       if (signalled || workerAlive(s, w)) s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })

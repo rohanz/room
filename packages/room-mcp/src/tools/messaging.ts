@@ -133,7 +133,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const addressedWorker = msg.to && s.room.workerOf(msg.to)
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
-        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel)
+        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
         notes.push(result)
       }
       const notice = msg.to ? recipientNotice(s, msg.to) : undefined
