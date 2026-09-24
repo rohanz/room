@@ -303,6 +303,13 @@ orchestration and sharing work above remains open.
 - **A cancelled tool call keeps running inside Room.** Claude Code's TaskStop on a slow `room_spawn` stopped the
   call in the session, but the Room server still held the queued spawns and would have carried them out once
   unblocked. Room should notice the caller gave up (MCP cancellation) and drop queued work.
+- **Nobody outside a batch can talk to it cleanly.** The owner's session launched a detached batch lead
+  (its own local room in its own clone) and later needed to tell one worker a root cause. Joining that room
+  from the launching session would have made it a second participant in the lead's checkout (finding 4 of
+  docs/audit-2026-09-25-website-logs.md), so a script posted straight into the doc instead; the note was sent
+  as "rohanz", the lead's own name, and the lead treated it as its own message. Wanted: join a room as an
+  observer (distinct name, shares nothing, woken only by messages addressed to it), and a human-kind message
+  must never be filtered as the same-named agent's own.
 - **Stale Room code goes unnoticed.** A session started on Wednesday ran pre-fix code until Friday and froze on
   the fixed stdin-pipe bug. Room should say once when the plugin on disk is newer than the running server:
   "Room was updated; restart this session to pick up fixes".
