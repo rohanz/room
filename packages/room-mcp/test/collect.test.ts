@@ -53,6 +53,14 @@ function carry(t: ReturnType<typeof setup>, dir: string, tag: string, files: Rec
   t.s.room.workers.set(tag, { ...t.s.room.workers.get(tag)!, base: git(dir, 'rev-parse', 'HEAD') })
 }
 
+async function startWorktreeProcess() {
+  const ready = path.join(root, 'process-ready')
+  const child = spawn(process.execPath, ['-e', 'require("fs").writeFileSync(process.argv[1], "ready"); setInterval(() => {}, 1000)', ready], { cwd: worker, stdio: 'ignore' })
+  for (let attempt = 0; attempt < 100 && !fs.existsSync(ready); attempt++) await new Promise(resolve => setTimeout(resolve, 10))
+  if (!fs.existsSync(ready)) { child.kill('SIGKILL'); throw new Error('worktree process did not start') }
+  return child
+}
+
 describe('room_collect', () => {
   function seedPresence(t: ReturnType<typeof setup>) {
     const name = t.w.name
@@ -86,6 +94,39 @@ describe('room_collect', () => {
     expect(lines).toContain(`kept for ignored output at ${worker}`)
     expect(lines).not.toContain('uncommitted')
   })
+  it('stops worktree processes even when ignored output keeps the collected worktree', async () => {
+    const t = setup()
+    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'new.txt', 'worker change')
+    put(worker, 'artifact.bin', 'ignored output')
+    const child = await startWorktreeProcess()
+    try {
+      const reply = await t.call({ tag: 'test' })
+      expect(reply).toContain('kept test: uncopied ignored artifacts')
+      expect(reply).toContain(`pid ${child.pid}`)
+      expect(reply).toContain('stopped processes from test:')
+      expect(fs.existsSync(worker)).toBe(true)
+    } finally { child.kill('SIGKILL') }
+  })
+  it('cleans regenerable ignored output while retaining other ignored artifacts', async () => {
+    fs.appendFileSync(path.join(lead, '.git/info/exclude'), 'dist/\n.astro/\ntest-results/\n.venv/\n')
+    const t = setup()
+    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'new.txt', 'worker change')
+    for (const p of ['dist/app.js', '.astro/cache.json', 'test-results/trace.zip']) put(worker, p, 'regenerable')
+    const reply = await t.call({ tag: 'test' })
+    expect(reply).toContain('cleaned up test')
+    expect(reply).not.toContain('uncopied ignored artifacts')
+    expect(fs.existsSync(worker)).toBe(false)
+
+    const other = path.join(root, 'other')
+    git(lead, 'worktree', 'add', '-qb', 'room/other', other)
+    t.s.room.workers.set('other', { ...t.w, tag: 'other', name: 'lead+other', dir: other, branch: 'room/other', exitCode: 0 } as never)
+    put(other, '.venv/lib.py', 'unrecoverable')
+    const kept = await t.call({ tag: 'other' })
+    expect(kept).toContain('kept .venv/')
+    expect(fs.existsSync(other)).toBe(true)
+  })
 
   it('discards ignored output from a retired collected worker with force', async () => {
     const t = setup()
@@ -100,6 +141,18 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(false)
     expect(t.s.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
     expectRetired(t)
+  })
+  it('stops worktree processes when ignored output makes discard refuse', async () => {
+    const t = setup('failed')
+    put(worker, 'artifact.bin', 'ignored output')
+    const child = await startWorktreeProcess()
+    try {
+      const reply = await t.call({ tag: 'test', discard: true })
+      expect(reply).toContain('discard refused; ignored artifacts')
+      expect(reply).toContain(`pid ${child.pid}`)
+      expect(reply).toContain('stopped processes:')
+      expect(fs.existsSync(worker)).toBe(true)
+    } finally { child.kill('SIGKILL') }
   })
 
   it('discards worker and clears its overlay, claims, scope and presence', async () => {
@@ -129,6 +182,54 @@ describe('room_collect', () => {
     for (const tag of ['test', 'second']) expect(git(lead, 'branch', '--list', 'room/' + tag)).toBe('')
     expect(release).toHaveBeenCalledTimes(2)
     expect(t.s.room.workers.size).toBe(0)
+  })
+  it('skips a vanished worktree with its reason and still collects the other worker', async () => {
+    const t = setup(), other = second(t)
+    put(other, 'survived.txt', 'kept')
+    fs.rmSync(worker, { recursive: true, force: true })
+    const result = await t.call({})
+    expect(result).toMatch(/skipped test: .*worktree.*missing/i)
+    expect(result).toContain('Changes from second: survived.txt')
+    expect(fs.readFileSync(path.join(lead, 'survived.txt'), 'utf8')).toBe('kept')
+  })
+  it('skips one worker with an internal git ls-files error and collects the other', async () => {
+    const t = setup(), other = second(t)
+    put(worker, 'broken.txt', 'broken'); put(other, 'survived.txt', 'kept')
+    const bin = path.join(root, 'bin'); fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nif [ "$1" = ls-files ] && [ "$(pwd)" = "$ROOM_TEST_FAIL_DIR" ]; then echo "injected ls-files error" >&2; exit 3; fi\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`)
+    vi.stubEnv('ROOM_TEST_FAIL_DIR', fs.realpathSync(worker))
+    let result: string
+    try { result = await t.call({}) }
+    finally { vi.unstubAllEnvs() }
+    expect(result).toContain('skipped test: git ls-files -z failed: injected ls-files error')
+    expect(result).toContain('Changes from second: survived.txt')
+  })
+  it('reports Directory not empty during cleanup and retains the worktree for recovery', async () => {
+    const t = setup()
+    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'new.txt', 'worker edit')
+    const bin = path.join(root, 'bin'); fs.mkdirSync(bin)
+    const marker = path.join(root, 'remove-failed')
+    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" worktree remove "*) if [ ! -f "$ROOM_TEST_MARKER" ]; then touch "$ROOM_TEST_MARKER"; echo "Directory not empty" >&2; exit 1; fi;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`)
+    vi.stubEnv('ROOM_TEST_MARKER', marker)
+    let result: string
+    try { result = await t.call({ tag: 'test' }) }
+    finally { vi.unstubAllEnvs() }
+    expect(result).toContain('Changes from test: new.txt')
+    expect(result).toContain('Directory not empty')
+    expect(result).toContain('cleanup incomplete')
+    expect(fs.existsSync(worker)).toBe(true)
+    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+  })
+  it('queues a parallel collect behind the first tag and reports the queue', async () => {
+    const t = setup(), other = second(t)
+    put(worker, 'first.txt', 'first'); put(other, 'second.txt', 'second')
+    const [first, queued] = await Promise.all([t.call({ tag: 'test' }), t.call({ tag: 'second' })])
+    expect(first).toContain('Changes from test: first.txt')
+    expect(queued).toContain('queued behind test')
+    expect(queued).toContain('Changes from second: second.txt')
   })
   it('keeps both workers and all lead files when their same-line changes conflict', async () => {
     const t = setup(), other = second(t)
@@ -219,6 +320,7 @@ describe('room_collect', () => {
   it('skips failed workers without touching their output', async () => {
     const t = setup('failed'); t.s.room.workers.set('test', { ...t.w, exitCode: 1 } as never)
     put(worker, 'new.txt', 'new'); expect(await t.call({ tag: 'test' })).toContain('skipped test: failed')
+    expect(await t.call({ tag: 'test' })).toContain('exit code 1')
     expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
     expect(fs.existsSync(worker)).toBe(true); expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
   })
@@ -269,16 +371,13 @@ describe('room_collect', () => {
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('generated model')
     expect(t.s.room.workers.has('test')).toBe(true)
   })
-  it('names an ignored directory once and discards it only when the lead repeats with force', async () => {
+  it('discards regenerable ignored directories without force or an alarming deleted list', async () => {
     const t = setup('failed')
     put(worker, '.gitignore', 'dist/\n')
     put(worker, 'dist/a.js', 'a'); put(worker, 'dist/b.js', 'b')
-    const refused = await t.call({ tag: 'test', discard: true })
-    expect(refused).toContain('not covered by a recovery patch: dist/\n')
-    expect(refused).toContain('force=true')
-    expect(fs.existsSync(path.join(worker, 'dist/a.js'))).toBe(true)
-    const forced = await t.call({ tag: 'test', discard: true, force: true })
-    expect(forced).toContain('deleted without a copy: dist/')
+    const result = await t.call({ tag: 'test', discard: true })
+    expect(result).toContain('discarded test')
+    expect(result).not.toContain('deleted without a copy')
     expect(fs.existsSync(worker)).toBe(false)
   })
   it('discards a clean failed worker without a patch and prunes old patches and empty folders', async () => {
@@ -565,6 +664,18 @@ describe('worker preview', () => {
     })
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'test "$(od -An -tu1 fixture.bin | tr -s " " | xargs)" = "0 255 1" && test -x run.sh && echo "1 passed"' })
     expect(result).toContain('tests: PASSED (exit 0)')
+  })
+  it('previews the lead\'s own local intent-only worker from its worktree', async () => {
+    const t = setup()
+    put(worker, 'own-output.txt', 'worker output')
+    Object.assign(t.state, {
+      rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
+      others: () => ['lead+test'], presences: () => [],
+      withheld: () => 'lead+test shares intent only; ask them or wait for their push',
+      baseFor: () => base, shareOf: () => 'intent', liveText: async () => undefined,
+    })
+    const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
+    expect(result).toContain('own-output.txt (lead+test only)')
   })
   it('collects Unicode UTF-8 bytes unchanged from a worker worktree', async () => {
     const t = setup()

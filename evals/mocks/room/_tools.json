@@ -413,7 +413,11 @@
           },
           "text": {
             "type": "string",
-            "description": "message text / change summary"
+            "description": "message text / change summary; or use message"
+          },
+          "message": {
+            "type": "string",
+            "description": "alias for text"
           },
           "paths": {
             "type": "array",
@@ -444,8 +448,7 @@
           }
         },
         "required": [
-          "type",
-          "text"
+          "type"
         ]
       }
     },
@@ -456,7 +459,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Wait for an answer, claim release, worker completion or interrupt; returns the event or timeout.",
+      "description": "Wait for an answer, claim release, worker completion or interrupt; returns the event or timeout. Loop short waits until the answer or completion arrives.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -470,7 +473,7 @@
           },
           "timeoutMs": {
             "type": "integer",
-            "description": "default 30000, max 120000"
+            "description": "default 30000, max 100000"
           }
         }
       }
@@ -611,7 +614,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Start another agent (set host: claude or codex) on an editing task in its own worktree, in the background: you keep working and are told when it finishes. Use this, not a built-in subagent, when asked for another agent, agents in parallel, or for codex/claude to do part of the work. Finish with room_collect.",
+      "description": "Start another agent (claude/codex) in its own worktree, in the background; use for agents in parallel or codex/claude to do part of the work, not a built-in subagent. Finish with room_collect.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -651,6 +654,10 @@
               "type": "string"
             },
             "description": "read-only input paths; default .roomlinks; [] disables"
+          },
+          "carry": {
+            "type": "boolean",
+            "description": "false starts from HEAD without lead changes"
           },
           "threads": {
             "type": "integer",
@@ -697,7 +704,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Collect finished workers as unstaged edits, never commits. Tag a stopped worker to take partial edits; collect-all skips it. Any conflict writes nothing. Skips live running/failed workers. copy takes named artifacts; discard dismisses one worker and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.",
+      "description": "Collect workers as unstaged edits. Tag a stopped worker for partial edits; collect-all skips it. Conflicts write nothing. Skips live/failed workers. copy takes named files; discard dismisses one and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object",

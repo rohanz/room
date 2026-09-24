@@ -3,7 +3,7 @@ import path from 'node:path'
 import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
-import { cleanupWorker, ignoredWorkerArtifacts, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths, workerOperationKey } from '../workers.js'
+import { cleanupWorker, ignoredWorkerArtifacts, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode } from './files.js'
 import { releaseClaimsOnDone } from './claims.js'
@@ -12,7 +12,7 @@ import type { Session } from '../session.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
-  description: 'Collect finished workers as unstaged edits, never commits. Tag a stopped worker to take partial edits; collect-all skips it. Any conflict writes nothing. Skips live running/failed workers. copy takes named artifacts; discard dismisses one worker and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.',
+  description: 'Collect workers as unstaged edits. Tag a stopped worker for partial edits; collect-all skips it. Conflicts write nothing. Skips live/failed workers. copy takes named files; discard dismisses one and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.',
   inputSchema: { ...{ additionalProperties: false }, type: 'object', properties: {
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },
@@ -22,6 +22,22 @@ export const defs: ToolDef[] = [{
 }]
 
 const split = (value: string) => value.split('\0').filter(Boolean)
+const collectQueues = new Map<string, { tail: Promise<void>; tag: string }>()
+
+/** Only signal processes after confirming this is still the worker's owned git worktree. */
+async function stopOwnedWorktreeProcesses(leadDir: string, w: Worker): Promise<string[]> {
+  if (!fs.existsSync(w.dir) || w.branch !== `room/${w.tag}`) return []
+  const leadRoot = fs.realpathSync(leadDir), workerRoot = fs.realpathSync(w.dir)
+  if (workerRoot === leadRoot) return []
+  const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
+  if (await common(leadDir) !== await common(w.dir)) return []
+  if ((await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) return []
+  return terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [] })
+}
+
+const failureReason = (w: Worker): string => w.exitCode !== undefined && w.exitCode !== 0
+  ? `exit code ${w.exitCode}${w.summary ? `; ${w.summary.replace(/\s+/g, ' ').slice(0, 180)}` : ''}`
+  : w.stopReason ?? w.summary?.replace(/\s+/g, ' ').slice(0, 180) ?? 'worker reported failure'
 
 /** Reject symlinks at every component, including dangling destination links. */
 function safePath(root: string, rel: string): string {
@@ -105,9 +121,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const lock = workerOperationKey(w)
         if (!rooms.reserve(lock)) return 'error: this worker is already being handled or retired'
         try {
+          const terminated = await stopOwnedWorktreeProcesses(s.dir, w)
           const ignored = await ignoredWorkerArtifacts(w)
-          if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
-          if (!await cleanupWorker(s.dir, w, true, true)) throw new Error('worker is not an owned Room worktree')
+          if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}${terminated.length ? '\nstopped processes: ' + terminated.join(', ') : ''}\nrepeat with force=true to delete them`
+          if (!await cleanupWorker(s.dir, w, true, true, terminated)) throw new Error('worker is not an owned Room worktree')
           const archive = s.room.doc.getArray<RetiredWorker>('retiredWorkers')
           const index = archive.toArray().findIndex(item => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead)
           if (index >= 0) s.room.doc.transact(() => {
@@ -115,7 +132,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const { keptWorktree: _keptWorktree, ...cleared } = r
             archive.insert(index, [{ ...cleared, summary: 'discarded' }])
           })
-          return 'discarded ' + r.tag + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '')
+          return 'discarded ' + r.tag + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '')
         } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
         finally { rooms.unreserve(lock) }
       }
@@ -140,7 +157,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (!result.startsWith('discarded ')) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
         }
         if (state.workerAlive(s, w) || pidAlive(w.pid)) {
-          const how = state.dismissWorker(s, w, 'discarded by the lead')
+          const how = await state.dismissWorker(s, w, 'discarded by the lead')
           if (s.room.workers.get(w.tag)?.status === 'running' && (state.workerAlive(s, w) || pidAlive(w.pid))) return 'could not discard ' + w.tag + ': ' + how
           const now = state.now ?? Date.now
           const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
@@ -151,17 +168,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep(50)
           if (state.workerAlive(s, w)) throw new Error('worker process has not stopped')
         }
+        const terminated = await stopOwnedWorktreeProcesses(s.dir, w)
         const ignored = await ignoredWorkerArtifacts(w)
         if (ignored.length && a.force !== true) {
           return [
             `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}`,
             ...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`),
             `retained worktree: ${w.dir}`,
+            ...(terminated.length ? ['stopped processes: ' + terminated.join(', ')] : []),
             'copy what you need (mode="copy", paths=[...]), then repeat with force=true to delete the rest',
           ].join('\n')
         }
         const patch = await saveDiscardPatch(s.dir, w)
-        if (!await cleanupWorker(s.dir, w, true, true)) throw new Error('worker is not an owned Room worktree')
+        if (!await cleanupWorker(s.dir, w, true, true, terminated)) throw new Error('worker is not an owned Room worktree')
         releaseClaimsOnDone(s, () => false, w.name, false)
         const retiredAt = Date.now()
         s.room.retireParticipant(w.name, {
@@ -169,7 +188,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           summary: 'discarded', files: [], fileCount: 0, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
         })
-        return [...childResults, 'discarded ' + w.tag + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '')].join('\n')
+        return [...childResults, 'discarded ' + w.tag + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '')].join('\n')
       } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
       finally { rooms.unreserve(lock); rooms.unreserve(intent) }
     }
@@ -195,7 +214,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const item of candidates) {
         const { s } = item; let { w } = item
         const stopped = w.pid !== undefined && !state.workerAlive(s, w) && !pidAlive(w.pid)
-        if (w.status !== 'done' && !(stopped && (w.status === 'running' || w.status === 'dismissed'))) { out.push('skipped ' + w.tag + ': ' + w.status); continue }
+        if (w.status !== 'done' && !(stopped && (w.status === 'running' || w.status === 'dismissed'))) { out.push('skipped ' + w.tag + ': ' + w.status + (w.status === 'failed' ? ` (${failureReason(w)})` : '')); continue }
         if (!a.tag && stopped && w.status !== 'done') {
           const why = w.stopReason === 'lead-session-ended' ? "the lead's session ended" : 'its process exited'
           out.push(`skipped ${w.tag}: stopped before finishing (${why}); room_collect tag=${w.tag} to take its partial edits, mode=copy for named files, or discard=true`)
@@ -204,6 +223,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const workerLock = await reserveWorker(s, w)
         if (!workerLock) continue
         workerLocks.push(workerLock)
+        try {
         const now = state.now ?? Date.now
         const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
         const deadline = now() + 15_000
@@ -214,13 +234,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           out.push('skipped ' + w.tag + ': changed while waiting'); continue
         }
         w = current.status === 'done' ? current : { ...current, status: 'done', exitCode: current.exitCode ?? 0 }
-        if (w.exitCode !== undefined && w.exitCode !== 0) { out.push('skipped ' + w.tag + ': failed exit'); continue }
+        if (w.exitCode !== undefined && w.exitCode !== 0) { out.push('skipped ' + w.tag + ': failed exit (' + failureReason(w) + ')'); continue }
         if (fs.realpathSync(w.dir) === fs.realpathSync(lead.dir)) throw new Error('worker must have a separate worktree')
         await assertNoOperation(w.dir)
         const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
         if (await common(lead.dir) !== await common(w.dir)) throw new Error('worker is not a worktree of this repository')
         if (w.branch !== 'room/' + w.tag || (await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) throw new Error('worker must be on branch room/' + w.tag)
+        await git(w.dir, ['ls-files', '-z'])
+        const terminated = await stopOwnedWorktreeProcesses(lead.dir, w)
+        if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
         selected.push({ s, w })
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e)
+          if (a.tag) throw e
+          out.push(`skipped ${w.tag}: ${!fs.existsSync(w.dir) ? 'worktree missing; ' : ''}${reason}`)
+        }
       }
       if (!selected.length) return out.join('\n') || 'No finished changes to collect.'
       await assertNoOperation(lead.dir)
@@ -320,9 +348,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             retire(`kept for ignored output at ${w.dir}`, w.dir)
             continue
           }
-          if (await cleanupWorker(s.dir, w, true)) {
+          const terminated: string[] = []
+          if (await cleanupWorker(s.dir, w, true, false, terminated)) {
             retire(w.summary ?? '')
             out.push('cleaned up ' + w.tag + ': temporary files, branch and logs')
+            if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
           } else { out.push('kept ' + w.tag + ': cleanup incomplete'); retire(w.summary ?? '', w.dir) }
         } catch (e) { out.push('cleanup incomplete for ' + w.tag + ': ' + (e instanceof Error ? e.message : String(e))); retire(w.summary ?? '', w.dir) }
       }
@@ -330,5 +360,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     } catch (e) { return [...out, 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n') }
     finally { for (const workerLock of workerLocks) rooms.unreserve(workerLock); rooms.unreserve(lock) }
   }
-  return { room_collect: roomCollect }
+  return { room_collect: async a => {
+    const key = fs.realpathSync(state.S().dir)
+    const prior = collectQueues.get(key)
+    let release!: () => void
+    const tail = new Promise<void>(resolve => { release = resolve })
+    const entry = { tail, tag: typeof a.tag === 'string' ? a.tag : 'collect-all' }
+    collectQueues.set(key, entry)
+    try {
+      if (prior) await prior.tail
+      const result = await roomCollect(a)
+      return prior ? `queued behind ${prior.tag}\n${result}` : result
+    } finally {
+      if (collectQueues.get(key) === entry) collectQueues.delete(key)
+      release()
+    }
+  } }
 }

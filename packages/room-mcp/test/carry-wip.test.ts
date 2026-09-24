@@ -149,6 +149,40 @@ function expectCarried(dir: string, tag: string, baseSha: string | undefined) {
 const CARRIED_LINE = /carried your (\d+) uncommitted changes? into its worktree \(commit ([0-9a-f]{10})\)/
 
 describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () => {
+  it('refuses to reuse a stale worker directory switched to another branch', async () => {
+    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', [], 'room-A/rohanz')
+    git(prepared.dir, 'switch', '-qc', 'unrelated')
+    await expect(prepareWorktree(repo, 'replacement', 'rohanz', [], 'room-A/rohanz')).rejects.toThrow(/branch.*unrelated/)
+  })
+  it('refuses a replacement repository at a former worker path', async () => {
+    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', [], 'room-A/rohanz')
+    git(repo, 'worktree', 'remove', '--force', prepared.dir)
+    fs.mkdirSync(prepared.dir, { recursive: true })
+    git(prepared.dir, 'init', '-q', '-b', 'room/replacement')
+    await expect(prepareWorktree(repo, 'replacement', 'rohanz', [], 'room-A/rohanz')).rejects.toThrow(/not a worktree of this repository/)
+  })
+  it('can spawn from HEAD without carrying tracked or untracked lead changes', async () => {
+    put(repo, 'shared.txt', lines([2, 'lead edit']))
+    put(repo, 'specs/draft.md', 'untracked spec\n')
+    const t = world()
+    const reply = await t.call('room_spawn', { tag: 'fresh', task: 'Read specs/draft.md', carry: false })
+    const w = t.a.workers.get('fresh')!
+    expect(w.base).toBe(head)
+    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(head)
+    expect(read(w.dir, 'shared.txt')).toBe(lines())
+    expect(exists(w.dir, 'specs/draft.md')).toBe(false)
+    expect(reply).toContain('specs/draft.md')
+    expect(reply).toContain('not in this worktree')
+  })
+
+  it('warns when an ignored spec named in the task is missing from the carried worktree', async () => {
+    put(repo, 'build/og-grid-spec.md', 'ignored spec\n')
+    const t = world()
+    const reply = await t.call('room_spawn', { tag: 'grid', task: 'Follow build/og-grid-spec.md' })
+    expect(exists(t.a.workers.get('grid')!.dir, 'build/og-grid-spec.md')).toBe(false)
+    expect(reply).toContain('build/og-grid-spec.md')
+    expect(reply).toContain('not in this worktree')
+  })
   it('removes the private carry ref and owner record after normal worker cleanup', async () => {
     put(repo, 'shared.txt', lines([2, 'W']))
     put(repo, 'untracked.txt', 'private WIP\n')
@@ -323,9 +357,18 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const sha = expectCarried(dir, 'drop', w.base)
     put(dir, 'keep.txt', 'k1\nk2\nK3\n'); put(dir, 'mine.txt', 'worker\n')
     await t.finish('drop')
-    const reply = await t.call('room_collect', { tag: 'drop', discard: true })
+    const oldTz = process.env.TZ
+    process.env.TZ = 'Pacific/Honolulu'
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-25T01:00:00.000Z'))
+    const date = new Date()
+    const localDay = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
+    let reply: string
+    try { reply = await t.call('room_collect', { tag: 'drop', discard: true }) }
+    finally { vi.useRealTimers(); if (oldTz === undefined) delete process.env.TZ; else process.env.TZ = oldTz }
     const patch = /recovery patch: (\S+)/.exec(reply)?.[1]
     expect(patch, reply).toBeTruthy()
+    expect(path.basename(patch!)).toContain(`drop-${localDay}-`)
     const text = fs.readFileSync(patch!, 'utf8')
     expect([...text.matchAll(/^diff --git a\/(\S+) /gm)].map(m => m[1]).sort()).toEqual(['keep.txt', 'mine.txt'])
     // It applies on the carried commit and restores exactly the worker's output there.

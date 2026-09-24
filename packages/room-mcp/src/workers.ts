@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import type { Worker, RetiredWorker } from '@room/shared'
+import { isRegenerableBuildPath, type Worker, type RetiredWorker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline, workerChangedPaths } from '@room/roomd/baseline'
 
@@ -26,14 +26,12 @@ export function workerOwnedPaths(w?: Pick<Worker, 'link'>) {
   }
 }
 
-const IGNORED_DEPENDENCY_DIRS = new Set(['node_modules', '.venv', 'venv', 'vendor', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.gradle', 'target'])
-
-/** Ignored output that a discard patch cannot recover, excluding reproducible dependency/cache trees. */
+/** Ignored output that a discard patch cannot recover. */
 export async function ignoredWorkerArtifacts(w: Worker): Promise<string[]> {
   const raw = await git(w.dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', '--', '.', ...workerOwnedPaths(w).exclusions])
   return raw.split('\0').filter(Boolean)
     .filter(p => p !== '.room' && p !== '.room/' && !p.startsWith('.room/'))
-    .filter(p => !p.split('/').some(part => IGNORED_DEPENDENCY_DIRS.has(part)))
+    .filter(p => !isRegenerableBuildPath(p))
     .sort()
 }
 
@@ -410,7 +408,7 @@ export async function cleanupPreparedWorktree(repoDir: string, prepared: Prepare
 }
 
 /** A worktree for the worker, with tracked WIP in its base and untracked bytes outside Git. */
-export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', linkExclusions?: string[], ownerId?: string, retry = 0): Promise<PreparedWorktree> {
+export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', linkExclusions?: string[], ownerId?: string, retry = 0, carry = true): Promise<PreparedWorktree> {
   const dir = path.join(repoDir, WORKERS_DIR, tag)
   const branch = `room/${tag}`
   const gitDir = (await git(repoDir, ['rev-parse', '--absolute-git-dir'])).trim()
@@ -418,7 +416,12 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   const record = await readCarryRecord(repoDir, tag)
   if (record?.ownerId && ownerId && record.ownerId !== ownerId) throw new Error(`worktree ${tag} is owned by another room or worker`)
   if (fs.existsSync(path.join(dir, '.git'))) {
+    if (!carry) throw new Error(`worktree ${tag} already exists; choose a new tag for carry=false`)
     if (ownerId && !record?.ownerId) throw new Error(`worktree ${tag} has unknown ownership; choose another tag`)
+    const actualBranch = (await git(dir, ['branch', '--show-current'])).trim()
+    if (actualBranch !== branch) throw new Error(`worktree ${tag} is on branch ${actualBranch || '(detached)'}, expected ${branch}; choose another tag`)
+    const common = async (root: string) => fs.realpathSync(path.resolve(root, (await git(root, ['rev-parse', '--git-common-dir'])).trim()))
+    if (await common(repoDir) !== await common(dir)) throw new Error(`worktree ${tag} is not a worktree of this repository; choose another tag`)
     return { dir, branch, created: false, ...record }
   }
   fs.mkdirSync(path.dirname(dir), { recursive: true })
@@ -428,6 +431,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   let hasBranch = false
   try { await git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); hasBranch = true } catch { /* new branch */ }
   if (hasBranch && ownerId && !record?.ownerId) throw new Error(`branch ${branch} has unknown ownership; choose another tag`)
+  if (hasBranch && !carry) throw new Error(`branch ${branch} already exists; choose a new tag for carry=false`)
   let base: string | undefined
   if (!hasBranch) {
     try { base = (await git(repoDir, ['rev-parse', '--verify', 'HEAD'])).trim() }
@@ -435,6 +439,11 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   }
   await internalGit(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, base!])
   if (!base) return { dir, branch, created: true, ...record }
+  if (!carry) {
+    const result: PreparedWorktree = { dir, branch, created: true, base }
+    await writeCarryRecord(repoDir, tag, { base, ownerId })
+    return result
+  }
   try {
     const exclusions = [...linkExclusions ?? []]
     if (linkExclusions === undefined) {
@@ -505,7 +514,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     if ((e as Error).message === 'lead changed during carry; retrying snapshot') {
       await cleanupPreparedWorktree(repoDir, { dir, branch, created: true })
       if (retry >= 2) throw new Error('lead changed repeatedly during carry; try spawning again when HEAD is stable')
-      return prepareWorktree(repoDir, tag, leadName, linkExclusions, ownerId, retry + 1)
+      return prepareWorktree(repoDir, tag, leadName, linkExclusions, ownerId, retry + 1, carry)
     }
     try {
       await internalGit(dir, ['reset', '--hard', base])
@@ -710,7 +719,8 @@ export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<stri
     try { boundedGitSync(verifyDir, ['apply', '--binary', verifyPatch]) }
     finally { await internalGit(leadDir, ['worktree', 'remove', '--force', verifyDir]) }
     fs.mkdirSync(dir, { recursive: true })
-    const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+    const local = new Date(now)
+    const stamp = `${local.getFullYear()}${String(local.getMonth() + 1).padStart(2, '0')}${String(local.getDate()).padStart(2, '0')}-${String(local.getHours()).padStart(2, '0')}${String(local.getMinutes()).padStart(2, '0')}${String(local.getSeconds()).padStart(2, '0')}`
     const file = path.join(dir, `${w.tag}-${stamp}.patch`)
     fs.writeFileSync(file, patch, { flag: 'wx', mode: 0o600 })
     return file

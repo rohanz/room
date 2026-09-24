@@ -369,6 +369,23 @@ describe('room_spawn / room_done / room_collect discard', () => {
     } finally { vi.unstubAllEnvs() }
   })
 
+  it('assigns distinct dev-server ports to running workers and includes each in its brief', async () => {
+    const t = setup()
+    try {
+      const first = await t.leadTools.call('room_spawn', { tag: 'first', task: 'serve the app' })
+      const second = await t.leadTools.call('room_spawn', { tag: 'second', task: 'test the app' })
+      const firstPort = (t.a.workers.get('first') as Worker & { port?: number })?.port
+      const secondPort = (t.a.workers.get('second') as Worker & { port?: number })?.port
+      expect(firstPort).toBe(4400)
+      expect(secondPort).toBe(4401)
+      expect(t.specs.map(spec => spec.env.PORT)).toEqual(['4400', '4401'])
+      expect(t.specs[0].args.join(' ')).toContain('Your dev-server port is 4400')
+      expect(t.specs[1].args.join(' ')).toContain('Your dev-server port is 4401')
+      expect(first).toContain('port 4400')
+      expect(second).toContain('port 4401')
+    } finally { await t.leadTools.shutdown() }
+  })
+
   it.each(['plugin:custom@market', ''])('passes ROOM_CLAUDE_CHANNEL only with ROOM_WAKE=channels (%s)', async channel => {
     vi.stubEnv('ROOM_CLAUDE_CHANNEL', channel)
     vi.stubEnv('ROOM_WAKE', 'channels')
@@ -949,6 +966,37 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(a.workers.get('money')?.task).toBe('one')
     // the reservation is released once the spawn has finished (or failed)
     expect(await tools.call('room_spawn', { tag: 'money', task: 'three' })).toContain('already running')
+  })
+
+  it('drops a cancelled spawn after delayed worktree preparation and removes the prepared tree', async () => {
+    const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
+    let ls: Session | null = fakeSession(a, lead)
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let entered!: () => void
+    const preparing = new Promise<void>(resolve => { entered = resolve })
+    const specs: SpawnSpec[] = []
+    let prepared: Awaited<ReturnType<typeof prepareWorktree>> | undefined
+    const tools = createTools({
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
+      spawner: spec => { specs.push(spec); return { pid: 7, onExit: () => {}, kill: () => true } },
+      worktree: async (repo, tag) => { entered(); await gate; prepared = await prepareWorktree(repo, tag); return prepared },
+    })
+    const controller = new AbortController()
+    const call = tools.call as (name: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<string>
+    const spawning = call('room_spawn', { tag: 'cancelled-preparation', task: 'never start' }, controller.signal)
+    await preparing
+    controller.abort()
+    release()
+    try {
+      expect(await spawning).toContain('tool call cancelled')
+      expect(specs).toHaveLength(0)
+      expect(a.workers.has('cancelled-preparation')).toBe(false)
+      expect(existsSync(join(dir, '.room/workers/cancelled-preparation'))).toBe(false)
+    } finally {
+      if (prepared?.created && existsSync(prepared.dir)) await cleanupPreparedWorktree(dir, prepared)
+      await tools.shutdown()
+    }
   })
 
   it('W5: after a lead restart, a done worker whose process is still ours can be stopped by dismiss, leave and shutdown', async () => {

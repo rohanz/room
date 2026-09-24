@@ -116,7 +116,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
       for (const { person, session } of participants) {
         const held = withheld(session, person)
-        if (held) return held
+        const ownLocalWorker = session.local && session.room.workerOf(person)
+        if (held && !(held.startsWith(`${person} shares intent only;`) && ownLocalWorker?.lead === caller.me.name && fs.existsSync(ownLocalWorker.dir))) return held
       }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : {}) })
@@ -324,7 +325,12 @@ export async function materializeGitTree(cloneDir: string, ref: string, destinat
       reject(error)
     }
     const finish = () => {
-      if (settled || archiveCode === undefined || extractCode === undefined) return
+      if (settled) return
+      if ((archiveCode !== undefined && archiveCode !== 0) || (extractCode !== undefined && extractCode !== 0)) {
+        fail(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? 'still running'}${archiveError.trim() ? `: ${archiveError.trim()}` : ''}; tar ${extractCode ?? 'still running'}${extractError.trim() ? `: ${extractError.trim()}` : ''})`))
+        return
+      }
+      if (archiveCode === undefined || extractCode === undefined) return
       settled = true; clearTimeout(timer)
       if (archiveCode === 0 && extractCode === 0) resolve()
       else reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? 'signal'}${archiveError.trim() ? `: ${archiveError.trim()}` : ''}; tar ${extractCode ?? 'signal'}${extractError.trim() ? `: ${extractError.trim()}` : ''})`))
@@ -340,8 +346,18 @@ export async function materializeGitTree(cloneDir: string, ref: string, destinat
       archive.stdout.resume()
     }
     archive.stdout.on('error', streamError); extract.stdin.on('error', streamError)
-    archive.on('close', code => { archiveCode = code; finish() })
-    extract.on('close', code => { extractCode = code; finish() })
+    // Node can destroy stdin on child exit without an EPIPE event. Drain git in that ordering too.
+    extract.stdin.on('close', () => { archive.stdout.unpipe(extract.stdin); archive.stdout.resume() })
+    // `close` waits for every inherited pipe handle, including ones held by grandchildren.
+    // Process exit is enough to know the result; drain the producer when tar exits first.
+    archive.on('exit', code => { archiveCode = code; finish() })
+    extract.on('exit', code => {
+      extractCode = code
+      archive.stdout.unpipe(extract.stdin)
+      archive.stdout.resume()
+      extract.stdin.destroy()
+      finish()
+    })
     archive.stdout.pipe(extract.stdin)
   })
 }
