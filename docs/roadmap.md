@@ -318,7 +318,7 @@ orchestration and sharing work above remains open.
 
 ### After 0.12.0 (2026-09-23, open)
 
-- **The full test suite occasionally freezes, and two timing-sensitive tests flake under load.** Seen twice by the batch lead and once in the final
+- ~~**The full test suite occasionally freezes, and two timing-sensitive tests flake under load.**~~ **Fixed 2026-09-24:** a synchronous `git hash-object --stdin` fed megabytes could wait for EOF forever (Node 22, macOS); the carry now hashes by path and applies its patch from a file. Seen twice by the batch lead and once in the final
   check: one vitest worker sits idle forever. The same suite then passes in about 70 s. Suspects:
   a child process (relay, preview `git archive | tar`, a worker's vitest) outliving its test.
   Find it with `--reporter=verbose` the next time it happens, and give CI a global timeout. Seen again
