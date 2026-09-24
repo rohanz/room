@@ -1,0 +1,734 @@
+{
+  "tools": [
+    {
+      "name": "room_login",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Sign in; show the returned code/URL verbatim, then call again to wait. action=logout revokes and forgets the account.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "login",
+              "logout"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "github",
+              "oidc"
+            ]
+          },
+          "wait": {
+            "type": "integer",
+            "description": "wait seconds, default 90, max 600"
+          },
+          "server": {
+            "type": "string",
+            "description": "server URL"
+          },
+          "credentials": {
+            "type": "string",
+            "description": "credentials file"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_create",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Open this repo on a team server and join. confirm=true authorizes opening it for members with push access.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "boolean"
+          },
+          "where": {
+            "type": "string",
+            "description": "team | server URL"
+          },
+          "room": {
+            "type": "string",
+            "description": "room name override"
+          },
+          "name": {
+            "type": "string",
+            "description": "name override"
+          },
+          "server": {
+            "type": "string",
+            "description": "alias of where"
+          },
+          "dir": {
+            "type": "string",
+            "description": "clone; default cwd"
+          },
+          "share": {
+            "type": "string",
+            "enum": [
+              "intent",
+              "declared",
+              "full"
+            ],
+            "description": "intent: plans only; declared: scoped files; full: all changed files"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_join",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Join local or a requested team server; remember explicit choices for this clone and its worktrees. Priority: argument, ROOM_SERVER, ROOM_URL, remembered, local.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "where": {
+            "type": "string",
+            "description": "local | team | server URL"
+          },
+          "room": {
+            "type": "string",
+            "description": "room name override"
+          },
+          "name": {
+            "type": "string",
+            "description": "name override"
+          },
+          "server": {
+            "type": "string",
+            "description": "alias of where"
+          },
+          "dir": {
+            "type": "string",
+            "description": "clone; default cwd"
+          },
+          "share": {
+            "type": "string",
+            "enum": [
+              "intent",
+              "declared",
+              "full"
+            ],
+            "description": "intent: plans only; declared: scoped files; full: all changed files"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_leave",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Leave and release your work claims. force dismisses running workers; forget clears this clone\u2019s remembered destination.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "forget": {
+            "type": "boolean"
+          },
+          "force": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_close",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "On explicit request, export history then delete local room memory or all branch rooms for everyone on the team server. Leaves clone files intact.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "confirm": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "confirm"
+        ]
+      }
+    },
+    {
+      "name": "room_export",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "description": "Write room history to a Markdown ledger.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "output; default .room/ledger/<room>-<timestamp>.md"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_scope",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Declare your task and paths once when working with others.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "area": {
+            "type": "string",
+            "description": "one word, lowercase"
+          },
+          "summary": {
+            "type": "string",
+            "description": "one line"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "files or directories you expect to touch"
+          }
+        },
+        "required": [
+          "area",
+          "summary",
+          "paths"
+        ]
+      }
+    },
+    {
+      "name": "room_state",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "description": "Show sharing, participants and overlapping work. Use path for file ownership, link for the browser URL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string",
+            "description": "file ownership"
+          },
+          "from": {
+            "type": "integer",
+            "description": "first line"
+          },
+          "to": {
+            "type": "integer",
+            "description": "last line"
+          },
+          "link": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_read",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "description": "Read a live file with claims and history. diff=true compares to base; omit path for all diffs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "repo-relative path"
+          },
+          "person": {
+            "type": "string",
+            "description": "default you"
+          },
+          "diff": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_claim",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Claim only where another participant is near. Use a directory ending /, symbol, or lines. Declare public API plans.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "repo-relative path"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "definition name"
+          },
+          "from": {
+            "type": "integer",
+            "description": "first line"
+          },
+          "to": {
+            "type": "integer",
+            "description": "last line"
+          },
+          "intent": {
+            "type": "string",
+            "description": "intent"
+          },
+          "plans": {
+            "type": "array",
+            "description": "Public API changes planned before editing.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "rename",
+                    "signature",
+                    "delete",
+                    "add"
+                  ]
+                },
+                "symbol": {
+                  "type": "string",
+                  "description": "current symbol"
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "new name/signature or reason"
+                }
+              },
+              "required": [
+                "kind",
+                "symbol"
+              ]
+            }
+          }
+        },
+        "required": [
+          "path",
+          "intent"
+        ]
+      }
+    },
+    {
+      "name": "room_release",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Release early; room_done releases remaining claims. List completed plan symbols in done.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "claimId": {
+            "type": "string",
+            "description": "claim id"
+          },
+          "summary": {
+            "type": "string",
+            "description": "what changed, one line"
+          },
+          "done": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "completed symbols"
+          }
+        },
+        "required": [
+          "claimId"
+        ]
+      }
+    },
+    {
+      "name": "room_send",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Ask an agent (to), answer (inReplyTo), or post a note. Changes are detected automatically.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "changed",
+              "question",
+              "answer",
+              "note"
+            ]
+          },
+          "to": {
+            "type": "string",
+            "description": "recipient; omit to broadcast"
+          },
+          "text": {
+            "type": "string",
+            "description": "message text / change summary"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "paths touched (changed)"
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "changed symbols"
+          },
+          "inReplyTo": {
+            "type": "string",
+            "description": "question id (answer)"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "fyi",
+              "notify",
+              "interrupt"
+            ],
+            "description": "urgency override"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "room_wait",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "description": "Wait for an answer, claim release, worker completion or interrupt; returns the event or timeout.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "claimId": {
+            "type": "string",
+            "description": "claim id"
+          },
+          "questionId": {
+            "type": "string",
+            "description": "question id"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "description": "default 30000, max 120000"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_done",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Finish your task and release claims. Workers report to their lead, then exit.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "one line: what landed and the test result"
+          },
+          "pr_note": {
+            "type": "boolean",
+            "description": "post ledger on current branch PR"
+          }
+        },
+        "required": [
+          "summary"
+        ]
+      }
+    },
+    {
+      "name": "room_pr_note",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "description": "Post or update the room ledger on a GitHub PR; defaults to this branch\u2019s open PR.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer",
+            "description": "PR number"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_impact",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "description": "Find symbol consumers or file dependencies before changing an interface.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "function/class/variable name"
+          },
+          "path": {
+            "type": "string",
+            "description": "repo-relative path"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_preview_merge",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "description": "Preview combined live changes without editing clones. Optionally run tests in the combined scratch tree.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "people": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "participants in merge order; default all"
+          },
+          "person": {
+            "type": "string",
+            "description": "one participant"
+          },
+          "includeOffline": {
+            "type": "boolean",
+            "description": "include offline overlays"
+          },
+          "run": {
+            "type": "string",
+            "description": "test command"
+          },
+          "resolve": {
+            "type": "boolean",
+            "description": "resolve superset conflicts"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_share",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Report or change sharing live; narrower levels withdraw file text. The server ceiling always applies.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": [
+              "intent",
+              "declared",
+              "full"
+            ],
+            "description": "intent: plans only; declared: scoped files; full: all changed files"
+          }
+        }
+      }
+    },
+    {
+      "name": "room_spawn",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Start another agent (set host: claude or codex) on an editing task in its own worktree, in the background: you keep working and are told when it finishes. Use this, not a built-in subagent, when asked for another agent, agents in parallel, or for codex/claude to do part of the work. Finish with room_collect.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tag": {
+            "type": "string",
+            "description": "worker tag"
+          },
+          "task": {
+            "type": "string",
+            "description": "self-contained task"
+          },
+          "host": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ],
+            "description": "host (default: caller host)"
+          },
+          "model": {
+            "type": "string",
+            "description": "model override for that host (optional)"
+          },
+          "effort": {
+            "type": "string",
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "description": "reasoning effort"
+          },
+          "link": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "read-only input paths; default .roomlinks; [] disables"
+          },
+          "threads": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "math-library thread budget for this worker (optional)"
+          },
+          "share": {
+            "type": "string",
+            "enum": [
+              "intent",
+              "declared",
+              "full"
+            ],
+            "description": "intent: plans only; declared: scoped files; full: all changed files"
+          },
+          "allowOutside": {
+            "type": "boolean",
+            "description": "permit dir outside this repo (no worktree bookkeeping)"
+          },
+          "dir": {
+            "type": "string",
+            "description": "use this existing directory instead of creating a worktree"
+          },
+          "where": {
+            "type": "string",
+            "enum": [
+              "here",
+              "local"
+            ],
+            "description": "here (default), or local workers bridged to this room"
+          }
+        },
+        "required": [
+          "tag",
+          "task"
+        ]
+      }
+    },
+    {
+      "name": "room_collect",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Collect finished workers as unstaged edits, never commits. Tag a stopped worker to take partial edits; collect-all skips it. Any conflict writes nothing. Skips live running/failed workers. copy takes named artifacts; discard dismisses one worker and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "tag": {
+            "type": "string",
+            "description": "worker tag"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "apply",
+              "copy"
+            ]
+          },
+          "discard": {
+            "type": "boolean"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "copy mode: repo-relative files or directories"
+          },
+          "force": {
+            "type": "boolean",
+            "description": "overwrite modified copy destinations; discard ignored artifacts too"
+          }
+        }
+      }
+    }
+  ]
+}
