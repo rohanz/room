@@ -1222,11 +1222,11 @@ var require_util = __commonJS({
       return jsPropertySyntax ? (0, codegen_1.getProperty)(dataProp).toString() : "/" + escapeJsonPointer(dataProp);
     }
     exports2.getErrorPath = getErrorPath;
-    function checkStrictMode(it, msg, mode = it.opts.strictSchema) {
-      if (!mode)
+    function checkStrictMode(it, msg, mode2 = it.opts.strictSchema) {
+      if (!mode2)
         return;
       msg = `strict mode: ${msg}`;
-      if (mode === true)
+      if (mode2 === true)
         throw new Error(msg);
       it.self.logger.warn(msg);
     }
@@ -7193,8 +7193,8 @@ var require_dist = __commonJS({
         (0, limit_1.default)(ajv);
       return ajv;
     };
-    formatsPlugin.get = (name2, mode = "full") => {
-      const formats = mode === "fast" ? formats_1.fastFormats : formats_1.fullFormats;
+    formatsPlugin.get = (name2, mode2 = "full") => {
+      const formats = mode2 === "fast" ? formats_1.fastFormats : formats_1.fullFormats;
       const f = formats[name2];
       if (!f)
         throw new Error(`Unknown format "${name2}"`);
@@ -19884,7 +19884,7 @@ var require_websocket = __commonJS({
     var EventEmitter2 = __require("events");
     var https = __require("https");
     var http2 = __require("http");
-    var net = __require("net");
+    var net2 = __require("net");
     var tls = __require("tls");
     var { randomBytes, createHash: createHash4 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
@@ -20628,12 +20628,12 @@ var require_websocket = __commonJS({
     }
     function netConnect(options) {
       options.path = options.socketPath;
-      return net.connect(options);
+      return net2.connect(options);
     }
     function tlsConnect(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
-        options.servername = net.isIP(options.host) ? "" : options.host;
+        options.servername = net2.isIP(options.host) ? "" : options.host;
       }
       return tls.connect(options);
     }
@@ -25816,37 +25816,191 @@ var init_config = __esm({
   }
 });
 
-// packages/room-mcp/src/prompt.ts
+// packages/room-mcp/src/channel.ts
+async function sendChannelNotification(wake, notify) {
+  try {
+    await notify({ method: "notifications/claude/channel", params: { content: wake.content, meta: wake.meta } });
+  } catch {
+  }
+}
+var init_channel = __esm({
+  "packages/room-mcp/src/channel.ts"() {
+    "use strict";
+  }
+});
+
+// packages/room-mcp/src/wake-path.ts
+import net from "node:net";
 import { execFileSync as execFileSync4 } from "node:child_process";
+function claudeParentArgs() {
+  if (parentArgsCache !== void 0) return parentArgsCache;
+  try {
+    parentArgsCache = execFileSync4("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    parentArgsCache = "";
+  }
+  return parentArgsCache;
+}
+function mode(env) {
+  const value2 = env.ROOM_WAKE;
+  return value2 === "socket" || value2 === "channels" || value2 === "off" ? value2 : "auto";
+}
+function channelAdmitted(env, parentArgs, channel) {
+  const entry = channel ?? env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL;
+  if (!entry) return false;
+  const admitted = [...parentArgs.matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)];
+  return admitted.some((m) => m[1].split(",").includes(entry));
+}
+function claudeWakeAvailable(o) {
+  if (o.host !== "claude") return false;
+  const env = o.env ?? process.env;
+  const selected = mode(env);
+  if (selected === "off") return false;
+  const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET;
+  if (selected === "socket") return socket;
+  if (selected === "auto" && socket) return true;
+  const channel = channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
+  return selected === "channels" ? channel : socket || channel;
+}
+function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIMEOUT_MS) {
+  return new Promise((resolve5, reject) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    let flushed = false;
+    const finish = (error2) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error2) reject(error2);
+      else resolve5();
+    };
+    socket.setTimeout(timeoutMs2, () => finish(new Error("Claude inbox socket timed out")));
+    socket.once("error", finish);
+    socket.once("close", () => {
+      if (!settled) finish(flushed ? void 0 : new Error("Claude inbox socket closed before write"));
+    });
+    socket.once("connect", () => {
+      const lines = token ? [{ type: "auth", token }, { type: "user", message: { role: "user", content } }] : [{ type: "user", message: { role: "user", content } }];
+      socket.end(lines.map((line) => JSON.stringify(line)).join("\n") + "\n", () => {
+        flushed = true;
+      });
+    });
+  });
+}
+function kindPhrase(type) {
+  switch (type) {
+    case "question":
+      return "asked a question";
+    case "answer":
+      return "answered";
+    case "changed":
+      return "reported a change";
+    case "note":
+      return "sent a note";
+    case "done":
+      return "finished";
+    default:
+      return "has an update";
+  }
+}
+var SOCKET_WAKE_WINDOW_MS, SOCKET_POST_TIMEOUT_MS, parentArgsCache, SocketWakeRouter;
+var init_wake_path = __esm({
+  "packages/room-mcp/src/wake-path.ts"() {
+    "use strict";
+    init_config();
+    init_channel();
+    SOCKET_WAKE_WINDOW_MS = 5e3;
+    SOCKET_POST_TIMEOUT_MS = 1500;
+    SocketWakeRouter = class {
+      constructor(o) {
+        this.o = o;
+      }
+      o;
+      pending = [];
+      timer;
+      sequence = 0;
+      loggedError = false;
+      closed = false;
+      push(wake) {
+        if (!wake || this.closed || this.o.host !== "claude") return;
+        const env = this.o.env ?? process.env;
+        const selected = mode(env);
+        if (selected === "off") return;
+        if (selected === "channels") {
+          void this.channel(wake);
+          return;
+        }
+        if (!env.CLAUDE_CODE_MESSAGING_SOCKET) {
+          if (selected === "auto" && this.channelAdmitted()) void this.channel(wake);
+          return;
+        }
+        this.pending.push(wake);
+        if (!this.timer) this.timer = setTimeout(() => {
+          this.timer = void 0;
+          void this.flush();
+        }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS);
+      }
+      close() {
+        this.closed = true;
+        if (this.timer) clearTimeout(this.timer);
+        this.timer = void 0;
+        this.pending = [];
+      }
+      async channel(wake) {
+        if (this.o.channel === "") return;
+        await sendChannelNotification(wake, this.o.notify);
+      }
+      channelAdmitted() {
+        const env = this.o.env ?? process.env;
+        return channelAdmitted(env, this.o.parentArgs ?? claudeParentArgs(), this.o.channel);
+      }
+      async flush() {
+        const items = this.pending.splice(0);
+        if (!items.length || this.closed) return;
+        const count = items.length;
+        const shown = count > 5 ? 4 : 5;
+        const phrases = items.slice(0, shown).map((w) => `${(w.meta.from ?? "someone").replace(/\s+/g, " ").trim().slice(0, 40) || "someone"} ${kindPhrase(w.meta.type)}`);
+        if (count > shown) phrases.push(`${count - shown} more`);
+        const collectHint = items.some((w) => w.meta.type === "done") ? " (room_collect brings in finished workers)" : "";
+        const content = `[room] ${count} ${count === 1 ? "thing needs" : "things need"} you: ${phrases.join("; ")}. Use the room_state tool to read them${collectHint}. (#${++this.sequence})`;
+        const env = this.o.env ?? process.env;
+        try {
+          await (this.o.post ?? postSocketWake)(env.CLAUDE_CODE_MESSAGING_SOCKET, env.CLAUDE_CODE_MESSAGING_TOKEN, content);
+        } catch (error2) {
+          if (!this.loggedError) {
+            this.loggedError = true;
+            this.o.log?.(`Claude socket wake failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
+          }
+          if (mode(env) === "auto" && this.channelAdmitted()) await this.channel({ content, meta: { type: "room_wake", count: String(count) } });
+        }
+      }
+    };
+  }
+});
+
+// packages/room-mcp/src/prompt.ts
 function claudeWakeUnavailable(dir, host = resolveSessionHost(dir), parentArgs) {
   if (host !== "claude") return false;
-  if (parentArgs === void 0) {
-    try {
-      parentArgs = execFileSync4("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
-    } catch {
-    }
-  }
-  const channel = process.env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL;
-  const admitted = [...(parentArgs ?? "").matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)];
-  if (channel && admitted.some((m) => m[1].split(",").includes(channel))) return false;
-  return true;
+  return !claudeWakeAvailable({ host, parentArgs });
 }
-function claudeWakeText(shell) {
+function claudeWakeText(shell, off = false) {
+  if (off) return "For your human: wake-ups are off in this process (ROOM_WAKE=off). Set ROOM_WAKE=auto to enable them.";
   const rc = shell?.endsWith("bash") ? "~/.bashrc" : "~/.zshrc";
   return [
     "For your human: this Claude Code session can't be woken instantly. Everything still works; messages reach it on its next turn.",
-    `To turn wake-ups on, start Claude Code with \`claude-room\`. If that command is not found, add it: \`echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ${rc}\``,
-    "On a claude.ai Team or Enterprise account, an Owner must enable channels first."
+    "First update Claude Code to 2.1.224 or later so it can bind an inbox socket. Check /status for its Peer address.",
+    `If a socket is unavailable, start Claude Code with \`claude-room\`. If that command is not found, add it: \`echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ${rc}\``,
+    "For claude-room channels on a claude.ai Team or Enterprise account, an Owner must enable channels; organization settings can also turn cross-session messaging off."
   ].join("\n");
 }
 function claudeWakeNote(session, moment, options = {}) {
-  if (moment === "alone" || process.env.ROOM_CLAUDE_CHANNEL === "" || !claudeWakeUnavailable(session.dir, options.host, options.parentArgs)) return "";
+  if (moment === "alone" || !claudeWakeUnavailable(session.dir, options.host, options.parentArgs)) return "";
   const forWorkers = moment === "spawn" && !workerWaitNoted.has(session);
   if (forWorkers) workerWaitNoted.add(session);
   const workerInstruction = "Block on room_wait in a loop to receive worker questions and completions.";
   if (wakeNoted.has(session)) return forWorkers ? workerInstruction : "";
   wakeNoted.add(session);
-  const humanNote = claudeWakeText(options.shell ?? process.env.SHELL);
+  const humanNote = claudeWakeText(options.shell ?? process.env.SHELL, process.env.ROOM_WAKE === "off");
   return forWorkers ? `${workerInstruction}
 ${humanNote}` : humanNote;
 }
@@ -25855,6 +26009,7 @@ var init_prompt = __esm({
   "packages/room-mcp/src/prompt.ts"() {
     "use strict";
     init_config();
+    init_wake_path();
     wakeNoted = /* @__PURE__ */ new WeakSet();
     workerWaitNoted = /* @__PURE__ */ new WeakSet();
     AGENT_INSTRUCTIONS = (name2) => `You are ${name2 ? `${name2}'s` : "one person's"} coding agent in a room. Room never changes your files unless you ask it to bring in a worker's output; explicit exports also write files.
@@ -31652,8 +31807,8 @@ function retainUntrackedTree(dir, tag, paths) {
   try {
     for (const entry of paths) {
       const stat4 = fs12.lstatSync(path11.join(dir, entry.path));
-      const mode = stat4.isSymbolicLink() ? "120000" : stat4.mode & 73 ? "100755" : "100644";
-      run3(["update-index", "--add", "--cacheinfo", `${mode},${entry.sha},${entry.path}`]);
+      const mode2 = stat4.isSymbolicLink() ? "120000" : stat4.mode & 73 ? "100755" : "100644";
+      run3(["update-index", "--add", "--cacheinfo", `${mode2},${entry.sha},${entry.path}`]);
     }
     const tree = run3(["write-tree"]);
     run3(["update-ref", carriedUntrackedRef(tag), tree]);
@@ -31964,8 +32119,8 @@ async function cleanupWorker(leadDir, w, collected = false, discarded = false) {
         const file = path11.join(w.dir, entry.path);
         if (fs12.existsSync(file)) continue;
         fs12.mkdirSync(path11.dirname(file), { recursive: true });
-        const mode = (await git(leadDir, ["ls-tree", carriedUntrackedRef(w.tag), "--", entry.path])).split(" ")[0];
-        if (mode === "120000") fs12.symlinkSync(execFileSync5("git", ["cat-file", "blob", entry.sha], { cwd: leadDir }).toString(), file);
+        const mode2 = (await git(leadDir, ["ls-tree", carriedUntrackedRef(w.tag), "--", entry.path])).split(" ")[0];
+        if (mode2 === "120000") fs12.symlinkSync(execFileSync5("git", ["cat-file", "blob", entry.sha], { cwd: leadDir }).toString(), file);
         else {
           const bytes = execFileSync5("git", ["cat-file", "--filters", "--path=" + entry.path, entry.sha], { cwd: leadDir });
           fs12.writeFileSync(file, bytes, { mode: entry.mode ?? 420 });
@@ -42990,8 +43145,8 @@ var ExperimentalServerTasks = class {
    */
   elicitInputStream(params2, options) {
     const clientCapabilities = this._server.getClientCapabilities();
-    const mode = params2.mode ?? "form";
-    switch (mode) {
+    const mode2 = params2.mode ?? "form";
+    switch (mode2) {
       case "url": {
         if (!clientCapabilities?.elicitation?.url) {
           throw new Error("Client does not support url elicitation.");
@@ -43005,7 +43160,7 @@ var ExperimentalServerTasks = class {
         break;
       }
     }
-    const normalizedParams = mode === "form" && params2.mode === void 0 ? { ...params2, mode: "form" } : params2;
+    const normalizedParams = mode2 === "form" && params2.mode === void 0 ? { ...params2, mode: "form" } : params2;
     return this.requestStream({
       method: "elicitation/create",
       params: normalizedParams
@@ -43379,8 +43534,8 @@ var Server = class extends Protocol {
    * @returns The result of the elicitation request.
    */
   async elicitInput(params2, options) {
-    const mode = params2.mode ?? "form";
-    switch (mode) {
+    const mode2 = params2.mode ?? "form";
+    switch (mode2) {
       case "url": {
         if (!this._clientCapabilities?.elicitation?.url) {
           throw new Error("Client does not support url elicitation.");
@@ -44376,7 +44531,7 @@ function handlers5(state) {
       const verb = retired || exited ? "finished" : `reported ${worker.status}`;
       return { text: `${name2} ${verb}${ago} and will not answer; its summary: ${summary}`, terminal: true };
     }
-    if (presences(s).some((p) => p.user.name === name2 && p.wakeUnavailable === true)) return { text: `${name2} cannot be woken; it will see this at its next turn`, terminal: false };
+    if (presences(s).some((p) => p.user.name === name2 && p.wakeUnavailable === true)) return { text: `${name2} cannot be woken in this session; it will see this at its next turn`, terminal: false };
     if (present || worker) return void 0;
     const known = knownNames(s);
     if (known.has(name2)) return { text: `${name2} is offline; it will see this when it returns`, terminal: false };
@@ -45153,7 +45308,7 @@ function addCarriedUntrackedModes(modes, worker) {
   return modes;
 }
 function mergedFileMode(rel, initialMode, participants) {
-  let mode = initialMode;
+  let mode2 = initialMode;
   for (const participant of participants) {
     if (participant.ownedPaths?.includes(rel) || participant.unchangedCarried?.has(rel)) continue;
     const src = path16.join(participant.dir, rel);
@@ -45170,13 +45325,13 @@ function mergedFileMode(rel, initialMode, participants) {
     const workerMode = stat4.mode & 511, baseMode = participant.baseModes.get(rel);
     if (baseMode === void 0 && participant.carriedPaths?.has(rel)) continue;
     if (workerMode === baseMode) continue;
-    if (mode !== initialMode && mode !== workerMode) throw new Error("conflicting file modes: " + rel);
+    if (mode2 !== initialMode && mode2 !== workerMode) throw new Error("conflicting file modes: " + rel);
     if (baseMode !== void 0 && initialMode !== baseMode && initialMode !== workerMode) throw new Error("conflicting file modes: " + rel);
-    mode = workerMode;
+    mode2 = workerMode;
   }
-  return mode;
+  return mode2;
 }
-function materializeMergedFile(root, rel, bytes, mode = 420) {
+function materializeMergedFile(root, rel, bytes, mode2 = 420) {
   if (!rel || path16.isAbsolute(rel) || rel.includes("\\") || rel.includes("\0") || rel.split("/").some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) throw new Error("unsafe merged path: " + rel);
   const canonicalRoot = fs17.realpathSync(root);
   const parts2 = rel.split("/");
@@ -45194,10 +45349,10 @@ function materializeMergedFile(root, rel, bytes, mode = 420) {
     if (stat4 && !stat4.isSymbolicLink()) fs17.rmSync(file);
     return;
   }
-  const fd = fs17.openSync(file, fs17.constants.O_WRONLY | fs17.constants.O_CREAT | fs17.constants.O_TRUNC | (fs17.constants.O_NOFOLLOW ?? 0), mode);
+  const fd = fs17.openSync(file, fs17.constants.O_WRONLY | fs17.constants.O_CREAT | fs17.constants.O_TRUNC | (fs17.constants.O_NOFOLLOW ?? 0), mode2);
   try {
     fs17.writeFileSync(fd, bytes);
-    fs17.fchmodSync(fd, mode);
+    fs17.fchmodSync(fd, mode2);
   } finally {
     fs17.closeSync(fd);
   }
@@ -45559,10 +45714,10 @@ function handlers7(state) {
         const before = fs18.existsSync(file) ? fs18.readFileSync(file) : null;
         if ((before === null ? null : before.toString("latin1")) !== result.initial.get(p)) throw new Error(p + " changed during collection; nothing written, retry");
         const oldMode = before !== null ? fs18.statSync(file).mode & 511 : 420;
-        const mode = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: w.dir, baseModes: baseModes.get(w.name), ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) })));
+        const mode2 = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: w.dir, baseModes: baseModes.get(w.name), ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) })));
         const after = text === null ? null : Buffer.from(text, "latin1");
-        if (before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode === oldMode || before === null && after === null) continue;
-        changes.push({ p, file, before, after, mode, oldMode });
+        if (before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode2 === oldMode || before === null && after === null) continue;
+        changes.push({ p, file, before, after, mode: mode2, oldMode });
       }
       const written = [];
       try {
@@ -46591,18 +46746,7 @@ var AutoJoin = class {
 init_local();
 init_hooks_bridge();
 init_config();
-
-// packages/room-mcp/src/channel.ts
-init_config();
-async function pushChannelNotification(s, wake, notify, channel, host) {
-  if (!wake || (host ?? resolveSessionHost(s.dir)) !== "claude" || channel === "") return;
-  try {
-    await notify({ method: "notifications/claude/channel", params: { content: wake.content, meta: wake.meta } });
-  } catch {
-  }
-}
-
-// packages/room-mcp/src/index.ts
+init_wake_path();
 init_prompt();
 init_session();
 init_credentials();
@@ -46687,13 +46831,17 @@ async function main() {
     startupNotice = "";
     return { content: [{ type: "text", text: (notice ? notice + "\n\n" : "") + (disclosure ? disclosure + "\n\n" : "") + body2 }] };
   });
+  const attachedWakeSessions = /* @__PURE__ */ new WeakSet();
   const attachChannel = (s) => {
+    if (attachedWakeSessions.has(s)) return;
+    attachedWakeSessions.add(s);
+    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), log });
     const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
     s.room.bus.observe((ev) => {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
         syncHookSeen(s);
         if (m.from === s.me.name || s.room.seen(s.me.name).has(m.id)) continue;
-        void pushChannelNotification(s, shouldWake(s.me, { kind: "msg", msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0), (notification) => mcp.notification(notification), startup.claudeChannel);
+        router.push(shouldWake(s.me, { kind: "msg", msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0));
       }
     });
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
