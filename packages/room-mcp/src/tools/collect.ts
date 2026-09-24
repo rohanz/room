@@ -307,7 +307,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
           })
         }
-        if (state.workerAlive(s, w) || w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); retire(w.summary ?? '', w.dir); continue }
+        if (state.workerAlive(s, w)) { out.push('kept ' + w.tag + ': clean exit not confirmed'); continue }
+        if (w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); retire(w.summary ?? '', w.dir); continue }
         try {
           const children = descendants(s, w)
           if (children.length) { out.push('kept ' + w.tag + ': nested workers remain: ' + children.map(c => c.tag).join(', ')); retire(w.summary ?? '', w.dir); continue }

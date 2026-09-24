@@ -4,7 +4,7 @@
 
 - Claude socket wakes now post the first event immediately. Events arriving within the next five seconds produce at most one follow-up wake; a quiet window resets batching for the next immediate wake. Numbered wake texts remain distinct.
 - Collecting a worker clears its overlays, claims and scope and retires it from live room state even when ignored output keeps the worktree. The retired record says `kept for ignored output at <path>`; `room_collect(tag, discard=true, force=true)` can still remove that worktree.
-- A pending hook-bridge write no longer crashes the MCP server with an uncaught `ENOENT` when the repo directory is removed; the timers in `conflicts.ts`, `bridge.ts` and `graph-index.ts` are guarded the same way, and tests stop their sessions before removing temp dirs.
+- A pending hook-bridge write no longer crashes the MCP server with an uncaught `ENOENT` when the repo directory is removed; the timers in `conflicts.ts`, `bridge.ts`, `graph-index.ts`, `tools/prs.ts` and `wake-path.ts` are guarded the same way, and tests stop their sessions before removing temp dirs.
 - Claude sessions are told the before-edit hook may not be running only when their own tree has changed with no hook receipt since session start, and at most once; room-tool-only sessions no longer get the false warning. The Codex up-front note is unchanged.
 - Plugin manifests and marketplace metadata are at 0.14.1.
 

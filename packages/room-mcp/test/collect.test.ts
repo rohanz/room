@@ -463,6 +463,20 @@ describe('room_collect', () => {
     expect(at).toBe(30_000)
   })
 
+  it('keeps a worker in room presence if its process is live at final collection', async () => {
+    const t = setup()
+    put(worker, 'new.txt', 'worker change')
+    seedPresence(t)
+    let alive = false
+    t.state.workerAlive = () => alive
+    release.mockImplementationOnce(() => { alive = true })
+    expect(await t.call({ tag: 'test' })).toContain('kept test: clean exit not confirmed')
+    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(t.s.room.scopes.has(t.w.name)).toBe(true)
+    expect(t.s.room.overlays.has(t.w.name)).toBe(true)
+    expect(t.s.room.retiredWorkers()).toEqual([])
+  })
+
 
 
   it('copies ignored and nested artifacts byte-for-byte, without committing', async () => {

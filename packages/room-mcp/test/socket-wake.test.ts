@@ -3,6 +3,7 @@ import net from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import * as channel from '../src/channel.js'
 import { SocketWakeRouter, claudeWakeAvailable } from '../src/wake-path.js'
 import { shouldWake } from '../src/wake.js'
 import type { Identity, Msg } from '@room/shared'
@@ -125,6 +126,23 @@ describe('Claude socket wake', () => {
     await pause()
     expect(log).toHaveBeenCalledOnce()
     router.close()
+  })
+
+  it('handles a rejected channel fallback on immediate and timed socket wakes', async () => {
+    vi.useFakeTimers()
+    const notify = vi.fn(async () => {})
+    const fallback = vi.spyOn(channel, 'sendChannelNotification').mockRejectedValue(new Error('channel refused'))
+    const post = vi.fn(async () => { throw new Error('socket refused') })
+    const log = vi.fn()
+    const router = new SocketWakeRouter({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, parentArgs: flag, notify, post, log, host: 'claude', windowMs: 10 })
+    try {
+      router.push(wake(makeMsg('a', 'cat')))
+      router.push(wake(makeMsg('b', 'dog')))
+      await vi.advanceTimersByTimeAsync(10)
+      expect(post).toHaveBeenCalledTimes(2)
+      expect(fallback).toHaveBeenCalledTimes(2)
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('channel refused'))
+    } finally { router.close(); fallback.mockRestore(); vi.useRealTimers() }
   })
 
   it.each(['socket', 'channels', 'off'] as const)('honors ROOM_WAKE=%s', async mode => {

@@ -88,6 +88,7 @@ export class SocketWakeRouter {
   private timer: ReturnType<typeof setTimeout> | undefined
   private sequence = 0
   private loggedError = false
+  private loggedFlushError = false
   private closed = false
   constructor(private o: SocketWakeOptions) {}
 
@@ -103,8 +104,8 @@ export class SocketWakeRouter {
     }
     if (!this.timer) {
       this.pending.push(wake)
-      this.timer = setTimeout(() => { this.timer = undefined; void this.flush() }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS)
-      void this.flush()
+      this.timer = setTimeout(() => { this.timer = undefined; this.flushSafely() }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS)
+      this.flushSafely()
     } else this.pending.push(wake)
   }
 
@@ -118,6 +119,14 @@ export class SocketWakeRouter {
   private channelAdmitted(): boolean {
     const env = this.o.env ?? process.env
     return channelAdmitted(env, this.o.parentArgs ?? claudeParentArgs(), this.o.channel)
+  }
+
+  private flushSafely(): void {
+    void this.flush().catch(error => {
+      if (this.loggedFlushError) return
+      this.loggedFlushError = true
+      this.o.log?.(`Claude wake fallback failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   private async flush(): Promise<void> {
