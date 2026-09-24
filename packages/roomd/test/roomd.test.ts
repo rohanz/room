@@ -570,8 +570,8 @@ describe('roomd v2 push-only overlays', () => {
     const roomUrl = room()
     await start({ room: roomUrl, dir: source, name: 'Alice' })
     const bob = await start({ room: roomUrl, dir: behind, name: 'Bob', basePollMs: 30 })
-    await waitFor(() => (bob.provider.awareness.getLocalState() as { status: string }).status === 'behind base by 1 commit: git pull')
-    expect(bob.provider.awareness.getLocalState()).toMatchObject({ status: 'behind base by 1 commit: git pull' })
+    await waitFor(() => (bob.provider.awareness.getLocalState() as { status: string }).status.startsWith('behind base by 1 commit:'))
+    expect((bob.provider.awareness.getLocalState() as { status: string }).status).toContain('git pull --ff-only --autostash')
     const expectedBase = sh(source, ['rev-parse', 'HEAD'])
     sh(behind, ['pull', '-q', '--ff-only'])
     // Git polling and presence publication finish asynchronously under suite load.
@@ -591,7 +591,8 @@ describe('roomd v2 push-only overlays', () => {
     const error = await startRoomd({ room: roomUrl, dir: other, name: 'Bob', log: silent, providerFactory }).then(() => null, caught => caught)
     expect(error).toBeInstanceOf(RoomdError)
     expect(error.message).toContain('diverged')
-    expect(error.message).toContain('rebase or merge')
+    expect(error.message).toContain('stop and tell your human')
+    expect(error.message).toContain('never merge another branch into this one')
   })
 
   it('a clone that has not fetched the room base is refused with both SHAs and the pull hint', async () => {
@@ -608,7 +609,8 @@ describe('roomd v2 push-only overlays', () => {
     expect(error.code).toBe(2)
     expect(error.message).toContain(roomHead)
     expect(error.message).toContain(localHead)
-    expect(error.message).toContain('git pull, then $room-join')
+    expect(error.message).toContain('git pull --ff-only --autostash')
+    expect(error.message).toContain('Then $room-join')
   })
 
   it('a clone ahead of the room base (pushed) joins and advances it for everyone', async () => {

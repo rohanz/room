@@ -14,11 +14,11 @@ import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, colorFor, isRegenerableBuildPath, scopeCovers, type BaseMsg, type Kind, type Presence } from '@room/shared'
+import { BASE_CATCH_UP, RoomDoc, colorFor, isRegenerableBuildPath, roomNameParts, scopeCovers, type BaseMsg, type Kind, type NoteMsg, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { baselineText, carriesWork, workerBaseline, type Baseline } from './baseline.js'
-import { git, gitBlobInfoMany, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitIsOnRemote, gitOrigin, gitPathsBetween, gitRelation, gitShow, gitShowMany, gitSubject, gitTracked, type GitBlobInfo } from './git.js'
+import { git, gitBlobInfoMany, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitShow, gitShowMany, gitSubject, gitTracked, type GitBlobInfo } from './git.js'
 
 /** Keep event emitters and timers from leaking both sync throws and rejected promises. */
 export function observeCallback(fn: () => unknown, report: (error: unknown) => void): void {
@@ -193,6 +193,8 @@ class Daemon implements Roomd {
    */
   shared = ''
   private readonly localRoom: boolean
+  private readonly namedRoomBranch: string
+  private notifiedSwitch?: string
 
   readonly dir: string
   readonly name: string
@@ -280,6 +282,9 @@ class Daemon implements Roomd {
     this.onScanned = options.onScanned
     this.beforePublishWrite = options.beforePublishWrite
     const { serverUrl, roomName } = splitRoomUrl(options.room)
+    let decodedRoomName = roomName
+    try { decodedRoomName = decodeURIComponent(roomName) } catch { /* use the literal name */ }
+    this.namedRoomBranch = roomNameParts(decodedRoomName).branch
     this.provider = options.providerFactory
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
       : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
@@ -315,11 +320,11 @@ class Daemon implements Roomd {
     if (roomBase && roomBase !== this.base) {
       const rel = await gitRelation(this.dir, this.base, roomBase)
       if (rel === 'ahead') await this.maybeAdvance(roomBase, this.base)
-      else if (rel === 'behind') this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)})${this.isWorkerWorktree() ? '' : '; git pull to catch up'}`)
+      else if (rel === 'behind') this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)})${this.isWorkerWorktree() ? '' : `; ${BASE_CATCH_UP}`}`)
       else {
         const message = rel === 'unknown'
-          ? `room base ${roomBase} is not in this clone (local HEAD ${this.base}) — git pull, then $room-join`
-          : `local HEAD ${this.base} has diverged from room base ${roomBase} — rebase or merge onto the room base, then $room-join`
+          ? `room base ${roomBase} is not in this clone (local HEAD ${this.base}) — ${BASE_CATCH_UP} Then $room-join`
+          : `local HEAD ${this.base} has diverged from room base ${roomBase} — stop and tell your human; never merge another branch into this one`
         this.setStatus(`error: ${message}`)
         throw new RoomdError(message, 2)
       }
@@ -327,7 +332,7 @@ class Daemon implements Roomd {
     if (!roomBase) {
       this.roomDoc.setMeta({
         ...(repo ? { repo } : {}),
-        branch: this.branch,
+        branch: this.roomBranch(),
         base: this.base,
         createdAt: Date.now(),
         seededBy: this.name,
@@ -603,8 +608,8 @@ class Daemon implements Roomd {
     const wasSecondary = !!this.publishUnder
     this.choosePublisher()
     if (wasSecondary && !this.publishUnder) await this.seedLocalOverlay()
-    const head = await gitHead(this.dir)
-    if (head === this.base) {
+    const [head, branch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)])
+    if (head === this.base && branch === this.branch) {
       // HEAD unchanged, but a commit we are ahead with may have been pushed since last check.
       const roomBase = this.roomDoc.meta.base
       if (roomBase && roomBase !== head) await this.refreshBaseStatus()
@@ -612,11 +617,11 @@ class Daemon implements Roomd {
     }
     const prev = this.base
     this.base = head
-    this.branch = await gitBranch(this.dir)
+    this.branch = branch
     this.tracked = await gitTracked(this.dir)
     await this.refreshShared()
     this.roomDoc.setBaseOf(this.name, this.shared, this)
-    this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
+    if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.maybeAdvance(roomBase, head)
     await this.seedLocalOverlay()
@@ -624,6 +629,27 @@ class Daemon implements Roomd {
   }
 
   private readonly unpushedPairs = new Set<string>()
+
+  private roomBranch(): string { return this.namedRoomBranch || this.roomDoc.meta.branch || this.branch }
+
+  /** Address the branch warning to this agent; a self-authored message is filtered from its inbox. */
+  private warnBranchSwitch(): boolean {
+    const roomBranch = this.roomBranch()
+    if (this.branch === 'HEAD') {
+      this.notifiedSwitch = undefined
+      this.setStatus(`detached HEAD; room base waits until you return to ${roomBranch}`)
+      return true
+    }
+    if (this.branch === roomBranch) { this.notifiedSwitch = undefined; return false }
+    const text = `you switched to ${this.branch}; the room is for ${roomBranch}; commits here are not the room's base until they are pushed to ${roomBranch}`
+    this.setStatus(text)
+    if (this.notifiedSwitch !== this.branch) {
+      this.notifiedSwitch = this.branch
+      this.roomDoc.post<NoteMsg>({ name: 'room', kind: 'bot' }, { type: 'note', to: this.name, priority: 'notify', text }, this)
+      this.log(text)
+    }
+    return true
+  }
 
   private isWorkerWorktree(): boolean { return !!this.label && this.branch === `room/${this.label}` }
 
@@ -641,8 +667,11 @@ class Daemon implements Roomd {
   /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
   private async maybeAdvance(from: string, to: string): Promise<void> {
     if (this.isWorkerWorktree()) { this.setStatus('worker worktree ahead of room base'); return }
-    if (await gitIsOnRemote(this.dir, to)) await this.advanceBase(from, to)
-    else {
+    if (this.warnBranchSwitch()) return
+    const pushed = await gitPushedRoomHead(this.dir, to, this.roomBranch())
+    if (pushed && pushed !== from && await gitRelation(this.dir, pushed, from) === 'ahead') {
+      await this.advanceBase(from, pushed)
+    } else {
       this.setStatus('ahead of base (unpushed): git push')
       const pair = `${to}:${from}`
       if (!this.unpushedPairs.has(pair)) {
@@ -657,7 +686,7 @@ class Daemon implements Roomd {
       gitCountBetween(this.dir, from, to), gitPathsBetween(this.dir, from, to), gitSubject(this.dir, to),
     ])
     this.roomDoc.doc.transact(() => {
-      this.roomDoc.setMeta({ base: to, branch: this.branch }, this)
+      this.roomDoc.setMeta({ base: to, branch: this.roomBranch() }, this)
       this.roomDoc.post<BaseMsg>({ name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }, { type: 'base', base: to, prev: from, commits, paths, summary }, this)
     }, this)
     this.log(`advanced room base to ${to.slice(0, 10)} (+${commits})`)
@@ -666,14 +695,15 @@ class Daemon implements Roomd {
   /** Presence status reflects where this clone stands relative to the room base. */
   private async refreshBaseStatus(): Promise<void> {
     if (this.stopped) return
+    if (!this.isWorkerWorktree() && this.warnBranchSwitch()) return
     const roomBase = this.roomDoc.meta.base
     if (!roomBase || roomBase === this.base) { this.setStatus('synced'); return }
     const rel = await gitRelation(this.dir, this.base, roomBase)
     if (rel === 'behind') {
       const n = await gitCountBetween(this.dir, this.base, roomBase).catch(() => 0)
-      this.setStatus(`${this.isWorkerWorktree() ? 'worker worktree behind room base' : 'behind base'} by ${n || '?'} commit${n === 1 ? '' : 's'}${this.isWorkerWorktree() ? '' : ': git pull'}`)
+      this.setStatus(`${this.isWorkerWorktree() ? 'worker worktree behind room base' : 'behind base'} by ${n || '?'} commit${n === 1 ? '' : 's'}${this.isWorkerWorktree() ? '' : `: ${BASE_CATCH_UP}`}`)
     } else if (rel === 'ahead') { await this.maybeAdvance(roomBase, this.base) }
-    else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}${this.isWorkerWorktree() ? '' : ': git pull'}`)
+    else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}${this.isWorkerWorktree() ? '' : `: ${BASE_CATCH_UP}`}`)
   }
 
   /** Publish what differs from HEAD: git's changed paths plus what this person already published, never every tracked file. */

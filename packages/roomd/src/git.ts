@@ -195,7 +195,11 @@ export const gitPathsBetween = (dir: string, from: string, to: string) =>
 export const gitSubject = (dir: string, rev: string) =>
   git(dir, ['log', '-1', '--format=%s', rev]).then(s => s.trim())
 
-/** True when the commit exists on any remote-tracking branch (i.e. it has been pushed/fetched). */
-export async function gitIsOnRemote(dir: string, sha: string): Promise<boolean> {
-  try { return (await git(dir, ['branch', '-r', '--contains', sha])).trim().length > 0 } catch { return false }
+/** Newest commit in HEAD that has reached the room branch's origin tracking ref. */
+export async function gitPushedRoomHead(dir: string, head: string, branch: string): Promise<string | undefined> {
+  const ref = `refs/remotes/origin/${branch}`
+  try {
+    await git(dir, ['rev-parse', '--verify', `${ref}^{commit}`])
+    return (await git(dir, ['merge-base', head, ref])).trim() || undefined
+  } catch { return undefined }
 }

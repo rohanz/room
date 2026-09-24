@@ -30,6 +30,8 @@ const who = (m: MsgBase) => displayName({ name: m.from, kind: m.fromKind })
 const to = (m: MsgBase) => m.to ? ` → ${displayName({ name: m.to, kind: 'agent' })}` : ''
 const priority = (m: MsgBase) => `[${m.priority}] `
 
+export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.'
+
 const builtins = {
   claim: { priority: 'fyi', audience: 'claim-holders', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} — ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ''}` },
   release: { priority: 'fyi', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` — ${m.summary}` : ''}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ''}` },
@@ -41,7 +43,7 @@ const builtins = {
   contract: { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'always', format: m => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
   note: { priority: m => m.to ? 'notify' : 'fyi', audience: 'everyone', inbox: false, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)}${m.to ? ` → ${m.to}` : ''}: ${m.text}` },
   done: { priority: 'fyi', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },
-  base: { priority: 'notify', audience: 'everyone', wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: m => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — git pull to catch up` },
+  base: { priority: 'notify', audience: 'everyone', wakes: (m, ctx) => (m.fromKind === 'human' || m.from !== ctx.me.name) && ctx.hasUncommitted, format: m => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — ${BASE_CATCH_UP}` },
   plan: { priority: 'fyi', audience: 'broadcast', wakes: 'interrupt', format: m => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''}${m.text ? ` — ${m.text}` : ''}` },
   scope: { priority: 'notify', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})` },
 } satisfies Record<BuiltinMsgType, MessageKind<any>>

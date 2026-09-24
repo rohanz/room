@@ -14,7 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { randomUUID } from 'node:crypto'
-import { formatMsg, formatPlans, shouldWakeOnMsg, type Msg, isAgentic } from '@room/shared'
+import { BASE_CATCH_UP, formatMsg, formatPlans, shouldWakeOnMsg, type Msg, isAgentic } from '@room/shared'
 import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
 import { claudeWakeUnavailable } from './prompt.js'
@@ -325,7 +325,7 @@ export class HooksBridge {
       return
     }
     const text = m.type === 'base'
-      ? `[room] ${formatMsg(m)}\nYou have uncommitted work. Run git pull --ff-only, handle Git's actual result, re-run room_preview_merge with the test command against anyone who changed the same files, then continue.`
+      ? `[room] ${formatMsg(m).replace(` — ${BASE_CATCH_UP}`, '')}\nYou have uncommitted work. ${BASE_CATCH_UP} Re-run room_preview_merge with the test command against anyone who changed the same files, then continue.`
       : `[room] ${formatMsg(m)}\nCall room_state, then react per the room-etiquette skill.`
     const delays = this.o.retryDelaysMs ?? [1000, 3000, 8000]
     for (let attempt = 0; ; attempt++) {
