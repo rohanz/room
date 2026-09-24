@@ -9,6 +9,14 @@ import { writeChoice } from '../src/choice.js'
 const repo = () => { const dir = mkdtempSync(join(tmpdir(), 'room-config-')); execFileSync('git', ['-C', dir, 'init', '-q']); return dir }
 
 describe('resolveConfig', () => {
+  it('restores a named local room after restart and still reads legacy choices', async () => {
+    const dir = repo()
+    await writeChoice(dir, 'local', 'Ada', 'full', 'local/picked')
+    expect(await resolveConfig({ dir, env: {} })).toMatchObject({ server: LOCAL, room: 'local/picked', whereRule: 'remembered' })
+    expect((await resolveConfig({ dir, env: { ROOM_ROOM: 'local/from-env' } })).room).toBe('local/from-env')
+    await writeChoice(dir, 'local')
+    expect((await resolveConfig({ dir, env: {} })).room).toBeUndefined()
+  })
   it('uses documented argument > environment > remembered > default precedence', async () => {
     const dir = repo()
     expect((await resolveConfig({ dir, env: {} })).server).toBe(LOCAL)

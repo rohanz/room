@@ -308,17 +308,21 @@ describe('automatic conflict notices', () => {
 })
 
 describe('room lifecycle', () => {
-  it('explains whose overlay publishes a colocated session when it joins', async () => {
+  it('shows another session in this checkout once without attributing its file changes to a peer', async () => {
     const room = new RoomDoc()
     room.setMeta({ repo: 'r', branch: 'main', base })
     const joined = fakeSession(room)
     joined.awareness.setLocalStateField('publishUnder', 'Kieran')
+    joined.awareness.setLocalStateField('watchedDirectory', dir)
     const peer = addPresence(joined.awareness, 'Kieran')
+    peer.setLocalStateField('watchedDirectory', dir)
+    applyAwarenessUpdate(joined.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
     let current: Session | null = null
     const tools = createTools({ getSession: () => current, setSession: s => { current = s }, cwd: dir, join: async () => joined, log: () => {} })
     activeTools.add(tools)
     const reply = await tools.call('room_join', {})
-    expect(reply).toContain("Your file changes are published under Kieran's name because both sessions watch this folder; claims say which lines are whose.")
+    expect(reply.match(/another session in this checkout/g)).toHaveLength(1)
+    expect(reply).not.toContain('Your file changes are published under')
     peer.destroy()
   })
 

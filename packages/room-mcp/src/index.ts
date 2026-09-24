@@ -60,9 +60,25 @@ function cwd(): string {
   return e('ROOM_DIR') ?? e('PWD') ?? e('INIT_CWD') ?? process.cwd()
 }
 
+/** The entry file is the loaded plugin bundle in an installation. Check it once per tool call. */
+export function createBundleUpdateNotice(file: string): () => string {
+  let startupMtime: number
+  try { startupMtime = fs.statSync(file).mtimeMs } catch { return () => '' }
+  let warned = false
+  return () => {
+    if (warned) return ''
+    try {
+      if (fs.statSync(file).mtimeMs <= startupMtime) return ''
+    } catch { return '' }
+    warned = true
+    return 'Room was updated on disk; restart this session to pick up fixes'
+  }
+}
+
 async function main() {
   let session: Session | null = null
   let startupNotice = ''
+  const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? '')
   const dir = cwd()
   const startup = await resolveConfig({ dir, env: process.env })
   LOG_FILE = startup.logFile
@@ -85,7 +101,7 @@ async function main() {
     { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: AGENT_INSTRUCTIONS() },
   )
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }))
-  mcp.setRequestHandler(CallToolRequestSchema, async req => {
+  mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     await autoJoin.settle() // a join in progress decides which session the disclosure below is about
     let disclosure = ''
     if (session) {
@@ -98,11 +114,12 @@ async function main() {
         }
       }
     }
-    const body = await tools.call(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>)
+    const body = await tools.call(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>, extra.signal)
     const delivery = startupNotice ? consumeHookNotice(dir, startupNotice) : undefined
     const notice = session || delivery === 'hook' || delivery === 'pending' ? '' : startupNotice
     if (delivery !== 'pending') startupNotice = ''
-    return { content: [{ type: 'text', text: (notice ? notice + '\n\n' : '') + (disclosure ? disclosure + '\n\n' : '') + body }] }
+    const updateNotice = bundleUpdateNotice()
+    return { content: [{ type: 'text', text: (notice ? notice + '\n\n' : '') + (disclosure ? disclosure + '\n\n' : '') + (updateNotice ? updateNotice + '\n\n' : '') + body }] }
   })
 
   // Claude Code: push interrupts and addressed notifies over the selected wake path.
@@ -112,12 +129,14 @@ async function main() {
     attachedWakeSessions.add(s)
     const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: notification => mcp.notification(notification), isUnread: wake => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: wake => !!s.room.messages().find(m => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log })
     const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
+    const wakeWithWorkers = shouldWake as (me: typeof s.me, ev: { kind: 'msg'; msg: Msg }, claims: ReturnType<typeof myClaims>, hasUncommitted: boolean, ownWorkers: Set<string>) => ReturnType<typeof shouldWake>
     s.room.bus.observe(ev => {
       for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
         // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
         syncHookSeen(s)
         if (m.from === s.me.name || s.room.seen(s.me.name).has(m.id)) continue
-        router.push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0))
+        router.push(wakeWithWorkers(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0,
+          new Set(Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name).map(w => w.name))))
       }
     })
     log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)

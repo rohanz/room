@@ -57,7 +57,8 @@ function repo() {
   execFileSync('git', ['init', '-q'], { cwd: dir })
   writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ host: 'claude' }))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
-  vi.stubEnv('ROOM_HOST', '')
+  vi.stubEnv('ROOM_HOST', 'claude')
+  vi.stubEnv('ROOM_WORKER_HOST', '')
   return dir
 }
 async function start(names: string[], tag?: string, stale: string[] = [], work: string[] = [], dir = repo()) {
@@ -97,12 +98,28 @@ describe('automatic session tags', () => {
     const worker = await start([main.me.name], undefined, [], [], worktree)
     expect([main.me.name, worker.me.name]).toEqual(['name', 'name+codex'])
     expect((await readChoice(dir))?.tags).toEqual({ [await worktreePath(dir)]: '', [await worktreePath(worktree)]: 'codex' })
-    // Rejoins retain their own identity, including their own leftover work.
+    // A restart releases the prior process's name; the new session retains its identity.
+    await main.daemon.stop()
+    await worker.daemon.stop()
     expect((await start([worker.me.name, main.me.name], undefined, [main.me.name], [main.me.name], dir)).me.name).toBe(main.me.name)
     expect((await start([main.me.name, worker.me.name], undefined, [worker.me.name], [worker.me.name], worktree)).me.name).toBe(worker.me.name)
   })
   it('numbers the third join', async () => {
     expect((await start(['name', 'name+claude'])).me.name).toBe('name+claude-2')
+  })
+  it('reserves distinct names for simultaneous linked-worktree joins before presence arrives', async () => {
+    const dir = repo()
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'init'], { cwd: dir })
+    const dirs = [dir]
+    for (let i = 1; i < 6; i++) {
+      const worktree = join(dir, `worktree-${i}`)
+      execFileSync('git', ['worktree', 'add', '-qb', `worker-${i}`, worktree], { cwd: dir })
+      dirs.push(worktree)
+    }
+    const joined = await Promise.all(dirs.map(worktree => start(['name'], undefined, [], [], worktree)))
+    expect(new Set(joined.map(s => s.me.name)).size).toBe(6)
+    const tags = (await readChoice(dir))?.tags
+    expect(Object.keys(tags ?? {})).toHaveLength(6)
   })
   it('preserves explicit ROOM_TAG even on collision', async () => {
     const s = await start(['name', 'name+custom'], 'custom')
@@ -125,7 +142,9 @@ describe('automatic session tags', () => {
   })
   it('rejoins under the tag remembered for this clone when the bare name is free', async () => {
     const dir = repo()
-    expect((await start(['name'], undefined, [], [], dir)).me.name).toBe('name+claude')
+    const first = await start(['name'], undefined, [], [], dir)
+    expect(first.me.name).toBe('name+claude')
+    await first.daemon.stop()
     await writeChoice(dir, 'team')
     expect((await start([], undefined, [], [], dir)).me.name).toBe('name+claude')
   })

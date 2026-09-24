@@ -58,11 +58,11 @@ export function resolveShare(raw: unknown, source = 'share'): { level: ShareLeve
   return level ? { level } : { level: 'intent', warning: `${source}='${String(raw)}' is not a level; sharing plans only` }
 }
 
-async function readRememberedChoice(dir: string): Promise<{ where?: string; share?: ShareLevel }> {
+async function readRememberedChoice(dir: string): Promise<{ where?: string; share?: ShareLevel; room?: string }> {
   try {
     const file = path.join(await gitCommonDir(dir), 'room-choice.json')
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown; share?: unknown }
-    return { where: value(parsed.where), share: parseShare(parsed.share) }
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown; share?: unknown; room?: unknown }
+    return { where: value(parsed.where), share: parseShare(parsed.share), room: value(parsed.room) }
   } catch { return {} }
 }
 
@@ -101,7 +101,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),
     maxWorkers: positive(args.maxWorkers ?? e.ROOM_MAX_WORKERS, DEFAULT_MAX_WORKERS),
     staleDays: positive(args.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),
-    room: value(args.room) ?? value(e.ROOM_ROOM) ?? (url ? decodeURIComponent(url.pathname.replace(/^\/+/, '')) || undefined : undefined), web: value(args.web) ?? value(e.ROOM_WEB),
+    room: value(args.room) ?? value(e.ROOM_ROOM) ?? (url ? decodeURIComponent(url.pathname.replace(/^\/+/, '')) || undefined : undefined) ?? (whereRule === 'remembered' && where === LOCAL ? rememberedChoice.room : undefined), web: value(args.web) ?? value(e.ROOM_WEB),
   }
 }
 

@@ -7,6 +7,7 @@ import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import { describeClaim, withLineNumbers, type NoteMsg, type Worker } from '@room/shared'
 import type { Session } from '../session.js'
+import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { workerOwnedPaths } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
@@ -61,9 +62,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (t === null) return `${p}: deleted by ${person} (uncommitted)${note}`
       if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`
       const out = [`${p} as ${person} sees it (${lines(t)} lines${s.room.text(p, person) !== undefined ? ', uncommitted edits' : diskWorker(s, person) ? ', worktree file' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`]
-      const who = s.room.whoChanged(p).filter(x => x !== person)
+      const who = s.room.whoChanged(p).filter(x => x !== person && !sameCheckoutSession(s, x))
       if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(', ')} — room_read with person= to see theirs`)
-      for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
+      for (const c of s.room.claimsFor(p)) if (!sameCheckoutSession(s, c.by)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
       out.push(withLineNumbers(t))
       out.push(...ledgerLines(s, { path: p, limit: 10 }, p))
       return out.join('\n')

@@ -26,7 +26,7 @@ export function displayName(id: Identity | { name: string; kind: Kind }): string
   const owner = 'owner' in id ? id.owner : undefined
   const label = 'label' in id ? id.label : undefined
   switch (id.kind) {
-    case 'agent': return `${owner ?? id.name}'s agent${label ? ` (${label})` : ''}`
+    case 'agent': return label || id.name.includes('+') ? id.name : `${owner ?? id.name}'s agent`
     case 'bot': return `${label ?? id.name} [bot]`
     case 'ci': return `${label ?? id.name} [ci]`
     default: return id.name

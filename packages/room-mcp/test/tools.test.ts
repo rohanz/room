@@ -43,11 +43,11 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
   }
 }
 
-function setup(opts: { synced?: boolean; joined?: boolean; config?: ResolvedConfig } = {}) {
+function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig } = {}) {
   const { a, b } = pair()
   a.setMeta({ repo: 'demo', branch: 'main', base })
   a.setOverlay('Rohan', 'app.py', MINE)
-  let session: Session | null = opts.joined === false ? null : fakeSession(a, opts.synced)
+  let session: Session | null = opts.joined === false ? null : fakeSession(a, opts.synced, opts.wsconnected)
   const joined: string[] = []
   const created: boolean[] = []
   const tools = createTools({
@@ -257,6 +257,13 @@ describe('session gating', () => {
     expect(await u.tools.call('room_state', {})).toBe('error: room not synced yet, retry')
   })
 
+  it('lets collect handle a previously connected room while sync is lost', async () => {
+    const t = setup({ synced: true, wsconnected: true })
+    t.session!.provider.synced = false
+    t.session!.provider.wsconnected = false
+    expect(await t.tools.call('room_collect', { tag: 'missing' })).not.toContain('room not synced yet')
+  })
+
   it('shows last-known state and reports queued sends and unavailable waits while offline', async () => {
     const { a } = pair()
     a.setMeta({ repo: 'demo', branch: 'main', base })
@@ -429,8 +436,12 @@ describe('one login, two agents', () => {
     expect(a.changedPaths('rohanz')).toEqual(['app.py'])
     expect(a.changedPaths('rohanz+codex')).toEqual(['session.py'])
     const state = await t1.call('room_state', {})
-    expect(state).toContain("you: rohanz's agent in r")
+    expect(state).toContain('you: rohanz · agent in r')
     expect(state).toContain('1 others: rohanz+codex (all:true for detail)')
+    const taggedState = await t2.call('room_state', { all: true })
+    expect(taggedState).toContain('you: rohanz+codex · agent of rohanz · codex in r')
+    expect(taggedState).toContain('rohanz+codex · agent of rohanz · codex (you):')
+    expect(taggedState).not.toContain("rohanz+codex's agent")
     // a question to the codex agent reaches it, not the first agent
     await t1.call('room_send', { type: 'question', text: 'which lines?', to: 'rohanz+codex' })
     // the inbox is the prefix before the body ("you: ..."); the body's recent-bus section lists every message
@@ -442,6 +453,29 @@ describe('one login, two agents', () => {
 })
 
 describe('reading', () => {
+  it('treats another session watching this checkout as one local session, never peer WIP', async () => {
+    const t = setup()
+    const s = t.session!
+    s.awareness.setLocalStateField('watchedDirectory', 'same-checkout')
+    const peer = addPresence(s.awareness, 'Rohan+old')
+    peer.setLocalStateField('watchedDirectory', 'same-checkout')
+    applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+    t.room.clearOverlay('Rohan', 'app.py')
+    t.other.setOverlay('Rohan+old', 'app.py', MINE.replace('return 22', 'return 99'))
+    t.other.setScope({ by: 'Rohan+old', byKind: 'agent', area: 'api', summary: 'old session', paths: ['app.py'] })
+    const scope = await t.tools.call('room_scope', { area: 'api', summary: 'new session', paths: ['app.py'] })
+    expect(scope).not.toContain("overlaps Rohan+old's scope")
+    expect(await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'edit' })).toContain('no claim needed')
+    const read = await t.tools.call('room_read', { path: 'app.py' })
+    expect(read).not.toContain('also changed (uncommitted) by: Rohan+old')
+    const state = await t.tools.call('room_state', { all: true })
+    expect(state.match(/another session in this checkout/g)).toHaveLength(1)
+    expect(state).toContain('  - Rohan+old · agent: another session in this checkout')
+    expect(state).not.toContain('Rohan+old: app.py')
+    expect(state).not.toContain('Rohan+old · agent: working on')
+    peer.destroy()
+    await t.tools.shutdown()
+  })
   it('room_read shows my overlay, base for untouched files, and others\' versions', async () => {
     const t = setup()
     const mine = await t.tools.call('room_read', { path: 'app.py' })

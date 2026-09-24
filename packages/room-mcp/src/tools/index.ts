@@ -1,6 +1,7 @@
 import { hookHealthNote } from '../hooks-bridge.js'
 import { hasCompany } from '../company.js'
 import { connectedBefore, trackConnection } from '../connection.js'
+import { toolCallAborted, withToolSignal } from '../registry.js'
 import { LOCAL, NotLoggedIn, type Session } from '../session.js'
 import { createHandlerState, NeedFetch, NotJoined, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { defs as joinDefs, handlers as joinHandlers, install as installJoin, teamSharingNote } from './join.js'
@@ -15,7 +16,7 @@ import { defs as prDefs, handlers as prHandlers, install as installPrs } from '.
 
 export interface Tools {
   list(): ToolDef[]
-  call(name: string, args: Record<string, unknown>): Promise<string>
+  call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>
   /** Attach the hooks bridge (state file + wake) to a session; idempotent. */
   attachHooks(s: Session): void
   /** Release claims, clear scope, stop the bridge and daemon (process exit path). */
@@ -64,23 +65,28 @@ export function createTools(ctx: ToolCtx): Tools {
     drop: state.drop,
     shutdown: state.shutdown,
     flushConflicts: state.flushConflicts,
-    async call(name, args) {
+    async call(name, args, signal) {
+      return withToolSignal(signal, async () => {
+      if (toolCallAborted()) return 'error: tool call cancelled'
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
       if (autoJoin && CHOOSES_ROOM.has(name)) { await autoJoin.settle(); autoJoin.cancel() }
       else if (autoJoin) await autoJoin.ensure()
+      if (toolCallAborted()) return 'error: tool call cancelled'
       const current = ctx.getSession()
       current?.daemon.touch()
       const closed = current?.closed
-      const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait'
+      const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait' || name === 'room_collect'
       if (closed && name !== 'room_leave' && !offlineTool) { const rn = current!.roomName; return `error: the room for ${rn.slice(0, rn.lastIndexOf('/'))} was closed (${closed.reason}); room_leave, then room_create to reopen` }
       const moved = await state.followBranch()
+      if (toolCallAborted()) return 'error: tool call cancelled'
       const s = ctx.getSession()
       s?.refreshRuntime?.()
       if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && (s.closed || connectedBefore(s)))) return 'error: room not synced yet, retry'
       if (s) { trackConnection(s, state.now); state.rooms.track(s) }
       try {
         const body = await h(args ?? {})
+        if (toolCallAborted()) return 'error: tool call cancelled'
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
         const s2 = ctx.getSession()
         if (s2 && s2 !== s) s2.refreshRuntime?.()
@@ -93,6 +99,7 @@ export function createTools(ctx: ToolCtx): Tools {
         if (s2) delete s2.autoTagNote
         return prefix + (sharing ? sharing + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
       } catch (e) {
+        if (toolCallAborted()) return 'error: tool call cancelled'
         if (e instanceof NotJoined) return notJoined()
         if (e instanceof NotLoggedIn) return `error: ${e.message}`
         if (e instanceof NeedFetch) return e.lead
@@ -100,6 +107,7 @@ export function createTools(ctx: ToolCtx): Tools {
           : `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry; if it is still missing, ${e.person} has not pushed it yet`
         return `error: ${e instanceof Error ? e.message : String(e)}`
       }
+      })
     },
   }
 }

@@ -5,7 +5,8 @@ describe('identity', () => {
   it('displayName renders each kind, with owner and label when present', () => {
     expect(displayName({ name: 'rohanz', kind: 'human' })).toBe('rohanz')
     expect(displayName({ name: 'rohanz', kind: 'agent' })).toBe("rohanz's agent")
-    expect(displayName({ name: 'rohanz+codex', kind: 'agent', owner: 'rohanz', label: 'codex' })).toBe("rohanz's agent (codex)")
+    expect(displayName({ name: 'rohanz+codex', kind: 'agent', owner: 'rohanz', label: 'codex' })).toBe('rohanz+codex')
+    expect(displayName({ name: 'rohanz+codex', kind: 'agent' })).toBe('rohanz+codex')
     expect(displayName({ name: 'deploy-bot', kind: 'bot', owner: 'rohanz', label: 'deploy' })).toBe('deploy [bot]')
     expect(displayName({ name: 'gh-actions', kind: 'ci' })).toBe('gh-actions [ci]')
   })

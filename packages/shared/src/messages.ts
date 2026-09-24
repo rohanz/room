@@ -27,7 +27,7 @@ export interface MessageKind<M extends MsgBase = Msg> {
 }
 
 const who = (m: MsgBase) => displayName({ name: m.from, kind: m.fromKind })
-const to = (m: MsgBase) => m.to ? ` → ${m.to}'s agent` : ''
+const to = (m: MsgBase) => m.to ? ` → ${displayName({ name: m.to, kind: 'agent' })}` : ''
 const priority = (m: MsgBase) => `[${m.priority}] `
 
 const builtins = {

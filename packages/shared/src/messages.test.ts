@@ -11,6 +11,7 @@ import {
   type BaseMsg,
   type PlanMsg,
   type NoteMsg,
+  type QuestionMsg,
 } from './index.js'
 
 declare module './types.js' {
@@ -143,5 +144,12 @@ it('addresses merge conflicts to the affected participant as a waking notificati
   expect(messageForMe({ name: 'Ada' }, m)).toBe(false)
   expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m)).toMatchObject({ wake: true, mustAnswer: true })
   expect(shouldWakeOnMsg({ name: 'Ada', kind: 'agent' }, m).wake).toBe(false)
+  room.doc.destroy()
+})
+
+it('formats a tagged question recipient by its Room name', () => {
+  const room = new RoomDoc()
+  const question = room.post<QuestionMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'rohanz+codex', text: 'which lines?' })
+  expect(formatMsg(question)).toBe("[notify] Rohan's agent → rohanz+codex asks: which lines?")
   room.doc.destroy()
 })

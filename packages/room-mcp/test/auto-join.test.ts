@@ -239,6 +239,18 @@ describe('tools and the ensure step', () => {
     tools.setAutoJoin(handle('Room could not join the local room (relay): EACCES.'))
     expect(await tools.call('room_spawn', { tag: 'w', task: 't' })).toBe('error: not in a room. Room could not join the local room (relay): EACCES.')
   })
+  it('drops a tool call cancelled while its automatic join is queued', async () => {
+    let finish!: () => void
+    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: os.tmpdir(), config: { server: LOCAL } as ResolvedConfig })
+    const h = handle()
+    h.ensure = () => new Promise<void>(resolve => { finish = resolve })
+    tools.setAutoJoin(h)
+    const controller = new AbortController()
+    const call = tools.call('room_state', {}, controller.signal)
+    controller.abort()
+    finish()
+    expect(await call).toBe('error: tool call cancelled')
+  })
 })
 
 describe('room-mcp.log', () => {

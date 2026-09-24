@@ -4,8 +4,9 @@ import { trackConnection } from './connection.js'
  * websocket provider) plus the identity the tools act as. `room_join` creates it,
  * `room_leave` tears it down.
  */
-import { readFileSync, watchFile, unwatchFile } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, watchFile, unwatchFile, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { dirname, join, resolve } from 'node:path'
 import { WebsocketProvider } from 'y-websocket'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
@@ -270,10 +271,39 @@ export async function serverFetch(url: string, init: RequestInit & { timeoutMs?:
 export function encodeRoom(roomName: string): string { return encodeURIComponent(roomName) }
 export function decodeRoom(encoded: string): string { try { return decodeURIComponent(encoded) } catch { return encoded } }
 
+/** Hold an automatic name from before the presence probe until the daemon stops.
+ * Linked worktrees share this git common dir, so O_EXCL chooses exactly one winner. */
+async function reserveAutoName(dir: string, room: string, name: string): Promise<(() => void) | undefined> {
+  const folder = join(await gitCommonDir(dir), 'room-name-locks')
+  mkdirSync(folder, { recursive: true, mode: 0o700 })
+  const file = join(folder, createHash('sha256').update(`${room}\0${name}`).digest('hex'))
+  const token = JSON.stringify({ pid: process.pid, nonce: randomUUID() })
+  const acquire = (): (() => void) | undefined => {
+    let fd: number
+    try { fd = openSync(file, 'wx', 0o600) }
+    catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') return undefined; throw e }
+    try { writeFileSync(fd, token) } finally { closeSync(fd) }
+    return () => { try { if (readFileSync(file, 'utf8') === token) unlinkSync(file) } catch { /* already removed */ } }
+  }
+  let release = acquire()
+  if (release) return release
+  // A crashed process leaves a reservation behind. A live process is never touched.
+  try {
+    const record = JSON.parse(readFileSync(file, 'utf8')) as { pid?: number }
+    if (typeof record.pid !== 'number') return undefined
+    try { process.kill(record.pid, 0); return undefined }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') return undefined }
+    if (existsSync(file)) unlinkSync(file)
+  } catch { return undefined }
+  release = acquire()
+  return release
+}
+
 /** Resolve identity before roomd can publish any overlays under it. The probe never publishes a user. */
 export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string; refreshRuntime: () => void }> {
   let name = options.name, label = options.label
   let autoTagNote: string | undefined
+  let releaseName: (() => void) | undefined
   const rememberedTag = explicitTag === undefined ? (await readChoice(options.dir))?.tags?.[await worktreePath(options.dir)] : undefined
   if (explicitTag === undefined) {
     const doc = new Y.Doc()
@@ -302,29 +332,39 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
       const roomDoc = new RoomDoc(doc)
       const holdsWork = (candidate: string) => roomDoc.changedPaths(candidate).length > 0 || (roomDoc.deleted.get(candidate)?.size ?? 0) > 0
       const rememberedName = rememberedTag === undefined ? undefined : rememberedTag ? `${options.name}+${rememberedTag}` : options.name
-      const rememberedPresent = rememberedName !== undefined && names.has(rememberedName)
-      const barePresent = names.has(options.name)
+      const reserved = new Set<string>()
       const host = resolveSessionHost(options.dir)
       for (let candidate = rememberedTag === undefined ? 0 : -1; ; candidate++) {
         const tag = candidate === -1 ? rememberedTag! : candidate === 0 ? '' : candidate === 1 ? host : `${host}-${candidate}`
         const candidateName = tag ? `${options.name}+${tag}` : options.name
-        if (names.has(candidateName) || (tag !== rememberedTag && holdsWork(candidateName))) continue
+        const release = await reserveAutoName(options.dir, options.room, candidateName)
+        if (!release) { reserved.add(candidateName); continue }
+        if (names.has(candidateName) || (tag !== rememberedTag && holdsWork(candidateName))) { release(); continue }
+        releaseName = release
         label = tag || undefined
         name = candidateName
         break
       }
+      const rememberedPresent = rememberedName !== undefined && (names.has(rememberedName) || reserved.has(rememberedName))
+      const barePresent = names.has(options.name) || reserved.has(options.name)
       if (rememberedPresent || name !== options.name && name !== rememberedName) {
         autoTagNote = `joined as ${name} (${rememberedPresent ? `remembered name ${rememberedName} is in use by another session` : barePresent ? `${options.name} is in use by another session` : `${options.name} still holds uncommitted work from another clone`})`
         ;(options.log ?? console.error)(autoTagNote)
       }
       if ((label ?? '') !== rememberedTag) await rememberTag(options.dir, label ?? '')
-    } finally {
+    } catch (e) { releaseName?.(); releaseName = undefined; throw e } finally {
       provider.destroy()
       provider.awareness.destroy()
       doc.destroy()
     }
   }
-  const daemon = await startRoomd({ ...options, name, label, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) })
+  let daemon: Roomd
+  try { daemon = await startRoomd({ ...options, name, label, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) }) }
+  catch (e) { releaseName?.(); throw e }
+  if (releaseName) {
+    const stop = daemon.stop.bind(daemon)
+    daemon.stop = async () => { try { await stop() } finally { releaseName?.(); releaseName = undefined } }
+  }
   const file = sessionMetadataPath(options.dir)
   const refreshTranscriptModel = createClaudeTranscriptModelRefresh()
   const publishRuntime = (transcriptModel?: string) => {

@@ -7,6 +7,7 @@ import { handlers as scopeHandlers } from './scope.js'
 import { git } from '@room/roomd/git'
 import { DEFAULT_SERVER, NoRoom, NotLoggedIn, deriveRoomName, normalizeLocalRoomName, resolveServer, type JoinOptions, type Session } from '../session.js'
 import { displayName } from '@room/shared'
+import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, markWarned, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
 import { LOCAL, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
@@ -171,7 +172,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName.slice(0, e.roomName.lastIndexOf('/'))
         return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`
       }
-      if (choice.rule === 'argument') { try { await writeChoice(dir, choice.where, s.me.name, s.shareRequested) } catch { /* not a repository? keep going */ } }
+      if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, choice.where, s.me.name, s.shareRequested, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
       for (const m of s.room.messages()) seen.add(m.id)
       rooms.add(s, 'primary')
@@ -184,26 +185,25 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone and its worktrees)' : choice.rule === 'env' ? resolved.whereEnv : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
       const note = await teamSharingNote(s)
       if (note) out.push(note)
+      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)
+      if (presences(s).some(p => sameCheckoutSession(s, p.user.name))) out.push('another session in this checkout')
       const company = hasCompany(s)
       if (!company.company) {
         out.push(shareLine(s))
         out.push('alone here; the room stays quiet until someone joins')
         return out.join('\n')
       }
-      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)
       out.push(shareLine(s))
-      const publisher = s.awareness.getLocalState()?.publishUnder
-      if (typeof publisher === 'string' && publisher !== s.me.name) out.push(`Your file changes are published under ${publisher}'s name because both sessions watch this folder; claims say which lines are whose.`)
-      const here = others(s).filter(n => presences(s).some(p => p.user.name === n))
+      const here = others(s).filter(n => !sameCheckoutSession(s, n) && presences(s).some(p => p.user.name === n))
       const mineA = myAreas(s)
       setPresence(s, { areas: mineA })
       out.push(...areaLines(s, mineA))
       out.push(here.length ? `here now: ${here.join(', ')}` : 'nobody else is here yet')
       for (const n of here) out.push(`  ${n}: ${personLine(s, n)}`)
-      const away = others(s).filter(n => !here.includes(n) && s.room.changedPaths(n).length)
+      const away = others(s).filter(n => !sameCheckoutSession(s, n) && !here.includes(n) && s.room.changedPaths(n).length)
       for (const n of away) out.push(`  ${n} (offline): ${personLine(s, n)}`)
       if (s.autoTagNote) { out.push(s.autoTagNote); delete s.autoTagNote }
-      const cs = s.room.openClaims()
+      const cs = s.room.openClaims().filter(c => !sameCheckoutSession(s, c.by))
       if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
       out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       out.push('next: room_scope(area, summary, paths) before you edit.')

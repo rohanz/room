@@ -11,11 +11,19 @@
 import type { NoteMsg, Presence, Worker } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
 import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, shouldRetire, workerCommand, workerGitFacts, workerLogTail, workerMaxBudget, workerOperationKey, workerPriority, workerProcessEnv, type SpawnedProcess, type Spawner } from './workers.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 
 export type Role = 'primary' | 'workers'
+
+/** The MCP request's cancellation follows awaits into worker preparation and registry locks. */
+const toolSignal = new AsyncLocalStorage<AbortSignal>()
+export function withToolSignal<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
+  return signal ? toolSignal.run(signal, run) : run()
+}
+export function toolCallAborted(): boolean { return toolSignal.getStore()?.aborted === true }
 
 /** What a session needs running while it is in the registry; built by the host (tools.ts) because the pieces close over tool state. */
 export interface Attachment {
@@ -248,10 +256,10 @@ export class Rooms {
   private mustHave(): Session { throw new Error('not in a room') }
 
   // ---- worker processes ---------------------------------------------------------
-  reserve(base: string): boolean { if (this.reserving.has(base)) return false; this.reserving.add(base); return true }
+  reserve(base: string): boolean { if (toolCallAborted() || this.reserving.has(base)) return false; this.reserving.add(base); return true }
   unreserve(base: string): void { this.reserving.delete(base) }
   reserveLaunch(max: number, running: number): boolean {
-    if (this.launchUsage(running) >= max) return false
+    if (toolCallAborted() || this.launchUsage(running) >= max) return false
     this.launching++
     return true
   }
@@ -297,6 +305,7 @@ export class Rooms {
     // An exit callback starts retirement asynchronously. Let that check finish before competing
     // for the same worktree lock; it retains any worker with work to collect.
     await this.retiring.get(s)
+    if (toolCallAborted()) return 'error: tool call cancelled'
     const key = workerOperationKey(w)
     if (!this.reserve(key)) return `error: ${w.tag} is being collected, discarded or resumed; retry after that finishes`
     try {
@@ -310,6 +319,7 @@ export class Rooms {
       // period so a prompt lead reply resumes it without requiring a second room_send.
       const deadline = Date.now() + 5_000
       while (this.hasHandle(s, w) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+      if (toolCallAborted()) return 'error: tool call cancelled'
       if (this.hasHandle(s, w) || (w.exitCode === undefined && pidIsOurWorker(w.pid, w))) return `error: ${w.tag}'s previous process is still exiting; send the message again shortly`
       if (!fs.existsSync(w.dir)) return `error: ${w.tag}'s worktree no longer exists; it cannot be resumed`
       if (!w.hostSessionId) return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`
@@ -317,6 +327,7 @@ export class Rooms {
       const budget = w.budget
       if (!budget) return `error: ${w.tag} has no recorded compute budget; it cannot be resumed`
       const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers } })
+      if (toolCallAborted()) return 'error: tool call cancelled'
       const latest = s.room.workers.get(w.tag)
       if (!latest || latest.id !== w.id || latest.gen !== w.gen || latest.status === 'running') return `error: ${w.tag} changed while you were sending; retry`
       w = latest
@@ -336,6 +347,7 @@ export class Rooms {
         const command = workerCommand(w.host, w.model, message, claudeChannel, w.effort, { tag: w.tag, sessionId: w.hostSessionId, resume: true, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels' })
         const priority = workerPriority(command, { ...process.env, ROOM_WORKER_NICE: String(budget.nice) })
         const logFile = path.join(s.dir, '.room', 'workers', `${w.tag}.log`)
+        if (toolCallAborted()) return 'error: tool call cancelled'
         let proc: SpawnedProcess
         try { proc = spawner({ cmd: priority.cmd, args: priority.args, cwd: w.dir, env, logFile, captureCodexSession: w.host === 'codex' }) }
         catch (e) { return `error: could not resume ${w.tag}: ${e instanceof Error ? e.message : String(e)}` }

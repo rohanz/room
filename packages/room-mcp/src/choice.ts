@@ -15,7 +15,7 @@ import { DEFAULT_SERVER, LOCAL, normaliseWhere } from './config.js'
 
 export const CHOICE_FILE = 'room-choice.json'
 
-export interface RoomChoice { where: string; at: number; by?: string; share?: ShareLevel; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree/destination keys already told what they share */ warned?: string[]; /** most recently disclosed level for each warning key */ warnedLevels?: Record<string, ShareLevel> }
+export interface RoomChoice { where: string; at: number; by?: string; share?: ShareLevel; /** Explicit local room selected by room_join; absent in older choices. */ room?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree/destination keys already told what they share */ warned?: string[]; /** most recently disclosed level for each warning key */ warnedLevels?: Record<string, ShareLevel> }
 
 /** "team"/"hosted" → the hosted server; "local" or empty → local; anything else is a server URL. */
 export { normaliseWhere }
@@ -43,12 +43,12 @@ export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
   } catch { return undefined }
 }
 
-export async function writeChoice(dir: string, where: string, by?: string, share?: ShareLevel): Promise<RoomChoice> {
+export async function writeChoice(dir: string, where: string, by?: string, share?: ShareLevel, room?: string): Promise<RoomChoice> {
   where = where.replace(/\?.*$/, '') // never remember a token; it comes from ROOM_SERVER/ROOM_TOKEN at join time
   const prev = await readChoice(dir)
   const same = prev?.where === where
   const rememberedShare = share ?? (same ? prev?.share : undefined)
-  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(rememberedShare ? { share: rememberedShare } : {}), ...(prev?.tags ? { tags: prev.tags } : {}), ...(same && prev.warned?.length ? { warned: prev.warned } : {}), ...(same && prev.warnedLevels ? { warnedLevels: prev.warnedLevels } : {}) }
+  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(rememberedShare ? { share: rememberedShare } : {}), ...(where === LOCAL && room ? { room } : {}), ...(prev?.tags ? { tags: prev.tags } : {}), ...(same && prev.warned?.length ? { warned: prev.warned } : {}), ...(same && prev.warnedLevels ? { warnedLevels: prev.warnedLevels } : {}) }
   const file = await choiceFile(dir)
   fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
   try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }
@@ -67,13 +67,37 @@ export async function rememberShare(dir: string, share: ShareLevel): Promise<Roo
 
 /** Remember an automatically assigned identity without changing this clone's room choice. */
 export async function rememberTag(dir: string, tag: string): Promise<RoomChoice> {
-  const prev = await readChoice(dir)
-  const key = await worktreePath(dir)
-  const c: RoomChoice = { ...(prev ?? { where: LOCAL, at: Date.now() }), tags: { ...prev?.tags, [key]: tag } }
   const file = await choiceFile(dir)
-  fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
-  try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }
-  return c
+  const lock = `${file}.lock`
+  const deadline = Date.now() + 5000
+  let fd: number | undefined
+  while (fd === undefined) {
+    try { fd = fs.openSync(lock, 'wx', 0o600); fs.writeFileSync(fd, String(process.pid)) }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+      // Recover a crashed writer; never remove a live session's lock.
+      try {
+        const owner = Number(fs.readFileSync(lock, 'utf8'))
+        if (Number.isInteger(owner) && owner > 0) {
+          try { process.kill(owner, 0) } catch (err) { if ((err as NodeJS.ErrnoException).code === 'ESRCH') fs.rmSync(lock, { force: true }) }
+        }
+      } catch { /* another writer may have just removed it */ }
+      if (Date.now() >= deadline) throw new Error('timed out waiting to remember Room name')
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  try {
+    const prev = await readChoice(dir)
+    const key = await worktreePath(dir)
+    const c: RoomChoice = { ...(prev ?? { where: LOCAL, at: Date.now() }), tags: { ...prev?.tags, [key]: tag } }
+    const temp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+    try { fs.writeFileSync(temp, JSON.stringify(c) + '\n', { mode: 0o600 }); fs.renameSync(temp, file) }
+    finally { fs.rmSync(temp, { force: true }) }
+    return c
+  } finally {
+    fs.closeSync(fd)
+    fs.rmSync(lock, { force: true })
+  }
 }
 
 /** Has this worktree been told its uncommitted work is visible to the team? Marks it told and says whether it was new. */
