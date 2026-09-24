@@ -96,7 +96,7 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 ### 6. Low — Build-output consolidation regresses disposable-cache cleanup
 
-**FIXED in 0.16.2 (<commit>).**
+**FIXED in 0.16.2 (475eeca).**
 
 **Locations:** `packages/shared/src/build-output.ts:2`; `packages/room-mcp/src/workers.ts:30`; `packages/room-mcp/test/collect.test.ts:124`.
 
@@ -110,7 +110,7 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 ### 7. Low — New test fixtures leave directories, timers and a child process behind
 
-**FIXED in 0.16.2 (<commit>).**
+**FIXED in 0.16.2 (475eeca).**
 
 **Locations:** `packages/roomd/test/base-branch.test.ts:17`, `:34`; `packages/room-mcp/test/archive-signal.test.ts:43`, `:53`, `:73`.
 

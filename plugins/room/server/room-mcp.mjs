@@ -7238,10 +7238,11 @@ function isAgentic(kind) {
   return kind !== void 0 && kind !== "human";
 }
 function displayName(id2) {
+  const owner = "owner" in id2 ? id2.owner : void 0;
   const label = "label" in id2 ? id2.label : void 0;
   switch (id2.kind) {
     case "agent":
-      return id2.name;
+      return id2.name.includes("+") ? id2.name : `${owner ?? id2.name}'s agent`;
     case "bot":
       return `${label ?? id2.name} [bot]`;
     case "ci":
@@ -7251,8 +7252,8 @@ function displayName(id2) {
   }
 }
 function describeIdentity(id2) {
-  const parts2 = [id2.name];
-  if (id2.kind !== "human") parts2.push(id2.owner && id2.owner !== id2.name ? `${id2.kind} of ${id2.owner}` : id2.kind);
+  const parts2 = [displayName(id2)];
+  if (id2.kind !== "human" && !(id2.kind === "agent" && !id2.name.includes("+"))) parts2.push(id2.owner && id2.owner !== id2.name ? `${id2.kind} of ${id2.owner}` : id2.kind);
   if (id2.label) parts2.push(id2.label);
   return parts2.join(" \xB7 ");
 }
@@ -7321,7 +7322,7 @@ var init_messages = __esm({
       conflict: { priority: "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
       "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
       contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
-      note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${m.to ? ` \u2192 ${m.to}` : ""}: ${m.text}` },
+      note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
       done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
       base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => (m.fromKind === "human" || m.from !== ctx.me.name) && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 ${BASE_CATCH_UP}` },
       plan: { priority: "fyi", audience: "broadcast", wakes: "interrupt", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""}${m.text ? ` \u2014 ${m.text}` : ""}` },
@@ -16418,13 +16419,13 @@ var init_doc = __esm({
       }
       /** Repair older archives that left live records behind; this is document-only and cheap for room_state. */
       sweepRetiredWorkers(present = /* @__PURE__ */ new Set()) {
-        const claims = new Set([...this.claims.values()].map((c) => c.by));
         let swept = 0;
         for (const retired of this.retiredWorkers()) {
           if (present.has(retired.name)) continue;
-          const current = this.workerOf(retired.name);
-          if (current && (current.startedAt !== retired.startedAt || current.lead !== retired.lead)) continue;
-          if (!current && !this.overlays.has(retired.name) && !this.deleted.has(retired.name) && !claims.has(retired.name) && !this.scopes.has(retired.name)) continue;
+          const currentWorkers = [...this.workers.values()].filter((w) => w.name === retired.name);
+          if (currentWorkers.length !== 1) continue;
+          const current = currentWorkers[0];
+          if (current.startedAt !== retired.startedAt || current.lead !== retired.lead || current.tag !== retired.tag) continue;
           this.retireParticipant(retired.name, retired);
           swept++;
         }
@@ -17344,11 +17345,11 @@ function activityLabel(lastActive, now = Date.now(), options = {}) {
   if (running) return now - lastActive > 3e5 ? "running \xB7 quiet " + duration3 : "running";
   return seconds < 90 ? "working" : "last action " + duration3 + " ago";
 }
-function participantIdentityLine(current, name2, worker) {
+function participantIdentityLine(current, name2, worker, fallbackKind) {
   const p = [...current].filter((p2) => p2.user.name === name2).sort((a, b) => Number(isAgentic(b.user.kind)) - Number(isAgentic(a.user.kind)) || (b.lastActive ?? 0) - (a.lastActive ?? 0))[0];
-  const id2 = p?.user ?? (worker ? { name: name2, kind: "agent", owner: worker.name.split("+")[0], label: worker.tag } : void 0);
+  const id2 = p?.user ?? (worker ? { name: name2, kind: "agent", owner: worker.name.split("+")[0], label: worker.tag } : fallbackKind ? { name: name2, kind: fallbackKind } : void 0);
   if (!id2) return name2;
-  const parts2 = [describeIdentity(id2).replace(id2.name, displayName(id2))];
+  const parts2 = [describeIdentity(id2)];
   const host = p?.host ?? worker?.host;
   if (host && host !== "agent" && host !== id2.label) parts2.push(host);
   const model = p?.model ?? worker?.model;
@@ -17387,7 +17388,7 @@ function deriveParticipants(input) {
       behindBase: Boolean(input.roomBase && ownBase && ownBase !== input.roomBase),
       latestActive,
       kinds: Array.from(kinds).sort((a, b) => a.localeCompare(b)),
-      identity: participantIdentityLine(current, name2, input.workers?.find((w) => w.name === name2)).slice(name2.length + 3),
+      identity: participantIdentityLine(current, name2, input.workers?.find((w) => w.name === name2), kinds.has("agent") ? "agent" : scope?.byKind ?? input.claims.find((c) => c.by === name2)?.byKind).split(" \xB7 ").slice(1).join(" \xB7 "),
       statuses: Array.from(latest.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([kind, presence]) => ({ kind, status: presence.status ?? "online" })),
       scope,
       files: [...input.changesByPerson.get(name2) ?? []].sort(),
@@ -17551,8 +17552,13 @@ var init_build_output = __esm({
       "test-results",
       "playwright-report",
       "node_modules",
+      "vendor",
       "__pycache__",
       ".pytest_cache",
+      ".mypy_cache",
+      ".ruff_cache",
+      ".tox",
+      ".gradle",
       "target"
     ];
     buildDirs = new Set(REGENERABLE_BUILD_DIRS);
@@ -19954,7 +19960,7 @@ var require_websocket = __commonJS({
     var http2 = __require("http");
     var net2 = __require("net");
     var tls = __require("tls");
-    var { randomBytes, createHash: createHash5 } = __require("crypto");
+    var { randomBytes: randomBytes2, createHash: createHash5 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -20492,7 +20498,7 @@ var require_websocket = __commonJS({
         }
       }
       const defaultPort = isSecure ? 443 : 80;
-      const key = randomBytes(16).toString("base64");
+      const key = randomBytes2(16).toString("base64");
       const request = isSecure ? https.request : http2.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
@@ -24823,7 +24829,8 @@ var init_roomignore = __esm({
 // packages/roomd/src/index.ts
 import fs6 from "node:fs";
 import path5 from "node:path";
-import { createHash } from "node:crypto";
+import os from "node:os";
+import { createHash, randomBytes } from "node:crypto";
 function observeCallback(fn, report) {
   void Promise.resolve().then(fn).catch(report);
 }
@@ -24833,6 +24840,43 @@ function parseShare(v) {
 }
 function clampShare(level, max2) {
   return SHARE_RANK[level] > SHARE_RANK[max2] ? max2 : level;
+}
+function machineIdentity(log2) {
+  if (process.env.ROOM_MACHINE_ID) return process.env.ROOM_MACHINE_ID;
+  const file = path5.join(process.env.XDG_CONFIG_HOME || path5.join(os.homedir(), ".config"), "room", "machine-id");
+  const cached2 = machineIdentities.get(file);
+  if (cached2) return cached2;
+  try {
+    fs6.mkdirSync(path5.dirname(file), { recursive: true, mode: 448 });
+    const temporary = `${file}.${process.pid}.${randomBytes(8).toString("hex")}`;
+    try {
+      fs6.writeFileSync(temporary, randomBytes(32).toString("hex") + "\n", { flag: "wx", mode: 384 });
+      try {
+        fs6.linkSync(temporary, file);
+      } catch (error2) {
+        if (error2.code !== "EEXIST") throw error2;
+      }
+    } finally {
+      try {
+        fs6.rmSync(temporary, { force: true });
+      } catch {
+      }
+    }
+    const id2 = fs6.readFileSync(file, "utf8").trim();
+    if (!/^[a-f0-9]{64}$/.test(id2)) throw new Error("invalid machine-id file");
+    machineIdentities.set(file, id2);
+    return id2;
+  } catch (error2) {
+    machineIdentities.set(file, machineHostname);
+    if (!machineIdentityWarningLogged) {
+      machineIdentityWarningLogged = true;
+      try {
+        log2(`machine id unavailable (${error2 instanceof Error ? error2.message : String(error2)}); using hostname for checkout identity`);
+      } catch {
+      }
+    }
+    return machineHostname;
+  }
 }
 function defaultIgnoredPath(relpath) {
   return relpath.split("/").some((segment) => DEFAULT_IGNORED_DIRS.has(segment) || segment === ".DS_Store" || /\.(npy|npz|parquet|pkl|pt|bin|sqlite|zip|gz|tmp)$/i.test(segment) || segment.endsWith("~") || /^(?:\.#.*|\.tmp(?:[.-].*)?|\..+\.(?:tmp(?:[.-].*)?|sw[opx]|part|atomic))$/i.test(segment));
@@ -24884,7 +24928,7 @@ async function startRoomd(options) {
 function errMsg(error2) {
   return error2 instanceof Error ? error2.message : String(error2);
 }
-var SHARE_LEVELS, SHARE_RANK, RoomdError, DEFAULT_IGNORED_DIRS, ROOM_FILE, ROOMIGNORE, DEFAULT_STARTUP_TIMEOUT_MS, Daemon;
+var SHARE_LEVELS, SHARE_RANK, machineHostname, machineIdentities, machineIdentityWarningLogged, RoomdError, DEFAULT_IGNORED_DIRS, ROOM_FILE, ROOMIGNORE, DEFAULT_STARTUP_TIMEOUT_MS, Daemon;
 var init_src3 = __esm({
   "packages/roomd/src/index.ts"() {
     "use strict";
@@ -24900,6 +24944,9 @@ var init_src3 = __esm({
     init_git();
     SHARE_LEVELS = ["intent", "declared", "full"];
     SHARE_RANK = { intent: 0, declared: 1, full: 2 };
+    machineHostname = os.hostname();
+    machineIdentities = /* @__PURE__ */ new Map();
+    machineIdentityWarningLogged = false;
     RoomdError = class extends Error {
       constructor(message, code) {
         super(message);
@@ -24984,7 +25031,7 @@ var init_src3 = __esm({
         this.log = options.log ?? ((line) => process.stderr.write(`[roomd] ${line}
 `));
         this.debounceMs = options.debounceMs ?? 300;
-        this.watchedDirectory = createHash("sha256").update(fs6.realpathSync(this.dir)).digest("hex");
+        this.watchedDirectory = createHash("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs6.realpathSync(this.dir)).digest("hex");
         this.batch = new DiskBatch((paths) => {
           const work = this.enqueue(async () => {
             await this.pollHead();
@@ -25837,7 +25884,7 @@ var init_common = __esm({
 });
 
 // packages/room-mcp/src/config.ts
-import os from "node:os";
+import os2 from "node:os";
 import { execFileSync as execFileSync2 } from "node:child_process";
 import path6 from "node:path";
 import fs7 from "node:fs";
@@ -25870,7 +25917,7 @@ async function readRememberedChoice(dir) {
   }
 }
 function resolveCredentialsPath(args3 = {}, e = process.env) {
-  return value(args3.credentialsPath ?? args3.credentials) ?? value(e.ROOM_CREDENTIALS) ?? path6.join(value(e.XDG_CONFIG_HOME) ?? path6.join(os.homedir(), ".config"), "room", "credentials.json");
+  return value(args3.credentialsPath ?? args3.credentials) ?? value(e.ROOM_CREDENTIALS) ?? path6.join(value(e.XDG_CONFIG_HOME) ?? path6.join(os2.homedir(), ".config"), "room", "credentials.json");
 }
 async function resolveConfig({ env, args: args3 = {}, dir }) {
   const e = env ?? process.env;
@@ -26271,10 +26318,8 @@ var init_presence = __esm({
 function sameCheckoutSession(s, name2) {
   const mine = s.awareness.getLocalState()?.watchedDirectory;
   if (!mine || name2 === s.me.name) return false;
-  return [...s.awareness.getStates().values()].some((value2) => {
-    const p = value2;
-    return p.user?.name === name2 && p.watchedDirectory === mine;
-  });
+  const peers = [...s.awareness.getStates()].filter(([id2, value2]) => id2 !== s.awareness.clientID && value2.user?.name === name2 && isFresh(s.awareness, id2, Date.now()));
+  return peers.length > 0 && peers.every(([, value2]) => value2.watchedDirectory === mine);
 }
 function hasCompany(s, runningWorkers = [], now = Date.now()) {
   const names = /* @__PURE__ */ new Map();
@@ -26291,9 +26336,12 @@ function hasCompany(s, runningWorkers = [], now = Date.now()) {
 }
 function describeCompany(s, company) {
   const scopes = s.room.allScopes();
+  const current = [...s.awareness.getStates().values()];
   const entries = company.others.map((name2) => {
-    const scope = scopes.find((sc) => name2 === sc.by || name2 === displayName({ name: sc.by, kind: sc.byKind }));
-    return scope ? `${scope.by} is here, on ${scope.area}: ${scope.paths.join(", ")}` : `${name2} is here`;
+    const scope = scopes.find((sc) => name2 === sc.by);
+    const presence = current.find((p) => p.user?.name === name2 && p.user.kind === "agent") ?? current.find((p) => p.user?.name === name2);
+    const who2 = displayName({ name: name2, kind: presence?.user?.kind ?? scope?.byKind ?? "agent" });
+    return scope ? `${who2} is here, on ${scope.area}: ${scope.paths.join(", ")}` : `${who2} is here`;
   });
   return "[room] " + entries.join("; ") + ".";
 }
@@ -26308,7 +26356,7 @@ var init_company = __esm({
 // packages/room-mcp/src/hooks-bridge.ts
 import { execFile as execFile3 } from "node:child_process";
 import fs8 from "node:fs";
-import os2 from "node:os";
+import os3 from "node:os";
 import path7 from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 import { randomUUID } from "node:crypto";
@@ -26470,7 +26518,7 @@ function defaultQueue(threadId, text) {
   });
 }
 function findThreadForDir(dir, since) {
-  const root = path7.join(os2.homedir(), ".codex", "sessions");
+  const root = path7.join(os3.homedir(), ".codex", "sessions");
   const key = `${root}\0${path7.resolve(dir)}\0${since}`;
   const cached2 = rolloutCache.get(key);
   if (cached2 && Date.now() - cached2.at < 5e3) return cached2.id;
@@ -26678,6 +26726,8 @@ var init_hooks_bridge = __esm({
           ...[.../* @__PURE__ */ new Set([...this.s.room.overlays.keys(), ...this.s.room.deleted.keys()])].filter((by) => by !== me).flatMap((by) => this.s.room.changedPaths(by).map((path20) => ({ by, path: path20, reason: "changed" })))
         ];
         const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now());
+        const presences = [...this.s.awareness.getStates().values()];
+        const others = company.others.map((name2) => displayName({ name: name2, kind: (presences.find((p) => p.user?.name === name2 && p.user.kind === "agent") ?? presences.find((p) => p.user?.name === name2))?.user?.kind ?? this.s.room.scope(name2)?.byKind ?? "agent" }));
         const sessionId = this.freshSession()?.id;
         const held = acquireNoticeLock(this.stateFile());
         if (!held) {
@@ -26688,7 +26738,7 @@ var init_hooks_bridge = __esm({
           const previous = readHookState(this.s.dir);
           const at = this.now();
           const carry = (!previous.sessionId || !sessionId || previous.sessionId === sessionId) && typeof previous.at === "number" && previous.at <= at && at - previous.at < 6e4 ? Object.fromEntries(["pendingDisclosure", "deliveredDisclosure", "pendingNotice", "deliveredNotice"].filter((key) => typeof previous[key] === "string").map((key) => [key, previous[key]])) : {};
-          fs8.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, ...sessionId ? { sessionId } : {}, at, company: company.company, others: company.others, companyLine: describeCompany(this.s, company), unread, claims, ownClaims, near, ...carry }, null, 1) + "\n");
+          fs8.writeFileSync(this.stateFile(), JSON.stringify({ name: me, room: this.s.roomName, ...sessionId ? { sessionId } : {}, at, company: company.company, others, companyLine: describeCompany(this.s, company), unread, claims, ownClaims, near, ...carry }, null, 1) + "\n");
         } catch (e) {
           this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : e}`);
         } finally {
@@ -31921,7 +31971,7 @@ var init_session = __esm({
 // packages/room-mcp/src/workers.ts
 import { execFileSync as execFileSync4, spawn as spawn2 } from "node:child_process";
 import fs11 from "node:fs";
-import os3 from "node:os";
+import os4 from "node:os";
 import path10 from "node:path";
 import { stripVTControlCharacters } from "node:util";
 function workerOwnedPaths(w) {
@@ -31937,6 +31987,45 @@ async function ignoredWorkerArtifacts(w) {
 }
 function workerOperationKey(w) {
   return "worker:" + path10.resolve(w.dir);
+}
+async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = []) {
+  const byName = new Map([...workers].map((record2) => [record2.name, record2]));
+  const chain = [w];
+  const seen = /* @__PURE__ */ new Set([w.name]);
+  let owner = w.lead;
+  while (leadName && owner !== leadName) {
+    const record2 = byName.get(owner);
+    if (!record2 || seen.has(record2.name)) return false;
+    const parent = {
+      name: record2.name,
+      tag: record2.tag,
+      lead: record2.lead,
+      dir: "dir" in record2 ? record2.dir : record2.keptWorktree ?? path10.dirname(path10.dirname(path10.dirname(chain[0].dir))),
+      branch: "branch" in record2 ? record2.branch : `room/${record2.tag}`
+    };
+    chain.unshift(parent);
+    seen.add(parent.name);
+    owner = parent.lead;
+  }
+  try {
+    let parentDir = leadDir, parentName = leadName;
+    const common = async (dir) => fs11.realpathSync(path10.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
+    for (const record2 of chain) {
+      if (parentName && record2.lead !== parentName) return false;
+      if (!fs11.existsSync(record2.dir) || record2.branch !== `room/${record2.tag}`) return false;
+      const parentRoot = fs11.realpathSync(parentDir), workerRoot = fs11.realpathSync(record2.dir);
+      if (workerRoot === parentRoot) return false;
+      const expected = path10.join(parentRoot, ".room", "workers", record2.tag);
+      if (!fs11.existsSync(expected) || workerRoot !== fs11.realpathSync(expected)) return false;
+      if (await common(parentDir) !== await common(record2.dir)) return false;
+      if ((await git(record2.dir, ["branch", "--show-current"])).trim() !== record2.branch) return false;
+      parentDir = record2.dir;
+      parentName = record2.name;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 function shouldRetire(facts) {
   if (!facts.exited) return void 0;
@@ -32170,7 +32259,7 @@ function patchArgs(base, exclusions, staged = false) {
 }
 function retainUntrackedTree(dir, tag, paths) {
   if (!paths.length) return void 0;
-  const scratch = fs11.mkdtempSync(path10.join(os3.tmpdir(), "room-carry-index-"));
+  const scratch = fs11.mkdtempSync(path10.join(os4.tmpdir(), "room-carry-index-"));
   const env = { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") };
   const run3 = (args3) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args3], { env }).toString().trim();
   try {
@@ -32325,7 +32414,7 @@ async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, 
     const excluded = [".room", ...exclusions].map((p) => `:(exclude,literal)${p.replace(/\/$/, "")}`);
     const patch = await internalGit(repoDir, patchArgs(base, excluded));
     if (patch) {
-      const scratch = fs11.mkdtempSync(path10.join(os3.tmpdir(), "room-carry-patch-"));
+      const scratch = fs11.mkdtempSync(path10.join(os4.tmpdir(), "room-carry-patch-"));
       try {
         const file = path10.join(scratch, "carry.patch");
         fs11.writeFileSync(file, patch, { mode: 384 });
@@ -32558,11 +32647,9 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   }
   return named;
 }
-async function cleanupWorker(leadDir, w, collected = false, discarded = false, terminatedProcesses = [], processOptions = {}) {
+async function cleanupWorker(leadDir, w, collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = []) {
   if (w.branch !== "room/" + w.tag || !discarded && (w.status === "failed" || w.exitCode !== 0)) return false;
-  const common = async (dir) => fs11.realpathSync(path10.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
-  if (await common(leadDir) !== await common(w.dir) || fs11.realpathSync(leadDir) === fs11.realpathSync(w.dir)) return false;
-  if ((await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) return false;
+  if (!await isOwnedWorkerWorktree(leadDir, w, leadName, workers)) return false;
   const nested = (await git(leadDir, ["worktree", "list", "--porcelain"])).split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length)).filter((dir) => dir !== w.dir && inside(fs11.realpathSync(w.dir), dir));
   if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(", ")}`);
   const head = (await git(w.dir, ["rev-parse", "HEAD"])).trim();
@@ -32659,7 +32746,7 @@ async function saveDiscardPatch(leadDir, w) {
       if (e.code !== "ENOTEMPTY") throw e;
     }
   }
-  const scratch = fs11.mkdtempSync(path10.join(os3.tmpdir(), "room-discard-"));
+  const scratch = fs11.mkdtempSync(path10.join(os4.tmpdir(), "room-discard-"));
   try {
     const run3 = (args3) => boundedGitSync(w.dir, args3, { env: { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") } });
     const base = w.base ?? (await git(leadDir, ["merge-base", "HEAD", w.branch])).trim();
@@ -33450,13 +33537,13 @@ var init_diff3 = __esm({
 // packages/room-mcp/src/merge.ts
 import { execFile as execFile4 } from "node:child_process";
 import fs12 from "node:fs";
-import os4 from "node:os";
+import os5 from "node:os";
 import path11 from "node:path";
 async function gitMergeFile(base, ours, theirs, labels) {
   const clean = (text) => ({ status: "clean", algorithm: "git", text, chunks: [{ ok: text.split("\n") }], conflicts: [] });
   if (ours === theirs || theirs === base) return clean(ours);
   if (ours === base) return clean(theirs);
-  const dir = fs12.mkdtempSync(path11.join(os4.tmpdir(), "room-merge-file-"));
+  const dir = fs12.mkdtempSync(path11.join(os5.tmpdir(), "room-merge-file-"));
   const oursPath = path11.join(dir, "ours"), basePath = path11.join(dir, "base"), theirsPath = path11.join(dir, "theirs");
   try {
     fs12.writeFileSync(oursPath, ours);
@@ -33847,7 +33934,6 @@ var init_conflicts = __esm({
         const mine = claims.filter((c) => c.by === me.name && c.byKind === me.kind);
         for (const c of claims) {
           if (c.by === me.name && c.byKind === me.kind) continue;
-          if (this.d.coLocated?.(c.by)) continue;
           const hit = ranges.find((r) => claimsOverlap(c, { path: p, ...r }) && !mine.some((m) => covers(m, p, r)));
           if (!hit) continue;
           const theirs = this.d.room.text(p, c.by) ?? await this.d.liveText(p, c.by).catch(() => void 0);
@@ -33898,7 +33984,7 @@ var init_conflicts = __esm({
             path: p,
             to: c.by,
             priority: "notify",
-            text: `${me.name}'s agent edited ${p}:${hit.from}-${hit.to} inside your claim ${c.id} (${c.intent}) without claiming`
+            text: `${displayName(me)} edited ${p}:${hit.from}-${hit.to} inside your claim ${c.id} (${c.intent}) without claiming`
           });
           this.d.log?.(`overlap: my edit ${p}:${hit.from}-${hit.to} inside ${c.by}'s claim ${c.id}`);
         }
@@ -34448,14 +34534,14 @@ function handlers(state) {
         ...s.room.openClaims().map((c) => ({ by: c.by, path: c.path, reason: "claim" })),
         ...[.../* @__PURE__ */ new Set([...s.room.overlays.keys(), ...s.room.deleted.keys()])].flatMap((by) => s.room.changedPaths(by).map((path20) => ({ by, path: path20, reason: "changed" })))
       ];
-      if (!nearPath(p, nearby.filter((entry) => entry.by !== s.me.name && !sameCheckoutSession(s, entry.by))).length) return `${p}: no claim needed; nobody else is near this path`;
+      if (!nearPath(p, nearby.filter((entry) => entry.by !== s.me.name && (entry.reason !== "changed" || !sameCheckoutSession(s, entry.by)))).length) return `${p}: no claim needed; nobody else is near this path`;
       const plans = parsePlans(a.plans);
       if (typeof plans === "string") return plans;
       const directory = p.endsWith("/");
       if (directory && a.symbol) return "error: directory claims do not take a symbol";
       if (directory) {
-        const scopeHits = s.room.allScopes().flatMap((sc) => sc.by === s.me.name || sameCheckoutSession(s, sc.by) ? [] : sc.paths.filter((path20) => coversPath(p, path20)).map((path20) => `${sc.by}'s scope includes ${path20}`));
-        const claimHits = s.room.openClaims().flatMap((c) => isMe(s, { name: c.by, kind: c.byKind }) || sameCheckoutSession(s, c.by) || !coversPath(p, c.path) ? [] : [`${c.by}'s claim includes ${c.path}`]);
+        const scopeHits = s.room.allScopes().flatMap((sc) => sc.by === s.me.name ? [] : sc.paths.filter((path20) => coversPath(p, path20)).map((path20) => `${sc.by}'s scope includes ${path20}`));
+        const claimHits = s.room.openClaims().flatMap((c) => isMe(s, { name: c.by, kind: c.byKind }) || !coversPath(p, c.path) ? [] : [`${c.by}'s claim includes ${c.path}`]);
         const hits = [...scopeHits, ...claimHits];
         if (hits.length) return `cannot claim ${p}: it would cover another participant's declared work (${hits.join("; ")}). Claim narrower files instead.`;
       }
@@ -34477,7 +34563,7 @@ function handlers(state) {
       }
       const r = directory ? range : clampRange(range.from, range.to, n);
       const intentFull = symbol ? `${symbol}: ${intent}` : intent;
-      const overl = s.room.openClaims().filter((c) => !isMe(s, { name: c.by, kind: c.byKind }) && !sameCheckoutSession(s, c.by) && claimsOverlap(c, { path: p, ...r }));
+      const overl = s.room.openClaims().filter((c) => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }));
       let claim2;
       let msg;
       s.room.doc.transact(() => {
@@ -34581,7 +34667,7 @@ function install(state) {
       for (const [id2, ch] of ev.changes.keys) {
         if (ch.action !== "add") continue;
         const arrived = s.room.openClaims().find((c) => c.id === id2);
-        if (!arrived || arrived.by === s.me.name && arrived.byKind === s.me.kind || sameCheckoutSession(s, arrived.by)) continue;
+        if (!arrived || arrived.by === s.me.name && arrived.byKind === s.me.kind) continue;
         for (const m of mine(s)) {
           if (!claimsOverlap(m, arrived)) continue;
           const key = [m.id, arrived.id].sort().join(":");
@@ -34850,7 +34936,7 @@ var init_registry = __esm({
             const files = [.../* @__PURE__ */ new Set([...s.room.changedPaths(w.name), ...done?.type === "done" ? done.changed : []])].sort();
             if (facts.clean && w.exitCode === 0) {
               try {
-                if (!await cleanupWorker(s.dir, w, true)) continue;
+                if (!await cleanupWorker(s.dir, w, true, false, [], {}, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue;
               } catch {
                 continue;
               }
@@ -44685,8 +44771,8 @@ function handlers2(state) {
     const tagged = (x, line) => x === s ? line : `${line} (workers room)`;
     const who2 = /* @__PURE__ */ new Set();
     for (const x of inRooms) {
-      for (const c of x.room.openClaims()) if (!sameCheckoutSession(s, c.by) && claimsOverlap(c, { path: p, ...r })) out2.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`));
-      for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && !sameCheckoutSession(s, sc.by) && scopeCovers(sc, p)) out2.push(tagged(x, `scope: ${sc.by} is on ${scopeLine2(sc)}`));
+      for (const c of x.room.openClaims()) if (claimsOverlap(c, { path: p, ...r })) out2.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`));
+      for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out2.push(tagged(x, `scope: ${sc.by} is on ${scopeLine2(sc)}`));
       for (const n2 of x.room.whoChanged(p)) if (n2 !== s.me.name && !sameCheckoutSession(s, n2)) who2.add(n2);
     }
     if (who2.size) out2.push(`uncommitted changes by: ${Array.from(who2).sort().join(", ")}`);
@@ -44707,7 +44793,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       setPresence(s, { status: `on ${area}: ${summary}`, areas });
       const out2 = [`scope set: ${scopeLine2({ area, summary, paths })}`];
       out2.push(...areaLines(s, areas));
-      const overlapping = s.room.allScopes().filter((sc) => sc.by !== s.me.name && !sameCheckoutSession(s, sc.by) && paths.some((p) => scopeCovers(sc, p) || sc.paths.some((q) => scopeCovers({ paths }, q))));
+      const overlapping = s.room.allScopes().filter((sc) => sc.by !== s.me.name && paths.some((p) => scopeCovers(sc, p) || sc.paths.some((q) => scopeCovers({ paths }, q))));
       for (const sc of overlapping) out2.push(`overlaps ${sc.by}'s scope ${scopeLine2(sc)} \u2014 coordinate before touching shared files`);
       out2.push(...ledgerLines(s, { area, limit: 20 }, area));
       return out2.join("\n");
@@ -44769,16 +44855,20 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
         const worker = s.room.workerOf(n);
         const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: worker !== void 0 && !state.workerAlive(s, worker) }) : "offline";
-        const who2 = participantIdentityLine(ps, n, worker);
+        const who2 = participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find((c) => c.by === n)?.byKind);
         if (sameCheckoutSession(s, n)) {
-          out2.push(`  - ${who2}: another session in this checkout \xB7 ${ago}`);
+          const declaredScope = s.room.scope(n);
+          out2.push(`  - ${who2}: another session in this checkout${declaredScope ? `; scope ${scopeLine2(declaredScope)}` : ""} \xB7 ${ago}`);
           continue;
         }
         const theirs = areasFor(s, n);
         const areaSummary2 = areaMembershipSummary(theirs);
         out2.push(`  - ${who2}${n === s.me.name ? " (you)" : ""}: ${personLine2(s, n)}${areaSummary2 ? ` \xB7 ${areaSummary2}` : ""} \xB7 ${ago}`);
       }
-      if (hidden.length) out2.push(`  ${hidden.length} others: ${hidden.join(", ")} (all:true for detail)`);
+      if (hidden.length) {
+        const label = (name2) => displayName({ name: name2, kind: (ps.find((p) => p.user.name === name2 && isAgentic(p.user.kind)) ?? ps.find((p) => p.user.name === name2))?.user.kind ?? s.room.scope(name2)?.byKind ?? s.room.openClaims().find((c) => c.by === name2)?.byKind ?? "human" });
+        out2.push(`  ${hidden.length} others: ${hidden.map(label).join(", ")} (all:true for detail)`);
+      }
       if (a.link === true) out2.push(`browser view: ${await refreshBrowserUrl(s)}`);
       const areaScopes = all2 ? s.room.allScopes() : s.room.allScopes().filter((sc) => inView(sc.by));
       const summary = s.room.areaSummary().filter((l) => areaScopes.some((sc) => l.startsWith(`${sc.area} (`)));
@@ -44786,7 +44876,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
         out2.push("activity by scope area:");
         for (const l of summary) out2.push(`  - ${l}`);
       }
-      const cs = s.room.openClaims().filter((c) => !sameCheckoutSession(s, c.by));
+      const cs = s.room.openClaims();
       out2.push(`open claims (${cs.length}):`);
       const byPerson = /* @__PURE__ */ new Map();
       for (const c of cs) {
@@ -45219,26 +45309,31 @@ function handlers4(state) {
       if (note) out2.push(note);
       if (s.local) out2.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`);
       if (presences(s).some((p) => sameCheckoutSession(s, p.user.name))) out2.push("another session in this checkout");
+      const sameCheckoutNames = new Set(presences(s).filter((p) => sameCheckoutSession(s, p.user.name)).map((p) => p.user.name));
+      for (const scope of s.room.allScopes()) if (sameCheckoutNames.has(scope.by)) out2.push(`  scope: ${displayName({ name: scope.by, kind: scope.byKind })} is on ${scopeLine(scope)}`);
+      const sameCheckoutClaims = s.room.openClaims().filter((c) => sameCheckoutNames.has(c.by));
       const company = hasCompany2(s);
       if (!company.company) {
+        if (sameCheckoutClaims.length) out2.push(`open claims in this checkout (${sameCheckoutClaims.length}):`, ...sameCheckoutClaims.map((c) => claimLine2(s, c)));
         out2.push(shareLine(s));
         out2.push("alone here; the room stays quiet until someone joins");
         return out2.join("\n");
       }
       out2.push(shareLine(s));
       const here = others(s).filter((n) => !sameCheckoutSession(s, n) && presences(s).some((p) => p.user.name === n));
+      const label = (name2) => displayName({ name: name2, kind: (presences(s).find((p) => p.user.name === name2 && p.user.kind === "agent") ?? presences(s).find((p) => p.user.name === name2))?.user.kind ?? s.room.scope(name2)?.byKind ?? s.room.openClaims().find((c) => c.by === name2)?.byKind ?? "human" });
       const mineA = myAreas(s);
       setPresence(s, { areas: mineA });
       out2.push(...areaLines(s, mineA));
-      out2.push(here.length ? `here now: ${here.join(", ")}` : "nobody else is here yet");
-      for (const n of here) out2.push(`  ${n}: ${personLine2(s, n)}`);
+      out2.push(here.length ? `here now: ${here.map(label).join(", ")}` : "nobody else is here yet");
+      for (const n of here) out2.push(`  ${label(n)}: ${personLine2(s, n)}`);
       const away = others(s).filter((n) => !sameCheckoutSession(s, n) && !here.includes(n) && s.room.changedPaths(n).length);
-      for (const n of away) out2.push(`  ${n} (offline): ${personLine2(s, n)}`);
+      for (const n of away) out2.push(`  ${label(n)} (offline): ${personLine2(s, n)}`);
       if (s.autoTagNote) {
         out2.push(s.autoTagNote);
         delete s.autoTagNote;
       }
-      const cs = s.room.openClaims().filter((c) => !sameCheckoutSession(s, c.by));
+      const cs = s.room.openClaims();
       if (cs.length) {
         out2.push(`open claims (${cs.length}):`);
         for (const c of cs) out2.push(claimLine2(s, c));
@@ -45374,6 +45469,7 @@ init_prs();
 init_context();
 var WAIT_DEFAULT = 3e4;
 var WAIT_MAX = 1e5;
+var WAIT_SIGNAL = /* @__PURE__ */ Symbol("room_wait request signal");
 var pendingWaits = /* @__PURE__ */ new WeakMap();
 function waitConsumesMessage(s, m) {
   return [...pendingWaits.get(s) ?? []].some((ends) => ends(m));
@@ -45518,6 +45614,7 @@ function handlers5(state) {
       return [`sent [${msg.id}] ${formatMsg(msg)}${s !== lead ? " (in the workers room)" : ""}`, ...notes, ...offline(s) ? ["offline: queued/not delivered"] : []].join("\n");
     },
     async room_wait(a) {
+      const signal = a[WAIT_SIGNAL];
       const s = S();
       const claimId = typeof a.claimId === "string" && a.claimId ? a.claimId : void 0;
       const questionId = typeof a.questionId === "string" && a.questionId ? a.questionId : void 0;
@@ -45578,14 +45675,22 @@ function handlers5(state) {
       }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
       const result = await new Promise((resolve5) => {
+        let finished = false;
+        let timer;
         const finish = (r) => {
-          clearTimeout(timer);
+          if (finished) return;
+          finished = true;
+          if (timer) clearTimeout(timer);
           s.room.claims.unobserve(onClaims);
           s.room.bus.unobserve(onBus);
           ws?.room.bus.unobserve(onWorkersBus);
-          qRoom.room.doc.off("update", onRecipient);
+          if (questionId) qRoom.room.doc.off("update", onRecipient);
+          signal?.removeEventListener("abort", onAbort);
+          for (const [x, ends] of waiting) pendingWaits.get(x)?.delete(ends);
+          setPresence(s, { status: "idle" });
           resolve5(r);
         };
+        const onAbort = () => finish("error: tool call cancelled");
         const onRecipient = () => {
           if (!questionId) return;
           const notice = unavailableQuestion(qRoom, questionId);
@@ -45598,7 +45703,7 @@ function handlers5(state) {
             if (ended) return finish(ended);
           }
         };
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap((room) => myWorkers(room)).filter((w) => w.status === "running" && w.exitCode === void 0).map((w) => [w.name, w])).values()];
           finish(capNotice + (running.length ? `nothing yet; ${running.length} worker${running.length === 1 ? "" : "s"} still running (${running.map((w) => w.tag).join(", ")}); nothing needs you` : `timeout after ${timeoutMs2}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : "nothing happened"}. Continue independent work or wait again.`));
         }, timeoutMs2);
@@ -45614,13 +45719,11 @@ function handlers5(state) {
         s.room.claims.observe(onClaims);
         s.room.bus.observe(onBus);
         ws?.room.bus.observe(onWorkersBus);
-        if (questionId) {
-          qRoom.room.doc.on("update", onRecipient);
-          onRecipient();
-        }
+        if (questionId) qRoom.room.doc.on("update", onRecipient);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+        else if (questionId) onRecipient();
       });
-      for (const [x, ends] of waiting) pendingWaits.get(x)?.delete(ends);
-      setPresence(s, { status: "idle" });
       return result;
     }
   };
@@ -46032,7 +46135,7 @@ init_baseline();
 init_workers();
 import { execFile as execFile5, spawn as spawn3 } from "node:child_process";
 import fs17 from "node:fs";
-import os5 from "node:os";
+import os6 from "node:os";
 import path16 from "node:path";
 import { stripVTControlCharacters as stripVTControlCharacters2 } from "node:util";
 init_context();
@@ -46127,7 +46230,7 @@ ${text}` : text;
       const out2 = [`${p} as ${person} sees it (${lines(t)} lines${edited ? ", uncommitted edits" : diskWorker(s, person) ? ", worktree file" : ", unchanged"} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`];
       const who2 = s.room.whoChanged(p).filter((x) => x !== person && !sameCheckoutSession(s, x));
       if (who2.length) out2.push(`! also changed (uncommitted) by: ${who2.join(", ")} \u2014 room_read with person= to see theirs`);
-      for (const c of s.room.claimsFor(p)) if (!sameCheckoutSession(s, c.by)) out2.push(`! claim ${c.id}: ${describeClaim(c)}`);
+      for (const c of s.room.claimsFor(p)) out2.push(`! claim ${c.id}: ${describeClaim(c)}`);
       out2.push(withLineNumbers(t));
       out2.push(...ledgerLines(s, { path: p, limit: 10 }, p));
       return out2.join("\n");
@@ -46340,7 +46443,7 @@ function testVerdict(output, code) {
   return { passed, text: [...summaries.slice(-5), verdict].join("\n") };
 }
 async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map()) {
-  const dir = fs17.mkdtempSync(path16.join(os5.tmpdir(), "room-merge-"));
+  const dir = fs17.mkdtempSync(path16.join(os6.tmpdir(), "room-merge-"));
   try {
     await materializeGitTree(s.dir, ancestor, dir);
     for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, "latin1"), modes.get(rel) ?? 420);
@@ -46451,14 +46554,15 @@ var defs7 = [{
 }];
 var split = (value2) => value2.split("\0").filter(Boolean);
 var collectQueues = /* @__PURE__ */ new Map();
-async function stopOwnedWorktreeProcesses(leadDir, w) {
-  if (!fs18.existsSync(w.dir) || w.branch !== `room/${w.tag}`) return [];
-  const leadRoot = fs18.realpathSync(leadDir), workerRoot = fs18.realpathSync(w.dir);
-  if (workerRoot === leadRoot) return [];
-  const common = async (dir) => fs18.realpathSync(path17.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
-  if (await common(leadDir) !== await common(w.dir)) return [];
-  if ((await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) return [];
-  return terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [] });
+var ownershipRecords = (s) => [...s.room.retiredWorkers(), ...s.room.workers.values()];
+async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors) {
+  if (!await isOwnedWorkerWorktree(leadDir, w, leadName, workers)) return [];
+  try {
+    return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [] });
+  } catch (e) {
+    errors?.push(`cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
 }
 var failureReason = (w) => w.exitCode !== void 0 && w.exitCode !== 0 ? `exit code ${w.exitCode}${w.summary ? `; ${w.summary.replace(/\s+/g, " ").slice(0, 180)}` : ""}` : w.stopReason ?? w.summary?.replace(/\s+/g, " ").slice(0, 180) ?? "worker reported failure";
 function safePath(root, rel) {
@@ -46548,12 +46652,13 @@ function handlers7(state) {
         const lock3 = workerOperationKey(w2);
         if (!rooms.reserve(lock3)) return "error: this worker is already being handled or retired";
         try {
-          const terminated = await stopOwnedWorktreeProcesses(s2.dir, w2);
+          const cleanupErrors = [];
+          const terminated = await stopOwnedWorktreeProcesses(s2.dir, w2, s2.me.name, ownershipRecords(s2), cleanupErrors);
           const ignored = await ignoredWorkerArtifacts(w2);
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}
-retained worktree: ${w2.dir}${terminated.length ? "\nstopped processes: " + terminated.join(", ") : ""}
+retained worktree: ${w2.dir}${terminated.length ? "\nstopped processes: " + terminated.join(", ") : ""}${cleanupErrors.length ? "\n" + cleanupErrors.join("; ") : ""}
 repeat with force=true to delete them`;
-          if (!await cleanupWorker(s2.dir, w2, true, true, terminated)) throw new Error("worker is not an owned Room worktree");
+          if (!await cleanupWorker(s2.dir, w2, true, true, terminated, {}, s2.me.name, ownershipRecords(s2))) throw new Error("worker is not an owned Room worktree");
           const archive = s2.room.doc.getArray("retiredWorkers");
           const index = archive.toArray().findIndex((item) => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead);
           if (index >= 0) s2.room.doc.transact(() => {
@@ -46561,7 +46666,7 @@ repeat with force=true to delete them`;
             const { keptWorktree: _keptWorktree, ...cleared } = r;
             archive.insert(index, [{ ...cleared, summary: "discarded" }]);
           });
-          return "discarded " + r.tag + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "");
+          return "discarded " + r.tag + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
         } catch (e) {
           return "error: " + (e instanceof Error ? e.message : String(e)) + "; retained " + w2.dir;
         } finally {
@@ -46591,10 +46696,12 @@ repeat with force=true to delete them`;
           childResults.push(result);
           if (!result.startsWith("discarded ")) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`;
         }
-        const terminated = await stopOwnedWorktreeProcesses(s.dir, w);
+        const cleanupErrors = [];
+        const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors);
         if (state.workerAlive(s, w) || pidAlive2(w.pid)) {
           const how = await state.dismissWorker(s, w, "discarded by the lead");
-          if (s.room.workers.get(w.tag)?.status === "running" && (state.workerAlive(s, w) || pidAlive2(w.pid))) return "could not discard " + w.tag + ": " + how;
+          if (s.room.workers.get(w.tag)?.status === "running" && (state.workerAlive(s, w) || pidAlive2(w.pid))) return "could not discard " + w.tag + ": " + how + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
+          if (how.includes("cwd process cleanup failed:")) cleanupErrors.push(how);
           const now = state.now ?? Date.now;
           const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
           const deadline = now() + 5e3;
@@ -46604,7 +46711,7 @@ repeat with force=true to delete them`;
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep2(50);
           if (state.workerAlive(s, w)) throw new Error("worker process has not stopped");
         }
-        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w));
+        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors));
         const ignored = await ignoredWorkerArtifacts(w);
         if (ignored.length && a.force !== true) {
           return [
@@ -46612,11 +46719,12 @@ repeat with force=true to delete them`;
             ...ignored.map((p) => `kept ${p} at ${path17.join(w.dir, p)}`),
             `retained worktree: ${w.dir}`,
             ...terminated.length ? ["stopped processes: " + terminated.join(", ")] : [],
+            ...cleanupErrors,
             'copy what you need (mode="copy", paths=[...]), then repeat with force=true to delete the rest'
           ].join("\n");
         }
         const patch = await saveDiscardPatch(s.dir, w);
-        if (!await cleanupWorker(s.dir, w, true, true, terminated)) throw new Error("worker is not an owned Room worktree");
+        if (!await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error("worker is not an owned Room worktree");
         releaseClaimsOnDone(s, () => false, w.name, false);
         const retiredAt = Date.now();
         s.room.retireParticipant(w.name, {
@@ -46633,7 +46741,7 @@ repeat with force=true to delete them`;
           retiredAt,
           outcome: "dismissed"
         });
-        return [...childResults, "discarded " + w.tag + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "")].join("\n");
+        return [...childResults, "discarded " + w.tag + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
       } catch (e) {
         return "error: " + (e instanceof Error ? e.message : String(e)) + "; retained " + w.dir;
       } finally {
@@ -46682,8 +46790,10 @@ repeat with force=true to delete them`;
           if (await common(lead.dir) !== await common(w.dir)) throw new Error("worker is not a worktree of this repository");
           if (w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) throw new Error("worker must be on branch room/" + w.tag);
           await git(w.dir, ["ls-files", "-z"]);
-          const terminated = await stopOwnedWorktreeProcesses(lead.dir, w);
+          const cleanupErrors = [];
+          const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors);
           if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
+          out2.push(...cleanupErrors.map((error2) => `${w.tag}: ${error2}`));
           const now = state.now ?? Date.now;
           const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
           const deadline = now() + 15e3;
@@ -46832,7 +46942,7 @@ repeat with force=true to delete them`;
             continue;
           }
           const terminated = [];
-          if (await cleanupWorker(s.dir, w, true, false, terminated)) {
+          if (await cleanupWorker(s.dir, w, true, false, terminated, {}, s.me.name, ownershipRecords(s))) {
             retire(w.summary ?? "");
             out2.push("cleaned up " + w.tag + ": temporary files, branch and logs");
             if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
@@ -47159,7 +47269,7 @@ init_context();
 init_config();
 import fs19 from "node:fs";
 import { randomUUID as randomUUID3 } from "node:crypto";
-import os6 from "node:os";
+import os7 from "node:os";
 import path18 from "node:path";
 function missingBriefPaths(task, leadDir, workerDir) {
   const paths = /* @__PURE__ */ new Set();
@@ -47323,8 +47433,8 @@ function handlers8(state) {
         const name2 = `${owner}+${tag}`;
         const { server, isWorker } = workerOrigin(s);
         const count = runningWorkers(lead).length;
-        const cores = Math.max(1, os6.availableParallelism?.() ?? os6.cpus().length);
-        const memBytes = os6.totalmem();
+        const cores = Math.max(1, os7.availableParallelism?.() ?? os7.cpus().length);
+        const memBytes = os7.totalmem();
         const budget = workerBudget({ cores, memBytes, maxWorkers: max2, running: count });
         const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS);
         const inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB);
@@ -47460,9 +47570,21 @@ function install6(state) {
   const dismissWorker = async (s, w, why, stopReason) => {
     const proc = rooms.handle(s, w.id);
     const protectedPids = w.pid ? [w.pid] : [];
-    const stopped = await terminateWorktreeProcesses(w.dir, { protectedPids });
+    const ownedWorktree = await isOwnedWorkerWorktree(s.dir, w, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()]);
+    const stopped = [];
+    let cleanupError;
+    const stopCwdProcesses = async () => {
+      if (!ownedWorktree || cleanupError) return;
+      try {
+        stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids }));
+      } catch (e) {
+        cleanupError = `cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    };
+    const cleanupText = () => (stopped.length ? `; stopped processes: ${stopped.join(", ")}` : "") + (cleanupError ? `; ${cleanupError}` : "");
+    await stopCwdProcesses();
     if (proc && w.dismissedAt !== void 0) {
-      return `pid ${w.pid} already signalled; waiting for exit${stopped.length ? `; stopped processes: ${stopped.join(", ")}` : ""}`;
+      return `pid ${w.pid} already signalled; waiting for exit${cleanupText()}`;
     }
     let how, signalled;
     if (proc) {
@@ -47484,8 +47606,8 @@ function install6(state) {
     }
     if (signalled || stopReason) s.room.updateWorker(w.tag, { ...w.status === "running" ? { status: "dismissed" } : {}, dismissedAt: state.now(), ...stopReason ? { stopReason } : {} }, w.id);
     if (signalled || workerAlive(s, w)) s.room.post(s.me, { type: "note", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
-    stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids }));
-    return how + (stopped.length ? `; stopped processes: ${stopped.join(", ")}` : "");
+    await stopCwdProcesses();
+    return how + cleanupText();
   };
   const startWorkersBridge = (lead, s) => {
     const bridge = new Bridge(lead, s, { log: log2, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : void 0 });
@@ -47658,7 +47780,7 @@ function createTools(ctx) {
           state.rooms.track(s);
         }
         try {
-          const body2 = await h(args3 ?? {});
+          const body2 = await h(name2 === "room_wait" ? { ...args3 ?? {}, [WAIT_SIGNAL]: signal } : args3 ?? {});
           if (toolCallAborted()) return "error: tool call cancelled";
           if (name2 === "room_preview_merge" || name2.startsWith("room_pr_")) await state.rooms.retireWorkers();
           const s2 = ctx.getSession();
@@ -47887,7 +48009,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.1",
+  version: "0.16.2",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
