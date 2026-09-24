@@ -11,7 +11,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 
 ## Fix now
 
-### 1. Resuming a worker can silently widen its sharing boundary
+### 1. Resuming a worker can silently widen its sharing boundary — FIXED in 0.15.2 (0b06299)
 
 - **Severity:** fix-now.
 - **Locations:** `packages/room-mcp/src/tools/workers.ts:149`, `packages/room-mcp/src/tools/workers.ts:167`, `packages/room-mcp/src/registry.ts:289`, `packages/shared/src/types.ts:126`, `packages/room-mcp/test/workers.test.ts:1296`.
@@ -19,7 +19,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** An `intent` worker under a `full` lead restarts with `ROOM_SHARE=full`; environment precedence overrides a remembered narrower level. This can publish file text after a routine follow-up. The test compares environments only when worker and lead use the same default. **Inferred end-to-end disclosure; the in-memory resume probe confirmed the generated full-sharing environment.**
 - **Smallest clean change:** Persist the worker's effective sharing setting and reuse it on resume; resolve legacy records conservatively. Add a spawn-intent/resume-under-full regression and a worker-side sharing-change case.
 
-### 2. Discard recovery bypasses the hardened patch-generation policy
+### 2. Discard recovery bypasses the hardened patch-generation policy — FIXED in 0.15.2 (bb936e8)
 
 - **Severity:** fix-now.
 - **Locations:** `packages/room-mcp/src/workers.ts:320`, `packages/room-mcp/src/workers.ts:421`, `packages/room-mcp/src/workers.ts:461`, `packages/room-mcp/src/workers.ts:666`, `packages/room-mcp/src/workers.ts:672`, `packages/room-mcp/src/tools/collect.ts:163`.
@@ -27,7 +27,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Config such as `color.ui=always` or custom diff prefixes can produce a recovery file unsuitable for ordinary `git apply`, after which discard removes the worktree and branch. **Inferred; hostile-config recovery was not executed.**
 - **Smallest clean change:** Define one internal patch argument builder (no color, no external diff/textconv, fixed a/b prefixes) and use it for both carry snapshots and discard. Verify recovery by applying the patch in a scratch tree before destructive cleanup, with a hostile-config regression.
 
-### 3. Resume clears the stop reason in the document but leaves it on disk
+### 3. Resume clears the stop reason in the document but leaves it on disk — FIXED in 0.15.2 (bb936e8, 0b06299, fa56a76)
 
 - **Severity:** fix-now.
 - **Locations:** `packages/room-mcp/src/registry.ts:127`, `packages/room-mcp/src/registry.ts:170`, `packages/room-mcp/src/registry.ts:302`, `packages/room-mcp/src/workers.ts:358`, `packages/room-mcp/src/workers.ts:370`, `packages/room-mcp/src/tools/workers.ts:257`.
@@ -35,7 +35,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** A successfully resumed worker can be marked dismissed again when another session tracks the room, or later be reported as intentionally stopped when its actual exit reason is unknown; retirement also skips it. **Inferred restart sequence.**
 - **Smallest clean change:** Give persisted stop state an explicit clear operation, call it as part of a successful resume transition, and bind it to the process generation/start identity. Test shutdown → resume → registry restart.
 
-### 4. An abandoned notice lock permanently suppresses sharing disclosure
+### 4. An abandoned notice lock permanently suppresses sharing disclosure — FIXED in 0.15.2 (6959496)
 
 - **Severity:** fix-now.
 - **Locations:** `packages/room-mcp/src/hooks-bridge.ts:66`, `packages/room-mcp/src/hooks-bridge.ts:81`, `packages/room-mcp/src/hooks-bridge.ts:227`, `packages/room-mcp/src/hooks-bridge.ts:239`, `plugins/room/hooks/common.mjs:78`.
@@ -43,7 +43,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** If a process dies while holding the lock, the sharing notice can disappear indefinitely and the bridge retries its write every 150 ms. Lock contention is also not delivery evidence. **Inferred crash/abandoned-lock scenario.**
 - **Smallest clean change:** Share a small lock/acknowledgement protocol with owner identity and stale-lock recovery; return “pending” on contention and regard only the matching delivered field as an acknowledgement. Test a pre-existing stale lock and a consumer dying before acknowledgement.
 
-### 5. Background callbacks still have process-fatal escape paths
+### 5. Background callbacks still have process-fatal escape paths — FIXED in 0.15.2 (bb936e8, 6959496, fa56a76)
 
 - **Severity:** fix-now.
 - **Locations:** `packages/relay/src/index.ts:384`, `packages/relay/src/index.ts:388`; `packages/roomd/src/index.ts:331`, `packages/roomd/src/index.ts:333`, `packages/roomd/src/index.ts:455`; `packages/room-mcp/src/workers.ts:530`; `packages/room-mcp/src/tools/files.ts:315`, `packages/room-mcp/src/tools/files.ts:338`; fatal policy at `packages/room-mcp/src/index.ts:186`.
@@ -51,7 +51,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** A removed/unwritable Git directory, failing refresh, full log disk, or early tar exit/EPIPE can terminate the entire MCP process instead of failing one operation. The 0.14.1 callback-hardening pass did not cover these boundaries. **Inferred failure injection; not deliberately triggered.**
 - **Smallest clean change:** Catch at each event boundary; use `Promise.resolve().then(fn).catch(report)` for the interval helper, observe takeover failures, guard log writes, and route pipe errors to the extraction operation's `fail`. Add fault-injection tests for these four boundaries rather than another happy-path timer test.
 
-### 6. Carry/recovery still bypass the Git timeout boundary
+### 6. Carry/recovery still bypass the Git timeout boundary — FIXED in 0.15.2 (bb936e8, 7070f88)
 
 - **Severity:** fix-now.
 - **Locations:** `packages/roomd/src/baseline.ts:99`, `packages/roomd/src/baseline.ts:100`; `packages/room-mcp/src/workers.ts:328`, `packages/room-mcp/src/workers.ts:359`, `packages/room-mcp/src/workers.ts:371`, `packages/room-mcp/src/workers.ts:428`, `packages/room-mcp/src/workers.ts:633`, `packages/room-mcp/src/workers.ts:635`, `packages/room-mcp/src/workers.ts:666`; `packages/roomd/src/room-file.ts:9`; `packages/agent/src/cli.ts:35`. Existing deadline: `packages/roomd/src/git.ts:3`.
@@ -61,7 +61,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 
 ## Tidy
 
-### 7. Resume bypasses the worker concurrency limit
+### 7. Resume bypasses the worker concurrency limit — FIXED in 0.15.2 (0b06299)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/workers.ts:94`, `packages/room-mcp/src/tools/workers.ts:138`, `packages/room-mcp/src/registry.ts:265`.
@@ -69,7 +69,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Finished workers can all be restarted while the lead is already at its configured capacity. **Verified in-memory:** eight running records plus one retained worker became nine running records after resume.
 - **Smallest clean change:** Use a shared launch-slot reservation for spawn and resume, counting in-flight starts as well as live workers; release it on failure. Test a resume at capacity and concurrent resumes.
 
-### 8. Stopped-worker file counts reimplement—and violate—the carry rule
+### 8. Stopped-worker file counts reimplement—and violate—the carry rule — FIXED in 0.15.2 (bb936e8)
 
 - **Severity:** tidy.
 - **Locations:** divergent copy `packages/room-mcp/src/tools/scope.ts:21`; canonical rule `packages/roomd/src/baseline.ts:109`, `packages/roomd/src/baseline.ts:123`; correct consumers `packages/room-mcp/src/tools/collect.ts:273`, `packages/room-mcp/src/tools/files.ts:134`, `packages/room-mcp/src/workers.ts:669`; retirement's separate status count `packages/room-mcp/src/workers.ts:66`.
@@ -77,7 +77,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** A stopped worker that edits only a carried untracked file, or commits its own output, can be described as having zero changed files; retirement's raw status count has the opposite problem for unchanged carried inputs. **Inferred UI results from the status commands.**
 - **Smallest clean change:** Put worker-owned changed-path enumeration beside `workerBaseline`/`carriedUnchanged`, with explicit content/mode handling; use it for state and retirement. Do not introduce another carry predicate.
 
-### 9. `link: []` does not fully disable `.roomlinks`
+### 9. `link: []` does not fully disable `.roomlinks` — FIXED in 0.15.2 (bb936e8)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/workers.ts:23`, `packages/room-mcp/src/tools/workers.ts:108`, `packages/room-mcp/src/workers.ts:229`, `packages/room-mcp/src/workers.ts:415`.
@@ -85,7 +85,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** A file named in `.roomlinks` can be excluded from carry even though the caller disabled links; it is neither carried nor linked. **Inferred from the two resolver paths.**
 - **Smallest clean change:** Resolve links once in `resolveWorkerLinks`; pass an authoritative resolved list to preparation, distinguishing omitted input from an explicit empty list if the lower-level API still supports defaults.
 
-### 10. Baseline read failures become false semantic evidence
+### 10. Baseline read failures become false semantic evidence — FIXED in 0.15.2 (bb936e8, 6959496)
 
 - **Severity:** tidy.
 - **Locations:** `packages/roomd/src/baseline.ts:83`, `packages/room-mcp/src/graph-index.ts:166`, `packages/room-mcp/src/graph-index.ts:172`, `packages/room-mcp/src/conflicts.ts:224`, `packages/room-mcp/src/tools/combined-tree.ts:106`.
@@ -93,7 +93,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** The same missing object or filter failure can manufacture “added” signatures in one view, hide a contract change in another, and be an explicit error in collection. **Inferred error-path results.**
 - **Smallest clean change:** Preserve a typed unavailable-base result from the baseline module; omit semantic claims and report degraded coverage until it can be read. Reserve empty old text for a verified absent path.
 
-### 11. Stopping the hook bridge does not cancel in-flight wakes
+### 11. Stopping the hook bridge does not cancel in-flight wakes — FIXED in 0.15.2 (6959496)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/hooks-bridge.ts:189`, `packages/room-mcp/src/hooks-bridge.ts:250`, `packages/room-mcp/src/hooks-bridge.ts:295`, `packages/room-mcp/src/hooks-bridge.ts:309`.
@@ -101,7 +101,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** A failed queue attempt can sleep, then wake an old thread and mark an old room message seen after the session has left or switched rooms. **Inferred asynchronous interleaving.**
 - **Smallest clean change:** Give the bridge a cancellation generation or AbortSignal, check it before every queue/retry/state mutation, and test stopping while a queue attempt is pending.
 
-### 12. A Claude session can fall through into Codex rollout discovery
+### 12. A Claude session can fall through into Codex rollout discovery — FIXED in 0.15.2 (6959496)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/hooks-bridge.ts:271`, `packages/room-mcp/src/hooks-bridge.ts:280`, `packages/room-mcp/src/hooks-bridge.ts:284`; host resolver `packages/room-mcp/src/config.ts:109`.
@@ -109,7 +109,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** A Claude session with no usable hook file can select a recent Codex thread for the same directory and queue a wake there, in addition to Claude's own router. **Inferred; no host session storage was inspected.**
 - **Smallest clean change:** Determine the host before fallback discovery and run Codex discovery only for Codex; let the Claude router own Claude delivery independently of hook-file availability.
 
-### 13. The “bounded” rollout fallback bounds depth, not work
+### 13. The “bounded” rollout fallback bounds depth, not work — FIXED in 0.15.2 (6959496)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/hooks-bridge.ts:355`, `packages/room-mcp/src/hooks-bridge.ts:360`, `packages/room-mcp/src/hooks-bridge.ts:372`; claim in `CHANGELOG.md:12`.
@@ -117,7 +117,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Large session histories can stall the MCP process every fallback poll; a read failure after open leaks a descriptor. **Inferred scale/error behavior.**
 - **Smallest clean change:** Cache discovery per directory/start identity, cap entries/time, and close each descriptor in `finally`; prefer hook IDs. Keep this as a fallback, not an unconditional scan.
 
-### 14. Path safety is repeated with materially different policies
+### 14. Path safety is repeated with materially different policies — DEFERRED (roadmap)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/collect.ts:27`; `packages/room-mcp/src/tools/files.ts:196`, `packages/room-mcp/src/tools/files.ts:224`, `packages/room-mcp/src/tools/files.ts:247`; `packages/room-mcp/src/tools/combined-tree.ts:26`, `packages/room-mcp/src/tools/combined-tree.ts:78`; `packages/room-mcp/src/tools/context.ts:169`; `packages/room-mcp/src/workers.ts:223`, `packages/room-mcp/src/workers.ts:238`, `packages/room-mcp/src/workers.ts:628`; `packages/roomd/src/baseline.ts:109`.
@@ -125,7 +125,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Fixing traversal or platform behavior in one path does not protect the others; callers cannot tell which differences are intentional. This is a maintenance finding, **not a claimed demonstrated escape**.
 - **Smallest clean change:** One repo-relative lexical validator and one containment helper, with explicit leaf policies (reject link, read contained link, replace link). Preserve collection's stricter no-symlink rule and preview's intentional leaf replacement.
 
-### 15. “Near” and scope coverage disagree on normalized paths
+### 15. “Near” and scope coverage disagree on normalized paths — FIXED in 0.15.2 (6959496)
 
 - **Severity:** tidy.
 - **Locations:** `packages/shared/src/near.ts:5`; `packages/shared/src/ledger.ts:36`; `packages/room-mcp/src/tools/scope.ts:69`, `packages/room-mcp/src/tools/scope.ts:98`; directory/claim matching at `packages/shared/src/claims.ts:9`, `plugins/room/hooks/before-edit.mjs:75`; hook mirror `plugins/room/hooks/common.mjs:185`.
@@ -133,7 +133,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** **Verified with pure helpers:** `coversPath('.', 'src/a.ts')` is true, but `scopeCovers({paths:['.']}, 'src/a.ts')` is false; a root scope affects claim guidance but not declared-sharing eligibility or scope-based routing consistently.
 - **Smallest clean change:** Define normalization once in shared code, then separate directional containment from symmetric overlap and use the appropriate operation everywhere. Keep the dependency-free hook mirror generated or parity-tested; do not replace directional sharing checks with symmetric overlap.
 
-### 16. Claim tools and hook snapshots separately assemble proximity evidence
+### 16. Claim tools and hook snapshots separately assemble proximity evidence — DEFERRED (roadmap)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/claims.ts:24`, `packages/room-mcp/src/hooks-bridge.ts:219`, `packages/room-mcp/src/tools/scope.ts:96`.
@@ -141,7 +141,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** A new evidence source or filtering rule must be added in several places, and `room_state` can hide a participant whose changed paths alone caused the claim hook to warn. **Inferred visibility mismatch from `inView`.**
 - **Smallest clean change:** Add one `coordinationPaths(room, excludingParticipant)` builder beside shared near policy; use its output for claims, hook snapshots and state overlap selection.
 
-### 17. Git-private state path resolution has several implementations
+### 17. Git-private state path resolution has several implementations — DEFERRED (roadmap)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/hooks-bridge.ts:22`, `packages/room-mcp/src/config.ts:125`, `plugins/room/hooks/common.mjs:22`, `packages/roomd/src/room-file.ts:8`; carry-record path assembly at `packages/room-mcp/src/workers.ts:341`, `packages/room-mcp/src/workers.ts:359`, `packages/room-mcp/src/workers.ts:371`.
@@ -149,7 +149,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Worktree/subdirectory handling, error policy and timeout fixes drift; a function named `sessionMetadataPath` is another general Git-directory resolver in disguise.
 - **Smallest clean change:** Establish one worktree-private and one common-Git-directory resolver in roomd, plus a shared carry-record accessor. Generate or parity-test the dependency-free hook equivalent.
 
-### 18. Worker launch orchestration is still split between spawn and resume
+### 18. Worker launch orchestration is still split between spawn and resume — FIXED in 0.15.2 as far as one launch-slot and exit path for spawn and resume (0b06299); the rest DEFERRED (roadmap)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/workers.ts:149`, `packages/room-mcp/src/tools/workers.ts:155`, `packages/room-mcp/src/tools/workers.ts:169`, `packages/room-mcp/src/tools/workers.ts:175`; `packages/room-mcp/src/registry.ts:288`, `packages/room-mcp/src/registry.ts:295`, `packages/room-mcp/src/registry.ts:303`; shared command builder `packages/room-mcp/src/workers.ts:196`.
@@ -157,7 +157,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** The sharing/cap omissions above are symptoms of two launch policies; future host/session-capture fixes can land in only one path.
 - **Smallest clean change:** Extract a lifecycle launcher that receives fresh-versus-resume command options and a fully resolved policy record; keep worktree creation separate. Use one callback/logging implementation and verify both modes through it.
 
-### 19. Graph snapshot reuse left an unread option and stale test distinctions
+### 19. Graph snapshot reuse left an unread option and stale test distinctions — FIXED in 0.15.2 (91a2610)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/graph-index.ts:69`; callers `packages/room-mcp/src/session.ts:410`, `packages/room-mcp/src/session.ts:466`; tests `packages/room-mcp/test/graph-index.test.ts:207`, `packages/room-mcp/test/graph-index.test.ts:226`, `packages/room-mcp/test/graph-index.test.ts:249`, `packages/room-mcp/test/graph-index.test.ts:264`.
@@ -165,7 +165,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Tests named around offline/stale peer eligibility imply a selection path that no longer exists; the constructor and callers advertise dead behavior.
 - **Smallest clean change:** Delete the option and its caller arguments; retain one strong “always builds locally despite a tempting peer snapshot” test and the independent import-update regression.
 
-### 20. Replaced designs leave unused public helpers and a stale message predicate
+### 20. Replaced designs leave unused public helpers and a stale message predicate — FIXED in 0.15.2 (6959496, 91a2610)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/choice.ts:109` and tests `packages/room-mcp/test/choice.test.ts:25`; `packages/relay/src/index.ts:150`, `packages/relay/src/index.ts:161` and `packages/relay/test/relay.test.ts:100`; `packages/shared/src/identity.ts:44`; `packages/shared/src/doc.ts:460`; actual registry `packages/shared/src/messages.ts:50`.
@@ -173,7 +173,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** The exported API suggests multiple authorities for configuration, relay admission and message kinds; the stale predicate would reject a real kind if reused. Repository searches found no production consumers; **external consumers are unknown**.
 - **Smallest clean change:** Move test probes to test helpers, test `resolveConfig` directly, remove unused internal exports, and derive any retained message predicate from `MessageKinds`. Check intended external API compatibility before removal.
 
-### 21. One overlay event schedules refresh of every changed source path
+### 21. One overlay event schedules refresh of every changed source path — DEFERRED (roadmap)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/graph-index.ts:78`, `packages/room-mcp/src/graph-index.ts:128`, `packages/room-mcp/src/graph-index.ts:146`, `packages/room-mcp/src/graph-index.ts:119`.
@@ -181,7 +181,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** An edit to one file can reread/reparse unrelated changed files and launch many Git reads concurrently; the initial-build concurrency limit does not protect the hot path. **Inferred workload amplification, not a benchmark claim.**
 - **Smallest clean change:** Extract affected paths from Yjs events, retain explicit removal handling, and route all refreshes through the same bounded queue. Test that changing one overlay does not refresh unrelated files.
 
-### 22. The carried-path cache survives sessions and caches failed promises
+### 22. The carried-path cache survives sessions and caches failed promises — FIXED in 0.15.2 (bb936e8)
 
 - **Severity:** tidy.
 - **Locations:** `packages/roomd/src/baseline.ts:34`, `packages/roomd/src/baseline.ts:39`.
@@ -189,7 +189,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Long-running processes retain entries for deleted workers, and a transient read failure poisons that SHA for later attempts, even from another available checkout. **Inferred lifetime/failure behavior.**
 - **Smallest clean change:** Scope the cache to a session or bound it; evict rejected promises and account for repository availability in its key/lifecycle.
 
-### 23. Git filename parsing is not consistently NUL-framed
+### 23. Git filename parsing is not consistently NUL-framed — FIXED in 0.15.2 (bb936e8, 6959496)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/files.ts:215`, `packages/room-mcp/src/tools/combined-tree.ts:66`, `packages/room-mcp/src/graph-index.ts:108`, `packages/roomd/src/git.ts:193`; sound examples `packages/roomd/src/git.ts:157`, `packages/room-mcp/src/tools/combined-tree.ts:62`.
@@ -197,7 +197,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Legal paths with tabs, newlines or quoted characters can lose modes, be missed by indexing, or appear under a nonexistent quoted name. **Inferred unusual-filename cases.**
 - **Smallest clean change:** Use `-z` for every machine-read path list and split tree metadata at the first tab only; share parsers and add round-trip filename tests.
 
-### 24. A fallback merge is still advertised as Git's result
+### 24. A fallback merge is still advertised as Git's result — FIXED in 0.15.2 (6959496, bb936e8)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/merge.ts:28`, `packages/room-mcp/src/merge.ts:46`, `packages/room-mcp/src/merge.ts:58`, `packages/room-mcp/src/merge.ts:66`; `packages/room-mcp/src/tools/combined-tree.ts:123`.
@@ -205,7 +205,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** A user can receive a clean fallback preview under an assurance the actual Git merge was used; the once-only stderr warning is not part of that result. **Inferred fallback case.**
 - **Smallest clean change:** Return the algorithm and fallback reason, surface them in preview output, and propagate operational failures where fallback would conceal missing evidence. Add a timeout to this asynchronous Git invocation too.
 
-### 25. Versions and wake guidance have multiple stale authorities
+### 25. Versions and wake guidance have multiple stale authorities — FIXED in 0.15.2 (91a2610)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/index.ts:80` (`0.2.0`); `packages/room-mcp/package.json:3`, `package.json:4` (`0.1.0`); plugin manifests `plugins/room/.codex-plugin/plugin.json:3`, `plugins/room/.claude-plugin/plugin.json:3` and `.claude-plugin/marketplace.json:13` (`0.15.1`). Wake prose: `README.md:215`, `packages/room-mcp/src/hooks-bridge.ts:7`, `packages/room-mcp/src/hooks-bridge.ts:286`, `packages/room-mcp/src/prompt.ts:20`; behavior `packages/room-mcp/src/wake-path.ts:115` and Windows requirement `README.md:212`.
@@ -213,7 +213,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Diagnostics identify the wrong release and guide readers toward the wrong timing/transport or insufficient Windows version. Historical changelog entries were not treated as current promises merely because behavior later changed.
 - **Smallest clean change:** One release-version input for manifests/handshake (document separately versioned packages if intentional), and one current wake-policy description covering immediate-first batching and platform minimums. Reconcile prose with the existing router, without changing the frozen Codex hook manifest.
 
-### 26. Follow-up and no-pipe tests leave the recent integration seams untested
+### 26. Follow-up and no-pipe tests leave the recent integration seams untested — FIXED in 0.15.2 (0b06299, 91a2610, 7070f88)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/test/workers.test.ts:1296`, `packages/room-mcp/test/workers.test.ts:1316`, `packages/room-mcp/test/workers.test.ts:1334`; `packages/room-mcp/test/carry-no-pipe.test.ts:35`.
@@ -221,7 +221,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** The sharing/stop/cap defects above pass the follow-up suite, and dropping tracked carry entirely would still pass the first no-pipe test. Other carry/collection tests provide useful coverage, so this is not a claim the whole suite is hollow.
 - **Smallest clean change:** Add the missing cross-boundary resume scenarios with real temporary Git metadata and a fake executable; assert large tracked and untracked contents and `carryFailed` as well as the no-stdin invariant. Replace fixed-delay exit coordination with an explicit test-controlled handshake where practical.
 
-### 27. Cleanup's “restored” worktree is not a restored snapshot
+### 27. Cleanup's “restored” worktree is not a restored snapshot — FIXED in 0.15.2 (bb936e8)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/workers.ts:592`, `packages/room-mcp/src/workers.ts:614`, `packages/room-mcp/src/workers.ts:624`, `packages/room-mcp/src/workers.ts:627`, `packages/room-mcp/src/workers.ts:635`, `packages/room-mcp/src/workers.ts:641`.
@@ -229,7 +229,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** The error says “restored” for a different tree, and a valid larger carried file can make recovery itself fail. Collected output may still exist in the lead, and discard has a recovery patch, so this is **not a claim all output is necessarily lost**. **Inferred late-cleanup failure.**
 - **Smallest clean change:** Keep a reversible snapshot until all destructive cleanup steps succeed, or explicitly report a reconstructed base and the actual recovery location; use the bounded binary Git reader for restoration. Inject a failure after worktree removal in tests.
 
-### 28. The tool split retained an implicit, order-dependent service locator
+### 28. The tool split retained an implicit, order-dependent service locator — DEFERRED (roadmap)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/context.ts:361`, `packages/room-mcp/src/tools/context.ts:388`, `packages/room-mcp/src/tools/index.ts:46`; lifecycle responsibilities in `packages/room-mcp/src/workers.ts:319`, `packages/room-mcp/src/workers.ts:522`, `packages/room-mcp/src/workers.ts:583`.
