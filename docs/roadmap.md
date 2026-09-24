@@ -286,6 +286,18 @@ fetchable base instead of their local carried commit.
 Python dotted-import narrowing remains weak in carried contract checks. The broader
 orchestration and sharing work above remains open.
 
+### Found in real use, 2026-09-25 (open, next batch)
+
+- **Concurrent sessions pick the same automatic name.** Six Codex sessions started at the same instant in
+  linked worktrees of one repo (launched by hand, not by room_spawn) all joined as `rohanz+claude`, so their
+  presence and overlays overwrote each other. The auto-tag probe must be race-free (claim the name atomically).
+- **A cancelled tool call keeps running inside Room.** Claude Code's TaskStop on a slow `room_spawn` stopped the
+  call in the session, but the Room server still held the queued spawns and would have carried them out once
+  unblocked. Room should notice the caller gave up (MCP cancellation) and drop queued work.
+- **Stale Room code goes unnoticed.** A session started on Wednesday ran pre-fix code until Friday and froze on
+  the fixed stdin-pipe bug. Room should say once when the plugin on disk is newer than the running server:
+  "Room was updated; restart this session to pick up fixes".
+
 ### After 0.14.1 (2026-09-24, open)
 
 - **Fixed in 0.15.0: wake text and note wording.** Claude wakes summarize unread events,
