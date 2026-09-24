@@ -25729,6 +25729,7 @@ function resolveSessionHost(dir, env = process.env, parentCommand = () => execFi
     if (/^claude(?:[.-]|$)/.test(command)) return "claude";
   } catch {
   }
+  if (value(env.CLAUDE_CODE_SESSION_ID)) return "claude";
   try {
     return host(JSON.parse(fs7.readFileSync(sessionMetadataPath(dir), "utf8")).host) ?? "agent";
   } catch {
@@ -25761,20 +25762,22 @@ function createClaudeTranscriptModelRefresh(io = fs7) {
     try {
       const stat4 = io.statSync(session.transcript_path);
       const prior = checked.get(sessionFile);
-      if (prior?.path === session.transcript_path && prior.mtimeMs === stat4.mtimeMs && prior.size === stat4.size) return prior.model;
+      const sameSession = prior?.sessionId === session.session_id && prior?.path === session.transcript_path;
+      if (sameSession && prior && prior.mtimeMs === stat4.mtimeMs && prior.size === stat4.size) return prior.model;
       fd = io.openSync(session.transcript_path, "r");
       const start2 = Math.max(0, stat4.size - 64 * 1024);
       const tail = Buffer.alloc(Math.min(stat4.size, 64 * 1024));
       const count = io.readSync(fd, tail, 0, tail.length, start2);
       const model = newestModelInTranscriptTail(tail.subarray(0, count).toString("utf8"), start2 > 0);
-      checked.set(sessionFile, { path: session.transcript_path, mtimeMs: stat4.mtimeMs, size: stat4.size, ...model ? { model } : {} });
-      if (model && session.model !== model) {
+      const effective = session.modelFromHook && !sameSession && typeof session.model === "string" ? session.model : model;
+      checked.set(sessionFile, { sessionId: typeof session.session_id === "string" ? session.session_id : void 0, path: session.transcript_path, mtimeMs: stat4.mtimeMs, size: stat4.size, ...effective ? { model: effective } : {} });
+      if (effective && session.model !== effective) {
         try {
-          io.writeFileSync(sessionFile, JSON.stringify({ ...session, model }) + "\n");
+          io.writeFileSync(sessionFile, JSON.stringify({ ...session, model: effective }) + "\n");
         } catch {
         }
       }
-      return model;
+      return effective;
     } catch {
       return void 0;
     } finally {
@@ -25789,12 +25792,17 @@ function createClaudeTranscriptModelRefresh(io = fs7) {
 }
 function resolveSessionRuntime(dir, env = process.env) {
   const clean = (v) => typeof v === "string" ? v.replace(/[^\x20-\x7e]/g, "").trim().slice(0, 80) || void 0 : void 0;
-  let model;
+  const effort = (v) => {
+    const e = clean(v);
+    return e && ["low", "medium", "high", "xhigh", "max", "ultra"].includes(e) ? e : void 0;
+  };
+  let session = {};
   try {
-    model = clean(JSON.parse(fs7.readFileSync(sessionMetadataPath(dir), "utf8")).model);
+    session = JSON.parse(fs7.readFileSync(sessionMetadataPath(dir), "utf8"));
   } catch {
   }
-  return { model: model ?? clean(env.ROOM_WORKER_MODEL), effort: clean(env.ROOM_WORKER_EFFORT) };
+  if (env.CLAUDE_CODE_SESSION_ID && resolveSessionHost(dir, env) === "claude" && session.session_id !== env.CLAUDE_CODE_SESSION_ID && session.host !== "claude") session = {};
+  return { model: clean(session.model) ?? clean(env.ROOM_WORKER_MODEL), effort: effort(session.effort) ?? effort(env.ROOM_WORKER_EFFORT) };
 }
 var DEFAULT_SERVER, LOCAL, DEFAULT_CLAUDE_CHANNEL, DEFAULT_MAX_WORKERS, DEFAULT_STALE_DAYS, value, positive;
 var init_config = __esm({
@@ -25919,6 +25927,7 @@ var init_wake_path = __esm({
       pending = [];
       timer;
       sequence = 0;
+      lastSentAt;
       loggedError = false;
       loggedFlushError = false;
       closed = false;
@@ -25928,21 +25937,22 @@ var init_wake_path = __esm({
         const selected = mode(env);
         if (selected === "off") return;
         if (selected === "channels") {
-          void this.channel(wake);
+          if (this.unread(wake)) void this.channel(wake);
           return;
         }
         if (!env.CLAUDE_CODE_MESSAGING_SOCKET) {
-          if (selected === "auto" && this.channelAdmitted()) void this.channel(wake);
+          if (selected === "auto" && this.channelAdmitted() && this.unread(wake)) void this.channel(wake);
           return;
         }
-        if (!this.timer) {
-          this.pending.push(wake);
-          this.timer = setTimeout(() => {
-            this.timer = void 0;
-            this.flushSafely();
-          }, this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS);
+        this.pending.push(wake);
+        if (this.timer) return;
+        const windowMs = this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS;
+        const elapsed = this.lastSentAt === void 0 ? windowMs : Date.now() - this.lastSentAt;
+        this.timer = setTimeout(() => {
+          this.timer = void 0;
           this.flushSafely();
-        } else this.pending.push(wake);
+        }, elapsed < windowMs ? windowMs - elapsed : windowMs);
+        if (elapsed >= windowMs) this.flushSafely();
       }
       close() {
         this.closed = true;
@@ -25958,6 +25968,9 @@ var init_wake_path = __esm({
         const env = this.o.env ?? process.env;
         return channelAdmitted(env, this.o.parentArgs ?? claudeParentArgs(), this.o.channel);
       }
+      unread(wake) {
+        return this.o.isUnread?.(wake) ?? true;
+      }
       flushSafely() {
         void this.flush().catch((error2) => {
           if (this.loggedFlushError) return;
@@ -25966,8 +25979,9 @@ var init_wake_path = __esm({
         });
       }
       async flush() {
-        const items = this.pending.splice(0);
+        const items = this.pending.splice(0).filter((w) => this.unread(w));
         if (!items.length || this.closed) return;
+        this.lastSentAt = Date.now();
         const count = items.length;
         const shown = count > 5 ? 4 : 5;
         const phrases = items.slice(0, shown).map((w) => `${(w.meta.from ?? "someone").replace(/\s+/g, " ").trim().slice(0, 40) || "someone"} ${kindPhrase(w.meta.type)}`);
@@ -31730,6 +31744,33 @@ function workerBudget({ cores, memBytes, maxWorkers, running }) {
   const divisor = Math.max(1, Math.min(maxWorkers, Math.max(workers, 4)), workers);
   return { threads: Math.max(1, Math.floor(cores / divisor)), memGb: Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3)) };
 }
+function workerProcessEnv(options, inherited = process.env) {
+  const caps = {};
+  for (const key of WORKER_THREAD_CAPS) {
+    const cap = Number(inherited[key]);
+    caps[key] = options.isWorker ? String(Number.isSafeInteger(cap) && cap >= 1 ? Math.min(cap, options.threads) : options.threads) : inherited[key] ?? String(options.threads);
+  }
+  return {
+    ...caps,
+    ROOM_WORKER_THREADS: String(options.threads),
+    ROOM_WORKER_MEM_GB: String(options.memGb),
+    ROOM_WORKER_HOST: options.host,
+    ...options.model ? { ROOM_WORKER_MODEL: options.model } : {},
+    ...options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {},
+    ROOM_SERVER: options.server,
+    ROOM_ROOM: options.room,
+    ROOM_DIR: options.dir,
+    PWD: options.dir,
+    ROOM_TAG: options.tag,
+    ROOM_LEAD: options.lead,
+    ROOM_OWNER: options.owner,
+    ROOM_SHARE: options.share,
+    ROOM_GEN: String(options.gen),
+    ROOM_WORKER_ID: options.id,
+    ...options.token ? { ROOM_TOKEN: options.token } : {},
+    ROOM_LOG_FILE: path11.join(options.logDir, ".room", "workers", `${options.tag}.mcp.log`)
+  };
+}
 function validTag(tag) {
   if (typeof tag !== "string") return void 0;
   const t = tag.trim();
@@ -31739,7 +31780,7 @@ function workerPrompt(lead, tag, task, context) {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
-    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process (you cannot answer afterwards).`,
+    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process. Your lead can resume this session for a later follow-up while the worktree remains.`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     `If you spawn workers, collect them before your own room_done.`,
     ...context ? [
@@ -31751,13 +31792,32 @@ function workerPrompt(lead, tag, task, context) {
     `TASK: ${task}`
   ].join("\n");
 }
-function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort) {
+function hostWorkerEffort(host, effort) {
+  return host === "claude" && effort === "minimal" ? "low" : effort;
+}
+function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort, options = {}) {
   if (effort !== void 0 && !WORKER_EFFORTS.includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join("|")}`);
-  if (host === "codex") return { cmd: "codex", args: ["exec", "-s", "workspace-write", ...model ? ["-m", model] : [], ...effort ? ["-c", `model_reasoning_effort=${effort}`] : [], prompt] };
+  effort = hostWorkerEffort(host, effort);
+  if (options.resume && !options.sessionId) throw new Error("resuming a worker requires its host session id");
+  if (host === "codex") return { cmd: "codex", args: options.resume ? ["exec", "resume", options.sessionId, "-c", 'sandbox_mode="workspace-write"', ...model ? ["-m", model] : [], ...effort ? ["-c", `model_reasoning_effort=${effort}`] : [], "--json", prompt] : ["exec", "-s", "workspace-write", ...model ? ["-m", model] : [], ...effort ? ["-c", `model_reasoning_effort=${effort}`] : [], "--json", prompt] };
   return {
     cmd: "claude",
-    args: [...claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : []]
+    args: [...options.wakeChannels && claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", ...options.resume ? ["--resume", options.sessionId] : [], prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : [], ...options.tag ? ["--name", options.tag] : [], ...!options.resume && options.sessionId ? ["--session-id", options.sessionId] : [], ...options.maxBudgetUsd ? ["--max-budget-usd", options.maxBudgetUsd] : []]
   };
+}
+function workerMaxBudget(env = process.env) {
+  const value2 = env.ROOM_WORKER_MAX_BUDGET_USD?.trim();
+  if (!value2) return void 0;
+  if (!/^\d+(?:\.\d+)?$/.test(value2) || Number(value2) <= 0) throw new Error("ROOM_WORKER_MAX_BUDGET_USD must be a positive dollar amount");
+  return value2;
+}
+function codexSessionId(line) {
+  try {
+    const event = JSON.parse(line);
+    return event.type === "thread.started" && typeof event.thread_id === "string" && /^[0-9a-f-]{36}$/i.test(event.thread_id) ? event.thread_id : void 0;
+  } catch {
+    return void 0;
+  }
 }
 function resolveWorkerLinks(repoDir, requested) {
   let input = requested;
@@ -31826,7 +31886,18 @@ function workerLogTail(logFile) {
     const buffer = Buffer.alloc(size2 - start2);
     fs12.readSync(fd, buffer, 0, buffer.length, start2);
     const text = stripVTControlCharacters(buffer.toString("utf8"));
-    return text.split(/\r?\n|\r/).map((l) => l.trim()).filter(Boolean).slice(-5).join("\n").slice(-600);
+    return text.split(/\r?\n|\r/).map((l) => {
+      const line = l.trim();
+      if (!line.startsWith("{")) return line;
+      try {
+        const event = JSON.parse(line);
+        if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") return event.item.text.trim();
+        if (typeof event.error?.message === "string") return event.error.message.trim();
+        return typeof event.message === "string" ? event.message.trim() : "";
+      } catch {
+        return line;
+      }
+    }).filter(Boolean).slice(-5).join("\n").slice(-600);
   } catch {
     return "(log unavailable)";
   } finally {
@@ -32213,7 +32284,7 @@ async function saveDiscardPatch(leadDir, w) {
     fs12.rmSync(scratch, { recursive: true, force: true });
   }
 }
-var IGNORED_DEPENDENCY_DIRS, WORKERS_DIR, warnedMissingNice, WORKER_EFFORTS, inside, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, LEAD_ONLY_ENV, defaultSpawner;
+var IGNORED_DEPENDENCY_DIRS, WORKERS_DIR, warnedMissingNice, WORKER_THREAD_CAPS, WORKER_EFFORTS, inside, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, LEAD_ONLY_ENV, defaultSpawner;
 var init_workers = __esm({
   "packages/room-mcp/src/workers.ts"() {
     "use strict";
@@ -32223,6 +32294,7 @@ var init_workers = __esm({
     IGNORED_DEPENDENCY_DIRS = /* @__PURE__ */ new Set(["node_modules", ".venv", "venv", "vendor", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".gradle", "target"]);
     WORKERS_DIR = path11.join(".room", "workers");
     warnedMissingNice = false;
+    WORKER_THREAD_CAPS = ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "LOKY_MAX_CPU_COUNT", "RAYON_NUM_THREADS"];
     WORKER_EFFORTS = ["minimal", "low", "medium", "high"];
     inside = (base, target) => {
       const rel = path11.relative(base, target);
@@ -32237,12 +32309,30 @@ var init_workers = __esm({
     defaultSpawner = (spec16) => {
       fs12.mkdirSync(path11.dirname(spec16.logFile), { recursive: true });
       const fd = fs12.openSync(spec16.logFile, "a");
-      const child = spawn2(spec16.cmd, spec16.args, { cwd: spec16.cwd, env: workerEnv(process.env, spec16.env), detached: true, stdio: ["ignore", fd, fd] });
+      const child = spawn2(spec16.cmd, spec16.args, { cwd: spec16.cwd, env: workerEnv(process.env, spec16.env), detached: true, stdio: ["ignore", spec16.captureCodexSession ? "pipe" : fd, fd] });
+      let sessionId;
+      let sessionIdCallback;
+      if (spec16.captureCodexSession && child.stdout) {
+        let pending = "";
+        child.stdout.on("data", (chunk) => {
+          fs12.writeSync(fd, chunk);
+          pending += chunk.toString("utf8");
+          const lines = pending.split("\n");
+          pending = lines.pop().slice(-64 * 1024);
+          for (const line of lines) {
+            const id2 = codexSessionId(line);
+            if (id2 && !sessionId) {
+              sessionId = id2;
+              sessionIdCallback?.(id2);
+            }
+          }
+        });
+      }
       child.unref();
       return {
         pid: child.pid ?? -1,
         onExit: (cb) => {
-          child.once("exit", (code) => {
+          child.once("close", (code) => {
             try {
               fs12.closeSync(fd);
             } catch {
@@ -32258,6 +32348,10 @@ var init_workers = __esm({
             }
             cb(err2);
           });
+        },
+        onSessionId: (cb) => {
+          sessionIdCallback = cb;
+          if (sessionId) cb(sessionId);
         },
         kill: () => signalWorker(child.pid ?? -1)
       };
@@ -33689,6 +33783,12 @@ function workerId(lead, tag, gen) {
 function workerIdBase(roomName, lead, tag) {
   return `${roomName}|${lead}/${tag}`;
 }
+function workerOrigin(s) {
+  return {
+    server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")),
+    isWorker: !!process.env.ROOM_TAG || !!s.room.workerOf(s.me.name) || !!s.me.owner && s.me.owner !== s.me.name
+  };
+}
 async function finishWorkerProcess(s, w, code, at = Date.now(), error2, unwitnessed = false) {
   const current = s.room.workers.get(w.tag);
   if (current !== w || w.exitCode !== void 0) return;
@@ -33723,7 +33823,9 @@ var Rooms;
 var init_registry = __esm({
   "packages/room-mcp/src/registry.ts"() {
     "use strict";
+    init_session();
     init_workers();
+    init_config();
     Rooms = class _Rooms {
       constructor(o) {
         this.o = o;
@@ -33831,6 +33933,7 @@ var init_registry = __esm({
       async evaluateRetirement(s) {
         for (const w of s.room.workers.values()) {
           if (w.stopReason === "lead-session-ended") continue;
+          if (w.status === "done" && w.hostSessionId && fs14.existsSync(w.dir)) continue;
           if (this.reserving.has("discard:" + s.roomName + ":" + w.name)) continue;
           if (w.lead !== s.me.name || this.hasHandle(s, w)) continue;
           const lock = workerOperationKey(w);
@@ -33948,6 +34051,76 @@ var init_registry = __esm({
       }
       hasHandle(s, w) {
         return !!w.id && this.handles.has(_Rooms.hkey(s, w.id));
+      }
+      /** Continue an exited, retained worker in its original checkout and host conversation. */
+      async resumeWorker(s, w, message, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, at = Date.now()) {
+        await this.retiring.get(s);
+        const key = workerOperationKey(w);
+        if (!this.reserve(key)) return `error: ${w.tag} is being collected, discarded or resumed; retry after that finishes`;
+        try {
+          const current = s.room.workers.get(w.tag);
+          if (!current || current.id !== w.id || current.gen !== w.gen) return `error: ${w.tag} changed while you were sending; retry`;
+          w = current;
+          if (w.lead !== s.me.name) return `error: ${w.tag} belongs to ${w.lead}`;
+          if (w.status === "running") return `error: ${w.tag} is already running`;
+          if (w.status === "dismissed" && w.stopReason !== "lead-session-ended") return `error: ${w.tag} was discarded and cannot be resumed`;
+          const deadline = Date.now() + 5e3;
+          while (this.hasHandle(s, w) && Date.now() < deadline) await new Promise((resolve5) => setTimeout(resolve5, 50));
+          if (this.hasHandle(s, w) || w.exitCode === void 0 && pidIsOurWorker(w.pid, w)) return `error: ${w.tag}'s previous process is still exiting; send the message again shortly`;
+          if (!fs14.existsSync(w.dir)) return `error: ${w.tag}'s worktree no longer exists; it cannot be resumed`;
+          if (!w.hostSessionId) return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`;
+          if (!w.id) return `error: ${w.tag} has no stable worker id; it cannot be resumed`;
+          const budget = w.budget;
+          if (!budget) return `error: ${w.tag} has no recorded compute budget; it cannot be resumed`;
+          const { server, isWorker } = workerOrigin(s);
+          const env = workerProcessEnv({
+            ...budget,
+            host: w.host,
+            model: w.model,
+            effort: w.effort,
+            server,
+            room: s.roomName,
+            dir: w.dir,
+            tag: w.tag,
+            lead: w.lead,
+            owner: s.me.owner ?? s.me.name,
+            share: s.daemon.share ?? "full",
+            gen: w.gen ?? 1,
+            id: w.id,
+            token: s.local ? void 0 : s.token,
+            logDir: s.dir,
+            isWorker
+          });
+          let maxBudgetUsd;
+          try {
+            maxBudgetUsd = workerMaxBudget();
+          } catch (e) {
+            return `error: ${e instanceof Error ? e.message : String(e)}`;
+          }
+          const command = workerCommand(w.host, w.model, message, claudeChannel, w.effort, { tag: w.tag, sessionId: w.hostSessionId, resume: true, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === "channels" });
+          const priority2 = workerPriority(command, { ...process.env, ROOM_WORKER_NICE: String(budget.nice) });
+          const logFile = path13.join(s.dir, ".room", "workers", `${w.tag}.log`);
+          let proc;
+          try {
+            proc = spawner({ cmd: priority2.cmd, args: priority2.args, cwd: w.dir, env, logFile, captureCodexSession: w.host === "codex" });
+          } catch (e) {
+            return `error: could not resume ${w.tag}: ${e instanceof Error ? e.message : String(e)}`;
+          }
+          this.setHandle(s, w.id, proc);
+          s.room.updateWorker(w.tag, { pid: proc.pid, status: "running", startedAt: at, summary: void 0, exitCode: void 0, finishedAt: void 0, dismissedAt: void 0, stopReason: void 0 }, w.id);
+          const exited = (code, error2) => {
+            this.dropHandle(s, w.id, proc);
+            const current2 = s.room.workerById(w.id);
+            if (!current2 || current2.pid !== proc.pid) return;
+            void finishWorkerProcess(s, current2, code, Date.now(), error2).then(() => this.retireWorkers(s)).catch(() => {
+            });
+          };
+          proc.onError?.((err2) => exited(-1, `could not resume ${w.tag}: ${err2.message}`));
+          proc.onExit((code) => exited(code));
+          return `resumed ${w.tag} with your message`;
+        } finally {
+          this.unreserve(key);
+        }
       }
     };
   }
@@ -44172,6 +44345,7 @@ var defs4 = [
   {
     name: "room_create",
     annotations: RW,
+    _meta: { "anthropic/requiresUserInteraction": true },
     description: "Open this repo on a team server and join. confirm=true authorizes opening it for members with push access.",
     inputSchema: { type: "object", properties: { confirm: { type: "boolean" }, where: str("team | server URL"), room: str("room name override"), name: str("name override"), server: str("alias of where"), dir: str("clone; default cwd"), share: SHARE } }
   },
@@ -44190,6 +44364,7 @@ var defs4 = [
   {
     name: "room_close",
     annotations: { ...RW, destructiveHint: true, idempotentHint: false },
+    _meta: { "anthropic/requiresUserInteraction": true },
     description: "On explicit request, export history then delete local room memory or all branch rooms for everyone on the team server. Leaves clone files intact.",
     inputSchema: { type: "object", properties: { confirm: { type: "boolean" } }, required: ["confirm"] }
   },
@@ -44596,11 +44771,13 @@ function handlers5(state) {
       const wsr = rooms.workers();
       const byQuestion = typeof a.inReplyTo === "string" && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : void 0;
       const workerMatches = requestedTo ? rooms.all().flatMap((room) => myWorkers(room).filter((w) => w.tag === requestedTo).map((worker) => ({ room, worker }))) : [];
-      if (workerMatches.length > 1) {
-        const names = [...new Set(workerMatches.map((x) => x.worker.name))].sort();
+      const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap((room) => room.room.retiredWorkers().filter((w) => w.tag === requestedTo && w.lead === room.me.name).map((worker) => ({ room, worker }))) : [];
+      const matches = workerMatches.length ? workerMatches : retiredMatches;
+      if (matches.length > 1 && new Set(matches.map((x) => x.room)).size > 1) {
+        const names = [...new Set(matches.map((x) => x.worker.name))].sort();
         return `error: worker tag ${requestedTo} is ambiguous; use a full name: ${names.join(", ")}`;
       }
-      const resolvedWorker = workerMatches[0];
+      const resolvedWorker = matches[0];
       const to2 = resolvedWorker?.worker.name ?? requestedTo;
       const exactWorkerRoom = to2 && wsr && wsr !== lead && (myWorkers(wsr).some((w) => w.name === to2) || wsr.room.retiredWorkers().some((w) => w.name === to2)) ? wsr : void 0;
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead;
@@ -44611,6 +44788,7 @@ function handlers5(state) {
         const valid = [...new Set(rooms.all().flatMap((room) => [...knownNames(room)]))].sort();
         return `error: nobody called ${to2} is or was in this room; participants: ${valid.join(", ")}`;
       }
+      if (to2 && !s.room.workerOf(to2) && s.room.retiredWorkers().some((w) => w.name === to2)) return `error: ${to2} was collected or discarded and cannot be resumed`;
       const pr = typeof a.priority === "string" && ["fyi", "notify", "interrupt"].includes(a.priority) ? a.priority : void 0;
       const withPr = (o) => pr ? { ...o, priority: pr } : o;
       let msg;
@@ -44641,6 +44819,11 @@ function handlers5(state) {
           break;
         default:
           return `error: type must be changed|question|answer|note (got ${String(a.type)})`;
+      }
+      const addressedWorker = msg.to && s.room.workerOf(msg.to);
+      if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== "running") {
+        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel);
+        notes.push(result);
       }
       const notice = msg.to ? recipientNotice(s, msg.to) : void 0;
       if (notice) notes.push(msg.type === "question" && notice.terminal ? unavailableQuestion(s, msg.id) : notice.text);
@@ -44678,7 +44861,8 @@ function handlers5(state) {
           if (m.type === "answer") return `answered: ${formatMsg(m)}`;
           if (m.type === "done") return `worker done: ${formatMsg(m)}`;
           if (m.type === "merge-conflict") return formatMsg(m);
-          return `${workersRoom ? "question from a worker" : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`;
+          if (m.type === "question") return `${workersRoom ? "question from a worker" : `question for you (answer it with room_send type=answer inReplyTo=${m.id}, then wait again)`}: ${formatMsg(m)}`;
+          return `${workersRoom ? "workers room" : "message for you"}: ${formatMsg(m)}`;
         }
         if (m.priority === "interrupt" && forMe(x, m)) {
           received(x, m);
@@ -46158,6 +46342,7 @@ init_prs();
 init_context();
 init_config();
 import fs19 from "node:fs";
+import { randomUUID } from "node:crypto";
 import os6 from "node:os";
 import path18 from "node:path";
 var defs8 = [
@@ -46197,7 +46382,7 @@ function handlers8(state) {
       }
       setPresence(s, { cursor: void 0, status: `done: ${summary.slice(0, 60)}` });
       s.daemon.touch();
-      const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; this worker cannot answer further questions.` : "You remain in the room."}`];
+      const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : "You remain in the room."}`];
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary);
       const command = s.lastPreview?.testsCommand;
       if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed === true && command) {
@@ -46220,7 +46405,7 @@ function handlers8(state) {
     async room_spawn(a) {
       const lead = S();
       if (a.effort !== void 0 && !WORKER_EFFORTS.includes(a.effort)) return `error: effort must be ${WORKER_EFFORTS.join("|")}`;
-      const effort = a.effort;
+      const requestedEffort = a.effort;
       if (a.threads !== void 0 && (typeof a.threads !== "number" || !Number.isSafeInteger(a.threads) || a.threads < 1)) return "error: threads must be an integer >= 1";
       if (a.where !== void 0 && a.where !== "here" && a.where !== "local") return "error: where must be here or local";
       let s = lead;
@@ -46237,6 +46422,7 @@ function handlers8(state) {
       if (!task) return "error: task is required";
       if (a.host !== void 0 && a.host !== "codex" && a.host !== "claude") return "error: host must be codex or claude";
       const host = (a.host ?? process.env.ROOM_HOST ?? process.env.ROOM_WORKER_HOST) === "codex" ? "codex" : "claude";
+      const effort = hostWorkerEffort(host, requestedEffort);
       const model = typeof a.model === "string" && a.model.trim() ? a.model.trim() : void 0;
       const idBase = workerIdBase(s.roomName, s.me.name, tag);
       const existing = s.room.workers.get(tag);
@@ -46303,7 +46489,7 @@ function handlers8(state) {
         }
         const owner = s.me.owner ?? s.me.name;
         const name2 = `${owner}+${tag}`;
-        const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
+        const { server, isWorker } = workerOrigin(s);
         const count = runningWorkers(lead).length;
         if (count >= max2) return abortPrepared(`error: ${count} workers already running (max ${max2}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`);
         const cores = Math.max(1, os6.availableParallelism?.() ?? os6.cpus().length);
@@ -46311,36 +46497,29 @@ function handlers8(state) {
         const budget = workerBudget({ cores, memBytes, maxWorkers: max2, running: count });
         const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS);
         const inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB);
-        const isWorker = !!process.env.ROOM_TAG || !!s.room.workerOf(s.me.name) || !!s.me.owner && s.me.owner !== s.me.name;
         const divisor = isWorker ? Math.max(2, max2) : 1;
         const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads;
         const threads = typeof a.threads === "number" ? Math.min(a.threads, threadShare) : threadShare;
         const memGb = Number.isFinite(inheritedMem) && inheritedMem >= 1 ? Math.max(1, Math.floor(inheritedMem / divisor)) : budget.memGb;
-        const caps = {};
-        for (const key of ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "LOKY_MAX_CPU_COUNT", "RAYON_NUM_THREADS"]) {
-          const cap = Number(process.env[key]);
-          caps[key] = isWorker ? String(Number.isSafeInteger(cap) && cap >= 1 ? Math.min(cap, threads) : threads) : process.env[key] ?? String(threads);
-        }
-        const env = {
-          ...caps,
-          ROOM_WORKER_THREADS: String(threads),
-          ROOM_WORKER_MEM_GB: String(memGb),
-          ROOM_WORKER_HOST: host,
-          ...model ? { ROOM_WORKER_MODEL: model } : {},
-          ...effort ? { ROOM_WORKER_EFFORT: effort } : {},
-          ROOM_SERVER: server,
-          ROOM_ROOM: s.roomName,
-          ROOM_DIR: dir,
-          PWD: dir,
-          ROOM_TAG: tag,
-          ROOM_LEAD: s.me.name,
-          ROOM_OWNER: owner,
-          ROOM_SHARE: share ?? s.daemon.share ?? "full",
-          ROOM_GEN: String(gen),
-          ROOM_WORKER_ID: id2,
-          ...s.token && !s.local ? { ROOM_TOKEN: s.token } : {},
-          ROOM_LOG_FILE: path18.join(s.dir, ".room", "workers", `${tag}.mcp.log`)
-        };
+        const env = workerProcessEnv({
+          threads,
+          memGb,
+          host,
+          model,
+          effort,
+          server,
+          room: s.roomName,
+          dir,
+          tag,
+          lead: s.me.name,
+          owner,
+          share: share ?? s.daemon.share ?? "full",
+          gen,
+          id: id2,
+          token: s.local ? void 0 : s.token,
+          logDir: s.dir,
+          isWorker
+        });
         let link;
         try {
           link = prepareWorkerLinks(lead.dir, dir, linkPaths);
@@ -46349,22 +46528,33 @@ function handlers8(state) {
         }
         const scheduling = workerPriority({ cmd: host, args: [] });
         const prompt = workerPrompt(s.me.name, tag, task, { threads, memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort, link, carriedPaths: carried?.paths });
-        const { cmd, args: args3 } = workerCommand(host, model, prompt, config2.claudeChannel, effort);
+        const hostSessionId = host === "claude" ? randomUUID() : void 0;
+        let maxBudgetUsd;
+        try {
+          maxBudgetUsd = workerMaxBudget();
+        } catch (e) {
+          return abortPrepared(`error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        const { cmd, args: args3 } = workerCommand(host, model, prompt, config2.claudeChannel, effort, { tag, sessionId: hostSessionId, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === "channels" });
         const logFile = path18.join(s.dir, ".room", "workers", `${tag}.log`);
         const priority2 = { cmd: scheduling.cmd, args: [...scheduling.args, ...args3], nice: scheduling.nice };
         let proc;
         try {
-          proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority2.cmd, args: priority2.args, cwd: dir, env, logFile });
+          proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority2.cmd, args: priority2.args, cwd: dir, env, logFile, captureCodexSession: host === "codex" });
         } catch (e) {
           return abortPrepared(`error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`);
         }
         rooms.setHandle(s, id2, proc);
-        const w = { id: id2, tag, name: name2, host, ...model ? { model } : {}, ...effort ? { effort } : {}, ...link.length ? { link } : {}, task, dir, branch, ...base ? { base } : {}, ...carriedBase ? { carriedBase } : {}, ...carriedUntracked?.length ? { carriedUntracked } : {}, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name, gen };
+        const w = { id: id2, tag, name: name2, host, ...model ? { model } : {}, ...effort ? { effort } : {}, ...hostSessionId ? { hostSessionId } : {}, budget: { threads, memGb, nice: scheduling.nice }, ...link.length ? { link } : {}, task, dir, branch, ...base ? { base } : {}, ...carriedBase ? { carriedBase } : {}, ...carriedUntracked?.length ? { carriedUntracked } : {}, pid: proc.pid, startedAt: now(), status: "running", lead: s.me.name, gen };
         s.room.setWorker(w);
+        if (host === "codex") proc.onSessionId?.((sessionId) => {
+          const current = s.room.workerById(id2);
+          if (current && current.pid === proc.pid && !current.hostSessionId) s.room.updateWorker(tag, { hostSessionId: sessionId }, id2);
+        });
         const exited = (code, error2) => {
           rooms.dropHandle(s, id2, proc);
           const cur = s.room.workerById(id2);
-          if (!cur) return;
+          if (!cur || cur.pid !== proc.pid) return;
           void finishWorkerProcess(s, cur, code, now(), error2).then(() => rooms.retireWorkers(s)).catch((e) => state.log(`worker exit: ${e}`));
         };
         proc.onError?.((err2) => exited(-1, `could not start ${cmd}: ${err2.message}`));
@@ -46928,7 +47118,7 @@ async function main() {
   const attachChannel = (s) => {
     if (attachedWakeSessions.has(s)) return;
     attachedWakeSessions.add(s);
-    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), log });
+    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), log });
     const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
     s.room.bus.observe((ev) => {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
