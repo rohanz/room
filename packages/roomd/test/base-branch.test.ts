@@ -14,7 +14,11 @@ afterAll(() => { vi.unstubAllEnvs() })
 
 const sh = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
 const daemons: Roomd[] = []
-afterEach(async () => { for (const daemon of daemons.splice(0)) await daemon.stop() })
+const roots: string[] = []
+afterEach(async () => {
+  try { for (const daemon of daemons.splice(0)) await daemon.stop() }
+  finally { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) }
+})
 
 function provider(doc: Y.Doc): WebsocketProvider {
   let local: unknown = null
@@ -32,6 +36,7 @@ function provider(doc: Y.Doc): WebsocketProvider {
 
 async function setup(): Promise<{ dir: string; base: string; poll: () => Promise<void> ; daemon: Roomd }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-base-'))
+  roots.push(root)
   const origin = path.join(root, 'origin.git')
   const dir = path.join(root, 'checkout')
   sh(root, 'init', '--bare', '-q', origin)

@@ -39,20 +39,37 @@ it('accepts a successful consumer that closes the archive pipe early', async () 
 it('reports tar exit without waiting for a descendant holding its stderr open', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-archive-held-stderr-'))
   const bin = path.join(dir, 'bin'), repo = path.join(dir, 'repo'), destination = path.join(dir, 'out')
+  const childPidFile = path.join(dir, 'sleep.pid')
   fs.mkdirSync(bin); fs.mkdirSync(repo); fs.mkdirSync(destination)
-  fs.writeFileSync(path.join(bin, 'tar'), '#!/bin/sh\nsleep 30 >&2 &\nexit 1\n', { mode: 0o755 })
+  fs.writeFileSync(path.join(bin, 'tar'), `#!/bin/sh\nsleep 30 >&2 &\necho $! > '${childPidFile}'\nexit 1\n`, { mode: 0o755 })
   execFileSync('git', ['init', '-q', repo])
   fs.writeFileSync(path.join(repo, 'file.txt'), 'content')
   execFileSync('git', ['-C', repo, 'add', 'file.txt'])
   execFileSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'fixture'])
   const ref = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
   vi.stubEnv('PATH', `${bin}:${process.env.PATH}`)
+  let deadline: ReturnType<typeof setTimeout> | undefined
   try {
     await expect(Promise.race([
       materializeGitTree(repo, ref, destination),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('waited for inherited stderr')), 10_000)),
+      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('waited for inherited stderr')), 10_000) }),
     ])).rejects.toThrow(/could not materialize/)
-  } finally { vi.unstubAllEnvs(); fs.rmSync(dir, { recursive: true, force: true }) }
+  } finally {
+    if (deadline) clearTimeout(deadline)
+    if (fs.existsSync(childPidFile)) {
+      const pid = Number(fs.readFileSync(childPidFile, 'utf8').trim())
+      try { process.kill(pid, 'SIGTERM') } catch { /* child already exited */ }
+      // The exited tar shell cannot wait for its orphan; wait for the OS to reap it.
+      for (let i = 0; i < 50; i++) {
+        let state: string
+        try { state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim() }
+        catch { break }
+        if (!state || state.startsWith('Z')) break
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+    }
+    vi.unstubAllEnvs(); fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 it('drains git when tar exits before the first archive write', async () => {
@@ -67,10 +84,14 @@ it('drains git when tar exits before the first archive write', async () => {
   execFileSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'fixture'])
   const ref = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
   vi.stubEnv('PATH', `${bin}:${process.env.PATH}`)
+  let deadline: ReturnType<typeof setTimeout> | undefined
   try {
     await expect(Promise.race([
       materializeGitTree(repo, ref, destination),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('archive pipe stayed paused')), 10_000)),
+      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('archive pipe stayed paused')), 10_000) }),
     ])).rejects.toThrow(/could not materialize/)
-  } finally { vi.unstubAllEnvs(); fs.rmSync(dir, { recursive: true, force: true }) }
+  } finally {
+    if (deadline) clearTimeout(deadline)
+    vi.unstubAllEnvs(); fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

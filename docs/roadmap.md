@@ -4,6 +4,9 @@ Written 2026-09-21. Room today fits a small team on a shared branch. These are t
 between that and a fifty-engineer production repo, in priority order. Completed work is marked below.
 Decide the order after the trial with real users; see "What decides the order" at the end.
 
+- **Crash recovery lock race (0.16.1 audit finding 8):** serialize stale-lock recovery before replacing automatic-name and choice locks; two contenders can otherwise remove each other's live reservation.
+- **Worker port reservations (0.16.1 audit finding 9):** include parent and other local leads' live workers when allocating ports, with a machine-local reservation if ports must be unique across processes.
+
 **Start here:** [the full review of 0.10.0](audit-2026-09-21-review.md) (30 of its 33 findings fixed in 0.10.1, three partly; each is marked in the file), then [is Room invisible?](audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
 use broke and proposes the order of work.
 

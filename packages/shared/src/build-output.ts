@@ -2,8 +2,10 @@
 export const REGENERABLE_BUILD_DIRS = [
   'dist', 'build', 'out', '.astro', '.next', '.nuxt', '.svelte-kit',
   '.turbo', '.cache', 'coverage', 'test-results', 'playwright-report',
-  'node_modules', '__pycache__', '.pytest_cache', 'target',
+  'node_modules', 'vendor', '__pycache__', '.pytest_cache', '.mypy_cache',
+  '.ruff_cache', '.tox', '.gradle', 'target',
 ] as const
+// .venv and venv are deliberately retained: rebuilding a virtualenv is costly and it may hold local state.
 
 const buildDirs = new Set<string>(REGENERABLE_BUILD_DIRS)
 

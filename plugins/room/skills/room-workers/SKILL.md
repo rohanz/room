@@ -33,7 +33,7 @@ description: Running editing work through other agents. Use when asked for anoth
 5. Call `room_collect()` once with no tag to bring every finished worker's changes into
    your working tree, uncommitted and unstaged. Conflicts write nothing: resolve them or
    collect one tag at a time. Running and failed workers are skipped. Fully collected workers
-   are cleaned up after a clean exit. Regenerable build output (`dist/`, `build/`, `out/`, `.astro/`, `.next/`, `.nuxt/`, `.svelte-kit/`, `.turbo/`, `.cache/`, `coverage/`, `test-results/`, `playwright-report/`, `node_modules/`, `__pycache__/`, `.pytest_cache/`, `target/`, `*.tsbuildinfo`) does not keep a collected worktree. For named artifacts, use `tag, mode="copy", paths=[...]`;
+   are cleaned up after a clean exit. Regenerable build output (`dist/`, `build/`, `out/`, `.astro/`, `.next/`, `.nuxt/`, `.svelte-kit/`, `.turbo/`, `.cache/`, `coverage/`, `test-results/`, `playwright-report/`, `node_modules/`, `vendor/`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.tox/`, `.gradle/`, `target/`, `*.tsbuildinfo`) does not keep a collected worktree. For named artifacts, use `tag, mode="copy", paths=[...]`;
    `tag, discard=true` stops a worker and removes its worktree, branch and logs, keeping a recovery patch for a week. Collect, discard and stop also stop processes running inside the worktree.
 6. Run the tests on the real working tree, then report the work and validation result.
    Never commit or push unless the human asked. If asked to commit, use plain git for one

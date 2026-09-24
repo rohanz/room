@@ -10,6 +10,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 ### 0. Medium — Human and agent names are indistinguishable
 
+**FIXED in 0.16.2 (ec7fe39).**
+
 **Location:** `packages/shared/src/identity.ts:28`.
 
 **Problem:** As supplied: the first joiner’s agent now displays as bare `rohanz`, exactly like the human.
@@ -21,6 +23,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 **Inferred — supplied finding; not re-derived.**
 
 ### 1. High — Stop and leave kill processes without establishing worktree ownership
+
+**FIXED in 0.16.2 (f6c604d).**
 
 **Locations:** `packages/room-mcp/src/tools/workers.ts:130`, `:257`; `packages/room-mcp/src/tools/collect.ts:27`.
 
@@ -34,6 +38,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 ### 2. High — Retirement sweeps delete a newer session’s shared work
 
+**FIXED in 0.16.2 (ec7fe39).**
+
 **Locations:** `packages/shared/src/doc.ts:121`, `:149`; `packages/room-mcp/src/tools/context.ts:252`.
 
 **Problem:** An archived worker name protects a later standalone participant only while that name appears in awareness. After disconnection, with no current worker record, `sweepRetiredWorkers` attributes the newer overlays and scope to the old retirement.
@@ -45,6 +51,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 **Reproduced:** Using the actual `RoomDoc`, newer `new.ts` work survived an online sweep, then disappeared when the same name was absent from the supplied presence set.
 
 ### 3. High — Equal checkout paths can hide different teammates
+
+**FIXED in 0.16.2 (ec7fe39).**
 
 **Locations:** `packages/room-mcp/src/company.ts:14`, `:30`; `packages/room-mcp/src/tools/claims.ts:30`; `packages/roomd/src/index.ts:259`.
 
@@ -58,6 +66,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 ### 4. Medium — Cancelled waits consume answers that are never returned
 
+**FIXED in 0.16.2 (70541c2).**
+
 **Locations:** `packages/room-mcp/src/tools/messaging.ts:184`, `:195`, `:224`; `packages/room-mcp/src/tools/index.ts:88`.
 
 **Problem:** Cancellation reaches the tool wrapper, but `room_wait` does not subscribe to it. Its wake-suppression predicate and bus observer remain active. A subsequent answer ends that abandoned wait and is marked seen; the wrapper then substitutes “tool call cancelled” for the answer.
@@ -69,6 +79,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 **Reproduced:** Started the real wait under `withToolSignal`, aborted it, then posted an answer. Wake suppression remained true and the answer became seen.
 
 ### 5. Medium — Process-enumeration failure prevents stopping an owned worker
+
+**FIXED in 0.16.2 (f6c604d).**
 
 **Locations:** `packages/room-mcp/src/workers.ts:654`; `packages/room-mcp/src/tools/workers.ts:262`; `packages/room-mcp/src/tools/context.ts:407`.
 
@@ -84,6 +96,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 ### 6. Low — Build-output consolidation regresses disposable-cache cleanup
 
+**FIXED in 0.16.2 (<commit>).**
+
 **Locations:** `packages/shared/src/build-output.ts:2`; `packages/room-mcp/src/workers.ts:30`; `packages/room-mcp/test/collect.test.ts:124`.
 
 **Problem:** Replacing the old dependency/cache set drops entries including `.mypy_cache` and `.ruff_cache`. They now count as unrecoverable artifacts. The new test deliberately covers retaining `.venv`, but does not distinguish that policy choice from the dropped cache exemptions.
@@ -95,6 +109,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 **Reproduced:** The actual artifact classifier retained `.mypy_cache/` while discarding `dist/`.
 
 ### 7. Low — New test fixtures leave directories, timers and a child process behind
+
+**FIXED in 0.16.2 (<commit>).**
 
 **Locations:** `packages/roomd/test/base-branch.test.ts:17`, `:34`; `packages/room-mcp/test/archive-signal.test.ts:43`, `:53`, `:73`.
 
@@ -110,6 +126,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 ### 8. Medium — Automatic-name crash recovery still has an unlink race
 
+**LEFT (roadmap).**
+
 **Locations:** `packages/room-mcp/src/session.ts:292`; `packages/room-mcp/src/choice.ts:80`.
 
 **Problem:** Two processes can read the same dead lock owner. One replaces the stale lock successfully; the other then unlinks that new live reservation using its earlier observation. The subsequent exclusive create can succeed for both contenders in sequence.
@@ -121,6 +139,8 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 **Inferred.** Leave after the trial because it requires concurrent crash recovery; fresh-lock acquisition uses exclusive creation correctly.
 
 ### 9. Medium — Worker ports are unique only within one lead’s running-worker list
+
+**LEFT (roadmap).**
 
 **Locations:** `packages/room-mcp/src/tools/workers.ts:164`, `:252`; `packages/room-mcp/src/workers.ts:111`.
 

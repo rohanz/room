@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.2
+
+- Untagged agents display as "<owner>'s agent" in participants, messages, hooks and the web view; tagged agents keep their names. Message routing names do not change.
+- Retiring an old worker no longer removes a later participant's shared work after that participant reuses the name and disconnects. Checkout identity now includes a machine ID, so teammates on different machines with the same path remain visible, along with their scopes, claims and conflict alarms.
+- Worker stop, leave, shutdown and collection clean up all processes in a worktree only after verifying Room owns it. Workers started in an existing directory are stopped through a verified process handle or PID. A failed or timed-out process listing is reported without preventing an owned worker from stopping.
+- Cancelling `room_wait` releases its listeners, timers and wake suppression immediately; an answer that arrives later remains unread for normal delivery.
+- Collection again treats Python check caches and other reproducible dependency directories as regenerable; virtual environments remain retained. Test fixtures now clean up temporary repositories, deadline timers and a background process.
+
 ## 0.16.1
 
 - Room advances its base only from pushed commits on the room's branch and warns an agent that switches branches; a detached HEAD (mid-rebase) neither moves the base nor warns. Base notices and join guidance show `git pull --ff-only --autostash` for catching up with uncommitted edits and tell the agent to stop if it cannot fast-forward.
