@@ -90,6 +90,17 @@ scripts/say.mts          post a message into a person's agent chat and watch the
 scripts/build-plugin.mjs esbuild bundle of room-mcp into plugins/room/server
 ```
 
+## Host features change weekly: read the current docs first
+
+Room is built on Claude Code and Codex, and both change every week. Before designing around, relying on or
+explaining a host feature (hooks, channels, cross-session messaging, plugins, permissions, `codex queue`),
+read its current documentation and changelog, not memory: the index at https://code.claude.com/docs/llms.txt
+and its `.md` pages, https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md (publish dates:
+`npm view @anthropic-ai/claude-code time`), and `codex --help` / Codex's docs. Name the version a feature
+arrived in. Every batch brief says this too; Codex workers have no network, so the lead saves dated snapshots
+of the pages they need. Room ran on research-preview channels for weeks after cross-session messaging, which
+wakes idle sessions with no flag, had shipped (Claude Code 2.1.224, 2026-08-07).
+
 ## Running and testing
 
 Hook definitions (`plugins/room/hooks.json`, `plugins/room/hooks/claude.json` — event, matcher, command) are frozen. Codex trusts each by content hash (`[hooks.state]` in `~/.codex/config.toml`), and any change un-trusts it for every user. Change behavior in the hook scripts instead.
