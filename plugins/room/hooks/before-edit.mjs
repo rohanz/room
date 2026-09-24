@@ -10,33 +10,41 @@ const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
 if (!root) process.exit(0)
 const stateDir = sessionStateDir(root, ev.session_id)
+const now = Date.now()
+const activityFile = path.join(stateDir, 'room-hook-activity.json')
+const previous = readJson(activityFile, null)
+if (previous?.session_id !== ev.session_id || previous?.event !== 'PreToolUse' || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
+  try { fs.writeFileSync(activityFile, JSON.stringify({ at: now, session_id: ev.session_id, event: 'PreToolUse' })) } catch { /* best effort */ }
+}
+const sessionFile = path.join(stateDir, 'room-session.json')
+let session = readJson(sessionFile, null)
+if (session && ev.session_id && session.session_id === ev.session_id) {
+  const effort = typeof ev.effort?.level === 'string' && ev.effort.level.trim() ? ev.effort.level.trim().slice(0, 80) : undefined
+  const model = session.host === 'codex' && typeof ev.model === 'string' && ev.model.trim() ? ev.model.trim().slice(0, 80) : undefined
+  if ((effort && session.effort !== effort) || (model && session.model !== model)) {
+    session = { ...session, ...(effort ? { effort } : {}), ...(model ? { model } : {}) }
+    try { fs.writeFileSync(sessionFile, JSON.stringify(session) + '\n') } catch { /* best effort */ }
+  }
+}
 const stateFile = path.join(stateDir, 'room-state.json')
 const state = readJson(stateFile, null)
 const sameSession = state?.sessionId === undefined || ev.session_id === undefined || state.sessionId === ev.session_id
 const stateFresh = typeof state?.at !== 'number' || (state.at <= Date.now() && Date.now() - state.at < 60_000)
 const pending = state && sameSession && (state.sessionId !== undefined || stateFresh) ? takePendingContext(stateFile, state) : []
-// Only the state lookup is needed while alone; no activity, transcript or write scans.
+// While alone, only the receipt above and the state lookup; no transcript or write scans.
 if (!state || !sameSession || (state.company !== true && !pending.length)) process.exit(0)
 if (state.company !== true) {
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: pending.join('\n') } }))
   process.exit(0)
 }
-const activityFile = path.join(stateDir, 'room-hook-activity.json')
-const now = Date.now()
 const paths = (isShellTool(ev.tool_name) ? shellLooksLikeWrite(ev.tool_input) : /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
   ? pathsOf(ev.tool_name, ev.tool_input, root) : []
 recordWriteIntents(stateDir, ev.session_id, root, paths, now)
-const previous = readJson(activityFile, null)
-if (previous?.session_id !== ev.session_id || previous?.event !== 'PreToolUse' || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
-  try { fs.writeFileSync(activityFile, JSON.stringify({ at: now, session_id: ev.session_id, event: 'PreToolUse' })) } catch { /* best effort */ }
-}
 const seenFile = path.join(stateDir, 'room-hook-seen.json')
 const hookSeen = readHookSeen(seenFile)
-// Claude SessionStart omits model; assistant transcript entries report the active model.
+// Claude SessionStart may omit model; assistant transcript entries can reveal a switch.
 // Persist the stat cache across hook processes, and never read more than the last 64 KiB.
 let transcriptChecked = false
-const sessionFile = path.join(stateDir, 'room-session.json')
-const session = readJson(sessionFile, null)
 if (session?.host === 'claude' && typeof ev.transcript_path === 'string') {
   let fd
   try {
@@ -48,7 +56,9 @@ if (session?.host === 'claude' && typeof ev.transcript_path === 'string') {
       const tail = Buffer.alloc(Math.min(stat.size, 64 * 1024))
       const count = fs.readSync(fd, tail, 0, tail.length, start)
       const model = newestModelInTranscriptTail(tail.subarray(0, count).toString('utf8'), start > 0)
-      if (model && session.model !== model) fs.writeFileSync(sessionFile, JSON.stringify({ ...session, model }) + '\n')
+      // SessionStart's model is authoritative over the first (possibly lagging)
+      // transcript read. Later transcript changes can reveal a /model switch.
+      if (model && session.model !== model && !(session.modelFromHook && !cached)) fs.writeFileSync(sessionFile, JSON.stringify({ ...session, model }) + '\n')
       hookSeen.transcript = { path: ev.transcript_path, mtimeMs: stat.mtimeMs, size: stat.size }
       transcriptChecked = true
     }

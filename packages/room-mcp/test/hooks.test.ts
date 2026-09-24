@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
-import { consumeHookDisclosure, consumeHookNotice, createWriteIntentReader, HooksBridge, hookHealthNote, syncHookSeen, writePendingHookContext } from '../src/hooks-bridge.js'
+import { consumeHookDisclosure, consumeHookNotice, createWriteIntentReader, findThreadForDir, HooksBridge, hookHealthNote, syncHookSeen, writePendingHookContext } from '../src/hooks-bridge.js'
 import type { Session } from '../src/session.js'
 import { hasCompany } from '../src/company.js'
 import { AGENT_INSTRUCTIONS } from '../src/prompt.js'
@@ -31,6 +31,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
   vi.stubEnv('ROOM_HOST', '')
   vi.stubEnv('ROOM_WORKER_HOST', '')
+  vi.stubEnv('CLAUDE_CODE_SESSION_ID', undefined)
   vi.stubEnv('ROOM_WAKE', undefined)
   vi.stubEnv('CLAUDE_CODE_MESSAGING_SOCKET', undefined)
   vi.stubEnv('CLAUDE_CODE_MESSAGING_TOKEN', undefined)
@@ -630,6 +631,20 @@ it('ignores synthetic models and never reads Claude models into Codex sessions',
   }
 })
 
+it('keeps the SessionStart model over the first lagging transcript read', async () => {
+  writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true }))
+  const transcript = join(dir, 'transcript.jsonl')
+  writeFileSync(join(dir, '.git/room-hook-seen.json'), JSON.stringify({ seen: [], transcript: { path: transcript, mtimeMs: 1, size: 1 } }))
+  await runHook('session-start.mjs', { session_id: 'host-model', cwd: dir, model: 'current-model', transcript_path: transcript }, ['--host', 'claude'])
+  writeFileSync(transcript, modelLine('previous-model'))
+  const input = { session_id: 'host-model', cwd: dir, tool_name: 'Bash', tool_input: { command: 'cat app.py' }, transcript_path: transcript }
+  await runHook('before-edit.mjs', input)
+  expect(JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8')).model).toBe('current-model')
+  writeFileSync(transcript, modelLine('previous-model') + modelLine('new-model'))
+  await runHook('before-edit.mjs', input)
+  expect(JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8')).model).toBe('new-model')
+})
+
 it('skips opening an unchanged transcript across hook processes and preserves the cache on inbox delivery', async () => {
   const { file, transcript, input } = transcriptSession()
   const marker = join(dir, 'transcript-opens')
@@ -704,15 +719,15 @@ it('records activity with company, throttles writes, and falls back for unknown 
   expect(JSON.parse(readFileSync(file, 'utf8')).at).toBeGreaterThan(JSON.parse(first).at)
 })
 
-it('does no activity, intent or transcript work without state or company', async () => {
+it('records hook activity but does no intent or transcript work without state or company', async () => {
   const activity = join(dir, '.git/room-hook-activity.json')
   rmSync(activity, { force: true })
   const input = { cwd: dir, session_id: 'silent', tool_name: 'Write', tool_input: { file_path: 'app.py' }, transcript_path: '/nonexistent' }
   expect(await runHook('before-edit.mjs', input)).toBe('')
-  expect(existsSync(activity)).toBe(false)
+  expect(JSON.parse(readFileSync(activity, 'utf8'))).toMatchObject({ session_id: 'silent', event: 'PreToolUse' })
   writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: false, unread: [], claims: [] }))
   expect(await runHook('before-edit.mjs', input)).toBe('')
-  expect(existsSync(activity)).toBe(false)
+  expect(JSON.parse(readFileSync(activity, 'utf8'))).toMatchObject({ session_id: 'silent', event: 'PreToolUse' })
 })
 
 it('tracks SessionStart and PreToolUse receipts separately', async () => {
@@ -722,6 +737,38 @@ it('tracks SessionStart and PreToolUse receipts separately', async () => {
   writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ sessionId: 'separate', company: true }))
   await runHook('before-edit.mjs', { session_id: 'separate', cwd: dir, tool_name: 'Read' })
   expect(JSON.parse(readFileSync(join(dir, '.git/room-hook-activity.json'), 'utf8'))).toMatchObject({ session_id: 'separate', event: 'PreToolUse' })
+})
+
+it.each([['codex', []], ['claude', ['--host', 'claude']]] as const)('%s hook records host identity and a Bash receipt while alone', async (host, args) => {
+  const id = `${host}-isolated`
+  await runHook('session-start.mjs', { session_id: id, cwd: dir, hook_event_name: 'SessionStart', model: 'host-model' }, [...args])
+  expect(JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8'))).toMatchObject({ session_id: id, host, model: 'host-model' })
+  writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ sessionId: id, company: false }))
+  await runHook('before-edit.mjs', { session_id: id, cwd: dir, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo x > app.py' }, effort: { level: 'high' } })
+  expect(JSON.parse(readFileSync(join(dir, '.git/room-hook-activity.json'), 'utf8'))).toMatchObject({ session_id: id, event: 'PreToolUse' })
+  if (host === 'claude') expect(JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8')).effort).toBe('high')
+})
+
+it('finds the exact Codex hook thread before considering rollout storage', async () => {
+  await runHook('session-start.mjs', { session_id: 'hook-thread', cwd: dir, hook_event_name: 'SessionStart' })
+  const b = new HooksBridge(session(new RoomDoc()), { forMe: () => false, isSeen: () => false })
+  expect(b.freshSession()).toEqual({ id: 'hook-thread', host: 'codex' })
+})
+
+it.each(['stale', 'foreign'])('uses the Codex rollout when the hook session file is %s', kind => {
+  const home = mkdtempSync(join(tmpdir(), 'room-rollout-home-'))
+  const id = '12345678-1234-1234-1234-123456789abc'
+  const sessions = join(home, '.codex', 'sessions')
+  mkdirSync(sessions, { recursive: true })
+  writeFileSync(join(sessions, `rollout-test-${id}.jsonl`), JSON.stringify({ cwd: dir }) + '\n')
+  const hint = kind === 'stale' ? { at: Date.now() - 60 * 60 * 1000, cwd: dir } : { at: Date.now(), cwd: '/somewhere/else' }
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'old-hook', host: 'codex', ...hint }))
+  vi.stubEnv('HOME', home)
+  try {
+    expect(findThreadForDir(dir, Date.now())).toBe(id)
+    const b = new HooksBridge(session(new RoomDoc()), { forMe: () => false, isSeen: () => false })
+    expect(b.freshSession()).toEqual({ id, host: 'codex' })
+  } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
 it('contains a scheduled hook-state write failure and logs it once', () => {

@@ -17,7 +17,7 @@ const host = flag >= 0 && process.argv[flag + 1] ? process.argv[flag + 1] : 'cod
 if (root && id) {
   const stateDir = sessionStateDir(root, id)
   try { fs.writeFileSync(path.join(stateDir, 'room-hook-session-activity.json'), JSON.stringify({ session_id: id, event: 'SessionStart', at: Date.now() })) } catch { /* best effort */ }
-  try { fs.writeFileSync(path.join(stateDir, 'room-session.json'), JSON.stringify({ session_id: id, at: Date.now(), cwd: ev.cwd, host, ...(host === 'claude' && typeof ev.transcript_path === 'string' && ev.transcript_path ? { transcript_path: ev.transcript_path } : {}), ...(typeof ev.model === 'string' && ev.model.trim() ? { model: ev.model.trim().slice(0, 80) } : {}) }) + '\n') } catch { /* best effort */ }
+  try { fs.writeFileSync(path.join(stateDir, 'room-session.json'), JSON.stringify({ session_id: id, at: Date.now(), cwd: ev.cwd, host, ...(host === 'claude' && typeof ev.transcript_path === 'string' && ev.transcript_path ? { transcript_path: ev.transcript_path } : {}), ...(typeof ev.model === 'string' && ev.model.trim() ? { model: ev.model.trim().slice(0, 80), modelFromHook: true } : {}), ...(typeof ev.effort?.level === 'string' && ev.effort.level.trim() ? { effort: ev.effort.level.trim().slice(0, 80) } : {}) }) + '\n') } catch { /* best effort */ }
 } else {
   try { fs.appendFileSync(path.join(os.tmpdir(), 'room-hook.log'), `${new Date().toISOString()} session-start: no root/id; keys=${Object.keys(ev).join(',')} cwd=${ev.cwd}\n`) } catch { /* ignore */ }
 }
@@ -31,7 +31,7 @@ if (root) {
   const sameSession = state?.sessionId === id
   const notices = fresh && (state?.sessionId === undefined || sameSession) ? takePendingContext(stateFile, state) : []
   const announced = fresh && sameSession && typeof state?.room === 'string' && state.room.length > 0 && state.company === true
-  writeHookSeen(seenFile, { ...hookSeen, companyTold: announced })
+  writeHookSeen(seenFile, { ...hookSeen, companyTold: announced, transcript: undefined })
   const lines = [...notices, ...(announced ? [companyLine(state)] : [])]
   if (lines.length) {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: lines.join('\n') } }))

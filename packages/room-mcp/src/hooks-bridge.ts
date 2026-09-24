@@ -352,11 +352,7 @@ function defaultQueue(threadId: string, text: string): Promise<void> {
   })
 }
 
-/**
- * Codex writes ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl per thread; the first
- * line carries the cwd. The newest rollout for this clone started around when this MCP
- * server did is our thread.
- */
+/** Find a Codex thread in rollout storage when the SessionStart hook ID is unavailable. */
 export function findThreadForDir(dir: string, since: number): string | undefined {
   const root = path.join(os.homedir(), '.codex', 'sessions')
   const want = [path.resolve(dir), fs.realpathSync.native(path.resolve(dir))]

@@ -115,6 +115,7 @@ export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process
     if (/^codex(?:[.-]|$)/.test(command)) return 'codex'
     if (/^claude(?:[.-]|$)/.test(command)) return 'claude'
   } catch { /* ps unavailable: try the session file */ }
+  if (value(env.CLAUDE_CODE_SESSION_ID)) return 'claude'
   try {
     return host(JSON.parse(fs.readFileSync(sessionMetadataPath(dir), 'utf8')).host) ?? 'agent'
   } catch { return 'agent' }
@@ -136,7 +137,7 @@ type TranscriptFs = Pick<typeof fs, 'readFileSync' | 'writeFileSync' | 'statSync
 
 /** Per-session bounded reader; successful reads are repeated only after the transcript changes. */
 export function createClaudeTranscriptModelRefresh(io: TranscriptFs = fs): (dir: string) => string | undefined {
-  const checked = new Map<string, { path: string; mtimeMs: number; size: number; model?: string }>()
+  const checked = new Map<string, { sessionId?: string; path: string; mtimeMs: number; size: number; model?: string }>()
   return dir => {
     const sessionFile = sessionMetadataPath(dir)
     let session: Record<string, unknown>
@@ -146,17 +147,20 @@ export function createClaudeTranscriptModelRefresh(io: TranscriptFs = fs): (dir:
     try {
       const stat = io.statSync(session.transcript_path)
       const prior = checked.get(sessionFile)
-      if (prior?.path === session.transcript_path && prior.mtimeMs === stat.mtimeMs && prior.size === stat.size) return prior.model
+      const sameSession = prior?.sessionId === session.session_id && prior?.path === session.transcript_path
+      if (sameSession && prior && prior.mtimeMs === stat.mtimeMs && prior.size === stat.size) return prior.model
       fd = io.openSync(session.transcript_path, 'r')
       const start = Math.max(0, stat.size - 64 * 1024)
       const tail = Buffer.alloc(Math.min(stat.size, 64 * 1024))
       const count = io.readSync(fd, tail, 0, tail.length, start)
       const model = newestModelInTranscriptTail(tail.subarray(0, count).toString('utf8'), start > 0)
-      checked.set(sessionFile, { path: session.transcript_path, mtimeMs: stat.mtimeMs, size: stat.size, ...(model ? { model } : {}) })
-      if (model && session.model !== model) {
-        try { io.writeFileSync(sessionFile, JSON.stringify({ ...session, model }) + '\n') } catch { /* best effort */ }
+      // The first transcript tail may predate the model reported by SessionStart.
+      const effective = session.modelFromHook && !sameSession && typeof session.model === 'string' ? session.model : model
+      checked.set(sessionFile, { sessionId: typeof session.session_id === 'string' ? session.session_id : undefined, path: session.transcript_path, mtimeMs: stat.mtimeMs, size: stat.size, ...(effective ? { model: effective } : {}) })
+      if (effective && session.model !== effective) {
+        try { io.writeFileSync(sessionFile, JSON.stringify({ ...session, model: effective }) + '\n') } catch { /* best effort */ }
       }
-      return model
+      return effective
     } catch { return undefined }
     finally { if (fd !== undefined) { try { io.closeSync(fd) } catch { /* best effort */ } } }
   }
@@ -165,7 +169,12 @@ export function createClaudeTranscriptModelRefresh(io: TranscriptFs = fs): (dir:
 /** Never infer model/effort from ambient host configuration or inherited host-specific variables. */
 export function resolveSessionRuntime(dir: string, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
   const clean = (v: unknown) => typeof v === 'string' ? v.replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80) || undefined : undefined
-  let model: string | undefined
-  try { model = clean(JSON.parse(fs.readFileSync(sessionMetadataPath(dir), 'utf8')).model) } catch { /* unknown */ }
-  return { model: model ?? clean(env.ROOM_WORKER_MODEL), effort: clean(env.ROOM_WORKER_EFFORT) }
+  const effort = (v: unknown) => { const e = clean(v); return e && ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(e) ? e : undefined }
+  let session: Record<string, unknown> = {}
+  try { session = JSON.parse(fs.readFileSync(sessionMetadataPath(dir), 'utf8')) as Record<string, unknown> } catch { /* unknown */ }
+  // Claude supplies its session ID to stdio MCP servers, but retains the spawn-time
+  // value across /clear. A newer Claude hook file is authoritative; an unrelated
+  // host's file from this clone is not.
+  if (env.CLAUDE_CODE_SESSION_ID && resolveSessionHost(dir, env) === 'claude' && session.session_id !== env.CLAUDE_CODE_SESSION_ID && session.host !== 'claude') session = {}
+  return { model: clean(session.model) ?? clean(env.ROOM_WORKER_MODEL), effort: effort(session.effort) ?? effort(env.ROOM_WORKER_EFFORT) }
 }

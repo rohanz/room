@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import fs, { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createClaudeTranscriptModelRefresh, resolveSessionRuntime, sessionMetadataPath, resolveConfig, DEFAULT_SERVER, LOCAL } from '../src/config.js'
+import { createClaudeTranscriptModelRefresh, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath, resolveConfig, DEFAULT_SERVER, LOCAL } from '../src/config.js'
 import { writeChoice } from '../src/choice.js'
 
 const repo = () => { const dir = mkdtempSync(join(tmpdir(), 'room-config-')); execFileSync('git', ['-C', dir, 'init', '-q']); return dir }
@@ -71,6 +71,26 @@ it('reads only hook and explicit worker runtime metadata, and clears absent valu
   expect(resolveSessionRuntime(dir, env)).toEqual({ model: undefined, effort: undefined })
 })
 
+it('uses Claude MCP session identity to identify the host and reject another session metadata', () => {
+  const dir = repo()
+  fs.writeFileSync(sessionMetadataPath(dir), JSON.stringify({ session_id: 'old', host: 'codex', model: 'wrong' }))
+  const env = { CLAUDE_CODE_SESSION_ID: 'current' }
+  expect(resolveSessionHost(dir, env, () => 'node')).toBe('claude')
+  expect(resolveSessionRuntime(dir, env)).toEqual({ model: undefined, effort: undefined })
+  fs.writeFileSync(sessionMetadataPath(dir), JSON.stringify({ session_id: 'current', host: 'claude', model: 'claude-fable-5-1', effort: 'high' }))
+  expect(resolveSessionRuntime(dir, env)).toEqual({ model: 'claude-fable-5-1', effort: 'high' })
+  fs.writeFileSync(sessionMetadataPath(dir), JSON.stringify({ session_id: 'after-clear', host: 'claude', model: 'claude-new', effort: 'medium' }))
+  expect(resolveSessionRuntime(dir, env)).toEqual({ model: 'claude-new', effort: 'medium' })
+})
+
+it('does not treat a Claude Bash subprocess launching Codex as a Claude session', () => {
+  const dir = repo()
+  const env = { CLAUDE_CODE_SESSION_ID: 'claude-parent', ROOM_HOST: 'codex' }
+  fs.writeFileSync(sessionMetadataPath(dir), JSON.stringify({ session_id: 'codex-child', host: 'codex', model: 'gpt-6-astra', effort: 'medium' }))
+  expect(resolveSessionHost(dir, { CLAUDE_CODE_SESSION_ID: 'claude-parent' }, () => 'codex')).toBe('codex')
+  expect(resolveSessionRuntime(dir, env)).toEqual({ model: 'gpt-6-astra', effort: 'medium' })
+})
+
 it('resolves hook metadata from the worktree gitdir, not the main clone', () => {
   const main = repo(), worktree = fs.mkdtempSync(join(tmpdir(), 'room-model-worktree-'))
   const gitdir = join(main, '.git', 'worktrees', 'worker')
@@ -102,6 +122,20 @@ it('reads changed Claude transcript tails once, skips placeholders, and picks up
   expect(JSON.parse(fs.readFileSync(file, 'utf8')).model).toBe('claude-new')
   expect(io.openSync).toHaveBeenCalledTimes(2)
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+it('keeps a hook-provided Claude model when the transcript initially lags', () => {
+  const dir = repo(), transcript = join(dir, 'transcript.jsonl'), file = sessionMetadataPath(dir)
+  fs.writeFileSync(file, JSON.stringify({ host: 'claude', model: 'host-current', modelFromHook: true, transcript_path: transcript }))
+  fs.writeFileSync(transcript, modelLine('older-model'))
+  const refresh = createClaudeTranscriptModelRefresh()
+  expect(refresh(dir)).toBe('host-current')
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).model).toBe('host-current')
+  fs.appendFileSync(transcript, modelLine('switched-model'))
+  expect(refresh(dir)).toBe('switched-model')
+  fs.writeFileSync(file, JSON.stringify({ session_id: 'after-clear', host: 'claude', model: 'new-host-model', modelFromHook: true, transcript_path: transcript }))
+  fs.appendFileSync(transcript, modelLine('old-session-tail'))
+  expect(refresh(dir)).toBe('new-host-model')
 })
 
 it('silently ignores missing or unreadable transcripts and never opens one for Codex', () => {
