@@ -129,6 +129,9 @@ export interface Worker {
   host: 'claude' | 'codex'
   model?: string
   effort?: string
+  /** Host conversation to resume for a follow-up in this worktree. */
+  hostSessionId?: string
+  budget?: { threads: number; memGb: number; nice: number }
   /** Repo-relative inputs linked from the lead's clone; read-only by worker instruction. */
   link?: string[]
   task: string

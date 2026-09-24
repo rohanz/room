@@ -3,14 +3,15 @@ import { Bridge } from '../bridge.js'
 import { pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree } from '../workers.js'
 import { releaseClaimsOnDone } from './claims.js'
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
-import { workerId, workerIdBase, finishWorkerProcess } from '../registry.js'
+import { workerId, workerIdBase, workerOrigin, finishWorkerProcess } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
-import { workerBudget, defaultSpawner, prepareWorktree, uncommittedCount, validTag, workerCommand, workerPrompt, persistWorkerStopReason, type PreparedWorktree, type SpawnedProcess, type WorkerHost } from '../workers.js'
+import { workerBudget, workerMaxBudget, workerProcessEnv, hostWorkerEffort, defaultSpawner, prepareWorktree, uncommittedCount, validTag, workerCommand, workerPrompt, persistWorkerStopReason, type PreparedWorktree, type SpawnedProcess, type WorkerHost } from '../workers.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
@@ -48,7 +49,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
       s.daemon.touch()
-      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; this worker cannot answer further questions.` : 'You remain in the room.'}`]
+      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : 'You remain in the room.'}`]
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary)
       const command = s.lastPreview?.testsCommand
       if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed === true && command) {
@@ -65,7 +66,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_spawn(a) {
       const lead = S()
       if (a.effort !== undefined && !(WORKER_EFFORTS as readonly unknown[]).includes(a.effort)) return `error: effort must be ${WORKER_EFFORTS.join('|')}`
-      const effort = a.effort as string | undefined
+      const requestedEffort = a.effort as string | undefined
       if (a.threads !== undefined && (typeof a.threads !== 'number' || !Number.isSafeInteger(a.threads) || a.threads < 1)) return 'error: threads must be an integer >= 1'
       if (a.where !== undefined && a.where !== 'here' && a.where !== 'local') return 'error: where must be here or local'
       let s = lead
@@ -79,6 +80,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!task) return 'error: task is required'
       if (a.host !== undefined && a.host !== 'codex' && a.host !== 'claude') return 'error: host must be codex or claude'
       const host: WorkerHost = (a.host ?? process.env.ROOM_HOST ?? process.env.ROOM_WORKER_HOST) === 'codex' ? 'codex' : 'claude'
+      const effort = hostWorkerEffort(host, requestedEffort)
       const model = typeof a.model === 'string' && a.model.trim() ? a.model.trim() : undefined
       const idBase = workerIdBase(s.roomName, s.me.name, tag)
       const existing = s.room.workers.get(tag)
@@ -131,7 +133,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // The worker's room variables are set here in full; defaultSpawner strips the lead's own ROOM_* first
         // (ROOM_URL/ROOM_NAME/ROOM_DIR from a runner would otherwise send it into the lead's room as the lead).
         // The server URL is passed without its query: a shared token travels only as ROOM_TOKEN.
-        const server = s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
+        const { server, isWorker } = workerOrigin(s)
         // Recount after async worktree preparation: another spawn may have completed meanwhile.
         const count = runningWorkers(lead).length
         if (count >= max) return abortPrepared(`error: ${count} workers already running (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`)
@@ -140,44 +142,40 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const budget = workerBudget({ cores, memBytes, maxWorkers: max, running: count })
         const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS)
         const inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB)
-        const isWorker = !!process.env.ROOM_TAG || !!s.room.workerOf(s.me.name) || (!!s.me.owner && s.me.owner !== s.me.name)
         const divisor = isWorker ? Math.max(2, max) : 1
         const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads
         const threads = typeof a.threads === 'number' ? Math.min(a.threads, threadShare) : threadShare
         const memGb = Number.isFinite(inheritedMem) && inheritedMem >= 1 ? Math.max(1, Math.floor(inheritedMem / divisor)) : budget.memGb
-        const caps: Record<string, string> = {}
-        for (const key of ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS', 'LOKY_MAX_CPU_COUNT', 'RAYON_NUM_THREADS']) {
-          const cap = Number(process.env[key])
-          caps[key] = isWorker ? String(Number.isSafeInteger(cap) && cap >= 1 ? Math.min(cap, threads) : threads) : process.env[key] ?? String(threads)
-        }
-        const env: Record<string, string> = {
-          ...caps, ROOM_WORKER_THREADS: String(threads), ROOM_WORKER_MEM_GB: String(memGb),
-          ROOM_WORKER_HOST: host, ...(model ? { ROOM_WORKER_MODEL: model } : {}), ...(effort ? { ROOM_WORKER_EFFORT: effort } : {}),
-          ROOM_SERVER: server, ROOM_ROOM: s.roomName, ROOM_DIR: dir, PWD: dir, ROOM_TAG: tag, ROOM_LEAD: s.me.name, ROOM_OWNER: owner,
-          ROOM_SHARE: share ?? s.daemon.share ?? 'full', ROOM_GEN: String(gen), ROOM_WORKER_ID: id,
-          ...(s.token && !s.local ? { ROOM_TOKEN: s.token } : {}),
-          ROOM_LOG_FILE: path.join(s.dir, '.room', 'workers', `${tag}.mcp.log`),
-        }
+        const env = workerProcessEnv({ threads, memGb, host, model, effort, server, room: s.roomName, dir, tag,
+          lead: s.me.name, owner, share: share ?? s.daemon.share ?? 'full', gen, id,
+          token: s.local ? undefined : s.token, logDir: s.dir, isWorker })
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
         catch (e) { return abortPrepared(`error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
         const scheduling = workerPriority({ cmd: host, args: [] })
         const prompt = workerPrompt(s.me.name, tag, task, { threads, memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort, link, carriedPaths: carried?.paths })
-        const { cmd, args } = workerCommand(host, model, prompt, config.claudeChannel, effort)
+        const hostSessionId = host === 'claude' ? randomUUID() : undefined
+        let maxBudgetUsd: string | undefined
+        try { maxBudgetUsd = workerMaxBudget() } catch (e) { return abortPrepared(`error: ${e instanceof Error ? e.message : String(e)}`) }
+        const { cmd, args } = workerCommand(host, model, prompt, config.claudeChannel, effort, { tag, sessionId: hostSessionId, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels' })
         const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
         const priority = { cmd: scheduling.cmd, args: [...scheduling.args, ...args], nice: scheduling.nice }
         let proc: SpawnedProcess
-        try { proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args, cwd: dir, env, logFile }) }
+        try { proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args, cwd: dir, env, logFile, captureCodexSession: host === 'codex' }) }
         catch (e) { return abortPrepared(`error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`) }
         rooms.setHandle(s, id, proc)
-        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(link.length ? { link } : {}), task, dir, branch, ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}), ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
+        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(hostSessionId ? { hostSessionId } : {}), budget: { threads, memGb, nice: scheduling.nice }, ...(link.length ? { link } : {}), task, dir, branch, ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}), ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
         s.room.setWorker(w)
+        if (host === 'codex') proc.onSessionId?.(sessionId => {
+          const current = s.room.workerById(id)
+          if (current && current.pid === proc.pid && !current.hostSessionId) s.room.updateWorker(tag, { hostSessionId: sessionId }, id)
+        })
         // Callbacks resolve the record by this spawn's id: a reused tag has a new id, so an older process
         // (or another lead's record under the same tag) is simply not found and touches nothing.
         const exited = (code: number | null, error?: string) => {
           rooms.dropHandle(s, id, proc)
           const cur = s.room.workerById(id)
-          if (!cur) return
+          if (!cur || cur.pid !== proc.pid) return
           void finishWorkerProcess(s, cur, code, now(), error)
             .then(() => rooms.retireWorkers(s))
             .catch(e => state.log(`worker exit: ${e}`))

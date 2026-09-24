@@ -87,6 +87,7 @@ export interface SpawnSpec {
   cwd: string
   env: Record<string, string>
   logFile: string
+  captureCodexSession?: boolean
 }
 export interface SpawnedProcess {
   /** -1 when the process could not be started (see onError). */
@@ -94,6 +95,8 @@ export interface SpawnedProcess {
   onExit(cb: (code: number | null) => void): void
   /** Fires when the process could not be started at all (e.g. the binary is missing). */
   onError?(cb: (err: Error) => void): void
+  /** Codex emits thread.started on JSONL stdout. */
+  onSessionId?(cb: (id: string) => void): void
   /** SIGTERM the worker; true when a signal was actually delivered (false: no pid, or the process is gone). */
   kill(): boolean
 }
@@ -139,6 +142,29 @@ export function workerBudget({ cores, memBytes, maxWorkers, running }: { cores: 
   return { threads: Math.max(1, Math.floor(cores / divisor)), memGb: Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3)) }
 }
 
+const WORKER_THREAD_CAPS = ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS', 'LOKY_MAX_CPU_COUNT', 'RAYON_NUM_THREADS'] as const
+
+export function workerProcessEnv(options: {
+  threads: number; memGb: number; host: WorkerHost; model?: string; effort?: string
+  server: string; room: string; dir: string; tag: string; lead: string; owner: string
+  share: string; gen: number; id: string; token?: string; logDir: string; isWorker: boolean
+}, inherited: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const caps: Record<string, string> = {}
+  for (const key of WORKER_THREAD_CAPS) {
+    const cap = Number(inherited[key])
+    caps[key] = options.isWorker ? String(Number.isSafeInteger(cap) && cap >= 1 ? Math.min(cap, options.threads) : options.threads) : inherited[key] ?? String(options.threads)
+  }
+  return {
+    ...caps, ROOM_WORKER_THREADS: String(options.threads), ROOM_WORKER_MEM_GB: String(options.memGb),
+    ROOM_WORKER_HOST: options.host, ...(options.model ? { ROOM_WORKER_MODEL: options.model } : {}), ...(options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {}),
+    ROOM_SERVER: options.server, ROOM_ROOM: options.room, ROOM_DIR: options.dir, PWD: options.dir,
+    ROOM_TAG: options.tag, ROOM_LEAD: options.lead, ROOM_OWNER: options.owner, ROOM_SHARE: options.share,
+    ROOM_GEN: String(options.gen), ROOM_WORKER_ID: options.id,
+    ...(options.token ? { ROOM_TOKEN: options.token } : {}),
+    ROOM_LOG_FILE: path.join(options.logDir, '.room', 'workers', `${options.tag}.mcp.log`),
+  }
+}
+
 export function validTag(tag: unknown): string | undefined {
   if (typeof tag !== 'string') return undefined
   const t = tag.trim()
@@ -150,7 +176,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
-    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process (you cannot answer afterwards).`,
+    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process. Your lead can resume this session for a later follow-up while the worktree remains.`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     `If you spawn workers, collect them before your own room_done.`,
     ...(context ? [
@@ -164,15 +190,34 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
 }
 
 export const WORKER_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const
+export function hostWorkerEffort(host: WorkerHost, effort?: string): string | undefined { return host === 'claude' && effort === 'minimal' ? 'low' : effort }
 
-// Claude effort is communicated in the prompt; no unverified host flag is passed.
-export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort?: string): { cmd: string; args: string[] } {
+export interface WorkerCommandOptions { tag?: string; sessionId?: string; resume?: boolean; maxBudgetUsd?: string; wakeChannels?: boolean }
+export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort?: string, options: WorkerCommandOptions = {}): { cmd: string; args: string[] } {
   if (effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join('|')}`)
-  if (host === 'codex') return { cmd: 'codex', args: ['exec', '-s', 'workspace-write', ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt] }
+  effort = hostWorkerEffort(host, effort)
+  if (options.resume && !options.sessionId) throw new Error('resuming a worker requires its host session id')
+  if (host === 'codex') return { cmd: 'codex', args: options.resume
+    ? ['exec', 'resume', options.sessionId!, '-c', 'sandbox_mode="workspace-write"', ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt]
+    : ['exec', '-s', 'workspace-write', ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt] }
   return {
     cmd: 'claude',
-    args: [...(claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : [])],
+    args: [...(options.wakeChannels && claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', ...(options.resume ? ['--resume', options.sessionId!] : []), prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(options.tag ? ['--name', options.tag] : []), ...(!options.resume && options.sessionId ? ['--session-id', options.sessionId] : []), ...(options.maxBudgetUsd ? ['--max-budget-usd', options.maxBudgetUsd] : [])],
   }
+}
+
+export function workerMaxBudget(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const value = env.ROOM_WORKER_MAX_BUDGET_USD?.trim()
+  if (!value) return undefined
+  if (!/^\d+(?:\.\d+)?$/.test(value) || Number(value) <= 0) throw new Error('ROOM_WORKER_MAX_BUDGET_USD must be a positive dollar amount')
+  return value
+}
+
+export function codexSessionId(line: string): string | undefined {
+  try {
+    const event = JSON.parse(line) as { type?: string; thread_id?: unknown }
+    return event.type === 'thread.started' && typeof event.thread_id === 'string' && /^[0-9a-f-]{36}$/i.test(event.thread_id) ? event.thread_id : undefined
+  } catch { return undefined }
 }
 
 const inside = (base: string, target: string): boolean => {
@@ -241,7 +286,16 @@ export function workerLogTail(logFile: string): string {
     const buffer = Buffer.alloc(size - start)
     fs.readSync(fd, buffer, 0, buffer.length, start)
     const text = stripVTControlCharacters(buffer.toString('utf8'))
-    return text.split(/\r?\n|\r/).map(l => l.trim()).filter(Boolean).slice(-5).join('\n').slice(-600)
+    return text.split(/\r?\n|\r/).map(l => {
+      const line = l.trim()
+      if (!line.startsWith('{')) return line
+      try {
+        const event = JSON.parse(line) as { type?: string; item?: { type?: string; text?: unknown }; error?: { message?: unknown }; message?: unknown }
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') return event.item.text.trim()
+        if (typeof event.error?.message === 'string') return event.error.message.trim()
+        return typeof event.message === 'string' ? event.message.trim() : ''
+      } catch { return line }
+    }).filter(Boolean).slice(-5).join('\n').slice(-600)
   } catch { return '(log unavailable)' }
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
@@ -460,12 +514,28 @@ export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM'): b
 export const defaultSpawner: Spawner = spec => {
   fs.mkdirSync(path.dirname(spec.logFile), { recursive: true })
   const fd = fs.openSync(spec.logFile, 'a')
-  const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ['ignore', fd, fd] })
+  const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ['ignore', spec.captureCodexSession ? 'pipe' : fd, fd] })
+  let sessionId: string | undefined
+  let sessionIdCallback: ((id: string) => void) | undefined
+  if (spec.captureCodexSession && child.stdout) {
+    let pending = ''
+    child.stdout.on('data', (chunk: Buffer) => {
+      fs.writeSync(fd, chunk)
+      pending += chunk.toString('utf8')
+      const lines = pending.split('\n')
+      pending = lines.pop()!.slice(-64 * 1024)
+      for (const line of lines) {
+        const id = codexSessionId(line)
+        if (id && !sessionId) { sessionId = id; sessionIdCallback?.(id) }
+      }
+    })
+  }
   child.unref()
   return {
     pid: child.pid ?? -1,
-    onExit: cb => { child.once('exit', code => { try { fs.closeSync(fd) } catch { /* closed */ } cb(code) }) },
+    onExit: cb => { child.once('close', code => { try { fs.closeSync(fd) } catch { /* closed */ } cb(code) }) },
     onError: cb => { child.once('error', err => { try { fs.closeSync(fd) } catch { /* closed */ } cb(err) }) },
+    onSessionId: cb => { sessionIdCallback = cb; if (sessionId) cb(sessionId) },
     kill: () => signalWorker(child.pid ?? -1),
   }
 }

@@ -11,8 +11,9 @@
 import type { NoteMsg, Presence, Worker } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { Session } from './session.js'
-import { cleanupWorker, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, shouldRetire, workerGitFacts, workerLogTail, workerOperationKey, type SpawnedProcess } from './workers.js'
+import { LOCAL, type Session } from './session.js'
+import { cleanupWorker, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, shouldRetire, workerCommand, workerGitFacts, workerLogTail, workerMaxBudget, workerOperationKey, workerPriority, workerProcessEnv, type SpawnedProcess, type Spawner } from './workers.js'
+import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -38,6 +39,13 @@ export interface RoomsOptions {
 export function workerId(lead: string, tag: string, gen: number): string { return `${lead}/${tag}#${gen}` }
 /** The part of an id that a concurrent spawn of the same tag would share. */
 export function workerIdBase(roomName: string, lead: string, tag: string): string { return `${roomName}|${lead}/${tag}` }
+/** Where a worker started from this session connects, and whether this session is itself a worker (its budget is then shared). */
+export function workerOrigin(s: Session): { server: string; isWorker: boolean } {
+  return {
+    server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')),
+    isWorker: !!process.env.ROOM_TAG || !!s.room.workerOf(s.me.name) || (!!s.me.owner && s.me.owner !== s.me.name),
+  }
+}
 
 /** A confirmed exit is recorded once, including when discovered after the lead restarts. */
 /** `unwitnessed`: a later lead found the recorded worker process gone, but cannot know why it stopped. */
@@ -160,6 +168,9 @@ export class Rooms {
     for (const w of s.room.workers.values()) {
       // The next lead must be able to explain and resume this intentionally stopped work.
       if (w.stopReason === 'lead-session-ended') continue
+      // A session with a retained checkout is reusable until the lead explicitly collects
+      // or discards it, even when that checkout is clean.
+      if (w.status === 'done' && w.hostSessionId && fs.existsSync(w.dir)) continue
       if (this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
       if (w.lead !== s.me.name || this.hasHandle(s, w)) continue
       const lock = workerOperationKey(w)
@@ -249,4 +260,56 @@ export class Rooms {
     if (h && (!proc || h.proc === proc)) this.handles.delete(k)
   }
   hasHandle(s: Session, w: Worker): boolean { return !!w.id && this.handles.has(Rooms.hkey(s, w.id)) }
+
+  /** Continue an exited, retained worker in its original checkout and host conversation. */
+  async resumeWorker(s: Session, w: Worker, message: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, at = Date.now()): Promise<string> {
+    // An exit callback starts retirement asynchronously. Let that check finish before competing
+    // for the same worktree lock; it retains any worker with work to collect.
+    await this.retiring.get(s)
+    const key = workerOperationKey(w)
+    if (!this.reserve(key)) return `error: ${w.tag} is being collected, discarded or resumed; retry after that finishes`
+    try {
+      const current = s.room.workers.get(w.tag)
+      if (!current || current.id !== w.id || current.gen !== w.gen) return `error: ${w.tag} changed while you were sending; retry`
+      w = current
+      if (w.lead !== s.me.name) return `error: ${w.tag} belongs to ${w.lead}`
+      if (w.status === 'running') return `error: ${w.tag} is already running`
+      if (w.status === 'dismissed' && w.stopReason !== 'lead-session-ended') return `error: ${w.tag} was discarded and cannot be resumed`
+      // room_done is sent before the headless host exits. Give that process a short grace
+      // period so a prompt lead reply resumes it without requiring a second room_send.
+      const deadline = Date.now() + 5_000
+      while (this.hasHandle(s, w) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+      if (this.hasHandle(s, w) || (w.exitCode === undefined && pidIsOurWorker(w.pid, w))) return `error: ${w.tag}'s previous process is still exiting; send the message again shortly`
+      if (!fs.existsSync(w.dir)) return `error: ${w.tag}'s worktree no longer exists; it cannot be resumed`
+      if (!w.hostSessionId) return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`
+      if (!w.id) return `error: ${w.tag} has no stable worker id; it cannot be resumed`
+      const budget = w.budget
+      if (!budget) return `error: ${w.tag} has no recorded compute budget; it cannot be resumed`
+      const { server, isWorker } = workerOrigin(s)
+      const env = workerProcessEnv({ ...budget, host: w.host, model: w.model, effort: w.effort, server,
+        room: s.roomName, dir: w.dir, tag: w.tag, lead: w.lead, owner: s.me.owner ?? s.me.name,
+        share: s.daemon.share ?? 'full', gen: w.gen ?? 1, id: w.id,
+        token: s.local ? undefined : s.token, logDir: s.dir, isWorker })
+      let maxBudgetUsd: string | undefined
+      try { maxBudgetUsd = workerMaxBudget() } catch (e) { return `error: ${e instanceof Error ? e.message : String(e)}` }
+      const command = workerCommand(w.host, w.model, message, claudeChannel, w.effort, { tag: w.tag, sessionId: w.hostSessionId, resume: true, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels' })
+      const priority = workerPriority(command, { ...process.env, ROOM_WORKER_NICE: String(budget.nice) })
+      const logFile = path.join(s.dir, '.room', 'workers', `${w.tag}.log`)
+      let proc: SpawnedProcess
+      try { proc = spawner({ cmd: priority.cmd, args: priority.args, cwd: w.dir, env, logFile, captureCodexSession: w.host === 'codex' }) }
+      catch (e) { return `error: could not resume ${w.tag}: ${e instanceof Error ? e.message : String(e)}` }
+      this.setHandle(s, w.id, proc)
+      s.room.updateWorker(w.tag, { pid: proc.pid, status: 'running', startedAt: at, summary: undefined, exitCode: undefined, finishedAt: undefined, dismissedAt: undefined, stopReason: undefined }, w.id)
+      const exited = (code: number | null, error?: string) => {
+        this.dropHandle(s, w.id, proc)
+        const current = s.room.workerById(w.id!)
+        if (!current || current.pid !== proc.pid) return
+        void finishWorkerProcess(s, current, code, Date.now(), error)
+          .then(() => this.retireWorkers(s)).catch(() => {})
+      }
+      proc.onError?.(err => exited(-1, `could not resume ${w.tag}: ${err.message}`))
+      proc.onExit(code => exited(code))
+      return `resumed ${w.tag} with your message`
+    } finally { this.unreserve(key) }
+  }
 }

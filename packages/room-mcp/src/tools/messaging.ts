@@ -75,11 +75,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
       const workerMatches = requestedTo ? rooms.all().flatMap(room => myWorkers(room)
         .filter(w => w.tag === requestedTo).map(worker => ({ room, worker }))) : []
-      if (workerMatches.length > 1) {
-        const names = [...new Set(workerMatches.map(x => x.worker.name))].sort()
+      const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap(room => room.room.retiredWorkers()
+        .filter(w => w.tag === requestedTo && w.lead === room.me.name).map(worker => ({ room, worker }))) : []
+      const matches = workerMatches.length ? workerMatches : retiredMatches
+      if (matches.length > 1 && new Set(matches.map(x => x.room)).size > 1) {
+        const names = [...new Set(matches.map(x => x.worker.name))].sort()
         return `error: worker tag ${requestedTo} is ambiguous; use a full name: ${names.join(', ')}`
       }
-      const resolvedWorker = workerMatches[0]
+      const resolvedWorker = matches[0]
       const to = resolvedWorker?.worker.name ?? requestedTo
       const exactWorkerRoom = to && wsr && wsr !== lead && (myWorkers(wsr).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : undefined
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead
@@ -90,6 +93,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const valid = [...new Set(rooms.all().flatMap(room => [...knownNames(room)]))].sort()
         return `error: nobody called ${to} is or was in this room; participants: ${valid.join(', ')}`
       }
+      if (to && !s.room.workerOf(to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
       let msg: Msg
@@ -119,6 +123,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           msg = s.room.post<NoteMsg>(s.me, withPr({ type: 'note', text, ...(to ? { to } : {}) }))
           break
         default: return `error: type must be changed|question|answer|note (got ${String(a.type)})`
+      }
+      const addressedWorker = msg.to && s.room.workerOf(msg.to)
+      if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
+        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel)
+        notes.push(result)
       }
       const notice = msg.to ? recipientNotice(s, msg.to) : undefined
       if (notice) notes.push(msg.type === 'question' && notice.terminal ? unavailableQuestion(s, msg.id)! : notice.text)

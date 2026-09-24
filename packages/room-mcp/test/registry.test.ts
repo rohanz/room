@@ -258,3 +258,13 @@ describe('worker process exits', () => {
     if (status === 'done') expect(s.room.workers.get('exit')?.summary).toBe('finished')
   })
 })
+
+it('retains a completed worker with a resumable host session and existing checkout until collection', async () => {
+  const r = registry(), s = fakeSession(pair().a, lead)
+  r.rooms.add(s, 'primary')
+  s.room.setWorker({ id: 'rohanz/review#1', tag: 'review', name: 'rohanz+review', host: 'claude', hostSessionId: '550e8400-e29b-41d4-a716-446655440000', budget: { threads: 2, memGb: 4, nice: 10 }, task: 'review', dir, branch: 'main', pid: -1, startedAt: 1, status: 'done', lead: lead.name, exitCode: 0, summary: 'done' })
+  await r.rooms.retireWorkers(s)
+  expect(s.room.workers.get('review')).toMatchObject({ status: 'done', hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })
+  expect(s.room.retiredWorkers()).toEqual([])
+  r.rooms.remove(s)
+})

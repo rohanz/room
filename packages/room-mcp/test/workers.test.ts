@@ -12,7 +12,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, type SpawnSpec } from '../src/workers.js'
+import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, codexSessionId, type SpawnSpec } from '../src/workers.js'
 
 // Disk cleanup and patch restoration are exercised with real worktrees in collect.test.ts.
 // These lifecycle tests use synthetic worker directories and controlled process callbacks.
@@ -93,9 +93,10 @@ describe('worker plumbing', () => {
   it('validates tags and builds host commands', () => {
     expect(validTag('money')).toBe('money'); expect(validTag('a b')).toBeUndefined(); expect(validTag('')).toBeUndefined()
     const c = workerCommand('claude', 'claude-sonnet-5', 'do it')
-    expect(c.cmd).toBe('claude'); expect(c.args).toContain('--model'); expect(c.args.slice(0, 4)).toEqual(['--dangerously-load-development-channels', 'plugin:room@room', '-p', 'do it'])
+    expect(c.cmd).toBe('claude'); expect(c.args).toContain('--model'); expect(c.args.slice(0, 2)).toEqual(['-p', 'do it'])
     const x = workerCommand('codex', undefined, 'do it')
     expect(x.cmd).toBe('codex'); expect(x.args.slice(0, 3)).toEqual(['exec', '-s', 'workspace-write'])
+    expect(x.args).toContain('--json')
     expect(workerPrompt('rohanz', 'money', 'switch to cents')).toContain('to "rohanz"')
   })
 
@@ -103,7 +104,9 @@ describe('worker plumbing', () => {
     for (const channel of ['plugin:custom@market', '']) {
       const config = await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: channel } })
       const c = workerCommand('claude', undefined, 'task', config.claudeChannel)
-      expect(c.args.slice(0, channel ? 4 : 2)).toEqual(channel ? ['--dangerously-load-development-channels', channel, '-p', 'task'] : ['-p', 'task'])
+      expect(c.args.slice(0, 2)).toEqual(['-p', 'task'])
+      const channels = workerCommand('claude', undefined, 'task', config.claudeChannel, undefined, { wakeChannels: true })
+      expect(channels.args.slice(0, channel ? 4 : 2)).toEqual(channel ? ['--dangerously-load-development-channels', channel, '-p', 'task'] : ['-p', 'task'])
       expect(workerCommand('codex', undefined, 'task', config.claudeChannel).args).not.toContain('--dangerously-load-development-channels')
     }
   })
@@ -366,8 +369,9 @@ describe('room_spawn / room_done / room_collect discard', () => {
     } finally { vi.unstubAllEnvs() }
   })
 
-  it.each(['plugin:custom@market', ''])('passes ROOM_CLAUDE_CHANNEL through room_spawn (%s)', async channel => {
+  it.each(['plugin:custom@market', ''])('passes ROOM_CLAUDE_CHANNEL only with ROOM_WAKE=channels (%s)', async channel => {
     vi.stubEnv('ROOM_CLAUDE_CHANNEL', channel)
+    vi.stubEnv('ROOM_WAKE', 'channels')
     vi.stubEnv('ROOM_WORKER_NICE', '0')
     try {
       const t = setup()
@@ -623,13 +627,14 @@ function setupLead() {
   let ls: Session | null = fakeSession(a, lead)
   const specs: SpawnSpec[] = []
   const exits: ((code: number | null) => void)[] = []
+  const sessionIds: ((id: string) => void)[] = []
   const killed: number[] = []
   const leadTools = createTools({
     getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2,
-    spawner: spec => { specs.push(spec); return { pid: 4242 + specs.length, onExit: cb => { exits.push(cb) }, kill: () => { killed.push(1); return true } } },
+    spawner: spec => { specs.push(spec); return { pid: 4242 + specs.length, onExit: cb => { exits.push(cb) }, onSessionId: cb => { sessionIds.push(cb) }, kill: () => { killed.push(1); return true } } },
     worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
   })
-  return { a, b, session: ls, leadTools, specs, exits, killed }
+  return { a, b, session: ls, leadTools, specs, exits, sessionIds, killed }
 }
 
 describe('worker safety', () => {
@@ -1092,11 +1097,17 @@ describe('worker scheduling priority', () => {
   })
 })
 
-it('passes explicit effort to Codex and leaves Claude effort in the prompt', () => {
-  expect(workerCommand('claude', undefined, 'task', '', 'medium').args).not.toContain('--effort')
+it('passes documented effort and session flags to Claude and Codex', () => {
+  expect(workerCommand('claude', undefined, 'task', '', 'medium', { tag: 'money', sessionId: '550e8400-e29b-41d4-a716-446655440000', maxBudgetUsd: '2.50' }).args)
+    .toEqual(['-p', 'task', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--effort', 'medium', '--name', 'money', '--session-id', '550e8400-e29b-41d4-a716-446655440000', '--max-budget-usd', '2.50'])
   expect(workerCommand('claude', undefined, 'task').args).not.toContain('--effort')
+  expect(workerCommand('claude', undefined, 'task', '', 'minimal').args).toContain('low')
   expect(workerCommand('codex', undefined, 'task', '', 'medium').args).toContain('model_reasoning_effort=medium')
   expect(workerCommand('codex', undefined, 'task').args).not.toContain('-c')
+  expect(workerCommand('claude', 'opus', 'fix', '', 'high', { tag: 'money', sessionId: '550e8400-e29b-41d4-a716-446655440000', resume: true }).args)
+    .toEqual(['-p', '--resume', '550e8400-e29b-41d4-a716-446655440000', 'fix', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money'])
+  expect(workerCommand('codex', 'gpt-6-sol', 'fix', '', 'high', { sessionId: '550e8400-e29b-41d4-a716-446655440000', resume: true }).args)
+    .toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'fix'])
   expect(workerEnv({ ROOM_WORKER_HOST: 'claude', ROOM_WORKER_MODEL: 'old', ROOM_WORKER_EFFORT: 'high' }, {})).toEqual({})
 })
 
@@ -1246,4 +1257,104 @@ it('reads only the last five non-empty log lines, strips ANSI, and caps output a
     expect(workerLogTail(log)).toMatch(/last$/)
     expect(workerLogTail(join(dir, 'missing-log'))).toBe('(log unavailable)')
   } finally { rmSync(log, { force: true }) }
+})
+
+it('renders Codex JSONL agent and error text without raw event envelopes', () => {
+  const log = join(dir, 'worker-jsonl.log')
+  try {
+    writeFileSync(log, [
+      JSON.stringify({ type: 'thread.started', thread_id: '550e8400-e29b-41d4-a716-446655440000' }),
+      JSON.stringify({ type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'Checking the failing path.' } }),
+      JSON.stringify({ type: 'turn.failed', error: { message: 'The command failed.' } }),
+      JSON.stringify({ type: 'error', message: 'Connection lost.' }),
+      'process exited with status 1',
+    ].join('\n'))
+    expect(workerLogTail(log)).toBe('Checking the failing path.\nThe command failed.\nConnection lost.\nprocess exited with status 1')
+  } finally { rmSync(log, { force: true }) }
+})
+
+describe('worker follow-up sessions', () => {
+  it('reads only Codex thread.started JSONL events', () => {
+    expect(codexSessionId('{"type":"thread.started","thread_id":"550e8400-e29b-41d4-a716-446655440000"}')).toBe('550e8400-e29b-41d4-a716-446655440000')
+    expect(codexSessionId('{"type":"turn.started","thread_id":"550e8400-e29b-41d4-a716-446655440000"}')).toBeUndefined()
+    expect(codexSessionId('not json')).toBeUndefined()
+  })
+
+  it('captures a Codex JSONL thread ID while preserving the process log', async () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'room-thread-id-'))
+    try {
+      const logFile = join(scratch, 'worker.log')
+      const id = '550e8400-e29b-41d4-a716-446655440000'
+      const proc = defaultSpawner({ cmd: process.execPath, args: ['-e', `process.stdout.write(JSON.stringify({type:'thread.started',thread_id:'${id}'})+'\\n')`], cwd: scratch, env: {}, logFile, captureCodexSession: true })
+      const seen = new Promise<string>(resolve => proc.onSessionId?.(resolve))
+      const exited = new Promise<number | null>(resolve => proc.onExit(resolve))
+      expect(await seen).toBe(id)
+      expect(await exited).toBe(0)
+      expect(readFileSync(logFile, 'utf8')).toContain('thread.started')
+    } finally { rmSync(scratch, { recursive: true, force: true }) }
+  })
+  it('records a Claude UUID and resumes a done worker with the same tag, worktree and budget', async () => {
+    vi.stubEnv('ROOM_WORKER_NICE', '0')
+    vi.stubEnv('ROOM_WORKER_MAX_BUDGET_USD', '3.25')
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'first', host: 'claude', model: 'opus', effort: 'high', threads: 2 })
+    const initial = t.a.workers.get('money')!
+    expect(initial.hostSessionId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(t.specs[0].args).toContain('--session-id')
+    mkdirSync(initial.dir, { recursive: true })
+    t.a.updateWorker('money', { status: 'done', summary: 'first done', finishedAt: Date.now() })
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.a.workers.get('money')?.exitCode).toBe(0))
+    const sent = await t.leadTools.call('room_send', { type: 'note', to: 'money', text: 'fix the review finding' })
+    expect(sent).toContain('resumed money with your message')
+    expect(t.specs[1].env).toEqual(t.specs[0].env)
+    expect(t.specs[1]).toMatchObject({ cwd: initial.dir, env: { ROOM_TAG: 'money', ROOM_WORKER_THREADS: t.specs[0].env.ROOM_WORKER_THREADS, ROOM_WORKER_MEM_GB: t.specs[0].env.ROOM_WORKER_MEM_GB } })
+    expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, 'fix the review finding', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
+    expect(t.a.workers.get('money')).toMatchObject({ status: 'running', hostSessionId: initial.hostSessionId, dir: initial.dir, gen: initial.gen })
+  })
+
+  it('captures the Codex thread ID and resumes a stopped worker with the documented flags', async () => {
+    vi.stubEnv('ROOM_WORKER_NICE', '0')
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'first', host: 'codex', model: 'gpt-6-sol', effort: 'high', threads: 2 })
+    expect(t.specs[0].args).toContain('--json')
+    t.sessionIds[0]('550e8400-e29b-41d4-a716-446655440000')
+    const initial = t.a.workers.get('money')!
+    expect(initial.hostSessionId).toBe('550e8400-e29b-41d4-a716-446655440000')
+    mkdirSync(initial.dir, { recursive: true })
+    t.exits[0](1)
+    await vi.waitFor(() => expect(t.a.workers.get('money')?.status).toBe('failed'))
+    const sent = await t.leadTools.call('room_send', { type: 'note', to: 'rohanz+money', text: 'repair the failure' })
+    expect(sent).toContain('resumed money with your message')
+    expect(t.specs[1].args).toEqual(['exec', 'resume', initial.hostSessionId, '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'repair the failure'])
+    expect(t.specs[1].cwd).toBe(initial.dir)
+    expect(t.a.workers.get('money')).toMatchObject({ status: 'running', exitCode: undefined, hostSessionId: initial.hostSessionId })
+  })
+
+  it('waits for a just-finished worker process to exit before resuming its session', async () => {
+    vi.stubEnv('ROOM_WORKER_NICE', '0')
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'quickreply', task: 'first', host: 'claude' })
+    const w = t.a.workers.get('quickreply')!
+    mkdirSync(w.dir, { recursive: true })
+    t.a.updateWorker('quickreply', { status: 'done', summary: 'done', finishedAt: Date.now() })
+    const reply = t.leadTools.call('room_send', { type: 'note', to: 'quickreply', text: 'one more fix' })
+    setTimeout(() => t.exits[0](0), 20)
+    expect(await reply).toContain('resumed quickreply with your message')
+    expect(t.specs).toHaveLength(2)
+  })
+
+  it('explains why a collected worker or missing worktree cannot resume', async () => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'missingfollowup', task: 'first', host: 'claude' })
+    t.a.updateWorker('missingfollowup', { status: 'done', finishedAt: Date.now() })
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.a.workers.get('missingfollowup')?.exitCode).toBe(0))
+    expect(await t.leadTools.call('room_send', { type: 'note', to: 'missingfollowup', text: 'fix' })).toContain('worktree no longer exists')
+    expect(t.specs).toHaveLength(1)
+    const finished = t.a.workers.get('missingfollowup')!
+    t.a.retireParticipant(finished.name, { ...finished, summary: 'collected', finishedAt: finished.finishedAt!, retiredAt: Date.now(), files: [], fileCount: 0, outcome: 'dismissed' })
+    expect(await t.leadTools.call('room_send', { type: 'note', to: 'missingfollowup', text: 'fix' })).toContain('collected or discarded')
+    expect(t.specs).toHaveLength(1)
+  })
 })

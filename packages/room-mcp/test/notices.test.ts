@@ -55,9 +55,8 @@ describe('unavailable addressed recipients', () => {
     ws.room.setWorker(w)
     ws.room.retireParticipant(w.name, { ...w, summary: 'Archived fix', finishedAt: w.finishedAt!, retiredAt: clock, files: [], fileCount: 0, outcome: 'merged' })
     const sent = await tools.room_send({ type: 'question', to: w.name, text: 'More?' })
-    const question = ws.room.messages().find(m => m.type === 'question')!
-    expect(sent).toContain('(in the workers room)')
-    expect(await tools.room_wait({ questionId: question.id })).toBe('lead+state finished 3m ago and will not answer; its summary: Archived fix')
+    expect(sent).toBe('error: lead+state was collected or discarded and cannot be resumed')
+    expect(ws.room.messages().some(m => m.type === 'question')).toBe(false)
   })
 
   it.each(['question', 'note', 'changed', 'answer'])('rejects an unknown addressee before posting %s', async type => {
