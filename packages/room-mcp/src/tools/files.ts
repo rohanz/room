@@ -9,6 +9,7 @@ import { describeClaim, withLineNumbers, type NoteMsg, type Worker } from '@room
 import type { Session } from '../session.js'
 import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
+import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, validRepoPath } from '@room/roomd'
 import { workerOwnedPaths } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -29,13 +30,14 @@ function ownUnpublishedCheckout(s: Session, person: string): boolean {
 }
 
 function ownDiskText(dir: string, rel: string): string | null {
-  if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) throw new Error('unsafe room path: ' + rel)
+  if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error('unsafe room path: ' + rel)
   const root = fs.realpathSync(dir)
   const candidate = path.resolve(root, rel)
-  if (!candidate.startsWith(root + path.sep)) throw new Error('unsafe room path: ' + rel)
+  if (!isInsideRoot(root, candidate)) throw new Error('unsafe room path: ' + rel)
   try {
-    const real = fs.realpathSync(candidate)
-    if (!real.startsWith(root + path.sep)) throw new Error('unsafe room symlink: ' + rel)
+    const result = containedRepoPath(root, candidate, { leaf: 'read-contained-link' })
+    if (!result.ok) throw new Error('unsafe room symlink: ' + rel)
+    const real = result.path
     if (!fs.statSync(real).isFile()) throw new Error('not a file: ' + rel)
     return fs.readFileSync(real, 'utf8')
   } catch (e) {
@@ -226,7 +228,7 @@ export interface TestResult { text: string; passed: boolean }
 function ensureMergedDirectory(root: string, rel: string): string {
   const canonicalRoot = fs.realpathSync(root)
   if (!rel) return canonicalRoot
-  if (path.isAbsolute(rel) || rel.includes('\\') || rel.includes('\0') || rel.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) throw new Error('unsafe merged path: ' + rel)
+  if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error('unsafe merged path: ' + rel)
   let at = canonicalRoot
   for (const part of rel.split('/')) {
     at = path.join(at, part)
@@ -234,8 +236,7 @@ function ensureMergedDirectory(root: string, rel: string): string {
     try { stat = fs.lstatSync(at) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
     if (stat?.isSymbolicLink() || (stat && !stat.isDirectory())) throw new Error('unsafe merged ancestor: ' + rel)
     if (!stat) fs.mkdirSync(at)
-    const real = fs.realpathSync(at)
-    if (real !== canonicalRoot && !real.startsWith(canonicalRoot + path.sep)) throw new Error('merged path escapes scratch tree: ' + rel)
+    if (!containedRepoPath(canonicalRoot, at, { leaf: 'read-contained-link', allowRoot: true }).ok) throw new Error('merged path escapes scratch tree: ' + rel)
   }
   return at
 }
@@ -258,8 +259,8 @@ export function mergedFileMode(rel: string, initialMode: number, participants: {
     const src = path.join(participant.dir, rel)
     let stat: fs.Stats
     try {
-      const root = fs.realpathSync(participant.dir), real = fs.realpathSync(src)
-      if (real !== root && !real.startsWith(root + path.sep)) throw new Error('unsafe worker mode path: ' + rel)
+      const root = fs.realpathSync(participant.dir)
+      if (!containedRepoPath(root, path.join(root, rel), { leaf: 'read-contained-link', allowRoot: true }).ok) throw new Error('unsafe worker mode path: ' + rel)
       stat = fs.lstatSync(src)
     } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; throw e }
     if (!stat.isFile()) continue
@@ -275,13 +276,14 @@ export function mergedFileMode(rel: string, initialMode: number, participants: {
 
 /** Materialize one merged byte image without following links from an archived ancestor. */
 export function materializeMergedFile(root: string, rel: string, bytes: Buffer | null, mode = 0o644): void {
-  if (!rel || path.isAbsolute(rel) || rel.includes('\\') || rel.includes('\0') || rel.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) throw new Error('unsafe merged path: ' + rel)
+  if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error('unsafe merged path: ' + rel)
   const canonicalRoot = fs.realpathSync(root)
   const parts = rel.split('/')
   const parent = ensureMergedDirectory(canonicalRoot, parts.slice(0, -1).join('/'))
   const file = path.join(parent, parts.at(-1)!)
   let stat: fs.Stats | undefined
   try { stat = fs.lstatSync(file) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+  // Replace-link leaf policy: unlink a symlink here, never follow it when writing.
   if (stat?.isSymbolicLink()) fs.unlinkSync(file)
   else if (stat && !stat.isFile()) throw new Error('merged path is not a regular file: ' + rel)
   if (bytes === null) { if (stat && !stat.isSymbolicLink()) fs.rmSync(file); return }

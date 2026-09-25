@@ -6,6 +6,7 @@
 import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import nodePath from 'node:path'
+import { CARRIED_PATH, containedRepoPath, validRepoPath } from './repo-path.js'
 import type { Worker } from '@room/shared'
 import { missingGitCwd } from './git.js'
 
@@ -151,10 +152,11 @@ export function carriedContentHash(dir: string, path: string, write = false): st
  */
 export function carriedUnchanged(baseline: Baseline, path: string): boolean {
   const carried = baseline.untracked.get(path)
-  if (!carried || nodePath.isAbsolute(path) || path.includes('\\') || path.split('/').some(part => !part || part === '.' || part === '..')) return false
+  if (!carried || !validRepoPath(path, CARRIED_PATH)) return false
   try {
-    const root = fs.realpathSync(baseline.dir), parent = fs.realpathSync(nodePath.dirname(nodePath.join(root, path)))
-    if (parent !== root && !parent.startsWith(root + nodePath.sep)) return false
+    const root = fs.realpathSync(baseline.dir)
+    // Git hashes the link text itself, so only its parent must be contained.
+    if (!containedRepoPath(root, nodePath.join(root, path), { leaf: 'replace-link' }).ok) return false
     const stat = fs.lstatSync(nodePath.join(root, path))
     if (!stat.isFile() && !stat.isSymbolicLink()) return false
     if (stat.isFile() && carried.mode !== undefined && (stat.mode & 0o777) !== carried.mode) return false

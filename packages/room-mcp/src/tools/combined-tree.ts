@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { git } from '@room/roomd/git'
+import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
 import { workerOwnedPaths } from '../workers.js'
@@ -23,11 +24,12 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       const live = await liveText(s, p, person)
       return options.encoding === 'latin1' && typeof live === 'string' ? Buffer.from(live, 'utf8').toString('latin1') : live
     }
-    if (path.isAbsolute(p) || p.split(/[\\/]/).includes('..')) throw new Error('unsafe preview path: ' + p)
+    if (!validRepoPath(p, { ...DISK_READ_PATH, blank: 'allow' })) throw new Error('unsafe preview path: ' + p)
     const root = fs.realpathSync(dir)
     try {
-      const file = fs.realpathSync(path.join(root, p))
-      if (!file.startsWith(root + path.sep)) throw new Error('unsafe preview symlink: ' + p)
+      const result = containedRepoPath(root, path.join(root, p), { leaf: 'read-contained-link' })
+      if (!result.ok) throw new Error('unsafe preview symlink: ' + p)
+      const file = result.path
       return fs.readFileSync(file, options.encoding ?? 'utf8')
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
@@ -80,8 +82,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       if (!reason && dir) {
         const root = fs.realpathSync(dir)
         try {
-          const target = fs.realpathSync(path.join(root, p))
-          if (target !== root && !target.startsWith(root + path.sep)) reason = 'symlink leaving the worktree'
+          if (!containedRepoPath(root, path.join(root, p), { leaf: 'read-contained-link', allowRoot: true }).ok) reason = 'symlink leaving the worktree'
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
           try { if (fs.lstatSync(path.join(root, p)).isSymbolicLink()) reason = 'dangling symlink' } catch { /* absent path */ }

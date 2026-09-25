@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { Areas, CODEOWNERS_PATHS, RoomDoc, claimsOverlap, describeClaim, formatMsg, formatPlans, isAgentic, msgPaths, scopeCovers, sharesArea } from '@room/shared'
 import type { Claim, ConflictMsg, Msg, NoteMsg, Plan, PlanMsg, Presence, Priority, ReleaseMsg, Scope, Worker } from '@room/shared'
-import { type ShareLevel, type SharePresence } from '@room/roomd'
+import { DISK_READ_PATH, containedRepoPath, isInsideRoot, validRepoPath, type ShareLevel, type SharePresence } from '@room/roomd'
 import { git, gitShow } from '@room/roomd/git'
 import { workerBaseline } from '@room/roomd/baseline'
 import { Bridge } from '../bridge.js'
@@ -167,13 +167,14 @@ export const WORKTREE_NOTE = "(read from the worker's worktree on disk; the work
 
 /** Resolve both lexical and symlink paths before reading anything outside git. */
 function workerText(dir: string, rel: string): string | null {
-  if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) throw new Error('unsafe worker path: ' + rel)
+  if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error('unsafe worker path: ' + rel)
   const root = fs.realpathSync(dir)
   const candidate = path.resolve(root, rel)
-  if (!candidate.startsWith(root + path.sep)) throw new Error('unsafe worker path: ' + rel)
+  if (!isInsideRoot(root, candidate)) throw new Error('unsafe worker path: ' + rel)
   try {
-    const real = fs.realpathSync(candidate)
-    if (!real.startsWith(root + path.sep)) throw new Error('unsafe worker symlink: ' + rel)
+    const result = containedRepoPath(root, candidate, { leaf: 'read-contained-link' })
+    if (!result.ok) throw new Error('unsafe worker symlink: ' + rel)
+    const real = result.path
     return fs.readFileSync(real, 'utf8')
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null

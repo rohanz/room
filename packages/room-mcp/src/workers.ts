@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import { isRegenerableBuildPath, type Worker, type RetiredWorker } from '@room/shared'
-import { carryRecord, carryRecordSync, realGitCommonDir } from '@room/roomd'
+import { LINK_INPUT_PATH, RECORDED_PATH, carryRecord, carryRecordSync, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline, workerChangedPaths } from '@room/roomd/baseline'
 
@@ -53,7 +53,7 @@ export function workerOperationKey(w: Pick<Worker, 'dir'>): string { return 'wor
 function roomWorkerPathMatchesBranch(leadDir: string, workerDir: string, branch: string, nested = false): boolean {
   const relative = path.relative(path.resolve(leadDir), path.resolve(workerDir)).split(path.sep)
   if (relative.length < 3 || relative.length % 3 !== 0 || (!nested && relative.length !== 3)) return false
-  return relative.every((part, i) => i % 3 === 0 ? part === '.room' : i % 3 === 1 ? part === 'workers' : !!part && part !== '.' && part !== '..')
+  return relative.every((part, i) => i % 3 === 0 ? part === '.room' : i % 3 === 1 ? part === 'workers' : validRepoPath(part, RECORDED_PATH))
     && branch === `room/${relative.at(-1)}`
 }
 
@@ -303,11 +303,6 @@ export function codexSessionId(line: string): string | undefined {
   } catch { return undefined }
 }
 
-const inside = (base: string, target: string): boolean => {
-  const rel = path.relative(base, target)
-  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)
-}
-
 /** Resolve link paths before creating a worker worktree, so carry can exclude them. */
 export function resolveWorkerLinks(repoDir: string, requested?: unknown): string[] {
   let input = requested
@@ -319,10 +314,10 @@ export function resolveWorkerLinks(repoDir: string, requested?: unknown): string
   if (!input.length) return []
   const root = fs.realpathSync(repoDir)
   const paths = (input as string[]).map(raw => {
-    const p = raw.trim(), parts = p.split(/[\\/]/)
-    if (!p || path.isAbsolute(p) || parts.some(x => !x || x === '.' || x === '..') || parts[0] === '.git' || parts[0] === '.room') throw new Error(`invalid link path: ${raw}`)
+    const p = raw.trim()
+    if (!validRepoPath(p, LINK_INPUT_PATH)) throw new Error(`invalid link path: ${raw}`)
     const source = fs.realpathSync(path.join(root, p))
-    if (!inside(root, source)) throw new Error(`link source escapes repo: ${p}`)
+    if (!isInsideRoot(root, source)) throw new Error(`link source escapes repo: ${p}`)
     const stat = fs.statSync(source)
     if (!stat.isFile() && !stat.isDirectory()) throw new Error(`link source must be a file or directory: ${p}`)
     return p
@@ -340,6 +335,7 @@ export function prepareWorkerLinks(repoDir: string, workerDir: string, requested
   const root = fs.realpathSync(repoDir), destRoot = fs.realpathSync(workerDir)
   const links = input.map(p => {
     const source = fs.realpathSync(path.join(root, p))
+    if (!isInsideRoot(root, source)) throw new Error(`link source escapes repo: ${p}`)
     const stat = fs.statSync(source)
     const target = path.join(destRoot, p)
     for (let at = target; at !== destRoot; at = path.dirname(at)) {
@@ -518,16 +514,19 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     const carriedUntracked: { path: string; sha: string; mode?: number }[] = []
     const skippedCarry: { path: string; reason: string }[] = []
     let totalBytes = 0
+    const carryRoot = fs.realpathSync(repoDir)
     for (const rel of untracked) {
       if (pathExcluded(rel, exclusions)) { skippedCarry.push({ path: rel, reason: 'linked input' }); continue }
       const source = path.join(repoDir, rel), target = path.join(dir, rel)
       const stat = fs.lstatSync(source)
       if (stat.isDirectory()) { skippedCarry.push({ path: rel, reason: 'nested repository or directory' }); continue }
       if (!stat.isFile() && !stat.isSymbolicLink()) { skippedCarry.push({ path: rel, reason: 'special file' }); continue }
-      let resolved: string
-      try { resolved = fs.realpathSync(source) }
+      let containment: ReturnType<typeof containedRepoPath>
+      try {
+        containment = containedRepoPath(carryRoot, path.join(carryRoot, rel), { leaf: 'read-contained-link' })
+      }
       catch { skippedCarry.push({ path: rel, reason: 'unresolvable path' }); continue }
-      if (!inside(fs.realpathSync(repoDir), resolved)) { skippedCarry.push({ path: rel, reason: 'path leaves repository' }); continue }
+      if (!containment.ok) { skippedCarry.push({ path: rel, reason: 'path leaves repository' }); continue }
       if (stat.isSymbolicLink()) {
         const link = fs.readlinkSync(source)
         if (path.isAbsolute(link)) { skippedCarry.push({ path: rel, reason: 'absolute link' }); continue }
@@ -749,7 +748,7 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
   if (!await isOwnedWorkerWorktree(leadDir, w, leadName, workers)) return false
   const nested = (await git(leadDir, ['worktree', 'list', '--porcelain'])).split('\n')
     .filter(line => line.startsWith('worktree ')).map(line => line.slice('worktree '.length))
-    .filter(dir => dir !== w.dir && inside(fs.realpathSync(w.dir), dir))
+    .filter(dir => dir !== w.dir && isInsideRoot(fs.realpathSync(w.dir), dir))
   if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(', ')}`)
   const head = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
   const recordFile = (await carryRecord(leadDir, w.tag)).file
@@ -793,7 +792,7 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
       for (const [ref, sha] of refs) await internalGit(leadDir, ['update-ref', ref, sha])
       if (record && !fs.existsSync(recordFile)) await fs.promises.writeFile(recordFile, record, { mode: 0o600 })
       for (const entry of w.carriedUntracked ?? []) {
-        if (!entry.path || path.isAbsolute(entry.path) || entry.path.split('/').some(part => !part || part === '.' || part === '..')) continue
+        if (!validRepoPath(entry.path, RECORDED_PATH)) continue
         const file = path.join(w.dir, entry.path)
         if (fs.existsSync(file)) continue
         fs.mkdirSync(path.dirname(file), { recursive: true })

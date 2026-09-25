@@ -5,10 +5,11 @@
  * into this clone.
  */
 import { readRoomFile, roomFilePath } from './room-file.js'
+export { validRepoPath, isInsideRoot, containedRepoPath, MATERIALIZED_PATH, DISK_READ_PATH, LINK_INPUT_PATH, RECORDED_PATH, CARRIED_PATH, type RepoPathSyntax, type RepoLeafPolicy, type RepoContainmentOptions } from './repo-path.js'
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
-import fs from 'node:fs'
 import { commonGitDirFromDotGit } from './git-dirs.js'
 export { worktreeGitDirFromDotGit, worktreeGitDirSync, commonGitDirFromDotGit, gitCommonDir, realGitCommonDir, carryRecord, carryRecordSync } from './git-dirs.js'
+import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'

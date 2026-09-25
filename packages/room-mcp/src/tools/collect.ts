@@ -3,6 +3,7 @@ import path from 'node:path'
 import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
+import { MATERIALIZED_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { cleanupWorker, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, isOwnedWorkerWorktree } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode } from './files.js'
@@ -42,14 +43,11 @@ const failureReason = (w: Worker): string => w.exitCode !== undefined && w.exitC
 
 /** Reject symlinks at every component, including dangling destination links. */
 function safePath(root: string, rel: string): string {
-  if (!rel || path.isAbsolute(rel) || rel.includes('\\') || rel.includes('\0') || rel.split('/').some(p => !p || p === '..' || p === '.' || p.toLowerCase() === '.git')) throw new Error('unsafe collection path: ' + rel)
-  let file = fs.realpathSync(root)
-  for (const part of rel.split('/')) {
-    file = path.join(file, part)
-    try { if (fs.lstatSync(file).isSymbolicLink()) throw new Error('symlink collection path refused: ' + rel) }
-    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
-  }
-  return file
+  if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error('unsafe collection path: ' + rel)
+  const rootReal = fs.realpathSync(root)
+  const result = containedRepoPath(rootReal, path.join(rootReal, rel), { leaf: 'reject-link', allowMissing: true })
+  if (!result.ok) throw new Error(result.reason === 'link' ? 'symlink collection path refused: ' + rel : 'unsafe collection path: ' + rel)
+  return result.path
 }
 
 function copyFiles(root: string, paths: string[]): string[] {
