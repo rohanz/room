@@ -1,4 +1,9 @@
-/** Owns repo-relative lexical validation and containment; callers choose their existing link-leaf policy explicitly. */
+/**
+ * Owns repo-relative lexical validation and containment; callers choose their link-leaf policy.
+ * These paths are inside the user's checkout and Room worktrees, which only the user's own processes write.
+ * Callers capture the canonical root once per operation, and containment refuses a root that has since become a symlink.
+ * A directory swap between a check and its use remains possible: Node's fs has no openat/O_NOFOLLOW directory-relative operations, and a process able to make that swap already has the user's write access.
+ */
 import fs from 'node:fs'
 import path from 'node:path'
 

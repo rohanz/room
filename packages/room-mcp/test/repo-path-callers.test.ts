@@ -181,6 +181,39 @@ it('combined-tree preview reads contained link leaves and excludes escaping ones
   room.doc.destroy()
 })
 
+it('refuses a worker root replaced by a symlink between files in one preview', async () => {
+  for (const name of ['a.txt', 'b.txt']) fs.writeFileSync(path.join(worker, name), `worker ${name}\n`)
+  const outside = path.join(root, 'outside-worker')
+  fs.mkdirSync(outside)
+  fs.writeFileSync(path.join(outside, 'b.txt'), 'outside b\n')
+  const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base })
+  room.setBaseOf('lead', base); room.setBaseOf('lead+w', base)
+  room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base })
+  const session = { dir: lead, me: { name: 'lead', kind: 'agent' }, room, local: true, awareness: { getStates: () => new Map() } } as unknown as Session
+  const state = { rooms: { holding: () => session }, liveText: async () => undefined, baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState
+  const parked = path.join(root, 'parked-worker')
+  const read = fs.readFileSync.bind(fs)
+  let swapped = false
+  vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+    const result = read(file, options as BufferEncoding)
+    if (String(file) === path.join(worker, 'a.txt') && !swapped) {
+      swapped = true
+      fs.renameSync(worker, parked)
+      fs.symlinkSync(outside, worker, 'dir')
+    }
+    return result
+  }) as typeof fs.readFileSync)
+  try {
+    await expect(buildCombinedTree(state, session, [{ person: 'lead+w', session }], { diskOnly: true }))
+      .rejects.toThrow(/unsafe preview symlink: b\.txt/)
+    expect(swapped).toBe(true)
+  } finally {
+    vi.restoreAllMocks()
+    if (swapped) { fs.unlinkSync(worker); fs.renameSync(parked, worker) }
+    room.doc.destroy()
+  }
+})
+
 it('combined-tree disk sites retain their lexical path cases', async () => {
   fs.mkdirSync(path.join(lead, 'a', '.git'), { recursive: true })
   fs.writeFileSync(path.join(lead, 'a', 'b'), 'nested\n')

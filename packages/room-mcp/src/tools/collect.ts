@@ -322,6 +322,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const result = await buildCombinedTree({ ...state, baseFor: (_s, person) => heads.get(person)!, shareOf: () => 'full' }, lead,
         selected.map(({ s, w }) => ({ session: s, person: w.name })), {
           diskOnly: true, diskWorkers: new Set(selected.map(({ w }) => w.name)), encoding: 'latin1', skipCallerOnly: true,
+          roots: new Map([[path.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path.resolve(w.dir), workerRoots.get(w)!] as const)]),
         })
       const unsupported = result.ignoredNotes.filter(note => !note.includes('gitignored') && !note.includes('linked input'))
       if (unsupported.length) return [...out, 'Nothing written; files need manual collection: ' + unsupported.join('; ') + '. All selected workers kept.'].join('\n')

@@ -163,7 +163,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         else {
           const modeParticipants = (await Promise.all(participants.map(async ({ person, session }) => {
             const w = session.room.workerOf(person)
-            return w && fs.existsSync(w.dir) ? { dir: fs.realpathSync(w.dir), baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) } : undefined
+            if (!w || !fs.existsSync(w.dir)) return undefined
+            const dir = result.roots.get(path.resolve(w.dir))
+            if (!dir) throw new Error('uncaptured preview root: ' + w.dir)
+            return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) }
           }))).filter((x): x is NonNullable<typeof x> => !!x)
           const modes = new Map<string, number>()
           for (const p of merged.keys()) {

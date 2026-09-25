@@ -166,3 +166,7 @@ healthcheck hits `/health`.
 
 Running without Docker is the same server: `YPERSISTENCE=/var/lib/room PORT=8080 npm run server`
 under systemd, with the same environment.
+
+## Local path boundary
+
+Room reads and collects paths inside the user's checkout and Room worktrees, which only the user's own processes write. Each operation captures its canonical roots once, and a root that has become a symlink is refused. A directory swap racing between a check and its use is not closed because Node's fs has no openat/O_NOFOLLOW directory-relative operations. A process able to swap those directories already has the user's write access.

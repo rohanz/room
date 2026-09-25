@@ -9,14 +9,37 @@ import { baselineText, checkoutText, MissingBaseBlob, pairBaseline, type Baselin
 import { diskWorker, type HandlerState } from './context.js'
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
-export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean } = {}) {
+export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
   const { rooms, liveText, baseFor, shareOf } = state
   const people = participants.map(p => p.person)
   // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
+  const previewWorkers = new WeakMap<Session, Map<string, ReturnType<typeof diskWorker>>>()
   const previewWorker = (s: Session, person: string) => {
+    let byPerson = previewWorkers.get(s)
+    if (!byPerson) { byPerson = new Map(); previewWorkers.set(s, byPerson) }
+    if (byPerson.has(person)) return byPerson.get(person)
     const w = s.local || options.diskWorkers?.has(person) ? s.room.workerOf(person) : undefined
-    return w?.lead === s.me.name && fs.existsSync(w.dir) ? w : diskWorker(s, person)
+    const worker = w?.lead === s.me.name && fs.existsSync(w.dir) ? w : diskWorker(s, person)
+    byPerson.set(person, worker)
+    return worker
   }
+  // Capture each disk boundary once, before any Git or file read can yield. Collection
+  // supplies the same roots it already validated for its entire operation.
+  const previewDirs = new Set([caller.dir])
+  for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
+    const worker = previewWorker(session, person)
+    if (worker) previewDirs.add(worker.dir)
+  }
+  const roots = options.roots ?? new Map([...previewDirs].map(dir => {
+    if (fs.lstatSync(dir).isSymbolicLink()) throw new Error('unsafe preview root: ' + dir)
+    return [path.resolve(dir), fs.realpathSync(dir)]
+  }))
+  const rootOf = (dir: string) => {
+    const root = roots.get(path.resolve(dir))
+    if (!root) throw new Error('uncaptured preview root: ' + dir)
+    return root
+  }
+  for (const dir of previewDirs) rootOf(dir)
   const previewText = async (s: Session, p: string, person: string) => {
     const w = previewWorker(s, person)
     const dir = w?.dir ?? (person === caller.me.name && s === caller ? caller.dir : undefined)
@@ -25,7 +48,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       return options.encoding === 'latin1' && typeof live === 'string' ? Buffer.from(live, 'utf8').toString('latin1') : live
     }
     if (!validRepoPath(p, { ...DISK_READ_PATH, blank: 'allow' })) throw new Error('unsafe preview path: ' + p)
-    const root = fs.realpathSync(dir)
+    const root = rootOf(dir)
     try {
       const result = containedRepoPath(root, path.join(root, p), { leaf: 'read-contained-link' })
       if (!result.ok) throw new Error('unsafe preview symlink: ' + p)
@@ -80,7 +103,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined)
       let reason = workerOwnedPaths(session.room.workerOf(person)).includes(p) ? 'linked input' : undefined
       if (!reason && dir) {
-        const root = fs.realpathSync(dir)
+        const root = rootOf(dir)
         try {
           if (!containedRepoPath(root, path.join(root, p), { leaf: 'read-contained-link', allowRoot: true }).ok) reason = 'symlink leaving the worktree'
         } catch (e) {
@@ -226,7 +249,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   }
 
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
-  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes }
+  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {
