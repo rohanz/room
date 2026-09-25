@@ -332,6 +332,12 @@ Still open from this audit: merge preview with `run` still materializes the lead
 tree. Fixed in 0.16.1: `*.tsbuildinfo` at a package root is regenerable output and no
 longer keeps a collected worktree.
 
+### Seen in the 0.16.4 live check (2026-09-25, open, small)
+
+- A message sent right after a worker finishes can hit "n's previous process is still exiting; send the
+  message again shortly". The reply still starts with "sent [...]" and the message stays on the bus,
+  but the worker is not resumed until the lead sends it again, so the bus holds the message twice.
+
 ### After 0.14.1 (2026-09-24, open)
 
 - **Fixed in 0.15.0: wake text and note wording.** Claude wakes summarize unread events,
