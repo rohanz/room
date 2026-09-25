@@ -17455,7 +17455,7 @@ function workerLines(inputs, options = {}) {
   if (!inputs.length && (!options.all || !retired.length)) return [];
   const visible = inputs.filter((i2) => options.all || i2.worker.stopReason || i2.worker.status === "running" || i2.worker.status === "failed");
   const finished = inputs.length - visible.length;
-  const out2 = [`workers (${inputs.length}):`, ...[...visible].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
+  const out2 = [`workers (${visible.length + (options.all ? retired.length : 0)}):`, ...[...visible].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
   if (options.all) {
     for (const w of [...retired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
       out2.push(`  - ${w.tag} (${w.outcome}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ""}${w.model ? `, ${w.model}` : ""}): ${w.summary} \xB7 ${formatCount(w.fileCount, "file")}`);
@@ -26048,7 +26048,8 @@ function resolveSessionRuntime(dir, env = process.env) {
   } catch {
   }
   if (env.CLAUDE_CODE_SESSION_ID && resolveSessionHost(dir, env) === "claude" && session.session_id !== env.CLAUDE_CODE_SESSION_ID && session.host !== "claude") session = {};
-  return { model: clean(session.model) ?? clean(env.ROOM_WORKER_MODEL), effort: effort(session.effort) ?? effort(env.ROOM_WORKER_EFFORT) };
+  const ownSession = env.ROOM_WORKER_ID ? session.worker_id === env.ROOM_WORKER_ID : !session.worker_id;
+  return { model: (ownSession ? clean(session.model) : void 0) ?? clean(env.ROOM_WORKER_MODEL), effort: (ownSession ? effort(session.effort) : void 0) ?? effort(env.ROOM_WORKER_EFFORT) };
 }
 var DEFAULT_SERVER, LOCAL, DEFAULT_CLAUDE_CHANNEL, DEFAULT_MAX_WORKERS, DEFAULT_STALE_DAYS, value, positive, sharingHumanChoices;
 var init_config = __esm({
@@ -31324,6 +31325,7 @@ function shouldRetire(facts) {
 }
 async function workerGitFacts(leadDir, w) {
   const facts = { merged: false, clean: false, ahead: void 0 };
+  if (!await isOwnedWorkerWorktree(leadDir, w, w.lead)) return facts;
   try {
     const owned = new Set(await workerChangedPaths(w));
     const status = await git(w.dir, ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", "."]);
@@ -35231,7 +35233,7 @@ Your dev-server port is ${port} (PORT=${port}).` : message, claudeChannel, w.eff
             this.releaseLaunch();
             launchReserved = false;
             this.watchWorkerProcess(s, id2, proc, `could not resume ${w.tag}`, log2);
-            return `resumed ${w.tag} with your message${portChanged ? `; dev-server PORT is ${port}` : ""}${w.share ? "" : " (legacy worker has no saved sharing level; using intent)"}${stopWarning}`;
+            return `resumed ${w.tag} with your message${w.status === "done" ? `; ${w.tag} had finished and was restarted` : ""}${portChanged ? `; dev-server PORT is ${port}` : ""}${w.share ? "" : " (legacy worker has no saved sharing level; using intent)"}${stopWarning}`;
           } finally {
             if (!portPassedToProcess) portReservation?.release();
             if (launchReserved) this.releaseLaunch();
@@ -44813,6 +44815,7 @@ init_company();
 init_src();
 init_git();
 init_baseline();
+init_workers();
 init_choice();
 init_session();
 init_session();
@@ -44834,6 +44837,7 @@ var defs2 = [
 ];
 async function workerChangedCount(s, worker, processGone) {
   const overlayCount = s.room.changedPaths(worker.name).length;
+  if (!await isOwnedWorkerWorktree(s.dir, worker, s.me.name, [...s.room.workers.values(), ...s.room.retiredWorkers()])) return overlayCount;
   if (!processGone && worker.status === "running" && s.room.overlays.has(worker.name)) return overlayCount;
   try {
     return (await workerChangedPaths(worker)).length;
@@ -45506,6 +45510,11 @@ function install4(state) {
     try {
       const n = await doJoin({ ...rejoinOptions(s, ctx.config?.credentialsPath), room: target });
       delete n.pinnedRoom;
+      const stale = s.room.messages().filter((m) => m.type === "note" && m.from === "room" && m.to === s.me.name && m.text.startsWith(`you switched to ${branch}; the room is for ${current};`)).map((m) => m.id);
+      if (stale.length) {
+        s.room.markSeen(s.me.name, stale);
+        for (const id2 of stale) seen.add(id2);
+      }
       cleanupMine(s, `switched branch to ${branch}`);
       rooms.remove(s);
       await doLeave(s);
@@ -46350,11 +46359,11 @@ ${text}` : text;
       if (a.includeOffline !== void 0 && typeof a.includeOffline !== "boolean") return "error: includeOffline must be a boolean";
       const explicit = Array.isArray(a.people) || !!alias;
       const allSessions = rooms.all();
+      const fullName = (name2) => allSessions.flatMap((s) => [...s.room.workers.values()]).find((w) => w.tag === name2 && w.lead === caller.me.name)?.name ?? name2;
       const presentSession = (person) => allSessions.find((s) => presences(s).some((p) => p.user.name === person));
       const present = Array.from(new Set(allSessions.flatMap((s) => presences(s).map((p) => p.user.name)))).filter((p) => p !== caller.me.name);
       const available = Array.from(new Set(allSessions.flatMap((s) => others(s)))).filter((p) => p !== caller.me.name);
-      const people = Array.from(new Set(explicit ? Array.isArray(a.people) ? a.people.map((p) => p.trim()) : [alias] : (a.includeOffline === true ? available : present).sort()));
-      if (people.includes(caller.me.name)) return "error: people must contain one or more people other than you";
+      const people = Array.from(new Set(explicit ? Array.isArray(a.people) ? a.people.map((p) => fullName(p.trim())) : [fullName(alias)] : (a.includeOffline === true ? available : present).sort())).filter((p) => p !== caller.me.name);
       const offlineWithOverlays = available.filter((person) => !present.includes(person) && rooms.holding(person, caller).room.changedPaths(person).length > 0);
       const skipped = !explicit && a.includeOffline !== true ? offlineWithOverlays : [];
       const skippedNote = skipped.length ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? "" : "s"} with overlays: ${skipped.join(", ")}; include with people: [${skipped.map((p) => JSON.stringify(p)).join(", ")}] or includeOffline: true` : "";
@@ -46779,7 +46788,7 @@ repeat with force=true to delete them`;
           if (!s.room.workers.has(child.tag)) continue;
           const result = await roomCollect({ tag: child.tag, discard: true, force: true }, /* @__PURE__ */ new Set([...discarding, w.name]));
           childResults.push(result);
-          if (!result.startsWith("discarded ")) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`;
+          if (!result.startsWith("discarded ") && !result.startsWith("stopped ")) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`;
         }
         const cleanupErrors = [];
         const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors);
@@ -46797,7 +46806,8 @@ repeat with force=true to delete them`;
           if (state.workerAlive(s, w)) throw new Error("worker process has not stopped");
         }
         terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors));
-        const ignored = await ignoredWorkerArtifacts(w);
+        const ownedWorktree = await isOwnedWorkerWorktree(s.dir, w, s.me.name, ownershipRecords(s));
+        const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w) : [];
         if (ignored.length && a.force !== true) {
           return [
             `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}`,
@@ -46808,8 +46818,8 @@ repeat with force=true to delete them`;
             'copy what you need (mode="copy", paths=[...]), then repeat with force=true to delete the rest'
           ].join("\n");
         }
-        const patch = await saveDiscardPatch(s.dir, w);
-        if (!await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error("worker is not an owned Room worktree");
+        const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w) : void 0;
+        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error("worker is not an owned Room worktree");
         releaseClaimsOnDone(s, () => false, w.name, false);
         const retiredAt = Date.now();
         s.room.retireParticipant(w.name, {
@@ -46817,6 +46827,7 @@ repeat with force=true to delete them`;
           tag: w.tag,
           lead: w.lead,
           host: w.host,
+          ...w.model ? { model: w.model } : {},
           task: w.task,
           summary: "discarded",
           files: [],
@@ -46826,7 +46837,7 @@ repeat with force=true to delete them`;
           retiredAt,
           outcome: "dismissed"
         });
-        return [...childResults, "discarded " + w.tag + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
+        return [...childResults, (!ownedWorktree && fs20.existsSync(w.dir) ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
       } catch (e) {
         return "error: " + (e instanceof Error ? e.message : String(e)) + "; retained " + w.dir;
       } finally {
@@ -48102,7 +48113,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.3",
+  version: "0.16.4",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
