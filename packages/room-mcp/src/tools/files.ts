@@ -163,7 +163,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         else {
           const modeParticipants = (await Promise.all(participants.map(async ({ person, session }) => {
             const w = session.room.workerOf(person)
-            return w && fs.existsSync(w.dir) ? { dir: w.dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) } : undefined
+            return w && fs.existsSync(w.dir) ? { dir: fs.realpathSync(w.dir), baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) } : undefined
           }))).filter((x): x is NonNullable<typeof x> => !!x)
           const modes = new Map<string, number>()
           for (const p of merged.keys()) {
@@ -226,7 +226,8 @@ function mirrorLinks(cloneDir: string, scratchDir: string, src: string, dst: str
 export interface TestResult { text: string; passed: boolean }
 
 function ensureMergedDirectory(root: string, rel: string): string {
-  const canonicalRoot = fs.realpathSync(root)
+  const canonicalRoot = path.resolve(root)
+  if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: 'read-contained-link', allowRoot: true }).ok) throw new Error('merged root is no longer safe')
   if (!rel) return canonicalRoot
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error('unsafe merged path: ' + rel)
   let at = canonicalRoot
@@ -259,7 +260,7 @@ export function mergedFileMode(rel: string, initialMode: number, participants: {
     const src = path.join(participant.dir, rel)
     let stat: fs.Stats
     try {
-      const root = fs.realpathSync(participant.dir)
+      const root = path.resolve(participant.dir)
       if (!containedRepoPath(root, path.join(root, rel), { leaf: 'read-contained-link', allowRoot: true }).ok) throw new Error('unsafe worker mode path: ' + rel)
       stat = fs.lstatSync(src)
     } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; throw e }
@@ -277,7 +278,8 @@ export function mergedFileMode(rel: string, initialMode: number, participants: {
 /** Materialize one merged byte image without following links from an archived ancestor. */
 export function materializeMergedFile(root: string, rel: string, bytes: Buffer | null, mode = 0o644): void {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error('unsafe merged path: ' + rel)
-  const canonicalRoot = fs.realpathSync(root)
+  const canonicalRoot = path.resolve(root)
+  if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: 'read-contained-link', allowRoot: true }).ok) throw new Error('merged root is no longer safe')
   const parts = rel.split('/')
   const parent = ensureMergedDirectory(canonicalRoot, parts.slice(0, -1).join('/'))
   const file = path.join(parent, parts.at(-1)!)
@@ -315,7 +317,7 @@ export function testVerdict(output: string, code: number | null): TestResult {
 
 /** Materialise ancestor + merged files in a scratch dir (sharing .venv/node_modules from my clone) and run a command there. */
 async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map()): Promise<TestResult> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-'))
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-')))
   try {
     await materializeGitTree(s.dir, ancestor, dir)
     for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)

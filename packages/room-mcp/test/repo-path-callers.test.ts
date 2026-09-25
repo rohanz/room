@@ -14,7 +14,7 @@ import type { Session } from '../src/session.js'
 let root: string, lead: string, worker: string, base: string
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
 beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-repo-path-callers-'))
+  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-repo-path-callers-')))
   lead = path.join(root, 'lead'); worker = path.join(lead, '.room', 'workers', 'w')
   fs.mkdirSync(lead)
   git(lead, 'init', '-q', '-b', 'main'); git(lead, 'config', 'user.name', 'test'); git(lead, 'config', 'user.email', 'test@room')

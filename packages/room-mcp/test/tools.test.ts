@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import net from 'node:net'
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -957,7 +957,7 @@ describe('preview merge', () => {
 
 describe('merge preview scratch tree', () => {
   it('links third-party packages to my clone and workspace packages into the scratch tree', () => {
-    const clone = mkdtempSync(join(tmpdir(), 'room-clone-')), scratch = mkdtempSync(join(tmpdir(), 'room-scratch-'))
+    const clone = mkdtempSync(join(tmpdir(), 'room-clone-')), scratch = realpathSync(mkdtempSync(join(tmpdir(), 'room-scratch-')))
     mkdirSync(join(clone, 'packages/shared'), { recursive: true })
     mkdirSync(join(clone, 'node_modules/@room'), { recursive: true })
     mkdirSync(join(clone, 'node_modules/vitest'), { recursive: true })

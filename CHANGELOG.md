@@ -4,6 +4,7 @@
 
 - Internal cleanup with two deliberate edge-case changes. Repo-relative path checks and symlink containment now have one implementation with named policies (`packages/roomd/src/repo-path.ts`); Git-private state paths and carry records have one resolver (`packages/roomd/src/git-dirs.ts`), parity-tested against the dependency-free hook copy.
 - A worktree whose `.git` file has an empty `gitdir:` line keeps hook and exclude state under `<dir>/.git` instead of the checkout root. Worker `link` inputs recheck that the source is still inside the repository before copying.
+- File reads and collection refuse a repository root that has changed into a symlink, instead of following it into another directory.
 
 ## 0.16.5
 

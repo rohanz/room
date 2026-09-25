@@ -19,7 +19,7 @@ const put = (dir: string, p: string, text: string) => { fs.mkdirSync(path.dirnam
 
 beforeEach(() => {
   release.mockReset()
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-collect-'))
+  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-collect-')))
   lead = path.join(root, 'lead'); worker = path.join(lead, '.room', 'workers', 'test'); fs.mkdirSync(lead)
   git(lead, 'init', '-q'); git(lead, 'config', 'user.name', 'Lead'); git(lead, 'config', 'user.email', 'lead@example.test')
   put(lead, 'file.txt', 'base\n'); put(lead, '.gitignore', 'artifact.bin\nnode_modules/\n.room/\n')

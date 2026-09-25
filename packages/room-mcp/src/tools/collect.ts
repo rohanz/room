@@ -44,8 +44,7 @@ const failureReason = (w: Worker): string => w.exitCode !== undefined && w.exitC
 /** Reject symlinks at every component, including dangling destination links. */
 function safePath(root: string, rel: string): string {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error('unsafe collection path: ' + rel)
-  const rootReal = fs.realpathSync(root)
-  const result = containedRepoPath(rootReal, path.join(rootReal, rel), { leaf: 'reject-link', allowMissing: true })
+  const result = containedRepoPath(root, path.join(root, rel), { leaf: 'reject-link', allowMissing: true })
   if (!result.ok) throw new Error(result.reason === 'link' ? 'symlink collection path refused: ' + rel : 'unsafe collection path: ' + rel)
   return result.path
 }
@@ -232,7 +231,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
     const out: string[] = []
     const selected: typeof candidates = []
-    const lock = 'collect:' + fs.realpathSync(lead.dir)
+    const leadRoot = fs.realpathSync(lead.dir)
+    const workerRoots = new Map<Worker, string>()
+    const lock = 'collect:' + leadRoot
     if (!rooms.reserve(lock)) return 'error: another collection is in progress'
     const workerLocks: string[] = []
     try {
@@ -254,7 +255,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           out.push(`${a.tag ? 'nothing to collect' : 'skipped ' + w.tag}: worktree ${w.dir} is gone`)
           continue
         }
-        if (fs.realpathSync(w.dir) === fs.realpathSync(lead.dir)) throw new Error('worker must have a separate worktree')
+        const workerRoot = fs.realpathSync(w.dir)
+        if (workerRoot === leadRoot) throw new Error('worker must have a separate worktree')
         await assertNoOperation(w.dir)
         const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
         if (await common(lead.dir) !== await common(w.dir)) throw new Error('worker is not a worktree of this repository')
@@ -276,6 +278,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         w = current.status === 'done' ? current : { ...current, status: 'done', exitCode: current.exitCode ?? 0 }
         if (w.exitCode !== undefined && w.exitCode !== 0) { out.push('skipped ' + w.tag + ': failed exit (' + failureReason(w) + ')'); continue }
         selected.push({ s, w })
+        workerRoots.set(w, workerRoot)
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e)
           if (a.tag) throw e
@@ -288,22 +291,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const { s, w } = selected[0]
         const releasePaths = (paths: string[]) => releaseClaimsOnDone(s, c => !paths.some(p => claimsOverlap(c, { path: p, from: 1, to: Number.MAX_SAFE_INTEGER })), w.name, false)
         if (!Array.isArray(a.paths) || !a.paths.length || a.paths.some(p => typeof p !== 'string')) return 'error: copy requires non-empty paths'
-        const files = copyFiles(w.dir, a.paths as string[])
+        const workerRoot = workerRoots.get(w)!
+        const files = copyFiles(workerRoot, a.paths as string[])
         const modified = new Set(split(await git(lead.dir, ['diff', '--name-only', '-z', 'HEAD', '--'])))
         const tracked = new Set(split(await git(lead.dir, ['ls-files', '-z'])))
         for (const p of files) {
-          const dst = safePath(lead.dir, p)
+          const dst = safePath(leadRoot, p)
           if (fs.existsSync(dst) && !fs.statSync(dst).isFile()) return 'error: copy destination is not a regular file: ' + p
           if (a.force !== true && (modified.has(p) || (!tracked.has(p) && fs.existsSync(dst)))) {
-            if (!fs.existsSync(dst) || !fs.readFileSync(dst).equals(fs.readFileSync(safePath(w.dir, p)))) return 'error: lead has modified ' + p + '; pass force=true to overwrite'
+            if (!fs.existsSync(dst) || !fs.readFileSync(dst).equals(fs.readFileSync(safePath(workerRoot, p)))) return 'error: lead has modified ' + p + '; pass force=true to overwrite'
           }
         }
         releasePaths(files)
         for (const p of files) {
-          const dst = safePath(lead.dir, p)
+          const dst = safePath(leadRoot, p)
           fs.mkdirSync(path.dirname(dst), { recursive: true })
-          fs.copyFileSync(safePath(w.dir, p), dst)
-          fs.chmodSync(dst, fs.statSync(safePath(w.dir, p)).mode & 0o777)
+          fs.copyFileSync(safePath(workerRoot, p), dst)
+          fs.chmodSync(dst, fs.statSync(safePath(workerRoot, p)).mode & 0o777)
           out.push('copied ' + p)
         }
         if (!files.length) out.push('nothing copied (empty directories)')
@@ -333,11 +337,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         unchangedCarried.set(w.name, carriedUnchangedPaths(workerBaseline(w)))
       }
       for (const [p, text] of result.merged) {
-        const file = safePath(lead.dir, p)
+        const file = safePath(leadRoot, p)
         const before = fs.existsSync(file) ? fs.readFileSync(file) : null
         if ((before === null ? null : before.toString('latin1')) !== result.initial.get(p)) throw new Error(p + ' changed during collection; nothing written, retry')
         const oldMode = before !== null ? fs.statSync(file).mode & 0o777 : 0o644
-        const mode = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: w.dir, baseModes: baseModes.get(w.name)!, ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) })))
+        const mode = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: workerRoots.get(w)!, baseModes: baseModes.get(w.name)!, ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) })))
         const after = text === null ? null : Buffer.from(text, 'latin1')
         if ((before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode === oldMode) || (before === null && after === null)) continue
         changes.push({ p, file, before, after, mode, oldMode })
@@ -347,11 +351,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       try {
         for (const change of changes) {
           written.push(change)
-          materializeMergedFile(lead.dir, change.p, change.after, change.mode)
+          materializeMergedFile(leadRoot, change.p, change.after, change.mode)
         }
       } catch (e) {
         for (const change of written.reverse()) {
-          materializeMergedFile(lead.dir, change.p, change.before, change.oldMode)
+          materializeMergedFile(leadRoot, change.p, change.before, change.oldMode)
         }
         throw e
       }

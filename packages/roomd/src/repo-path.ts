@@ -57,13 +57,16 @@ export function isInsideRoot(rootInput: string, targetInput: string, options: { 
 }
 
 export function containedRepoPath(rootInput: string, targetInput: string, options: RepoContainmentOptions): Containment {
-  const root = fs.realpathSync(rootInput)
-  const target = path.resolve(root, path.relative(path.resolve(rootInput), path.resolve(targetInput)))
+  // Callers supply the boundary they validated. Resolving it again would silently move
+  // that boundary if the directory has since been replaced with a symlink.
+  const root = path.resolve(rootInput)
+  if (fs.lstatSync(root).isSymbolicLink() || fs.realpathSync(root) !== root) return { ok: false, reason: 'link' }
+  const target = path.resolve(targetInput)
+  if (!isInsideRoot(root, target, options)) return { ok: false, reason: 'outside' }
   if (options.leaf === 'read-contained-link') {
     const real = fs.realpathSync(target)
     return isInsideRoot(root, real, options) ? { ok: true, path: real } : { ok: false, reason: 'outside' }
   }
-  if (!isInsideRoot(root, target, options)) return { ok: false, reason: 'outside' }
   const checkThrough = options.leaf === 'reject-link' ? target : path.dirname(target)
   if (options.leaf === 'replace-link') {
     const real = fs.realpathSync(checkThrough)
