@@ -4,13 +4,18 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFil
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, type Worker } from '@room/shared'
-import { shouldRetire, workerGitFacts, prepareWorktree, saveDiscardPatch, type RetirementFacts } from '../src/workers.js'
+import { prepareWorktree, saveDiscardPatch } from '../src/workers.js'
+import { decideRetire, workerRealState, type WorkerRealState } from '../src/worker-state.js'
 import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
 import { handlers as collectHandlers } from '../src/tools/collect.js'
 import type { HandlerState } from '../src/tools/context.js'
 
-const facts: RetirementFacts = { exited: true, done: true, dismissed: false, merged: false, clean: false, ahead: 1 }
+const facts: WorkerRealState = { worktree: 'present', process: 'gone', hostSession: false, finished: true, status: 'done', dismissed: false, merged: false, clean: false, ahead: 1 }
+const workerGitFacts = async (dir: string, w: Worker) => {
+  const state = await workerRealState(dir, w, { git: true, leadName: w.lead })
+  return { merged: state.merged ?? false, clean: state.clean ?? false, ahead: state.ahead, ...(state.uncommitted !== undefined ? { uncommitted: state.uncommitted } : {}) }
+}
 const worker = (dir: string): Worker => ({ id: 'lead/w#1', name: 'lead+w', tag: 'w', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/w', pid: -1, startedAt: 1, status: 'done', summary: 'done', exitCode: 0 })
 const dirs: string[] = []
 afterEach(() => { vi.useRealTimers(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
@@ -30,11 +35,11 @@ function registry(dir: string) {
   return { room, s, rooms, close: () => { rooms.remove(s); room.doc.destroy() } }
 }
 
-describe('shouldRetire', () => {
+describe('decideRetire', () => {
   it.each([
-    [{ exited: false, dismissed: true, merged: true, clean: true, ahead: 0 }, undefined],
-    [{ done: false, merged: true, clean: true, ahead: 0 }, undefined],
-    [{ done: false, dismissed: true }, 'dismissed'],
+    [{ process: 'ours', dismissed: true, merged: true, clean: true, ahead: 0 }, undefined],
+    [{ status: 'failed', merged: true, clean: true, ahead: 0 }, undefined],
+    [{ status: 'failed', dismissed: true }, 'dismissed'],
     [{ dismissed: true, merged: true }, 'dismissed'],
     [{ merged: true, clean: false, ahead: 0 }, undefined],
     [{ merged: true, clean: true, ahead: 0, uncommitted: 0 }, 'merged'],
@@ -43,8 +48,8 @@ describe('shouldRetire', () => {
     [{ clean: false, ahead: 0 }, undefined],
     [{ clean: true, ahead: 1 }, undefined],
     [{ clean: true, ahead: undefined }, undefined],
-  ] as [Partial<RetirementFacts>, string | undefined][])('evaluates %j as %s', (patch, outcome) => {
-    expect(shouldRetire({ ...facts, ...patch })).toBe(outcome)
+  ] as [Partial<WorkerRealState>, string | undefined][])('evaluates %j as %s', (patch, outcome) => {
+    expect(decideRetire({ ...facts, ...patch })).toBe(outcome)
   })
 })
 
@@ -80,6 +85,17 @@ describe('git facts and lead evaluation', () => {
     expect(r.room.openClaims().filter(c => c.by === w.name)).toEqual([])
     expect(git('branch', '--list', 'room/w')).toContain('room/w')
     expect(git('worktree', 'list', '--porcelain')).not.toContain(w.dir)
+    r.close()
+  })
+  it('keeps a vanished done worker with a host session addressable for follow-up', async () => {
+    const { dir, git } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), hostSessionId: 'host-session' }
+    r.room.setWorker(w)
+    rmSync(w.dir, { recursive: true, force: true })
+    await r.rooms.retireWorkers()
+    expect(r.room.workers.get('w')).toBeDefined()
+    expect(git('branch', '--list', 'room/w')).toContain('room/w')
     r.close()
   })
   it('retains a done worker and its actionable record when ignored output remains', async () => {

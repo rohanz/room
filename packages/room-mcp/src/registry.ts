@@ -13,7 +13,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
-import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, pruneMissingWorkerWorktree, shouldRetire, workerCommand, workerGitFacts, workerLogTail, workerMaxBudget, workerOperationKey, workerPriority, workerProcessEnv, type SpawnedProcess, type Spawner } from './workers.js'
+import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, pruneMissingWorkerWorktree, workerCommand, workerLogTail, workerMaxBudget, workerOperationKey, workerPriority, workerProcessEnv, type SpawnedProcess, type Spawner } from './workers.js'
+import { decideRetire, processExited, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { bindWorkerPortReservation, reserveWorkerPort, type PortReservation } from './port-reservations.js'
 
@@ -190,16 +191,15 @@ export class Rooms {
       const lock = workerOperationKey(w)
       if (!this.reserve(lock)) continue
       try {
-        const exited = w.exitCode !== undefined || !pidIsOurWorker(w.pid, w)
-        if (!exited) continue
+        const state = await workerRealState(s.dir, w, { process: true })
+        if (!processExited(state)) continue
         if (w.status !== 'done') s.room.clearWorkerCoordination(w.name)
         if (w.status === 'running') {
           await finishWorkerProcess(s, w, null, Date.now(), undefined, true)
           continue
         }
-        const facts = { exited, done: w.status === 'done', dismissed: w.dismissedAt !== undefined || w.status === 'dismissed', merged: false, clean: false, ahead: undefined as number | undefined, uncommitted: undefined as number | undefined }
-        if (!facts.done && !facts.dismissed) continue
-        if (!fs.existsSync(w.dir)) {
+        if (w.status !== 'done' && !state.dismissed) continue
+        if (state.worktree === 'vanished') {
           try { await pruneMissingWorkerWorktree(s.dir, w) } catch { continue }
           if (s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
           const retiredAt = Date.now()
@@ -210,8 +210,8 @@ export class Rooms {
           })
           continue
         }
-        Object.assign(facts, await workerGitFacts(s.dir, w))
-        const outcome = shouldRetire(facts)
+        const facts = { ...await workerRealState(s.dir, w, { git: true, leadName: w.lead }), process: state.process }
+        const outcome = decideRetire(facts)
         // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
         if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s) || this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
         // An ignored artifact has no recovery patch. Keep both its worktree and the live record so

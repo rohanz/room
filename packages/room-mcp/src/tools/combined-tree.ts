@@ -5,6 +5,7 @@ import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
 import { workerOwnedPaths } from '../workers.js'
+import { decidePreview, workerRealState } from '../worker-state.js'
 import { baselineText, checkoutText, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
 import { diskWorker, type HandlerState } from './context.js'
 
@@ -14,15 +15,16 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   const people = participants.map(p => p.person)
   // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
   const previewWorkers = new WeakMap<Session, Map<string, ReturnType<typeof diskWorker>>>()
-  const previewWorker = (s: Session, person: string) => {
+  for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
     let byPerson = previewWorkers.get(s)
     if (!byPerson) { byPerson = new Map(); previewWorkers.set(s, byPerson) }
-    if (byPerson.has(person)) return byPerson.get(person)
+    if (byPerson.has(person)) continue
     const w = s.local || options.diskWorkers?.has(person) ? s.room.workerOf(person) : undefined
-    const worker = w?.lead === s.me.name && fs.existsSync(w.dir) ? w : diskWorker(s, person)
+    const candidate = w?.lead === s.me.name ? w : diskWorker(s, person)
+    const worker = candidate && decidePreview(await workerRealState(s.dir, candidate), true) === 'disk' ? candidate : undefined
     byPerson.set(person, worker)
-    return worker
   }
+  const previewWorker = (s: Session, person: string) => previewWorkers.get(s)?.get(person)
   // Capture each disk boundary once, before any Git or file read can yield. Collection
   // supplies the same roots it already validated for its entire operation.
   const previewDirs = new Set([caller.dir])

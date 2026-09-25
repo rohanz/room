@@ -15,6 +15,7 @@ import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef 
 import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
 import { handlers as shareHandlers } from './share.js'
 import { exportRoomLedger } from '../prs.js'
+import { decideLeave, workerRealState } from '../worker-state.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_login', annotations: RW, description: 'Sign in; show the returned code/URL verbatim, then call again to wait. action=logout revokes and forgets the account.',
@@ -218,7 +219,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_leave(a) {
       const s = S()
-      const running = runningWorkers(s)
+      const running = (await Promise.all(runningWorkers(s).map(async r => ({ ...r, action: decideLeave(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx?.probe })) })))).filter(r => r.action === 'stop')
       if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map(r => r.w.tag).join(', ')}. Wait for them (room_wait), room_collect(discard=true) them, or room_leave force=true to dismiss them all and leave.`
       const stopped = await Promise.all(running.map(r => dismissWorker(r.s, r.w, 'the lead left the room')))
       await closeWorkersRoom()

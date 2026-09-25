@@ -1,6 +1,7 @@
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidAlive, pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses, isOwnedWorkerWorktree } from '../workers.js'
+import { pidAlive, pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses } from '../workers.js'
+import { decideStop, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -265,7 +266,7 @@ export function install(state: HandlerState): void {
       // The host's exit can also take down its dev-server children. Name and stop
       // those while they are still visible, but leave the host pid for its own handle.
       const protectedPids = w.pid ? [w.pid] : []
-      const ownedWorktree = await isOwnedWorkerWorktree(s.dir, w, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])
+      const ownedWorktree = decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...s.room.workers.values()] })).cwd
       const stopped: string[] = []
       let cleanupError: string | undefined
       const stopCwdProcesses = async () => {
@@ -282,7 +283,7 @@ export function install(state: HandlerState): void {
       if (proc) {
         signalled = proc.kill()
         how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled: the process is already gone`
-      } else if (pidIsOurWorker(w.pid, w, ctx.probe)) {
+      } else if (decideStop(await workerRealState(s.dir, w, { process: true, probe: ctx.probe })).host === 'signal') {
         signalled = signalWorker(w.pid)
         how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled (it exited just now, or is not ours to signal)`
       } else {

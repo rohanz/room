@@ -197,6 +197,18 @@ describe('room_collect', () => {
     expect(t.s.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
     expectRetired(t)
   })
+  it('refuses to forget a kept worktree that is no longer an owned Room worktree', async () => {
+    const t = setup()
+    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    put(worker, 'new.txt', 'worker change')
+    put(worker, 'artifact.bin', 'ignored output')
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt')
+    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+    git(worker, 'checkout', '-qb', 'elsewhere')
+    expect(await t.call({ tag: 'test', discard: true, force: true })).toBe(`error: worker is not an owned Room worktree; retained ${worker}`)
+    expect(fs.existsSync(path.join(worker, 'artifact.bin'))).toBe(true)
+    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+  })
   it('stops worktree processes when ignored output makes discard refuse', async () => {
     const t = setup('failed')
     put(worker, 'artifact.bin', 'ignored output')
@@ -306,9 +318,13 @@ describe('room_collect', () => {
   })
   it('explains that plain collect cannot collect a vanished worktree and leaves its record', async () => {
     const t = setup()
+    put(worker, 'not-landed.txt', 'worker commit')
+    git(worker, 'add', 'not-landed.txt'); git(worker, 'commit', '-qm', 'worker commit')
+    const branchHead = git(lead, 'rev-parse', 'room/test')
     fs.rmSync(worker, { recursive: true, force: true })
     expect(await t.call({ tag: 'test' })).toContain('nothing to collect: worktree')
     expect(t.s.room.workers.has('test')).toBe(true)
+    expect(git(lead, 'rev-parse', 'room/test')).toBe(branchHead)
     expect(git(lead, 'worktree', 'list', '--porcelain')).not.toContain(worker)
   })
   it('names a missing cwd in the shared git helper error', async () => {
@@ -799,6 +815,32 @@ describe('worker preview', () => {
     })
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
     expect(result).toContain('own-output.txt (lead+test only)')
+  })
+  it('withholds the lead\'s own intent-only worker once its worktree vanished', async () => {
+    const t = setup()
+    fs.rmSync(worker, { recursive: true, force: true })
+    Object.assign(t.state, {
+      rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
+      others: () => ['lead+test'], presences: () => [],
+      withheld: () => 'lead+test shares intent only; ask them or wait for their push',
+      baseFor: () => base, shareOf: () => 'intent', liveText: async () => undefined,
+    })
+    expect(await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })).toBe('lead+test shares intent only; ask them or wait for their push')
+  })
+  it('previews a vanished local worker from its shared overlay instead of its checkout', async () => {
+    const t = setup()
+    put(worker, 'disk-only.txt', 'never shared')
+    t.s.room.setOverlay('lead+test', 'shared.txt', 'shared change\n')
+    fs.rmSync(worker, { recursive: true, force: true })
+    Object.assign(t.state, {
+      rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
+      others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
+      baseFor: () => base, shareOf: () => 'full',
+      liveText: async (_s: unknown, p: string) => p === 'shared.txt' ? 'shared change\n' : undefined,
+    })
+    const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
+    expect(result).toContain('shared.txt')
+    expect(result).not.toContain('disk-only.txt')
   })
   it('collects Unicode UTF-8 bytes unchanged from a worker worktree', async () => {
     const t = setup()

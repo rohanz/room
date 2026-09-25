@@ -3,7 +3,8 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { prepareWorktree, saveDiscardPatch, persistWorkerStopReason, persistedWorkerStopReason, clearWorkerStopState, defaultSpawner, cleanupWorker, workerGitFacts } from '../src/workers.js'
+import { prepareWorktree, saveDiscardPatch, persistWorkerStopReason, persistedWorkerStopReason, clearWorkerStopState, defaultSpawner, cleanupWorker } from '../src/workers.js'
+import { workerRealState } from '../src/worker-state.js'
 import { RoomDoc, type Worker } from '@room/shared'
 import { carriedContentHash, carriedPaths, carriedUnchanged, checkoutText, workerBaseline, workerChangedPaths } from '@room/roomd/baseline'
 import { gitPathsBetween } from '@room/roomd/git'
@@ -117,7 +118,7 @@ describe('carry and discard safety', () => {
     expect(await workerChangedPaths(worker)).toEqual([])
     fs.unlinkSync(path.join(prepared.dir, 'lead.txt'))
     expect(await workerChangedPaths(worker)).toEqual(['lead.txt'])
-    expect(await workerGitFacts(root, worker)).toMatchObject({ clean: false, uncommitted: 1 })
+    expect(await workerRealState(root, worker, { git: true, leadName: worker.lead })).toMatchObject({ clean: false, uncommitted: 1 })
     fs.writeFileSync(path.join(prepared.dir, 'lead.txt'), 'worker edit\n')
     fs.writeFileSync(path.join(prepared.dir, 'own.txt'), 'own\n')
     expect(await workerChangedPaths(worker)).toEqual(['lead.txt', 'own.txt'])

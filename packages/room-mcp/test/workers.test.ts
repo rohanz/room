@@ -465,6 +465,22 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(existsSync(file(stopped.specs[0].env.PORT))).toBe(false)
   })
 
+  it('room_leave and shutdown stop only workers that are still running', async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'finished', task: 'x' })
+    await t.leadTools.call('room_spawn', { tag: 'busy', task: 'y' })
+    t.a.updateWorker('finished', { status: 'done', summary: 'done', finishedAt: Date.now() })
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.a.workers.get('finished')?.exitCode).toBe(0))
+    expect(await t.leadTools.call('room_leave', {})).toMatch(/^error: 1 worker\(s\) still running: busy\. /)
+    expect(t.killed).toEqual([])
+    await t.leadTools.shutdown()
+    expect(t.killed).toEqual([1])
+    expect(t.a.workers.get('busy')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
+    expect(t.a.workers.get('finished')).toMatchObject({ status: 'done' })
+    expect(t.a.workers.get('finished')?.stopReason).toBeUndefined()
+  })
+
   it('releases a reserved port when spawning fails', async () => {
     const { a } = pair()
     a.setMeta({ repo: 'x', branch: 'main', base })

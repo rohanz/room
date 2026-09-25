@@ -11,7 +11,8 @@ import { ConflictWatcher } from '../conflicts.js'
 import { branchOf, fetchPrs, isPrName, openPrs, postPrNote, prLeader, renderPrNote, syncPrs, type PrInfo } from '../prs.js'
 import { Rooms, type Attachment, type Role } from '../registry.js'
 import { authFor, closeRoom, DEFAULT_SERVER, joinSession, leaveSession, LOCAL, parseServer, resolveServer, type JoinOptions, type Session } from '../session.js'
-import { pidIsOurWorker, signalWorker, type ProcessInfo, type Spawner } from '../workers.js'
+import type { ProcessInfo, Spawner } from '../workers.js'
+import { decideShutdown, workerRealState } from '../worker-state.js'
 import type { ResolvedConfig } from '../config.js'
 import { hasCompany, type CompanyState } from '../company.js'
 
@@ -405,7 +406,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     async shutdown() {
       const s = ctx.getSession()
       if (!s) return
-      const stops = runtime.runningWorkers(s).map(async r => {
+      const running = (await Promise.all(runtime.runningWorkers(s).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
+      const stops = running.map(async r => {
         try { await runtime.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended') }
         catch { /* best effort */ }
       })

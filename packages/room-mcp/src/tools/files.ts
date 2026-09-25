@@ -11,6 +11,7 @@ import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, validRepoPath } from '@room/roomd'
 import { workerOwnedPaths } from '../workers.js'
+import { decidePreview, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -147,7 +148,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const { person, session } of participants) {
         const held = withheld(session, person)
         const ownLocalWorker = session.local && session.room.workerOf(person)
-        if (held && !(held.startsWith(`${person} shares intent only;`) && ownLocalWorker?.lead === caller.me.name && fs.existsSync(ownLocalWorker.dir))) return held
+        const preview = ownLocalWorker && decidePreview(await workerRealState(session.dir, ownLocalWorker), ownLocalWorker.lead === caller.me.name)
+        if (held && !(held.startsWith(`${person} shares intent only;`) && preview === 'disk')) return held
       }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
@@ -163,7 +165,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         else {
           const modeParticipants = (await Promise.all(participants.map(async ({ person, session }) => {
             const w = session.room.workerOf(person)
-            if (!w || !fs.existsSync(w.dir)) return undefined
+            if (!w || decidePreview(await workerRealState(session.dir, w), true) !== 'disk') return undefined
             const dir = result.roots.get(path.resolve(w.dir))
             if (!dir) throw new Error('uncaptured preview root: ' + w.dir)
             return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) }
