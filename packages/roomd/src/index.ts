@@ -7,6 +7,8 @@
 import { readRoomFile, roomFilePath } from './room-file.js'
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
 import fs from 'node:fs'
+import { commonGitDirFromDotGit } from './git-dirs.js'
+export { worktreeGitDirFromDotGit, worktreeGitDirSync, commonGitDirFromDotGit, gitCommonDir, realGitCommonDir, carryRecord, carryRecordSync } from './git-dirs.js'
 import path from 'node:path'
 import os from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
@@ -610,17 +612,7 @@ class Daemon implements Roomd {
 
   private excludeRoomFile(): void {
     // Worktrees have a .git file pointing at <common>/.git/worktrees/<name>; excludes live in the common dir.
-    let gitDir = path.join(this.dir, '.git')
-    try {
-      if (fs.statSync(gitDir).isFile()) {
-        const m = fs.readFileSync(gitDir, 'utf8').match(/gitdir:\s*(.+)/)
-        if (m) {
-          gitDir = path.resolve(this.dir, m[1].trim())
-          const common = path.join(gitDir, 'commondir')
-          if (fs.existsSync(common)) gitDir = path.resolve(gitDir, fs.readFileSync(common, 'utf8').trim())
-        }
-      }
-    } catch { /* fall through to the plain path */ }
+    const gitDir = commonGitDirFromDotGit(this.dir)
     const exclude = path.join(gitDir, 'info', 'exclude')
     try {
       fs.mkdirSync(path.dirname(exclude), { recursive: true })

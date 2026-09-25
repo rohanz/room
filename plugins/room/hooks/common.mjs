@@ -25,7 +25,7 @@ export function gitStatePath(root, name) {
     const st = fs.statSync(dotgit)
     if (st.isFile()) {
       const m = fs.readFileSync(dotgit, 'utf8').match(/gitdir:\s*(.+)/)
-      if (m) return path.join(path.resolve(root, m[1].trim()), name)
+      if (m?.[1].trim()) return path.join(path.resolve(root, m[1].trim()), name)
     }
   } catch { /* fall through */ }
   return path.join(dotgit, name)

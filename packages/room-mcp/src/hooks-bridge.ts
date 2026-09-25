@@ -15,20 +15,14 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { randomUUID } from 'node:crypto'
 import { BASE_CATCH_UP, displayName, formatMsg, formatPlans, shouldWakeOnMsg, type Msg, type Presence, isAgentic } from '@room/shared'
+import { worktreeGitDirFromDotGit } from '@room/roomd'
 import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
 import { claudeWakeUnavailable } from './prompt.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
 
 function gitStatePath(root: string, name: string): string {
-  const dotgit = path.join(root, '.git')
-  try {
-    if (fs.statSync(dotgit).isFile()) {
-      const m = fs.readFileSync(dotgit, 'utf8').match(/gitdir:\s*(.+)/)
-      if (m) return path.join(path.resolve(root, m[1].trim()), name)
-    }
-  } catch { /* fall through */ }
-  return path.join(dotgit, name)
+  return path.join(worktreeGitDirFromDotGit(root), name)
 }
 
 type PendingHookField = 'pendingDisclosure' | 'pendingNotice'

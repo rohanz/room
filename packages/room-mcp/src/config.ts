@@ -8,7 +8,7 @@ import os from 'node:os'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
-import { gitCommonDir } from '@room/roomd/local'
+import { gitCommonDir, worktreeGitDirFromDotGit } from '@room/roomd'
 import { parseShare, type ShareLevel } from '@room/roomd'
 import { newestModelInTranscriptTail } from '../../../plugins/room/hooks/common.mjs'
 
@@ -126,14 +126,7 @@ export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process
 
 /** Per-worktree hook file, also used when the session changes under a live MCP process. */
 export function sessionMetadataPath(dir: string): string {
-  let gitDir = path.join(dir, '.git')
-  try {
-    if (fs.statSync(gitDir).isFile()) {
-      const target = fs.readFileSync(gitDir, 'utf8').match(/gitdir:\s*(.+)/)?.[1].trim()
-      if (target) gitDir = path.resolve(dir, target)
-    }
-  } catch { /* the hook may not have run yet */ }
-  return path.join(gitDir, 'room-session.json')
+  return path.join(worktreeGitDirFromDotGit(dir), 'room-session.json')
 }
 
 type TranscriptFs = Pick<typeof fs, 'readFileSync' | 'writeFileSync' | 'statSync' | 'openSync' | 'readSync' | 'closeSync'>

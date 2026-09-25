@@ -5,7 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { readRelayInfo } from '@room/relay'
-import { ensureLocalRelay, gitCommonDir, localRoomName } from '../src/local.js'
+import { ensureLocalRelay, localRoomName } from '../src/local.js'
+import { gitCommonDir } from '../src/git-dirs.js'
 
 const sh = (dir: string, args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString().trim()
 

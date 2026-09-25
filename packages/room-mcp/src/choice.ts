@@ -9,7 +9,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { git } from '@room/roomd/git'
-import { gitCommonDir } from '@room/roomd/local'
+import { gitCommonDir } from '@room/roomd'
 import type { ShareLevel } from '@room/roomd'
 import { DEFAULT_SERVER, LOCAL, normaliseWhere } from './config.js'
 import { acquireOwnedFile } from './owned-file.js'

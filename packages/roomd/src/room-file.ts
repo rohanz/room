@@ -1,13 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { boundedGitSync } from './baseline.js'
+import { worktreeGitDirSync } from './git-dirs.js'
 
 export interface RoomFile { room?: string; name?: string; dir?: string }
 
 /** The current worktree's private metadata, never the shared Git directory. */
 export function roomFilePath(dir: string): string {
-  const gitDir = boundedGitSync(dir, ['rev-parse', '--absolute-git-dir']).toString().trim()
-  return path.join(gitDir, 'room.json')
+  return path.join(worktreeGitDirSync(dir), 'room.json')
 }
 
 export function readRoomFile(dir: string): RoomFile | undefined {

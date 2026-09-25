@@ -10,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import { isRegenerableBuildPath, type Worker, type RetiredWorker } from '@room/shared'
+import { carryRecord, carryRecordSync, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline, workerChangedPaths } from '@room/roomd/baseline'
 
@@ -99,7 +100,6 @@ export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<Worker, 'na
   }
   try {
     let parentDir = leadDir, parentName = leadName
-    const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
     for (const record of chain) {
       if (parentName && record.lead !== parentName) return false
       if (!fs.existsSync(record.dir)) return false
@@ -108,7 +108,7 @@ export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<Worker, 'na
       if (!roomWorkerPathMatchesBranch(parentDir, record.dir, record.branch)) return false
       const expected = path.join(parentRoot, '.room', 'workers', path.basename(record.dir))
       if (workerRoot !== fs.realpathSync(expected)) return false
-      if (await common(parentDir) !== await common(record.dir)) return false
+      if (await realGitCommonDir(parentDir) !== await realGitCommonDir(record.dir)) return false
       if ((await git(record.dir, ['branch', '--show-current'])).trim() !== record.branch) return false
       parentDir = record.dir
       parentName = record.name
@@ -425,57 +425,29 @@ function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sh
   } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
 }
 type CarryRecord = Pick<PreparedWorktree, 'base' | 'carriedBase' | 'carried' | 'carriedUntracked' | 'skippedCarry'> & { ownerId?: string }
-async function carryRecordFile(repoDir: string, tag: string): Promise<string> {
-  const common = (await git(repoDir, ['rev-parse', '--git-common-dir'])).trim()
-  return path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json')
-}
-async function readCarryRecord(repoDir: string, tag: string): Promise<CarryRecord | undefined> {
-  try { return JSON.parse(await fs.promises.readFile(await carryRecordFile(repoDir, tag), 'utf8')) as CarryRecord }
-  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
-}
-async function writeCarryRecord(repoDir: string, tag: string, record: CarryRecord): Promise<void> {
-  const file = await carryRecordFile(repoDir, tag)
-  await fs.promises.mkdir(path.dirname(file), { recursive: true })
-  const temp = file + '.' + process.pid + '.tmp'
-  try { await fs.promises.writeFile(temp, JSON.stringify(record), { mode: 0o600 }); await fs.promises.rename(temp, file) }
-  finally { await fs.promises.rm(temp, { force: true }) }
-}
 
 /** The relay can disappear with the lead; keep the intentional stop reason beside the carry record. */
 export function persistWorkerStopReason(repoDir: string, tag: string, reason: Worker['stopReason'], workerId?: string): void {
-  const common = boundedGitSync(repoDir, ['rev-parse', '--git-common-dir']).toString().trim()
-  const file = path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json')
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  let record: CarryRecord & { stopReason?: Worker['stopReason'] } = {}
-  try { record = JSON.parse(fs.readFileSync(file, 'utf8')) }
-  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
-  const tmp = file + '.' + process.pid + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify({ ...record, stopReason: reason, stopWorkerId: workerId }), { mode: 0o600 })
-  fs.renameSync(tmp, file)
+  const recordFile = carryRecordSync(repoDir, tag)
+  const record = recordFile.read<CarryRecord & { stopReason?: Worker['stopReason'] }>() ?? {}
+  recordFile.write({ ...record, stopReason: reason, stopWorkerId: workerId })
 }
 
 export function persistedWorkerStopReason(repoDir: string, tag: string, workerId?: string): Worker['stopReason'] | undefined {
-  const common = boundedGitSync(repoDir, ['rev-parse', '--git-common-dir']).toString().trim()
-  try {
-    const record = JSON.parse(fs.readFileSync(path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json'), 'utf8'))
-    if (workerId && record.stopWorkerId && record.stopWorkerId !== workerId) return undefined
-    return record.stopReason === 'lead-session-ended' ? record.stopReason : undefined
-  } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
+  const record = carryRecordSync(repoDir, tag).read<{ stopReason?: Worker['stopReason']; stopWorkerId?: string }>()
+  if (record === undefined || (workerId && record.stopWorkerId && record.stopWorkerId !== workerId)) return undefined
+  return record.stopReason === 'lead-session-ended' ? record.stopReason : undefined
 }
 
 /** Clear only the stop state for this process generation after resume has started successfully. */
 export function clearWorkerStopState(repoDir: string, tag: string, workerId?: string): void {
-  const common = boundedGitSync(repoDir, ['rev-parse', '--git-common-dir']).toString().trim()
-  const file = path.join(path.resolve(repoDir, common), 'room-carry', tag + '.json')
-  let record: CarryRecord & { stopReason?: Worker['stopReason']; stopWorkerId?: string }
-  try { record = JSON.parse(fs.readFileSync(file, 'utf8')) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+  const recordFile = carryRecordSync(repoDir, tag)
+  const record = recordFile.read<CarryRecord & { stopReason?: Worker['stopReason']; stopWorkerId?: string }>()
+  if (record === undefined) return
   if (workerId && record.stopWorkerId && record.stopWorkerId !== workerId) return
   delete record.stopReason
   delete record.stopWorkerId
-  const tmp = file + '.' + process.pid + '.tmp'
-  try { fs.writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 }); fs.renameSync(tmp, file) }
-  finally { try { fs.rmSync(tmp, { force: true }) } catch { /* rename already succeeded */ } }
+  recordFile.write(record)
 }
 
 
@@ -486,7 +458,7 @@ export async function cleanupPreparedWorktree(repoDir: string, prepared: Prepare
   await internalGit(repoDir, ['branch', '-D', prepared.branch])
   try { await internalGit(repoDir, ['update-ref', '-d', carryRef(prepared.branch.slice(5))]) } catch { /* no carry ref */ }
   try { await internalGit(repoDir, ['update-ref', '-d', carriedUntrackedRef(prepared.branch.slice(5))]) } catch { /* no untracked ref */ }
-  await fs.promises.rm(await carryRecordFile(repoDir, prepared.branch.slice(5)), { force: true })
+  await fs.promises.rm((await carryRecord(repoDir, prepared.branch.slice(5))).file, { force: true })
 }
 
 /** A worktree for the worker, with tracked WIP in its base and untracked bytes outside Git. */
@@ -495,15 +467,14 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   const branch = `room/${tag}`
   const gitDir = (await git(repoDir, ['rev-parse', '--absolute-git-dir'])).trim()
   if (['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply'].some(p => fs.existsSync(path.join(gitDir, p)))) throw new Error('finish the merge or rebase before spawning workers')
-  const record = await readCarryRecord(repoDir, tag)
+  const record = await (await carryRecord(repoDir, tag)).read<CarryRecord>()
   if (record?.ownerId && ownerId && record.ownerId !== ownerId) throw new Error(`worktree ${tag} is owned by another room or worker`)
   if (fs.existsSync(path.join(dir, '.git'))) {
     if (!carry) throw new Error(`worktree ${tag} already exists; choose a new tag for carry=false`)
     if (ownerId && !record?.ownerId) throw new Error(`worktree ${tag} has unknown ownership; choose another tag`)
     const actualBranch = (await git(dir, ['branch', '--show-current'])).trim()
     if (actualBranch !== branch) throw new Error(`worktree ${tag} is on branch ${actualBranch || '(detached)'}, expected ${branch}; choose another tag`)
-    const common = async (root: string) => fs.realpathSync(path.resolve(root, (await git(root, ['rev-parse', '--git-common-dir'])).trim()))
-    if (await common(repoDir) !== await common(dir)) throw new Error(`worktree ${tag} is not a worktree of this repository; choose another tag`)
+    if (await realGitCommonDir(repoDir) !== await realGitCommonDir(dir)) throw new Error(`worktree ${tag} is not a worktree of this repository; choose another tag`)
     return { dir, branch, created: false, ...record }
   }
   fs.mkdirSync(path.dirname(dir), { recursive: true })
@@ -523,7 +494,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   if (!base) return { dir, branch, created: true, ...record }
   if (!carry) {
     const result: PreparedWorktree = { dir, branch, created: true, base }
-    await writeCarryRecord(repoDir, tag, { base, ownerId })
+    await (await carryRecord(repoDir, tag)).write({ base, ownerId })
     return result
   }
   try {
@@ -590,7 +561,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     retainUntrackedTree(repoDir, tag, carriedUntracked)
     if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
     const result: PreparedWorktree = { dir, branch, created: true, base: commit, carriedBase: staged.length ? commit : undefined, carried: paths.length ? { count: paths.length, commit, paths } : undefined, carriedUntracked, skippedCarry }
-    await writeCarryRecord(repoDir, tag, { base: result.base, carriedBase: result.carriedBase, carried: result.carried, carriedUntracked, skippedCarry, ownerId })
+    await (await carryRecord(repoDir, tag)).write({ base: result.base, carriedBase: result.carriedBase, carried: result.carried, carriedUntracked, skippedCarry, ownerId })
     return result
   } catch (e) {
     if ((e as Error).message === 'lead changed during carry; retrying snapshot') {
@@ -781,7 +752,7 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
     .filter(dir => dir !== w.dir && inside(fs.realpathSync(w.dir), dir))
   if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(', ')}`)
   const head = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
-  const recordFile = await carryRecordFile(leadDir, w.tag)
+  const recordFile = (await carryRecord(leadDir, w.tag)).file
   const record = await fs.promises.readFile(recordFile).catch(e => { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e })
   const refs = new Map<string, string>()
   for (const ref of [carryRef(w.tag), carriedUntrackedRef(w.tag)]) {

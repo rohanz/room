@@ -6,14 +6,9 @@
 import path from 'node:path'
 import { ensureLocalRelay as relayEnsure, type LocalRelay } from '@room/relay'
 import { git } from './git.js'
+import { gitCommonDir } from './git-dirs.js'
 
 export type { LocalRelay, LocalRelayInfo } from '@room/relay'
-
-/** The git dir shared by every worktree of a clone; the relay file lives there. */
-export async function gitCommonDir(dir: string): Promise<string> {
-  const out = (await git(dir, ['rev-parse', '--git-common-dir'])).trim()
-  return path.resolve(dir, out)
-}
 
 /** The main worktree's checkout (the directory holding the common .git). */
 export async function mainWorktree(dir: string): Promise<string> {

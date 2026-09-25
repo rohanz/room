@@ -513,6 +513,19 @@ describe('roomd v2 push-only overlays', () => {
     expect(read(dir, '.git/info/exclude').split('\n').filter(line => line === '.room.json')).toHaveLength(1)
   })
 
+  it('writes linked-worktree room metadata privately but excludes Room files in the common gitdir', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' })
+    const worker = path.join(dir, '.room', 'workers', 'one')
+    fs.mkdirSync(path.dirname(worker), { recursive: true })
+    sh(dir, ['worktree', 'add', '-qb', 'room/one', worker])
+    const daemon = await start({ room: room(), dir: worker, name: 'Worker' })
+    const privateDir = sh(worker, ['rev-parse', '--absolute-git-dir'])
+    expect(JSON.parse(fs.readFileSync(path.join(privateDir, 'room.json'), 'utf8'))).toMatchObject({ name: 'Worker', dir: worker })
+    expect(fs.readFileSync(path.join(dir, '.git', 'info', 'exclude'), 'utf8')).toContain('.room.json\n')
+    expect(fs.existsSync(path.join(privateDir, 'info', 'exclude'))).toBe(false)
+    await daemon.stop()
+  })
+
   it('logs an unpushed HEAD/base pair once across repeated polls, and logs new pairs', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n' }) // deliberately no remote
     const logs: string[] = []
