@@ -1,6 +1,6 @@
 import type { Session } from './session.js'
 
-export const OFFLINE_GRACE_MS = 2000
+const OFFLINE_GRACE_MS = 2000
 interface Connection { connectedOnce: boolean; disconnectedAt?: number; update: () => void }
 const connections = new WeakMap<Session, Connection>()
 

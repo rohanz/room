@@ -37,6 +37,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Check repository hygiene
+        run: npx knip
+
       - name: Run tests
         run: env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test
 

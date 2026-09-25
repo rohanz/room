@@ -16,7 +16,7 @@ import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
 import { baselineText, readBaseline, carriedPaths, carriesWork, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
 
-export const ROOM: Identity = { name: 'room', kind: 'agent' }
+const ROOM: Identity = { name: 'room', kind: 'agent' }
 
 export interface ConflictDeps {
   room: RoomDoc

@@ -1,0 +1,86 @@
+{
+  "$schema": "./node_modules/knip/schema.json",
+  "ignoreBinaries": [
+    "codex"
+  ],
+  "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/*.{mjs,mts}",
+        "plugins/room/hooks/*.{mjs,mts}",
+        "plugins/room/bin/*"
+      ],
+      "project": [
+        "scripts/*.{mjs,mts}",
+        "plugins/room/hooks/*.{mjs,mts}",
+        "vitest*.ts"
+      ]
+    },
+    "packages/agent": {
+      "entry": [
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ]
+    },
+    "packages/relay": {
+      "entry": [
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ]
+    },
+    "packages/room-mcp": {
+      "entry": [
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ]
+    },
+    "packages/roomd": {
+      "entry": [
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ]
+    },
+    "packages/server": {
+      "entry": [
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ]
+    },
+    "packages/shared": {
+      "entry": [
+        "src/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts"
+      ]
+    },
+    "packages/web": {
+      "entry": [
+        "src/**/*.test.ts",
+        "scripts/*.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "scripts/*.ts"
+      ]
+    }
+  },
+  "ignoreDependencies": [
+    "tree-sitter-wasms"
+  ]
+}

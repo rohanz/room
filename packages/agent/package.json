@@ -16,9 +16,9 @@
   "dependencies": {
     "@openai/codex-sdk": "^0.153.0",
     "@room/room-mcp": "*",
+    "@room/roomd": "*",
     "@room/shared": "*",
     "ws": "^8.21.0",
-    "y-protocols": "^1.0.6",
     "y-websocket": "^3.0.0",
     "yjs": "^13.6.32"
   },

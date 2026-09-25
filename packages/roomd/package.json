@@ -20,7 +20,6 @@
     "@room/relay": "*",
     "@room/shared": "*",
     "chokidar": "^4.0.3",
-    "lib0": "^0.2.117",
     "ws": "^8.21.0",
     "y-protocols": "^1.0.6",
     "y-websocket": "^3.0.0",

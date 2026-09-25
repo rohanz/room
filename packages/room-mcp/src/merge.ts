@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { diff3Merge } from 'node-diff3'
 
-export interface MergeConflict {
+interface MergeConflict {
   /** One-based range occupied by the conflicting source region in the merged text. */
   from: number
   to: number
@@ -13,7 +13,7 @@ export interface MergeConflict {
   b: string[]
 }
 
-export type MergeChunk = { ok: string[]; conflict?: never } | { ok?: never; conflict: MergeConflict }
+type MergeChunk = { ok: string[]; conflict?: never } | { ok?: never; conflict: MergeConflict }
 
 export interface GitMergeResult {
   status: 'clean' | 'conflict'

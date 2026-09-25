@@ -22,7 +22,7 @@ import { FileStore, type Store, type StoredSession } from './store.js'
 export type { StoredSession } from './store.js'
 export type Provider = 'github' | 'oidc'
 
-export interface OidcOptions {
+interface OidcOptions {
   /** Issuer URL, e.g. https://accounts.google.com or https://acme.okta.com. Discovery is read from <issuer>/.well-known/openid-configuration. */
   issuer: string
   clientId: string

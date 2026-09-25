@@ -15,8 +15,8 @@ import { newestModelInTranscriptTail } from '../../../plugins/room/hooks/common.
 export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
 export const LOCAL = 'local'
 export const DEFAULT_CLAUDE_CHANNEL = 'plugin:room@room'
-export const DEFAULT_MAX_WORKERS = 8
-export const DEFAULT_STALE_DAYS = 7
+const DEFAULT_MAX_WORKERS = 8
+const DEFAULT_STALE_DAYS = 7
 
 export type ConfigRule = 'argument' | 'env' | 'remembered' | 'default'
 export interface ConfigArgs {

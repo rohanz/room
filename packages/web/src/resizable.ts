@@ -1,5 +1,5 @@
 /** Widths are applied synchronously while the grids are still detached, before first paint. */
-export const layoutDefaults = { people: 224, files: 200, timeline: 304 } as const
+const layoutDefaults = { people: 224, files: 200, timeline: 304 } as const
 export type LayoutKey = keyof typeof layoutDefaults
 const storageKey = 'room.layout'
 

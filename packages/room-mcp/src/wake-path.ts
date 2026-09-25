@@ -9,11 +9,11 @@ type WakeEnv = NodeJS.ProcessEnv
 type Mode = 'auto' | 'socket' | 'channels' | 'off'
 
 /** Wake immediately, then gather events during this window into one follow-up. */
-export const SOCKET_WAKE_WINDOW_MS = 5_000
+const SOCKET_WAKE_WINDOW_MS = 5_000
 const SOCKET_POST_TIMEOUT_MS = 1_500
 
 let parentArgsCache: string | undefined
-export function claudeParentArgs(): string {
+function claudeParentArgs(): string {
   if (parentArgsCache !== undefined) return parentArgsCache
   try { parentArgsCache = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() }
   catch { parentArgsCache = '' }
@@ -53,7 +53,7 @@ export function claudeWakeAvailable(o: WakeAvailability): boolean {
 }
 
 /** The inbox protocol is newline-delimited JSON. No acknowledgement exists, so a clean close means only that bytes were handed to the socket. */
-export function postSocketWake(socketPath: string, token: string | undefined, content: string, timeoutMs = SOCKET_POST_TIMEOUT_MS): Promise<void> {
+function postSocketWake(socketPath: string, token: string | undefined, content: string, timeoutMs = SOCKET_POST_TIMEOUT_MS): Promise<void> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath)
     let settled = false

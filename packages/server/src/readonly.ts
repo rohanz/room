@@ -142,8 +142,8 @@ const PARTICIPANT_MAPS = ['overlays', 'deleted', 'overlayAt', 'scopes', 'graphs'
  * `pr#<n>` scope/metadata records. They are client-authored and are not authorship proof: any
  * authenticated member can forge them, so ordinary participant speech never belongs here.
  */
-export const TRUSTED_ROOM_MESSAGE_TYPES = new Set(['conflict', 'merge-conflict', 'contract', 'note'])
-export const TRUSTED_PR_NAME = /^pr#[1-9]\d*$/
+const TRUSTED_ROOM_MESSAGE_TYPES = new Set(['conflict', 'merge-conflict', 'contract', 'note'])
+const TRUSTED_PR_NAME = /^pr#[1-9]\d*$/
 
 function syncUpdate(buf: Uint8Array): Uint8Array | undefined {
   try {

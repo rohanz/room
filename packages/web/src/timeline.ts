@@ -36,7 +36,7 @@ function comparableBody(message: Msg): string {
 }
 
 /** Hides addressed upgrade copies and annotates their broadcast original. */
-export function foldUpgradeCopies(messages: readonly Msg[]): Folded[] {
+function foldUpgradeCopies(messages: readonly Msg[]): Folded[] {
   const eligible = new Set<Msg['type']>(['claim', 'changed', 'scope'])
   const folded = messages.map(message => ({ message, alsoSentTo: [] as string[] }))
   const hidden = new Set<string>()

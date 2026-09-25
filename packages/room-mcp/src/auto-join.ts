@@ -32,25 +32,25 @@ export interface AutoJoinOptions {
   now?: () => number
 }
 
-export const JOIN_DELAYS_MS = [1000, 2000, 5000, 10_000, 20_000]
-export const JOIN_DEADLINE_MS = 120_000
-export const JOIN_RETRY_AFTER_MS = 30_000
+const JOIN_DELAYS_MS = [1000, 2000, 5000, 10_000, 20_000]
+const JOIN_DEADLINE_MS = 120_000
+const JOIN_RETRY_AFTER_MS = 30_000
 
 /** Where a join failed: set by the step that threw (relay, sync, git, seed, watch). */
-export function phaseOf(e: unknown): string | undefined {
+function phaseOf(e: unknown): string | undefined {
   const p = (e as { phase?: unknown } | null)?.phase
   return typeof p === 'string' ? p : undefined
 }
 const causeOf = (e: unknown) => `${phaseOf(e) ? `(${phaseOf(e)}): ` : ''}${e instanceof Error ? e.message : String(e)}`
 
 /** Failures a human must act on (open the repo, log in, fix the clone) are not retried. */
-export function retryable(e: unknown): boolean {
+function retryable(e: unknown): boolean {
   if (e instanceof NoRoom || e instanceof NotLoggedIn) return false
   return !(e instanceof RoomdError) || e.code === 1
 }
 
 /** The one line the agent sees when the automatic join gave up. */
-export function joinFailureLine(e: unknown, local: boolean, attempts: number): string {
+function joinFailureLine(e: unknown, local: boolean, attempts: number): string {
   if (e instanceof NotLoggedIn) return 'Room is not connected: not logged in; use room_login.'
   const phase = phaseOf(e)
   const head = `Room could not join${local ? ' the local room' : ''}${attempts > 1 ? ` after ${attempts} attempts` : ''}${phase ? ` (${phase})` : ''}: ${e instanceof Error ? e.message : String(e)}`

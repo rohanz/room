@@ -23,14 +23,12 @@ import {
   type Claim,
   type Msg,
   type Participant,
-  type ParticipantClaim,
   type ParticipantInput,
   type Scope,
 } from '@room/shared'
-export { deriveParticipants, type Participant, type ParticipantClaim, type ParticipantInput } from '@room/shared'
+export { deriveParticipants, type Participant, type ParticipantInput } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
 import { Editor } from './editor.ts'
-import { buildActivityGraph, type OverlayVersion } from './activity-graph.ts'
 import { classifyNWay, unifiedDiffLines, type MergedLine } from './merged.ts'
 import { collapseConflictTimeline, groupEpisodes, type Episode, type TimelineItem } from './timeline.ts'
 
@@ -120,9 +118,9 @@ export function deriveStatePill(person: Pick<Participant, 'online' | 'behindBase
   return activityLabel(person.latestActive)
 }
 
-export interface FileRow { path: string; people: string[]; area: string; claimCount: number }
+interface FileRow { path: string; people: string[]; area: string; claimCount: number }
 
-export function deriveFileRows(
+function deriveFileRows(
   changesByPerson: ReadonlyMap<string, readonly string[]>,
   scopes: readonly Scope[] = [],
   claims: readonly Claim[] = [],
@@ -268,7 +266,7 @@ export function clipTimelineEpisodes(episodes: readonly Episode[], ids: Readonly
   })
 }
 
-export function toggleTimelinePriority(selected: ReadonlySet<TimelinePriority>, priority: TimelinePriority): Set<TimelinePriority> {
+function toggleTimelinePriority(selected: ReadonlySet<TimelinePriority>, priority: TimelinePriority): Set<TimelinePriority> {
   const next = new Set(selected)
   if (next.has(priority)) next.delete(priority); else next.add(priority)
   return next.size ? next : new Set(TIMELINE_PRIORITIES)
@@ -446,7 +444,7 @@ function lineElement(line: MergedLine, names: readonly string[], prefix = '', cl
   return row
 }
 
-export function resolutionLabel(span: ConflictSpan): string {
+function resolutionLabel(span: ConflictSpan): string {
   const r = span.resolvedBy
   return r ? `resolved · ${r.who ? `${r.who} ` : ''}${r.how} · ${clockTime(r.at)}` : `conflict · ${span.people.join(' ↔ ')}`
 }
@@ -976,73 +974,6 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
     if (shouldFollow) requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight })
   }
   subscribeRender(conn, render)
-  focus.subscribe(render)
-  render()
-  return element
-}
-
-function overlays(room: RoomDoc): OverlayVersion[] {
-  const result: OverlayVersion[] = []
-  for (const [person, files] of room.overlays) for (const [path, text] of files) result.push({ person, path, text: text.toString() })
-  return result
-}
-
-export function activityGraphPanel(conn: Conn, focus: FocusState): HTMLElement {
-  const content = h('div', { class: 'graph-content' })
-  const toggle = h('button', { class: 'graph-toggle', ariaLabel: 'Collapse activity graph' }, 'Activity graph', h('span', { class: 'chevron' }, '⌄'))
-  const element = h('section', { class: 'activity-graph' }, toggle, content)
-  let collapsed = false
-  toggle.onclick = () => {
-    collapsed = !collapsed
-    element.classList.toggle('collapsed', collapsed)
-    toggle.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} activity graph`)
-    toggle.title = `${collapsed ? 'Expand' : 'Collapse'} activity graph`
-    toggle.querySelector('.chevron')!.textContent = collapsed ? '⌃' : '⌄'
-  }
-  const render = () => {
-    const model = buildActivityGraph({
-      overlays: overlays(conn.room),
-      claims: conn.room.openClaims(),
-      scopes: conn.room.allScopes(),
-      changesByPerson: changesByPerson(conn.room),
-      focusPerson: focus.person,
-    })
-    const plans = model.nodes.filter(node => node.kind === 'plan')
-    const files = model.nodes.filter(node => node.kind === 'file')
-    if (!plans.length) {
-      content.replaceChildren(h('div', { class: 'graph-empty muted' }, 'no planned changes'))
-      return
-    }
-    const rowHeight = 28
-    const height = Math.max(48, Math.max(plans.length, files.length) * rowHeight + 12)
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-    svg.setAttribute('viewBox', `0 0 1000 ${height}`)
-    svg.setAttribute('role', 'img')
-    svg.setAttribute('aria-label', 'Open plans and files that use their symbols')
-    const positions = new Map<string, { x: number; y: number }>()
-    plans.forEach((node, index) => positions.set(node.id, { x: 22, y: 20 + index * rowHeight }))
-    files.forEach((node, index) => positions.set(node.id, { x: 700, y: 20 + index * rowHeight }))
-    for (const edge of model.edges) {
-      const from = positions.get(edge.from); const to = positions.get(edge.to)
-      if (!from || !to) continue
-      const path = document.createElementNS(svg.namespaceURI, 'path')
-      path.setAttribute('d', `M ${from.x + 250} ${from.y} C 470 ${from.y}, 530 ${to.y}, ${to.x - 10} ${to.y}`)
-      path.setAttribute('class', 'graph-edge')
-      svg.append(path)
-    }
-    for (const node of model.nodes) {
-      const position = positions.get(node.id)!
-      const group = document.createElementNS(svg.namespaceURI, 'g')
-      const circle = document.createElementNS(svg.namespaceURI, 'circle')
-      circle.setAttribute('cx', String(position.x)); circle.setAttribute('cy', String(position.y)); circle.setAttribute('r', '5')
-      circle.setAttribute('fill', node.owner ? colorFor(node.owner, conn.room) : '#98a0ad')
-      const text = document.createElementNS(svg.namespaceURI, 'text')
-      text.setAttribute('x', String(position.x + 12)); text.setAttribute('y', String(position.y + 4)); text.textContent = node.label
-      group.append(circle, text); svg.append(group)
-    }
-    content.replaceChildren(svg)
-  }
-  subscribeRender(conn, render, false)
   focus.subscribe(render)
   render()
   return element

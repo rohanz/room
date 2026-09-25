@@ -31,7 +31,8 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.0"
+    "@types/ws": "^8.5.0",
+    "esbuild": "0.28.2"
   },
   "license": "PolyForm-Noncommercial-1.0.0"
 }

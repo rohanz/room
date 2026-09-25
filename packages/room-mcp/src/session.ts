@@ -25,7 +25,7 @@ import { acquireOwnedFile } from './owned-file.js'
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
-export const DEFAULT_WEB = 'http://localhost:5173'
+const DEFAULT_WEB = 'http://localhost:5173'
 
 export interface Session {
   room: RoomDoc
@@ -191,7 +191,7 @@ export async function deriveRoomName(dir: string): Promise<{ roomName?: string; 
   return { repo, branch, roomName: repo ? `${repo}/${branch}` : undefined }
 }
 
-export async function defaultName(dir: string): Promise<string | undefined> {
+async function defaultName(dir: string): Promise<string | undefined> {
   try { const n = (await git(dir, ['config', 'user.name'])).trim(); if (n) return n } catch { /* fall through */ }
   return process.env.USER || process.env.USERNAME || undefined
 }
@@ -228,7 +228,7 @@ export function requestedShare(explicit?: string): ShareLevel {
 }
 
 /** The server also serves the browser view: ws(s)://host -> http(s)://host. Local dev keeps the Vite port. */
-export function defaultWeb(server: string): string {
+function defaultWeb(server: string): string {
   try {
     const u = new URL(server)
     if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return DEFAULT_WEB
@@ -244,9 +244,9 @@ export function defaultWeb(server: string): string {
  */
 /** Progress lines for server waits; joinSession sets it from its `log` so every call site reports cold starts. */
 let serverLog: ((line: string) => void) | undefined
-export function setServerLog(log?: (line: string) => void): void { serverLog = log }
+function setServerLog(log?: (line: string) => void): void { serverLog = log }
 /** Total time a tool call may spend waiting for a cold server before giving up. */
-export const SERVER_RETRY_MS = 45_000
+const SERVER_RETRY_MS = 45_000
 
 export async function serverFetch(url: string, init: RequestInit & { timeoutMs?: number; retry?: boolean } = {}, log: ((line: string) => void) | undefined = serverLog): Promise<Response> {
   const { timeoutMs = 25_000, retry = true, ...rest } = init
@@ -506,8 +506,8 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
 }
 
 /** Server close code when a repo is closed (DELETE /rooms): stop reconnecting and remember why. */
-export const ROOM_CLOSED_CODE = 4001
-export function watchClosed(s: Session, log?: (line: string) => void): void {
+const ROOM_CLOSED_CODE = 4001
+function watchClosed(s: Session, log?: (line: string) => void): void {
   const p = s.provider as unknown as { on?: (ev: string, fn: (e: { code?: number; reason?: string } | null) => void) => void; disconnect?: () => void }
   p.on?.('connection-close', e => {
     if (e?.code !== ROOM_CLOSED_CODE) return
@@ -523,7 +523,7 @@ function removeStaleCredential(server: string, reason: string): void { if (/expi
 
 /** Why the server would refuse us, or undefined when access is fine (or the server cannot be asked).
  *  `missing`: access is fine but nobody has opened this repo yet. */
-export async function preflight(server: string, roomName: string, auth: Creds): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean } | undefined> {
+async function preflight(server: string, roomName: string, auth: Creds): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean } | undefined> {
   try {
     const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 20000 })
     if (res.ok) return undefined
@@ -570,7 +570,7 @@ export async function authFor(s: Session): Promise<Creds & { server: string }> {
 }
 
 /** Ask the server for a room-scoped token (7 days) the browser can use (never the GitHub token itself). */
-export async function viewToken(server: string, roomName: string, auth: Creds): Promise<string | undefined> {
+async function viewToken(server: string, roomName: string, auth: Creds): Promise<string | undefined> {
   if (!auth.token && !auth.session) return undefined
   try {
     const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...auth }), timeoutMs: 20000 })

@@ -14,7 +14,7 @@ export interface Creds { gh?: string; token?: string; session?: string }
 /** `login` is the display name; `id` the namespaced identity (`oidc:<issuer-host>:<sub>`) when the provider has one. */
 export type Verdict = { ok: true; login?: string; id?: string; provider?: Provider } | { ok: false; status: 401 | 403; why: string }
 
-export const GH_REFUSED = 'forwarded GitHub tokens are not accepted: run room_login (GitHub device login)'
+const GH_REFUSED = 'forwarded GitHub tokens are not accepted: run room_login (GitHub device login)'
 
 export interface AdmitOptions {
   auth: Pick<Auth, 'providers' | 'resolve' | 'fake'>

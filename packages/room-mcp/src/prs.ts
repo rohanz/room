@@ -22,9 +22,9 @@ export interface PrInfo {
   url: string
 }
 
-export const PR_PREFIX = 'pr#'
+const PR_PREFIX = 'pr#'
 export const isPrName = (name: string): boolean => name.startsWith(PR_PREFIX)
-export const prName = (number: number): string => `${PR_PREFIX}${number}`
+const prName = (number: number): string => `${PR_PREFIX}${number}`
 export function prIdentity(pr: PrInfo): Identity {
   return { name: prName(pr.number), kind: 'bot', owner: pr.author, label: `PR #${pr.number}` }
 }
@@ -47,7 +47,6 @@ const prMap = (room: RoomDoc) => room.doc.getMap<PrInfo>('prs')
 export function openPrs(room: RoomDoc): PrInfo[] {
   return Array.from(prMap(room).values()).sort((a, b) => a.number - b.number)
 }
-export function prInfo(room: RoomDoc, name: string): PrInfo | undefined { return prMap(room).get(name) }
 
 /** Mirror `prs` into the doc: one scope + one metadata entry per PR; entries for closed PRs go. */
 export function syncPrs(room: RoomDoc, prs: PrInfo[], origin?: unknown): { added: number[]; updated: number[]; removed: number[] } {

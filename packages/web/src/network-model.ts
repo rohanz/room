@@ -1,9 +1,9 @@
 import { bareSymbol, type Claim, type GraphSnapshot, type Plan } from '@room/shared'
 
-export type NetworkRole = 'changed' | 'upstream' | 'downstream' | 'context'
+type NetworkRole = 'changed' | 'upstream' | 'downstream' | 'context'
 export interface NetworkNode { path: string; role: NetworkRole; deleted: boolean }
 export type ContractSource = 'declared' | 'observed'
-export type ImpactPlan = Plan & { source: ContractSource }
+type ImpactPlan = Plan & { source: ContractSource }
 export type ImpactClaim = Omit<Claim, 'plans'> & { plans?: ImpactPlan[]; released?: boolean }
 type ImpactClaimInput = Claim | ImpactClaim
 

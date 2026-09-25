@@ -31,7 +31,7 @@ export function parseRoomUrl(raw: string): RoomLocation {
   }
 }
 
-export function roomLocationFromQuery(search = location.search): RoomLocation {
+function roomLocationFromQuery(search = location.search): RoomLocation {
   const raw = new URLSearchParams(search).get('room') ?? 'ws://localhost:1234/demo'
   return parseRoomUrl(raw)
 }

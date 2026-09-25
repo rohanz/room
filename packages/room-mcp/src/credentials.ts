@@ -30,11 +30,11 @@ export function credentialsPath(): string {
 }
 
 /** Servers are keyed by origin: "wss://host" (no path, no trailing slash). */
-export function serverKey(server: string): string {
+function serverKey(server: string): string {
   try { const u = new URL(server); return `${u.protocol}//${u.host}` } catch { return server.replace(/\/+$/, '') }
 }
 
-export function loadCredentials(): Record<string, Credential> {
+function loadCredentials(): Record<string, Credential> {
   try { return JSON.parse(fs.readFileSync(credentialsPath(), 'utf8')) as Record<string, Credential> } catch { return {} }
 }
 

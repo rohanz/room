@@ -14,7 +14,7 @@ import type { ShareLevel } from '@room/roomd'
 import { DEFAULT_SERVER, LOCAL, normaliseWhere } from './config.js'
 import { acquireOwnedFile } from './owned-file.js'
 
-export const CHOICE_FILE = 'room-choice.json'
+const CHOICE_FILE = 'room-choice.json'
 
 export interface RoomChoice { where: string; at: number; by?: string; share?: ShareLevel; /** Explicit local room selected by room_join; absent in older choices. */ room?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree/destination keys already told what they share */ warned?: string[]; /** most recently disclosed level for each warning key */ warnedLevels?: Record<string, ShareLevel> }
 

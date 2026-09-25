@@ -125,7 +125,7 @@ export class GitHubProxy {
   }
 }
 
-export class GitHubError extends Error {
+class GitHubError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 

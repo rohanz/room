@@ -146,8 +146,7 @@ export interface SpawnedProcess {
 /** Injectable for tests: how a worker process is started. */
 export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 
-export const WORKERS_DIR = path.join('.room', 'workers')
-export const DEFAULT_MAX_WORKERS = 8
+const WORKERS_DIR = path.join('.room', 'workers')
 
 export const WORKER_PORT_START = 4400
 export const WORKER_PORT_END = 4499
@@ -370,7 +369,7 @@ export interface PreparedWorktree {
 }
 
 /** Subject of the commit that carries a lead's uncommitted work into a new worker's worktree. */
-export const carriedSubject = (leadName: string) => `room: carried-in uncommitted work from ${leadName}`
+const carriedSubject = (leadName: string) => `room: carried-in uncommitted work from ${leadName}`
 
 /** A worktree for the worker, created from the lead's HEAD on branch room/<tag>; reused if it already exists. */
 const internalGit = (dir: string, args: string[]) => git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', ...args])
@@ -592,7 +591,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
  * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG, ROOM_LEAD,
  * ROOM_OWNER, ROOM_SHARE, ROOM_GEN, ROOM_LOG_FILE and, when the lead joined with one, ROOM_TOKEN).
  */
-export const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
+const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
 /** The environment a worker process starts with: the lead's, minus LEAD_ONLY_ENV, plus the spec's variables. */
 export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
@@ -644,7 +643,7 @@ export function pidAlive(pid: number): boolean {
 
 export interface ProcessInfo { start?: number; command?: string }
 /** What `ps` knows about a pid: start time (ms since epoch) and command line; undefined when unknown. */
-export function probeProcess(pid: number): ProcessInfo | undefined {
+function probeProcess(pid: number): ProcessInfo | undefined {
   if (!pid || pid <= 0) return undefined
   try {
     const start = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim()
@@ -672,7 +671,7 @@ export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string;
 
 export interface CwdProcess { pid: number; cwd: string; command: string }
 
-export function pidHasWorkerCwd(pid: number, dir: string, list: () => CwdProcess[] = listCwdProcesses): boolean {
+function pidHasWorkerCwd(pid: number, dir: string, list: () => CwdProcess[] = listCwdProcesses): boolean {
   const resolved = (p: string) => { try { return fs.realpathSync(p) } catch { return path.resolve(p) } }
   const root = resolved(dir)
   return list().some(p => p.pid === pid && (resolved(p.cwd) === root || resolved(p.cwd).startsWith(root + path.sep)))
@@ -684,7 +683,7 @@ function processName(pid: number): string {
 }
 
 /** List processes by cwd. No process group is inferred: a dev server may have reparented itself. */
-export function listCwdProcesses(platform: NodeJS.Platform = process.platform): CwdProcess[] {
+function listCwdProcesses(platform: NodeJS.Platform = process.platform): CwdProcess[] {
   const result: CwdProcess[] = []
   if (platform === 'linux') {
     for (const entry of fs.readdirSync('/proc')) {

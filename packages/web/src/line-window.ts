@@ -1,7 +1,7 @@
 import type { MergedLine } from './merged.ts'
 
 export const LARGE_LINES = 1500
-export const CONTEXT = 3
+const CONTEXT = 3
 export const PAGE = 500
 export type Segment = { kind: 'lines'; from: number; to: number } | { kind: 'gap'; from: number; to: number; reason: 'unchanged' | 'more' }
 export interface WindowOptions { expanded?: ReadonlySet<string>; all?: boolean }
