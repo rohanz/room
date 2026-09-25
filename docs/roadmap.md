@@ -17,6 +17,11 @@ use broke and proposes the order of work.
 - **Worker wording and bookkeeping (0.16.x check):** Discarding a worker launched in an existing directory reports the stop and retained directory without an error. Its own model is shown, and the lead's edits are not counted as worker files. Worker counts match displayed rows, preview names use full room names, and a finished worker's resume reply says it was restarted.
 - **Leave, preview, and branch switch (0.16.x check):** Plain `room_leave` refuses while workers run; `force=true` dismisses them. Preview lists accept the lead's name alongside others, and a branch switch delivers one reply after joining the new room while marking the old room warning seen.
 
+## Fixed in 0.16.6
+
+- **Path safety (2026-09-24 cleanliness audit finding 14):** one repo-relative validator and one containment helper with explicit leaf policies for every read, write, carry, recovery and baseline path.
+- **Git-private state paths (2026-09-24 cleanliness audit finding 17):** one worktree-private and one common Git-directory resolver plus one carry-record accessor, parity-tested against the hook copy.
+
 ## The design the gaps point at: cost scales with overlap
 
 The gap list below says what breaks. This is the one idea that fixes most of it. Multiplayer
@@ -145,9 +150,7 @@ context), Warp (already runs Claude Code, Codex and OpenCode), Zed's own agent (
 
 ### Deferred from the 2026-09-24 cleanliness audit, after the trial
 
-- **14:** Unify repo-relative path validation and containment policies across read, carry, recovery and write paths.
 - **16:** Build proximity evidence once for claim guidance, hook snapshots and room-state visibility.
-- **17:** Centralize worktree-private and common Git-directory resolution, including carry records and hook parity.
 - **18:** Beyond one spawn/resume launch path, consolidate the remaining worker lifecycle callback, logging and policy assembly.
 - **21:** Refresh only affected graph paths through a bounded queue when an overlay changes.
 - **28:** Replace ordered service-locator initialization with typed services and split worker Git recovery from process lifecycle in small steps.
@@ -333,6 +336,8 @@ tree. Fixed in 0.16.1: `*.tsbuildinfo` at a package root is regenerable output a
 longer keeps a collected worktree.
 
 ### Seen in the 0.16.4 live check (2026-09-25, open, small)
+
+- **Worker link inputs and backslashes (found in the 0.16.6 path batch):** `link` paths are validated with backslashes as separators, but POSIX joins treat them as filename characters, so `safe\name` is accepted as a literal name while `safe\..` is refused. Conservative today; decide on one rule (probably reject backslashes, like collection) with a user-visible note.
 
 - A message sent right after a worker finishes can hit "n's previous process is still exiting; send the
   message again shortly". The reply still starts with "sent [...]" and the message stays on the bus,

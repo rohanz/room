@@ -117,13 +117,14 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** Large session histories can stall the MCP process every fallback poll; a read failure after open leaks a descriptor. **Inferred scale/error behavior.**
 - **Smallest clean change:** Cache discovery per directory/start identity, cap entries/time, and close each descriptor in `finally`; prefer hook IDs. Keep this as a fallback, not an unconditional scan.
 
-### 14. Path safety is repeated with materially different policies — DEFERRED (roadmap)
+### 14. Path safety is repeated with materially different policies — FIXED in 0.16.6 (2f84af3)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/collect.ts:27`; `packages/room-mcp/src/tools/files.ts:196`, `packages/room-mcp/src/tools/files.ts:224`, `packages/room-mcp/src/tools/files.ts:247`; `packages/room-mcp/src/tools/combined-tree.ts:26`, `packages/room-mcp/src/tools/combined-tree.ts:78`; `packages/room-mcp/src/tools/context.ts:169`; `packages/room-mcp/src/workers.ts:223`, `packages/room-mcp/src/workers.ts:238`, `packages/room-mcp/src/workers.ts:628`; `packages/roomd/src/baseline.ts:109`.
 - **Problem:** Lexical rejection and containment checks are copied across read, carry, recovery, mode and write paths, with different handling of backslashes, empty/dot components, `.git`, and symlink leaves.
 - **Consequence:** Fixing traversal or platform behavior in one path does not protect the others; callers cannot tell which differences are intentional. This is a maintenance finding, **not a claimed demonstrated escape**.
 - **Smallest clean change:** One repo-relative lexical validator and one containment helper, with explicit leaf policies (reject link, read contained link, replace link). Preserve collection's stricter no-symlink rule and preview's intentional leaf replacement.
+- **Fix (0.16.6):** `packages/roomd/src/repo-path.ts` owns `validRepoPath` with named syntax presets, lexical `isInsideRoot`, and `containedRepoPath` with `reject-link`, `read-contained-link` and `replace-link` leaf policies; every listed caller uses it and characterization tests pin each one. One deliberate change: worker links recheck containment before copying, so a source retargeted outside after validation is refused. Kept as found: link inputs split on backslashes for validation while POSIX joins treat them as filename characters (conservative; recorded in the roadmap).
 
 ### 15. “Near” and scope coverage disagree on normalized paths — FIXED in 0.15.2 (6959496)
 
@@ -141,13 +142,14 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** A new evidence source or filtering rule must be added in several places, and `room_state` can hide a participant whose changed paths alone caused the claim hook to warn. **Inferred visibility mismatch from `inView`.**
 - **Smallest clean change:** Add one `coordinationPaths(room, excludingParticipant)` builder beside shared near policy; use its output for claims, hook snapshots and state overlap selection.
 
-### 17. Git-private state path resolution has several implementations — DEFERRED (roadmap)
+### 17. Git-private state path resolution has several implementations — FIXED in 0.16.6 (6b12cc8)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/hooks-bridge.ts:22`, `packages/room-mcp/src/config.ts:125`, `plugins/room/hooks/common.mjs:22`, `packages/roomd/src/room-file.ts:8`; carry-record path assembly at `packages/room-mcp/src/workers.ts:341`, `packages/room-mcp/src/workers.ts:359`, `packages/room-mcp/src/workers.ts:371`.
 - **Problem:** Hook/config code hand-parses `.git`, room metadata shells out to Git, and carry stop-state helpers duplicate common-directory resolution and filenames.
 - **Consequence:** Worktree/subdirectory handling, error policy and timeout fixes drift; a function named `sessionMetadataPath` is another general Git-directory resolver in disguise.
 - **Smallest clean change:** Establish one worktree-private and one common-Git-directory resolver in roomd, plus a shared carry-record accessor. Generate or parity-test the dependency-free hook equivalent.
+- **Fix (0.16.6):** `packages/roomd/src/git-dirs.ts` owns the worktree-private and common Git-directory resolvers and the carry-record accessor; the hook copy in `plugins/room/hooks/common.mjs` stays dependency-free and a parity test runs both over the same fixtures. One deliberate change: a gitfile with an empty `gitdir:` now falls back to `<dir>/.git` everywhere instead of the checkout root in hooks and excludes.
 
 ### 18. Worker launch orchestration is still split between spawn and resume — FIXED in 0.15.2 as far as one launch-slot and exit path for spawn and resume (0b06299); the rest DEFERRED (roadmap)
 
