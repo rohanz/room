@@ -38,13 +38,16 @@ it('refreshes runtime metadata after hook rewrites, clears missing model, and st
   fs.writeFileSync(file, JSON.stringify({ model: 'gpt-6-astra' }))
   const { daemon } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room' }, 'worker')
   try {
+    const refresh = vi.mocked(watchFile).mock.calls.find(([name]) => name === file)![2] as () => void
     expect(daemon.provider.awareness.getLocalState()).toMatchObject({ model: 'gpt-6-astra' })
     daemon.roomDoc.setWorker({ tag: 'worker', name: 'Ada+worker', host: 'codex', task: '', dir, branch: 'main', pid: 1, lead: 'Ada', status: 'running', startedAt: 1 })
     fs.writeFileSync(file, JSON.stringify({ model: 'actual-model' }))
-    await vi.waitFor(() => expect(daemon.provider.awareness.getLocalState()?.model).toBe('actual-model'), { timeout: 3000 })
+    refresh()
+    expect(daemon.provider.awareness.getLocalState()?.model).toBe('actual-model')
     expect(daemon.roomDoc.workerOf('Ada+worker')?.model).toBe('actual-model')
     fs.writeFileSync(file, '{}')
-    await vi.waitFor(() => expect(daemon.provider.awareness.getLocalState()?.model).toBeUndefined(), { timeout: 3000 })
+    refresh()
+    expect(daemon.provider.awareness.getLocalState()?.model).toBeUndefined()
     expect(daemon.provider.awareness.getLocalState()?.effort).toBeUndefined()
     const publish = vi.spyOn(daemon.provider.awareness, 'setLocalState')
     await daemon.stop()
@@ -74,12 +77,13 @@ it('touches for new matching-session hook activity and unregisters both polling 
     fs.writeFileSync(activity, '{partial')
     refresh()
     expect(daemon.touch).not.toHaveBeenCalled()
-    // Wait for the observable hook write to be consumed, not an arbitrary timer delay.
-    await vi.waitFor(() => {
-      fs.writeFileSync(activity, JSON.stringify({ session_id: 'current', at: Date.now() }))
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 1)
+    try {
+      fs.writeFileSync(activity, JSON.stringify({ session_id: 'current', at: now + 1 }))
       refresh()
       expect(daemon.touch).toHaveBeenCalledTimes(1)
-    })
+    } finally { clock.mockRestore() }
     refresh()
     expect(daemon.touch).toHaveBeenCalledTimes(1)
     await daemon.stop()
