@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.5
+
+- Discard and automatic retirement prune vanished worker worktrees and clear their records, claims and overlays. Discard deletes `room/<tag>` only when its commits are already in the lead's HEAD; otherwise the branch and its unmerged commits remain. Plain collect reports the missing checkout without clearing its record, and Git errors name a missing worktree directory.
+
 ## 0.16.4
 
 - Discarding a worker in an existing directory reports the stop and retained directory without an error. Worker model and file counts no longer borrow the lead's metadata or edits; room_state worker counts match listed rows.

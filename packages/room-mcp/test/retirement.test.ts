@@ -63,6 +63,25 @@ it('does not inspect a separate checkout that Room does not own even if its bran
 })
 
 describe('git facts and lead evaluation', () => {
+  it('auto-retires a worker whose worktree vanished and keeps unmerged commits', async () => {
+    const { dir, git } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base }
+    writeFileSync(join(w.dir, 'worker.txt'), 'work')
+    execFileSync('git', ['-C', w.dir, 'add', 'worker.txt'])
+    execFileSync('git', ['-C', w.dir, 'commit', '-qm', 'worker'])
+    r.room.setWorker(w)
+    r.room.setOverlay(w.name, 'worker.txt', 'work')
+    r.room.addClaim({ by: w.name, byKind: 'agent', path: 'worker.txt', from: 1, to: 1, intent: 'work' })
+    rmSync(w.dir, { recursive: true, force: true })
+    await r.rooms.retireWorkers()
+    expect(r.room.workers.has(w.tag)).toBe(false)
+    expect(r.room.overlays.has(w.name)).toBe(false)
+    expect(r.room.openClaims().filter(c => c.by === w.name)).toEqual([])
+    expect(git('branch', '--list', 'room/w')).toContain('room/w')
+    expect(git('worktree', 'list', '--porcelain')).not.toContain(w.dir)
+    r.close()
+  })
   it('retains a done worker and its actionable record when ignored output remains', async () => {
     const { dir } = repo(), r = registry(dir)
     writeFileSync(join(dir, '.gitignore'), 'artifact.bin\n')
@@ -211,13 +230,14 @@ describe('git facts and lead evaluation', () => {
   })
 
   it('evaluates on the slow timer and cancels it when the session leaves', async () => {
-    vi.useFakeTimers()
-    const r = registry('/missing')
-    r.room.setWorker({ ...worker('/missing'), status: 'failed', dismissedAt: 2 })
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const { dir } = repo(), r = registry(dir), missing = join(dir, '.room', 'workers', 'w')
+    r.room.setWorker({ ...worker(missing), status: 'failed', dismissedAt: 2 })
     await vi.advanceTimersByTimeAsync(60_000)
+    await r.rooms.retireWorkers()
     expect(r.room.retiredWorkers()).toHaveLength(1)
     r.rooms.remove(r.s)
-    r.room.setWorker({ ...worker('/missing'), startedAt: 2, dismissedAt: 3 })
+    r.room.setWorker({ ...worker(missing), startedAt: 2, dismissedAt: 3 })
     await vi.advanceTimersByTimeAsync(60_000)
     expect(r.room.workers.size).toBe(1)
     r.room.doc.destroy()

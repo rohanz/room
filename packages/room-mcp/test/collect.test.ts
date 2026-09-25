@@ -9,6 +9,7 @@ import type { HandlerState } from '../src/tools/context.js'
 import { signalWorker, pidAlive } from '../src/workers.js'
 import { RoomDoc, splitParticipants, workerLines } from '@room/shared'
 import * as Y from 'yjs'
+import { git as roomGit } from '@room/roomd/git'
 
 const release = vi.hoisted(() => vi.fn())
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: release }))
@@ -78,6 +79,16 @@ describe('room_collect', () => {
     expect(room.workers.has(t.w.tag)).toBe(false)
     const groups = splitParticipants({ presences: [], workers: [...room.workers.values()], retiredWorkers: room.retiredWorkers(), scopes: [...room.scopes.entries()], overlayPeople: [...room.overlays.keys()], changesByPerson: new Map(), claims: room.openClaims(), now: Date.now() })
     expect([...groups.active, ...groups.offlineTeammates].map(p => p.name)).not.toContain(name)
+  }
+
+  function useLegacyWorker(t: ReturnType<typeof setup>, name: string) {
+    git(lead, 'worktree', 'remove', '--force', worker)
+    git(lead, 'branch', '-D', 'room/test')
+    worker = path.join(lead, '.room', 'workers', name)
+    git(lead, 'worktree', 'add', '-qb', `room/${name}`, worker)
+    t.s.room.workers.delete(t.w.tag)
+    Object.assign(t.w, { tag: `${name}-2`, name: `lead+${name}-2`, dir: worker, branch: `room/${name}` })
+    t.s.room.workers.set(t.w.tag, t.w as never)
   }
 
   it('retires collected worker with ignored output and shows only its kept worktree', async () => {
@@ -232,9 +243,77 @@ describe('room_collect', () => {
     put(other, 'survived.txt', 'kept')
     fs.rmSync(worker, { recursive: true, force: true })
     const result = await t.call({})
-    expect(result).toMatch(/skipped test: .*worktree.*missing/i)
+    expect(result).toMatch(/skipped test: worktree .* is gone/i)
     expect(result).toContain('Changes from second: survived.txt')
     expect(fs.readFileSync(path.join(lead, 'survived.txt'), 'utf8')).toBe('kept')
+    expect(git(lead, 'worktree', 'list', '--porcelain')).not.toContain(worker)
+  })
+  it.each([false, true])('discards a vanished worktree with merged commits (pruned first: %s)', async pruned => {
+    const t = setup()
+    seedPresence(t)
+    git(lead, 'branch', 'room/og-cards')
+    const otherBranch = git(lead, 'rev-parse', 'room/og-cards')
+    put(worker, 'landed.txt', 'landed')
+    git(worker, 'add', '.'); git(worker, 'commit', '-qm', 'worker work')
+    const commit = git(worker, 'rev-parse', 'HEAD')
+    git(lead, 'merge', '-q', '--ff-only', commit)
+    fs.rmSync(worker, { recursive: true, force: true })
+    if (pruned) git(lead, 'worktree', 'prune')
+    const reply = await t.call({ tag: 'test', discard: true })
+    expect(reply).toContain('its worktree was already gone; branch room/test deleted (its commits are already in your HEAD)')
+    expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
+    expect(git(lead, 'rev-parse', 'room/og-cards')).toBe(otherBranch)
+    expect(git(lead, 'worktree', 'list', '--porcelain')).not.toContain(worker)
+    expectRetired(t)
+  })
+  it('keeps unmerged branch commits when discarding a vanished worktree', async () => {
+    const t = setup()
+    seedPresence(t)
+    for (const name of ['one', 'two']) {
+      put(worker, `${name}.txt`, name)
+      git(worker, 'add', '.'); git(worker, 'commit', '-qm', name)
+    }
+    fs.rmSync(worker, { recursive: true, force: true })
+    const reply = await t.call({ tag: 'test', discard: true })
+    expect(reply).toContain('branch room/test kept: it has 2 commits not in your HEAD')
+    expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
+    expectRetired(t)
+  })
+  it('discards a legacy replacement record when its worktree and branch are already absent', async () => {
+    const t = setup()
+    useLegacyWorker(t, 'og-sections')
+    seedPresence(t)
+    fs.rmSync(worker, { recursive: true, force: true })
+    git(lead, 'worktree', 'prune')
+    git(lead, 'branch', '-D', 'room/og-sections')
+    const reply = await t.call({ tag: 'og-sections-2', discard: true })
+    expect(reply).toContain('its worktree was already gone; branch room/og-sections was already absent')
+    expectRetired(t)
+  })
+  it('keeps commits on a legacy replacement branch after its worktree vanishes', async () => {
+    const t = setup()
+    useLegacyWorker(t, 'e2e-static')
+    seedPresence(t)
+    put(worker, 'worker.txt', 'unmerged')
+    git(worker, 'add', 'worker.txt'); git(worker, 'commit', '-qm', 'worker work')
+    const branchCommit = git(lead, 'rev-parse', 'room/e2e-static')
+    fs.rmSync(worker, { recursive: true, force: true })
+    git(lead, 'worktree', 'prune')
+    const reply = await t.call({ tag: 'e2e-static-2', discard: true })
+    expect(reply).toContain('branch room/e2e-static kept: it has 1 commit not in your HEAD')
+    expect(git(lead, 'rev-parse', 'room/e2e-static')).toBe(branchCommit)
+    expectRetired(t)
+  })
+  it('explains that plain collect cannot collect a vanished worktree and leaves its record', async () => {
+    const t = setup()
+    fs.rmSync(worker, { recursive: true, force: true })
+    expect(await t.call({ tag: 'test' })).toContain('nothing to collect: worktree')
+    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(git(lead, 'worktree', 'list', '--porcelain')).not.toContain(worker)
+  })
+  it('names a missing cwd in the shared git helper error', async () => {
+    fs.rmSync(worker, { recursive: true, force: true })
+    await expect(roomGit(worker, ['status'])).rejects.toThrow(`worktree ${worker} no longer exists`)
   })
   it('skips one worker with an internal git ls-files error and collects the other', async () => {
     const t = setup(), other = second(t)

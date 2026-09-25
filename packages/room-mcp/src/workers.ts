@@ -48,6 +48,32 @@ export interface RetirementFacts {
 /** One worktree cannot be collected, discarded and auto-retired at the same time. */
 export function workerOperationKey(w: Pick<Worker, 'dir'>): string { return 'worker:' + path.resolve(w.dir) }
 
+/** A Room worker path is a chain of .room/workers/<name> directories ending on room/<name>. */
+function roomWorkerPathMatchesBranch(leadDir: string, workerDir: string, branch: string, nested = false): boolean {
+  const relative = path.relative(path.resolve(leadDir), path.resolve(workerDir)).split(path.sep)
+  if (relative.length < 3 || relative.length % 3 !== 0 || (!nested && relative.length !== 3)) return false
+  return relative.every((part, i) => i % 3 === 0 ? part === '.room' : i % 3 === 1 ? part === 'workers' : !!part && part !== '.' && part !== '..')
+    && branch === `room/${relative.at(-1)}`
+}
+
+/** Prune a vanished Room checkout, preserving any branch commits absent from the lead HEAD. */
+export async function pruneMissingWorkerWorktree(leadDir: string, w: Pick<Worker, 'dir' | 'branch' | 'tag'>, manageBranch = true): Promise<string | undefined> {
+  if (!roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) {
+    throw new Error(`worker ${w.dir} is not an owned Room worktree`)
+  }
+  try { fs.lstatSync(w.dir); throw new Error(`worktree ${w.dir} still exists`) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  await git(leadDir, ['worktree', 'prune'])
+  if (!manageBranch) return undefined
+  const branch = `refs/heads/${w.branch}`
+  if (!(await git(leadDir, ['for-each-ref', '--format=%(refname)', branch])).split('\n').includes(branch)) return `branch ${w.branch} was already absent`
+  const count = Number((await git(leadDir, ['rev-list', '--count', branch, '^HEAD'])).trim())
+  if (!Number.isSafeInteger(count)) throw new Error(`could not count commits on ${w.branch}`)
+  if (count) return `branch ${w.branch} kept: it has ${count} commit${count === 1 ? '' : 's'} not in your HEAD`
+  await git(leadDir, ['branch', '-D', w.branch])
+  return `branch ${w.branch} deleted (its commits are already in your HEAD)`
+}
+
 type WorktreeOwnershipRecord = Pick<Worker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'>
   | Pick<RetiredWorker, 'name' | 'tag' | 'lead' | 'keptWorktree'>
 
@@ -76,11 +102,12 @@ export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<Worker, 'na
     const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
     for (const record of chain) {
       if (parentName && record.lead !== parentName) return false
-      if (!fs.existsSync(record.dir) || record.branch !== `room/${record.tag}`) return false
+      if (!fs.existsSync(record.dir)) return false
       const parentRoot = fs.realpathSync(parentDir), workerRoot = fs.realpathSync(record.dir)
       if (workerRoot === parentRoot) return false
-      const expected = path.join(parentRoot, '.room', 'workers', record.tag)
-      if (!fs.existsSync(expected) || workerRoot !== fs.realpathSync(expected)) return false
+      if (!roomWorkerPathMatchesBranch(parentDir, record.dir, record.branch)) return false
+      const expected = path.join(parentRoot, '.room', 'workers', path.basename(record.dir))
+      if (workerRoot !== fs.realpathSync(expected)) return false
       if (await common(parentDir) !== await common(record.dir)) return false
       if ((await git(record.dir, ['branch', '--show-current'])).trim() !== record.branch) return false
       parentDir = record.dir
@@ -747,7 +774,7 @@ export async function terminateWorktreeProcesses(dir: string, options: {
 
 /** Remove only owned Room worktrees; failures require explicit discard. */
 export async function cleanupWorker(leadDir: string, w: Worker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
-  if (w.branch !== 'room/' + w.tag || (!discarded && (w.status === 'failed' || w.exitCode !== 0))) return false
+  if (!discarded && (w.status === 'failed' || w.exitCode !== 0)) return false
   if (!await isOwnedWorkerWorktree(leadDir, w, leadName, workers)) return false
   const nested = (await git(leadDir, ['worktree', 'list', '--porcelain'])).split('\n')
     .filter(line => line.startsWith('worktree ')).map(line => line.slice('worktree '.length))

@@ -7,6 +7,7 @@ import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import nodePath from 'node:path'
 import type { Worker } from '@room/shared'
+import { missingGitCwd } from './git.js'
 
 /** Bounded binary Git reads used by the few synchronous carry/recovery operations. */
 function deadlineMs(): number {
@@ -19,7 +20,9 @@ export function boundedGitSync(dir: string, args: string[], options: { input?: B
   try {
     return execFileSync('git', args, { cwd: dir, encoding: 'buffer', stdio: ['pipe', 'pipe', 'pipe'], timeout, maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024, ...options })
   } catch (error) {
-    const stopped = error as Error & { signal?: string; killed?: boolean }
+    const stopped = error as NodeJS.ErrnoException & { signal?: string; killed?: boolean }
+    const missing = missingGitCwd(dir, stopped)
+    if (missing) throw missing
     if (stopped.signal === 'SIGTERM' || stopped.killed) throw new Error(`git ${args.join(' ')} timed out after ${timeout}ms`, { cause: error })
     throw error
   }
@@ -81,7 +84,9 @@ function run(dir: string, args: string[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     execFile('git', args, { cwd: dir, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout }, (error, stdout, stderr) => {
       if (error) {
-        const stopped = error as Error & { killed?: boolean; signal?: string }
+        const stopped = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
+        const missing = missingGitCwd(dir, stopped)
+        if (missing) { reject(missing); return }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr).trim() || error.message
         reject(Object.assign(new Error(`git ${args.join(' ')} failed: ${detail}`), { stderr: String(stderr) }))
       }

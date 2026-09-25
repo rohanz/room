@@ -22111,6 +22111,10 @@ var init_src2 = __esm({
 
 // packages/roomd/src/git.ts
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+function missingGitCwd(dir, error2) {
+  return error2.code === "ENOENT" && !existsSync(dir) ? new Error(`worktree ${dir} no longer exists`) : void 0;
+}
 function timeoutMs(configured) {
   const fromEnv = Number(process.env.ROOM_GIT_TIMEOUT_MS);
   return Number.isFinite(configured) && configured > 0 ? configured : Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_GIT_TIMEOUT_MS;
@@ -22121,6 +22125,11 @@ function git(dir, args3, configuredTimeoutMs) {
     execFile("git", args3, { cwd: dir, maxBuffer: 64 * 1024 * 1024, timeout }, (err2, stdout, stderr2) => {
       if (err2) {
         const stopped = err2;
+        const missing = missingGitCwd(dir, stopped);
+        if (missing) {
+          reject(missing);
+          return;
+        }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr2 || err2.message).trim();
         reject(new Error(`git ${args3.join(" ")} failed: ${detail}`));
       } else resolve5(stdout);
@@ -22364,6 +22373,8 @@ function boundedGitSync(dir, args3, options = {}) {
     return execFileSync("git", args3, { cwd: dir, encoding: "buffer", stdio: ["pipe", "pipe", "pipe"], timeout, maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024, ...options });
   } catch (error2) {
     const stopped = error2;
+    const missing = missingGitCwd(dir, stopped);
+    if (missing) throw missing;
     if (stopped.signal === "SIGTERM" || stopped.killed) throw new Error(`git ${args3.join(" ")} timed out after ${timeout}ms`, { cause: error2 });
     throw error2;
   }
@@ -22404,6 +22415,11 @@ function run2(dir, args3) {
     execFile2("git", args3, { cwd: dir, encoding: "buffer", maxBuffer: 64 * 1024 * 1024, timeout }, (error2, stdout, stderr2) => {
       if (error2) {
         const stopped = error2;
+        const missing = missingGitCwd(dir, stopped);
+        if (missing) {
+          reject(missing);
+          return;
+        }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr2).trim() || error2.message;
         reject(Object.assign(new Error(`git ${args3.join(" ")} failed: ${detail}`), { stderr: String(stderr2) }));
       } else resolve5(stdout);
@@ -22471,6 +22487,7 @@ var carriesWork, committedPaths, MAX_COMMITTED_PATHS, MissingBaseBlob;
 var init_baseline = __esm({
   "packages/roomd/src/baseline.ts"() {
     "use strict";
+    init_git();
     carriesWork = (baseline) => !!baseline && (baseline.carriedCommit || baseline.untracked.size > 0);
     committedPaths = /* @__PURE__ */ new Map();
     MAX_COMMITTED_PATHS = 128;
@@ -30683,7 +30700,7 @@ ${JSON.stringify(symbolNames, null, 2)}`);
 
 // packages/room-mcp/src/parse/engine.ts
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync as existsSync2 } from "node:fs";
 import { dirname as dirname3, join as join3 } from "node:path";
 import { fileURLToPath } from "node:url";
 function warnOnce(key, error2) {
@@ -30696,7 +30713,7 @@ function bundledAsset(name2) {
   const configured = process.env.ROOM_TREE_SITTER_WASM_DIR?.trim();
   if (configured) return join3(configured, name2);
   const candidate = join3(bundledGrammarDir, name2);
-  return existsSync(candidate) ? candidate : void 0;
+  return existsSync2(candidate) ? candidate : void 0;
 }
 function runtimePath() {
   return bundledAsset("tree-sitter.wasm") ?? moduleRequire.resolve("web-tree-sitter/tree-sitter.wasm");
@@ -31277,6 +31294,31 @@ async function ignoredWorkerArtifacts(w) {
 function workerOperationKey(w) {
   return "worker:" + path9.resolve(w.dir);
 }
+function roomWorkerPathMatchesBranch(leadDir, workerDir, branch, nested = false) {
+  const relative3 = path9.relative(path9.resolve(leadDir), path9.resolve(workerDir)).split(path9.sep);
+  if (relative3.length < 3 || relative3.length % 3 !== 0 || !nested && relative3.length !== 3) return false;
+  return relative3.every((part, i2) => i2 % 3 === 0 ? part === ".room" : i2 % 3 === 1 ? part === "workers" : !!part && part !== "." && part !== "..") && branch === `room/${relative3.at(-1)}`;
+}
+async function pruneMissingWorkerWorktree(leadDir, w, manageBranch = true) {
+  if (!roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) {
+    throw new Error(`worker ${w.dir} is not an owned Room worktree`);
+  }
+  try {
+    fs10.lstatSync(w.dir);
+    throw new Error(`worktree ${w.dir} still exists`);
+  } catch (error2) {
+    if (error2.code !== "ENOENT") throw error2;
+  }
+  await git(leadDir, ["worktree", "prune"]);
+  if (!manageBranch) return void 0;
+  const branch = `refs/heads/${w.branch}`;
+  if (!(await git(leadDir, ["for-each-ref", "--format=%(refname)", branch])).split("\n").includes(branch)) return `branch ${w.branch} was already absent`;
+  const count = Number((await git(leadDir, ["rev-list", "--count", branch, "^HEAD"])).trim());
+  if (!Number.isSafeInteger(count)) throw new Error(`could not count commits on ${w.branch}`);
+  if (count) return `branch ${w.branch} kept: it has ${count} commit${count === 1 ? "" : "s"} not in your HEAD`;
+  await git(leadDir, ["branch", "-D", w.branch]);
+  return `branch ${w.branch} deleted (its commits are already in your HEAD)`;
+}
 async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = []) {
   const byName = new Map([...workers].map((record2) => [record2.name, record2]));
   const chain = [w];
@@ -31301,11 +31343,12 @@ async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = []) {
     const common = async (dir) => fs10.realpathSync(path9.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
     for (const record2 of chain) {
       if (parentName && record2.lead !== parentName) return false;
-      if (!fs10.existsSync(record2.dir) || record2.branch !== `room/${record2.tag}`) return false;
+      if (!fs10.existsSync(record2.dir)) return false;
       const parentRoot = fs10.realpathSync(parentDir), workerRoot = fs10.realpathSync(record2.dir);
       if (workerRoot === parentRoot) return false;
-      const expected = path9.join(parentRoot, ".room", "workers", record2.tag);
-      if (!fs10.existsSync(expected) || workerRoot !== fs10.realpathSync(expected)) return false;
+      if (!roomWorkerPathMatchesBranch(parentDir, record2.dir, record2.branch)) return false;
+      const expected = path9.join(parentRoot, ".room", "workers", path9.basename(record2.dir));
+      if (workerRoot !== fs10.realpathSync(expected)) return false;
       if (await common(parentDir) !== await common(record2.dir)) return false;
       if ((await git(record2.dir, ["branch", "--show-current"])).trim() !== record2.branch) return false;
       parentDir = record2.dir;
@@ -31938,7 +31981,7 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   return named;
 }
 async function cleanupWorker(leadDir, w, collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = []) {
-  if (w.branch !== "room/" + w.tag || !discarded && (w.status === "failed" || w.exitCode !== 0)) return false;
+  if (!discarded && (w.status === "failed" || w.exitCode !== 0)) return false;
   if (!await isOwnedWorkerWorktree(leadDir, w, leadName, workers)) return false;
   const nested = (await git(leadDir, ["worktree", "list", "--porcelain"])).split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length)).filter((dir) => dir !== w.dir && inside(fs10.realpathSync(w.dir), dir));
   if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(", ")}`);
@@ -34980,7 +35023,7 @@ var init_registry = __esm({
         s.room.sweepRetiredWorkers(present);
         for (const w of s.room.workers.values()) {
           if (w.stopReason === "lead-session-ended") continue;
-          if (w.status === "done" && w.hostSessionId && fs17.existsSync(w.dir)) continue;
+          if (w.status === "done" && w.hostSessionId) continue;
           if (this.reserving.has("discard:" + s.roomName + ":" + w.name)) continue;
           if (w.lead !== s.me.name || this.hasHandle(s, w)) continue;
           const lock = workerOperationKey(w);
@@ -34995,15 +35038,38 @@ var init_registry = __esm({
             }
             const facts = { exited, done: w.status === "done", dismissed: w.dismissedAt !== void 0 || w.status === "dismissed", merged: false, clean: false, ahead: void 0, uncommitted: void 0 };
             if (!facts.done && !facts.dismissed) continue;
-            Object.assign(facts, await workerGitFacts(s.dir, w));
-            const outcome = shouldRetire(facts);
-            if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s) || this.reserving.has("discard:" + s.roomName + ":" + w.name)) continue;
-            if (fs17.existsSync(w.dir)) {
+            if (!fs17.existsSync(w.dir)) {
               try {
-                if ((await ignoredWorkerArtifacts(w)).length) continue;
+                await pruneMissingWorkerWorktree(s.dir, w);
               } catch {
                 continue;
               }
+              if (s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue;
+              const retiredAt2 = Date.now();
+              s.room.retireParticipant(w.name, {
+                name: w.name,
+                tag: w.tag,
+                lead: w.lead,
+                host: w.host,
+                ...w.model ? { model: w.model } : {},
+                task: w.task,
+                summary: "worktree was already gone",
+                files: [],
+                fileCount: 0,
+                startedAt: w.startedAt,
+                finishedAt: w.finishedAt ?? retiredAt2,
+                retiredAt: retiredAt2,
+                outcome: "dismissed"
+              });
+              continue;
+            }
+            Object.assign(facts, await workerGitFacts(s.dir, w));
+            const outcome = shouldRetire(facts);
+            if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s) || this.reserving.has("discard:" + s.roomName + ":" + w.name)) continue;
+            try {
+              if ((await ignoredWorkerArtifacts(w)).length) continue;
+            } catch {
+              continue;
             }
             const done = s.room.messages().filter((m) => m.type === "done" && m.from === w.name && m.at >= w.startedAt).at(-1);
             const files = [.../* @__PURE__ */ new Set([...s.room.changedPaths(w.name), ...done?.type === "done" ? done.changed : []])].sort();
@@ -46748,11 +46814,13 @@ function handlers7(state) {
         try {
           const cleanupErrors = [];
           const terminated = await stopOwnedWorktreeProcesses(s2.dir, w2, s2.me.name, ownershipRecords(s2), cleanupErrors);
-          const ignored = await ignoredWorkerArtifacts(w2);
+          const missing = !fs20.existsSync(w2.dir);
+          const missingDetail = missing ? await pruneMissingWorkerWorktree(s2.dir, w2) : void 0;
+          const ignored = missing ? [] : await ignoredWorkerArtifacts(w2);
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}
 retained worktree: ${w2.dir}${terminated.length ? "\nstopped processes: " + terminated.join(", ") : ""}${cleanupErrors.length ? "\n" + cleanupErrors.join("; ") : ""}
 repeat with force=true to delete them`;
-          if (!await cleanupWorker(s2.dir, w2, true, true, terminated, {}, s2.me.name, ownershipRecords(s2))) throw new Error("worker is not an owned Room worktree");
+          if (!missing && !await cleanupWorker(s2.dir, w2, true, true, terminated, {}, s2.me.name, ownershipRecords(s2))) throw new Error("worker is not an owned Room worktree");
           const archive = s2.room.doc.getArray("retiredWorkers");
           const index = archive.toArray().findIndex((item) => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead);
           if (index >= 0) s2.room.doc.transact(() => {
@@ -46760,7 +46828,7 @@ repeat with force=true to delete them`;
             const { keptWorktree: _keptWorktree, ...cleared } = r;
             archive.insert(index, [{ ...cleared, summary: "discarded" }]);
           });
-          return "discarded " + r.tag + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
+          return "discarded " + r.tag + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
         } catch (e) {
           return "error: " + (e instanceof Error ? e.message : String(e)) + "; retained " + w2.dir;
         } finally {
@@ -46791,6 +46859,7 @@ repeat with force=true to delete them`;
           if (!result.startsWith("discarded ") && !result.startsWith("stopped ")) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`;
         }
         const cleanupErrors = [];
+        const verifiedProcess = !!rooms.handle?.(s, w.id) || pidIsOurWorker(w.pid, w, state.ctx?.probe);
         const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors);
         if (state.workerAlive(s, w) || pidAlive2(w.pid)) {
           const how = await state.dismissWorker(s, w, "discarded by the lead");
@@ -46800,13 +46869,23 @@ repeat with force=true to delete them`;
           const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
           const deadline = now() + 5e3;
           while (state.workerAlive(s, w) && now() < deadline) await sleep2(50);
-          if (state.workerAlive(s, w) && (rooms.handle(s, w.id) || pidIsOurWorker(w.pid, w, state.ctx?.probe))) signalWorker(w.pid, "SIGKILL");
+          if (state.workerAlive(s, w) && (rooms.handle?.(s, w.id) || pidIsOurWorker(w.pid, w, state.ctx?.probe))) signalWorker(w.pid, "SIGKILL");
           const hardDeadline = now() + 5e3;
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep2(50);
           if (state.workerAlive(s, w)) throw new Error("worker process has not stopped");
         }
         terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors));
-        const ownedWorktree = await isOwnedWorkerWorktree(s.dir, w, s.me.name, ownershipRecords(s));
+        const missing = !fs20.existsSync(w.dir);
+        let missingDetail;
+        if (missing) {
+          try {
+            missingDetail = await pruneMissingWorkerWorktree(s.dir, w);
+          } catch (error2) {
+            const recordedPath = path18.basename(w.dir) === w.tag && path18.basename(path18.dirname(w.dir)) === "workers" && path18.basename(path18.dirname(path18.dirname(w.dir))) === ".room" && w.branch === `room/${w.tag}`;
+            if (!verifiedProcess || !recordedPath || !(error2 instanceof Error) || !error2.message.includes("is not an owned Room worktree")) throw error2;
+          }
+        }
+        const ownedWorktree = !missing && await isOwnedWorkerWorktree(s.dir, w, s.me.name, ownershipRecords(s));
         const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w) : [];
         if (ignored.length && a.force !== true) {
           return [
@@ -46837,7 +46916,7 @@ repeat with force=true to delete them`;
           retiredAt,
           outcome: "dismissed"
         });
-        return [...childResults, (!ownedWorktree && fs20.existsSync(w.dir) ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
+        return [...childResults, (!ownedWorktree && fs20.existsSync(w.dir) ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
       } catch (e) {
         return "error: " + (e instanceof Error ? e.message : String(e)) + "; retained " + w.dir;
       } finally {
@@ -46880,6 +46959,11 @@ repeat with force=true to delete them`;
         if (!workerLock) continue;
         workerLocks.push(workerLock);
         try {
+          if (!fs20.existsSync(w.dir)) {
+            await pruneMissingWorkerWorktree(lead.dir, w, false);
+            out2.push(`${a.tag ? "nothing to collect" : "skipped " + w.tag}: worktree ${w.dir} is gone`);
+            continue;
+          }
           if (fs20.realpathSync(w.dir) === fs20.realpathSync(lead.dir)) throw new Error("worker must have a separate worktree");
           await assertNoOperation(w.dir);
           const common = async (dir) => fs20.realpathSync(path18.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
@@ -48113,7 +48197,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.4",
+  version: "0.16.5",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",

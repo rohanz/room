@@ -1,6 +1,11 @@
 import { execFile, spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 
 export const DEFAULT_GIT_TIMEOUT_MS = 30_000
+
+export function missingGitCwd(dir: string, error: NodeJS.ErrnoException): Error | undefined {
+  return error.code === 'ENOENT' && !existsSync(dir) ? new Error(`worktree ${dir} no longer exists`) : undefined
+}
 
 function timeoutMs(configured?: number): number {
   const fromEnv = Number(process.env.ROOM_GIT_TIMEOUT_MS)
@@ -13,6 +18,11 @@ export function git(dir: string, args: string[], configuredTimeoutMs?: number): 
     execFile('git', args, { cwd: dir, maxBuffer: 64 * 1024 * 1024, timeout }, (err, stdout, stderr) => {
       if (err) {
         const stopped = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
+        const missing = missingGitCwd(dir, stopped)
+        if (missing) {
+          reject(missing)
+          return
+        }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr || err.message).trim()
         reject(new Error(`git ${args.join(' ')} failed: ${detail}`))
       }

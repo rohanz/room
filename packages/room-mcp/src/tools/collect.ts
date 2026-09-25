@@ -3,7 +3,7 @@ import path from 'node:path'
 import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
-import { cleanupWorker, ignoredWorkerArtifacts, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, isOwnedWorkerWorktree } from '../workers.js'
+import { cleanupWorker, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidAlive, pidIsOurWorker, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, isOwnedWorkerWorktree } from '../workers.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode } from './files.js'
 import { releaseClaimsOnDone } from './claims.js'
@@ -124,9 +124,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try {
           const cleanupErrors: string[] = []
           const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors)
-          const ignored = await ignoredWorkerArtifacts(w)
+          const missing = !fs.existsSync(w.dir)
+          const missingDetail = missing ? await pruneMissingWorkerWorktree(s.dir, w) : undefined
+          const ignored = missing ? [] : await ignoredWorkerArtifacts(w)
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}${terminated.length ? '\nstopped processes: ' + terminated.join(', ') : ''}${cleanupErrors.length ? '\n' + cleanupErrors.join('; ') : ''}\nrepeat with force=true to delete them`
-          if (!await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
+          if (!missing && !await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
           const archive = s.room.doc.getArray<RetiredWorker>('retiredWorkers')
           const index = archive.toArray().findIndex(item => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead)
           if (index >= 0) s.room.doc.transact(() => {
@@ -134,7 +136,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const { keptWorktree: _keptWorktree, ...cleared } = r
             archive.insert(index, [{ ...cleared, summary: 'discarded' }])
           })
-          return 'discarded ' + r.tag + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
+          return 'discarded ' + r.tag + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
         } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
         finally { rooms.unreserve(lock) }
       }
@@ -161,6 +163,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // A headless host can take its child server down as it exits. Record and stop
         // worktree processes while they are still observable, before dismissing it.
         const cleanupErrors: string[] = []
+        const verifiedProcess = !!rooms.handle?.(s, w.id) || pidIsOurWorker(w.pid, w, state.ctx?.probe)
         const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors)
         if (state.workerAlive(s, w) || pidAlive(w.pid)) {
           const how = await state.dismissWorker(s, w, 'discarded by the lead')
@@ -170,13 +173,28 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
           const deadline = now() + 5_000
           while (state.workerAlive(s, w) && now() < deadline) await sleep(50)
-          if (state.workerAlive(s, w) && (rooms.handle(s, w.id) || pidIsOurWorker(w.pid, w, state.ctx?.probe))) signalWorker(w.pid, 'SIGKILL')
+          if (state.workerAlive(s, w) && (rooms.handle?.(s, w.id) || pidIsOurWorker(w.pid, w, state.ctx?.probe))) signalWorker(w.pid, 'SIGKILL')
           const hardDeadline = now() + 5_000
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep(50)
           if (state.workerAlive(s, w)) throw new Error('worker process has not stopped')
         }
         terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors))
-        const ownedWorktree = await isOwnedWorkerWorktree(s.dir, w, s.me.name, ownershipRecords(s))
+        const missing = !fs.existsSync(w.dir)
+        let missingDetail: string | undefined
+        if (missing) {
+          try { missingDetail = await pruneMissingWorkerWorktree(s.dir, w) }
+          catch (error) {
+            // A persisted worker may outlive a lead that rejoins from another checkout.
+            // Its verified process can still be dismissed, but the new checkout must not
+            // prune a branch for a worktree path that is outside its own repository.
+            const recordedPath = path.basename(w.dir) === w.tag
+              && path.basename(path.dirname(w.dir)) === 'workers'
+              && path.basename(path.dirname(path.dirname(w.dir))) === '.room'
+              && w.branch === `room/${w.tag}`
+            if (!verifiedProcess || !recordedPath || !(error instanceof Error) || !error.message.includes('is not an owned Room worktree')) throw error
+          }
+        }
+        const ownedWorktree = !missing && await isOwnedWorkerWorktree(s.dir, w, s.me.name, ownershipRecords(s))
         const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w) : []
         if (ignored.length && a.force !== true) {
           return [
@@ -197,7 +215,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           summary: 'discarded', files: [], fileCount: 0, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
         })
-        return [...childResults, (!ownedWorktree && fs.existsSync(w.dir) ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
+        return [...childResults, (!ownedWorktree && fs.existsSync(w.dir) ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
       } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
       finally { rooms.unreserve(lock); rooms.unreserve(intent) }
     }
@@ -233,6 +251,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!workerLock) continue
         workerLocks.push(workerLock)
         try {
+        if (!fs.existsSync(w.dir)) {
+          await pruneMissingWorkerWorktree(lead.dir, w, false)
+          out.push(`${a.tag ? 'nothing to collect' : 'skipped ' + w.tag}: worktree ${w.dir} is gone`)
+          continue
+        }
         if (fs.realpathSync(w.dir) === fs.realpathSync(lead.dir)) throw new Error('worker must have a separate worktree')
         await assertNoOperation(w.dir)
         const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))

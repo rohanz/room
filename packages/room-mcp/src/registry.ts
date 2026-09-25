@@ -13,7 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
-import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, shouldRetire, workerCommand, workerGitFacts, workerLogTail, workerMaxBudget, workerOperationKey, workerPriority, workerProcessEnv, type SpawnedProcess, type Spawner } from './workers.js'
+import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, pruneMissingWorkerWorktree, shouldRetire, workerCommand, workerGitFacts, workerLogTail, workerMaxBudget, workerOperationKey, workerPriority, workerProcessEnv, type SpawnedProcess, type Spawner } from './workers.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { bindWorkerPortReservation, reserveWorkerPort, type PortReservation } from './port-reservations.js'
 
@@ -182,9 +182,9 @@ export class Rooms {
     for (const w of s.room.workers.values()) {
       // The next lead must be able to explain and resume this intentionally stopped work.
       if (w.stopReason === 'lead-session-ended') continue
-      // A session with a retained checkout is reusable until the lead explicitly collects
-      // or discards it, even when that checkout is clean.
-      if (w.status === 'done' && w.hostSessionId && fs.existsSync(w.dir)) continue
+      // Keep a finished host session addressable until the lead explicitly collects or
+      // discards it. If its checkout vanished, room_send must explain why it cannot resume.
+      if (w.status === 'done' && w.hostSessionId) continue
       if (this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
       if (w.lead !== s.me.name || this.hasHandle(s, w)) continue
       const lock = workerOperationKey(w)
@@ -199,16 +199,25 @@ export class Rooms {
         }
         const facts = { exited, done: w.status === 'done', dismissed: w.dismissedAt !== undefined || w.status === 'dismissed', merged: false, clean: false, ahead: undefined as number | undefined, uncommitted: undefined as number | undefined }
         if (!facts.done && !facts.dismissed) continue
+        if (!fs.existsSync(w.dir)) {
+          try { await pruneMissingWorkerWorktree(s.dir, w) } catch { continue }
+          if (s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
+          const retiredAt = Date.now()
+          s.room.retireParticipant(w.name, {
+            name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
+            task: w.task, summary: 'worktree was already gone', files: [], fileCount: 0,
+            startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
+          })
+          continue
+        }
         Object.assign(facts, await workerGitFacts(s.dir, w))
         const outcome = shouldRetire(facts)
         // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
         if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s) || this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
         // An ignored artifact has no recovery patch. Keep both its worktree and the live record so
         // the lead can copy it or explicitly discard it, exactly as manual collection does.
-        if (fs.existsSync(w.dir)) {
-          try { if ((await ignoredWorkerArtifacts(w)).length) continue }
-          catch { continue }
-        }
+        try { if ((await ignoredWorkerArtifacts(w)).length) continue }
+        catch { continue }
         const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
         const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
         if (facts.clean && w.exitCode === 0) {
