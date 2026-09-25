@@ -46,6 +46,10 @@ jobs:
       - name: Build web
         run: npm run build -w @room/web
 
+      - name: Build server image
+        # The image installs packages/server/package.json on its own, outside the workspace.
+        run: docker build -t room-server-ci .
+
       - name: Build plugin
         run: npm run build:plugin
 

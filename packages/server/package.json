@@ -18,7 +18,6 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
-    "@room/shared": "*",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.0"
   },
