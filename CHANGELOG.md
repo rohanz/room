@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.16.3
+
+- Automatic-name and choice locks serialize stale-owner recovery, so concurrent contenders cannot remove a replacement lock held by a live process.
+- Worker dev-server ports are reserved per machine across leads and nested workers, reclaimed after owner crashes, and released when workers stop or exit; resumed workers receive a fresh port when needed.
+
 ## 0.16.2
 
 - Untagged agents display as "<owner>'s agent" in participants, messages, hooks and the web view; tagged agents keep their names. Message routing names do not change.

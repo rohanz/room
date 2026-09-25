@@ -4,8 +4,8 @@ import { trackConnection } from './connection.js'
  * websocket provider) plus the identity the tools act as. `room_join` creates it,
  * `room_leave` tears it down.
  */
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, watchFile, unwatchFile, writeFileSync } from 'node:fs'
-import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, watchFile, unwatchFile, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { WebsocketProvider } from 'y-websocket'
 import WebSocket from 'ws'
@@ -21,6 +21,7 @@ import { configureCredentials, getCredential, removeCredential, setCredential } 
 import { createClaudeTranscriptModelRefresh, DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
 import { isFresh } from './presence.js'
 import { readChoice, rememberTag, worktreePath } from './choice.js'
+import { acquireOwnedFile } from './owned-file.js'
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
@@ -277,26 +278,7 @@ async function reserveAutoName(dir: string, room: string, name: string): Promise
   const folder = join(await gitCommonDir(dir), 'room-name-locks')
   mkdirSync(folder, { recursive: true, mode: 0o700 })
   const file = join(folder, createHash('sha256').update(`${room}\0${name}`).digest('hex'))
-  const token = JSON.stringify({ pid: process.pid, nonce: randomUUID() })
-  const acquire = (): (() => void) | undefined => {
-    let fd: number
-    try { fd = openSync(file, 'wx', 0o600) }
-    catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') return undefined; throw e }
-    try { writeFileSync(fd, token) } finally { closeSync(fd) }
-    return () => { try { if (readFileSync(file, 'utf8') === token) unlinkSync(file) } catch { /* already removed */ } }
-  }
-  let release = acquire()
-  if (release) return release
-  // A crashed process leaves a reservation behind. A live process is never touched.
-  try {
-    const record = JSON.parse(readFileSync(file, 'utf8')) as { pid?: number }
-    if (typeof record.pid !== 'number') return undefined
-    try { process.kill(record.pid, 0); return undefined }
-    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') return undefined }
-    if (existsSync(file)) unlinkSync(file)
-  } catch { return undefined }
-  release = acquire()
-  return release
+  return acquireOwnedFile(file, { pid: process.pid })
 }
 
 /** Resolve identity before roomd can publish any overlays under it. The probe never publishes a user. */

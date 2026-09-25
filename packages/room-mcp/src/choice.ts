@@ -12,6 +12,7 @@ import { git } from '@room/roomd/git'
 import { gitCommonDir } from '@room/roomd/local'
 import type { ShareLevel } from '@room/roomd'
 import { DEFAULT_SERVER, LOCAL, normaliseWhere } from './config.js'
+import { acquireOwnedFile } from './owned-file.js'
 
 export const CHOICE_FILE = 'room-choice.json'
 
@@ -70,21 +71,12 @@ export async function rememberTag(dir: string, tag: string): Promise<RoomChoice>
   const file = await choiceFile(dir)
   const lock = `${file}.lock`
   const deadline = Date.now() + 5000
-  let fd: number | undefined
-  while (fd === undefined) {
-    try { fd = fs.openSync(lock, 'wx', 0o600); fs.writeFileSync(fd, String(process.pid)) }
-    catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
-      // Recover a crashed writer; never remove a live session's lock.
-      try {
-        const owner = Number(fs.readFileSync(lock, 'utf8'))
-        if (Number.isInteger(owner) && owner > 0) {
-          try { process.kill(owner, 0) } catch (err) { if ((err as NodeJS.ErrnoException).code === 'ESRCH') fs.rmSync(lock, { force: true }) }
-        }
-      } catch { /* another writer may have just removed it */ }
-      if (Date.now() >= deadline) throw new Error('timed out waiting to remember Room name')
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
+  let release: (() => void) | undefined
+  while (!release) {
+    release = acquireOwnedFile(lock, { pid: process.pid })
+    if (release) break
+    if (Date.now() >= deadline) throw new Error('timed out waiting to remember Room name')
+    await new Promise(resolve => setTimeout(resolve, 10))
   }
   try {
     const prev = await readChoice(dir)
@@ -95,8 +87,7 @@ export async function rememberTag(dir: string, tag: string): Promise<RoomChoice>
     finally { fs.rmSync(temp, { force: true }) }
     return c
   } finally {
-    fs.closeSync(fd)
-    fs.rmSync(lock, { force: true })
+    release()
   }
 }
 

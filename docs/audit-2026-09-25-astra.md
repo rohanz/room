@@ -122,11 +122,11 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 **Inferred:** Traced setup and cleanup; these suites could not execute in this sandbox.
 
-## Leave
+## Left by the original audit; fixed in 0.16.3
 
 ### 8. Medium — Automatic-name crash recovery still has an unlink race
 
-**LEFT (roadmap).**
+**FIXED in 0.16.3 (ports-locks branch).**
 
 **Locations:** `packages/room-mcp/src/session.ts:292`; `packages/room-mcp/src/choice.ts:80`.
 
@@ -136,11 +136,11 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 **Smallest clean change:** Serialize stale-lock recovery with a separate exclusive recovery guard, then re-read the owner before removal. A reread without serialization still leaves a race.
 
-**Inferred.** Leave after the trial because it requires concurrent crash recovery; fresh-lock acquisition uses exclusive creation correctly.
+**Inferred in the audit.** The fix serializes recovery and re-reads the owner under the guard.
 
 ### 9. Medium — Worker ports are unique only within one lead’s running-worker list
 
-**LEFT (roadmap).**
+**FIXED in 0.16.3 (ports-locks branch).**
 
 **Locations:** `packages/room-mcp/src/tools/workers.ts:164`, `:252`; `packages/room-mcp/src/workers.ts:111`.
 
@@ -152,7 +152,7 @@ No files were edited, no commits made, and no plugin build run. Final working tr
 
 **Reproduced:** A parent recorded on port `4400` saw an empty allocation set when spawning its first child, which also received `4400`.
 
-Leave for this three-user trial if each user runs on a separate machine without nested server-running workers.
+Fixed for nested workers and concurrent local leads.
 
 ## Verification
 
