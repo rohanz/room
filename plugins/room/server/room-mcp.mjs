@@ -17610,13 +17610,14 @@ function isInsideRoot(rootInput, targetInput, options = {}) {
   return (!!options.allowRoot || rel !== "") && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 function containedRepoPath(rootInput, targetInput, options) {
-  const root = fs2.realpathSync(rootInput);
-  const target = path.resolve(root, path.relative(path.resolve(rootInput), path.resolve(targetInput)));
+  const root = path.resolve(rootInput);
+  if (fs2.lstatSync(root).isSymbolicLink() || fs2.realpathSync(root) !== root) return { ok: false, reason: "link" };
+  const target = path.resolve(targetInput);
+  if (!isInsideRoot(root, target, options)) return { ok: false, reason: "outside" };
   if (options.leaf === "read-contained-link") {
     const real = fs2.realpathSync(target);
     return isInsideRoot(root, real, options) ? { ok: true, path: real } : { ok: false, reason: "outside" };
   }
-  if (!isInsideRoot(root, target, options)) return { ok: false, reason: "outside" };
   const checkThrough = options.leaf === "reject-link" ? target : path.dirname(target);
   if (options.leaf === "replace-link") {
     const real = fs2.realpathSync(checkThrough);
@@ -46122,10 +46123,34 @@ import path18 from "node:path";
 async function buildCombinedTree(state, caller, participants, options = {}) {
   const { rooms, liveText, baseFor, shareOf } = state;
   const people = participants.map((p) => p.person);
+  const previewWorkers = /* @__PURE__ */ new WeakMap();
   const previewWorker = (s, person) => {
+    let byPerson = previewWorkers.get(s);
+    if (!byPerson) {
+      byPerson = /* @__PURE__ */ new Map();
+      previewWorkers.set(s, byPerson);
+    }
+    if (byPerson.has(person)) return byPerson.get(person);
     const w = s.local || options.diskWorkers?.has(person) ? s.room.workerOf(person) : void 0;
-    return w?.lead === s.me.name && fs20.existsSync(w.dir) ? w : diskWorker(s, person);
+    const worker = w?.lead === s.me.name && fs20.existsSync(w.dir) ? w : diskWorker(s, person);
+    byPerson.set(person, worker);
+    return worker;
   };
+  const previewDirs = /* @__PURE__ */ new Set([caller.dir]);
+  for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
+    const worker = previewWorker(session, person);
+    if (worker) previewDirs.add(worker.dir);
+  }
+  const roots = options.roots ?? new Map([...previewDirs].map((dir) => {
+    if (fs20.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
+    return [path18.resolve(dir), fs20.realpathSync(dir)];
+  }));
+  const rootOf = (dir) => {
+    const root = roots.get(path18.resolve(dir));
+    if (!root) throw new Error("uncaptured preview root: " + dir);
+    return root;
+  };
+  for (const dir of previewDirs) rootOf(dir);
   const previewText = async (s, p, person) => {
     const w = previewWorker(s, person);
     const dir = w?.dir ?? (person === caller.me.name && s === caller ? caller.dir : void 0);
@@ -46134,7 +46159,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
       return options.encoding === "latin1" && typeof live === "string" ? Buffer.from(live, "utf8").toString("latin1") : live;
     }
     if (!validRepoPath(p, { ...DISK_READ_PATH, blank: "allow" })) throw new Error("unsafe preview path: " + p);
-    const root = fs20.realpathSync(dir);
+    const root = rootOf(dir);
     try {
       const result = containedRepoPath(root, path18.join(root, p), { leaf: "read-contained-link" });
       if (!result.ok) throw new Error("unsafe preview symlink: " + p);
@@ -46192,7 +46217,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
       const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : void 0);
       let reason = workerOwnedPaths(session.room.workerOf(person)).includes(p) ? "linked input" : void 0;
       if (!reason && dir) {
-        const root = fs20.realpathSync(dir);
+        const root = rootOf(dir);
         try {
           if (!containedRepoPath(root, path18.join(root, p), { leaf: "read-contained-link", allowRoot: true }).ok) reason = "symlink leaving the worktree";
         } catch (e) {
@@ -46353,7 +46378,7 @@ ${conflicts.join("\n")}`);
     if (resolvable.length && options.resolve !== true) out2.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone.`);
   }
   out2.unshift(`preview merge of your changes with ${people.map((p) => `${p}'s`).join(", ")} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? "fallback" : "git"}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join("; ")}` : ""}):`);
-  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out: out2, ignoredNotes };
+  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out: out2, ignoredNotes, roots };
 }
 function supersetSide(a, b) {
   const contains2 = (outer, inner) => {
@@ -46538,7 +46563,10 @@ ${text}--- end ${p} ---`);
         else {
           const modeParticipants = (await Promise.all(participants.map(async ({ person, session }) => {
             const w = session.room.workerOf(person);
-            return w && fs21.existsSync(w.dir) ? { dir: w.dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) } : void 0;
+            if (!w || !fs21.existsSync(w.dir)) return void 0;
+            const dir = result.roots.get(path19.resolve(w.dir));
+            if (!dir) throw new Error("uncaptured preview root: " + w.dir);
+            return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) };
           }))).filter((x) => !!x);
           const modes = /* @__PURE__ */ new Map();
           for (const p of merged.keys()) {
@@ -46595,7 +46623,8 @@ function mirrorLinks(cloneDir, scratchDir, src, dst) {
   }
 }
 function ensureMergedDirectory(root, rel) {
-  const canonicalRoot = fs21.realpathSync(root);
+  const canonicalRoot = path19.resolve(root);
+  if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged root is no longer safe");
   if (!rel) return canonicalRoot;
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe merged path: " + rel);
   let at = canonicalRoot;
@@ -46632,7 +46661,7 @@ function mergedFileMode(rel, initialMode, participants) {
     const src = path19.join(participant.dir, rel);
     let stat4;
     try {
-      const root = fs21.realpathSync(participant.dir);
+      const root = path19.resolve(participant.dir);
       if (!containedRepoPath(root, path19.join(root, rel), { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("unsafe worker mode path: " + rel);
       stat4 = fs21.lstatSync(src);
     } catch (e) {
@@ -46651,7 +46680,8 @@ function mergedFileMode(rel, initialMode, participants) {
 }
 function materializeMergedFile(root, rel, bytes, mode2 = 420) {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe merged path: " + rel);
-  const canonicalRoot = fs21.realpathSync(root);
+  const canonicalRoot = path19.resolve(root);
+  if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged root is no longer safe");
   const parts2 = rel.split("/");
   const parent = ensureMergedDirectory(canonicalRoot, parts2.slice(0, -1).join("/"));
   const file = path19.join(parent, parts2.at(-1));
@@ -46685,7 +46715,7 @@ function testVerdict(output, code) {
   return { passed, text: [...summaries.slice(-5), verdict].join("\n") };
 }
 async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map()) {
-  const dir = fs21.mkdtempSync(path19.join(os7.tmpdir(), "room-merge-"));
+  const dir = fs21.realpathSync(fs21.mkdtempSync(path19.join(os7.tmpdir(), "room-merge-")));
   try {
     await materializeGitTree(s.dir, ancestor, dir);
     for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, "latin1"), modes.get(rel) ?? 420);
@@ -46809,8 +46839,7 @@ async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors)
 var failureReason = (w) => w.exitCode !== void 0 && w.exitCode !== 0 ? `exit code ${w.exitCode}${w.summary ? `; ${w.summary.replace(/\s+/g, " ").slice(0, 180)}` : ""}` : w.stopReason ?? w.summary?.replace(/\s+/g, " ").slice(0, 180) ?? "worker reported failure";
 function safePath(root, rel) {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe collection path: " + rel);
-  const rootReal = fs22.realpathSync(root);
-  const result = containedRepoPath(rootReal, path20.join(rootReal, rel), { leaf: "reject-link", allowMissing: true });
+  const result = containedRepoPath(root, path20.join(root, rel), { leaf: "reject-link", allowMissing: true });
   if (!result.ok) throw new Error(result.reason === "link" ? "symlink collection path refused: " + rel : "unsafe collection path: " + rel);
   return result.path;
 }
@@ -47014,7 +47043,9 @@ repeat with force=true to delete them`;
     }
     const out2 = [];
     const selected = [];
-    const lock = "collect:" + fs22.realpathSync(lead.dir);
+    const leadRoot = fs22.realpathSync(lead.dir);
+    const workerRoots = /* @__PURE__ */ new Map();
+    const lock = "collect:" + leadRoot;
     if (!rooms.reserve(lock)) return "error: another collection is in progress";
     const workerLocks = [];
     try {
@@ -47040,7 +47071,8 @@ repeat with force=true to delete them`;
             out2.push(`${a.tag ? "nothing to collect" : "skipped " + w.tag}: worktree ${w.dir} is gone`);
             continue;
           }
-          if (fs22.realpathSync(w.dir) === fs22.realpathSync(lead.dir)) throw new Error("worker must have a separate worktree");
+          const workerRoot = fs22.realpathSync(w.dir);
+          if (workerRoot === leadRoot) throw new Error("worker must have a separate worktree");
           await assertNoOperation(w.dir);
           const common = async (dir) => fs22.realpathSync(path20.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
           if (await common(lead.dir) !== await common(w.dir)) throw new Error("worker is not a worktree of this repository");
@@ -47069,6 +47101,7 @@ repeat with force=true to delete them`;
             continue;
           }
           selected.push({ s, w });
+          workerRoots.set(w, workerRoot);
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
           if (a.tag) throw e;
@@ -47081,22 +47114,23 @@ repeat with force=true to delete them`;
         const { s, w } = selected[0];
         const releasePaths = (paths) => releaseClaimsOnDone(s, (c) => !paths.some((p) => claimsOverlap(c, { path: p, from: 1, to: Number.MAX_SAFE_INTEGER })), w.name, false);
         if (!Array.isArray(a.paths) || !a.paths.length || a.paths.some((p) => typeof p !== "string")) return "error: copy requires non-empty paths";
-        const files = copyFiles(w.dir, a.paths);
+        const workerRoot = workerRoots.get(w);
+        const files = copyFiles(workerRoot, a.paths);
         const modified = new Set(split(await git(lead.dir, ["diff", "--name-only", "-z", "HEAD", "--"])));
         const tracked = new Set(split(await git(lead.dir, ["ls-files", "-z"])));
         for (const p of files) {
-          const dst = safePath(lead.dir, p);
+          const dst = safePath(leadRoot, p);
           if (fs22.existsSync(dst) && !fs22.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
           if (a.force !== true && (modified.has(p) || !tracked.has(p) && fs22.existsSync(dst))) {
-            if (!fs22.existsSync(dst) || !fs22.readFileSync(dst).equals(fs22.readFileSync(safePath(w.dir, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
+            if (!fs22.existsSync(dst) || !fs22.readFileSync(dst).equals(fs22.readFileSync(safePath(workerRoot, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
           }
         }
         releasePaths(files);
         for (const p of files) {
-          const dst = safePath(lead.dir, p);
+          const dst = safePath(leadRoot, p);
           fs22.mkdirSync(path20.dirname(dst), { recursive: true });
-          fs22.copyFileSync(safePath(w.dir, p), dst);
-          fs22.chmodSync(dst, fs22.statSync(safePath(w.dir, p)).mode & 511);
+          fs22.copyFileSync(safePath(workerRoot, p), dst);
+          fs22.chmodSync(dst, fs22.statSync(safePath(workerRoot, p)).mode & 511);
           out2.push("copied " + p);
         }
         if (!files.length) out2.push("nothing copied (empty directories)");
@@ -47113,7 +47147,8 @@ repeat with force=true to delete them`;
           diskOnly: true,
           diskWorkers: new Set(selected.map(({ w }) => w.name)),
           encoding: "latin1",
-          skipCallerOnly: true
+          skipCallerOnly: true,
+          roots: new Map([[path20.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path20.resolve(w.dir), workerRoots.get(w)])])
         }
       );
       const unsupported = result.ignoredNotes.filter((note) => !note.includes("gitignored") && !note.includes("linked input"));
@@ -47129,11 +47164,11 @@ repeat with force=true to delete them`;
         unchangedCarried.set(w.name, carriedUnchangedPaths(workerBaseline(w)));
       }
       for (const [p, text] of result.merged) {
-        const file = safePath(lead.dir, p);
+        const file = safePath(leadRoot, p);
         const before = fs22.existsSync(file) ? fs22.readFileSync(file) : null;
         if ((before === null ? null : before.toString("latin1")) !== result.initial.get(p)) throw new Error(p + " changed during collection; nothing written, retry");
         const oldMode = before !== null ? fs22.statSync(file).mode & 511 : 420;
-        const mode2 = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: w.dir, baseModes: baseModes.get(w.name), ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) })));
+        const mode2 = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: workerRoots.get(w), baseModes: baseModes.get(w.name), ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) })));
         const after = text === null ? null : Buffer.from(text, "latin1");
         if (before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode2 === oldMode || before === null && after === null) continue;
         changes.push({ p, file, before, after, mode: mode2, oldMode });
@@ -47142,11 +47177,11 @@ repeat with force=true to delete them`;
       try {
         for (const change of changes) {
           written.push(change);
-          materializeMergedFile(lead.dir, change.p, change.after, change.mode);
+          materializeMergedFile(leadRoot, change.p, change.after, change.mode);
         }
       } catch (e) {
         for (const change of written.reverse()) {
-          materializeMergedFile(lead.dir, change.p, change.before, change.oldMode);
+          materializeMergedFile(leadRoot, change.p, change.before, change.oldMode);
         }
         throw e;
       }
