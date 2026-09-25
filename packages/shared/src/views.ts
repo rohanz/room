@@ -292,7 +292,7 @@ export function workerLines(inputs: readonly WorkerLineInput[], options: { all?:
   if (!inputs.length && (!options.all || !retired.length)) return []
   const visible = inputs.filter(i => options.all || i.worker.stopReason || i.worker.status === 'running' || i.worker.status === 'failed')
   const finished = inputs.length - visible.length
-  const out = [`workers (${inputs.length}):`, ...[...visible]
+  const out = [`workers (${visible.length + (options.all ? retired.length : 0)}):`, ...[...visible]
     .sort((a, b) => a.worker.startedAt - b.worker.startedAt)
     .flatMap(workerLine)]
   if (options.all) {

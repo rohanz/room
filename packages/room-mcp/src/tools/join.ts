@@ -288,6 +288,8 @@ export function install(state: HandlerState): void {
       try {
         const n = await doJoin({ ...rejoinOptions(s, ctx.config?.credentialsPath), room: target })
         delete n.pinnedRoom
+        const stale = s.room.messages().filter(m => m.type === 'note' && m.from === 'room' && m.to === s.me.name && m.text.startsWith(`you switched to ${branch}; the room is for ${current};`)).map(m => m.id)
+        if (stale.length) { s.room.markSeen(s.me.name, stale); for (const id of stale) seen.add(id) }
         cleanupMine(s, `switched branch to ${branch}`)
         rooms.remove(s)
         await doLeave(s)

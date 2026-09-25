@@ -376,7 +376,7 @@ export class Rooms {
         catch (e) { stopWarning = `; warning: could not clear saved stop reason: ${e instanceof Error ? e.message : String(e)}`; log(`worker resume:${stopWarning}`) }
         this.releaseLaunch(); launchReserved = false
         this.watchWorkerProcess(s, id, proc, `could not resume ${w.tag}`, log)
-        return `resumed ${w.tag} with your message${portChanged ? `; dev-server PORT is ${port}` : ''}${w.share ? '' : ' (legacy worker has no saved sharing level; using intent)'}${stopWarning}`
+        return `resumed ${w.tag} with your message${w.status === 'done' ? `; ${w.tag} had finished and was restarted` : ''}${portChanged ? `; dev-server PORT is ${port}` : ''}${w.share ? '' : ' (legacy worker has no saved sharing level; using intent)'}${stopWarning}`
       } finally {
         if (!portPassedToProcess) portReservation?.release()
         if (launchReserved) this.releaseLaunch()

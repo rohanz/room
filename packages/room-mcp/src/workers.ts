@@ -102,6 +102,7 @@ export function shouldRetire(facts: RetirementFacts): RetiredWorker['outcome'] |
 /** Unknown git state must never be mistaken for clean work. */
 export async function workerGitFacts(leadDir: string, w: Worker): Promise<Pick<RetirementFacts, 'merged' | 'clean' | 'ahead' | 'uncommitted'>> {
   const facts: Pick<RetirementFacts, 'merged' | 'clean' | 'ahead' | 'uncommitted'> = { merged: false, clean: false, ahead: undefined }
+  if (!await isOwnedWorkerWorktree(leadDir, w, w.lead)) return facts
   try {
     const owned = new Set(await workerChangedPaths(w))
     const status = await git(w.dir, ['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--', '.'])

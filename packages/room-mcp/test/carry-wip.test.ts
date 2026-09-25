@@ -404,6 +404,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     put(dir, 'shared.txt', lines([2, 'lead edit'], [9, 'worker edit']))
     await t.finish('carried-line')
     const preview = await t.call('room_preview_merge', { person: 'rohanz+carried-line' })
+    expect(preview).toMatch(/against rohanz\+carried-line's base/)
     expect(preview).toMatch(/touched by one side only since rohanz\+carried-line's base [0-9a-f]{10} \(merge trivially; the lead's carried edits are in that base\): shared\.txt \(rohanz\+carried-line only\)/)
   })
 

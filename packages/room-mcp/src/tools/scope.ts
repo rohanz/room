@@ -5,6 +5,7 @@ import { sameCheckoutSession } from '../company.js'
 import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
+import { isOwnedWorkerWorktree } from '../workers.js'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
@@ -22,6 +23,7 @@ export const defs: ToolDef[] = [
 /** A stopped worker may have lost its overlay while its worktree still holds edits. */
 async function workerChangedCount(s: Session, worker: import('@room/shared').Worker, processGone: boolean): Promise<number> {
   const overlayCount = s.room.changedPaths(worker.name).length
+  if (!await isOwnedWorkerWorktree(s.dir, worker, s.me.name, [...s.room.workers.values(), ...s.room.retiredWorkers()])) return overlayCount
   if (!processGone && worker.status === 'running' && s.room.overlays.has(worker.name)) return overlayCount
   try {
     return (await workerChangedPaths(worker)).length

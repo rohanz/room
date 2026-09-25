@@ -12,6 +12,11 @@ use broke and proposes the order of work.
 - **Crash recovery lock race (0.16.1 audit finding 8):** automatic-name and choice locks now serialize stale-owner recovery with a reclaimable guard and re-read the owner before removing a lock.
 - **Worker port reservations (0.16.1 audit finding 9):** worker ports now include the parent, use machine-local reservations across leads, and release or reclaim reservations after worker exits.
 
+## Fixed in 0.16.4
+
+- **Worker wording and bookkeeping (0.16.x check):** Discarding a worker launched in an existing directory reports the stop and retained directory without an error. Its own model is shown, and the lead's edits are not counted as worker files. Worker counts match displayed rows, preview names use full room names, and a finished worker's resume reply says it was restarted.
+- **Leave, preview, and branch switch (0.16.x check):** Plain `room_leave` refuses while workers run; `force=true` dismisses them. Preview lists accept the lead's name alongside others, and a branch switch delivers one reply after joining the new room while marking the old room warning seen.
+
 ## The design the gaps point at: cost scales with overlap
 
 The gap list below says what breaks. This is the one idea that fixes most of it. Multiplayer
@@ -326,18 +331,6 @@ files, and large-repo collection and merge preview without a test command. Previ
 Still open from this audit: merge preview with `run` still materializes the lead's full
 tree. Fixed in 0.16.1: `*.tsbuildinfo` at a package root is regenerable output and no
 longer keeps a collected worktree.
-
-### Wording and bookkeeping seen in the 0.16.x checks (2026-09-25, open, small)
-
-- Stopping or discarding a worker spawned with `dir` stops it but replies "Error: worker is not an owned
-  Room worktree; retained …"; that worker's entry shows the lead's model and "uncommitted files left in its
-  worktree" (the lead's own edits).
-- room_state says "workers (0):" and then lists dismissed workers.
-- A merge preview line named a worker "b" instead of "rohanz+b".
-- The resume reply does not say the worker had finished and was restarted.
-- Plain room_leave stops running workers; room_preview_merge refuses a list that includes the lead.
-- After a branch switch the "you switched" note lands in the room the session just left, so the agent
-  sees it late (Room has already moved the session to the new branch's room).
 
 ### After 0.14.1 (2026-09-24, open)
 

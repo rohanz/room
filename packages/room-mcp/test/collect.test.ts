@@ -93,6 +93,21 @@ describe('room_collect', () => {
     const lines = workerLines([], { all: true, retiredWorkers: t.s.room.retiredWorkers() }).join('\n')
     expect(lines).toContain(`kept for ignored output at ${worker}`)
     expect(lines).not.toContain('uncommitted')
+    expect(lines).toContain('workers (1):')
+  })
+  it('stops a worker in an existing directory and reports that its directory was retained', async () => {
+    const t = setup('running')
+    t.s.room.workers.set('test', { ...t.w, dir: lead, branch: 'main', model: 'worker-model' } as never)
+    let alive = true
+    const stopped = vi.fn(async () => { alive = false; return 'pid signalled' })
+    t.state.workerAlive = () => alive
+    t.state.dismissWorker = stopped as never
+    const result = await t.call({ tag: 'test', discard: true })
+    expect(stopped).toHaveBeenCalledOnce()
+    expect(result).toContain(`stopped test; kept ${lead} (an existing directory, not a Room worktree)`)
+    expect(result).not.toContain('error:')
+    expect(fs.existsSync(lead)).toBe(true)
+    expect(t.s.room.retiredWorkers()[0]?.model).toBe('worker-model')
   })
   it('stops worktree processes even when ignored output keeps the collected worktree', async () => {
     const t = setup()

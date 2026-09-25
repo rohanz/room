@@ -48,6 +48,20 @@ describe('shouldRetire', () => {
   })
 })
 
+it('does not count the lead checkout edits as an existing-dir worker\'s uncommitted files', async () => {
+  const { dir } = repo()
+  writeFileSync(join(dir, 'lead-only'), 'lead edit')
+  const w = { ...worker(dir), branch: 'main', status: 'dismissed' as const }
+  expect((await workerGitFacts(dir, w)).uncommitted).toBeUndefined()
+})
+
+it('does not inspect a separate checkout that Room does not own even if its branch looks like a worker branch', async () => {
+  const { dir } = repo(), { dir: external, git } = repo()
+  git('checkout', '-qb', 'room/w')
+  writeFileSync(join(external, 'outside'), 'external edit')
+  expect((await workerGitFacts(dir, worker(external))).uncommitted).toBeUndefined()
+})
+
 describe('git facts and lead evaluation', () => {
   it('retains a done worker and its actionable record when ignored output remains', async () => {
     const { dir } = repo(), r = registry(dir)
@@ -162,7 +176,7 @@ describe('git facts and lead evaluation', () => {
     r.close()
   })
   it('distinguishes merged, dirty, ahead, clean and missing worktrees', async () => {
-    const { dir, git } = repo(), work = join(dir, 'work')
+    const { dir, git } = repo(), work = join(dir, '.room', 'workers', 'w')
     git('worktree', 'add', '-qb', 'room/w', work)
     const w = { ...worker(work), base: git('rev-parse', 'HEAD') }
     expect(await workerGitFacts(dir, w)).toEqual({ merged: false, clean: true, ahead: 0, uncommitted: 0 })

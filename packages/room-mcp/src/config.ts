@@ -179,5 +179,6 @@ export function resolveSessionRuntime(dir: string, env: NodeJS.ProcessEnv = proc
   // value across /clear. A newer Claude hook file is authoritative; an unrelated
   // host's file from this clone is not.
   if (env.CLAUDE_CODE_SESSION_ID && resolveSessionHost(dir, env) === 'claude' && session.session_id !== env.CLAUDE_CODE_SESSION_ID && session.host !== 'claude') session = {}
-  return { model: clean(session.model) ?? clean(env.ROOM_WORKER_MODEL), effort: effort(session.effort) ?? effort(env.ROOM_WORKER_EFFORT) }
+  const ownSession = env.ROOM_WORKER_ID ? session.worker_id === env.ROOM_WORKER_ID : !session.worker_id
+  return { model: (ownSession ? clean(session.model) : undefined) ?? clean(env.ROOM_WORKER_MODEL), effort: (ownSession ? effort(session.effort) : undefined) ?? effort(env.ROOM_WORKER_EFFORT) }
 }

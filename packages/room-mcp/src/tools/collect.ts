@@ -156,7 +156,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (!s.room.workers.has(child.tag)) continue
           const result = await roomCollect({ tag: child.tag, discard: true, force: true }, new Set([...discarding, w.name]))
           childResults.push(result)
-          if (!result.startsWith('discarded ')) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
+          if (!result.startsWith('discarded ') && !result.startsWith('stopped ')) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
         }
         // A headless host can take its child server down as it exits. Record and stop
         // worktree processes while they are still observable, before dismissing it.
@@ -176,7 +176,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (state.workerAlive(s, w)) throw new Error('worker process has not stopped')
         }
         terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors))
-        const ignored = await ignoredWorkerArtifacts(w)
+        const ownedWorktree = await isOwnedWorkerWorktree(s.dir, w, s.me.name, ownershipRecords(s))
+        const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w) : []
         if (ignored.length && a.force !== true) {
           return [
             `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}`,
@@ -187,16 +188,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             'copy what you need (mode="copy", paths=[...]), then repeat with force=true to delete the rest',
           ].join('\n')
         }
-        const patch = await saveDiscardPatch(s.dir, w)
-        if (!await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
+        const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w) : undefined
+        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
         releaseClaimsOnDone(s, () => false, w.name, false)
         const retiredAt = Date.now()
         s.room.retireParticipant(w.name, {
-          name: w.name, tag: w.tag, lead: w.lead, host: w.host, task: w.task,
+          name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}), task: w.task,
           summary: 'discarded', files: [], fileCount: 0, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
         })
-        return [...childResults, 'discarded ' + w.tag + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
+        return [...childResults, (!ownedWorktree && fs.existsSync(w.dir) ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
       } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
       finally { rooms.unreserve(lock); rooms.unreserve(intent) }
     }

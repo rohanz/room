@@ -135,7 +135,7 @@ it('keeps running and failed worker details while compacting finished history', 
   const compact = workerLines(inputs, { retiredWorkers: [retired] }).join('\n')
   expect(compact).toContain('running (codex, running')
   expect(compact).toContain('failed (codex, failed')
-  expect(compact).toContain('workers (4):')
+  expect(compact).toContain('workers (2):')
   expect(compact).toContain('finished: 2 (all=true lists them)')
   expect(compact).not.toContain('done (codex')
   expect(compact).not.toContain('shipped')
@@ -144,7 +144,7 @@ it('keeps running and failed worker details while compacting finished history', 
   expect(expanded).toContain('old (merged, actual-model): shipped · 60 files')
   expect(expanded).not.toContain('all=true')
   expect(workerLines([], { retiredWorkers: [retired] })).toEqual([])
-  expect(workerLines([], { all: true, retiredWorkers: [retired] })).toContain('workers (0):')
+  expect(workerLines([], { all: true, retiredWorkers: [retired] })).toContain('workers (1):')
 })
 
 it('uses consistent activity wording at the action and worker thresholds', async () => {

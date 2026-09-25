@@ -128,13 +128,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.includeOffline !== undefined && typeof a.includeOffline !== 'boolean') return 'error: includeOffline must be a boolean'
       const explicit = Array.isArray(a.people) || !!alias
       const allSessions = rooms.all()
+      const fullName = (name: string) => allSessions.flatMap(s => [...s.room.workers.values()]).find(w => w.tag === name && w.lead === caller.me.name)?.name ?? name
       const presentSession = (person: string) => allSessions.find(s => presences(s).some(p => p.user.name === person))
       const present = Array.from(new Set(allSessions.flatMap(s => presences(s).map(p => p.user.name)))).filter(p => p !== caller.me.name)
       const available = Array.from(new Set(allSessions.flatMap(s => others(s)))).filter(p => p !== caller.me.name)
       const people = Array.from(new Set(explicit
-        ? Array.isArray(a.people) ? (a.people as string[]).map(p => p.trim()) : [alias]
-        : (a.includeOffline === true ? available : present).sort()))
-      if (people.includes(caller.me.name)) return 'error: people must contain one or more people other than you'
+        ? Array.isArray(a.people) ? (a.people as string[]).map(p => fullName(p.trim())) : [fullName(alias)]
+        : (a.includeOffline === true ? available : present).sort())).filter(p => p !== caller.me.name)
       const offlineWithOverlays = available.filter(person => !present.includes(person) && rooms.holding(person, caller).room.changedPaths(person).length > 0)
       const skipped = !explicit && a.includeOffline !== true ? offlineWithOverlays : []
       const skippedNote = skipped.length

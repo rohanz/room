@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.4
+
+- Discarding a worker in an existing directory reports the stop and retained directory without an error. Worker model and file counts no longer borrow the lead's metadata or edits; room_state worker counts match listed rows.
+- Merge previews expand worker tags to full room names and accept people lists that include the lead. Resume replies say when a finished worker was restarted. Branch switches deliver one reply after joining the new room and mark the old room warning seen; plain room_leave is covered by a regression check that it refuses while workers run.
+- Stabilized the skip-log and runtime-presence tests on slower runners: they wait for the logged skip total and call the registered file-watch callback directly instead of relying on polling timing.
+
 ## 0.16.3
 
 - Automatic-name and choice locks serialize stale-owner recovery, so concurrent contenders cannot remove a replacement lock held by a live process.

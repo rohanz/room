@@ -812,6 +812,12 @@ it('tracks SessionStart and PreToolUse receipts separately', async () => {
   expect(JSON.parse(readFileSync(join(dir, '.git/room-hook-activity.json'), 'utf8'))).toMatchObject({ session_id: 'separate', event: 'PreToolUse' })
 })
 
+it('tags worker SessionStart metadata so a shared checkout can identify its owner', async () => {
+  vi.stubEnv('ROOM_WORKER_ID', 'lead/worker#1')
+  await runHook('session-start.mjs', { session_id: 'worker-thread', cwd: dir, model: 'actual' })
+  expect(JSON.parse(readFileSync(join(dir, '.git/room-session.json'), 'utf8'))).toMatchObject({ worker_id: 'lead/worker#1', model: 'actual' })
+})
+
 it.each([['codex', []], ['claude', ['--host', 'claude']]] as const)('%s hook records host identity and a Bash receipt while alone', async (host, args) => {
   const id = `${host}-isolated`
   await runHook('session-start.mjs', { session_id: id, cwd: dir, hook_event_name: 'SessionStart', model: 'host-model' }, [...args])

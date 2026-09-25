@@ -725,9 +725,17 @@ describe('pinned rooms', () => {
     const t1 = createTools({ getSession: () => s1, setSession: x => { s1 = x }, cwd: dir })
     expect(await t1.call('room_state', { all: true })).not.toContain('switched to branch')
     const derived = { ...fakeSession(a, lead, false), roomName: 'github.com/o/x/other' } as Session
+    const oldWarning = a.post({ name: 'room', kind: 'bot' }, { type: 'note', to: lead.name, priority: 'notify', text: 'you switched to main; the room is for other; commits here are not the room base' })
+    const destination = pair().a
+    destination.setMeta({ repo: 'x', branch: 'main', base })
     let s2: Session | null = derived
-    const t2 = createTools({ getSession: () => s2, setSession: x => { s2 = x }, cwd: dir, join: async o => ({ ...fakeSession(a, lead, false), roomName: o.room ?? '?' }), leave: async () => {} })
-    expect(await t2.call('room_state', { all: true })).toContain('switched to branch main')
+    const t2 = createTools({ getSession: () => s2, setSession: x => { s2 = x }, cwd: dir, join: async o => ({ ...fakeSession(destination, lead, false), roomName: o.room ?? '?' }), leave: async () => {} })
+    const switched = await t2.call('room_state', { all: true })
+    expect(switched.match(/your clone switched to branch main/g)).toHaveLength(1)
+    expect(a.seen(lead.name).has(oldWarning.id)).toBe(true)
+    expect(destination.messages().filter(m => m.type === 'note' && m.to === lead.name && m.text?.includes('switched to branch main'))).toHaveLength(0)
+    await t2.call('room_state', { all: true })
+    expect(destination.messages().filter(m => m.type === 'note' && m.to === lead.name && m.text?.includes('switched to branch main'))).toHaveLength(0)
   })
 })
 
@@ -784,6 +792,7 @@ describe('worker safety', () => {
     const refused = await t.leadTools.call('room_leave', {})
     expect(refused).toContain('error: 1 worker(s) still running: a')
     expect(t.a.workers.get('a')?.status).toBe('running')
+    expect(t.killed).toHaveLength(0)
     const left = await t.leadTools.call('room_leave', { force: true })
     expect(left).toContain('left local/x/main')
     expect(t.killed).toHaveLength(1)
@@ -835,6 +844,16 @@ describe('worker safety', () => {
     const ok = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside, allowOutside: true })
     expect(ok).toContain('outside this repo, so no worktree was made')
     expect(t.a.workers.get('far')).toMatchObject({ dir: outside, branch: 'elsewhere' })
+  })
+  it('shows an existing-dir worker model without attributing the lead checkout edits to it', async () => {
+    const t = setupLead()
+    writeFileSync(join(dir, 'lead-only.txt'), 'lead edit')
+    try {
+      await t.leadTools.call('room_spawn', { tag: 'same', task: 'inspect', dir, host: 'codex', model: 'worker-model' })
+      const state = await t.leadTools.call('room_state', { all: true })
+      expect(state).toContain('same (codex worker-model')
+      expect(state).toContain('0 changed files · branch main')
+    } finally { rmSync(join(dir, 'lead-only.txt'), { force: true }) }
   })
 })
 
@@ -1021,6 +1040,11 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(await leadTools.call('room_state', { path: 'app.py' })).toContain('uncommitted changes by: rohanz+money')
     const pm = await leadTools.call('room_preview_merge', { person: 'rohanz+money' })
     expect(pm, pm).toContain('no conflicts')
+    const includingLead = await leadTools.call('room_preview_merge', { people: ['rohanz', 'rohanz+money'] })
+    expect(includingLead).toContain('step 1: merge rohanz+money')
+    const byTag = await leadTools.call('room_preview_merge', { people: ['money'] })
+    expect(byTag).toContain('step 1: merge rohanz+money')
+    expect(byTag).toContain('from rohanz, rohanz+money')
     const all = await leadTools.call('room_preview_merge', { people: ['rohanz+money', 'rohanz+tiers'], run: 'cat app.py tiers.py' })
     expect(all).toContain('x = 100')
     expect(all).toContain('tier = "gold"')
@@ -1030,6 +1054,9 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(failed).toMatch(/Tests: 1 failed, 1 total\ntests: FAILED \(exit 3\)$/)
     // dismissing the team-room worker signals only the team-room process; the local one is untouched
     await leadTools.call('room_collect', { discard: true, tag: 'money' })
+    expect(killed).toEqual(['github.com/rohanz/x/main'])
+    expect(local.a.workers.get('money')?.status).toBe('running')
+    expect(await leadTools.call('room_leave', {})).toContain('worker(s) still running: money')
     expect(killed).toEqual(['github.com/rohanz/x/main'])
     expect(local.a.workers.get('money')?.status).toBe('running')
     await leadTools.call('room_leave', { force: true })
@@ -1449,7 +1476,7 @@ describe('worker follow-up sessions', () => {
     t.exits[0](0)
     await vi.waitFor(() => expect(t.a.workers.get('money')?.exitCode).toBe(0))
     const sent = await t.leadTools.call('room_send', { type: 'note', to: 'money', text: 'fix the review finding' })
-    expect(sent).toContain('resumed money with your message')
+    expect(sent).toContain('money had finished and was restarted')
     expect(t.specs[1].env).toEqual(t.specs[0].env)
     expect(t.specs[1]).toMatchObject({ cwd: initial.dir, env: { ROOM_TAG: 'money', ROOM_WORKER_THREADS: t.specs[0].env.ROOM_WORKER_THREADS, ROOM_WORKER_MEM_GB: t.specs[0].env.ROOM_WORKER_MEM_GB } })
     expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, 'fix the review finding', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
@@ -1483,7 +1510,7 @@ describe('worker follow-up sessions', () => {
     t.a.updateWorker('quickreply', { status: 'done', summary: 'done', finishedAt: Date.now() })
     const reply = t.leadTools.call('room_send', { type: 'note', to: 'quickreply', text: 'one more fix' })
     setTimeout(() => t.exits[0](0), 20)
-    expect(await reply).toContain('resumed quickreply with your message')
+    expect(await reply).toContain('quickreply had finished and was restarted')
     expect(t.specs).toHaveLength(2)
   })
 
