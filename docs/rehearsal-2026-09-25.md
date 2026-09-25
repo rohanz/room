@@ -84,3 +84,38 @@ Room 0.16.0 on the hosted server (Fly release v62).
 - Fix 1–5 (and 6 if cheap), then rehearse once more on the hosted server with a Fly machine that has
   been idle, and with at least one other GitHub login if Kieran or Hrishi can spare ten minutes.
 - The friend checklist should say "when your task is done, say: commit and push it to trial".
+
+## Second run, same day (13:00, Room 0.16.3 plus hygiene, Fly v64)
+
+Same repository and cards on a fresh branch `rehearsal-2` at the snapshot commit, three fresh clones,
+same hosts, driven the same way. Two additions: the Fly machine had stopped from idle before anyone
+joined, and Ana was told "when it's done, commit it on its own branch and push that branch so I can
+look at it before it goes in", which is what triggered finding 1 last time.
+
+Result: all three cards pushed to `rehearsal-2` within about nine minutes of "take issue N"; the
+combined branch passes the trial check (286) and the whole suite (992); the ETag and the
+`content_md5` deprecation match upstream's behaviour.
+
+- **Fly from idle:** the first join woke the stopped machine; Ana was in the room about 21 s after
+  "join the room", including loading the skill.
+- **Finding 1 is fixed live:** Ana's review branch and its push produced no base message for anyone.
+  When she moved the commit onto `rehearsal-2` and pushed, Ben and Cy were told once, with the new
+  `git pull --ff-only --autostash` instruction; Ben fast-forwarded and pushed on top.
+- **Findings 4 and 6 are fixed live:** the join note is plain words ("to keep file contents on this
+  machine, say: share plans only"), and Ana reads as "rohanz's agent" to the others.
+- **Addressing worked:** Cy's combined preview caught a failure in Ana's half-finished edit and told
+  Ana (not Ben); Cy's question about overlapping test claims went to Ben, who answered it.
+
+New findings:
+
+8. **A branch switch takes a session out of the room.** Room follows the checkout to the new branch's
+   room and releases its claims, so while Ana's work waited for review nobody could see it. This is
+   the per-branch room model; repository-level rooms (roadmap) remove it. Until then the trial
+   instruction "stay on the trial branch" matters.
+9. **A stale base notice reached Codex.** Cy got "rohanz+claude moved the base to d877e4e, git pull" after
+   it had already pulled that commit and pushed on top of it (Codex reads queued messages at the end of
+   its turn). It handled it, but Room could drop a base notice whose commit is already in the
+   recipient's HEAD when it is delivered.
+10. **Old branches in the same repository are visible to agents.** Ben saw last run's finished
+    commit on the old `rehearsal` branch via `git fetch` (and said it did not look). The public trial
+    repository will not have such branches; keep it that way.
