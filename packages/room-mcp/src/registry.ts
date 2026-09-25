@@ -15,6 +15,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
 import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, shouldRetire, workerCommand, workerGitFacts, workerLogTail, workerMaxBudget, workerOperationKey, workerPriority, workerProcessEnv, type SpawnedProcess, type Spawner } from './workers.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
+import { bindWorkerPortReservation, reserveWorkerPort, type PortReservation } from './port-reservations.js'
 
 export type Role = 'primary' | 'workers'
 
@@ -340,23 +341,31 @@ export class Rooms {
       const running = this.runningWorkerCount(s)
       if (!this.reserveLaunch(config.maxWorkers, running)) return `error: ${this.launchUsage(running)} workers already running or starting (max ${config.maxWorkers}, ROOM_MAX_WORKERS); wait for one to finish`
       let launchReserved = true
+      let portReservation: PortReservation | undefined
+      let portPassedToProcess = false
       try {
         const { server, isWorker } = workerOrigin(s)
-        const env = workerProcessEnv({ ...budget, host: w.host, model: w.model, effort: w.effort, port: w.port, server,
+        try { portReservation = reserveWorkerPort(id, [], undefined, w.port) }
+        catch (e) { return `error: could not reserve a port for ${w.tag}: ${e instanceof Error ? e.message : String(e)}` }
+        const port = portReservation.port
+        const portChanged = port !== w.port
+        const env = workerProcessEnv({ ...budget, host: w.host, model: w.model, effort: w.effort, port, server,
           room: s.roomName, dir: w.dir, tag: w.tag, lead: w.lead, owner: s.me.owner ?? s.me.name,
           share: w.share ?? 'intent', gen: w.gen ?? 1, id,
           token: s.local ? undefined : s.token, logDir: s.dir, isWorker })
         let maxBudgetUsd: string | undefined
         try { maxBudgetUsd = workerMaxBudget() } catch (e) { return `error: ${e instanceof Error ? e.message : String(e)}` }
-        const command = workerCommand(w.host, w.model, message, claudeChannel, w.effort, { tag: w.tag, sessionId: w.hostSessionId, resume: true, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels' })
+        const command = workerCommand(w.host, w.model, portChanged ? `${message}\n\nYour dev-server port is ${port} (PORT=${port}).` : message, claudeChannel, w.effort, { tag: w.tag, sessionId: w.hostSessionId, resume: true, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels' })
         const priority = workerPriority(command, { ...process.env, ROOM_WORKER_NICE: String(budget.nice) })
         const logFile = path.join(s.dir, '.room', 'workers', `${w.tag}.log`)
         if (toolCallAborted()) return 'error: tool call cancelled'
         let proc: SpawnedProcess
         try { proc = spawner({ cmd: priority.cmd, args: priority.args, cwd: w.dir, env, logFile, captureCodexSession: w.host === 'codex' }) }
         catch (e) { return `error: could not resume ${w.tag}: ${e instanceof Error ? e.message : String(e)}` }
+        bindWorkerPortReservation(proc, portReservation)
+        portPassedToProcess = true
         this.setHandle(s, id, proc)
-        const resumed = s.room.updateWorker(w.tag, { pid: proc.pid, status: 'running', startedAt: at, summary: undefined, exitCode: undefined, finishedAt: undefined, dismissedAt: undefined, stopReason: undefined }, id)
+        const resumed = s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running', startedAt: at, summary: undefined, exitCode: undefined, finishedAt: undefined, dismissedAt: undefined, stopReason: undefined }, id)
         if (!resumed) {
           this.dropHandle(s, id, proc)
           try { proc.kill() } catch (e) { log(`worker resume: could not stop stale ${w.tag}: ${e}`) }
@@ -367,8 +376,11 @@ export class Rooms {
         catch (e) { stopWarning = `; warning: could not clear saved stop reason: ${e instanceof Error ? e.message : String(e)}`; log(`worker resume:${stopWarning}`) }
         this.releaseLaunch(); launchReserved = false
         this.watchWorkerProcess(s, id, proc, `could not resume ${w.tag}`, log)
-        return `resumed ${w.tag} with your message${w.share ? '' : ' (legacy worker has no saved sharing level; using intent)'}${stopWarning}`
-      } finally { if (launchReserved) this.releaseLaunch() }
+        return `resumed ${w.tag} with your message${portChanged ? `; dev-server PORT is ${port}` : ''}${w.share ? '' : ' (legacy worker has no saved sharing level; using intent)'}${stopWarning}`
+      } finally {
+        if (!portPassedToProcess) portReservation?.release()
+        if (launchReserved) this.releaseLaunch()
+      }
     } finally { this.unreserve(key) }
   }
 }

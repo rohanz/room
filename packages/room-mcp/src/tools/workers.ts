@@ -1,6 +1,6 @@
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses, allocateWorkerPort, isOwnedWorkerWorktree } from '../workers.js'
+import { pidAlive, pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses, isOwnedWorkerWorktree } from '../workers.js'
 import { releaseClaimsOnDone } from './claims.js'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -15,6 +15,7 @@ import { workerBudget, workerMaxBudget, workerProcessEnv, hostWorkerEffort, defa
 import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
+import { bindWorkerPortReservation, releaseWorkerProcessPort, reserveWorkerPort, type PortReservation } from '../port-reservations.js'
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
   const paths = new Set<string>()
   for (const match of task.matchAll(/(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
@@ -114,6 +115,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `error: ${rooms.launchUsage(starting)} workers already running or starting (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`
       }
       let launchReserved = true
+      let portReservation: PortReservation | undefined
+      let portPassedToProcess = false
       try {
         let dir: string, branch: string, base: string | undefined, created = false, outside = false
         let carried: PreparedWorktree['carried'], carryFailed = false, carryError: string | undefined
@@ -165,8 +168,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const port = (w as Worker & { port?: number }).port
           return typeof port === 'number' ? [port] : []
         })
-        let port: number | undefined
-        try { port = allocateWorkerPort(usedPorts) }
+        let port: number
+        try { portReservation = reserveWorkerPort(id, usedPorts); port = portReservation.port }
         catch (e) { return abortPrepared(`error: could not allocate a worker port: ${e instanceof Error ? e.message : String(e)}`) }
         const env = workerProcessEnv({ threads, memGb, host, model, effort, server, room: s.roomName, dir, tag,
           lead: s.me.name, owner, share: effectiveShare, gen, id,
@@ -186,6 +189,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (toolCallAborted()) return abortPrepared('error: tool call cancelled')
         try { proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args, cwd: dir, env, logFile, captureCodexSession: host === 'codex' }) }
         catch (e) { return abortPrepared(`error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`) }
+        bindWorkerPortReservation(proc, portReservation)
+        portPassedToProcess = true
         rooms.setHandle(s, id, proc)
         const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(hostSessionId ? { hostSessionId } : {}), budget: { threads, memGb, nice: scheduling.nice }, ...(port === undefined ? {} : { port }), share: effectiveShare, ...(link.length ? { link } : {}), task, dir, branch, ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}), ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
         s.room.setWorker(w)
@@ -218,6 +223,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
         return out.join('\n')
       } finally {
+        if (!portPassedToProcess) portReservation?.release()
         if (launchReserved) rooms.releaseLaunch()
         rooms.unreserve(idBase)
       }
@@ -290,6 +296,7 @@ export function install(state: HandlerState): void {
       if (signalled || stopReason) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
       if (signalled || workerAlive(s, w)) s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
       await stopCwdProcesses()
+      if (proc && !pidAlive(w.pid)) releaseWorkerProcessPort(proc)
       return how + cleanupText()
     }
 

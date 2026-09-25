@@ -149,11 +149,14 @@ export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 export const WORKERS_DIR = path.join('.room', 'workers')
 export const DEFAULT_MAX_WORKERS = 8
 
+export const WORKER_PORT_START = 4400
+export const WORKER_PORT_END = 4499
+
 /** A small, predictable range makes simultaneous worker dev servers independent. */
 export function allocateWorkerPort(used: Iterable<number>): number {
   const occupied = new Set(used)
-  for (let port = 4400; port <= 4499; port++) if (!occupied.has(port)) return port
-  throw new Error('all worker dev-server ports (4400-4499) are in use')
+  for (let port = WORKER_PORT_START; port <= WORKER_PORT_END; port++) if (!occupied.has(port)) return port
+  throw new Error(`all worker dev-server ports (${WORKER_PORT_START}-${WORKER_PORT_END}) are in use`)
 }
 
 /** Porcelain entries missing from a fresh worktree; Room's own directory is excluded. */

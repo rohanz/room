@@ -13,6 +13,7 @@ import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerEnv, codexSessionId, type SpawnSpec } from '../src/workers.js'
+import { reserveWorkerPort } from '../src/port-reservations.js'
 
 // Disk cleanup and patch restoration are exercised with real worktrees in collect.test.ts.
 // These lifecycle tests use synthetic worker directories and controlled process callbacks.
@@ -34,6 +35,9 @@ let roomEnv: Record<string, string | undefined>
 beforeEach(() => {
   roomEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => isRoomTestEnv(key)))
   for (const key of Object.keys(roomEnv)) delete process.env[key]
+  const configHome = mkdtempSync(join(tmpdir(), 'room-worker-config-'))
+  scratchRepos.push(configHome)
+  vi.stubEnv('XDG_CONFIG_HOME', configHome)
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -384,6 +388,95 @@ describe('room_spawn / room_done / room_collect discard', () => {
       expect(first).toContain('port 4400')
       expect(second).toContain('port 4401')
     } finally { await t.leadTools.shutdown() }
+  })
+
+  it('keeps ports distinct across independent lead registries', async () => {
+    const first = setup(), second = setup()
+    try {
+      await Promise.all([
+        first.leadTools.call('room_spawn', { tag: 'one', task: 'serve' }),
+        second.leadTools.call('room_spawn', { tag: 'two', task: 'serve' }),
+      ])
+      expect(first.specs[0].env.PORT).not.toBe(second.specs[0].env.PORT)
+    } finally {
+      await first.leadTools.shutdown()
+      await second.leadTools.shutdown()
+    }
+  })
+
+  it('does not assign a nested worker its parent dev-server port', async () => {
+    const configHome = process.env.XDG_CONFIG_HOME!
+    const parent = reserveWorkerPort('lead/parent', [], configHome)
+    const { a } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setWorker({ id: 'lead/parent', tag: 'money', name: workerId.name, lead: lead.name, host: 'codex', task: 'parent task', dir: join(dir, '.room', 'workers', 'money'), branch: 'room/money', pid: process.pid, port: parent.port, startedAt: Date.now(), status: 'running' })
+    let session: Session | null = fakeSession(a, workerId)
+    const specs: SpawnSpec[] = []
+    const tools = createTools({
+      getSession: () => session, setSession: s => { session = s }, cwd: dir,
+      spawner: spec => { specs.push(spec); return { pid: 4243, onExit: () => {}, kill: () => true } },
+      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+    })
+    try {
+      expect(parent.port).toBe(4400)
+      expect(await tools.call('room_spawn', { tag: 'child', task: 'serve' })).toContain('spawned child')
+      expect(specs[0].env.PORT).toBe('4401')
+    } finally { await tools.shutdown(); parent.release() }
+  })
+
+  it('does not treat the caller\'s PORT as a Room reservation', async () => {
+    vi.stubEnv('PORT', '4400')
+    const t = setup()
+    try {
+      await t.leadTools.call('room_spawn', { tag: 'first', task: 'serve' })
+      expect(t.specs[0].env.PORT).toBe('4400')
+    } finally { await t.leadTools.shutdown() }
+  })
+
+  it('releases the reserved port on exit, collect, discard and stop', async () => {
+    const file = (port: string) => join(process.env.XDG_CONFIG_HOME!, 'room', 'ports', port)
+    const exited = setup()
+    await exited.leadTools.call('room_spawn', { tag: 'exited', task: 'x' })
+    expect(existsSync(file(exited.specs[0].env.PORT))).toBe(true)
+    exited.exits[0](0)
+    expect(existsSync(file(exited.specs[0].env.PORT))).toBe(false)
+    await exited.leadTools.shutdown()
+
+    const collected = setup()
+    await collected.leadTools.call('room_spawn', { tag: 'collected', task: 'x' })
+    collected.a.updateWorker('collected', { status: 'done', summary: 'done', finishedAt: Date.now() })
+    collected.exits[0](0)
+    await vi.waitFor(() => expect(collected.a.workers.get('collected')?.exitCode).toBe(0))
+    await collected.leadTools.call('room_collect', { tag: 'collected' })
+    expect(existsSync(file(collected.specs[0].env.PORT))).toBe(false)
+    await collected.leadTools.shutdown()
+
+    const discarded = setup()
+    await discarded.leadTools.call('room_spawn', { tag: 'discarded', task: 'x' })
+    const discarding = discarded.leadTools.call('room_collect', { tag: 'discarded', discard: true })
+    setTimeout(() => discarded.exits[0](null), 10)
+    expect(await discarding).toContain('discarded discarded')
+    expect(existsSync(file(discarded.specs[0].env.PORT))).toBe(false)
+    await discarded.leadTools.shutdown()
+
+    const stopped = setup()
+    await stopped.leadTools.call('room_spawn', { tag: 'stopped', task: 'x' })
+    expect(await stopped.leadTools.call('room_leave', { force: true })).toContain('left local/x/main')
+    expect(existsSync(file(stopped.specs[0].env.PORT))).toBe(false)
+  })
+
+  it('releases a reserved port when spawning fails', async () => {
+    const { a } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base })
+    let session: Session | null = fakeSession(a, lead)
+    const tools = createTools({
+      getSession: () => session, setSession: s => { session = s }, cwd: dir,
+      spawner: () => { throw new Error('spawn failed') },
+      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: false }),
+    })
+    expect(await tools.call('room_spawn', { tag: 'failed', task: 'x' })).toContain('spawn failed')
+    expect(existsSync(join(process.env.XDG_CONFIG_HOME!, 'room', 'ports', '4400'))).toBe(false)
+    await tools.shutdown()
   })
 
   it.each(['plugin:custom@market', ''])('passes ROOM_CLAUDE_CHANNEL only with ROOM_WAKE=channels (%s)', async channel => {
@@ -1392,6 +1485,24 @@ describe('worker follow-up sessions', () => {
     setTimeout(() => t.exits[0](0), 20)
     expect(await reply).toContain('resumed quickreply with your message')
     expect(t.specs).toHaveLength(2)
+  })
+
+  it('reserves a fresh port and names it when a resumed worker lost its old port', async () => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'resumeport', task: 'first', host: 'claude' })
+    const w = t.a.workers.get('resumeport')!
+    mkdirSync(w.dir, { recursive: true })
+    t.a.updateWorker('resumeport', { status: 'done', summary: 'first done', finishedAt: Date.now() })
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.a.workers.get('resumeport')?.exitCode).toBe(0))
+    const other = reserveWorkerPort('other-lead/worker', [], process.env.XDG_CONFIG_HOME, w.port)
+    try {
+      const reply = await t.leadTools.call('room_send', { type: 'note', to: 'resumeport', text: 'one more task' })
+      expect(reply).toContain('dev-server PORT is 4401')
+      expect(t.specs[1].env.PORT).toBe('4401')
+      expect(t.specs[1].args.join(' ')).toContain('Your dev-server port is 4401 (PORT=4401).')
+      expect(t.a.workers.get('resumeport')?.port).toBe(4401)
+    } finally { other.release(); await t.leadTools.shutdown() }
   })
 
   it('explains why a collected worker or missing worktree cannot resume', async () => {
