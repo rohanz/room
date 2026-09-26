@@ -9,8 +9,8 @@ import type { HandlerState } from '../src/tools/context.js'
 import { createWorkerRuntime } from '../src/tools/workers.js'
 
 const terminate = vi.hoisted(() => vi.fn<(_dir: string) => Promise<string[]>>())
-vi.mock('../src/workers.js', async importOriginal => ({
-  ...await importOriginal<typeof import('../src/workers.js')>(),
+vi.mock('../src/worker-process.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/worker-process.js')>(),
   terminateWorktreeProcesses: terminate,
 }))
 

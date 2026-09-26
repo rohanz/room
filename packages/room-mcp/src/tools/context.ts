@@ -7,7 +7,7 @@ import type { ConflictWatcher } from '../conflicts.js'
 import type { PrInfo } from '../prs.js'
 import type { Rooms } from '../registry.js'
 import type { JoinOptions, Session } from '../session.js'
-import type { CwdProcessLister, ProcessInfo, Spawner } from '../workers.js'
+import type { CwdProcessLister, ProcessInfo, Spawner } from '../worker-process.js'
 import type { ResolvedConfig } from '../config.js'
 import type { CompanyState } from '../company.js'
 

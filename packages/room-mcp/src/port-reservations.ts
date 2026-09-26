@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { acquireOwnedFile } from './owned-file.js'
-import { allocateWorkerPort, WORKER_PORT_END, WORKER_PORT_START, type SpawnedProcess } from './workers.js'
+import { allocateWorkerPort, WORKER_PORT_END, WORKER_PORT_START } from './worker-config.js'
+import { type SpawnedProcess } from './worker-process.js'
 
 export interface PortReservation { port: number; release(): void }
 

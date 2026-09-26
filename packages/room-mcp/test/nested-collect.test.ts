@@ -7,7 +7,7 @@ import * as Y from 'yjs'
 import { RoomDoc, type Worker } from '@room/shared'
 import { handlers } from '../src/tools/collect.js'
 import type { HandlerState } from '../src/tools/context.js'
-import { prepareWorktree, persistWorkerStopReason } from '../src/workers.js'
+import { prepareWorktree, persistWorkerStopReason } from '../src/worker-git.js'
 import { finishWorkerProcess, Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
 

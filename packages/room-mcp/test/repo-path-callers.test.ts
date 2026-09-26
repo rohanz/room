@@ -9,7 +9,7 @@ import { handlers as collectHandlers } from '../src/tools/collect.js'
 import { handlers as fileHandlers, materializeMergedFile, mergedFileMode } from '../src/tools/files.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import { type HandlerState } from '../src/tools/context.js'
-import { cleanupWorker, prepareWorkerLinks, prepareWorktree, resolveWorkerLinks } from '../src/workers.js'
+import { cleanupWorker, prepareWorkerLinks, prepareWorktree, resolveWorkerLinks } from '../src/worker-git.js'
 import type { Session } from '../src/session.js'
 
 let root: string, lead: string, worker: string, base: string

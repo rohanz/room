@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pidIsOurWorker } from '../src/workers.js'
+import { pidIsOurWorker } from '../src/worker-process.js'
 import { RoomDoc, workerLine, type Worker } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'

@@ -2,7 +2,7 @@
  * second owned file, so two readers of the same dead owner cannot delete a successor. */
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { pidAlive } from './workers.js'
+import { pidAlive } from './worker-process.js'
 
 function ownerPid(file: string): number | undefined {
   try {

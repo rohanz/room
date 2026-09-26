@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it } from 'vitest'
 import { sessionMetadataPath } from '../src/config.js'
 import { writePendingHookContext } from '../src/hooks-bridge.js'
-import { clearWorkerStopState, persistedWorkerStopReason, persistWorkerStopReason, prepareWorktree } from '../src/workers.js'
+import { clearWorkerStopState, persistedWorkerStopReason, persistWorkerStopReason, prepareWorktree } from '../src/worker-git.js'
 
 const roots: string[] = []
 const run = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()

@@ -12,7 +12,9 @@ import { createTools as createRoomTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerProcessOwnership, probeProcess, parsePsLstartUtc, persistedWorkerStopReason, workerEnv, codexSessionId, type SpawnSpec } from '../src/workers.js'
+import { prepareWorkerLinks, prepareWorktree, cleanupPreparedWorktree, persistedWorkerStopReason } from '../src/worker-git.js'
+import { workerBudget, workerPriority, workerCommand, workerPrompt, validTag, workerEnv } from '../src/worker-config.js'
+import { workerLogTail, defaultSpawner, pidAlive, pidIsOurWorker, workerProcessOwnership, probeProcess, parsePsLstartUtc, codexSessionId, type SpawnSpec } from '../src/worker-process.js'
 import { reserveWorkerPort } from '../src/port-reservations.js'
 
 // Lifecycle workers and worktrees in this file are synthetic. Never scan host processes.
@@ -20,8 +22,8 @@ const createTools = (ctx: Parameters<typeof createRoomTools>[0]) => createRoomTo
 
 // Disk cleanup and patch restoration are exercised with real worktrees in collect.test.ts.
 // These lifecycle tests use synthetic worker directories and controlled process callbacks.
-vi.mock('../src/workers.js', async importOriginal => ({
-  ...await importOriginal<typeof import('../src/workers.js')>(),
+vi.mock('../src/worker-git.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/worker-git.js')>(),
   ignoredWorkerArtifacts: vi.fn(async () => []),
   saveDiscardPatch: vi.fn(async () => undefined),
   cleanupWorker: vi.fn(async () => true),

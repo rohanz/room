@@ -4,7 +4,8 @@ import type { Session } from './session.js'
 import type { Rooms } from './registry.js'
 import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
-import { defaultSpawner, probeProcess, stopWorkerWithEscalation, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type ProcessInfo, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
+import { defaultSpawner, probeProcess, stopWorkerWithEscalation, type ProcessInfo, type SpawnedProcess, type Spawner } from './worker-process.js'
+import { workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type WorkerHost } from './worker-config.js'
 
 export class WorkerLaunchError extends Error {
   constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string, readonly delivered = false, readonly pid?: number, readonly stopped = false) { super(message) }

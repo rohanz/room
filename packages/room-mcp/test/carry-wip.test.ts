@@ -13,7 +13,7 @@ import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorktree, cleanupWorker, saveDiscardPatch } from '../src/workers.js'
+import { prepareWorktree, cleanupWorker, saveDiscardPatch } from '../src/worker-git.js'
 
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 const CARRIED_SUBJECT = 'room: carried-in uncommitted work from rohanz'

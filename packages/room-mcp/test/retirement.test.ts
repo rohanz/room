@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFil
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { RoomDoc, type Worker } from '@room/shared'
-import { prepareWorktree, saveDiscardPatch } from '../src/workers.js'
+import { prepareWorktree, saveDiscardPatch } from '../src/worker-git.js'
 import { RetainedDeclaredPaths, retainedDeclaredFile } from '@room/roomd'
 import { decideRetire, workerRealState, type WorkerRealState } from '../src/worker-state.js'
 import { Rooms } from '../src/registry.js'

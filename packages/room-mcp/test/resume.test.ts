@@ -9,10 +9,11 @@ import { RoomDoc, type Worker } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { Rooms } from '../src/registry.js'
 import { decideResume, type WorkerRealState } from '../src/worker-state.js'
-import { persistWorkerStopReason } from '../src/workers.js'
+import { persistWorkerStopReason } from '../src/worker-git.js'
 import { HooksBridge } from '../src/hooks-bridge.js'
 import type { Session } from '../src/session.js'
-import type { PreparedWorktree, SpawnSpec } from '../src/workers.js'
+import type { PreparedWorktree } from '../src/worker-git.js'
+import type { SpawnSpec } from '../src/worker-process.js'
 
 const scratch: string[] = []
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }) })

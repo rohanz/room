@@ -4,7 +4,71 @@ import path from 'node:path'
 import { type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
-import { isOwnedWorkerWorktree, workerProcessOwnership, ROOM_CARRY_IDENTITY, type ProcessInfo, type ProcessOwnership } from './workers.js'
+import { RECORDED_PATH, realGitCommonDir, validRepoPath } from '@room/roomd'
+import { workerProcessOwnership, type ProcessInfo, type ProcessOwnership } from './worker-process.js'
+
+export function roomWorkerPathMatchesBranch(leadDir: string, workerDir: string, branch: string, nested = false): boolean {
+  const relative = path.relative(path.resolve(leadDir), path.resolve(workerDir)).split(path.sep)
+  if (relative.length < 3 || relative.length % 3 !== 0 || (!nested && relative.length !== 3)) return false
+  return relative.every((part, i) => i % 3 === 0 ? part === '.room' : i % 3 === 1 ? part === 'workers' : validRepoPath(part, RECORDED_PATH))
+    && branch === `room/${relative.at(-1)}`
+}
+
+export type WorktreeOwnershipRecord = Pick<Worker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'>
+  | Pick<RetiredWorker, 'name' | 'tag' | 'lead' | 'keptWorktree'>
+
+/** Cwd-wide cleanup requires a canonical Room worktree at every level back to this lead. */
+export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<Worker, 'name' | 'dir' | 'branch' | 'tag' | 'lead'>, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
+  const byName = new Map([...workers].map(record => [record.name, record]))
+  const chain = [w]
+  const seen = new Set([w.name])
+  let owner = w.lead
+  while (leadName && owner !== leadName) {
+    const record = byName.get(owner)
+    if (!record || seen.has(record.name)) return false
+    // An archived lead may still have a live nested worktree. Its child path
+    // identifies the candidate parent; the checks below must prove every link.
+    const parent = {
+      name: record.name, tag: record.tag, lead: record.lead,
+      dir: 'dir' in record ? record.dir : record.keptWorktree ?? path.dirname(path.dirname(path.dirname(chain[0].dir))),
+      branch: 'branch' in record ? record.branch : `room/${record.tag}`,
+    }
+    chain.unshift(parent)
+    seen.add(parent.name)
+    owner = parent.lead
+  }
+  try {
+    let parentDir = leadDir, parentName = leadName
+    for (const record of chain) {
+      if (parentName && record.lead !== parentName) return false
+      if (!fs.existsSync(record.dir)) return false
+      const parentRoot = fs.realpathSync(parentDir), workerRoot = fs.realpathSync(record.dir)
+      if (workerRoot === parentRoot) return false
+      if (!roomWorkerPathMatchesBranch(parentDir, record.dir, record.branch)) return false
+      const expected = path.join(parentRoot, '.room', 'workers', path.basename(record.dir))
+      if (workerRoot !== fs.realpathSync(expected)) return false
+      if (await realGitCommonDir(parentDir) !== await realGitCommonDir(record.dir)) return false
+      if ((await git(record.dir, ['branch', '--show-current'])).trim() !== record.branch) return false
+      parentDir = record.dir
+      parentName = record.name
+    }
+    return true
+  } catch { return false }
+}
+
+
+/** Identity of the commit that carries a lead's uncommitted work into a worker's worktree. */
+export const ROOM_CARRY_IDENTITY = {
+  authorName: 'Room',
+  authorEmail: 'room@localhost',
+  subjectPrefix: 'room: carried-in uncommitted work from ',
+  isRoomCarryCommit(name: string, email: string, subject: string): boolean {
+    return name === ROOM_CARRY_IDENTITY.authorName
+      && email === ROOM_CARRY_IDENTITY.authorEmail
+      && subject.startsWith(ROOM_CARRY_IDENTITY.subjectPrefix)
+      && /^.+$/.test(subject.slice(ROOM_CARRY_IDENTITY.subjectPrefix.length))
+  },
+} as const
 
 type OwnershipRecord = Pick<Worker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'> | Pick<RetiredWorker, 'name' | 'tag' | 'lead' | 'keptWorktree'>
 export interface WorkerRealState {

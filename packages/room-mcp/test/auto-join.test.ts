@@ -16,7 +16,7 @@ import { appendRoomLog } from '../src/index.js'
 import { LOCAL, NoRoom, joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import type { ResolvedConfig } from '../src/config.js'
-import { workerProcessEnv } from '../src/workers.js'
+import { workerProcessEnv } from '../src/worker-config.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const cleanups: (() => Promise<void> | void)[] = []

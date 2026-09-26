@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { codexSessionId, workerEnv, workerOwnedPaths, workerOperationKey, workerProcessEnv } from '../src/workers.js'
+import { codexSessionId } from '../src/worker-process.js'
+import { workerEnv, workerProcessEnv } from '../src/worker-config.js'
+import { workerOwnedPaths, workerOperationKey } from '../src/worker-git.js'
 
 describe('worker module characterization', () => {
   it('keeps worker-owned link exclusions and operation keys stable', () => {

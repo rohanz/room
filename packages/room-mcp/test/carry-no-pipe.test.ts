@@ -18,7 +18,7 @@ vi.mock('node:child_process', async original => {
 })
 
 const { execFileSync } = await import('node:child_process')
-const { prepareWorktree } = await import('../src/workers.js')
+const { prepareWorktree } = await import('../src/worker-git.js')
 const { carriedContentHash } = await import('@room/roomd/baseline')
 
 const repos: string[] = []
