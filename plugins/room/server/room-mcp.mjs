@@ -18321,16 +18321,19 @@ var init_disk_batch = __esm({
   "packages/roomd/src/disk-batch.ts"() {
     "use strict";
     DiskBatch = class {
-      constructor(run3, debounceMs = 300, now = Date.now, hotThrottleMs = 3e4) {
+      constructor(run3, debounceMs = 300, now = Date.now, hotThrottleMs = 3e4, onError = () => {
+      }) {
         this.run = run3;
         this.debounceMs = debounceMs;
         this.now = now;
         this.hotThrottleMs = hotThrottleMs;
+        this.onError = onError;
       }
       run;
       debounceMs;
       now;
       hotThrottleMs;
+      onError;
       pending = /* @__PURE__ */ new Map();
       active = /* @__PURE__ */ new Map();
       arrivals = /* @__PURE__ */ new Map();
@@ -18382,7 +18385,12 @@ var init_disk_batch = __esm({
           }
           if (ready.size) {
             for (const p of ready.keys()) this.active.set(p, (this.active.get(p) ?? 0) + 1);
-            void Promise.resolve(this.run(ready)).finally(() => {
+            void Promise.resolve().then(() => this.run(ready)).catch((error2) => {
+              try {
+                this.onError(error2);
+              } catch {
+              }
+            }).finally(() => {
               for (const p of ready.keys()) {
                 const count = this.active.get(p) ?? 0;
                 if (count <= 1) this.active.delete(p);
@@ -24823,6 +24831,11 @@ var init_src2 = __esm({
       retainedDeclaredPaths = /* @__PURE__ */ new Set();
       sharingGeneration = 0;
       sharingDirty = false;
+      inFlightPaths = /* @__PURE__ */ new Map();
+      reconcileDirty = false;
+      retryDelayMs = 1e3;
+      retryTimer;
+      retrySchedule;
       remoteRepairTimer;
       remoteRepairSchedule;
       unobserveOwnedData;
@@ -24872,6 +24885,11 @@ var init_src2 = __esm({
           timer.unref?.();
           return () => clearTimeout(timer);
         });
+        this.retrySchedule = options.retrySchedule ?? ((run3, delay) => {
+          const timer = setTimeout(run3, delay);
+          timer.unref?.();
+          return () => clearTimeout(timer);
+        });
         this.debounceMs = options.debounceMs ?? 300;
         this.watchedDirectory = createHash3("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs7.realpathSync(this.dir)).digest("hex");
         this.batch = new DiskBatch((paths) => {
@@ -24888,7 +24906,7 @@ var init_src2 = __esm({
           this.diskWork.add(work);
           void work.finally(() => this.diskWork.delete(work));
           return work;
-        }, this.debounceMs, Date.now, options.hotThrottleMs);
+        }, this.debounceMs, Date.now, options.hotThrottleMs, (error2) => this.reconcileFailed(error2));
         this.trackedRefreshMs = options.trackedRefreshMs ?? 1e4;
         this.basePollMs = options.basePollMs ?? 3e3;
         this.sizeCap = options.sizeCap ?? 512 * 1024;
@@ -24932,6 +24950,13 @@ var init_src2 = __esm({
         this.base = base;
         this.tracked = tracked;
         this.retainedDeclaredPaths = new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl);
+        this.roomDoc.scopes.observe((ev) => {
+          if (!ev.keysChanged.has(this.name) || this.share !== "declared" || this.explicitScopePaths) return;
+          const old = ev.changes.keys.get(this.name)?.oldValue;
+          this.retainLeavingScope(old?.paths ?? [], this.scopePaths());
+          this.setEffectiveShare(this.share, true);
+          observeCallback(() => this.resharePaths(), (error2) => this.log(`warn: ${errMsg(error2)}`));
+        });
         await this.step("sync", () => this.waitForSync());
         const onBaseNotice = (event) => {
           const notices = event.changes.delta.flatMap((change) => change.insert ?? []);
@@ -24980,13 +25005,6 @@ var init_src2 = __esm({
           await this.pollHead();
         }));
         this.roomDoc.metaMap.observe(() => observeCallback(() => this.refreshBaseStatus(), (error2) => this.log(`warn: ${errMsg(error2)}`)));
-        this.roomDoc.scopes.observe((ev) => {
-          if (!ev.keysChanged.has(this.name) || this.share !== "declared" || this.explicitScopePaths) return;
-          const old = ev.changes.keys.get(this.name)?.oldValue;
-          this.retainLeavingScope(old?.paths ?? [], this.scopePaths());
-          this.setEffectiveShare(this.share, true);
-          observeCallback(() => this.resharePaths(), (error2) => this.log(`warn: ${errMsg(error2)}`));
-        });
         await this.refreshBaseStatus();
         this.pendingSkips.clear();
         this.started = true;
@@ -25038,7 +25056,7 @@ var init_src2 = __esm({
       }
       retainLeavingScope(oldPaths, nextPaths) {
         if (!oldPaths.length || this.publishUnder) return;
-        const known = /* @__PURE__ */ new Set([...this.roomDoc.changedPaths(this.name), ...this.roomDoc.deletedFor(this.name).keys(), ...this.batch.knownPaths()]);
+        const known = /* @__PURE__ */ new Set([...this.roomDoc.changedPaths(this.name), ...this.roomDoc.deletedFor(this.name).keys(), ...this.skips.share, ...this.batch.knownPaths(), ...this.inFlightPaths.keys()]);
         for (const relpath of known) {
           if (scopeCovers({ paths: oldPaths }, relpath) && !scopeCovers({ paths: nextPaths }, relpath)) this.retainedDeclaredPaths.add(relpath);
         }
@@ -25069,7 +25087,11 @@ var init_src2 = __esm({
       /** Re-evaluate every changed file against the current level: withdraw what is no longer allowed, publish what now is. */
       async resharePaths() {
         if (this.stopped) return;
-        await this.reconcile(await gitChanged(this.dir));
+        const changed = await gitChanged(this.dir).catch((error2) => {
+          this.reconcileFailed(error2);
+          throw error2;
+        });
+        await this.reconcile(changed);
       }
       /** Withdraw a file from the room without touching disk; remembers it as withheld when it differs from base. */
       withhold(relpath, changed) {
@@ -25122,6 +25144,7 @@ var init_src2 = __esm({
         this.unobserveBus?.();
         this.unobserveOwnedData?.();
         this.remoteRepairTimer?.();
+        this.retryTimer?.();
         this.flushSkipLog();
         this.log(`stopped: ${reason.replace(/\s+/g, " ")}`);
         for (const timer of this.timers) clearInterval(timer);
@@ -25191,8 +25214,39 @@ var init_src2 = __esm({
         } else this.log("publishing watched directory");
       }
       enqueue(work) {
-        this.workQueue = this.workQueue.then(() => this.stopped ? void 0 : work()).catch((error2) => this.log(`warn: ${errMsg(error2)}`));
+        this.workQueue = this.workQueue.then(() => this.stopped ? void 0 : work()).catch((error2) => this.reconcileFailed(error2));
         return this.workQueue;
+      }
+      trackPaths(paths) {
+        const held = [...paths];
+        for (const p of held) this.inFlightPaths.set(p, (this.inFlightPaths.get(p) ?? 0) + 1);
+        return () => {
+          for (const p of held) {
+            const n = this.inFlightPaths.get(p) ?? 0;
+            if (n <= 1) this.inFlightPaths.delete(p);
+            else this.inFlightPaths.set(p, n - 1);
+          }
+        };
+      }
+      reconcileFailed(error2) {
+        this.log(`warn: ${errMsg(error2)}`);
+        if (this.stopped) return;
+        this.reconcileDirty = true;
+        if (this.retryTimer) return;
+        const delay = this.retryDelayMs;
+        this.retryDelayMs = Math.min(delay * 2, 3e4);
+        this.retryTimer = this.retrySchedule(() => {
+          this.retryTimer = void 0;
+          if (!this.stopped) void this.resharePaths().catch(() => {
+          });
+        }, delay);
+      }
+      reconciled() {
+        if (!this.reconcileDirty) return;
+        this.reconcileDirty = false;
+        this.retryDelayMs = 1e3;
+        this.retryTimer?.();
+        this.retryTimer = void 0;
       }
       currentStatus() {
         return this.provider.awareness.getLocalState()?.status ?? "synced";
@@ -25472,42 +25526,51 @@ var init_src2 = __esm({
         if (this.stopped) return;
         const generation = this.sharingGeneration;
         const paths = Array.from(this.pathsToReconcile(extra));
-        const base = this.base, shared = this.shared;
-        const oversized = paths.filter((p) => {
-          try {
-            const stat4 = fs7.lstatSync(this.abs(p));
-            return stat4.isFile() && stat4.size > this.sizeCap;
-          } catch {
-            return false;
-          }
-        });
-        const oversizedSet = new Set(oversized);
-        const ordinary = paths.filter((p) => !oversizedSet.has(p));
-        const [texts, sharedTexts, blobs] = await Promise.all([
-          gitShowMany(this.dir, base, ordinary),
-          shared === base ? void 0 : gitShowMany(this.dir, shared, ordinary),
-          gitBlobInfoMany(this.dir, base, oversized)
-        ]);
-        if (this.stopped) return;
-        if (generation !== this.sharingGeneration) {
-          this.markSharingDirty();
-          return;
-        }
-        if (await gitHead(this.dir) !== base) return;
-        if (generation !== this.sharingGeneration) {
-          this.markSharingDirty();
-          return;
-        }
-        for (const relpath of paths) {
+        const release = this.trackPaths(paths);
+        try {
+          const base = this.base, shared = this.shared;
+          const oversized = paths.filter((p) => {
+            try {
+              const stat4 = fs7.lstatSync(this.abs(p));
+              return stat4.isFile() && stat4.size > this.sizeCap;
+            } catch {
+              return false;
+            }
+          });
+          const oversizedSet = new Set(oversized);
+          const ordinary = paths.filter((p) => !oversizedSet.has(p));
+          const [texts, sharedTexts, blobs] = await Promise.all([
+            gitShowMany(this.dir, base, ordinary),
+            shared === base ? void 0 : gitShowMany(this.dir, shared, ordinary),
+            gitBlobInfoMany(this.dir, base, oversized)
+          ]);
           if (this.stopped) return;
           if (generation !== this.sharingGeneration) {
             this.markSharingDirty();
             return;
           }
-          await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs });
-          if (this.phase === "seed") this.onSeedProgress?.();
+          if (await gitHead(this.dir) !== base) return;
+          if (generation !== this.sharingGeneration) {
+            this.markSharingDirty();
+            return;
+          }
+          for (const relpath of paths) {
+            if (this.stopped) return;
+            if (generation !== this.sharingGeneration) {
+              this.markSharingDirty();
+              return;
+            }
+            await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs });
+            if (this.phase === "seed") this.onSeedProgress?.();
+          }
+          if (generation !== this.sharingGeneration) this.markSharingDirty();
+          else this.reconciled();
+        } catch (error2) {
+          this.reconcileFailed(error2);
+          throw error2;
+        } finally {
+          release();
         }
-        if (generation !== this.sharingGeneration) this.markSharingDirty();
       }
       markSharingDirty() {
         if (this.stopped || this.sharingDirty) return;
@@ -25606,6 +25669,7 @@ var init_src2 = __esm({
       /** `read`: base texts already read at `read.base` (and `read.shared`) with HEAD checked once for the batch (reconcile). */
       async publishDiskState(relpath, read) {
         if (this.stopped) return;
+        const release = this.trackPaths([relpath]);
         try {
           const generation = this.sharingGeneration;
           const sharingChanged = () => {
@@ -25754,6 +25818,7 @@ var init_src2 = __esm({
             this.log(droppedStale ? `dropped stale overlay ${relpath}` : afterDeleted ? `marked ${relpath} deleted` : afterText === void 0 ? `cleared ${relpath} overlay` : `published ${relpath} overlay`);
           }
         } finally {
+          release();
           this.roomDoc.reconcileBaseTexts(this.name, this);
         }
       }
@@ -25859,16 +25924,21 @@ var init_src2 = __esm({
       }
       async onDiskChange(relpath, isNew) {
         if (this.stopped) return;
-        if (await gitIgnored(this.dir, relpath)) {
-          this.tracked.delete(relpath);
-          this.withdrawIgnored(relpath, ".gitignore");
-          return;
+        const release = this.trackPaths([relpath]);
+        try {
+          if (await gitIgnored(this.dir, relpath)) {
+            this.tracked.delete(relpath);
+            this.withdrawIgnored(relpath, ".gitignore");
+            return;
+          }
+          if (!this.tracked.has(relpath) && !this.roomDoc.changedPaths(this.name).includes(relpath)) {
+            if (!isNew || !fs7.existsSync(this.abs(relpath))) return;
+            this.tracked.add(relpath);
+          }
+          await this.publishDiskState(relpath);
+        } finally {
+          release();
         }
-        if (!this.tracked.has(relpath) && !this.roomDoc.changedPaths(this.name).includes(relpath)) {
-          if (!isNew || !fs7.existsSync(this.abs(relpath))) return;
-          this.tracked.add(relpath);
-        }
-        await this.publishDiskState(relpath);
       }
       /** Does git track (or offer as untracked) any file under this directory? */
       holdsTracked(dir) {
@@ -46396,9 +46466,15 @@ init_src2();
 init_config();
 init_choice();
 init_context();
-function secondaryDeclaredLine(s) {
+function secondaryPublishingLine(s) {
   const publisher = s.awareness.getLocalState()?.publishUnder;
-  return s.daemon.share === "declared" && typeof publisher === "string" && publisher ? `This checkout's file text is published by ${publisher} and follows ${publisher}'s declared area.` : void 0;
+  if (typeof publisher !== "string" || !publisher) return void 0;
+  const primary = [...s.awareness.getStates().values()].find((state) => state?.user?.name === publisher && !state.publishUnder);
+  const level = primary?.share === "full" || primary?.share === "declared" || primary?.share === "intent" ? ` (${primary.share})` : "";
+  return `This checkout's file text is published by ${publisher} and follows ${publisher}'s sharing settings${level}.`;
+}
+function retainedList(paths) {
+  return `${paths.slice(0, 8).join(", ")}${paths.length > 8 ? `, +${paths.length - 8} more` : ""}`;
 }
 var defs3 = [
   {
@@ -46414,7 +46490,7 @@ function handlers3(state) {
     async room_share(a) {
       const s = S();
       const before = s.daemon.share;
-      if (a.level === void 0) return [shareLine(s), secondaryDeclaredLine(s)].filter(Boolean).join("\n");
+      if (a.level === void 0) return shareLine(s);
       const resolved = resolveShare(a.level, "level");
       const asked = resolved.level;
       s.shareWarning = resolved.warning;
@@ -46427,11 +46503,11 @@ function handlers3(state) {
       }
       if (level !== before) s.room.post(s.me, { type: "note", text: `now sharing ${sharingDescription(level)}`, priority: "fyi" });
       const out2 = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`];
-      const secondary = secondaryDeclaredLine(s);
+      const secondary = secondaryPublishingLine(s);
       if (secondary) out2.push(secondary);
       else if (level === "declared" && !s.room.scope(s.me.name)) {
         const retained = s.daemon.retainedDeclared();
-        out2.push(retained.length ? `${retained.length} changed file(s) you declared earlier remain shared: ${retained.slice(0, 8).join(", ")}${retained.length > 8 ? `, +${retained.length - 8} more` : ""}` : "no scope declared yet, so nothing is shared until room_scope(area, summary, paths)");
+        out2.push(retained.length ? `${retained.length} changed file(s) you declared earlier remain shared: ${retainedList(retained)}` : "no scope declared yet, so nothing is shared until room_scope(area, summary, paths)");
       }
       return out2.join("\n");
     }
@@ -46443,9 +46519,9 @@ function install3(state) {
     const level = s.daemon.share ?? s.shareRequested ?? "intent";
     const clamped = s.shareRequested && s.shareRequested !== level ? ` (asked for ${s.shareRequested}; the server caps sharing at ${s.shareMax}, ROOM_SHARE_MAX)` : "";
     const held = s.daemon.skipped?.().share ?? [];
-    const publisher = level === "declared" ? s.awareness.getLocalState()?.publishUnder : void 0;
-    const description = typeof publisher === "string" && publisher ? `this checkout's file text follows ${publisher}'s declared area (published by ${publisher})` : sharingDescription(level);
-    return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${description}${clamped}${held.length && !publisher ? `; withheld ${held.length} changed file(s): ${held.join(", ")}` : ""}`;
+    const secondary = secondaryPublishingLine(s);
+    const retained = level === "declared" && !secondary ? s.daemon.retainedDeclared?.() ?? [] : [];
+    return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${secondary ?? sharingDescription(level)}${clamped}${held.length && !secondary ? `; withheld ${held.length} changed file(s): ${held.join(", ")}` : ""}${retained.length ? `; still shared from earlier: ${retainedList(retained)}` : ""}`;
   };
   Object.assign(state, { shareLine });
 }
@@ -46499,9 +46575,10 @@ function sharingSentence(s) {
   const parts2 = roomNameParts(s.roomName);
   const repo = parts2.branch ? s.roomName.slice(0, -(parts2.branch.length + 1)) : s.roomName;
   const level = s.daemon.share ?? s.shareRequested ?? "intent";
-  const publisher = level === "declared" ? s.awareness.getLocalState()?.publishUnder : void 0;
-  const description = typeof publisher === "string" && publisher ? `file text under ${publisher}'s declared area (published by ${publisher})` : sharingDescription(level);
-  const choices = publisher ? "" : sharingHumanChoices(level);
+  const secondary = secondaryPublishingLine(s);
+  if (secondary) return `note for your human: ${secondary} Members of ${repo} on ${server} can read it.`;
+  const description = sharingDescription(level);
+  const choices = sharingHumanChoices(level);
   return `note for your human: this clone now shares ${description} with members of ${repo} on ${server}${choices ? `; ${choices}` : "."}`;
 }
 async function prepareTeamSharingDisclosure(s) {
@@ -48873,11 +48950,11 @@ function handlers8(state) {
       setPresence(s, { cursor: void 0, status: `done: ${summary.slice(0, 60)}` });
       s.daemon.touch();
       const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : "You remain in the room."}`];
-      const secondary = secondaryDeclaredLine(s);
+      const secondary = secondaryPublishingLine(s);
       if (secondary) out2.push(secondary);
       else {
         const retained = s.daemon.share === "declared" ? s.daemon.retainedDeclared() : [];
-        if (retained.length) out2.push(`${retained.length} changed file(s) you declared earlier stay shared while they differ from your base: ${retained.slice(0, 8).join(", ")}${retained.length > 8 ? `, +${retained.length - 8} more` : ""}. A sharing-level change, an ignore rule or the size limit also withdraws them. To withdraw them now, say: share plans only.`);
+        if (retained.length) out2.push(`${retained.length} changed file(s) you declared earlier stay shared while they differ from your base: ${retainedList(retained)}. A sharing-level change, an ignore rule or the size limit also withdraws them. To withdraw them now, say: share plans only.`);
       }
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary);
       const command = s.lastPreview?.testsCommand;
@@ -49622,7 +49699,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.17",
+  version: "0.16.18",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
