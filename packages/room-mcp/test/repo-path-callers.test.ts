@@ -1,3 +1,4 @@
+import { createHandlerState } from '../src/tools/state.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,7 +8,7 @@ import { RoomDoc, type Worker } from '@room/shared'
 import { handlers as collectHandlers } from '../src/tools/collect.js'
 import { handlers as fileHandlers, materializeMergedFile, mergedFileMode } from '../src/tools/files.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
-import { createHandlerState, type HandlerState } from '../src/tools/context.js'
+import { type HandlerState } from '../src/tools/context.js'
 import { cleanupWorker, prepareWorkerLinks, prepareWorktree, resolveWorkerLinks } from '../src/workers.js'
 import type { Session } from '../src/session.js'
 

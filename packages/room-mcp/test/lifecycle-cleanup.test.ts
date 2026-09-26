@@ -1,3 +1,4 @@
+import { createHandlerState } from '../src/tools/state.js'
 import { describe, expect, it, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -9,7 +10,7 @@ import { RoomDoc, type RetiredWorker } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { handlers as joinHandlers } from '../src/tools/join.js'
 import { install as installWorkerHandlers } from '../src/tools/workers.js'
-import { createHandlerState, type HandlerState } from '../src/tools/context.js'
+import { type HandlerState } from '../src/tools/context.js'
 
 describe('worker lifecycle cleanup', () => {
   it('signals only processes whose resolved cwd is inside the worktree, then escalates survivors', async () => {

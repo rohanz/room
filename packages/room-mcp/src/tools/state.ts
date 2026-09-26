@@ -1,0 +1,181 @@
+import fs from 'node:fs'
+import { Areas, CODEOWNERS_PATHS, RoomDoc, claimsOverlap, describeClaim, formatMsg, formatPlans, isAgentic, msgPaths, scopeCovers, sharesArea } from '@room/shared'
+import type { Claim, ConflictMsg, Msg, NoteMsg, Plan, PlanMsg, Presence, Priority, ReleaseMsg, Scope, Worker } from '@room/shared'
+import { git, gitShow } from '@room/roomd/git'
+import { workerBaseline } from '@room/roomd/baseline'
+import type { ShareLevel, SharePresence } from '@room/roomd'
+import { Bridge } from '../bridge.js'
+import { HooksBridge } from '../hooks-bridge.js'
+import { ConflictWatcher } from '../conflicts.js'
+import { branchOf, fetchPrs, isPrName, openPrs, postPrNote, prLeader, renderPrNote, syncPrs, type PrInfo } from '../prs.js'
+import { Rooms, type Attachment, type Role } from '../registry.js'
+import { authFor, closeRoom, DEFAULT_SERVER, joinSession, leaveSession, LOCAL, parseServer, resolveServer, type JoinOptions, type Session } from '../session.js'
+import { decideShutdown, workerRealState } from '../worker-state.js'
+import { hasCompany } from '../company.js'
+import { repairRetired } from '../retire.js'
+import { diskWorker, workerText, NeedFetch, NotJoined, type HandlerState, type ToolCtx } from './context.js'
+
+export function createHandlerState(ctx: ToolCtx): HandlerState {
+  const now = ctx.now ?? (() => Date.now())
+  const log = ctx.log ?? ((l: string) => process.stderr.write(`room-mcp: ${l}\n`))
+  const doJoin = ctx.join ?? joinSession
+  const doLeave = ctx.leave ?? leaveSession
+
+  // ---- per-session state --------------------------------------------------
+  const seen = new Set<string>() // message ids already shown in the inbox (ids, not indexes: the bus is a concurrent array)
+  const upgraded = new Set<string>() // "msgId:person" copies already posted
+  const conflictPairs = new Set<string>() // sorted "a:b" claim-id pairs already reported
+  /** The lead-in-two-rooms bridge, while a workers room is open (owned by that session's attachment). */
+  let roomBridge: Bridge | null = null
+  /** The primary session's hooks bridge (state file); the inbox asks it to rewrite after marking messages seen. */
+  let primaryHooks: HooksBridge | null = null
+  let runtime!: HandlerState
+  const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { session: a.session, token: a.token }) })
+  /**
+   * Everything a joined session needs running. The primary gets the hooks bridge (state file + wake),
+   * the conflict watcher and the PR mirror. The workers room gets a wake-only hooks bridge (the state
+   * file is the team room's), the host's channel push, and the bridge to the lead's team room.
+   */
+  const attach = (s: Session, role: Role, lead?: Session): Attachment => {
+    const hooks = new HooksBridge(s, { forMe: m => runtime.forMe(s, m), isSeen: id => seen.has(id), company: () => runtime.hasCompany(s), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}) })
+    hooks.start()
+    if (role === 'primary') primaryHooks = hooks
+    let watcher: ConflictWatcher | null = null
+    let bridge: Bridge | null = null
+    if (role === 'primary') {
+      watcher = runtime.startConflictWatcher(s)
+      runtime.startPrSync(s)
+    } else if (lead) {
+      bridge = runtime.startWorkersBridge(lead, s)
+      roomBridge = bridge
+    }
+    return {
+      stop() {
+        hooks.stop(); watcher?.stop()
+        if (primaryHooks === hooks) primaryHooks = null
+        if (role === 'primary') runtime.stopPrSync()
+        if (bridge) { bridge.stop(); if (roomBridge === bridge) roomBridge = null }
+      },
+      flush: () => watcher?.flush() ?? Promise.resolve(),
+    }
+  }
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => runtime.observeClaims(s), attach, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
+
+  const S = (): Session => {
+    const s = ctx.getSession()
+    if (!s) throw new NotJoined()
+    for (const roomSession of new Set([s, ...rooms.all()])) {
+      const present = new Set(Array.from(roomSession.awareness?.getStates().values() ?? []).flatMap(p => p.user?.name ? [p.user.name] : []))
+      repairRetired(roomSession, present)
+    }
+    return s
+  }
+  const isMe = (s: Session, p: { name: string; kind: string }) => p.name === s.me.name && p.kind === s.me.kind
+  const mine = (s: Session) => s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === s.me.kind)
+
+  const others = (s: Session): string[] => {
+    const names = new Set<string>()
+    for (const k of s.room.scopes.keys()) names.add(k)
+    for (const k of s.room.overlays.keys()) names.add(k)
+    for (const p of presences(s)) names.add(p.user.name)
+    names.delete(s.me.name)
+    const retired = new Set(s.room.retiredWorkers().map(w => w.name))
+    return Array.from(names).filter(n => !isPrName(n) && (!retired.has(n) || s.room.workerOf(n))).sort() // PR mirrors and retired workers are not routed to
+  }
+  const presences = (s: Session): SharePresence[] =>
+    Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)
+  /** A person's sharing level as their presence announces it; absent presence or an older client means full. */
+  const shareOf = (s: Session, person: string): ShareLevel => {
+    if (person === s.me.name) return s.daemon.share ?? 'full'
+    const p = presences(s).find(x => x.user.name === person && isAgentic(x.user.kind)) ?? presences(s).find(x => x.user.name === person)
+    return p?.share ?? 'full'
+  }
+  /** Why a person's version of a path is not in the room, or undefined when it is (or could be). */
+  const withheld = (s: Session, person: string, p?: string): string | undefined => {
+    const level = shareOf(s, person)
+    if (level === 'intent') return `${person} shares intent only; ask them or wait for their push`
+    if (level === 'declared' && p !== undefined && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p)) return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`
+    return undefined
+  }
+  const setPresence = (s: Session, patch: Partial<Presence>) => {
+    const cur = (s.awareness.getLocalState() ?? {}) as Partial<Presence>
+    s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() })
+  }
+  const base = (s: Session) => s.room.meta.base ?? 'HEAD'
+  /** The commit a person's overlay is a delta from (their own HEAD), falling back to the room base. A carried worker in a
+   *  team room publishes its lead's HEAD, because only the lead's machine has the carried commit; that machine (the lead
+   *  and its workers) uses the carried commit itself. */
+  const baseFor = (s: Session, person: string) => {
+    const worker = diskWorker(s, person)
+    if (worker) return worker.base ?? base(s)
+    const record = s.room.workerOf(person)
+    if (workerBaseline(record)?.carriedCommit && (record!.lead === s.me.name || s.room.workerOf(s.me.name)?.lead === record!.lead)) return record!.base!
+    return s.room.baseOf(person) ?? base(s)
+  }
+  const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(diskWorker(s, person)?.dir ?? s.dir, baseFor(s, person), path)
+  /** A person's HEAD + their overlay; undefined if the file exists nowhere; null if they deleted it.
+   *  Throws NeedFetch when their HEAD is not in this clone. */
+  const liveText = async (s: Session, path: string, person: string): Promise<string | undefined | null> => {
+    const worker = diskWorker(s, person)
+    if (worker) return workerText(worker.dir, path)
+    if (s.room.deleted.get(person)?.has(path)) return null
+    const ov = s.room.text(path, person)
+    if (ov !== undefined) return ov
+    try { return await baseText(s, path, person) }
+    catch (e) {
+      const sha = baseFor(s, person), worker = s.room.workerOf(person), baseline = workerBaseline(worker)
+      throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker!.lead : undefined)
+    }
+  }
+  const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
+
+  runtime = {
+    ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, myWorkers: undefined!, workerAlive: undefined!,
+    ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, others, presences,
+    shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, loadAreas: undefined!, areasOf: undefined!,
+    areasFor: undefined!, myAreas: undefined!, inMyAreas: undefined!, areaLines: undefined!, ownerHints: undefined!, msgInMyAreas: undefined!, forMe: undefined!, inbox: undefined!, waitingOn: undefined!, describeUsers: undefined!,
+    planChanged: undefined!, followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, upgrade: undefined!, claimLine: undefined!, ledgerLines: undefined!, scopeLine: undefined!, personLine: undefined!,
+    serverOf: undefined!, LOCAL_LOGIN: undefined!, codeLine: undefined!, refreshPrs: undefined!, startPrSync: undefined!, stopPrSync: undefined!, prLines: undefined!, myPr: undefined!, postLedger: undefined!, observeClaims: undefined!, startConflictWatcher: undefined!, startWorkersBridge: undefined!,
+    workerPaths: () => roomBridge?.workerPaths() ?? [],
+    scheduleInboxWrite: () => primaryHooks?.scheduleWrite(),
+    upgraded, conflictPairs,
+    attachHooks: (s: Session) => rooms.add(s, 'primary'),
+    clearStale: (s: Session) => { runtime.evictStale(s); return runtime.cleanupMine(s, 'stale from an earlier session') },
+    async shutdown() {
+      const s = ctx.getSession()
+      if (!s) return
+      const running = (await Promise.all(runtime.runningWorkers(s).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
+      const cancellation = new AbortController()
+      const pending = new Set(running.map(r => r.w.tag))
+      const stops = running.map(async r => {
+        try { await runtime.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended', cancellation.signal) }
+        catch (e) { log(`shutdown dismissal failed for ${r.w.tag}: ${e instanceof Error ? e.message : String(e)}`) }
+        finally { pending.delete(r.w.tag) }
+      })
+      if (stops.length) {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const completed = await Promise.race([Promise.all(stops).then(() => true), new Promise<false>(resolve => {
+          timer = setTimeout(() => resolve(false), 1800)
+          timer.unref()
+        })])
+        if (timer) clearTimeout(timer)
+        if (!completed) {
+          cancellation.abort()
+          for (const tag of pending) log(`shutdown dismissal timed out for ${tag}; worker record kept for restart`)
+        }
+      }
+      await runtime.closeWorkersRoom().catch(() => {})
+      try { runtime.cleanupMine(s, 'session ended') } catch { /* best effort */ }
+      rooms.remove(s)
+      await doLeave(s)
+    },
+    async drop(s: Session, reason: string) {
+      log(`leaving ${s.roomName}: ${reason}`)
+      try { runtime.cleanupMine(s, reason) } catch { /* best effort */ }
+      rooms.remove(s)
+      await doLeave(s)
+    },
+    async flushConflicts() { await rooms.flush() },
+  }
+  return runtime
+}
