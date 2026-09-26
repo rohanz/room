@@ -69,7 +69,7 @@ describe('room_collect', () => {
     const t = setup(status)
     const current = { ...t.w, id: 'worker-id', pid: process.pid, startedAt: Date.now(), exitCode: status === 'running' ? undefined : 0 }
     t.s.room.workers.set('test', current as never)
-    t.state.ctx = { probe: () => undefined } as never
+    t.state.ctx = { probe: () => ({}) } as never
     t.state.dismissWorker = vi.fn(async () => 'signalled')
     put(worker, 'new.txt', 'worker change')
     for (const args of [{ tag: 'test' }, { tag: 'test', discard: true }]) {

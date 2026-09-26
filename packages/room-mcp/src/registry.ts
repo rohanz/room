@@ -12,7 +12,7 @@ import type { NoteMsg, Presence, Worker } from '@room/shared'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
-import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidAlive, pidIsOurWorker, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, type SpawnedProcess, type Spawner } from './workers.js'
+import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, probeProcess, type ProcessProbe, type SpawnedProcess, type Spawner } from './workers.js'
 import { decideResume, decideRetire, processExited, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from './worker-launch.js'
@@ -35,6 +35,7 @@ export interface Attachment {
 }
 
 export interface RoomsOptions {
+  probe?: ProcessProbe
   /** The primary session lives with the host (tests and index.ts set it); the registry reads and writes it through these. */
   primary(): Session | null
   setPrimary(s: Session | null): void
@@ -103,6 +104,7 @@ export class Rooms {
   private retiring = new Map<Session, Promise<void>>()
 
   constructor(private o: RoomsOptions) {}
+  probe(pid: number) { return (this.o.probe ?? probeProcess)(pid) }
 
   // ---- sessions ---------------------------------------------------------------
   primary(): Session | null { return this.o.primary() }
@@ -191,8 +193,8 @@ export class Rooms {
       const lock = workerOperationKey(w)
       if (!this.reserve(lock)) continue
       try {
-        const state = await workerRealState(s.dir, w, { process: true })
-        if (!processExited(state) || pidAlive(w.pid)) continue
+        const state = await workerRealState(s.dir, w, { process: true, probe: this.probe.bind(this) })
+        if (!processExited(state)) continue
         if (w.status !== 'done') s.room.clearWorkerCoordination(w.name)
         if (w.status === 'running') {
           await finishWorkerProcess(s, w, null, Date.now(), undefined, true)
@@ -221,7 +223,7 @@ export class Rooms {
         const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
         const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
         if (facts.clean && w.exitCode === 0) {
-          try { if (!await cleanupWorker(s.dir, w, true, false, [], {}, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue }
+          try { if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this) }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue }
           catch { continue }
         }
         const retiredAt = Date.now()
@@ -283,7 +285,7 @@ export class Rooms {
     const sessions = [s, ...this.all().filter(x => x !== s)]
     let count = 0
     for (const sess of sessions) for (const w of sess.room.workers.values()) {
-      if (w.lead === s.me.name && (w.status === 'running' || this.hasHandle(sess, w) || pidIsOurWorker(w.pid, w))) count++
+      if (w.lead === s.me.name && (w.status === 'running' || this.hasHandle(sess, w) || pidIsOurWorker(w.pid, w, this.probe.bind(this)))) count++
     }
     return count
   }
@@ -305,7 +307,7 @@ export class Rooms {
     const deadline = Date.now() + timeoutMs
     const signal = toolSignal.getStore()
     while (Date.now() < deadline && !signal?.aborted) {
-      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) })
+      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) })
       if (state.process === 'not-ours') return true
       const key = Rooms.hkey(s, w.id!)
       await new Promise<void>(resolve => {
@@ -324,7 +326,7 @@ export class Rooms {
         waiting.add(done); this.exitWaiters.set(key, waiting)
         const timer = setTimeout(done, Math.min(this.hasHandle(s, w) ? 1_000 : 100, Math.max(1, deadline - Date.now())))
         signal?.addEventListener('abort', done, { once: true })
-        if (!this.hasHandle(s, w) && !pidIsOurWorker(w.pid, w)) done()
+        if (!this.hasHandle(s, w) && !pidIsOurWorker(w.pid, w, this.probe.bind(this))) done()
       })
     }
     return false
@@ -361,7 +363,7 @@ export class Rooms {
       if (w.lead !== s.me.name) return `error: ${w.tag} belongs to ${w.lead}`
       if (w.status === 'running') return `error: ${w.tag} is already running`
       if (w.status === 'dismissed' && w.stopReason !== 'lead-session-ended') return `error: ${w.tag} was discarded and cannot be resumed`
-      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) })
+      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) })
       const initial = decideResume(state)
       if (initial === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
       if (initial === 'no-session') return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`
@@ -370,7 +372,7 @@ export class Rooms {
         return toolCallAborted() ? 'error: tool call cancelled' : `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`
       }
       if (toolCallAborted()) return 'error: tool call cancelled'
-      const settled = decideResume(await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) }))
+      const settled = decideResume(await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) }))
       if (settled === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
       if (settled === 'unknown') return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`
       if (settled === 'wait-exit') return `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`
@@ -394,7 +396,7 @@ export class Rooms {
         try { launched = launchWorkerProcess({ rooms: this, session: s, id, tag: w.tag, dir: w.dir,
           lead: w.lead, owner: s.me.owner ?? s.me.name, host: w.host, model: w.model, effort: w.effort,
           share: w.share ?? 'intent', gen: w.gen ?? 1, budget, server, isWorker,
-          token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, log, at },
+          token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, probe: this.probe.bind(this), log, at },
         { mode: 'resume', message, sessionId: w.hostSessionId!, oldPort: w.port }, launchLease,
         ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running',
           startedAt, processStartTime, summary: undefined, exitCode: undefined, finishedAt: undefined,

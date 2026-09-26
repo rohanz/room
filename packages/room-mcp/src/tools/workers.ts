@@ -1,6 +1,6 @@
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidAlive, pidIsOurWorker, signalWorker, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses } from '../workers.js'
+import { pidPresent, pidIsOurWorker, signalWorker, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses } from '../workers.js'
 import { decideStop, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
 import fs from 'node:fs'
@@ -177,7 +177,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           launched = launchWorkerProcess({ rooms, session: s, id, tag, dir, lead: s.me.name, owner,
             host, model, effort, share: effectiveShare, gen, budget: { threads, memGb }, server,
             isWorker, token: s.local ? undefined : s.token, claudeChannel: config.claudeChannel,
-            usedPorts, spawner: ctx.spawner, log: state.log, at: now },
+            usedPorts, spawner: ctx.spawner, probe: ctx.probe, log: state.log, at: now },
           { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, sessionId: hostSessionId }, launchLease,
           ({ proc, port, nice, startedAt, processStartTime }) => {
             const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}),
@@ -256,15 +256,15 @@ export function install(state: HandlerState): void {
     }
   const runningWorkers = (s: Session): { s: Session; w: Worker }[] => {
       const out: { s: Session; w: Worker }[] = []
-      for (const sess of [s, ...rooms.all().filter(x => x !== s)]) for (const w of myWorkers(sess)) if (w.status === 'running' || pidAlive(w.pid) || workerAlive(sess, w)) out.push({ s: sess, w })
+      for (const sess of [s, ...rooms.all().filter(x => x !== s)]) for (const w of myWorkers(sess)) if (w.status === 'running' || pidPresent(w.pid, ctx.probe) || workerAlive(sess, w)) out.push({ s: sess, w })
       return out
     }
   const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason'], cancelled?: AbortSignal): Promise<string> => {
       const proc = rooms.handle(s, w.id)
       if (!proc) {
         const processState = await workerRealState(s.dir, w, { process: true, probe: ctx.probe })
-        if (processState.process === 'not-ours' && pidAlive(w.pid)) return `pid ${w.pid} belongs to another process; not signalled`
-        if (processState.process === 'unknown' && pidAlive(w.pid)) {
+        if (processState.process === 'not-ours' && pidPresent(w.pid, ctx.probe)) return `pid ${w.pid} belongs to another process; not signalled`
+        if (processState.process === 'unknown') {
           const message = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
           s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: 'interrupt', text: message })
           return message
@@ -279,7 +279,7 @@ export function install(state: HandlerState): void {
       let cleanupError: string | undefined
       const stopCwdProcesses = async () => {
         if (!ownedWorktree || cleanupError) return
-        try { stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids })) }
+        try { stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids, probe: ctx.probe })) }
         catch (e) { cleanupError = `cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}` }
       }
       const cleanupText = () => (stopped.length ? `; stopped processes: ${stopped.join(', ')}` : '') + (cleanupError ? `; ${cleanupError}` : '')
@@ -298,14 +298,16 @@ export function install(state: HandlerState): void {
         signalled = false
         how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`
       }
-      if (!signalled && pidAlive(w.pid)) how = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
+      if (!signalled && pidPresent(w.pid, ctx.probe)) how = proc
+        ? `pid ${w.pid} not signalled: worker process is still alive`
+        : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
       await stopCwdProcesses()
-      if (proc && !pidAlive(w.pid)) releaseWorkerProcessPort(proc)
+      if (proc && !pidPresent(w.pid, ctx.probe)) releaseWorkerProcessPort(proc)
       // Shutdown may have reached its deadline during cwd cleanup. Commit the stop only
       // after every awaited step succeeds, so a later continuation cannot rewrite the record.
       if (cancelled?.aborted) return how + cleanupText()
       if (stopReason && cleanupError) throw new Error(cleanupError)
-      if (signalled || proc || pidAlive(w.pid)) s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : pidAlive(w.pid) ? how : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
+      if (signalled || proc || pidPresent(w.pid, ctx.probe)) s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
       // Keep an owned handle until exit confirms the process can no longer publish live state.
       if (signalled) {
         if (stopReason) {

@@ -14,7 +14,7 @@ import { createHandlerState, type HandlerState } from '../src/tools/context.js'
 describe('worker lifecycle cleanup', () => {
   it('signals only processes whose resolved cwd is inside the worktree, then escalates survivors', async () => {
     const signal = vi.fn()
-    const alive = vi.fn((pid: number) => pid === 102)
+    let afterTerm = false
     const killed = await terminateWorktreeProcesses('/repo/.room/workers/a', {
       list: () => [
         { pid: 101, cwd: '/repo/.room/workers/a', command: 'astro dev' },
@@ -23,8 +23,8 @@ describe('worker lifecycle cleanup', () => {
         { pid: process.pid, cwd: '/repo/.room/workers/a', command: 'room' },
       ],
       signal,
-      alive,
-      sleep: async () => {},
+      probe: pid => !afterTerm || pid === 102 ? {} : undefined,
+      sleep: async () => { afterTerm = true },
     })
     expect(killed).toEqual(['astro dev (pid 101)', 'vite (pid 102)'])
     expect(signal.mock.calls).toEqual([[101, 'SIGTERM'], [102, 'SIGTERM'], [102, 'SIGKILL']])
@@ -53,7 +53,7 @@ describe('worker lifecycle cleanup', () => {
     await terminateWorktreeProcesses('/repo/.room/workers/a', {
       list: () => [{ pid: 102, cwd: ++calls <= 2 ? '/repo/.room/workers/a' : '/repo/other', command: 'vite' }],
       signal,
-      alive: () => true,
+      probe: () => ({}),
       sleep: async () => {},
     })
     expect(signal.mock.calls).toEqual([[102, 'SIGTERM']])
@@ -74,7 +74,7 @@ describe('worker lifecycle cleanup', () => {
       const names: string[] = []
       const signal = vi.fn()
       expect(await cleanupWorker(root, { tag: 'a', name: 'lead+a', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/a', pid: -1, startedAt: 1, status: 'done', exitCode: 0 }, true, false, names, {
-        list: () => [{ pid: 12345, cwd: dir, command: 'astro dev' }], signal, alive: () => false, sleep: async () => {},
+        list: () => [{ pid: 12345, cwd: dir, command: 'astro dev' }], signal, probe: () => ({}), sleep: async () => {},
       })).toBe(true)
       expect(names).toEqual(['astro dev (pid 12345)'])
       expect(signal).toHaveBeenCalledWith(12345, 'SIGTERM')
@@ -82,7 +82,7 @@ describe('worker lifecycle cleanup', () => {
       git('worktree', 'add', '-qb', 'room/explicit', explicit)
       signal.mockClear()
       expect(await cleanupWorker(root, { tag: 'explicit', name: 'lead+explicit', lead: 'lead', host: 'codex', task: 'task', dir: explicit, branch: 'room/explicit', pid: -1, startedAt: 1, status: 'done', exitCode: 0 }, true, false, [], {
-        list: () => [{ pid: 12345, cwd: explicit, command: 'editor' }], signal, alive: () => false, sleep: async () => {},
+        list: () => [{ pid: 12345, cwd: explicit, command: 'editor' }], signal, sleep: async () => {},
       }, 'lead')).toBe(false)
       expect(signal).not.toHaveBeenCalled()
       expect(existsSync(explicit)).toBe(true)

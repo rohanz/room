@@ -227,7 +227,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       flush: () => watcher?.flush() ?? Promise.resolve(),
     }
   }
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => runtime.observeClaims(s), attach })
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => runtime.observeClaims(s), attach, probe: ctx.probe })
 
   // ---- pull requests as intent ------------------------------------------------
   /** Refresh the PR mirror in the doc when I am the elected maintainer (lowest present name). Never throws. */
@@ -260,7 +260,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const isMe = (s: Session, p: { name: string; kind: string }) => p.name === s.me.name && p.kind === s.me.kind
   const mine = (s: Session) => s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === s.me.kind)
 
-  /** Is a process for this worker record alive: one we spawned, or (after a lead restart) one `ps` vouches for. */
+  /** Is this worker process ours: one we spawned, or one the configured probe verifies after a lead restart. */
 
   /** Open (once) the local workers room next to a team session and bridge the two. */
 

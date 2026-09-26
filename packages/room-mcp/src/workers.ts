@@ -621,6 +621,8 @@ export function pidAlive(pid: number): boolean {
 }
 
 export interface ProcessInfo { startTime?: string; executable?: string }
+/** Undefined means the pid is gone; an empty object means it is live but its identity is unreadable. */
+export type ProcessProbe = (pid: number) => ProcessInfo | undefined
 export interface ProcessReaders {
   platform: NodeJS.Platform
   readFile(file: string): string
@@ -649,15 +651,16 @@ export function parsePsLstartUtc(line: string): number | undefined {
  * not a practical risk: pids increment and wrap only after about 99,999, and the executable must also match. */
 export function probeProcess(pid: number, readers: ProcessReaders = systemProcessReaders): ProcessInfo | undefined {
   if (!pid || pid <= 0) return undefined
+  const unreadable = () => pidAlive(pid) ? {} : undefined
   try {
     if (readers.platform === 'linux') {
       const stat = readers.readFile(`/proc/${pid}/stat`)
       const close = stat.lastIndexOf(')')
-      if (close < 0) return undefined
+      if (close < 0) return unreadable()
       const startTicks = stat.slice(close + 1).trim().split(/\s+/)[19]
-      if (!/^\d+$/.test(startTicks ?? '')) return undefined
+      if (!/^\d+$/.test(startTicks ?? '')) return unreadable()
       const bootId = readers.readFile('/proc/sys/kernel/random/boot_id').trim()
-      if (!bootId) return undefined
+      if (!bootId) return unreadable()
       let executable: string | undefined
       try { executable = path.basename(readers.readLink(`/proc/${pid}/exe`)) } catch { /* start time is still useful to record */ }
       return { startTime: `linux:${bootId}:${startTicks}`, executable }
@@ -665,31 +668,36 @@ export function probeProcess(pid: number, readers: ProcessReaders = systemProces
     if (readers.platform === 'darwin') {
       const lstart = readers.exec('ps', ['-o', 'lstart=', '-p', String(pid)]).trim()
       const startSeconds = parsePsLstartUtc(lstart)
-      if (startSeconds === undefined) return undefined
+      if (startSeconds === undefined) return unreadable()
       const boot = readers.exec('sysctl', ['-n', 'kern.boottime']).match(/sec\s*=\s*(\d+)/)?.[1]
-      if (!boot) return undefined
+      if (!boot) return unreadable()
       let executable: string | undefined
       try { executable = path.basename(readers.exec('ps', ['-o', 'comm=', '-p', String(pid)]).trim()) } catch { /* start time is still useful to record */ }
       return { startTime: `darwin:${boot}:${startSeconds}`, executable }
     }
   } catch { /* process exited or the OS did not allow the read */ }
-  return undefined
+  return unreadable()
+}
+
+export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
+  return pid > 0 && probe(pid) !== undefined
 }
 
 type WorkerIdentity = Pick<Worker, 'processStartTime' | 'host'>
 export type ProcessOwnership = 'ours' | 'not-ours' | 'unknown'
 
-export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: (pid: number) => ProcessInfo | undefined = probeProcess): ProcessOwnership {
-  if (!pidAlive(pid)) return 'not-ours'
-  if (!w.processStartTime) return 'unknown'
+export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): ProcessOwnership {
+  if (!pid || pid <= 0) return 'not-ours'
   const info = probe(pid)
+  if (!info) return 'not-ours'
+  if (!w.processStartTime) return 'unknown'
   if (!info?.startTime || !info.executable) return 'unknown'
   if (info.startTime !== w.processStartTime) return 'not-ours'
   const executable = path.basename(info.executable)
   return executable === w.host || executable === 'node' ? 'ours' : 'not-ours'
 }
 
-export function pidIsOurWorker(pid: number, w: WorkerIdentity, probe: (pid: number) => ProcessInfo | undefined = probeProcess): boolean {
+export function pidIsOurWorker(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): boolean {
   return workerProcessOwnership(pid, w, probe) === 'ours'
 }
 
@@ -734,14 +742,13 @@ function listCwdProcesses(platform: NodeJS.Platform = process.platform): CwdProc
 export async function terminateWorktreeProcesses(dir: string, options: {
   list?: () => CwdProcess[]
   signal?: (pid: number, signal: NodeJS.Signals) => void
-  alive?: (pid: number) => boolean
+  probe?: ProcessProbe
   sleep?: (ms: number) => Promise<void>
   protectedPids?: number[]
 } = {}): Promise<string[]> {
   const root = fs.existsSync(dir) ? fs.realpathSync(dir) : path.resolve(dir)
   const protectedPids = new Set([process.pid, process.ppid, ...(options.protectedPids ?? [])])
   const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig))
-  const alive = options.alive ?? pidAlive
   const sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
   const resolved = (cwd: string) => { try { return fs.realpathSync(cwd) } catch { return path.resolve(cwd) } }
   const list = options.list ?? listCwdProcesses
@@ -754,7 +761,7 @@ export async function terminateWorktreeProcesses(dir: string, options: {
   const beforeTerm = new Set(list().filter(insideWorktree).map(p => p.pid))
   const named: string[] = []
   for (const p of targets) {
-    if (!beforeTerm.has(p.pid)) continue
+    if (!beforeTerm.has(p.pid) || !pidPresent(p.pid, options.probe)) continue
     const name = p.command || processName(p.pid)
     try { signal(p.pid, 'SIGTERM'); named.push(`${name} (pid ${p.pid})`) }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
@@ -762,7 +769,7 @@ export async function terminateWorktreeProcesses(dir: string, options: {
   if (!named.length) return []
   await sleep(300)
   const stillInside = new Set(list().filter(insideWorktree).map(p => p.pid))
-  for (const p of targets) if (stillInside.has(p.pid) && alive(p.pid)) {
+  for (const p of targets) if (stillInside.has(p.pid) && pidPresent(p.pid, options.probe)) {
     try { signal(p.pid, 'SIGKILL') }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
   }

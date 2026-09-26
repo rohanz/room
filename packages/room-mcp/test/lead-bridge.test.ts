@@ -58,7 +58,7 @@ function setupBridged(queue?: (id: string, text: string) => Promise<void>) {
   const exits: ((code: number | null) => void)[] = []
   const attached: Session[] = []
   const leadTools = createTools({
-    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, queue,
+    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, queue, probe: () => undefined,
     attachChannel: s => { attached.push(s) },
     join: async () => fakeSession(local.a, lead),
     leave: async () => {},

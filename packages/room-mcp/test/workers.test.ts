@@ -379,9 +379,10 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const specs: SpawnSpec[] = []
     const exits: ((code: number | null) => void)[] = []
     const killed: number[] = []
+    const live = new Set<number>()
     const leadTools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers,
-      spawner: spec => { specs.push(spec); return { pid: 4242 + specs.length, onExit: cb => { exits.push(cb) }, kill: () => { killed.push(1); return true } } },
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers, probe: pid => live.has(pid) ? { startTime: 'test:worker', executable: 'node' } : undefined,
+      spawner: spec => { specs.push(spec); const pid = 4242 + specs.length; live.add(pid); return { pid, onExit: cb => { exits.push(code => { live.delete(pid); cb(code) }) }, kill: () => { killed.push(1); return true } } },
       worktree: worktree ?? (async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true, base })),
     })
     let ws: Session | null = fakeSession(b, workerId)
@@ -445,7 +446,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     let session: Session | null = fakeSession(a, workerId)
     const specs: SpawnSpec[] = []
     const tools = createTools({
-      getSession: () => session, setSession: s => { session = s }, cwd: dir,
+      getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => undefined,
       spawner: spec => { specs.push(spec); return { pid: 4243, onExit: () => {}, kill: () => true } },
       worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
     })
@@ -494,6 +495,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const stopped = setup()
     await stopped.leadTools.call('room_spawn', { tag: 'stopped', task: 'x' })
     expect(await stopped.leadTools.call('room_leave', { force: true })).toContain('left local/x/main')
+    expect(existsSync(file(stopped.specs[0].env.PORT))).toBe(true)
+    stopped.exits[0](null)
     expect(existsSync(file(stopped.specs[0].env.PORT))).toBe(false)
   })
 
@@ -620,7 +623,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const joins: { server?: string; name?: string }[] = []
     const left: string[] = []
     const leadTools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0,
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, probe: () => undefined,
       join: async o => { joins.push({ server: o.server, name: o.name }); return fakeSession(local.a, lead) },
       leave: async s => { left.push(s.roomName) },
       spawner: spec => { specs.push(spec); return { pid: 99, onExit: () => {}, kill: () => true } },
@@ -795,9 +798,10 @@ function setupLead() {
   const exits: ((code: number | null) => void)[] = []
   const sessionIds: ((id: string) => void)[] = []
   const killed: number[] = []
+  const live = new Set<number>()
   const leadTools = createTools({
-    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2,
-    spawner: spec => { specs.push(spec); return { pid: 4242 + specs.length, onExit: cb => { exits.push(cb) }, onSessionId: cb => { sessionIds.push(cb) }, kill: () => { killed.push(1); return true } } },
+    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2, probe: pid => live.has(pid) ? { startTime: 'test:worker', executable: 'node' } : undefined,
+    spawner: spec => { specs.push(spec); const pid = 4242 + specs.length; live.add(pid); return { pid, onExit: cb => { exits.push(code => { live.delete(pid); cb(code) }) }, onSessionId: cb => { sessionIds.push(cb) }, kill: () => { killed.push(1); return true } } },
     worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
   })
   return { a, b, session: ls, leadTools, specs, exits, sessionIds, killed }
@@ -812,7 +816,8 @@ describe('worker safety', () => {
     expect(workerProcessOwnership(process.pid, rec, () => ({ ...info, startTime: 'linux:boot-b:12345' }))).toBe('not-ours')
     expect(workerProcessOwnership(process.pid, rec, () => ({ ...info, executable: '/usr/bin/vim' }))).toBe('not-ours')
     expect(workerProcessOwnership(process.pid, { ...rec, processStartTime: undefined }, () => info)).toBe('unknown')
-    expect(workerProcessOwnership(process.pid, rec, () => undefined)).toBe('unknown')
+    expect(workerProcessOwnership(process.pid, rec, () => ({}))).toBe('unknown')
+    expect(workerProcessOwnership(process.pid, rec, () => undefined)).toBe('not-ours')
     expect(workerProcessOwnership(-1, rec, () => info)).toBe('not-ours')
   })
 
@@ -872,7 +877,7 @@ describe('worker safety', () => {
     a.setMeta({ repo: 'x', branch: 'main', base })
     a.setWorker({ id: 'worker-unknown', tag: 'unknown', name: 'rohanz+unknown', host: 'claude', task: 'x', dir, branch: 'room/unknown', pid: process.pid, startedAt: Date.now(), status: 'running', lead: 'rohanz' })
     let session: Session | null = fakeSession(a, lead)
-    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => undefined, leave: async () => {} })
+    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
     await tools.shutdown()
     expect(a.workers.get('unknown')?.status).toBe('running')
     expect(a.workers.get('unknown')?.dismissedAt).toBeUndefined()
@@ -885,7 +890,7 @@ describe('worker safety', () => {
     a.setMeta({ repo: 'x', branch: 'main', base })
     a.setWorker({ id: 'finished-unknown', tag: 'finished', name: 'rohanz+finished', host: 'claude', task: 'x', dir, branch: 'room/finished', pid: process.pid, startedAt: Date.now(), status, lead: 'rohanz' })
     let session: Session | null = fakeSession(a, lead)
-    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => undefined, leave: async () => {} })
+    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
     await tools.shutdown()
     expect(a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && m.text === `could not verify finished's process (pid ${process.pid}); left running, not stopped`)).toBe(true)
     expect(a.workers.get('finished')?.status).toBe(status)
@@ -896,7 +901,7 @@ describe('worker safety', () => {
     a.setMeta({ repo: 'x', branch: 'main', base })
     a.setWorker({ id: 'finished-unknown', tag: 'finished', name: 'rohanz+finished', host: 'claude', task: 'x', dir, branch: 'room/finished', pid: process.pid, startedAt: Date.now(), status: 'done', lead: 'rohanz' })
     let session: Session | null = fakeSession(a, lead)
-    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => undefined, leave: async () => {} })
+    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
     expect(await tools.call('room_leave', {})).toContain('1 worker(s) still running: finished')
     expect(await tools.call('room_leave', { force: true })).toContain(`could not verify finished's process (pid ${process.pid}); left running, not stopped`)
     expect(a.workers.get('finished')?.status).toBe('done')
@@ -982,7 +987,7 @@ describe('review fixes: workers', () => {
     ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
     const specs: SpawnSpec[] = []
     const leadTools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0,
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, probe: () => undefined,
       join: async () => fakeSession(local.a, teamLead),
       leave: async () => {},
       spawner: spec => { specs.push(spec); return { pid: 99, onExit: () => {}, kill: () => true } },
@@ -1001,7 +1006,7 @@ describe('review fixes: workers', () => {
     // The lead joined with a token in the URL: only the session knows it, not the environment.
     let ls: Session | null = { ...fakeSession(a, lead, false), roomUrl: 'ws://team.example/local%2Fx%2Fmain', token } as Session
     const specs: SpawnSpec[] = []
-    const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, spawner: spec => { specs.push(spec); return { pid: 5, onExit: () => {}, kill: () => true } }, worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }) })
+    const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined, spawner: spec => { specs.push(spec); return { pid: 5, onExit: () => {}, kill: () => true } }, worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }) })
     await tools.call('room_spawn', { tag: 'w', task: 't' })
     expect(specs[0].env.ROOM_SERVER).toBe('ws://team.example')
     expect(specs[0].env.ROOM_TOKEN).toBe(token)
@@ -1063,7 +1068,7 @@ describe('review fixes: the workers room', () => {
     ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
     const attached: string[] = []
     const leadTools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, queue,
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, queue, probe: () => undefined,
       attachChannel: s => { attached.push(s.roomName) },
       join: async () => fakeSession(local.a, lead),
       leave: async () => {},
@@ -1136,7 +1141,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
     const killed: string[] = []
     const leadTools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0,
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, probe: () => undefined,
       join: async () => fakeSession(local.a, lead),
       leave: async () => {},
       spawner: spec => ({ pid: 99, onExit: () => {}, kill: () => { killed.push(spec.env.ROOM_ROOM); return true } }),
@@ -1188,7 +1193,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const preparing = new Promise<void>(resolve => { entered = resolve })
     const specs: SpawnSpec[] = []
     const tools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined,
       spawner: spec => { specs.push(spec); return { pid: 7, onExit: () => {}, kill: () => true } },
       worktree: async (repo, tag) => { entered(); await gate; return { dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true } },
     })
@@ -1214,7 +1219,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const specs: SpawnSpec[] = []
     let prepared: Awaited<ReturnType<typeof prepareWorktree>> | undefined
     const tools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined,
       spawner: spec => { specs.push(spec); return { pid: 7, onExit: () => {}, kill: () => true } },
       worktree: async (repo, tag) => { entered(); await gate; prepared = await prepareWorktree(repo, tag); return prepared },
     })
@@ -1244,7 +1249,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     // a record from before the restart: no process handle, but the OS start identity still matches
     a.setWorker({ tag: 'money', name: 'rohanz+money', host: 'claude', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b', task: 'x', dir: '/repo/.room/workers/money', branch: 'room/money', pid: child.pid!, processStartTime: 'test:worker:1', startedAt, status: 'done', lead: 'rohanz', gen: 1, summary: 'done but alive' })
     let ls: Session | null = fakeSession(a, lead)
-    const probe = () => ({ startTime: 'test:worker:1', executable: 'claude' })
+    const probe = () => pidAlive(child.pid!) ? { startTime: 'test:worker:1', executable: 'claude' } : undefined
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe })
     expect(await tools.call('room_leave', {})).toContain('still running: money')
     expect(await tools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('done but its process is still alive')
@@ -1259,12 +1264,24 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     let ls: Session | null = fakeSession(a, lead)
     let deliverable = false
     let exit: (code: number | null) => void = () => {}
+    let live = true
+    const realKill = process.kill.bind(process)
+    vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === 8 && signal === 0) {
+        const error = new Error('synthetic worker has no OS process') as NodeJS.ErrnoException
+        error.code = 'ESRCH'
+        throw error
+      }
+      return realKill(pid, signal)
+    })
     const tools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
-      spawner: () => ({ pid: 8, onExit: cb => { exit = cb }, kill: () => { if (deliverable) setTimeout(() => exit(0), 1); return deliverable } }),
+      probe: pid => pid === 8 && live ? { startTime: 'test:worker:8', executable: 'claude' } : undefined,
+      spawner: () => ({ pid: 8, onExit: cb => { exit = code => { live = false; cb(code) } }, kill: () => { if (deliverable) setTimeout(() => exit(0), 1); return deliverable } }),
       worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
     })
     await tools.call('room_spawn', { tag: 'money', task: 't' })
+    expect(a.workers.get('money')?.processStartTime).toBe('test:worker:8')
     const refused = await tools.call('room_collect', { discard: true, tag: 'money' })
     expect(refused).toMatch(/^could not discard money: pid 8 not signalled:/)
     expect(a.workers.get('money')?.status).toBe('running')

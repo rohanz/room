@@ -156,7 +156,7 @@ describe('nested lead: a worker that leads workers', () => {
     let s: Session | null = fakeSession(room, leadMe, top)
     const specs: SpawnSpec[] = []
     const tools = createTools({
-      getSession: () => s, setSession: x => { s = x }, cwd: top, maxWorkers: 4,
+      getSession: () => s, setSession: x => { s = x }, cwd: top, maxWorkers: 4, probe: () => undefined,
       spawner: spec => { specs.push(spec); return { pid: 900 + specs.length, onExit: () => {}, kill: () => true } },
       worktree: async (repo, tag) => ({ dir: path.join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
     })

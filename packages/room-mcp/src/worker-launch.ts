@@ -4,7 +4,7 @@ import type { Session } from './session.js'
 import type { Rooms } from './registry.js'
 import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
-import { defaultSpawner, probeProcess, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
+import { defaultSpawner, probeProcess, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type ProcessInfo, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
 
 export class WorkerLaunchError extends Error {
   constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string) { super(message) }
@@ -23,7 +23,7 @@ interface Policy {
   host: WorkerHost; model?: string; effort?: string; share: string; gen: number
   budget: { threads: number; memGb: number; nice?: number }
   server: string; isWorker: boolean; token?: string; claudeChannel?: string
-  spawner?: Spawner; log: (line: string) => void; at?: () => number
+  spawner?: Spawner; probe?: (pid: number) => ProcessInfo | undefined; log: (line: string) => void; at?: () => number
   usedPorts?: number[]; preferredPort?: number
 }
 type Command =
@@ -77,7 +77,7 @@ export function launchWorkerProcess(policy: Policy, command: Command, lease: Wor
     passed = true
     rooms.setHandle(s, id, proc)
     const result = { proc, port, env, nice: priority.nice, logFile, portChanged,
-      startedAt: (policy.at ?? Date.now)(), processStartTime: probeProcess(proc.pid)?.startTime }
+      startedAt: (policy.at ?? Date.now)(), processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime }
     if (!onStarted(result)) {
       rooms.dropHandle(s, id, proc)
       try { proc.kill() } catch (e) { policy.log(`worker launch: could not stop stale ${tag}: ${e}`) }

@@ -4,7 +4,7 @@ import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
-import { cleanupWorker, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidAlive, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses } from '../workers.js'
+import { cleanupWorker, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidPresent, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, type ProcessProbe } from '../workers.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode } from './files.js'
@@ -29,9 +29,9 @@ const collectQueues = new Map<string, { tail: Promise<void>; tag: string }>()
 /** Only signal processes after confirming this is still the worker's owned git worktree. */
 const ownershipRecords = (s: Session) => [...s.room.retiredWorkers(), ...s.room.workers.values()]
 
-async function stopOwnedWorktreeProcesses(leadDir: string, w: Worker, leadName: string, workers: Iterable<Worker | RetiredWorker>, errors?: string[]): Promise<string[]> {
+async function stopOwnedWorktreeProcesses(leadDir: string, w: Worker, leadName: string, workers: Iterable<Worker | RetiredWorker>, errors?: string[], probe?: ProcessProbe): Promise<string[]> {
   if (!decideStop(await workerRealState(leadDir, w, { ownership: true, leadName, workers })).cwd) return []
-  try { return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [] }) }
+  try { return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [], probe }) }
   catch (e) {
     errors?.push(`cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}`)
     return []
@@ -71,7 +71,7 @@ async function assertNoOperation(dir: string): Promise<void> {
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const unverifiedLive = async (s: Session, w: Worker): Promise<string | undefined> => {
-    if (!pidAlive(w.pid)) return undefined
+    if (!pidPresent(w.pid, state.ctx?.probe)) return undefined
     const facts = await workerRealState(s.dir, w, { process: true, hasHandle: !!state.rooms.handle?.(s, w.id), probe: state.ctx?.probe })
     return facts.process === 'ours' ? undefined : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
   }
@@ -84,7 +84,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (lead === s.me.name) return { owned: true, liveLead }
       visited.add(lead)
       const active = [...s.room.workers.values()].find(parent => parent.name === lead)
-      if (active && !discarding.has(lead) && !liveLead && (state.workerAlive(s, active) || pidAlive(active.pid))) liveLead = lead
+      if (active && !discarding.has(lead) && !liveLead && (state.workerAlive(s, active) || pidPresent(active.pid, state.ctx?.probe))) liveLead = lead
       lead = known.find(parent => parent.name === lead)?.lead ?? ''
     }
     return { owned: false }
@@ -126,13 +126,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!rooms.reserve(lock)) return 'error: this worker is already being handled or retired'
         try {
           const cleanupErrors: string[] = []
-          const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors)
+          const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe)
           // A kept worktree that is no longer an owned Room worktree is refused, not forgotten: cleanupWorker decides.
           const missing = decideDiscard(await workerRealState(s.dir, w)) === 'prune'
           const missingDetail = missing ? await pruneMissingWorkerWorktree(s.dir, w) : undefined
           const ignored = missing ? [] : await ignoredWorkerArtifacts(w)
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}${terminated.length ? '\nstopped processes: ' + terminated.join(', ') : ''}${cleanupErrors.length ? '\n' + cleanupErrors.join('; ') : ''}\nrepeat with force=true to delete them`
-          if (!missing && !await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
+          if (!missing && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe }, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
           const archive = s.room.doc.getArray<RetiredWorker>('retiredWorkers')
           const index = archive.toArray().findIndex(item => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead)
           if (index >= 0) s.room.doc.transact(() => {
@@ -171,10 +171,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const cleanupErrors: string[] = []
         const beforeStop = await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })
         const verifiedProcess = decideStop(beforeStop).host === 'signal'
-        const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors)
-        if (state.workerAlive(s, w) || pidAlive(w.pid)) {
+        const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe)
+        if (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe)) {
           const how = await state.dismissWorker(s, w, 'discarded by the lead')
-          if (s.room.workers.get(w.tag)?.status === 'running' && (state.workerAlive(s, w) || pidAlive(w.pid))) return 'could not discard ' + w.tag + ': ' + how + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
+          if (s.room.workers.get(w.tag)?.status === 'running' && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) return 'could not discard ' + w.tag + ': ' + how + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
           if (how.includes('cwd process cleanup failed:')) cleanupErrors.push(how)
           const now = state.now ?? Date.now
           const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
@@ -185,7 +185,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep(50)
           if (state.workerAlive(s, w)) throw new Error('worker process has not stopped')
         }
-        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors))
+        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe))
         const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) })
         const missing = decideDiscard(afterStop) === 'prune'
         let missingDetail: string | undefined
@@ -215,7 +215,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           ].join('\n')
         }
         const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w) : undefined
-        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
+        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe }, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
         releaseClaimsOnDone(s, () => false, w.name, false)
         const retiredAt = Date.now()
         s.room.retireParticipant(w.name, {
@@ -252,7 +252,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const { s } = item; let { w } = item
         const unsafe = await unverifiedLive(s, w)
         if (unsafe) { out.push(unsafe); continue }
-        const stopped = w.pid !== undefined && !state.workerAlive(s, w) && !pidAlive(w.pid)
+        const stopped = w.pid !== undefined && !state.workerAlive(s, w) && !pidPresent(w.pid, state.ctx?.probe)
         const decision = decideCollect(await workerRealState(lead.dir, w), !!a.tag, stopped)
         if (decision === 'skip-status') { out.push('skipped ' + w.tag + ': ' + w.status + (w.status === 'failed' ? ` (${failureReason(w)})` : '')); continue }
         if (decision === 'skip-partial') {
@@ -280,7 +280,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (w.branch !== 'room/' + w.tag || (await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) throw new Error('worker must be on branch room/' + w.tag)
         await git(w.dir, ['ls-files', '-z'])
         const cleanupErrors: string[] = []
-        const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors)
+        const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe)
         if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
         out.push(...cleanupErrors.map(error => `${w.tag}: ${error}`))
         const now = state.now ?? Date.now
@@ -405,7 +405,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             continue
           }
           const terminated: string[] = []
-          if (await cleanupWorker(s.dir, w, true, false, terminated, {}, s.me.name, ownershipRecords(s))) {
+          if (await cleanupWorker(s.dir, w, true, false, terminated, { probe: state.ctx?.probe }, s.me.name, ownershipRecords(s))) {
             retire(w.summary ?? '')
             out.push('cleaned up ' + w.tag + ': temporary files, branch and logs')
             if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
