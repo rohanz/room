@@ -84,6 +84,7 @@ export class Bridge {
     const onLocalClaims = (ev: { changes: { keys: Map<string, { action: string }> } }) => {
       for (const [id, ch] of ev.changes.keys) {
         if (ch.action === 'add') this.mirrorClaim(id)
+        else if (ch.action === 'update') this.updateMirrorClaim(id)
         else if (ch.action === 'delete') this.unmirrorClaim(id)
       }
     }
@@ -215,6 +216,19 @@ export class Bridge {
     this.o.log?.(`bridge: mirrored ${c.by}'s claim ${c.path}:${c.from}-${c.to} into the team room as ${t.id}`)
   }
 
+  private updateMirrorClaim(localId: string): void {
+    const teamId = this.mirrored.get(localId)
+    if (!teamId) { this.mirrorClaim(localId); return }
+    const local = this.local.room.claims.get(localId)
+    const mirrored = this.team.room.claims.get(teamId)
+    if (!local || !mirrored) return
+    const { id: _id, at: _at, anchor: _anchor, ...rest } = local as Claim & { anchor?: unknown }
+    this.team.room.doc.transact(() => this.team.room.claims.set(teamId, {
+      ...mirrored, ...rest, id: teamId, at: mirrored.at, by: this.team.me.name, byKind: this.team.me.kind,
+      intent: `[${mirrored.mirrorOf}] ${local.intent}`, mirrorOf: mirrored.mirrorOf,
+    }), this)
+  }
+
   /** The local claim is gone: drop the mirror and tell the team what became of the plans it showed them. */
   private unmirrorClaim(localId: string): void {
     const teamId = this.mirrored.get(localId)
@@ -235,12 +249,15 @@ export class Bridge {
   /** A team message about a worker's paths is re-posted to that worker locally: plans, conflicts and base
    *  moves as interrupts, the rest at notify. One per worker, path and type per minute. */
   private relayDown(m: Msg): void {
-    if (this.relayed.includes(m.id) || !RELAY_TYPES.has(m.type)) return
+    if (this.relayed.includes(m.id)) return
     if (m.from === this.team.me.name && m.fromKind !== 'human') return
+    const broadcast = m.type === 'note' && !m.to && (m.priority === 'notify' || m.priority === 'interrupt')
+    if (!broadcast && !RELAY_TYPES.has(m.type)) return
     const paths = msgPaths(m)
-    if (!paths.length) return
+    if (!broadcast && !paths.length) return
     const now = Date.now()
     const hit = this.workers().filter(w => {
+      if (broadcast) return true
       const sc = this.local.room.scope(w.name)
       const changed = this.local.room.changedPaths(w.name)
       return paths.some(p => (sc && scopeCovers(sc, p)) || changed.includes(p))
@@ -248,12 +265,12 @@ export class Bridge {
     if (!hit.length) return
     this.relayed.push(m.id)
     if (this.relayed.length > RELAYED_MAX) this.relayed.splice(0, this.relayed.length - RELAYED_MAX)
-    const priority = INTERRUPT_TYPES.has(m.type) ? 'interrupt' : 'notify'
+    const priority = broadcast ? m.priority as 'notify' | 'interrupt' : INTERRUPT_TYPES.has(m.type) ? 'interrupt' : 'notify'
     const delivered: string[] = []
     for (const w of hit) {
       const key = `${w.name}|${paths.slice().sort().join(',')}|${m.type}`
       const last = this.recent.get(key) ?? 0
-      if (priority !== 'interrupt' && now - last < RELAY_DEDUPE_MS) continue
+      if (!broadcast && priority !== 'interrupt' && now - last < RELAY_DEDUPE_MS) continue
       this.recent.set(key, now)
       this.local.room.post<NoteMsg>(this.team.me, { type: 'note', to: w.name, priority, text: `[team room] ${formatMsg(m)}` })
       delivered.push(w.tag)

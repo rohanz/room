@@ -4,13 +4,18 @@
 
 Behaviour fixes from the 2026-09-26 roadmap triage, for a three-person trial on one shared branch and the declared-sharing rehearsal.
 
-- **Claims follow their code when HEAD moves** (triage item 1). After your commit or pull, the daemon finds each of your own open claims' lines (as they stand in your overlay, else as claimed) exactly once in the new file and moves the range. If the lines are gone or appear more than once, it releases the claim and tells you: "released your claim on <path>:<a>-<b>: that code changed in <commit>". Claims record a SHA-256 digest of the covered lines, never the source text. Other participants' claims are never touched.
+- Claim re-anchoring uses the digest recorded at claim time, including when an overlay appears later without an anchor. Daemons skip worker mirrors; the bridge updates mirrors when workers move or release claims.
+- The bridge delivers unaddressed team notify and interrupt notes once to each local worker, without forwarding fyi or echoing them into the team room.
+- A newly learned server sharing ceiling updates every live session on that server. Failed refreshes retain the last known ceiling.
+- Retained declared paths are bound to their room and participant, and collection clears their record even when a worker worktree is kept.
+
+- **Claims follow their code when HEAD moves** (triage item 1). After your commit or pull, the daemon finds each of your own open claims' lines, by the digest recorded when you claimed them, exactly once in the new file and moves the range. If you edited those lines, or they are gone or appear more than once, it releases the claim and tells you (re-claim to keep going): "released your claim on <path>:<a>-<b>: that code changed in <commit>". Claims record a SHA-256 digest of the covered lines, never the source text. Other participants' claims are never touched.
 - **A note to nobody reaches everyone** (item 2). An unaddressed note at notify or interrupt priority goes to every other participant's inbox; a broadcast notify is read on their next action and a broadcast interrupt wakes them. fyi stays feed-only, and the sender does not receive its own note.
 - **Untested previews say so** (item 5). `room_preview_merge` without `run` adds "no tests were run on the combined code; pass run=\"<cmd>\" to check it", naming `npm test`, `pytest`/`uv run pytest` or `make test` when the repository has one.
 - **Local commits without a remote branch say "committed locally"** (item 10) instead of "ahead of base (unpushed): git push". A local room advances its base because its participants share one object store. A team room does not, because teammates could not fetch the commit. Push advice appears only when `origin/<branch>` exists.
 - **A lingering previous process no longer renames you permanently** (item 3). The temporary `+<host>` name is not remembered, so the next start returns to the remembered or bare name when it is free.
 - **An unreachable server's sharing ceiling is not cached** (item 6). The local choice applies, never widened, and the ceiling is fetched again on reconnect.
-- **Declared-sharing output survives a restart** (item 7). Retained declared paths are saved per worktree under its git dir and restored on start, so teammates still see finished work after `room_done` and a daemon restart. The record is cleared on withdrawal, clean integration or collection. Carry records and this record share one atomic writer.
+- **Declared-sharing output survives a restart** (item 7). Retained declared paths are saved per worktree under its git dir and restored on start in the same room under the same participant, so teammates still see finished work after `room_done` and a daemon restart. The record is cleared on withdrawal, clean integration or collection. Both carry and retained-path records use atomic replacement, through separate writers.
 
 ## 0.16.11
 

@@ -8,7 +8,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import { RoomDoc } from '@room/shared'
 import type { ShareLevel } from '@room/roomd'
 import { createTools } from '../src/tools.js'
-import { requestedShare, serverShareMax, findRoomFile, type Session } from '../src/session.js'
+import { requestedShare, serverShareMax, trackServerShare, findRoomFile, type Session } from '../src/session.js'
 import { sharingDescription } from '../src/config.js'
 import { readChoice, writeChoice } from '../src/choice.js'
 
@@ -125,6 +125,28 @@ it('does not cache an unreachable sharing ceiling and retries with an injected f
   expect(await serverShareMax('ws://retry-ceiling', 'declared', fetcher)).toBe('intent')
   expect(await serverShareMax('ws://retry-ceiling', 'declared', fetcher)).toBe('intent')
   expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
+it('applies a newly learned ceiling to both sessions on one server without widening on fetch failure', async () => {
+  const server = 'ws://two-session-ceiling'
+  const a = setup(), b = setup()
+  const one = await a.joiner({ server, share: 'full' })
+  const two = await b.joiner({ server, share: 'full' })
+  const stopA = trackServerShare(server, one), stopB = trackServerShare(server, two)
+  cleanup.push(stopA, stopB)
+  const fetcher = vi.fn().mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ shareMax: 'intent' })))
+    .mockRejectedValueOnce(new Error('offline again'))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ shareMax: 'declared' })))
+  await serverShareMax(server, 'full', fetcher)
+  expect([one.daemon.share, two.daemon.share]).toEqual(['full', 'full'])
+  await serverShareMax(server, 'full', fetcher)
+  await vi.waitFor(() => expect([one.daemon.share, two.daemon.share]).toEqual(['intent', 'intent']))
+  expect([one.shareMax, two.shareMax]).toEqual(['intent', 'intent'])
+  await serverShareMax(server, 'full', fetcher, true)
+  expect([one.daemon.share, two.daemon.share]).toEqual(['intent', 'intent'])
+  await serverShareMax(server, 'full', fetcher, true)
+  expect([one.daemon.share, two.daemon.share]).toEqual(['declared', 'declared'])
 })
 
 it('delivers automatic-join disclosure on the first tool reply only', async () => {

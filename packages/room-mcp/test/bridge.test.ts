@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
-import type { Identity, ClaimMsg, PlanMsg, ReleaseMsg } from '@room/shared'
+import type { Identity, ClaimMsg, NoteMsg, PlanMsg, ReleaseMsg } from '@room/shared'
 import { Bridge } from '../src/bridge.js'
 import type { Session } from '../src/session.js'
 
@@ -110,6 +110,30 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     // the lead's own team messages are never relayed to its workers
     t.team.a.post<ClaimMsg>(lead, { type: 'claim', claimId: 'c_me', path: 'api/x.py', from_line: 1, to_line: 1, intent: 'mine' })
     expect(t.local.b.messages().filter(m => m.type === 'note' && m.to === worker.name)).toHaveLength(1)
+  })
+
+  it('relays each team broadcast notify or interrupt to every worker once, without fyi or echoes', () => {
+    const t = setup()
+    t.local.b.setWorker({ tag: 'tax', name: 'rohanz+tax', host: 'codex', task: 'tax', dir, branch: 'room/tax', pid: 2, startedAt: 2, status: 'running', lead: lead.name })
+    const send = (priority: 'fyi' | 'notify' | 'interrupt') => t.team.b.post<NoteMsg>(kieran, { type: 'note', priority, text: priority })
+    send('fyi'); send('notify'); send('interrupt')
+    const notes = t.local.b.messages().filter((m): m is NoteMsg => m.type === 'note')
+    expect(notes.map(m => [m.to, m.priority])).toEqual([
+      [worker.name, 'notify'], ['rohanz+tax', 'notify'], [worker.name, 'interrupt'], ['rohanz+tax', 'interrupt'],
+    ])
+    expect(t.team.b.messages().filter(m => m.type === 'note')).toHaveLength(3)
+    t.team.a.post<NoteMsg>(lead, { type: 'note', priority: 'notify', text: 'self' })
+    expect(t.local.b.messages().filter(m => m.type === 'note')).toHaveLength(4)
+  })
+
+  it('updates the team mirror when the worker claim moves', () => {
+    const t = setup()
+    const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'move', claimedHash: 'first' })
+    const id = t.team.b.openClaims()[0].id
+    t.local.b.moveClaim(c.id, 4, 6, undefined, 'second')
+    expect(t.team.b.claims.get(id)).toMatchObject({ from: 4, to: 6, claimedHash: 'second' })
+    t.local.b.removeClaim(c.id)
+    expect(t.team.b.openClaims()).toEqual([])
   })
 
   it('stop() removes the mirrored claims and stops relaying', () => {

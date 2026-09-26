@@ -210,18 +210,35 @@ export function parseServer(raw: string): { server: string; token?: string } {
 }
 
 const shareMaxCache = new Map<string, ShareLevel>()
+const shareSessions = new Map<string, Set<Session>>()
+/** Track every live session on a server so a learned policy reaches all of them. */
+export function trackServerShare(server: string, session: Session): () => void {
+  let sessions = shareSessions.get(server)
+  if (!sessions) { sessions = new Set(); shareSessions.set(server, sessions) }
+  sessions.add(session)
+  return () => {
+    sessions!.delete(session)
+    if (!sessions!.size) shareSessions.delete(server)
+  }
+}
 /** The server's sharing ceiling. Unknown results use the local choice and are retried. */
-export async function serverShareMax(server: string, fallback: ShareLevel = 'intent', fetcher: typeof serverFetch = serverFetch): Promise<ShareLevel> {
+export async function serverShareMax(server: string, fallback: ShareLevel = 'intent', fetcher: typeof serverFetch = serverFetch, refresh = false): Promise<ShareLevel> {
   const hit = shareMaxCache.get(server)
-  if (hit) return hit
+  if (hit && !refresh) return hit
+  let max: ShareLevel | undefined
   try {
     const res = await fetcher(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 })
-    if (!res.ok) return fallback
-    const max = resolveShare(((await res.json()) as { shareMax?: unknown }).shareMax).level
-    shareMaxCache.set(server, max)
-    return max
+    if (!res.ok) return hit ?? fallback
+    max = resolveShare(((await res.json()) as { shareMax?: unknown }).shareMax).level
   } catch { /* unreachable: the join will report it */ }
-  return fallback
+  if (max === undefined) return hit ?? fallback
+  shareMaxCache.set(server, max)
+  await Promise.allSettled([...shareSessions.get(server) ?? []].map(async session => {
+    session.shareMax = max
+    const level = clampShare(session.shareRequested, max)
+    if (session.daemon.share !== level) await session.daemon.setShare(level)
+  }))
+  return max
 }
 
 /** Missing uses full; invalid levels fail closed to plans only. */
@@ -456,18 +473,17 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     ...(config.room ? { pinnedRoom: true } : {}),
   }
   trackConnection(session)
-  if (!shareMaxCache.has(server)) {
-    let refreshing = false
-    session.provider.on('sync', (synced: boolean) => {
-      if (!synced || refreshing || shareMaxCache.has(server)) return
-      refreshing = true
-      void serverShareMax(server, session.shareRequested).then(async max => {
-        session.shareMax = max
-        const level = clampShare(session.shareRequested, max)
-        if (session.daemon.share !== level) await session.daemon.setShare(level)
-      }).catch(error => opts.log?.(`warn: could not refresh sharing ceiling: ${String(error)}`)).finally(() => { refreshing = false })
-    })
-  }
+  const untrackShare = trackServerShare(server, session)
+  const stop = session.daemon.stop.bind(session.daemon)
+  session.daemon.stop = async () => { try { await stop() } finally { untrackShare() } }
+  let refreshing = false
+  session.provider.on('sync', (synced: boolean) => {
+    if (!synced || refreshing) return
+    refreshing = true
+    void serverShareMax(server, session.shareMax, serverFetch, true)
+      .catch(error => opts.log?.(`warn: could not refresh sharing ceiling: ${String(error)}`))
+      .finally(() => { refreshing = false })
+  })
   watchClosed(session, opts.log)
   return session
 }

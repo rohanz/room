@@ -238,6 +238,7 @@ class Daemon implements Roomd {
   shared = ''
   private readonly localRoom: boolean
   private readonly namedRoomBranch: string
+  private readonly roomName: string
   private notifiedSwitch?: string
 
   readonly dir: string
@@ -328,6 +329,7 @@ class Daemon implements Roomd {
     const { serverUrl, roomName } = splitRoomUrl(options.room)
     let decodedRoomName = roomName
     try { decodedRoomName = decodeURIComponent(roomName) } catch { /* use the literal name */ }
+    this.roomName = decodedRoomName
     this.namedRoomBranch = roomNameParts(decodedRoomName).branch
     this.provider = options.providerFactory
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
@@ -352,7 +354,7 @@ class Daemon implements Roomd {
     this.branch = branch
     this.base = base
     this.tracked = tracked
-    this.retainedDeclaredPaths = new RetainedDeclaredPaths(this.dir)
+    this.retainedDeclaredPaths = new RetainedDeclaredPaths(this.dir, this.roomName, this.name)
 
     await this.step('sync', () => this.waitForSync())
     // The daemon owns base receipts. Observe before the initial sweep so a notice
@@ -787,16 +789,16 @@ class Daemon implements Roomd {
 
   /** Capture the claimed code before a commit can clear its overlay. */
   private async snapshotOwnClaims(prev: string): Promise<Claim[]> {
-    const owned = [...this.roomDoc.claims.values()].filter(c => c.by === this.name && !c.path.endsWith('/'))
+    const owned = [...this.roomDoc.claims.values()].filter(c => c.by === this.name && !c.mirrorOf && !c.path.endsWith('/'))
     const oldPaths = [...new Set(owned.filter(c => !this.roomDoc.overlayText(this.name, c.path) && !c.claimedHash).map(c => c.path))]
     const oldTexts = oldPaths.length ? await gitShowMany(this.dir, prev, oldPaths) : new Map<string, string | undefined>()
     return owned.map(c => {
       const overlay = this.roomDoc.text(c.path, this.name)
+      if (c.claimedHash) return c
       if (overlay !== undefined) {
         const range = this.roomDoc.claimRange(c)
         return { ...c, ...range, claimedHash: claimDigest(overlay, range.from, range.to) }
       }
-      if (c.claimedHash) return c
       const oldText = oldTexts.get(c.path)
       return { ...c, claimedHash: oldText === undefined ? undefined : claimDigest(oldText, c.from, c.to) }
     })
@@ -814,11 +816,11 @@ class Daemon implements Roomd {
     this.roomDoc.doc.transact(() => {
       for (const move of moves) {
         const current = this.roomDoc.claims.get(move.id)
-        if (current?.by === this.name) this.roomDoc.moveClaim(move.id, move.from, move.to, this, hashById.get(move.id))
+        if (current?.by === this.name && !current.mirrorOf) this.roomDoc.moveClaim(move.id, move.from, move.to, this, hashById.get(move.id))
       }
       for (const release of releases) {
         const current = this.roomDoc.claims.get(release.id)
-        if (current?.by !== this.name) continue
+        if (current?.by !== this.name || current.mirrorOf) continue
         this.roomDoc.removeClaim(release.id, this)
         const text = `released your claim on ${release.path}:${release.from}-${release.to}: that code changed in ${head.slice(0, 10)}`
         this.roomDoc.post<ReleaseMsg>({ name: this.name, kind: this.kind }, { type: 'release', claimId: release.id, path: release.path, summary: text }, this)

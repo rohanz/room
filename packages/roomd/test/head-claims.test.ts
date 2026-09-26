@@ -49,6 +49,7 @@ it('revalidates only its own claims when HEAD moves, retaining a moved block and
   const claimedHash = claimDigest(before, 2, 3)
   const own = doc.addClaim({ path: 'app.txt', from: 2, to: 3, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash })
   const other = doc.addClaim({ path: 'app.txt', from: 2, to: 3, by: 'Bob', byKind: 'agent', intent: 'edit', claimedHash })
+  const mirror = doc.addClaim({ path: 'app.txt', from: 2, to: 3, by: 'Alice', byKind: 'agent', intent: '[worker] edit', mirrorOf: 'worker', claimedHash })
   expect(own.claimedHash).toMatch(/^[a-f0-9]{64}$/)
   expect(JSON.stringify(own)).not.toContain('claimed one')
 
@@ -58,6 +59,7 @@ it('revalidates only its own claims when HEAD moves, retaining a moved block and
   await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
   expect(doc.claims.get(own.id)).toMatchObject({ from: 7, to: 8 })
   expect(doc.claims.get(other.id)).toEqual(other)
+  expect(doc.claims.get(mirror.id)).toEqual(mirror)
 
   fs.writeFileSync(file, 'first\nlast\n')
   git(root, 'add', '-A')
@@ -66,14 +68,40 @@ it('revalidates only its own claims when HEAD moves, retaining a moved block and
   await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
   expect(doc.claims.get(own.id)).toBeUndefined()
   expect(doc.claims.get(other.id)).toEqual(other)
+  expect(doc.claims.get(mirror.id)).toEqual(mirror)
   expect(doc.messages()).toContainEqual(expect.objectContaining({
     type: 'note', from: 'room', to: 'Alice', priority: 'notify',
     text: `released your claim on app.txt:7-8: that code changed in ${commit}`,
   }))
 })
 
+it('keeps the claim-time digest when a later overlay has unrelated lines at an unanchored claim', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-claim-digest-'))
+  git(root, 'init', '-q', '-b', 'main')
+  git(root, 'config', 'user.email', 'test@example.com')
+  git(root, 'config', 'user.name', 'Test')
+  const file = path.join(root, 'app.txt')
+  const before = Array.from({ length: 18 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+  fs.writeFileSync(file, before)
+  git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base')
+  daemon = await startRoomd({ dir: root, room: 'ws://memory/digest', name: 'Alice', kind: 'agent',
+    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+  })
+  const doc = daemon.roomDoc
+  const digest = claimDigest(before, 10, 12)!
+  const claim = doc.addClaim({ path: 'app.txt', from: 10, to: 12, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: digest })
+  expect(claim.anchor).toBeUndefined()
+  const after = 'inserted\n'.repeat(5) + before
+  doc.setOverlay('Alice', 'app.txt', after)
+  expect(doc.claimRange(claim)).toEqual({ from: 10, to: 12 })
+  fs.writeFileSync(file, after)
+  git(root, 'add', '-A'); git(root, 'commit', '-qm', 'insert above claim')
+  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  expect(doc.claims.get(claim.id)).toMatchObject({ from: 15, to: 17, claimedHash: digest })
+})
+
 for (const addedAbove of [0, 5]) {
-  it(`keeps an edited claim after commit with ${addedAbove} lines inserted above`, async () => {
+  it(`releases an edited claim after commit with ${addedAbove} lines inserted above`, async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-head-edit-'))
     git(root, 'init', '-q', '-b', 'main')
     git(root, 'config', 'user.email', 'test@example.com')
@@ -98,8 +126,7 @@ for (const addedAbove of [0, 5]) {
 
     await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
 
-    expect(doc.claims.get(claim.id)).toMatchObject({ from: 10 + addedAbove, to: 12 + addedAbove,
-      claimedHash: claimDigest(after, 10 + addedAbove, 12 + addedAbove) })
-    expect(doc.messages().filter(m => m.type === 'note' && m.to === 'Alice')).toHaveLength(0)
+    expect(doc.claims.get(claim.id)).toBeUndefined()
+    expect(doc.messages().filter(m => m.type === 'note' && m.to === 'Alice')).toHaveLength(1)
   })
 }

@@ -865,6 +865,19 @@ describe('sharing levels', () => {
     expect(teammate.roomDoc.text('app.py', 'Decl')).toBe('finished\n')
   })
 
+  it('does not publish retained declared output into a different room from the same checkout', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'finished\n')
+    const first = await start({ room: room(), dir, name: 'Decl', share: 'declared' })
+    first.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'app', summary: 'finish', paths: ['app.py'] })
+    await waitFor(() => first.roomDoc.text('app.py', 'Decl') === 'finished\n')
+    first.roomDoc.clearScope('Decl')
+    await first.stop()
+    const second = await start({ room: room(), dir, name: 'Decl', share: 'declared' })
+    expect(second.roomDoc.text('app.py', 'Decl')).toBeUndefined()
+    expect(second.roomDoc.changedPaths('Decl')).toEqual([])
+  })
+
   it('setShare withdraws overlays when the level drops and republishes when it rises', async () => {
     const dir = await makeRepo({ 'a.py': 'a\n', 'b.py': 'b\n' })
     const daemon = await start({ room: room(), dir, name: 'Dial' })

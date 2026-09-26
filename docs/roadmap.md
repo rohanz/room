@@ -346,6 +346,7 @@ files, and large-repo collection and merge preview without a test command. Previ
 - **Fixed in 0.16.0: Concurrent sessions pick the same automatic name.** Six Codex sessions started at the same instant in
   linked worktrees of one repo (launched by hand, not by room_spawn) all joined as `rohanz+claude`, so their
   presence and overlays overwrote each other. The auto-tag probe must be race-free (claim the name atomically).
+- **Remembered name across independent clones on one machine (low impact):** Two clones can reserve the same remembered name because the name lock covers only a common Git directory.
 - **Fixed in 0.16.0: A cancelled tool call keeps running inside Room.** Claude Code's TaskStop on a slow `room_spawn` stopped the
   call in the session, but the Room server still held the queued spawns and would have carried them out once
   unblocked. Room should notice the caller gave up (MCP cancellation) and drop queued work.

@@ -7,17 +7,18 @@ import { RECORDED_PATH, validRepoPath } from './repo-path.js'
 export class RetainedDeclaredPaths extends Set<string> {
   private readonly file: string
 
-  constructor(dir: string) {
+  constructor(dir: string, private readonly room: string, private readonly participant: string) {
     super()
     this.file = path.join(worktreeGitDirSync(dir), 'room-retained-declared.json')
-    const record = readRecordSync<{ paths?: unknown }>(this.file)
-    if (Array.isArray(record?.paths)) {
+    const record = readRecordSync<{ room?: unknown; participant?: unknown; paths?: unknown }>(this.file)
+    if (record && (record.room !== room || record.participant !== participant)) fs.rmSync(this.file, { force: true })
+    if (record?.room === room && record.participant === participant && Array.isArray(record.paths)) {
       for (const value of record.paths) if (typeof value === 'string' && validRepoPath(value, RECORDED_PATH)) super.add(value)
     }
   }
 
   private save(): void {
-    if (this.size) writeRecordSync(this.file, { paths: [...this] })
+    if (this.size) writeRecordSync(this.file, { room: this.room, participant: this.participant, paths: [...this] })
     else fs.rmSync(this.file, { force: true })
   }
 
