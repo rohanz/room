@@ -261,6 +261,15 @@ export function install(state: HandlerState): void {
     }
   const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason']): Promise<string> => {
       const proc = rooms.handle(s, w.id)
+      if (!proc) {
+        const processState = await workerRealState(s.dir, w, { process: true, probe: ctx.probe })
+        if (processState.process !== 'ours' && pidAlive(w.pid)) {
+          const message = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
+          s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: 'interrupt', text: message })
+          return message
+        }
+        if (processState.process !== 'ours') return `pid ${w.pid} not signalled: the process is gone; worker record kept`
+      }
       // The host's exit can also take down its dev-server children. Name and stop
       // those while they are still visible, but leave the host pid for its own handle.
       const protectedPids = w.pid ? [w.pid] : []
@@ -288,12 +297,13 @@ export function install(state: HandlerState): void {
         signalled = false
         how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`
       }
+      if (!signalled && pidAlive(w.pid)) how = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
       // Keep an owned handle until exit confirms the process can no longer publish live state.
-      if (stopReason) {
+      if (stopReason && signalled) {
         try { persistWorkerStopReason(s.dir, w.tag, stopReason, w.id) } catch (e) { state.log(`could not persist stop reason for ${w.tag}: ${e}`) }
       }
-      if (signalled || stopReason) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
-      if (signalled || workerAlive(s, w)) s.room.post<NoteMsg>(s.me, { type: 'note', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
+      if (signalled) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
+      if (signalled || proc || pidAlive(w.pid)) s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : pidAlive(w.pid) ? how : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
       await stopCwdProcesses()
       if (proc && !pidAlive(w.pid)) releaseWorkerProcessPort(proc)
       return how + cleanupText()

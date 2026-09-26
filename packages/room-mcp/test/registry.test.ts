@@ -220,13 +220,26 @@ describe('worker process exits', () => {
     expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(0)
   })
 
-  it('does not let a recycled live pid hide an exited worker after restart', async () => {
+  it('keeps a record while a recycled pid is live, then records failure after it is gone', async () => {
     const r = registry(), s = fakeSession(pair().a, lead)
     r.rooms.add(s, 'primary')
     s.room.setWorker({ tag: 'reused', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/reused', pid: process.pid, startedAt: 1, status: 'running', lead: lead.name })
     await r.rooms.retireWorkers(s)
+    expect(s.room.workers.get('reused')?.status).toBe('running')
+    s.room.updateWorker('reused', { pid: -1 })
+    await r.rooms.retireWorkers(s)
     expect(s.room.workers.get('reused')).toMatchObject({ status: 'failed', exitCode: -1 })
     expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(0)
+    r.rooms.remove(s)
+  })
+
+  it.each(['done', 'dismissed'] as const)('does not retire a %s record with an unverifiable live pid', async status => {
+    const r = registry(), s = fakeSession(pair().a, lead)
+    r.rooms.add(s, 'primary')
+    s.room.setWorker({ tag: 'unverified', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/unverified', pid: process.pid, startedAt: 1, status, lead: lead.name, exitCode: 0 })
+    await r.rooms.retireWorkers(s)
+    expect(s.room.workers.get('unverified')?.status).toBe(status)
+    expect(s.room.retiredWorkers()).toHaveLength(0)
     r.rooms.remove(s)
   })
 

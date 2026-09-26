@@ -12,7 +12,7 @@ import type { NoteMsg, Presence, Worker } from '@room/shared'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
-import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, type SpawnedProcess, type Spawner } from './workers.js'
+import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidAlive, pidIsOurWorker, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, type SpawnedProcess, type Spawner } from './workers.js'
 import { decideResume, decideRetire, processExited, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from './worker-launch.js'
@@ -192,7 +192,7 @@ export class Rooms {
       if (!this.reserve(lock)) continue
       try {
         const state = await workerRealState(s.dir, w, { process: true })
-        if (!processExited(state)) continue
+        if (!processExited(state) || pidAlive(w.pid)) continue
         if (w.status !== 'done') s.room.clearWorkerCoordination(w.name)
         if (w.status === 'running') {
           await finishWorkerProcess(s, w, null, Date.now(), undefined, true)
@@ -306,7 +306,7 @@ export class Rooms {
     const signal = toolSignal.getStore()
     while (Date.now() < deadline && !signal?.aborted) {
       const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) })
-      if (state.process !== 'ours') return true
+      if (state.process === 'not-ours') return true
       const key = Rooms.hkey(s, w.id!)
       await new Promise<void>(resolve => {
         let settled = false
@@ -365,12 +365,14 @@ export class Rooms {
       const initial = decideResume(state)
       if (initial === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
       if (initial === 'no-session') return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`
+      if (initial === 'unknown') return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`
       if (initial === 'wait-exit' && !await this.waitForPreviousExit(s, w, exitWaitMs)) {
         return toolCallAborted() ? 'error: tool call cancelled' : `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`
       }
       if (toolCallAborted()) return 'error: tool call cancelled'
       const settled = decideResume(await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) }))
       if (settled === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
+      if (settled === 'unknown') return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`
       if (settled === 'wait-exit') return `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`
       if (!w.id) return `error: ${w.tag} has no stable worker id; it cannot be resumed`
       const budget = w.budget

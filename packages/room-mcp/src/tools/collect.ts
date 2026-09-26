@@ -70,6 +70,11 @@ async function assertNoOperation(dir: string): Promise<void> {
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
+  const unverifiedLive = async (s: Session, w: Worker): Promise<string | undefined> => {
+    if (!pidAlive(w.pid)) return undefined
+    const facts = await workerRealState(s.dir, w, { process: true, hasHandle: !!state.rooms.handle?.(s, w.id), probe: state.ctx?.probe })
+    return facts.process === 'ours' ? undefined : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
+  }
   const ownership = (s: Session, w: Worker, discarding: Set<string>): { owned: boolean; liveLead?: string } => {
     const known = [...s.room.workers.values(), ...s.room.retiredWorkers()]
     const visited = new Set<string>()
@@ -150,6 +155,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const lock = await reserveWorker(s, w)
       if (!lock) { rooms.unreserve(intent); return 'error: this worker is already being handled or retired' }
       try {
+        const unsafe = await unverifiedLive(s, w)
+        if (unsafe) return unsafe
         const children = descendants(s, w)
         if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map(c => c.tag).join(', ')}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`
         const childResults: string[] = []
@@ -243,6 +250,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     try {
       for (const item of candidates) {
         const { s } = item; let { w } = item
+        const unsafe = await unverifiedLive(s, w)
+        if (unsafe) { out.push(unsafe); continue }
         const stopped = w.pid !== undefined && !state.workerAlive(s, w) && !pidAlive(w.pid)
         const decision = decideCollect(await workerRealState(lead.dir, w), !!a.tag, stopped)
         if (decision === 'skip-status') { out.push('skipped ' + w.tag + ': ' + w.status + (w.status === 'failed' ? ` (${failureReason(w)})` : '')); continue }
@@ -255,6 +264,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!workerLock) continue
         workerLocks.push(workerLock)
         try {
+        const unsafeAfterLock = await unverifiedLive(s, w)
+        if (unsafeAfterLock) { out.push(unsafeAfterLock); continue }
         // Reserving can wait for retirement; judge the checkout again once this worktree is locked.
         if (decideCollect(await workerRealState(lead.dir, w), !!a.tag, stopped) === 'missing') {
           await pruneMissingWorkerWorktree(lead.dir, w, false)
@@ -277,6 +288,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const deadline = now() + 15_000
         while (state.workerAlive(s, w) && now() < deadline) await sleep(Math.min(250, deadline - now()))
         if (state.workerAlive(s, w)) { out.push('skipped ' + w.tag + ': process has not exited after 15 s'); continue }
+        const unsafeAfterWait = await unverifiedLive(s, w)
+        if (unsafeAfterWait) { out.push(unsafeAfterWait); continue }
         const current = s.room.workers.get(w.tag)
         if (!current || current.id !== w.id || current.startedAt !== w.startedAt || (current.status !== 'done' && !(stopped && (current.status === 'running' || current.status === 'dismissed')))) {
           out.push('skipped ' + w.tag + ': changed while waiting'); continue

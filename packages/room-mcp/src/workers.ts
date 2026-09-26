@@ -620,7 +620,7 @@ export function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
 }
 
-export interface ProcessInfo { start?: number; command?: string; env?: Record<string, string>; cwd?: string }
+export interface ProcessInfo { start?: number; command?: string; args?: string[]; env?: Record<string, string>; cwd?: string }
 /** Process identity from ps plus the environment/cwd when the host permits reading them. */
 function probeProcess(pid: number): ProcessInfo | undefined {
   if (!pid || pid <= 0) return undefined
@@ -630,6 +630,7 @@ function probeProcess(pid: number): ProcessInfo | undefined {
     const t = Date.parse(start)
     const info: ProcessInfo = { ...(Number.isFinite(t) ? { start: t } : {}), ...(command ? { command } : {}) }
     if (process.platform === 'linux') {
+      try { info.args = fs.readFileSync(`/proc/${pid}/cmdline`).toString('utf8').split('\0').filter(Boolean) } catch { /* inaccessible */ }
       try {
         info.env = Object.fromEntries(fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').filter(Boolean).map(entry => {
           const equal = entry.indexOf('=')
@@ -642,7 +643,7 @@ function probeProcess(pid: number): ProcessInfo | undefined {
         const expanded = execFileSync('ps', ['eww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 })
         const env: Record<string, string> = {}
         const environmentText = expanded.startsWith(command) ? expanded.slice(command.length) : ''
-        for (const match of environmentText.matchAll(/(?:^|\s)(ROOM_TAG|ROOM_LEAD)=([^\s]+)/g)) env[match[1]] = match[2]
+        for (const match of environmentText.matchAll(/(?:^|\s)(ROOM_TAG|ROOM_LEAD|ROOM_WORKER_ID)=([^\s]+)/g)) env[match[1]] = match[2]
         info.env = env
       } catch { /* environment unavailable */ }
       try {
@@ -659,25 +660,77 @@ function probeProcess(pid: number): ProcessInfo | undefined {
  * spawn, and its exact host session argument, Room environment, or exact worktree cwd matches.
  * A recycled pid after a lead restart fails at least one of these.
  */
-export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string; dir: string; branch?: string; lead?: string; hostSessionId?: string }, probe: (pid: number) => ProcessInfo | undefined = probeProcess): boolean {
-  if (!pidAlive(pid)) return false
+type WorkerIdentity = { id?: string; startedAt: number; tag: string; dir: string; branch?: string; lead?: string; hostSessionId?: string }
+export type ProcessOwnership = 'ours' | 'not-ours' | 'unknown'
+
+/** A flattened macOS command can prove an argument only outside quoted prompt text. */
+function commandTokens(command: string): { value: string; quoted: boolean }[] | undefined {
+  const tokens: { value: string; quoted: boolean }[] = []
+  let value = '', quote = '', quoted = false, active = false
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]
+    if (ch === '\\' && i + 1 < command.length) { value += command[++i]; active = true; continue }
+    if (quote) { if (ch === quote) quote = ''; else value += ch; continue }
+    if (ch === '"' || ch === "'") { quote = ch; quoted = true; active = true; continue }
+    if (/\s/.test(ch)) { if (active) tokens.push({ value, quoted }); value = ''; quoted = active = false; continue }
+    value += ch; active = true
+  }
+  if (quote) return undefined
+  if (active) tokens.push({ value, quoted })
+  return tokens
+}
+
+function hostExecutable(args: string[]): boolean {
+  const exe = path.basename(args[0] ?? '')
+  if (exe === 'claude' || exe === 'codex') return true
+  if (exe !== 'node' && exe !== 'node.exe') return false
+  const entry = (args[1] ?? '').replaceAll('\\', '/')
+  return /(?:^|\/)(?:claude|codex)$/.test(entry)
+    || /(?:^|\/)claude(?:-code)?\/cli\.(?:js|mjs)$/.test(entry)
+    || /(?:^|\/)@anthropic-ai\/claude-code\/cli\.(?:js|mjs)$/.test(entry)
+    || /(?:^|\/)@openai\/codex\/bin\/codex\.(?:js|mjs)$/.test(entry)
+}
+
+function sessionArgument(args: string[], session: string, quoted: boolean[], exactArgv: boolean): boolean {
+  const promptAt = args.indexOf('-p')
+  const promptBoundary = exactArgv || promptAt < 0 || quoted[promptAt + 1]
+  for (let i = 1; i < args.length; i++) {
+    if (quoted[i] || quoted[i + 1]) continue
+    if (args[i] === '--session-id' && args[i + 1] === session && (i < promptAt || promptBoundary)) return true
+    if (args[i] === '--resume' && args[i + 1] === session && (promptAt < 0 || i < promptAt)) return true
+    if (args[i - 1] === 'exec' && args[i] === 'resume' && args[i + 1] === session) return true
+  }
+  return false
+}
+
+export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: (pid: number) => ProcessInfo | undefined = probeProcess): ProcessOwnership {
+  if (!pidAlive(pid)) return 'not-ours'
   const info = probe(pid)
-  if (!info?.start || !info.command) return false
-  if (Math.abs(info.start - w.startedAt) > 5000) return false
-  if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info.command)) return false
-  const session = w.hostSessionId?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  if (session && new RegExp(`(?:^|\\s)(?:--session-id|--resume|resume)\\s+["']?${session}(?=["']?(?:\\s|$))`).test(info.command)) return true
-  if (w.lead && info.env?.ROOM_TAG === w.tag && info.env.ROOM_LEAD === w.lead) return true
+  if (!info?.start || (!info.command && !info.args?.length)) return 'unknown'
+  if (Math.abs(info.start - w.startedAt) > 5000) return 'not-ours'
+  const tokens = info.args ? info.args.map(value => ({ value, quoted: false })) : commandTokens(info.command ?? '')
+  if (!tokens?.length) return 'unknown'
+  const args = tokens.map(t => t.value)
+  if (!hostExecutable(args)) return 'not-ours'
+  // A present generation id is stronger than an old session id or reused tag.
+  if (info.env?.ROOM_WORKER_ID && w.id && info.env.ROOM_WORKER_ID !== w.id) return 'not-ours'
+  if (w.id && info.env?.ROOM_WORKER_ID === w.id) return 'ours'
+  if (w.hostSessionId && sessionArgument(args, w.hostSessionId, tokens.map(t => t.quoted), !!info.args)) return 'ours'
+  if (w.lead && info.env?.ROOM_TAG === w.tag && info.env.ROOM_LEAD === w.lead) return 'ours'
   if (info.cwd && fs.existsSync(path.join(w.dir, '.git'))) {
     try {
       const root = fs.realpathSync(w.dir)
-      if (fs.realpathSync(info.cwd) !== root) return false
+      if (fs.realpathSync(info.cwd) !== root) return 'unknown'
       const top = execFileSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
       const branch = execFileSync('git', ['-C', root, 'branch', '--show-current'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-      if (fs.realpathSync(top) === root && branch === (w.branch ?? `room/${w.tag}`)) return true
+      if (fs.realpathSync(top) === root && branch === (w.branch ?? `room/${w.tag}`)) return 'ours'
     } catch { /* inaccessible or no longer the worker worktree */ }
   }
-  return false
+  return 'unknown'
+}
+
+export function pidIsOurWorker(pid: number, w: WorkerIdentity, probe: (pid: number) => ProcessInfo | undefined = probeProcess): boolean {
+  return workerProcessOwnership(pid, w, probe) === 'ours'
 }
 
 export interface CwdProcess { pid: number; cwd: string; command: string }

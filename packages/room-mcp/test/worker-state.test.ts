@@ -3,7 +3,7 @@ import type { Worker } from '@room/shared'
 import { decideCollect, decideDiscard, decideLeave, decidePreview, decideRetire, decideShutdown, decideStop, processExited, workerRealState, type WorkerRealState } from '../src/worker-state.js'
 
 const worker: Worker = { id: 'lead/w#1', name: 'lead+w', lead: 'lead', tag: 'w', host: 'codex', task: 'task', dir: '/missing/.room/workers/w', branch: 'room/w', pid: 123, startedAt: 1, status: 'done', exitCode: 0, hostSessionId: 'session' }
-const base: WorkerRealState = { worktree: 'present', owned: true, branch: 'present', ahead: 0, process: 'gone', hostSession: true, finished: true, status: 'done', exitCode: 0, dismissed: false, clean: true, merged: false, uncommitted: 0 }
+const base: WorkerRealState = { worktree: 'present', owned: true, branch: 'present', ahead: 0, process: 'not-ours', hostSession: true, finished: true, status: 'done', exitCode: 0, dismissed: false, clean: true, merged: false, uncommitted: 0 }
 
 describe('workerRealState probes', () => {
   it('probes a vanished checkout only through the lead, retaining unmerged commits', async () => {
@@ -15,8 +15,8 @@ describe('workerRealState probes', () => {
     })
     const owned = vi.fn(async () => true)
     const state = await workerRealState('/lead', worker, { ownership: true, branch: true, git: true, process: true,
-      probes: { exists: () => false, owned, git, process: () => false, changedPaths: vi.fn() } })
-    expect(state).toMatchObject({ worktree: 'vanished', owned: false, branch: 'present', branchAhead: 2, process: 'gone', hostSession: true, finished: true })
+      probes: { exists: () => false, owned, git, process: () => 'not-ours', changedPaths: vi.fn() } })
+    expect(state).toMatchObject({ worktree: 'vanished', owned: false, branch: 'present', branchAhead: 2, process: 'not-ours', hostSession: true, finished: true })
     expect(owned).not.toHaveBeenCalled()
     expect(git).toHaveBeenCalledTimes(3)
   })
@@ -113,14 +113,14 @@ describe('worker lifecycle decisions', () => {
   it.each([
     [{ owned: true, process: 'ours' }, { cwd: true, host: 'signal' }],
     [{ owned: false, process: 'ours' }, { cwd: false, host: 'signal' }],
-    [{ owned: true, process: 'gone' }, { cwd: true, host: 'gone' }],
-    [{ owned: undefined, process: undefined }, { cwd: false, host: 'gone' }],
+    [{ owned: true, process: 'not-ours' }, { cwd: true, host: 'not-ours' }],
+    [{ owned: undefined, process: undefined }, { cwd: false, host: 'not-ours' }],
   ] as [Partial<WorkerRealState>, ReturnType<typeof decideStop>][])('stop %j', (patch, action) => {
     expect(decideStop({ ...base, ...patch })).toEqual(action)
   })
   it.each([
     [{ process: 'ours', exitCode: undefined, dismissed: true }, undefined],
-    [{ process: 'ours', exitCode: 0, dismissed: true }, 'dismissed'],
+    [{ process: 'ours', exitCode: 0, dismissed: true }, undefined],
     [{ status: 'running', finished: false, dismissed: true }, undefined],
     [{ status: 'failed', dismissed: true }, 'dismissed'],
     [{ status: 'failed', clean: true, ahead: 0 }, undefined],
@@ -133,11 +133,11 @@ describe('worker lifecycle decisions', () => {
     expect(decideRetire({ ...base, ...patch })).toBe(outcome)
   })
   it.each([
-    [{ status: 'running', process: 'gone' }, 'stop'],
+    [{ status: 'running', process: 'not-ours' }, 'stop'],
     [{ status: 'done', process: 'ours' }, 'stop'],
-    [{ status: 'done', process: 'gone' }, 'leave'],
-    [{ status: 'failed', process: 'gone' }, 'leave'],
-    [{ status: 'dismissed', process: 'gone' }, 'leave'],
+    [{ status: 'done', process: 'not-ours' }, 'leave'],
+    [{ status: 'failed', process: 'not-ours' }, 'leave'],
+    [{ status: 'dismissed', process: 'not-ours' }, 'leave'],
     [{ status: 'dismissed', process: 'ours' }, 'stop'],
   ] as [Partial<WorkerRealState>, string][])('leave and shutdown %j', (patch, action) => {
     expect(decideLeave({ ...base, ...patch })).toBe(action)
@@ -145,8 +145,8 @@ describe('worker lifecycle decisions', () => {
   })
   it.each([
     [{ exitCode: undefined, process: 'ours' }, false],
-    [{ exitCode: 0, process: 'ours' }, true],
-    [{ exitCode: undefined, process: 'gone' }, true],
+    [{ exitCode: 0, process: 'ours' }, false],
+    [{ exitCode: undefined, process: 'not-ours' }, true],
   ] as [Partial<WorkerRealState>, boolean][])('process exited %j -> %s', (patch, exited) => {
     expect(processExited({ ...base, ...patch })).toBe(exited)
   })

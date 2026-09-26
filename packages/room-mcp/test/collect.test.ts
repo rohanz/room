@@ -65,6 +65,22 @@ async function startWorktreeProcess() {
 }
 
 describe('room_collect', () => {
+  it.each(['done', 'dismissed', 'running'])('keeps a %s worker when its live pid cannot be verified', async status => {
+    const t = setup(status)
+    const current = { ...t.w, id: 'worker-id', pid: process.pid, startedAt: Date.now(), exitCode: status === 'running' ? undefined : 0 }
+    t.s.room.workers.set('test', current as never)
+    t.state.ctx = { probe: () => undefined } as never
+    t.state.dismissWorker = vi.fn(async () => 'signalled')
+    put(worker, 'new.txt', 'worker change')
+    for (const args of [{ tag: 'test' }, { tag: 'test', discard: true }]) {
+      const reply = await t.call(args)
+      expect(reply).toContain(`could not verify test's process (pid ${process.pid}); left running, not stopped`)
+      expect(t.s.room.workers.get('test')).toEqual(current)
+      expect(fs.existsSync(worker)).toBe(true)
+    }
+    expect(t.state.dismissWorker).not.toHaveBeenCalled()
+    expect(t.s.room.retiredWorkers()).toHaveLength(0)
+  })
   function seedPresence(t: ReturnType<typeof setup>) {
     const name = t.w.name
     t.s.room.setOverlay(name, 'new.txt', 'worker change')

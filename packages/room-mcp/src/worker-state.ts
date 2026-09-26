@@ -4,7 +4,7 @@ import path from 'node:path'
 import { type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
-import { isOwnedWorkerWorktree, pidIsOurWorker, ROOM_CARRY_IDENTITY, type ProcessInfo } from './workers.js'
+import { isOwnedWorkerWorktree, workerProcessOwnership, ROOM_CARRY_IDENTITY, type ProcessInfo, type ProcessOwnership } from './workers.js'
 
 type OwnershipRecord = Pick<Worker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'> | Pick<RetiredWorker, 'name' | 'tag' | 'lead' | 'keptWorktree'>
 export interface WorkerRealState {
@@ -15,7 +15,7 @@ export interface WorkerRealState {
   branchAhead?: number
   /** Retirement count also considers detached HEAD and excludes verified Room carry. */
   ahead?: number
-  process?: 'ours' | 'gone'
+  process?: ProcessOwnership
   hostSession: boolean
   finished: boolean
   status: Worker['status']
@@ -31,7 +31,7 @@ export interface WorkerStateProbes {
   owned?: typeof isOwnedWorkerWorktree
   git?: typeof git
   changedPaths?: typeof workerChangedPaths
-  process?: (w: Worker) => boolean
+  process?: (w: Worker) => ProcessOwnership
 }
 
 /** A base may be a user commit. Only a recorded commit with Room's carry identity is excluded. */
@@ -72,7 +72,7 @@ export async function workerRealState(leadDir: string, w: Worker, options: {
     finished: w.exitCode !== undefined || w.finishedAt !== undefined || w.status !== 'running',
     status: w.status, exitCode: w.exitCode, dismissed: w.dismissedAt !== undefined || w.status === 'dismissed',
   }
-  if (options.process) state.process = options.hasHandle || (deps.process ?? (worker => pidIsOurWorker(worker.pid, worker, options.probe)))(w) ? 'ours' : 'gone'
+  if (options.process) state.process = options.hasHandle ? 'ours' : (deps.process ?? (worker => workerProcessOwnership(worker.pid, worker, options.probe)))(w)
   if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers)
   if (options.branch) {
     const ref = `refs/heads/${w.branch}`
@@ -117,11 +117,11 @@ export type DiscardDecision = 'prune' | 'cleanup' | 'retain-directory'
 export function decideDiscard(s: WorkerRealState): DiscardDecision {
   return s.worktree === 'vanished' ? 'prune' : s.owned ? 'cleanup' : 'retain-directory'
 }
-export function decideStop(s: WorkerRealState): { cwd: boolean; host: 'signal' | 'gone' } {
-  return { cwd: s.owned === true, host: s.process === 'ours' ? 'signal' : 'gone' }
+export function decideStop(s: WorkerRealState): { cwd: boolean; host: 'signal' | 'not-ours' | 'unknown' } {
+  return { cwd: s.owned === true, host: s.process === 'ours' ? 'signal' : s.process === 'unknown' ? 'unknown' : 'not-ours' }
 }
-/** A recorded exit code wins over a process probe that may have outlived it. */
-export function processExited(s: Pick<WorkerRealState, 'exitCode' | 'process'>): boolean { return s.exitCode !== undefined || s.process !== 'ours' }
+/** A current process probe wins over a stale exit code when deciding whether cleanup is safe. */
+export function processExited(s: Pick<WorkerRealState, 'exitCode' | 'process'>): boolean { return s.process === 'not-ours' }
 export function decideRetire(s: WorkerRealState): RetiredWorker['outcome'] | undefined {
   if (!processExited(s) || !s.finished) return undefined
   if (s.dismissed) return 'dismissed'
@@ -129,14 +129,14 @@ export function decideRetire(s: WorkerRealState): RetiredWorker['outcome'] | und
   if (s.clean === true && s.ahead === 0) return s.merged ? 'merged' : 'clean'
   return undefined
 }
-export function decideLeave(s: WorkerRealState): 'stop' | 'leave' { return (s.status !== 'done' && s.status !== 'failed' && s.status !== 'dismissed') || s.process === 'ours' ? 'stop' : 'leave' }
+export function decideLeave(s: WorkerRealState): 'stop' | 'leave' { return (s.status !== 'done' && s.status !== 'failed' && s.status !== 'dismissed') || s.process === 'ours' || s.process === 'unknown' ? 'stop' : 'leave' }
 export function decideShutdown(s: WorkerRealState): 'stop' | 'leave' { return decideLeave(s) }
 export function decidePreview(s: WorkerRealState, diskEligible: boolean): 'disk' | 'shared' {
   return diskEligible && s.worktree === 'present' ? 'disk' : 'shared'
 }
-export type ResumeDecision = 'missing' | 'no-session' | 'wait-exit' | 'ready'
+export type ResumeDecision = 'missing' | 'no-session' | 'wait-exit' | 'unknown' | 'ready'
 export function decideResume(s: WorkerRealState): ResumeDecision {
   if (s.worktree === 'vanished') return 'missing'
   if (!s.hostSession) return 'no-session'
-  return s.process === 'ours' ? 'wait-exit' : 'ready'
+  return s.process === 'ours' ? 'wait-exit' : s.process === 'unknown' ? 'unknown' : 'ready'
 }

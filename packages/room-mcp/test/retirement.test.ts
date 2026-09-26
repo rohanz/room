@@ -11,7 +11,7 @@ import type { Session } from '../src/session.js'
 import { handlers as collectHandlers } from '../src/tools/collect.js'
 import type { HandlerState } from '../src/tools/context.js'
 
-const facts: WorkerRealState = { worktree: 'present', process: 'gone', hostSession: false, finished: true, status: 'done', dismissed: false, merged: false, clean: false, ahead: 1 }
+const facts: WorkerRealState = { worktree: 'present', process: 'not-ours', hostSession: false, finished: true, status: 'done', dismissed: false, merged: false, clean: false, ahead: 1 }
 const workerGitFacts = async (dir: string, w: Worker) => {
   const state = await workerRealState(dir, w, { git: true, leadName: w.lead })
   return { merged: state.merged ?? false, clean: state.clean ?? false, ahead: state.ahead, ...(state.uncommitted !== undefined ? { uncommitted: state.uncommitted } : {}) }

@@ -228,7 +228,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await doLeave(s)
       let forgot = ''
       if (a.forget === true) { const had = await clearChoice(s.dir).catch(() => false); forgot = had ? '; forgot the remembered room choice for this clone (next session starts local)' : '; nothing was remembered for this clone' }
-      return `left ${s.roomName}; released ${released} claim(s)${stopped.length ? '; stopped workers: ' + stopped.join('; ') : ''}${forgot}`
+      return `left ${s.roomName}; released ${released} claim(s)${stopped.length ? '; worker process checks: ' + stopped.join('; ') : ''}${forgot}`
     },
     async room_close(a) {
       const s = S()
