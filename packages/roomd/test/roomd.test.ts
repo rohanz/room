@@ -898,14 +898,15 @@ describe('sharing levels', () => {
     expect(daemon.roomDoc.baseText('Allowed', daemon.base, 'allowed.py')).toBe('base\n')
   })
 
-  it('collects a legacy base entry with no live overlay during startup', async () => {
+  it('preserves a legacy base entry with no live overlay during startup', async () => {
     const dir = await makeRepo({ 'a.py': 'base\n' })
     const url = room()
     const keeper = await start({ room: url, dir: await cloneRepo(dir), name: 'Keeper', share: 'intent' })
     const base = keeper.base
     keeper.roomDoc.baseTexts.set(`${base}:a.py`, 'base\n')
     await start({ room: url, dir, name: 'Collector', share: 'intent' })
-    expect(keeper.roomDoc.baseText('Collector', base, 'a.py')).toBeUndefined()
+    expect(keeper.roomDoc.baseTexts.get(`${base}:a.py`)).toBe('base\n')
+    expect(keeper.roomDoc.baseText('Collector', base, 'a.py')).toBe('base\n')
   })
 
   it('adopts a legacy base entry for a surviving overlay during startup', async () => {
