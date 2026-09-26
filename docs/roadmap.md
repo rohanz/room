@@ -182,7 +182,7 @@ context), Warp (already runs Claude Code, Codex and OpenCode), Zed's own agent (
 
 ### Deferred from the 2026-09-24 cleanliness audit, after the trial
 
-- **28:** Replace ordered service-locator initialization with typed services and split worker Git recovery from process lifecycle in small steps.
+- **Done in 0.16.19–0.16.21: 28.** Typed tool services composed in `tools/state.ts` (0.16.19); `workers.ts` split into config, git and process modules (0.16.20); the daemon's publication path moved to `roomd/src/publisher.ts` with one `eligibility()` and a written invariant (0.16.21).
 
 ## Sharing rules (smaller, can ship before the structural work)
 
