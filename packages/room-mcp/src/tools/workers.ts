@@ -308,7 +308,7 @@ export function install(state: HandlerState): void {
       // after every awaited step succeeds, so a later continuation cannot rewrite the record.
       if (cancelled?.aborted) return how + cleanupText()
       if (stopReason && cleanupError) throw new Error(cleanupError)
-      if (signalled || proc || pidPresent(w.pid, ctx.probe)) s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
+      if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
       // Keep an owned handle until exit confirms the process can no longer publish live state.
       if (signalled) {
         if (stopReason) {

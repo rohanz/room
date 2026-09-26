@@ -86,6 +86,24 @@ it('lists multiple unanswered questions with previews when inReplyTo is omitted'
   expect(main.room.messages()).toHaveLength(2)
 })
 
+it.each(['answered', 'new question'] as const)('rechecks an inferred answer after worker resume when %s arrives', async change => {
+  const { main, rooms, tools } = fixture()
+  const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
+    branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
+  main.room.setWorker(worker)
+  const question = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  vi.spyOn(rooms, 'resumeWorker').mockImplementation(async () => {
+    if (change === 'answered') main.room.post({ name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: question.id, text: 'Already answered' })
+    else main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Another field?' })
+    return 'resumed money'
+  })
+  const sent = await tools.room_send({ type: 'answer', to: 'money', text: 'price_cents' })
+  expect(sent).toContain('error: answer requires inReplyTo')
+  if (change === 'answered') expect(sent).toContain('no unanswered question')
+  else expect(sent).toContain('unanswered questions:')
+  expect(main.room.messages().some(m => m.type === 'answer' && m.text === 'price_cents')).toBe(false)
+})
+
 it('finds a read answer sent before room_wait even if another room holds the question', async () => {
   const { main, rooms, makeSession, state, tools } = fixture()
   const workers = makeSession('workers'); rooms.add(workers, 'workers')

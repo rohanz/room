@@ -131,7 +131,7 @@ it('shows current running, done, and failed workers by default and labels retire
   const { workerLines } = await import('./views.js')
   const worker: Worker = { name: 'lead+run', tag: 'run', lead: 'lead', host: 'codex', task: 'task', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'running' }
   const retired = { name: 'lead+old', tag: 'old', lead: 'lead', host: 'codex' as const, model: 'actual-model', task: 'task', summary: 'shipped', files: ['a.ts'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' as const, disposition: 'collected' as const }
-  const history = [retired, { ...retired, name: 'lead+discarded', tag: 'discarded', disposition: 'discarded' as const }, { ...retired, name: 'lead+stopped', tag: 'stopped', disposition: 'stopped' as const, stopReason: 'lead-session-ended' as const }]
+  const history = [retired, { ...retired, name: 'lead+discarded', tag: 'discarded', disposition: 'discarded' as const }, { ...retired, name: 'lead+stopped', tag: 'stopped', disposition: 'stopped' as const, stopReason: 'lead-session-ended' as const }, { ...retired, name: 'lead+kept', tag: 'kept', keptWorktree: '/tmp/kept', keptReason: 'uncopied ignored artifacts' }]
   const inputs = [
     ...(['running', 'failed', 'done'] as const).map(status => ({ worker: { ...worker, tag: status, status }, changedCount: 0, now: 10 })),
     { worker: { ...worker, tag: 'discarded-live', status: 'dismissed' as const, dismissedAt: 5 }, changedCount: 0, now: 10 },
@@ -141,21 +141,22 @@ it('shows current running, done, and failed workers by default and labels retire
   expect(compact).toContain('running (codex, running')
   expect(compact).toContain('failed (codex, failed')
   expect(compact).toContain('done (codex, done')
-  expect(compact).toContain('workers (4):')
-  expect(compact).not.toContain('discarded-live')
+  expect(compact).toContain('workers (6):')
+  expect(compact).toContain('discarded-live (codex, discard pending (dismissed)')
+  expect(compact).toContain('kept (collected, actual-model, kept: uncopied ignored artifacts)')
   expect(compact).toContain('stopped-live (codex, stopped when your last session ended; its partial work is in its worktree')
   expect(compact).toContain('  retired: 3 (all=true lists them)')
-  expect(compact).not.toContain('shipped')
+  expect(compact).not.toContain('old (collected')
   const expanded = workerLines(inputs, { all: true, retiredWorkers: history }).join('\n')
-  expect(expanded).toContain('workers (8):')
-  expect(expanded).toContain('discarded-live (codex, discarded')
+  expect(expanded).toContain('workers (9):')
+  expect(expanded).toContain('discarded-live (codex, discard pending (dismissed)')
   expect(expanded).toContain('stopped-live (codex, stopped when your last session ended; its partial work is in its worktree')
   expect(expanded).toContain('old (collected, actual-model): shipped · 60 files')
   expect(expanded).toContain('discarded (discarded, actual-model)')
   expect(expanded).toContain('stopped (stopped when your last session ended; its partial work is in its worktree, actual-model)')
   expect(expanded).not.toContain('all=true')
-  expect(workerLines([], { retiredWorkers: history })).toEqual(['workers (0):', '  retired: 3 (all=true lists them)'])
-  expect(workerLines([], { all: true, retiredWorkers: history })).toContain('workers (3):')
+  expect(workerLines([], { retiredWorkers: history })[0]).toBe('workers (1):')
+  expect(workerLines([], { all: true, retiredWorkers: history })).toContain('workers (4):')
 })
 
 it('uses consistent activity wording at the action and worker thresholds', async () => {

@@ -186,6 +186,8 @@ export interface RetiredWorker {
   uncommitted?: number
   /** Collected worktree retained for later explicit cleanup, usually because it has ignored output. */
   keptWorktree?: string
+  /** Why collection retained the worktree. */
+  keptReason?: string
 }
 
 export interface Meta {

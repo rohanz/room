@@ -119,6 +119,7 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(true)
     expectRetired(t)
     expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+    expect(workerLines([], { retiredWorkers: t.s.room.retiredWorkers() }).join('\n')).toContain('kept: uncopied ignored artifacts')
     const lines = workerLines([], { all: true, retiredWorkers: t.s.room.retiredWorkers() }).join('\n')
     expect(lines).toContain(`kept for ignored output at ${worker}`)
     expect(lines).not.toContain('uncommitted')

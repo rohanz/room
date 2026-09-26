@@ -65,6 +65,15 @@ it('room_preview_merge still reports a conflict on a file both changed', async (
   expect(result).toContain('file.txt')
 })
 
+it('credits identical edits to both participants', async () => {
+  put(lead, 'file.txt', 'same change\n')
+  put(worker, 'file.txt', 'same change\n')
+  const t = setup()
+  const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
+  expect(result).toContain('lead and lead+test made the same change: file.txt')
+  expect(result).not.toContain('only lead+test changed this file')
+})
+
 it('runs a team preview from a shared worker overlay even when its local directory exists', async () => {
   const t = setup()
   const s = t.state.S()

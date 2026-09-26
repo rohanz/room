@@ -4,10 +4,13 @@
 
 - `room_send` type `answer` without `inReplyTo` answers the sender's only unanswered question from the recipient (or, with no `to`, the only one addressed to the sender) and says `answered <id>`. With none or several it refuses and lists each candidate id with an 80-character preview (rehearsal 2026-09-25 finding 11).
 - The worker preamble and room-workers skill say carried edits are the lead's work in progress, already in the worktree to build on: edit around and after them freely; ask only before changing or removing the lead's own lines.
-- `room_state` shows the lead's current workers by default: running, finished but not yet collected or discarded, and stopped. Retired workers carry a `disposition` and are listed with `all=true` as collected, discarded or stopped (reason); by default a `retired: N (all=true lists them)` hint remains. The `workers (N):` count matches the rows shown.
+- `room_state` shows the lead's current workers by default: running, finished but not yet collected or discarded, and stopped. Retired workers carry a `disposition`; those with retained worktrees stay visible by default, while ordinary history is listed with `all=true` as collected, discarded or stopped (reason). A `retired: N (all=true lists them)` hint covers hidden history. The `workers (N):` count matches the rows shown.
 - Discarding a worker whose worktree has vanished removes its `.log` and `.mcp.log`, through the same `cleanupWorkerLogs` as a normal discard.
 - The spawn reply separates tracked changes from copied untracked files: "carried your uncommitted work into its worktree: 1 tracked change (commit X), 1 untracked file copied".
 - The merge preview says "only <name> changed this file since its start, which already includes your carried edits" instead of "merge trivially; the lead's carried edits are in that base".
+- `room_state` keeps a worker visible while discard is pending, including after a refused stop or timeout. Collected workers whose worktrees were retained remain visible by default with the reason.
+- Implicit `room_send` answers recheck unanswered questions after a worker resume wait, so a concurrent answer or new question cannot receive the stale inferred reply.
+- Merge previews credit both people when they made the same edit. Lead-initiated successful discards no longer send the lead a notice about its own action; failure and shutdown notices remain.
 
 ## 0.16.9
 

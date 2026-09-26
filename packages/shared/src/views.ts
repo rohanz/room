@@ -280,7 +280,7 @@ export function workerLine({ worker: w, processGone = false, lastActive, changed
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120)
   const state = stoppedWithSession(w) ? STOPPED_WITH_SESSION
     : w.stopReason ? `stopped (${w.stopReason})`
-    : w.dismissedAt !== undefined || w.status === 'dismissed' ? 'discarded'
+    : w.dismissedAt !== undefined || w.status === 'dismissed' ? `discard pending (${w.status})`
     : w.status === 'running' && processGone ? STOPPED_UNWITNESSED
     : w.status === 'running' ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status
   return [
@@ -292,16 +292,17 @@ export function workerLine({ worker: w, processGone = false, lastActive, changed
 export function workerLines(inputs: readonly WorkerLineInput[], options: { all?: boolean; retiredWorkers?: readonly RetiredWorker[] } = {}): string[] {
   const retired = options.retiredWorkers ?? []
   if (!inputs.length && !retired.length) return []
-  const visible = inputs.filter(i => options.all || !!i.worker.stopReason || (i.worker.dismissedAt === undefined && i.worker.status !== 'dismissed'))
-  const out = [`workers (${visible.length + (options.all ? retired.length : 0)}):`, ...[...visible]
+  const visibleRetired = options.all ? retired : retired.filter(w => !!w.keptWorktree)
+  const out = [`workers (${inputs.length + visibleRetired.length}):`, ...[...inputs]
     .sort((a, b) => a.worker.startedAt - b.worker.startedAt)
     .flatMap(workerLine)]
-  if (options.all) {
-    for (const w of [...retired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
-      const state = w.disposition === 'stopped' ? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? 'reason unknown'})`) : w.disposition ?? w.outcome
-      out.push(`  - ${w.tag} (${state}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ''}${w.model ? `, ${w.model}` : ''}): ${w.summary} · ${formatCount(w.fileCount, 'file')}`)
-    }
-  } else if (retired.length) out.push(`  retired: ${retired.length} (all=true lists them)`)
+  for (const w of [...visibleRetired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
+    const state = w.disposition === 'stopped' ? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? 'reason unknown'})`) : w.disposition ?? w.outcome
+    const kept = w.keptWorktree ? `, kept: ${w.keptReason ?? (w.summary.startsWith('kept for ') ? w.summary.slice(9) : `worktree at ${w.keptWorktree}`)}` : ''
+    out.push(`  - ${w.tag} (${state}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ''}${w.model ? `, ${w.model}` : ''}${kept}): ${w.summary} · ${formatCount(w.fileCount, 'file')}`)
+  }
+  const hiddenRetired = retired.length - visibleRetired.length
+  if (hiddenRetired) out.push(`  retired: ${hiddenRetired} (all=true lists them)`)
   return out
 }
 

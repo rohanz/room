@@ -101,16 +101,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const resolvedWorker = matches[0]
       let to = resolvedWorker?.worker.name ?? requestedTo
       let inferredQuestionId: string | undefined
-      if (a.type === 'answer' && !a.inReplyTo) {
+      const unansweredQuestions = (from?: string) => {
         const answered = new Set(rooms.all().flatMap(room => room.room.messages()
           .filter(m => m.type === 'answer').map(m => m.inReplyTo)))
-        const candidates = rooms.all().flatMap(room => room.room.messages()
+        return rooms.all().flatMap(room => room.room.messages()
           .filter((m): m is QuestionMsg => m.type === 'question' && m.to === room.me.name
-            && (!to || m.from === to) && !answered.has(m.id))
+            && (!from || m.from === from) && !answered.has(m.id))
           .map(question => ({ room, question })))
-        if (candidates.length !== 1) return candidates.length
-          ? `error: answer requires inReplyTo; unanswered questions:\n${candidates.map(({ question }) => `${question.id}: ${questionPreview(question.text)}`).join('\n')}`
-          : `error: answer requires inReplyTo; no unanswered question${to ? ` from ${to}` : ''} addressed to you`
+      }
+      const ambiguousAnswer = (candidates: ReturnType<typeof unansweredQuestions>, from?: string) => candidates.length
+        ? `error: answer requires inReplyTo; unanswered questions:\n${candidates.map(({ question }) => `${question.id}: ${questionPreview(question.text)}`).join('\n')}`
+        : `error: answer requires inReplyTo; no unanswered question${from ? ` from ${from}` : ''} addressed to you`
+      if (a.type === 'answer' && !a.inReplyTo) {
+        const candidates = unansweredQuestions(to)
+        if (candidates.length !== 1) return ambiguousAnswer(candidates, to)
         byQuestion = candidates[0].room
         question = candidates[0].question
         to = question.from
@@ -142,6 +146,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (result.startsWith('error:')) return result
         restarted = true
         notes.push(result)
+      }
+      if (inferredQuestionId) {
+        const candidates = unansweredQuestions(requestedTo && resolvedWorker ? resolvedWorker.worker.name : requestedTo)
+        if (candidates.length !== 1 || candidates[0].question.id !== inferredQuestionId || candidates[0].room !== byQuestion) return ambiguousAnswer(candidates, requestedTo && resolvedWorker ? resolvedWorker.worker.name : requestedTo)
       }
       let paths: string[] = [], symbols: string[] = []
       // Publish the timeline entry and its prompt-delivery receipt together. Bus

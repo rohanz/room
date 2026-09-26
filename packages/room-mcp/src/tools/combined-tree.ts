@@ -167,7 +167,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   const conflictingPaths = new Map<string, string[]>()
   for (const [index, { person, session }] of participants.entries()) {
     const declaredNote = shareOf(session, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
-    const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], resolvable: string[] = []
+    const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], sameChange: string[] = [], resolvable: string[] = []
     const pair = pairs.get(person)
     for (const p of paths) {
       const mine = merged.get(p)
@@ -175,7 +175,13 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       const b = await baseAt(pair, p)
       const mineT = mine ?? '', theirs = theirsRaw === undefined ? b : theirsRaw
       if (theirs === b) continue
-      if (mine === b || mine === theirs) {
+      if (mine === theirs) {
+        const prior = owners.get(p) ?? [caller.me.name]
+        sameChange.push(`${prior.join(' + ')} and ${person} made the same change: ${p}`)
+        owners.set(p, [...new Set([...prior, person])])
+        continue
+      }
+      if (mine === b) {
         onlyOne.push(`${p} (${person} only)`)
         merged.set(p, theirs)
         owners.set(p, [...(owners.get(p) ?? []), person])
@@ -246,6 +252,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     out.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(' + ')}${pair && pair.sha !== ancestor ? ` (against ${pair.worker}'s base ${pair.sha.slice(0, 10)})` : ''}`)
     if (declaredNote) out.push(declaredNote)
     if (onlyOne.length) out.push(`only ${person} changed ${onlyOne.length === 1 ? 'this file' : 'these files'} since its start${pair?.carriedCommit ? ', which already includes your carried edits' : ''}: ${onlyOne.join(', ')}`)
+    out.push(...sameChange)
     if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
     if (conflicts.length) out.push(`CONFLICTS:\n${conflicts.join('\n')}`)
     else out.push('no conflicts')

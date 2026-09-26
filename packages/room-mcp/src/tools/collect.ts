@@ -385,26 +385,26 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push('Changes from ' + selected.map(x => x.w.tag).join(', ') + ': ' + (changes.map(x => x.p).join(', ') || 'already present') + '. Nothing committed or staged.')
       for (const { s, w } of selected) {
         releaseClaimsOnDone(s, () => false, w.name, false)
-        const retire = (summary: string, keptWorktree?: string) => {
+        const retire = (summary: string, keptWorktree?: string, keptReason?: string) => {
           const retiredAt = Date.now()
           const files = result.paths.filter(p => result.owners.get(p)?.includes(w.name))
           s.room.retireParticipant(w.name, {
             name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
-            task: w.task, summary, ...(keptWorktree ? { keptWorktree } : {}), files, fileCount: files.length,
+            task: w.task, summary, ...(keptWorktree ? { keptWorktree, keptReason } : {}), files, fileCount: files.length,
             startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed', disposition: 'collected',
           })
         }
         if (state.workerAlive(s, w)) { out.push('kept ' + w.tag + ': clean exit not confirmed'); continue }
-        if (w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); retire(w.summary ?? '', w.dir); continue }
+        if (w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); retire(w.summary ?? '', w.dir, 'clean exit not confirmed'); continue }
         try {
           const children = descendants(s, w)
-          if (children.length) { out.push('kept ' + w.tag + ': nested workers remain: ' + children.map(c => c.tag).join(', ')); retire(w.summary ?? '', w.dir); continue }
+          if (children.length) { const reason = 'nested workers remain: ' + children.map(c => c.tag).join(', '); out.push('kept ' + w.tag + ': ' + reason); retire(w.summary ?? '', w.dir, reason); continue }
           const ignored = await ignoredWorkerArtifacts(w)
           if (ignored.length) {
             out.push('kept ' + w.tag + ': uncopied ignored artifacts')
             out.push(...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`))
             out.push(`retained worktree: ${w.dir}`)
-            retire(`kept for ignored output at ${w.dir}`, w.dir)
+            retire(`kept for ignored output at ${w.dir}`, w.dir, 'uncopied ignored artifacts')
             continue
           }
           const terminated: string[] = []
@@ -412,8 +412,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             retire(w.summary ?? '')
             out.push('cleaned up ' + w.tag + ': temporary files, branch and logs')
             if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
-          } else { out.push('kept ' + w.tag + ': cleanup incomplete'); retire(w.summary ?? '', w.dir) }
-        } catch (e) { out.push('cleanup incomplete for ' + w.tag + ': ' + (e instanceof Error ? e.message : String(e))); retire(w.summary ?? '', w.dir) }
+          } else { out.push('kept ' + w.tag + ': cleanup incomplete'); retire(w.summary ?? '', w.dir, 'cleanup incomplete') }
+        } catch (e) { out.push('cleanup incomplete for ' + w.tag + ': ' + (e instanceof Error ? e.message : String(e))); retire(w.summary ?? '', w.dir, 'cleanup incomplete') }
       }
       return out.join('\n')
     } catch (e) { return [...out, 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n') }
