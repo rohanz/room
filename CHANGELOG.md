@@ -9,7 +9,7 @@
 - The spawn reply separates tracked changes from copied untracked files: "carried your uncommitted work into its worktree: 1 tracked change (commit X), 1 untracked file copied".
 - The merge preview says "only <name> changed this file since its start, which already includes your carried edits" instead of "merge trivially; the lead's carried edits are in that base".
 - `room_state` keeps a worker visible while discard is pending, including after a refused stop or timeout. Collected workers whose worktrees were retained remain visible by default with the reason.
-- Implicit `room_send` answers recheck unanswered questions after a worker resume wait, so a concurrent answer or new question cannot receive the stale inferred reply.
+- `room_send` validates explicit and inferred answer targets before delivery: the target must be an unanswered question from the recipient addressed to the sender, or it refuses with open candidate IDs and previews. After resuming a worker with the answer text, it always records that delivered answer on the bus with the worker's seen receipt, even if another answer arrives during the resume wait.
 - Merge previews credit both people when they made the same edit. Lead-initiated successful discards no longer send the lead a notice about its own action; failure and shutdown notices remain.
 
 ## 0.16.9

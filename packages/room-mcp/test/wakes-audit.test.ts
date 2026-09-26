@@ -39,14 +39,59 @@ it('accepts message as an alias for room_send text', async () => {
   expect(main.room.messages().at(-1)).toMatchObject({ type: 'note', text: 'working on it' })
 })
 
-it('automatically addresses an inReplyTo answer to the asker even when to is wrong', async () => {
+it('infers the asker for an explicit inReplyTo when to is omitted', async () => {
   const { main, tools } = fixture()
   const question = main.room.post({ name: 'worker', kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })
   main.room.colors.set('worker', 0)
-  main.room.colors.set('bystander', 0)
-  const sent = await tools.room_send({ type: 'answer', inReplyTo: question.id, to: 'bystander', text: 'price_cents' })
+  const sent = await tools.room_send({ type: 'answer', inReplyTo: question.id, text: 'price_cents' })
   expect(sent).toContain('price_cents')
   expect(main.room.messages().at(-1)).toMatchObject({ type: 'answer', to: 'worker', inReplyTo: question.id })
+})
+
+it('refuses an explicit inReplyTo when the question is already answered, without resuming or posting', async () => {
+  const { main, rooms, tools } = fixture()
+  const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
+    branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
+  main.room.setWorker(worker)
+  const answered = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Already handled?' })
+  main.room.post({ name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: answered.id, text: 'Yes' })
+  const open = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  const resume = vi.spyOn(rooms, 'resumeWorker')
+  const sent = await tools.room_send({ type: 'answer', to: 'money', inReplyTo: answered.id, text: 'Again' })
+  expect(sent).toContain(`invalid inReplyTo ${answered.id}`)
+  expect(sent).toContain(`${open.id}: Which field?`)
+  expect(resume).not.toHaveBeenCalled()
+  expect(main.room.messages()).toHaveLength(3)
+})
+
+it('refuses an explicit inReplyTo addressed to someone else, without resuming or posting', async () => {
+  const { main, rooms, tools } = fixture()
+  const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
+    branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
+  main.room.setWorker(worker)
+  const wrong = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'someone-else', text: 'Private question?' })
+  const open = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  const resume = vi.spyOn(rooms, 'resumeWorker')
+  const sent = await tools.room_send({ type: 'answer', to: 'money', inReplyTo: wrong.id, text: 'price_cents' })
+  expect(sent).toContain(`invalid inReplyTo ${wrong.id}`)
+  expect(sent).toContain(`${open.id}: Which field?`)
+  expect(sent).not.toContain(`${wrong.id}: Private question?`)
+  expect(resume).not.toHaveBeenCalled()
+  expect(main.room.messages()).toHaveLength(2)
+})
+
+it('refuses an explicit inReplyTo from another recipient or naming a non-question', async () => {
+  const { main, tools } = fixture()
+  main.room.colors.set('Ada', 0)
+  main.room.colors.set('Bea', 0)
+  const question = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  const note = main.room.post({ name: 'Bea', kind: 'agent' }, { type: 'note', to: 'lead', text: 'For context' })
+  for (const id of [question.id, note.id]) {
+    const sent = await tools.room_send({ type: 'answer', to: 'Bea', inReplyTo: id, text: 'price_cents' })
+    expect(sent).toContain(`invalid inReplyTo ${id}`)
+    expect(sent).toContain(`${question.id}: Which field?`)
+    expect(main.room.messages()).toHaveLength(2)
+  }
 })
 
 it('refuses an implicit answer when no unanswered question matches the recipient', async () => {
@@ -86,22 +131,25 @@ it('lists multiple unanswered questions with previews when inReplyTo is omitted'
   expect(main.room.messages()).toHaveLength(2)
 })
 
-it.each(['answered', 'new question'] as const)('rechecks an inferred answer after worker resume when %s arrives', async change => {
+it.each(['answered', 'new question'] as const)('posts an inferred answer after worker resume when %s arrives', async change => {
   const { main, rooms, tools } = fixture()
   const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
     branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
   main.room.setWorker(worker)
   const question = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
-  vi.spyOn(rooms, 'resumeWorker').mockImplementation(async () => {
+  const resume = vi.spyOn(rooms, 'resumeWorker').mockImplementation(async (_session, _worker, prompt) => {
+    expect(prompt).toBe('price_cents')
     if (change === 'answered') main.room.post({ name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: question.id, text: 'Already answered' })
     else main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Another field?' })
     return 'resumed money'
   })
   const sent = await tools.room_send({ type: 'answer', to: 'money', text: 'price_cents' })
-  expect(sent).toContain('error: answer requires inReplyTo')
-  if (change === 'answered') expect(sent).toContain('no unanswered question')
-  else expect(sent).toContain('unanswered questions:')
-  expect(main.room.messages().some(m => m.type === 'answer' && m.text === 'price_cents')).toBe(false)
+  expect(resume).toHaveBeenCalledOnce()
+  expect(sent).toContain('sent [')
+  expect(sent).toContain(`answered ${question.id}`)
+  const answer = main.room.messages().find(m => m.type === 'answer' && m.text === 'price_cents')
+  expect(answer).toMatchObject({ type: 'answer', to: worker.name, inReplyTo: question.id })
+  expect(main.room.seen(worker.name).has(answer!.id)).toBe(true)
 })
 
 it('finds a read answer sent before room_wait even if another room holds the question', async () => {

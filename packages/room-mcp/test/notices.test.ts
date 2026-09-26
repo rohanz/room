@@ -62,7 +62,8 @@ describe('unavailable addressed recipients', () => {
   it.each(['question', 'note', 'changed', 'answer'])('rejects an unknown addressee before posting %s', async type => {
     const { s, tools } = fixture()
     const sent = await tools.room_send({ type, to: 'nobody', text: 'hello', paths: ['a.ts'], inReplyTo: 'old' })
-    expect(sent).toContain('nobody called nobody is or was in this room; participants: lead')
+    if (type === 'answer') expect(sent).toContain('invalid inReplyTo old; no unanswered questions addressed to you')
+    else expect(sent).toContain('nobody called nobody is or was in this room; participants: lead')
     expect(s.room.messages()).toEqual([])
   })
 

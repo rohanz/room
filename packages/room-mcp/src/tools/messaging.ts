@@ -85,8 +85,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const lead = S()
       let byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
       let question = byQuestion?.room.messages().find(m => m.id === a.inReplyTo && m.type === 'question')
-      // A reply belongs to the asker. A stray `to` must never redirect the answer.
-      const requestedTo = a.type === 'answer' && question ? question.from : typeof a.to === 'string' && a.to ? a.to : undefined
+      // An explicit recipient must match the asker; without one, infer it from the question.
+      const requestedTo = typeof a.to === 'string' && a.to ? a.to : a.type === 'answer' ? question?.from : undefined
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
       const wsr = rooms.workers()
       const workerMatches = requestedTo ? rooms.all().flatMap(room => myWorkers(room)
@@ -101,24 +101,37 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const resolvedWorker = matches[0]
       let to = resolvedWorker?.worker.name ?? requestedTo
       let inferredQuestionId: string | undefined
-      const unansweredQuestions = (from?: string) => {
+      const unansweredQuestions = () => {
         const answered = new Set(rooms.all().flatMap(room => room.room.messages()
           .filter(m => m.type === 'answer').map(m => m.inReplyTo)))
         return rooms.all().flatMap(room => room.room.messages()
           .filter((m): m is QuestionMsg => m.type === 'question' && m.to === room.me.name
-            && (!from || m.from === from) && !answered.has(m.id))
+            && !answered.has(m.id))
           .map(question => ({ room, question })))
       }
       const ambiguousAnswer = (candidates: ReturnType<typeof unansweredQuestions>, from?: string) => candidates.length
         ? `error: answer requires inReplyTo; unanswered questions:\n${candidates.map(({ question }) => `${question.id}: ${questionPreview(question.text)}`).join('\n')}`
         : `error: answer requires inReplyTo; no unanswered question${from ? ` from ${from}` : ''} addressed to you`
-      if (a.type === 'answer' && !a.inReplyTo) {
-        const candidates = unansweredQuestions(to)
-        if (candidates.length !== 1) return ambiguousAnswer(candidates, to)
-        byQuestion = candidates[0].room
-        question = candidates[0].question
-        to = question.from
-        inferredQuestionId = question.id
+      if (a.type === 'answer') {
+        const open = unansweredQuestions()
+        const candidates = to ? open.filter(({ question }) => question.from === to) : open
+        if (a.inReplyTo) {
+          // Validate explicit and inferred targets against the same open-question set, once,
+          // before a worker can receive the prompt. A later answer does not undo delivery.
+          const target = candidates.find(({ question }) => question.id === a.inReplyTo)
+          if (!target || target.room !== byQuestion) {
+            return `error: invalid inReplyTo ${String(a.inReplyTo)}; ${open.length
+              ? `valid unanswered questions:\n${open.map(({ question }) => `${question.id}: ${questionPreview(question.text)}`).join('\n')}`
+              : 'no unanswered questions addressed to you'}`
+          }
+          question = target.question
+        } else {
+          if (candidates.length !== 1) return ambiguousAnswer(candidates, to)
+          byQuestion = candidates[0].room
+          question = candidates[0].question
+          to = question.from
+          inferredQuestionId = question.id
+        }
       }
       const exactWorkerRoom = to && wsr && wsr !== lead && (myWorkers(wsr).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : undefined
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead
@@ -146,10 +159,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (result.startsWith('error:')) return result
         restarted = true
         notes.push(result)
-      }
-      if (inferredQuestionId) {
-        const candidates = unansweredQuestions(requestedTo && resolvedWorker ? resolvedWorker.worker.name : requestedTo)
-        if (candidates.length !== 1 || candidates[0].question.id !== inferredQuestionId || candidates[0].room !== byQuestion) return ambiguousAnswer(candidates, requestedTo && resolvedWorker ? resolvedWorker.worker.name : requestedTo)
       }
       let paths: string[] = [], symbols: string[] = []
       // Publish the timeline entry and its prompt-delivery receipt together. Bus
