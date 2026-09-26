@@ -1,3 +1,4 @@
+import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
 import fs from 'node:fs'
@@ -133,15 +134,17 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
 
   const areas = createAreas({ ctx, log, base, presences, others, shareOf, now, isMe })
   const claims = createClaims({ conflictPairs, mine, log, ctx, liveText, baseFor, now })
+  const scheduleInboxWrite = () => primaryHooks?.scheduleWrite()
+  const inboxServices = createInbox({ seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded })
   runtime = {
+    ...inboxServices,
     ...claims,
     ...areas,
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, myWorkers: undefined!, workerAlive: undefined!,
     ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, others, presences,
-    shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, forMe: undefined!, inbox: undefined!, waitingOn: undefined!, describeUsers: undefined!,
-    followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, upgrade: undefined!, serverOf: undefined!, LOCAL_LOGIN: undefined!, codeLine: undefined!, refreshPrs: undefined!, startPrSync: undefined!, stopPrSync: undefined!, prLines: undefined!, myPr: undefined!, postLedger: undefined!, startWorkersBridge: undefined!,
+    shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, serverOf: undefined!, LOCAL_LOGIN: undefined!, codeLine: undefined!, refreshPrs: undefined!, startPrSync: undefined!, stopPrSync: undefined!, prLines: undefined!, myPr: undefined!, postLedger: undefined!, startWorkersBridge: undefined!,
     workerPaths: () => roomBridge?.workerPaths() ?? [],
-    scheduleInboxWrite: () => primaryHooks?.scheduleWrite(),
+    scheduleInboxWrite,
     upgraded, conflictPairs,
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
     clearStale: (s: Session) => { runtime.evictStale(s); return runtime.cleanupMine(s, 'stale from an earlier session') },

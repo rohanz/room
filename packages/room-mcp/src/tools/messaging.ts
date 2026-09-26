@@ -298,8 +298,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function install(state: HandlerState): void {
-  const { seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas, others, upgraded } = state
+export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 'scheduleInboxWrite' | 'mine' | 'msgInMyAreas' | 'others' | 'upgraded'>): Pick<HandlerState, 'forMe' | 'inbox' | 'describeUsers' | 'waitingOn' | 'upgrade'> {
+  const { seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas, others, upgraded } = deps
   const forMe = (s: Session, m: Msg) => messageForMe(s.me, m, { claims: mine(s), inMyAreas: x => msgInMyAreas(s, x) })
   const inbox = (s: Session): string => {
       const fresh: Msg[] = []
@@ -410,5 +410,9 @@ export function install(state: HandlerState): void {
       }
       return notes
     }
-  Object.assign(state, { forMe, inbox, describeUsers, waitingOn, upgrade })
+  return { forMe, inbox, describeUsers, waitingOn, upgrade }
+}
+
+export function install(state: HandlerState): void {
+  Object.assign(state, createInbox(state))
 }
