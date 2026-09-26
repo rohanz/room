@@ -168,7 +168,7 @@ describe('worker identity', () => {
     let n = 0
     const tools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined,
-      spawner: () => ({ pid: 100 + ++n, onExit: cb => { exits.push(cb) }, kill: () => true }),
+      spawner: () => ({ pid: 100 + ++n, started: Promise.resolve(), onExit: cb => { exits.push(cb) }, kill: () => true }),
       worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
     })
     await tools.call('room_spawn', { tag: 'money', task: 'first' })

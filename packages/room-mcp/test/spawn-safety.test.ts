@@ -26,7 +26,7 @@ afterEach(async () => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-function tool(roomName = 'local/a/main', spawner: (spec: { env: Record<string, string> }) => any = () => ({ pid: 4000000, onExit() {}, kill: () => true })) {
+function tool(roomName = 'local/a/main', spawner: (spec: { env: Record<string, string> }) => any = () => ({ pid: 4000000, started: Promise.resolve(), onExit() {}, kill: () => true })) {
   const room = new RoomDoc()
   room.setMeta({ repo: 'a', branch: 'main', base: head })
   const me = { name: 'lead', kind: 'agent' as const, owner: 'lead' }

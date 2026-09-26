@@ -118,6 +118,8 @@ export interface SpawnSpec {
 export interface SpawnedProcess {
   /** -1 when the process could not be started (see onError). */
   pid: number
+  /** Resolves on child_process 'spawn'; rejects on 'error'. */
+  started: Promise<void>
   onExit(cb: (code: number | null) => void): void
   /** Fires when the process could not be started at all (e.g. the binary is missing). */
   onError?(cb: (err: Error) => void): void
@@ -588,7 +590,26 @@ export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', wo
 export const defaultSpawner: Spawner = spec => {
   fs.mkdirSync(path.dirname(spec.logFile), { recursive: true })
   const fd = fs.openSync(spec.logFile, 'a')
-  const child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ['ignore', spec.captureCodexSession ? 'pipe' : fd, fd] })
+  let child: ReturnType<typeof spawn>
+  try { child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ['ignore', spec.captureCodexSession ? 'pipe' : fd, fd] }) }
+  catch (error) { fs.closeSync(fd); throw error }
+  const closeLog = () => { try { fs.closeSync(fd) } catch { /* closed */ } }
+  child.once('close', closeLog)
+  child.once('error', closeLog)
+  // Node emits exactly one of 'spawn' or 'error' for every child, so no timer is needed; a timer
+  // would kill a healthy worker whenever this event loop is busy for longer than its bound.
+  const started = new Promise<void>((resolve, reject) => {
+    const done = (error?: Error) => {
+      child.off('spawn', onSpawn)
+      child.off('error', onError)
+      if (error) reject(error)
+      else resolve()
+    }
+    const onSpawn = () => done()
+    const onError = (error: Error) => done(error)
+    child.once('spawn', onSpawn)
+    child.once('error', onError)
+  })
   let sessionId: string | undefined
   let sessionIdCallback: ((id: string) => void) | undefined
   if (spec.captureCodexSession && child.stdout) {
@@ -608,8 +629,9 @@ export const defaultSpawner: Spawner = spec => {
   child.unref()
   return {
     pid: child.pid ?? -1,
-    onExit: cb => { child.once('close', code => { try { fs.closeSync(fd) } catch { /* closed */ } cb(code) }) },
-    onError: cb => { child.once('error', err => { try { fs.closeSync(fd) } catch { /* closed */ } cb(err) }) },
+    started,
+    onExit: cb => { child.once('close', cb) },
+    onError: cb => { child.once('error', cb) },
     onSessionId: cb => { sessionIdCallback = cb; if (sessionId) cb(sessionId) },
     kill: () => { try { return child.kill('SIGTERM') } catch { return false } },
   }

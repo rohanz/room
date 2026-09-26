@@ -62,7 +62,7 @@ function setupBridged(queue?: (id: string, text: string) => Promise<void>) {
     attachChannel: s => { attached.push(s) },
     join: async () => fakeSession(local.a, lead),
     leave: async () => {},
-    spawner: () => ({ pid: 99, onExit: cb => { exits.push(cb) }, kill: () => {} }),
+    spawner: () => ({ pid: 99, started: Promise.resolve(), onExit: cb => { exits.push(cb) }, kill: () => {} }),
     worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
   })
   let ws: Session | null = fakeSession(local.b, workerId)

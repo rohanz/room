@@ -394,8 +394,8 @@ export class Rooms {
       try {
         const { server, isWorker } = workerOrigin(s)
         const wasDone = w.status === 'done'
-        let launched: ReturnType<typeof launchWorkerProcess>
-        try { launched = launchWorkerProcess({ rooms: this, session: s, id, tag: w.tag, dir: w.dir,
+        let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
+        try { launched = await launchWorkerProcess({ rooms: this, session: s, id, tag: w.tag, dir: w.dir,
           lead: w.lead, owner: s.me.owner ?? s.me.name, host: w.host, model: w.model, effort: w.effort,
           share: w.share ?? 'intent', gen: w.gen ?? 1, budget, server, isWorker,
           token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, probe: this.probe.bind(this), log, at },

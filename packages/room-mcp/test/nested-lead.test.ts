@@ -157,7 +157,7 @@ describe('nested lead: a worker that leads workers', () => {
     const specs: SpawnSpec[] = []
     const tools = createTools({
       getSession: () => s, setSession: x => { s = x }, cwd: top, maxWorkers: 4, probe: () => undefined,
-      spawner: spec => { specs.push(spec); return { pid: 900 + specs.length, onExit: () => {}, kill: () => true } },
+      spawner: spec => { specs.push(spec); return { pid: 900 + specs.length, started: Promise.resolve(), onExit: () => {}, kill: () => true } },
       worktree: async (repo, tag) => ({ dir: path.join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
     })
     for (const tag of ['ship', 'cat']) expect(await tools.call('room_spawn', { tag, task: 'one docstring', host: 'codex' })).toContain(`spawned ${tag}`)

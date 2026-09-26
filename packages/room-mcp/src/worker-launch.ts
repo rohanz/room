@@ -37,8 +37,8 @@ export interface WorkerLaunchResult {
 }
 
 /** The caller owns the room record transition; this routine owns every process resource and callback. */
-export function launchWorkerProcess(policy: Policy, command: Command, lease: WorkerLaunchLease,
-  onStarted: (result: WorkerLaunchResult) => boolean, onSessionId?: (id: string, proc: SpawnedProcess) => void): WorkerLaunchResult {
+export async function launchWorkerProcess(policy: Policy, command: Command, lease: WorkerLaunchLease,
+  onStarted: (result: WorkerLaunchResult) => boolean, onSessionId?: (id: string, proc: SpawnedProcess) => void): Promise<WorkerLaunchResult> {
   const { rooms, session: s, id, tag } = policy
   let reservation: ReturnType<typeof reserveWorkerPort> | undefined
   let passed = false
@@ -73,6 +73,12 @@ export function launchWorkerProcess(policy: Policy, command: Command, lease: Wor
     try { proc = (policy.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args,
       cwd: policy.dir, env, logFile, captureCodexSession: policy.host === 'codex' }) }
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
+    try { await proc.started }
+    catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
+    if (toolCallAborted()) {
+      try { proc.kill() } catch (e) { policy.log(`worker launch: could not stop cancelled ${tag}: ${e}`) }
+      throw new WorkerLaunchError('cancelled', 'tool call cancelled')
+    }
     bindWorkerPortReservation(proc, reservation)
     passed = true
     rooms.setHandle(s, id, proc)

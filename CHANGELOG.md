@@ -2,6 +2,7 @@
 
 ## 0.16.9
 
+- Worker spawn and resume wait for the host process to start before recording success or delivering a resumed follow-up; asynchronous start failures leave no delivered message and report the launch error.
 - Discard rechecks process ownership after dismissal and exit waiting; an unverifiable live worker keeps its record and worktree.
 - Resumed workers receive the follow-up in the launch prompt. After launch, Room posts one timeline copy with the worker's seen receipt already recorded, so its inbox, hooks and wakes do not redeliver it; launch failure leaves no bus copy.
 - Resume stops waiting with a verification error when ownership becomes unknown, without spinning through microtasks.

@@ -17,7 +17,7 @@ import type { PreparedWorktree, SpawnSpec } from '../src/workers.js'
 const scratch: string[] = []
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
-function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise<PreparedWorktree>, probe: (pid: number) => { startTime?: string; executable?: string } | undefined = () => undefined, failStart = false) {
+function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise<PreparedWorktree>, probe: (pid: number) => { startTime?: string; executable?: string } | undefined = () => undefined, failStart = false, started: Promise<void> = Promise.resolve()) {
   const dir = mkdtempSync(join(tmpdir(), 'room-resume-'))
   scratch.push(dir)
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
@@ -46,7 +46,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   const errors: ((error: Error) => void)[] = []
   const tools = createTools({
     getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers, log: line => logs.push(line), probe,
-    spawner: spec => { if (failStart) throw new Error('host unavailable'); specs.push(spec); return { pid: 6000 + specs.length, onExit: cb => { exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => true } },
+    spawner: spec => { if (failStart) throw new Error('host unavailable'); specs.push(spec); return { pid: 6000 + specs.length, started, onExit: cb => { exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => true } },
     worktree: worktree ?? (async (repo, tag) => {
       const workerDir = join(repo, '.room', 'workers', tag)
       mkdirSync(workerDir, { recursive: true })
@@ -236,7 +236,7 @@ describe('resumed worker boundaries', () => {
     const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
     const w = t.room.workers.get('retry')!
     expect(await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('unavailable') }, undefined, 1)).toContain('could not resume retry')
-    const second = await rooms.resumeWorker(t.session, w, 'again', () => ({ pid: 9001, onExit: () => {}, kill: () => true }), undefined, 1)
+    const second = await rooms.resumeWorker(t.session, w, 'again', () => ({ pid: 9001, started: Promise.resolve(), onExit: () => {}, kill: () => true }), undefined, 1)
     expect(second).toContain('resumed retry')
   })
 
@@ -289,7 +289,7 @@ describe('resumed worker boundaries', () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000)
     try {
-      const sending = rooms.resumeWorker(t.session, w, 'again', () => ({ pid: 9002, onExit: () => {}, kill: () => true }))
+      const sending = rooms.resumeWorker(t.session, w, 'again', () => ({ pid: 9002, started: Promise.resolve(), onExit: () => {}, kill: () => true }))
       setTimeout(() => oldExit(0), 10_000)
       await vi.advanceTimersByTimeAsync(10_000)
       expect(await sending).toContain('resumed slow-exit')
@@ -319,12 +319,31 @@ describe('resumed worker boundaries', () => {
     expect(t.room.seen(t.room.workers.get('failed-launch')!.name).size).toBe(0)
   })
 
+  it('waits for an asynchronous resume start failure before posting or receipting the follow-up', async () => {
+    let failStart!: (error: Error) => void
+    const started = new Promise<void>((_, reject) => { failStart = reject })
+    const t = setup(2, undefined, () => undefined, false, started)
+    t.seed('missing-host')
+    const recipient = t.room.workers.get('missing-host')!.name
+    const before = t.room.messages().length
+    const sending = t.tools.call('room_send', { type: 'note', to: 'missing-host', text: 'try this fix' })
+    await vi.waitFor(() => expect(t.specs).toHaveLength(1))
+    expect(t.room.messages()).toHaveLength(before)
+    expect(t.room.seen(recipient).size).toBe(0)
+    expect(t.room.workers.get('missing-host')?.status).toBe('done')
+    failStart(new Error('spawn claude ENOENT'))
+    expect(await sending).toContain('could not resume missing-host: spawn claude ENOENT')
+    expect(t.room.messages()).toHaveLength(before)
+    expect(t.room.seen(recipient).size).toBe(0)
+    expect(t.room.workers.get('missing-host')?.status).toBe('done')
+  })
+
   it('bounds an old process exit wait and says neither delivery nor restart happened', async () => {
     const t = setup()
     t.seed('stuck')
     const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
     const w = t.room.workers.get('stuck')!
-    rooms.setHandle(t.session, w.id!, { pid: 9001, onExit: () => {}, kill: () => true })
+    rooms.setHandle(t.session, w.id!, { pid: 9001, started: Promise.resolve(), onExit: () => {}, kill: () => true })
     const reply = await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('must not start') }, undefined, undefined, () => {}, Date.now, 20)
     expect(reply).toBe('error: could not resume stuck: previous process did not exit within 1 second; message was not delivered and worker was not resumed')
     expect(t.specs).toHaveLength(0)

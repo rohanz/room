@@ -95,7 +95,7 @@ function world() {
     getSession: () => ls, setSession: s => { ls = s }, cwd: repo, probe: () => undefined,
     spawner: spec => {
       prompts.set(spec.env.ROOM_TAG, spec.args.find(arg => arg.includes('You are worker')) ?? '')
-      return { pid: pid++, onExit: cb => { exits.set(spec.env.ROOM_TAG, cb) }, kill: () => true }
+      return { pid: pid++, started: Promise.resolve(), onExit: cb => { exits.set(spec.env.ROOM_TAG, cb) }, kill: () => true }
     },
   })
   cleanups.push(() => leadTools.shutdown())

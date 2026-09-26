@@ -172,9 +172,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
         catch (e) { return abortPrepared(`error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
         const hostSessionId = host === 'claude' ? randomUUID() : undefined
-        let launched: ReturnType<typeof launchWorkerProcess>
+        let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
         try {
-          launched = launchWorkerProcess({ rooms, session: s, id, tag, dir, lead: s.me.name, owner,
+          launched = await launchWorkerProcess({ rooms, session: s, id, tag, dir, lead: s.me.name, owner,
             host, model, effort, share: effectiveShare, gen, budget: { threads, memGb }, server,
             isWorker, token: s.local ? undefined : s.token, claudeChannel: config.claudeChannel,
             usedPorts, spawner: ctx.spawner, probe: ctx.probe, log: state.log, at: now },
