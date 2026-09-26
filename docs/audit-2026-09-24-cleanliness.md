@@ -151,7 +151,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Smallest clean change:** Establish one worktree-private and one common-Git-directory resolver in roomd, plus a shared carry-record accessor. Generate or parity-test the dependency-free hook equivalent.
 - **Fix (0.16.6):** `packages/roomd/src/git-dirs.ts` owns the worktree-private and common Git-directory resolvers and the carry-record accessor; the hook copy in `plugins/room/hooks/common.mjs` stays dependency-free and a parity test runs both over the same fixtures. One deliberate change: a gitfile with an empty `gitdir:` now falls back to `<dir>/.git` everywhere instead of the checkout root in hooks and excludes.
 
-### 18. Worker launch orchestration is still split between spawn and resume — FIXED in 0.15.2 as far as one launch-slot and exit path for spawn and resume (0b06299); the rest DEFERRED (roadmap)
+### 18. Worker launch orchestration is still split between spawn and resume — FIXED in 0.16.7 (471ceb3, ff52d69, 38e7b35, 392756b); 0.15.2 had shared the launch slot and exit path (0b06299)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/workers.ts:149`, `packages/room-mcp/src/tools/workers.ts:155`, `packages/room-mcp/src/tools/workers.ts:169`, `packages/room-mcp/src/tools/workers.ts:175`; `packages/room-mcp/src/registry.ts:288`, `packages/room-mcp/src/registry.ts:295`, `packages/room-mcp/src/registry.ts:303`; shared command builder `packages/room-mcp/src/workers.ts:196`.

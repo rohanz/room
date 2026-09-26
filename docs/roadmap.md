@@ -22,6 +22,11 @@ use broke and proposes the order of work.
 - **Path safety (2026-09-24 cleanliness audit finding 14):** one repo-relative validator and one containment helper with explicit leaf policies for every read, write, carry, recovery and baseline path.
 - **Git-private state paths (2026-09-24 cleanliness audit finding 17):** one worktree-private and one common Git-directory resolver plus one carry-record accessor, parity-tested against the hook copy.
 
+## Fixed in 0.16.7
+
+- **Worker lifecycle (2026-09-24 cleanliness audit finding 18):** one real-state report and one decision table per lifecycle operation, and one launcher for fresh and resumed workers.
+- **Resume race (0.16.4 live check):** a message sent right after a worker finishes waits for the old process to exit and resumes the worker once, or says plainly that it was not delivered. It is never left on the bus twice.
+
 ## The design the gaps point at: cost scales with overlap
 
 The gap list below says what breaks. This is the one idea that fixes most of it. Multiplayer
@@ -151,7 +156,6 @@ context), Warp (already runs Claude Code, Codex and OpenCode), Zed's own agent (
 ### Deferred from the 2026-09-24 cleanliness audit, after the trial
 
 - **16:** Build proximity evidence once for claim guidance, hook snapshots and room-state visibility.
-- **18:** Beyond one spawn/resume launch path, consolidate the remaining worker lifecycle callback, logging and policy assembly.
 - **21:** Refresh only affected graph paths through a bounded queue when an overlay changes.
 - **28:** Replace ordered service-locator initialization with typed services and split worker Git recovery from process lifecycle in small steps.
 
@@ -335,13 +339,16 @@ Still open from this audit: merge preview with `run` still materializes the lead
 tree. Fixed in 0.16.1: `*.tsbuildinfo` at a package root is regenerable output and no
 longer keeps a collected worktree.
 
+### Seen in the 0.16.7 live check (2026-09-26, open, small)
+
+- `room_state` without `all=true` shows no workers section, and a collected worker is listed as
+  "a (dismissed, …) · 1 file", the same label as a discarded one ("discarded · 0 files"). Label
+  collected workers as collected and show the lead's workers by default.
+
 ### Seen in the 0.16.4 live check (2026-09-25, open, small)
 
 - **Worker link inputs and backslashes (found in the 0.16.6 path batch):** `link` paths are validated with backslashes as separators, but POSIX joins treat them as filename characters, so `safe\name` is accepted as a literal name while `safe\..` is refused. Conservative today; decide on one rule (probably reject backslashes, like collection) with a user-visible note.
 
-- A message sent right after a worker finishes can hit "n's previous process is still exiting; send the
-  message again shortly". The reply still starts with "sent [...]" and the message stays on the bus,
-  but the worker is not resumed until the lead sends it again, so the bus holds the message twice.
 
 ### After 0.14.1 (2026-09-24, open)
 

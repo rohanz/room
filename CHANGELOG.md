@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.7
+
+- Worker lifecycle cleanup with three deliberate behaviour fixes. One report (`packages/room-mcp/src/worker-state.ts`) says what state a worker is really in (worktree present or vanished, ownership, branch and unmerged commits, whether its process is still ours, host session, finished or running), and collect, discard, stop, leave, shutdown, automatic retirement, preview and resume each decide from it through one tested decision table. One launcher (`packages/room-mcp/src/worker-launch.ts`) starts fresh and resumed workers with the same port reservation, environment, priority, log path, handle registration and exit logging.
+- A message sent to a worker that has just finished no longer bounces with "previous process is still exiting". Room waits up to 30 seconds for the old process to exit, then resumes the worker once. If it cannot, the reply says the message was not delivered and the worker was not resumed, and the message is not left on the bus.
+- Resuming a worker whose worktree was deleted replies "cannot resume <tag>: its worktree no longer exists", and a merge preview of that worker says its worktree is gone before falling back to its shared overlay. The reply to a message that restarts a finished worker no longer adds "will not answer".
+- Discarding a worker whose worktree is gone no longer keeps `room/<tag>` just because it holds Room's carry commit of the lead's uncommitted work; the branch is kept only for commits of the worker's own.
+
 ## 0.16.6
 
 - Internal cleanup with two deliberate edge-case changes. Repo-relative path checks and symlink containment now have one implementation with named policies (`packages/roomd/src/repo-path.ts`); Git-private state paths and carry records have one resolver (`packages/roomd/src/git-dirs.ts`), parity-tested against the dependency-free hook copy.
