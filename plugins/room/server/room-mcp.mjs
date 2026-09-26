@@ -7304,8 +7304,8 @@ function messageForMe(me, m, context = {}) {
 function messageEndsWait(m, waiting) {
   return messageKind(m).endsWait?.(m, waiting) ?? false;
 }
-function formatMsg(m) {
-  return messageKind(m).format(m);
+function formatMsg(m, context) {
+  return messageKind(m).format(m, context);
 }
 function formatPlans(plans) {
   return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
@@ -7333,7 +7333,10 @@ var init_messages = __esm({
       done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
       base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => (m.fromKind === "human" || m.from !== ctx.me.name) && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 ${BASE_CATCH_UP}` },
       plan: { priority: "fyi", audience: "broadcast", wakes: "interrupt", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""}${m.text ? ` \u2014 ${m.text}` : ""}` },
-      scope: { priority: "notify", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` }
+      scope: { priority: "notify", audience: "everyone", inbox: false, wakes: "never", format: (m, context) => {
+        const current = context?.scopes.some((s) => s.by === m.from && s.area === m.area) && context.messages.filter((x) => x.type === "scope" && x.from === m.from).at(-1)?.id === m.id;
+        return current ? `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` : `${priority(m)}earlier: ${who(m)} was on ${m.area} (${new Date(m.at).toISOString().slice(11, 19)}): ${m.summary} (${m.paths.join(", ")})`;
+      } }
     };
     MessageKinds = builtins;
   }
@@ -18605,8 +18608,7 @@ var init_publisher = __esm({
         this.retryDelayMs = Math.min(delay * 2, 3e4);
         this.retryTimer = this.host.retrySchedule(() => {
           this.retryTimer = void 0;
-          if (!this.host.stopped) void this.resharePaths().catch(() => {
-          });
+          if (!this.host.stopped) void this.host.reconcileGitChanges();
         }, delay);
       }
       reportFailure(error2) {
@@ -18660,7 +18662,7 @@ var init_publisher = __esm({
               return;
             }
             await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs });
-            if (this.host.phase === "seed") this.host.onSeedProgress?.();
+            if (this.host.phase === "seed" || this.host.phase === "watch") this.host.onSeedProgress?.();
           }
           if (generation !== this.host.sharingGeneration) this.markSharingDirty();
           else this.reconciled();
@@ -25220,6 +25222,7 @@ var init_src2 = __esm({
       provider;
       branch = "";
       base = "";
+      appliedHead = "";
       /**
        * The commit this person's overlays are published against (baseOf): HEAD, except for a carried worker
        * in a team room. Its HEAD is a commit of the lead's uncommitted work that exists only on the lead's
@@ -25239,6 +25242,11 @@ var init_src2 = __esm({
       debounceMs;
       trackedRefreshMs;
       basePollMs;
+      reconcileIntervalMs;
+      periodicReconcileSchedule;
+      cancelPeriodicReconcile;
+      reconcileQueued = false;
+      beforeWatcherReady;
       sizeCap;
       totalBudget;
       connectTimeoutMs;
@@ -25326,6 +25334,13 @@ var init_src2 = __esm({
         }, this.debounceMs, Date.now, options.hotThrottleMs, (error2) => this.publisher.reconcileFailed(error2));
         this.trackedRefreshMs = options.trackedRefreshMs ?? 1e4;
         this.basePollMs = options.basePollMs ?? 3e3;
+        this.reconcileIntervalMs = options.reconcileIntervalMs ?? 6e4;
+        this.periodicReconcileSchedule = options.periodicReconcileSchedule ?? ((run3, intervalMs) => {
+          const timer = setInterval(run3, intervalMs);
+          timer.unref?.();
+          return () => clearInterval(timer);
+        });
+        this.beforeWatcherReady = options.beforeWatcherReady;
         this.sizeCap = options.sizeCap ?? 512 * 1024;
         this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024;
         this.connectTimeoutMs = options.connectTimeoutMs ?? 15e3;
@@ -25366,6 +25381,7 @@ var init_src2 = __esm({
         ]));
         this.branch = branch;
         this.base = base;
+        this.appliedHead = base;
         this.tracked = tracked;
         this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl));
         this.roomDoc.scopes.observe((ev) => {
@@ -25416,6 +25432,10 @@ var init_src2 = __esm({
         if (!this.publishUnder) this.writeRoomFile();
         this.excludeRoomFile();
         await this.step("watch", () => this.startWatcher());
+        await this.reconcileGitChanges();
+        if (this.reconcileIntervalMs > 0) this.cancelPeriodicReconcile = this.periodicReconcileSchedule(() => {
+          void this.reconcileGitChanges();
+        }, this.reconcileIntervalMs);
         this.trimBusIfLeader();
         if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader());
         this.every(this.trackedRefreshMs, () => this.refreshTracked());
@@ -25494,6 +25514,7 @@ var init_src2 = __esm({
         this.unobserveOwnedData?.();
         this.remoteRepairTimer?.();
         this.publisher.stopRetry();
+        this.cancelPeriodicReconcile?.();
         this.flushSkipLog();
         this.log(`stopped: ${reason.replace(/\s+/g, " ")}`);
         for (const timer of this.timers) clearInterval(timer);
@@ -25565,6 +25586,19 @@ var init_src2 = __esm({
       enqueue(work) {
         this.workQueue = this.workQueue.then(() => this.stopped ? void 0 : work()).catch((error2) => this.publisher.reconcileFailed(error2));
         return this.workQueue;
+      }
+      /** Level-triggered check, shared by startup, the slow timer and failed-publish retry. */
+      reconcileGitChanges() {
+        if (this.reconcileQueued || this.stopped) return this.workQueue;
+        this.reconcileQueued = true;
+        return this.enqueue(async () => {
+          try {
+            await this.pollHead();
+            await this.publisher.reconcile(await gitChanged(this.dir));
+          } finally {
+            this.reconcileQueued = false;
+          }
+        });
       }
       currentStatus() {
         return this.provider.awareness.getLocalState()?.status ?? "synced";
@@ -25681,26 +25715,37 @@ var init_src2 = __esm({
         this.choosePublisher();
         if (wasSecondary && !this.publishUnder) await this.publisher.reconcile(await gitChanged(this.dir));
         const [head, branch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)]);
-        if (head === this.base && branch === this.branch) {
-          const roomBase2 = this.roomDoc.meta.base;
-          if (roomBase2 && roomBase2 !== head) await this.refreshBaseStatus();
+        if (head === this.appliedHead && branch === this.branch) {
+          const roomBase = this.roomDoc.meta.base;
+          if (roomBase && roomBase !== head) await this.refreshBaseStatus();
           return;
         }
-        const prev = this.base;
+        const prev = this.appliedHead;
         const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : [];
+        const oldBranch = this.branch, oldShared = this.shared, oldTracked = this.tracked;
         this.base = head;
         this.branch = branch;
-        if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages());
-        this.tracked = await gitTracked(this.dir);
-        await this.refreshShared();
-        this.roomDoc.setBaseOf(this.name, this.shared, this);
-        this.roomDoc.reconcileBaseTexts(this.name, this);
-        if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
-        const roomBase = this.roomDoc.meta.base;
-        if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === "ahead") await this.maybeAdvance(roomBase, head);
-        await this.publisher.reconcile(await gitChanged(this.dir));
-        if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot);
-        await this.refreshBaseStatus();
+        try {
+          this.tracked = await gitTracked(this.dir);
+          await this.refreshShared();
+          await this.publisher.reconcile(await gitChanged(this.dir));
+          if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot);
+          if (await gitHead(this.dir) !== head) throw new Error("HEAD moved during reconciliation");
+          await this.refreshBaseStatus();
+          this.roomDoc.doc.transact(() => {
+            this.roomDoc.setBaseOf(this.name, this.shared, this);
+            this.roomDoc.reconcileBaseTexts(this.name, this);
+          }, this);
+          if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages());
+          this.appliedHead = head;
+          if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
+        } catch (error2) {
+          this.base = prev;
+          this.branch = oldBranch;
+          this.shared = oldShared;
+          this.tracked = oldTracked;
+          throw error2;
+        }
       }
       unpushedPairs = /* @__PURE__ */ new Set();
       roomBranch() {
@@ -25771,6 +25816,7 @@ var init_src2 = __esm({
           gitPathsBetween(this.dir, from2, to2),
           gitSubject(this.dir, to2)
         ]);
+        if (this.roomDoc.meta.base !== from2) return;
         this.roomDoc.doc.transact(() => {
           this.roomDoc.setMeta({ base: to2, branch: this.roomBranch() }, this);
           this.roomDoc.post({ name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {} }, { type: "base", base: to2, prev: from2, commits, paths, summary }, this);
@@ -25914,6 +25960,7 @@ var init_src2 = __esm({
         if (removed) this.log(`folded ${removed} old bus messages into the compact ledger (keeping ${this.busKeep})`);
       }
       async startWatcher() {
+        this.beforeWatcherReady?.();
         const watchedFiles = /* @__PURE__ */ new Set();
         let warnedLarge = false;
         const countFile = (absolute, add2) => {
@@ -45996,7 +46043,6 @@ var Rooms = class _Rooms {
       if (!launchLease) return `error: ${this.launchUsage(running)} workers already running or starting (max ${config2.maxWorkers}, ROOM_MAX_WORKERS); wait for one to finish`;
       try {
         const { server, isWorker } = workerOrigin(s);
-        const wasDone = w.status === "done";
         let launched;
         try {
           launched = await launchWorkerProcess(
@@ -46077,7 +46123,7 @@ var Rooms = class _Rooms {
           stopWarning = `; warning: could not clear saved stop reason: ${e instanceof Error ? e.message : String(e)}`;
           log2(`worker resume:${stopWarning}`);
         }
-        return `resumed ${w.tag} with your message${wasDone ? `; ${w.tag} had finished and was restarted` : ""}${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ""}${w.share ? "" : " (legacy worker has no saved sharing level; using intent)"}${stopWarning}`;
+        return `resumed ${w.tag}'s retained conversation with your message${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ""}${w.share ? "" : " (legacy worker has no saved sharing level; using intent)"}${stopWarning}`;
       } finally {
         launchLease.release();
       }
@@ -46434,6 +46480,7 @@ function handlers3(state) {
           return abortPrepared(`error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`);
         }
         const hostSessionId = host === "claude" ? randomUUID3() : void 0;
+        const spawnedAfter = s.room.lastMessages(1)[0]?.id ?? "";
         let launched;
         try {
           launched = await launchWorkerProcess(
@@ -46484,6 +46531,7 @@ function handlers3(state) {
                 ...carriedUntracked?.length ? { carriedUntracked } : {},
                 pid: proc2.pid,
                 startedAt,
+                spawnedAfter,
                 ...processStartTime ? { processStartTime } : {},
                 status: "running",
                 lead: s.me.name,
@@ -46690,6 +46738,7 @@ async function workerChangedCount(s, worker, processGone) {
     return overlayCount;
   }
 }
+var formatRoomMessage = (s, m) => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages() });
 function handlers4(state) {
   const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine: scopeLine2, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine: personLine2, claimLine: claimLine2, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines, shareOf } = state;
   const pathState = async (a) => {
@@ -46722,13 +46771,13 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       await loadAreas(s);
       const areas = areasOf(s).areasOf([...paths, ...s.room.changedPaths(s.me.name)]);
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas });
-      s.room.post(s.me, { type: "scope", area, summary, paths });
+      const posted = s.room.post(s.me, { type: "scope", area, summary, paths });
       setPresence(s, { status: `on ${area}: ${summary}`, areas });
       const out2 = [`scope set: ${scopeLine2({ area, summary, paths })}`];
       out2.push(...areaLines(s, areas));
       const overlapping = s.room.allScopes().filter((sc) => sc.by !== s.me.name && paths.some((p) => scopeCovers(sc, p) || sc.paths.some((q) => scopeCovers({ paths }, q))));
       for (const sc of overlapping) out2.push(`overlaps ${sc.by}'s scope ${scopeLine2(sc)} \u2014 coordinate before touching shared files`);
-      out2.push(...ledgerLines(s, { area, limit: 20 }, area));
+      out2.push(...ledgerLines(s, { area, limit: 20 }, area, posted.id));
       return out2.join("\n");
     },
     async room_state(a) {
@@ -46849,13 +46898,13 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       }
       const msgs = s.room.lastMessages(all2 ? 10 : 30).filter((x) => !(x.to && x.to !== s.me.name && x.from !== s.me.name)).filter((x) => all2 || x.to === s.me.name || x.from === s.me.name || x.type === "base" || msgInMyAreas(s, x)).slice(-10);
       out2.push(`recent bus${all2 ? "" : " in your areas"} (${msgs.length}):`);
-      for (const x of msgs) out2.push(`  - [${x.id}] ${formatMsg(x)}`);
+      for (const x of msgs) out2.push(`  - [${x.id}] ${formatRoomMessage(s, x)}`);
       out2.push(...prLines(s));
       out2.push(...workerLines(await Promise.all(myWorkers(s).map(async (worker) => {
         const processGone = worker.status === "running" && !state.workerAlive(s, worker);
         return { worker, lastActive: presences(s).filter((p) => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => {
           const message = s.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
-          return message ? formatMsg(message) : void 0;
+          return message ? formatRoomMessage(s, message) : void 0;
         })(), now: now() };
       })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter((w) => w.lead === s.me.name) }));
       const ws = wsRoom;
@@ -46865,7 +46914,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
           const processGone = worker.status === "running" && !state.workerAlive(ws, worker);
           return { worker, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => {
             const message = ws.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
-            return message ? formatMsg(message) : void 0;
+            return message ? formatRoomMessage(ws, message) : void 0;
           })(), now: now() };
         })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter((w) => w.lead === ws.me.name) }));
       }
@@ -46932,11 +46981,11 @@ function createAreas(deps) {
     const stale = !presences(s).some((p) => p.user.name === c.by) && now() - c.at > STALE_MS;
     return claimLine(c, { yours: isMe(s, { name: c.by, kind: c.byKind }), stale });
   };
-  const ledgerLines = (s, q, label) => {
-    const entries = s.room.ledger({ ...q, limit: q.limit ?? 10 }).filter((m) => !(m.to && m.to !== s.me.name && m.from !== s.me.name));
+  const ledgerLines = (s, q, label, excludeId) => {
+    const entries = s.room.ledger({ ...q, limit: q.limit ?? 10 }).filter((m) => m.id !== excludeId && !(m.to && m.to !== s.me.name && m.from !== s.me.name));
     const plans = s.room.openClaims().filter((c) => c.plans?.length && !(c.by === s.me.name) && (q.path ? c.path === q.path : true) && (q.area ? s.room.allScopes().some((sc) => sc.area === q.area && scopeCovers(sc, c.path)) : true));
     const out2 = [`${label} ledger (${entries.length}):`];
-    for (const m of entries) out2.push(`  - ${new Date(m.at).toISOString().slice(11, 19)} ${formatMsg(m)}`);
+    for (const m of entries) out2.push(`  - ${new Date(m.at).toISOString().slice(11, 19)} ${formatRoomMessage(s, m)}`);
     if (plans.length) {
       out2.push("open plans by others:");
       for (const c of plans) out2.push(`  - ${c.by}'s agent in ${c.path}: ${formatPlans(c.plans)}`);
@@ -47076,8 +47125,11 @@ function rejoinOptions(s, credentialsPath2) {
 }
 function markHistorySeenOnJoin(s, seen) {
   const worker = s.room.workerOf(s.me.name);
-  for (const m of s.room.messages()) {
-    if (worker?.status === "running" && m.type === "note" && (!m.to || m.to === s.me.name) && m.from === worker.lead && m.at >= worker.startedAt && (m.priority === "notify" || m.priority === "interrupt")) continue;
+  const messages = s.room.messages();
+  const spawnIndex = messages.findIndex((m) => m.id === worker?.spawnedAfter);
+  for (let i2 = 0; i2 < messages.length; i2++) {
+    const m = messages[i2];
+    if (worker?.status === "running" && i2 > spawnIndex && m.type === "note" && (!m.to || m.to === s.me.name) && m.from === worker.lead && (m.priority === "notify" || m.priority === "interrupt")) continue;
     seen.add(m.id);
   }
 }
@@ -49628,7 +49680,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.21",
+  version: "0.16.22",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",

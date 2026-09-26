@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.22
+
+Behaviour fixes from the 2026-09-27 design audit (synthesis items 1–5), each with a test that fails on 0.16.21.
+
+- A message to a finished worker replies "resumed a's retained conversation with your message". Both hosts resume the recorded host session; the old reply said the worker "was restarted".
+- Scope events in ledgers, the recent bus and worker lines read as current ("X is on <area>") only while they match that person's live scope and are their newest scope event. Older ones read "earlier: X was on <area> (<time>)", so a collected worker's old declaration no longer looks like current activity. The `room_scope` reply leaves out the event it just posted.
+- A worker's post-spawn briefing is chosen by bus order, not by comparing clocks. Spawn records the newest bus message (`spawnedAfter`), and lead notes after it are kept. Two machines with skewed clocks used to lose the briefing. If the mark was trimmed, every retained notify/interrupt note from the lead to the worker or to everyone is kept.
+- `pollHead` records a HEAD as applied only after the whole transition succeeds: tracked files, overlays, claim re-anchoring, base status, then the base receipt. A failure restores the previous state and the publisher retry reruns the whole transition. Before, a failed transition was skipped by the next poll.
+- Publication no longer depends on watcher events alone. roomd reconciles Git changes once the watcher is ready, and every 60 s after that through the work queue, skipping a tick while one is queued or running. An edit made during startup, or a missed watcher event, is published.
+
 ## 0.16.21
 
 Refactor of the daemon's publication path. The only intended behaviour change is that each failure is logged once.

@@ -48,15 +48,17 @@ Found by one audit only, and checked:
 ## Before the trial (0.16.22)
 
 These are small, concrete fixes, each with a failing test first:
-1. **Resume reply.** Say that Room resumed the worker's retained conversation (both audits).
+1. **Resume reply.** Say that Room resumed the worker's retained conversation (both audits). FIXED in 0.16.22 (9ea4bf1).
 2. **Scope and ledger replies.** Render past activity as history, not as "is on", and leave out the
-   event this reply itself just posted (both audits; live-check notes).
+   event this reply itself just posted (both audits; live-check notes). FIXED in 0.16.22 (9ea4bf1).
+   Open: the PR ledger comment (`room-mcp/src/prs.ts` ~149) still renders every past scope event as
+   "is on"; found during the fix and left out of its scope.
 3. **Worker briefing filter.** Order by bus position, not by comparing wall clocks across machines.
-   Two machines a few minutes apart currently lose a worker's briefing (Fable 9, Astra 5).
+   Two machines a few minutes apart currently lose a worker's briefing (Fable 9, Astra 5). FIXED in 0.16.22 (9ea4bf1).
 4. **HEAD transitions.** pollHead records a HEAD as applied only after its whole transition succeeds,
-   and retries otherwise (Astra 8).
+   and retries otherwise (Astra 8). FIXED in 0.16.22 (e497efc).
 5. **Level-triggered publication.** Reconcile Git changes once the watcher is ready, and on a slow
-   periodic timer, so a missed watcher event cannot leave an edit unpublished (Astra 9).
+   periodic timer, so a missed watcher event cannot leave an edit unpublished (Astra 9). FIXED in 0.16.22 (e497efc).
 
 ## After the trial: the design work
 
