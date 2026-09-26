@@ -3,7 +3,19 @@ import { scopeCovers, type RoomDoc } from '@room/shared'
 import { baselineText, type Baseline } from './baseline.js'
 import { git, gitBlobInfoMany, gitChanged, gitHead, gitShow, gitShowMany, type GitBlobInfo } from './git.js'
 import type { DiskBatch } from './disk-batch.js'
-import { clampShare, type ShareLevel } from './index.js'
+
+export type ShareLevel = 'intent' | 'declared' | 'full'
+export const SHARE_LEVELS: readonly ShareLevel[] = ['intent', 'declared', 'full']
+const SHARE_RANK: Record<ShareLevel, number> = { intent: 0, declared: 1, full: 2 }
+/** A level from user input; undefined when it is not one. */
+export function parseShare(v: unknown): ShareLevel | undefined {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
+  return (SHARE_LEVELS as readonly string[]).includes(s) ? s as ShareLevel : undefined
+}
+/** The level actually allowed: never above the server ceiling. */
+export function clampShare(level: ShareLevel, max: ShareLevel): ShareLevel {
+  return SHARE_RANK[level] > SHARE_RANK[max] ? max : level
+}
 
 const errMsg = (error: unknown): string => error instanceof Error ? error.message : String(error)
 

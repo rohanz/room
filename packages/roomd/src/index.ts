@@ -17,7 +17,8 @@ import os from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
-import { Publisher } from './publisher.js'
+import { Publisher, clampShare, type ShareLevel } from './publisher.js'
+export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './publisher.js'
 import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
 import { claimDigest, reanchorClaims } from './reanchor.js'
@@ -41,18 +42,6 @@ export function observeCallback(fn: () => unknown, report: (error: unknown) => v
  *  - declared: overlays only for paths under the person's declared scope paths; the rest is withheld.
  *  - full: every changed file (the original behaviour).
  */
-export type ShareLevel = 'intent' | 'declared' | 'full'
-export const SHARE_LEVELS: readonly ShareLevel[] = ['intent', 'declared', 'full']
-const SHARE_RANK: Record<ShareLevel, number> = { intent: 0, declared: 1, full: 2 }
-/** A level from user input (env, tool argument); undefined when it is not one. */
-export function parseShare(v: unknown): ShareLevel | undefined {
-  const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
-  return (SHARE_LEVELS as readonly string[]).includes(s) ? s as ShareLevel : undefined
-}
-/** The level actually allowed: never above the server ceiling. */
-export function clampShare(level: ShareLevel, max: ShareLevel): ShareLevel {
-  return SHARE_RANK[level] > SHARE_RANK[max] ? max : level
-}
 /** Presence as this daemon publishes it: the shared Presence plus the sharing level. */
 export type SharePresence = Presence & { share?: ShareLevel }
 export { claimDigest } from './reanchor.js'
