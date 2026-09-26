@@ -139,6 +139,22 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.roomDoc.changedPaths('Writer')).toEqual([])
   })
 
+  it('reports one warning for a failed publish and retries the path', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' })
+    const logs: string[] = []
+    const retries: Array<() => void> = []
+    let fail = true
+    const daemon = await start({ room: room(), dir, name: 'Retry', log: line => logs.push(line),
+      retrySchedule: run => { retries.push(run); return () => {} },
+      beforePublishWrite: async () => { if (fail) { fail = false; throw new Error('injected publish failure') } },
+    })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
+    await waitFor(() => retries.length === 1)
+    expect(logs.filter(line => line.includes('injected publish failure'))).toHaveLength(1)
+    retries.shift()!()
+    await waitFor(() => daemon.roomDoc.text('app.py', 'Retry') === 'edit\n')
+  })
+
   it('automatically sweeps a late remote base key after its owner has retired', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n' }), url = room()
     const scheduled: Array<() => Promise<void>> = []
