@@ -34926,7 +34926,7 @@ function createHandlerState(ctx) {
       flush: () => watcher?.flush() ?? Promise.resolve()
     };
   };
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: (s) => ctx.setSession(s), observeClaims: (s) => runtime2.observeClaims(s), attach: attach2, probe: ctx.probe });
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: (s) => ctx.setSession(s), observeClaims: (s) => runtime2.observeClaims(s), attach: attach2, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses });
   const S = () => {
     const s = ctx.getSession();
     if (!s) throw new NotJoined();
@@ -35605,7 +35605,7 @@ var init_registry = __esm({
             const files = [.../* @__PURE__ */ new Set([...s.room.changedPaths(w.name), ...done?.type === "done" ? done.changed : []])].sort();
             if (facts.clean && w.exitCode === 0) {
               try {
-                if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this) }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue;
+                if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this), list: this.o.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue;
               } catch {
                 continue;
               }
@@ -46290,7 +46290,7 @@ function handlers5(state) {
       const lead = S();
       let byQuestion = typeof a.inReplyTo === "string" && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : void 0;
       let question = byQuestion?.room.messages().find((m) => m.id === a.inReplyTo && m.type === "question");
-      const requestedTo = a.type === "answer" && question ? question.from : typeof a.to === "string" && a.to ? a.to : void 0;
+      const requestedTo = typeof a.to === "string" && a.to ? a.to : a.type === "answer" ? question?.from : void 0;
       const wsr = rooms.workers();
       const workerMatches = requestedTo ? rooms.all().flatMap((room) => myWorkers(room).filter((w) => w.tag === requestedTo).map((worker) => ({ room, worker }))) : [];
       const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap((room) => room.room.retiredWorkers().filter((w) => w.tag === requestedTo && w.lead === room.me.name).map((worker) => ({ room, worker }))) : [];
@@ -46302,19 +46302,29 @@ function handlers5(state) {
       const resolvedWorker = matches[0];
       let to2 = resolvedWorker?.worker.name ?? requestedTo;
       let inferredQuestionId;
-      const unansweredQuestions = (from2) => {
+      const unansweredQuestions = () => {
         const answered = new Set(rooms.all().flatMap((room) => room.room.messages().filter((m) => m.type === "answer").map((m) => m.inReplyTo)));
-        return rooms.all().flatMap((room) => room.room.messages().filter((m) => m.type === "question" && m.to === room.me.name && (!from2 || m.from === from2) && !answered.has(m.id)).map((question2) => ({ room, question: question2 })));
+        return rooms.all().flatMap((room) => room.room.messages().filter((m) => m.type === "question" && m.to === room.me.name && !answered.has(m.id)).map((question2) => ({ room, question: question2 })));
       };
       const ambiguousAnswer = (candidates, from2) => candidates.length ? `error: answer requires inReplyTo; unanswered questions:
 ${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPreview(question2.text)}`).join("\n")}` : `error: answer requires inReplyTo; no unanswered question${from2 ? ` from ${from2}` : ""} addressed to you`;
-      if (a.type === "answer" && !a.inReplyTo) {
-        const candidates = unansweredQuestions(to2);
-        if (candidates.length !== 1) return ambiguousAnswer(candidates, to2);
-        byQuestion = candidates[0].room;
-        question = candidates[0].question;
-        to2 = question.from;
-        inferredQuestionId = question.id;
+      if (a.type === "answer") {
+        const open3 = unansweredQuestions();
+        const candidates = to2 ? open3.filter(({ question: question2 }) => question2.from === to2) : open3;
+        if (a.inReplyTo) {
+          const target = candidates.find(({ question: question2 }) => question2.id === a.inReplyTo);
+          if (!target || target.room !== byQuestion) {
+            return `error: invalid inReplyTo ${String(a.inReplyTo)}; ${open3.length ? `valid unanswered questions:
+${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(question2.text)}`).join("\n")}` : "no unanswered questions addressed to you"}`;
+          }
+          question = target.question;
+        } else {
+          if (candidates.length !== 1) return ambiguousAnswer(candidates, to2);
+          byQuestion = candidates[0].room;
+          question = candidates[0].question;
+          to2 = question.from;
+          inferredQuestionId = question.id;
+        }
       }
       const exactWorkerRoom = to2 && wsr && wsr !== lead && (myWorkers(wsr).some((w) => w.name === to2) || wsr.room.retiredWorkers().some((w) => w.name === to2)) ? wsr : void 0;
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead;
@@ -46342,10 +46352,6 @@ ${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPrevie
         if (result.startsWith("error:")) return result;
         restarted = true;
         notes.push(result);
-      }
-      if (inferredQuestionId) {
-        const candidates = unansweredQuestions(requestedTo && resolvedWorker ? resolvedWorker.worker.name : requestedTo);
-        if (candidates.length !== 1 || candidates[0].question.id !== inferredQuestionId || candidates[0].room !== byQuestion) return ambiguousAnswer(candidates, requestedTo && resolvedWorker ? resolvedWorker.worker.name : requestedTo);
       }
       let paths = [], symbols = [];
       s.room.doc.transact(() => {
@@ -47373,10 +47379,10 @@ var defs7 = [{
 var split = (value2) => value2.split("\0").filter(Boolean);
 var collectQueues = /* @__PURE__ */ new Map();
 var ownershipRecords = (s) => [...s.room.retiredWorkers(), ...s.room.workers.values()];
-async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors, probe) {
+async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors, probe, list) {
   if (!decideStop(await workerRealState(leadDir, w, { ownership: true, leadName, workers })).cwd) return [];
   try {
-    return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [], probe });
+    return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [], probe, list });
   } catch (e) {
     errors?.push(`cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}`);
     return [];
@@ -47469,7 +47475,7 @@ function handlers7(state) {
         if (!rooms.reserve(lock3)) return "error: this worker is already being handled or retired";
         try {
           const cleanupErrors = [];
-          const terminated = await stopOwnedWorktreeProcesses(s2.dir, w2, s2.me.name, ownershipRecords(s2), cleanupErrors, state.ctx?.probe);
+          const terminated = await stopOwnedWorktreeProcesses(s2.dir, w2, s2.me.name, ownershipRecords(s2), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses);
           const missing = decideDiscard(await workerRealState(s2.dir, w2)) === "prune";
           const missingDetail = missing ? await pruneMissingWorkerWorktree(s2.dir, w2) : void 0;
           if (missing) cleanupWorkerLogs(s2.dir, w2);
@@ -47477,7 +47483,7 @@ function handlers7(state) {
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}
 retained worktree: ${w2.dir}${terminated.length ? "\nstopped processes: " + terminated.join(", ") : ""}${cleanupErrors.length ? "\n" + cleanupErrors.join("; ") : ""}
 repeat with force=true to delete them`;
-          if (!missing && !await cleanupWorker(s2.dir, w2, true, true, terminated, { probe: state.ctx?.probe }, s2.me.name, ownershipRecords(s2))) throw new Error("worker is not an owned Room worktree");
+          if (!missing && !await cleanupWorker(s2.dir, w2, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s2.me.name, ownershipRecords(s2))) throw new Error("worker is not an owned Room worktree");
           const archive = s2.room.doc.getArray("retiredWorkers");
           const index = archive.toArray().findIndex((item) => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead);
           if (index >= 0) s2.room.doc.transact(() => {
@@ -47520,7 +47526,7 @@ repeat with force=true to delete them`;
         const cleanupErrors = [];
         const beforeStop = await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe });
         const verifiedProcess = decideStop(beforeStop).host === "signal";
-        const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe);
+        const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses);
         if (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe)) {
           const how = await state.dismissWorker(s, w, "discarded by the lead");
           if (s.room.workers.get(w.tag)?.status === "running" && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) return "could not discard " + w.tag + ": " + how + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
@@ -47536,7 +47542,7 @@ repeat with force=true to delete them`;
         }
         const unsafeAfterDismissal = await unverifiedLive(s, w);
         if (unsafeAfterDismissal) return unsafeAfterDismissal;
-        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe));
+        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses));
         const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) });
         const missing = decideDiscard(afterStop) === "prune";
         let missingDetail;
@@ -47562,7 +47568,7 @@ repeat with force=true to delete them`;
           ].join("\n");
         }
         const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w) : void 0;
-        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe }, s.me.name, ownershipRecords(s))) throw new Error("worker is not an owned Room worktree");
+        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) throw new Error("worker is not an owned Room worktree");
         releaseClaimsOnDone(s, () => false, w.name, false);
         const retiredAt = Date.now();
         s.room.retireParticipant(w.name, {
@@ -47649,7 +47655,7 @@ repeat with force=true to delete them`;
           if (w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) throw new Error("worker must be on branch room/" + w.tag);
           await git(w.dir, ["ls-files", "-z"]);
           const cleanupErrors = [];
-          const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe);
+          const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses);
           if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
           out2.push(...cleanupErrors.map((error2) => `${w.tag}: ${error2}`));
           const now = state.now ?? Date.now;
@@ -47810,7 +47816,7 @@ repeat with force=true to delete them`;
             continue;
           }
           const terminated = [];
-          if (await cleanupWorker(s.dir, w, true, false, terminated, { probe: state.ctx?.probe }, s.me.name, ownershipRecords(s))) {
+          if (await cleanupWorker(s.dir, w, true, false, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) {
             retire(w.summary ?? "");
             out2.push("cleaned up " + w.tag + ": temporary files, branch and logs");
             if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
@@ -48473,7 +48479,7 @@ function install6(state) {
     const stopCwdProcesses = async () => {
       if (!ownedWorktree || cleanupError) return;
       try {
-        stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids, probe: ctx.probe }));
+        stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids, probe: ctx.probe, list: ctx.listCwdProcesses }));
       } catch (e) {
         cleanupError = `cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}`;
       }
