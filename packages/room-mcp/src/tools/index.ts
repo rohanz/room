@@ -5,7 +5,7 @@ import { connectedBefore, trackConnection } from '../connection.js'
 import { toolCallAborted, withToolSignal } from '../registry.js'
 import { LOCAL, NotLoggedIn, type Session } from '../session.js'
 import { NeedFetch, NotJoined, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
-import { defs as joinDefs, handlers as joinHandlers, install as installJoin, markHistorySeenOnJoin, teamSharingNote } from './join.js'
+import { defs as joinDefs, handlers as joinHandlers, markHistorySeenOnJoin, teamSharingNote } from './join.js'
 import { defs as scopeDefs, handlers as scopeHandlers } from './scope.js'
 import { defs as claimDefs, handlers as claimHandlers } from './claims.js'
 import { defs as messagingDefs, handlers as messagingHandlers, WAIT_SIGNAL } from './messaging.js'
@@ -47,7 +47,6 @@ export function createTools(ctx: ToolCtx): Tools {
   const state: HandlerState = createHandlerState(ctx)
   const initial = ctx.getSession()
   if (initial) trackConnection(initial, state.now)
-  installJoin(state)
   installWorkers(state)
   let autoJoin: AutoJoinHandle | undefined
   const notJoined = () => autoJoin?.failure ? `error: not in a room. ${autoJoin.failure}`

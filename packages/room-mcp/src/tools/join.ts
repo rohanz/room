@@ -279,8 +279,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function install(state: HandlerState): void {
-  const { ctx, log, doJoin, doLeave, seen, rooms, now, presences, mine, planChanged } = state
+export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | 'doLeave' | 'seen' | 'rooms' | 'now' | 'presences' | 'runningWorkers'>): Pick<HandlerState, 'followBranch' | 'evictStale' | 'cleanupMine' | 'serverOf' | 'LOCAL_LOGIN' | 'codeLine'> {
+  const { ctx, log, doJoin, doLeave, seen, rooms, now, presences, runningWorkers } = deps
   const blockedBranch = new WeakMap<Session, string>()
   const followBranch = async (): Promise<string> => {
       const s = ctx.getSession()
@@ -291,7 +291,7 @@ export function install(state: HandlerState): void {
       const current = roomNameParts(s.roomName).branch
       if (!current) return ''
       if (branch === current) return ''
-      const running = state.runningWorkers(s)
+      const running = runningWorkers(s)
       if (running.length) {
         if (blockedBranch.get(s) === branch) return ''
         blockedBranch.set(s, branch)
@@ -338,5 +338,9 @@ export function install(state: HandlerState): void {
   const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
       ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.`
       : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
-  Object.assign(state, { followBranch, evictStale, cleanupMine, serverOf, LOCAL_LOGIN, codeLine })
+  return { followBranch, evictStale, cleanupMine, serverOf, LOCAL_LOGIN, codeLine }
+}
+
+export function install(state: HandlerState): void {
+  Object.assign(state, createJoin(state))
 }
