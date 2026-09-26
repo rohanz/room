@@ -16541,7 +16541,7 @@ var init_doc = __esm({
       }
       setBaseText(person, sha, relpath, text, origin) {
         const key = this.baseTextKey(person, sha, relpath);
-        if (this.ownedBaseTexts.has(key)) return;
+        if (this.ownedBaseTexts.get(key) === text) return;
         this.doc.transact(() => {
           this.ownedBaseTexts.set(key, text);
         }, origin);
@@ -18237,6 +18237,21 @@ var init_room_file = __esm({
 // packages/roomd/src/retained-declared.ts
 import fs6 from "node:fs";
 import path4 from "node:path";
+import { createHash } from "node:crypto";
+function retainedDeclaredFile(dir, room, participant, server) {
+  const identity = JSON.stringify([normaliseServer(server), room, participant]);
+  const hash = createHash("sha256").update(identity).digest("hex");
+  return path4.join(worktreeGitDirSync(dir), `room-retained-declared-${hash}.json`);
+}
+function deleteRetainedDeclaredRecord(dir, room, participant, server) {
+  const gitDir = worktreeGitDirSync(dir);
+  fs6.rmSync(retainedDeclaredFile(dir, room, participant, server), { force: true });
+  const legacyFile = path4.join(gitDir, "room-retained-declared.json");
+  const legacy = readRecordSync(legacyFile);
+  if (legacy?.server === normaliseServer(server) && legacy.room === room && legacy.participant === participant) {
+    fs6.rmSync(legacyFile, { force: true });
+  }
+}
 function normaliseServer(server) {
   const url = new URL(server);
   url.username = "";
@@ -18257,11 +18272,17 @@ var init_retained_declared = __esm({
         this.room = room;
         this.participant = participant;
         this.server = normaliseServer(server);
-        this.file = path4.join(worktreeGitDirSync(dir), "room-retained-declared.json");
+        this.file = retainedDeclaredFile(dir, room, participant, server);
         const record2 = readRecordSync(this.file);
-        if (record2 && (record2.server !== this.server || record2.room !== room || record2.participant !== participant)) fs6.rmSync(this.file, { force: true });
-        if (record2?.server === this.server && record2.room === room && record2.participant === participant && Array.isArray(record2.paths)) {
-          for (const value2 of record2.paths) if (typeof value2 === "string" && validRepoPath(value2, RECORDED_PATH)) super.add(value2);
+        const legacyFile = path4.join(worktreeGitDirSync(dir), "room-retained-declared.json");
+        const legacy = record2 ? void 0 : readRecordSync(legacyFile);
+        const source = record2 ?? legacy;
+        if (source?.server === this.server && source.room === room && source.participant === participant && Array.isArray(source.paths)) {
+          for (const value2 of source.paths) if (typeof value2 === "string" && validRepoPath(value2, RECORDED_PATH)) super.add(value2);
+          if (legacy) {
+            this.save();
+            fs6.rmSync(legacyFile, { force: true });
+          }
         }
       }
       room;
@@ -20605,7 +20626,7 @@ var require_websocket = __commonJS({
     var http2 = __require("http");
     var net2 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes3, createHash: createHash6 } = __require("crypto");
+    var { randomBytes: randomBytes3, createHash: createHash7 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -21273,7 +21294,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash6("sha1").update(key + GUID).digest("base64");
+        const digest = createHash7("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -21642,7 +21663,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter2 = __require("events");
     var http2 = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash6 } = __require("crypto");
+    var { createHash: createHash7 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -21949,7 +21970,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash6("sha1").update(key + GUID).digest("base64");
+        const digest = createHash7("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -22812,9 +22833,9 @@ ${reason}`);
 });
 
 // packages/roomd/src/reanchor.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function digestLines(lines) {
-  return createHash("sha256").update(lines.join("\n"), "utf8").digest("hex");
+  return createHash2("sha256").update(lines.join("\n"), "utf8").digest("hex");
 }
 function claimDigest(text, from2, to2) {
   if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2) || from2 < 1 || to2 < from2) return void 0;
@@ -24609,7 +24630,7 @@ var init_roomignore = __esm({
 import fs7 from "node:fs";
 import path5 from "node:path";
 import os from "node:os";
-import { createHash as createHash2, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes2 } from "node:crypto";
 import { execFileSync as execFileSync2 } from "node:child_process";
 function observeCallback(fn, report) {
   void Promise.resolve().then(fn).catch(report);
@@ -24717,6 +24738,7 @@ var init_src2 = __esm({
     init_room_file();
     init_git_dirs();
     init_retained_declared();
+    init_retained_declared();
     init_git_dirs();
     init_disk_batch();
     init_wrapper();
@@ -24787,6 +24809,7 @@ var init_src2 = __esm({
       sharingGeneration = 0;
       sharingDirty = false;
       remoteRepairTimer;
+      remoteRepairSchedule;
       unobserveOwnedData;
       beforePublishWrite;
       beforeBaseRead;
@@ -24827,8 +24850,15 @@ var init_src2 = __esm({
         this.localRoom = !!options.localKey;
         this.log = options.log ?? ((line) => process.stderr.write(`[roomd] ${line}
 `));
+        this.remoteRepairSchedule = options.remoteRepairSchedule ?? ((run3) => {
+          const timer = setTimeout(() => {
+            void run3();
+          }, 40);
+          timer.unref?.();
+          return () => clearTimeout(timer);
+        });
         this.debounceMs = options.debounceMs ?? 300;
-        this.watchedDirectory = createHash2("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs7.realpathSync(this.dir)).digest("hex");
+        this.watchedDirectory = createHash3("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs7.realpathSync(this.dir)).digest("hex");
         this.batch = new DiskBatch((paths) => {
           const work = this.enqueue(async () => {
             await this.pollHead();
@@ -25060,7 +25090,7 @@ var init_src2 = __esm({
         this.stopped = true;
         this.unobserveBus?.();
         this.unobserveOwnedData?.();
-        clearTimeout(this.remoteRepairTimer);
+        this.remoteRepairTimer?.();
         this.flushSkipLog();
         this.log(`stopped: ${reason.replace(/\s+/g, " ")}`);
         for (const timer of this.timers) clearInterval(timer);
@@ -25195,26 +25225,32 @@ var init_src2 = __esm({
           if (transaction.origin === this || this.stopped) return;
           if (events.some((event) => event instanceof YMapEvent && (event.target === this.roomDoc.overlays || event.target === this.roomDoc.deleted ? event.changes.keys.get(this.name)?.action === "delete" : event.path[0] === this.name && [...event.changes.keys.values()].some((change) => change.action === "delete")))) this.scheduleRemoteRepair();
         };
-        const removedBaseText = (event, transaction) => {
+        const changedBaseText = (event, transaction) => {
           if (transaction.origin === this || this.stopped) return;
-          if ([...event.changes.keys].some(([key, change]) => change.action === "delete" && key.startsWith(`${this.name}\0`) && !key.slice(this.name.length + 1).includes("\0"))) this.scheduleRemoteRepair();
+          if ([...event.changes.keys].some(([key, change]) => {
+            const split2 = key.indexOf("\0");
+            if (split2 < 0 || key.slice(split2 + 1).includes("\0")) return false;
+            const owner = key.slice(0, split2);
+            return owner === this.name || change.action === "add" && !this.roomDoc.overlays.get(owner)?.size && !this.roomDoc.deleted.get(owner)?.size;
+          })) this.scheduleRemoteRepair();
         };
         this.roomDoc.overlays.observeDeep(removedOwnEntry);
         this.roomDoc.deleted.observeDeep(removedOwnEntry);
-        this.roomDoc.ownedBaseTexts.observe(removedBaseText);
+        this.roomDoc.ownedBaseTexts.observe(changedBaseText);
         this.unobserveOwnedData = () => {
           this.roomDoc.overlays.unobserveDeep(removedOwnEntry);
           this.roomDoc.deleted.unobserveDeep(removedOwnEntry);
-          this.roomDoc.ownedBaseTexts.unobserve(removedBaseText);
+          this.roomDoc.ownedBaseTexts.unobserve(changedBaseText);
         };
       }
       scheduleRemoteRepair() {
         if (this.remoteRepairTimer) return;
-        this.remoteRepairTimer = setTimeout(() => {
+        this.remoteRepairTimer = this.remoteRepairSchedule(async () => {
           this.remoteRepairTimer = void 0;
+          this.roomDoc.sweepOrphanedBaseTexts(this);
           this.markSharingDirty();
-        }, 40);
-        this.remoteRepairTimer.unref?.();
+          await this.workQueue;
+        });
       }
       /** Record receipts before any synchronous delivery observer sees a new bus entry. */
       markIntegratedBaseNotices(notices) {
@@ -26326,7 +26362,7 @@ import { execFile as execFile3 } from "node:child_process";
 import fs9 from "node:fs";
 import os3 from "node:os";
 import path7 from "node:path";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { randomUUID } from "node:crypto";
 function gitStatePath(root, name2) {
   return path7.join(worktreeGitDirFromDotGit(root), name2);
@@ -26441,7 +26477,7 @@ function createWriteIntentReader(dir, now = Date.now) {
     id2 ??= sessionId();
     if (!id2) return void 0;
     try {
-      const file = gitStatePath(dir, `room-write-intents-${createHash3("sha256").update(id2).digest("hex")}.json`);
+      const file = gitStatePath(dir, `room-write-intents-${createHash4("sha256").update(id2).digest("hex")}.json`);
       const evidence = JSON.parse(fs9.readFileSync(file, "utf8"));
       if (evidence.session_id !== id2 || !Array.isArray(evidence.writes)) return void 0;
       const at = now(), target = path7.resolve(dir, p);
@@ -33126,7 +33162,7 @@ var init_choice = __esm({
 
 // packages/room-mcp/src/session.ts
 import { mkdirSync, readFileSync, watchFile as watchFile2, unwatchFile as unwatchFile2 } from "node:fs";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { dirname as dirname4, join as join4, resolve as resolve3 } from "node:path";
 async function serverAuthConfig(server) {
   const hit = configCache.get(server);
@@ -33322,7 +33358,7 @@ function decodeRoom(encoded) {
 async function reserveAutoName(dir, room, name2, worktree) {
   const folder = join4(await gitCommonDir(dir), "room-name-locks");
   mkdirSync(folder, { recursive: true, mode: 448 });
-  const file = join4(folder, createHash4("sha256").update(`${room}\0${name2}`).digest("hex"));
+  const file = join4(folder, createHash5("sha256").update(`${room}\0${name2}`).digest("hex"));
   const release = acquireOwnedFile(file, { pid: process.pid, worktree });
   if (release) return { release, sameWorktree: false };
   try {
@@ -33970,7 +34006,7 @@ var init_worker_launch = __esm({
 import fs18 from "node:fs";
 import path17 from "node:path";
 function retireCollected(s, w, record2) {
-  if (fs18.existsSync(path17.join(w.dir, ".git"))) fs18.rmSync(path17.join(worktreeGitDirSync(w.dir), "room-retained-declared.json"), { force: true });
+  if (fs18.existsSync(path17.join(w.dir, ".git"))) deleteRetainedDeclaredRecord(w.dir, s.roomName, w.name, splitRoomUrl(s.roomUrl).serverUrl);
   s.room.retireParticipant(w.name, record2);
 }
 function repairRetired(s, present) {
@@ -34771,7 +34807,7 @@ var init_merge = __esm({
 });
 
 // packages/room-mcp/src/conflicts.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 function changedRanges(base, live) {
   const out2 = [];
   for (const h of structuredPatch("a", "b", base, live, "", "", { context: 0 }).hunks) {
@@ -34823,7 +34859,7 @@ var init_conflicts = __esm({
     init_baseline();
     ROOM = { name: "room", kind: "agent" };
     covers = (c, p, r) => claimsOverlap(c, { path: p, ...r }) && (c.path.endsWith("/") || c.from <= r.from && c.to >= r.to);
-    hashText = (text) => createHash5("sha256").update(text).digest("hex");
+    hashText = (text) => createHash6("sha256").update(text).digest("hex");
     ConflictWatcher = class {
       constructor(d) {
         this.d = d;
@@ -35135,7 +35171,7 @@ var init_conflicts = __esm({
         const key = `${person}|${p}`;
         const mine = await this.d.liveText(p, this.d.me.name).catch(() => void 0);
         const theirs = await this.d.liveText(p, person).catch(() => void 0);
-        const hash = createHash5("sha256").update(`${this.d.baseFor(this.d.me.name)}\0${this.d.baseFor(person)}\0${mine ?? ""}\0${theirs ?? ""}`).digest("hex");
+        const hash = createHash6("sha256").update(`${this.d.baseFor(this.d.me.name)}\0${this.d.baseFor(person)}\0${mine ?? ""}\0${theirs ?? ""}`).digest("hex");
         if (this.mergeHashes.get(key) === hash) return;
         const res = await mergePath(this.d, person, p);
         if (res.status === "unknown") return;
@@ -46458,7 +46494,7 @@ function rejoinOptions(s, credentialsPath2) {
 function markHistorySeenOnJoin(s, seen) {
   const worker = s.room.workerOf(s.me.name);
   for (const m of s.room.messages()) {
-    if (worker?.status === "running" && m.type === "note" && !m.to && m.from === worker.lead && m.at >= worker.startedAt && m.priority !== "fyi") continue;
+    if (worker?.status === "running" && m.type === "note" && (!m.to || m.to === s.me.name) && m.from === worker.lead && m.at >= worker.startedAt && (m.priority === "notify" || m.priority === "interrupt")) continue;
     seen.add(m.id);
   }
 }
@@ -48987,6 +49023,26 @@ function handlers8(state) {
           );
         } catch (e) {
           const error2 = e instanceof WorkerLaunchError ? e : new WorkerLaunchError("start", String(e));
+          if (error2.delivered) {
+            if (!error2.stopped) return `error: stop unconfirmed for ${tag} (pid ${error2.pid}); it may still be running in ${dir}. Worker record and worktree kept; use room_collect discard=true when it is safe to remove.`;
+            const reason = error2.phase === "cancelled" ? "message-delivered-cancelled" : "message-delivered-failed";
+            const stoppedAt = now();
+            const stopped = s.room.updateWorker(tag, {
+              status: "dismissed",
+              dismissedAt: stoppedAt,
+              finishedAt: stoppedAt,
+              stopReason: reason,
+              ...error2.pid ? { pid: error2.pid } : {}
+            }, id2);
+            if (stopped) {
+              try {
+                persistWorkerStopReason(s.dir, tag, reason, id2);
+              } catch (persistError) {
+                state.log(`worker spawn: could not persist stop reason for ${tag}: ${persistError}`);
+              }
+            }
+            return `error: stopped after start: ${error2.phase === "cancelled" ? "cancelled" : error2.message}; worker record and worktree kept in ${dir}. Use room_collect to collect or discard it.`;
+          }
           const prefix = error2.phase === "port" ? "could not allocate a worker port: " : error2.phase === "budget" || error2.phase === "cancelled" ? "" : `could not start ${host}: `;
           return abortPrepared(`error: ${prefix}${error2.message}`);
         }
@@ -49282,7 +49338,7 @@ function createTools(ctx) {
         }
         try {
           const body2 = await h(name2 === "room_wait" ? { ...args3 ?? {}, [WAIT_SIGNAL]: signal } : args3 ?? {});
-          if (toolCallAborted() && name2 !== "room_send") return "error: tool call cancelled";
+          if (toolCallAborted() && name2 !== "room_send" && name2 !== "room_spawn") return "error: tool call cancelled";
           if (name2 === "room_preview_merge" || name2.startsWith("room_pr_")) await state.rooms.retireWorkers();
           const s2 = ctx.getSession();
           if (s2 && s2 !== s) s2.refreshRuntime?.();
@@ -49510,7 +49566,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.12",
+  version: "0.16.13",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
