@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.23
+
+Fixes from the Astra review of 0.16.22.
+
+- **Fixed a 0.16.22 regression.** A HEAD transition again publishes the new base receipt and base texts before reconciling overlays. 0.16.22 reversed that order, so cleanup pruned the new base text and a dirty file showed as entirely added after a commit. The rollback of daemon fields is gone because it could not undo what was already published. The applied HEAD advances only after every step succeeds, and the base poll or publisher retry reruns the whole transition. Claim re-anchoring is idempotent, so a retry leaves a claim alone when its text still matches its range.
+- Resuming a worker records a new briefing marker, so lead notes posted before the resume are not delivered as a new briefing.
+- A scope event counts as current only when person, area, summary and paths all match the live scope. A bridge-restored lead scope therefore shows the earlier union as history.
+- Released claims render as history ("earlier: X claimed path:a-b (time)") instead of "X claims …".
+
 ## 0.16.22
 
 Behaviour fixes from the 2026-09-27 design audit (synthesis items 1–5), each with a test that fails on 0.16.21.

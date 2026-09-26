@@ -6,7 +6,8 @@ import type { BuiltinMsgType, Claim, MessageMap, Msg, MsgBase, MsgType, Plan, Id
 export type MessageAudience = 'addressed' | 'broadcast' | 'claim-holders' | 'everyone'
 export interface MessageWakeContext { me: Identity; hasUncommitted: boolean; myClaims: readonly Claim[] }
 export type MessageWake<M extends MsgBase = Msg> = 'never' | 'interrupt' | 'addressed' | 'always' | ((m: M, ctx: MessageWakeContext) => boolean)
-export interface MessageFormatContext { scopes: readonly Scope[]; messages: readonly Msg[] }
+/** Current room state, so past events render as history. `claims` are the open claims. */
+export interface MessageFormatContext { scopes: readonly Scope[]; messages: readonly Msg[]; claims?: readonly Claim[] }
 
 export interface MessageWaiting {
   claimId?: string
@@ -36,7 +37,9 @@ const scopePaths = (paths: readonly string[]) => [...new Set(paths.map(normalize
 export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.'
 
 const builtins = {
-  claim: { priority: 'fyi', audience: 'claim-holders', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} — ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ''}` },
+  claim: { priority: 'fyi', audience: 'claim-holders', inbox: false, wakes: 'never', format: (m, context) => context?.claims && !context.claims.some(c => c.id === m.claimId)
+    ? `${priority(m)}earlier: ${who(m)} claimed ${m.path}:${m.from_line}-${m.to_line} (${new Date(m.at).toISOString().slice(11, 19)}) — ${m.intent}`
+    : `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} — ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ''}` },
   release: { priority: 'fyi', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` — ${m.summary}` : ''}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ''}` },
   changed: { priority: m => m.symbols?.length ? 'notify' : 'fyi', audience: 'everyone', inbox: false, wakes: 'addressed', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
   question: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },

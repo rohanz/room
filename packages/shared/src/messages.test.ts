@@ -8,6 +8,8 @@ import {
   registerMessageKind,
   shouldWakeOnMsg,
   type MsgBase,
+  type Msg,
+  type Claim,
   type BaseMsg,
   type PlanMsg,
   type NoteMsg,
@@ -198,4 +200,12 @@ it('formats a tagged question recipient by its Room name', () => {
   const question = room.post<QuestionMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'rohanz+codex', text: 'which lines?' })
   expect(formatMsg(question)).toBe("[notify] Rohan's agent → rohanz+codex asks: which lines?")
   room.doc.destroy()
+})
+
+it('renders a released claim as history and an open one as current', () => {
+  const claim = { id: 'm1', type: 'claim', priority: 'fyi', from: 'Kieran', fromKind: 'agent', at: 1000, claimId: 'c1', path: 'api/pricing.py', from_line: 3, to_line: 9, intent: 'add tax' } as Msg
+  const open = [{ id: 'c1', by: 'Kieran', byKind: 'agent', path: 'api/pricing.py', from: 3, to: 9, intent: 'add tax', at: 1000 }] as unknown as Claim[]
+  expect(formatMsg(claim, { scopes: [], messages: [claim], claims: open })).toContain('Kieran\'s agent claims api/pricing.py:3-9')
+  expect(formatMsg(claim, { scopes: [], messages: [claim], claims: [] })).toContain('earlier: Kieran\'s agent claimed api/pricing.py:3-9 (00:00:01) — add tax')
+  expect(formatMsg(claim)).toContain('claims api/pricing.py:3-9')
 })

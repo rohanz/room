@@ -34,7 +34,7 @@ async function workerChangedCount(s: Session, worker: import('@room/shared').Wor
   }
 }
 
-const formatRoomMessage = (s: Session, m: Msg): string => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages() })
+const formatRoomMessage = (s: Session, m: Msg): string => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages(), claims: s.room.openClaims() })
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines, shareOf } = state
