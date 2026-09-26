@@ -32461,7 +32461,33 @@ var init_workers = __esm({
     defaultSpawner = (spec16) => {
       fs13.mkdirSync(path12.dirname(spec16.logFile), { recursive: true });
       const fd = fs13.openSync(spec16.logFile, "a");
-      const child = spawn2(spec16.cmd, spec16.args, { cwd: spec16.cwd, env: workerEnv(process.env, spec16.env), detached: true, stdio: ["ignore", spec16.captureCodexSession ? "pipe" : fd, fd] });
+      let child;
+      try {
+        child = spawn2(spec16.cmd, spec16.args, { cwd: spec16.cwd, env: workerEnv(process.env, spec16.env), detached: true, stdio: ["ignore", spec16.captureCodexSession ? "pipe" : fd, fd] });
+      } catch (error2) {
+        fs13.closeSync(fd);
+        throw error2;
+      }
+      const closeLog = () => {
+        try {
+          fs13.closeSync(fd);
+        } catch {
+        }
+      };
+      child.once("close", closeLog);
+      child.once("error", closeLog);
+      const started = new Promise((resolve5, reject) => {
+        const done = (error2) => {
+          child.off("spawn", onSpawn);
+          child.off("error", onError);
+          if (error2) reject(error2);
+          else resolve5();
+        };
+        const onSpawn = () => done();
+        const onError = (error2) => done(error2);
+        child.once("spawn", onSpawn);
+        child.once("error", onError);
+      });
       let sessionId;
       let sessionIdCallback;
       if (spec16.captureCodexSession && child.stdout) {
@@ -32491,23 +32517,12 @@ var init_workers = __esm({
       child.unref();
       return {
         pid: child.pid ?? -1,
+        started,
         onExit: (cb) => {
-          child.once("close", (code) => {
-            try {
-              fs13.closeSync(fd);
-            } catch {
-            }
-            cb(code);
-          });
+          child.once("close", cb);
         },
         onError: (cb) => {
-          child.once("error", (err2) => {
-            try {
-              fs13.closeSync(fd);
-            } catch {
-            }
-            cb(err2);
-          });
+          child.once("error", cb);
         },
         onSessionId: (cb) => {
           sessionIdCallback = cb;
@@ -33329,7 +33344,7 @@ function reserveWorkerLaunch(rooms, max2, running) {
     }
   } };
 }
-function launchWorkerProcess(policy, command, lease, onStarted, onSessionId) {
+async function launchWorkerProcess(policy, command, lease, onStarted, onSessionId) {
   const { rooms, session: s, id: id2, tag } = policy;
   let reservation;
   let passed = false;
@@ -33409,6 +33424,19 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
       });
     } catch (e) {
       throw new WorkerLaunchError("start", String(e instanceof Error ? e.message : e));
+    }
+    try {
+      await proc.started;
+    } catch (e) {
+      throw new WorkerLaunchError("start", String(e instanceof Error ? e.message : e));
+    }
+    if (toolCallAborted()) {
+      try {
+        proc.kill();
+      } catch (e) {
+        policy.log(`worker launch: could not stop cancelled ${tag}: ${e}`);
+      }
+      throw new WorkerLaunchError("cancelled", "tool call cancelled");
     }
     bindWorkerPortReservation(proc, reservation);
     passed = true;
@@ -35783,7 +35811,7 @@ var init_registry = __esm({
             const wasDone = w.status === "done";
             let launched;
             try {
-              launched = launchWorkerProcess(
+              launched = await launchWorkerProcess(
                 {
                   rooms: this,
                   session: s,
@@ -48256,7 +48284,7 @@ function handlers8(state) {
         const hostSessionId = host === "claude" ? randomUUID3() : void 0;
         let launched;
         try {
-          launched = launchWorkerProcess(
+          launched = await launchWorkerProcess(
             {
               rooms,
               session: s,
