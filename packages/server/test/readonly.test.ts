@@ -236,6 +236,29 @@ describe('document identity binding', () => {
     return { server, room, claim, conn, dropped }
   }
 
+  it('audits foreign flat base additions and replacements while preserving the member update stream', () => {
+    const server = new Y.Doc(), room = new RoomDoc(server)
+    room.setBaseText('alice', 'sha', 'a.py', 'real')
+    const violations: string[] = []
+    const conn = connect(server, new DocumentIdentityGuard(() => server), 'bob', violations)
+    expect(conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').set('alice\u0000sha:a.py', 'forged')))).toBe(true)
+    expect(conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').set('alice\u0000sha:b.py', 'added')))).toBe(true)
+    expect(room.baseText('alice', 'sha', 'a.py')).toBe('forged')
+    expect(violations).toEqual(['basetextFlat mutation for alice', 'basetextFlat mutation for alice'])
+    server.destroy()
+  })
+
+  it('rejects malformed flat base keys in enforce mode but permits foreign cleanup deletes', () => {
+    const { server, room, conn, dropped } = fixture()
+    room.setBaseText('victim', 'sha', 'a.py', 'real')
+    expect(conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').set('octo\u0000sha:', 'bad')))).toBe(false)
+    expect(conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').set('octo\u0000sha:a.py\u0000tail', 'bad')))).toBe(false)
+    expect(conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').delete('victim\u0000sha:a.py')))).toBe(true)
+    expect(room.baseText('victim', 'sha', 'a.py')).toBeUndefined()
+    expect(dropped).toHaveLength(2)
+    server.destroy()
+  })
+
   it('enforce mode rejects victim scope, claim, and message forgeries as whole protocol packets', () => {
     const { server, room, claim, conn, dropped } = fixture()
     const attempts = [

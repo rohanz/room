@@ -124,6 +124,37 @@ describe('roomd v2 push-only overlays', () => {
 
   afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
 
+  it('automatically sweeps a late remote base key after its owner has retired', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' }), url = room()
+    const scheduled: Array<() => Promise<void>> = []
+    const owner = await start({ dir, room: url, name: 'Keeper', remoteRepairSchedule: run => { scheduled.push(run); return () => {} } })
+    const peer = new RoomDoc(), connection = hub.connect(url, peer.doc)
+    try {
+      peer.setOverlay('Gone', 'old.py', 'edit')
+      peer.clearOverlays('Gone')
+      peer.setBaseText('Gone', 'sha', 'old.py', 'late base')
+      expect(owner.roomDoc.baseText('Gone', 'sha', 'old.py')).toBe('late base')
+      expect(scheduled).toHaveLength(1)
+      await scheduled.shift()!()
+      expect(peer.baseText('Gone', 'sha', 'old.py')).toBeUndefined()
+    } finally { connection.destroy(); peer.doc.destroy() }
+  })
+
+  it('repairs a remote replacement of its own flat base text from the real base', async () => {
+    const dir = await makeRepo({ 'edit.py': 'real base\n' }), url = room()
+    fs.writeFileSync(path.join(dir, 'edit.py'), 'edited\n')
+    const scheduled: Array<() => Promise<void>> = []
+    const owner = await start({ dir, room: url, name: 'Owner', remoteRepairSchedule: run => { scheduled.push(run); return () => {} } })
+    const peer = new RoomDoc(), connection = hub.connect(url, peer.doc)
+    try {
+      peer.ownedBaseTexts.set(`Owner\u0000${owner.shared}:edit.py`, 'forged')
+      expect(owner.roomDoc.baseText('Owner', owner.shared, 'edit.py')).toBe('forged')
+      expect(scheduled).toHaveLength(1)
+      await scheduled.shift()!()
+      expect(peer.baseText('Owner', owner.shared, 'edit.py')).toBe('real base\n')
+    } finally { connection.destroy(); peer.doc.destroy() }
+  })
+
   it('reconciles remotely cleared own overlays, deletion marks and base texts without a disk event', async () => {
     const dir = await makeRepo({ 'edit.py': 'base\n', 'gone.py': 'old\n' })
     fs.writeFileSync(path.join(dir, 'edit.py'), 'changed\n')

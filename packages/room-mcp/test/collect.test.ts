@@ -10,6 +10,7 @@ import { signalWorker, pidAlive } from '../src/workers.js'
 import { RoomDoc, splitParticipants, workerLines } from '@room/shared'
 import * as Y from 'yjs'
 import { git as roomGit } from '@room/roomd/git'
+import { retainedDeclaredFile } from '@room/roomd'
 
 const release = vi.hoisted(() => vi.fn())
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: release }))
@@ -33,7 +34,7 @@ function setup(status = 'done') {
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ base, branch: 'main', repo: 'test' })
   room.workers.set('test', w as never)
-  const s = { dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } }
+  const s = { dir: lead, local: {}, roomName: 'local/test', roomUrl: 'ws://127.0.0.1:1/local%2Ftest', me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } }
   const retireWorkers = vi.fn(async () => {})
   const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers }, workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
   return { call: handlers(state).room_collect, retireWorkers, state, s, w }
@@ -114,8 +115,8 @@ describe('room_collect', () => {
     t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
-    const retained = path.join(git(worker, 'rev-parse', '--absolute-git-dir'), 'room-retained-declared.json')
-    fs.writeFileSync(retained, JSON.stringify({ room: 'local/test', participant: t.w.name, paths: ['new.txt'] }))
+    const retained = retainedDeclaredFile(worker, t.s.roomName, t.w.name, 'ws://127.0.0.1:1')
+    fs.writeFileSync(retained, JSON.stringify({ server: 'ws://127.0.0.1:1', room: t.s.roomName, participant: t.w.name, paths: ['new.txt'] }))
     seedPresence(t)
     expect(await t.call({ tag: 'test' })).toContain(`kept artifact.bin at ${path.join(worker, 'artifact.bin')}`)
     expect(fs.existsSync(worker)).toBe(true)

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, type Worker } from '@room/shared'
 import { prepareWorktree, saveDiscardPatch } from '../src/workers.js'
+import { retainedDeclaredFile } from '@room/roomd'
 import { decideRetire, workerRealState, type WorkerRealState } from '../src/worker-state.js'
 import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
@@ -28,7 +29,7 @@ function repo() {
 }
 function registry(dir: string) {
   const room = new RoomDoc()
-  const s = { room, dir, me: { name: 'lead' }, roomName: 'local/repo/main' } as Session
+  const s = { room, dir, me: { name: 'lead' }, roomName: 'local/repo/main', roomUrl: 'ws://team/local%2Frepo%2Fmain' } as Session
   let primary: Session | null = s
   const rooms = new Rooms({ primary: () => primary, setPrimary: p => { primary = p }, observeClaims() {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
   rooms.track(s)
@@ -318,14 +319,16 @@ it('clears a dismissed dirty worker retained-path record during automatic retire
   const prepared = await prepareWorktree(dir, 'w', 'lead')
   const w = { ...worker(prepared.dir), base: prepared.base, status: 'dismissed' as const, dismissedAt: 2 }
   writeFileSync(join(w.dir, 'a'), 'dirty work')
-  const gitDir = execFileSync('git', ['-C', w.dir, 'rev-parse', '--absolute-git-dir']).toString().trim()
-  const retained = join(gitDir, 'room-retained-declared.json')
+  const retained = retainedDeclaredFile(w.dir, r.s.roomName, w.name, 'ws://team')
+  const teamRetained = retainedDeclaredFile(w.dir, 'repo/main', w.name, 'wss://team')
+  writeFileSync(teamRetained, JSON.stringify({ server: 'wss://team', room: 'repo/main', participant: w.name, paths: ['a'] }))
   writeFileSync(retained, JSON.stringify({ server: 'ws://team', room: 'repo/main', participant: w.name, paths: ['a'] }))
   r.room.setWorker(w)
   await r.rooms.retireWorkers()
   expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('dismissed')
   expect(existsSync(w.dir)).toBe(true)
   expect(existsSync(retained)).toBe(false)
+  expect(existsSync(teamRetained)).toBe(true)
   r.close()
 })
 
@@ -333,8 +336,7 @@ it('clears a retained-path record when repairing a legacy archived worker', asyn
   const { dir } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w', 'lead')
   const w = { ...worker(prepared.dir), base: prepared.base }
-  const gitDir = execFileSync('git', ['-C', w.dir, 'rev-parse', '--absolute-git-dir']).toString().trim()
-  const retained = join(gitDir, 'room-retained-declared.json')
+  const retained = retainedDeclaredFile(w.dir, r.s.roomName, w.name, 'ws://team')
   const record = { name: w.name, tag: w.tag, lead: w.lead, host: w.host, task: w.task,
     summary: 'archived', files: [], fileCount: 0, startedAt: w.startedAt,
     finishedAt: 2, retiredAt: 3, outcome: 'dismissed' as const }

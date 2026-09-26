@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -8,6 +8,7 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity, ClaimMsg, NoteMsg, PlanMsg, ReleaseMsg } from '@room/shared'
 import { Bridge } from '../src/bridge.js'
+import { markHistorySeenOnJoin } from '../src/tools/join.js'
 import type { Session } from '../src/session.js'
 
 let dir: string, base: string
@@ -54,6 +55,21 @@ function setup() {
 }
 
 describe('Bridge: a lead in a team room with a local workers room', () => {
+  it('keeps an addressed team interrupt relayed between spawn and worker join', () => {
+    const t = setup()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(100)
+    const old = t.local.a.post<NoteMsg>(lead, { type: 'note', text: 'before spawn', priority: 'notify' })
+    t.local.a.updateWorker('money', { startedAt: 150 })
+    clock.mockReturnValue(200)
+    t.team.b.post<NoteMsg>(kieran, { type: 'note', priority: 'interrupt', text: 'stop now' })
+    const relayed = t.local.b.messages().find(m => m.type === 'note' && m.to === worker.name)!
+    const workerSession = fakeSession(t.local.b, worker, 'local/x/main', true)
+    const seen = new Set<string>()
+    markHistorySeenOnJoin(workerSession, seen)
+    clock.mockRestore()
+    expect(seen.has(old.id)).toBe(true)
+    expect(seen.has(relayed.id)).toBe(false)
+  })
   it("the lead's team scope is the union of its workers' declared and changed paths", () => {
     const t = setup()
     expect(t.team.a.scope('rohanz')).toBeUndefined()

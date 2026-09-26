@@ -202,6 +202,8 @@ export class DocumentIdentityGuard {
       const root = shadow.getMap(name)
       root.observeDeep(events => this.checkParticipantMap(name, root, events))
     }
+    const flatBase = shadow.getMap<string>('basetextFlat')
+    flatBase.observe(event => this.checkFlatBase(event))
     const claims = shadow.getMap<Record<string, unknown>>('claims')
     claims.observe(event => this.checkRecordMap('claim', claims, event, ['by']))
     const workers = shadow.getMap<Record<string, unknown>>('workers')
@@ -215,6 +217,19 @@ export class DocumentIdentityGuard {
   }
 
   private reject(reason: string): void { if (this.login && !this.violations.length) this.violations.push(reason) }
+
+  private checkFlatBase(event: Y.YMapEvent<string>): void {
+    const login = this.login
+    if (!login) return
+    for (const [key, change] of event.changes.keys) {
+      if (change.action === 'delete') continue
+      const split = key.indexOf('\u0000')
+      const owner = split < 0 ? '' : key.slice(0, split)
+      const rest = key.slice(split + 1)
+      const colon = rest.indexOf(':')
+      if (split < 0 || colon < 1 || colon === rest.length - 1 || rest.includes('\u0000') || !ownsName(owner, login)) this.reject(`basetextFlat mutation for ${owner || '(invalid owner)'}`)
+    }
+  }
 
   private checkParticipantMap(name: string, root: Y.Map<unknown>, events: Y.YEvent<Y.AbstractType<unknown>>[]): void {
     const login = this.login

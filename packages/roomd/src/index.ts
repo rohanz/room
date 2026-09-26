@@ -9,6 +9,7 @@ export { validRepoPath, isInsideRoot, containedRepoPath, MATERIALIZED_PATH, DISK
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
 import { commonGitDirFromDotGit } from './git-dirs.js'
 import { RetainedDeclaredPaths } from './retained-declared.js'
+export { retainedDeclaredFile } from './retained-declared.js'
 export { worktreeGitDirFromDotGit, worktreeGitDirSync, commonGitDirFromDotGit, gitCommonDir, realGitCommonDir, carryRecord, carryRecordSync } from './git-dirs.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -140,6 +141,8 @@ export interface RoomdOptions {
   scopePaths?: string[]
   /** In-memory transport override for tests that cannot open loopback sockets. */
   providerFactory?: (serverUrl: string, roomName: string, doc: Y.Doc) => WebsocketProvider
+  /** Test scheduler for remote repair; callback is awaited by the test without a wall clock. */
+  remoteRepairSchedule?: (run: () => Promise<void>) => () => void
   /** Rolling bus size and maintenance interval. Defaults: ROOM_BUS_KEEP/2000 and 60s. */
   busKeep?: number
   busTrimMs?: number
@@ -270,7 +273,8 @@ class Daemon implements Roomd {
   private retainedDeclaredPaths: Set<string> = new Set<string>()
   private sharingGeneration = 0
   private sharingDirty = false
-  private remoteRepairTimer?: NodeJS.Timeout
+  private remoteRepairTimer?: () => void
+  private readonly remoteRepairSchedule: (run: () => Promise<void>) => () => void
   private unobserveOwnedData?: () => void
   private beforePublishWrite?: (relpath: string) => Promise<void>
   private beforeBaseRead?: (relpath: string) => Promise<void>
@@ -313,6 +317,11 @@ class Daemon implements Roomd {
     this.roomUrl = options.room
     this.localRoom = !!options.localKey
     this.log = options.log ?? (line => process.stderr.write(`[roomd] ${line}\n`))
+    this.remoteRepairSchedule = options.remoteRepairSchedule ?? (run => {
+      const timer = setTimeout(() => { void run() }, 40)
+      timer.unref?.()
+      return () => clearTimeout(timer)
+    })
     this.debounceMs = options.debounceMs ?? 300
     this.watchedDirectory = createHash('sha256').update(machineHostname).update('\0').update(machineIdentity(this.log)).update('\0').update(fs.realpathSync(this.dir)).digest('hex')
     this.batch = new DiskBatch(paths => {
@@ -559,7 +568,7 @@ class Daemon implements Roomd {
     this.stopped = true
     this.unobserveBus?.()
     this.unobserveOwnedData?.()
-    clearTimeout(this.remoteRepairTimer)
+    this.remoteRepairTimer?.()
     this.flushSkipLog()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
     for (const timer of this.timers) clearInterval(timer)
@@ -709,27 +718,33 @@ class Daemon implements Roomd {
           : event.path[0] === this.name && [...event.changes.keys.values()].some(change => change.action === 'delete')
       ))) this.scheduleRemoteRepair()
     }
-    const removedBaseText = (event: Y.YMapEvent<string>, transaction: Y.Transaction) => {
+    const changedBaseText = (event: Y.YMapEvent<string>, transaction: Y.Transaction) => {
       if (transaction.origin === this || this.stopped) return
-      if ([...event.changes.keys].some(([key, change]) => change.action === 'delete' && key.startsWith(`${this.name}\u0000`) && !key.slice(this.name.length + 1).includes('\u0000'))) this.scheduleRemoteRepair()
+      if ([...event.changes.keys].some(([key, change]) => {
+        const split = key.indexOf('\u0000')
+        if (split < 0 || key.slice(split + 1).includes('\u0000')) return false
+        const owner = key.slice(0, split)
+        return owner === this.name || (change.action === 'add' && !this.roomDoc.overlays.get(owner)?.size && !this.roomDoc.deleted.get(owner)?.size)
+      })) this.scheduleRemoteRepair()
     }
     this.roomDoc.overlays.observeDeep(removedOwnEntry)
     this.roomDoc.deleted.observeDeep(removedOwnEntry)
-    this.roomDoc.ownedBaseTexts.observe(removedBaseText)
+    this.roomDoc.ownedBaseTexts.observe(changedBaseText)
     this.unobserveOwnedData = () => {
       this.roomDoc.overlays.unobserveDeep(removedOwnEntry)
       this.roomDoc.deleted.unobserveDeep(removedOwnEntry)
-      this.roomDoc.ownedBaseTexts.unobserve(removedBaseText)
+      this.roomDoc.ownedBaseTexts.unobserve(changedBaseText)
     }
   }
 
   private scheduleRemoteRepair(): void {
     if (this.remoteRepairTimer) return
-    this.remoteRepairTimer = setTimeout(() => {
+    this.remoteRepairTimer = this.remoteRepairSchedule(async () => {
       this.remoteRepairTimer = undefined
+      this.roomDoc.sweepOrphanedBaseTexts(this)
       this.markSharingDirty()
-    }, 40)
-    this.remoteRepairTimer.unref?.()
+      await this.workQueue
+    })
   }
 
   /** Record receipts before any synchronous delivery observer sees a new bus entry. */

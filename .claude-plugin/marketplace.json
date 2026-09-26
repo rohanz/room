@@ -10,7 +10,7 @@
       "name": "room",
       "source": "./plugins/room",
       "description": "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
-      "version": "0.16.12"
+      "version": "0.16.13"
     }
   ]
 }

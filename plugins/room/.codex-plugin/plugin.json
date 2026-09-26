@@ -1,6 +1,6 @@
 {
   "name": "room",
-  "version": "0.16.12",
+  "version": "0.16.13",
   "description": "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   "author": {
     "name": "Rohan",

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.13
+
+- A daemon automatically sweeps flat base text added after its owner has retired. A live owner restores its real base content after a remote replacement, and reconciliation replaces incorrect existing content.
+- Fresh worker spawns roll back a prepared worktree only before the process starts. After start, cancellation or launch failure keeps the checkout and worker record, reports whether the stop was confirmed, and leaves collection or discard to the lead.
+- Retained declared paths are stored separately for each normalized server, room and participant. Opening a local workers room no longer erases the team room's record; matching records from 0.16.12 migrate on first use, and retirement removes only its matching record.
+- A joining worker receives post-spawn lead notify and interrupt notes addressed through the bridge as well as unaddressed broadcasts.
+- The server identity guard audits foreign or malformed flat base text additions and replacements. Member updates remain observe-only so later Yjs updates remain applicable; enforce mode still rejects an objected packet.
+
 ## 0.16.12
 
 - A broadcast interrupt note now ends `room_wait` under the same inbox and wake rule, including a wait for a specific answer or claim. Message, interrupt, and timeout returns include every unread inbox item and receipt only delivered items. Automatic MCP joins now apply the same history boundary as explicit joins: a running worker keeps its own lead's notify and interrupt broadcasts posted after spawn, while older history is filtered.

@@ -220,7 +220,7 @@ export class RoomDoc {
   }
   setBaseText(person: string, sha: string, relpath: string, text: string, origin?: unknown): void {
     const key = this.baseTextKey(person, sha, relpath)
-    if (this.ownedBaseTexts.has(key)) return
+    if (this.ownedBaseTexts.get(key) === text) return
     this.doc.transact(() => { this.ownedBaseTexts.set(key, text) }, origin)
   }
   /** Each person's own HEAD: the commit their overlay is a delta from. */

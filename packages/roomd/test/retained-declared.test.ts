@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it } from 'vitest'
-import { RetainedDeclaredPaths } from '../src/retained-declared.js'
+import { RetainedDeclaredPaths, retainedDeclaredFile } from '../src/retained-declared.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -24,20 +24,35 @@ it('stores declared paths in the private git dir and restores additions, deletio
   expect([...new RetainedDeclaredPaths(dir, 'room-a', 'Alice', 'ws://server-a')]).toEqual(['src/b.py'])
   first.clear()
   expect([...new RetainedDeclaredPaths(dir, 'room-a', 'Alice', 'ws://server-a')]).toEqual([])
-  expect(fs.existsSync(path.join(dir, '.git', 'room-retained-declared.json'))).toBe(false)
+  expect(fs.existsSync(retainedDeclaredFile(dir, 'room-a', 'Alice', 'ws://server-a'))).toBe(false)
 })
 
-it('discards paths when the same checkout joins a different room or participant', () => {
+it('keeps separate team and local workers room records in one checkout', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-retained-identity-'))
   dirs.push(dir)
   execFileSync('git', ['init', '-q', dir])
-  const a = new RetainedDeclaredPaths(dir, 'room-a', 'Alice', 'ws://server-a')
+  const a = new RetainedDeclaredPaths(dir, 'repo/main', 'Alice', 'wss://server-a')
   a.add('secret.py')
-  expect([...new RetainedDeclaredPaths(dir, 'room-b', 'Alice', 'ws://server-a')]).toEqual([])
-  expect([...new RetainedDeclaredPaths(dir, 'room-a', 'Alice', 'ws://server-a')]).toEqual([])
-  const b = new RetainedDeclaredPaths(dir, 'room-b', 'Alice', 'ws://server-a')
+  const b = new RetainedDeclaredPaths(dir, 'local/repo/main', 'Alice', 'ws://127.0.0.1:1234')
   b.add('public.py')
-  expect([...new RetainedDeclaredPaths(dir, 'room-b', 'Bob', 'ws://server-a')]).toEqual([])
+  expect([...new RetainedDeclaredPaths(dir, 'repo/main', 'Alice', 'wss://server-a')]).toEqual(['secret.py'])
+  expect([...new RetainedDeclaredPaths(dir, 'local/repo/main', 'Alice', 'ws://127.0.0.1:1234')]).toEqual(['public.py'])
+  b.clear()
+  expect([...new RetainedDeclaredPaths(dir, 'repo/main', 'Alice', 'wss://server-a')]).toEqual(['secret.py'])
+  expect(path.basename(retainedDeclaredFile(dir, 'repo/main', 'Alice', 'wss://server-a'))).toMatch(/^room-retained-declared-[a-f0-9]{64}\.json$/)
+})
+
+it('migrates a matching legacy record without letting another identity touch it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-retained-upgrade-'))
+  dirs.push(dir)
+  execFileSync('git', ['init', '-q', dir])
+  const legacy = path.join(dir, '.git', 'room-retained-declared.json')
+  fs.writeFileSync(legacy, JSON.stringify({ server: 'wss://team', room: 'repo/main', participant: 'Alice', paths: ['src/kept.py'] }))
+  expect([...new RetainedDeclaredPaths(dir, 'local/repo/main', 'Alice', 'ws://local')]).toEqual([])
+  expect(fs.existsSync(legacy)).toBe(true)
+  expect([...new RetainedDeclaredPaths(dir, 'repo/main', 'Alice', 'wss://team')]).toEqual(['src/kept.py'])
+  expect(fs.existsSync(legacy)).toBe(false)
+  expect(fs.existsSync(retainedDeclaredFile(dir, 'repo/main', 'Alice', 'wss://team'))).toBe(true)
 })
 
 it('does not publish retained paths from another server with the same room and participant', () => {
@@ -51,6 +66,5 @@ it('does not publish retained paths from another server with the same room and p
   expect([...b]).toEqual([])
   b.add('public/b.py')
   expect([...new RetainedDeclaredPaths(dir, 'repo/main', 'Alice', 'wss://server-b.example/')]).toEqual(['public/b.py'])
-  expect(fs.readFileSync(path.join(dir, '.git', 'room-retained-declared.json'), 'utf8')).not.toContain('secret')
-  expect([...new RetainedDeclaredPaths(dir, 'repo/main', 'Alice', 'wss://server-a.example')]).toEqual([])
+  expect([...new RetainedDeclaredPaths(dir, 'repo/main', 'Alice', 'wss://server-a.example')]).toEqual(['private/a.py'])
 })

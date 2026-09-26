@@ -194,6 +194,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           })
         } catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
+          if (error.delivered) {
+            if (!error.stopped) return `error: stop unconfirmed for ${tag} (pid ${error.pid}); it may still be running in ${dir}. Worker record and worktree kept; use room_collect discard=true when it is safe to remove.`
+            const reason = error.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
+            const stoppedAt = now()
+            const stopped = s.room.updateWorker(tag, { status: 'dismissed', dismissedAt: stoppedAt, finishedAt: stoppedAt,
+              stopReason: reason, ...(error.pid ? { pid: error.pid } : {}) }, id)
+            if (stopped) {
+              try { persistWorkerStopReason(s.dir, tag, reason, id) }
+              catch (persistError) { state.log(`worker spawn: could not persist stop reason for ${tag}: ${persistError}`) }
+            }
+            return `error: stopped after start: ${error.phase === 'cancelled' ? 'cancelled' : error.message}; worker record and worktree kept in ${dir}. Use room_collect to collect or discard it.`
+          }
           const prefix = error.phase === 'port' ? 'could not allocate a worker port: '
             : error.phase === 'budget' || error.phase === 'cancelled' ? ''
             : `could not start ${host}: `

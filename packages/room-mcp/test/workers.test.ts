@@ -1251,6 +1251,34 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     }
   })
 
+  it.each([true, false])('keeps a fresh worker checkout after cancellation following process start (stop confirmed: %s)', async stopped => {
+    const { repo, head } = realRepo()
+    const previousDir = dir, previousBase = base
+    dir = repo; base = head
+    const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
+    let ls: Session | null = fakeSession(a, lead)
+    const controller = new AbortController()
+    let onExit: ((code: number | null) => void) | undefined
+    const tools = createTools({
+      getSession: () => ls, setSession: s => { ls = s }, cwd: repo, now: () => 500, probe: () => ({ startTime: 'injected' }),
+      worktree: async (_repo, tag) => prepareWorktree(repo, tag, 'rohanz', [], undefined, 0, false),
+      spawner: spec => {
+        writeFileSync(join(spec.cwd, 'partial.txt'), 'keep me')
+        return { pid: 8123, started: Promise.resolve(), onExit: cb => { onExit = cb; controller.abort() },
+          kill: () => { if (stopped) onExit?.(0); return stopped } }
+      },
+    })
+    try {
+      const call = tools.call as (name: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<string>
+      const reply = await call('room_spawn', { tag: 'after-start', task: 'write', host: 'codex' }, controller.signal)
+      const checkout = join(repo, '.room', 'workers', 'after-start')
+      expect(reply).toContain(stopped ? 'stopped after' : 'stop unconfirmed')
+      expect(existsSync(checkout)).toBe(true)
+      expect(readFileSync(join(checkout, 'partial.txt'), 'utf8')).toBe('keep me')
+      expect(a.workers.get('after-start')?.status).toBe(stopped ? 'dismissed' : 'running')
+    } finally { dir = previousDir; base = previousBase }
+  })
+
   it('W5: after a lead restart, a done worker whose process is still ours can be stopped by dismiss, leave and shutdown', async () => {
     const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
     const startedAt = Date.now()
