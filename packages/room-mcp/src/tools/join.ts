@@ -13,7 +13,7 @@ import { configureCredentials, getCredential, getPending, setPending } from '../
 import { LOCAL, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
-import { handlers as shareHandlers } from './share.js'
+import { handlers as shareHandlers, secondaryPublishingLine } from './share.js'
 import { exportRoomLedger } from '../prs.js'
 import { decideLeave, workerRealState } from '../worker-state.js'
 
@@ -34,16 +34,15 @@ export const defs: ToolDef[] = [
 
 const disclosures = new WeakMap<Session, { pending?: string; prepared?: Promise<void>; delivered?: boolean }>()
 
-function sharingSentence(s: Session): string {
+export function sharingSentence(s: Session): string {
   const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
   const parts = roomNameParts(s.roomName)
   const repo = parts.branch ? s.roomName.slice(0, -(parts.branch.length + 1)) : s.roomName
   const level = s.daemon.share ?? s.shareRequested ?? 'intent'
-  const publisher = level === 'declared' ? s.awareness.getLocalState()?.publishUnder : undefined
-  const description = typeof publisher === 'string' && publisher
-    ? `file text under ${publisher}'s declared area (published by ${publisher})`
-    : sharingDescription(level)
-  const choices = publisher ? '' : sharingHumanChoices(level)
+  const secondary = secondaryPublishingLine(s)
+  if (secondary) return `note for your human: ${secondary} Members of ${repo} on ${server} can read it.`
+  const description = sharingDescription(level)
+  const choices = sharingHumanChoices(level)
   return `note for your human: this clone now shares ${description} with members of ${repo} on ${server}${choices ? `; ${choices}` : '.'}`
 }
 
