@@ -382,7 +382,7 @@ class Daemon implements Roomd {
     this.setStatus(this.currentStatus())
     await this.refreshShared()
     this.roomDoc.setBaseOf(this.name, this.shared, this)
-    this.roomDoc.reconcileBaseTexts(this)
+    this.roomDoc.reconcileBaseTexts(this.name, this)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== this.base) {
       const rel = await gitRelation(this.dir, this.base, roomBase)
@@ -514,7 +514,7 @@ class Daemon implements Roomd {
         this.roomDoc.clearOverlay(this.name, relpath, this)
         this.roomDoc.unmarkDeleted(this.name, relpath, this)
       }
-      this.roomDoc.reconcileBaseTexts(this)
+      this.roomDoc.reconcileBaseTexts(this.name, this)
     }, this)
     if (had) this.log(`withdrew ${relpath} overlay (sharing ${this.share})`)
     this.retainedDeclaredPaths.delete(relpath)
@@ -526,7 +526,7 @@ class Daemon implements Roomd {
   private withdrawIgnored(relpath: string, reason: string): void {
     const had = this.roomDoc.overlayText(this.name, relpath) !== undefined || (this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false)
     if (had) {
-      this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this); this.roomDoc.reconcileBaseTexts(this) }, this)
+      this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this); this.roomDoc.reconcileBaseTexts(this.name, this) }, this)
       this.log(`withdrew ${relpath} (${reason})`)
     }
     this.retainedDeclaredPaths.delete(relpath)
@@ -617,7 +617,7 @@ class Daemon implements Roomd {
         for (const p of this.roomDoc.changedPaths(this.name)) {
           this.roomDoc.clearOverlay(this.name, p, this); this.roomDoc.unmarkDeleted(this.name, p, this)
         }
-        this.roomDoc.reconcileBaseTexts(this)
+        this.roomDoc.reconcileBaseTexts(this.name, this)
       }, this)
       this.log(`publishing under ${next} (same watched directory)`)
     } else this.log('publishing watched directory')
@@ -729,7 +729,7 @@ class Daemon implements Roomd {
     this.tracked = await gitTracked(this.dir)
     await this.refreshShared()
     this.roomDoc.setBaseOf(this.name, this.shared, this)
-    this.roomDoc.reconcileBaseTexts(this)
+    this.roomDoc.reconcileBaseTexts(this.name, this)
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.maybeAdvance(roomBase, head)
@@ -1082,7 +1082,7 @@ class Daemon implements Roomd {
           this.roomDoc.doc.transact(() => {
             this.roomDoc.markDeleted(this.name, relpath, this)
             this.roomDoc.clearOverlay(this.name, relpath, this)
-            this.roomDoc.setBaseText(sharedBase, relpath, published, this)
+            this.roomDoc.setBaseText(this.name, sharedBase, relpath, published, this)
           }, this)
         }
       } else if (!this.isShared(relpath)) {
@@ -1131,7 +1131,7 @@ class Daemon implements Roomd {
           else {
             this.roomDoc.setOverlay(this.name, relpath, disk, this)
             if (disk.length <= this.sizeCap) {
-              this.roomDoc.setBaseText(sharedBase, relpath, published ?? '', this)
+              this.roomDoc.setBaseText(this.name, sharedBase, relpath, published ?? '', this)
             }
           }
         }, this)
@@ -1147,7 +1147,7 @@ class Daemon implements Roomd {
         this.log(droppedStale ? `dropped stale overlay ${relpath}` : afterDeleted ? `marked ${relpath} deleted` : afterText === undefined ? `cleared ${relpath} overlay` : `published ${relpath} overlay`)
       }
     } finally {
-      this.roomDoc.reconcileBaseTexts(this)
+      this.roomDoc.reconcileBaseTexts(this.name, this)
     }
   }
 

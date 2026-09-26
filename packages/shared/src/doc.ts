@@ -44,6 +44,11 @@ export class RoomDoc {
   constructor(doc: Y.Doc = new Y.Doc()) {
     this.doc = doc
     this.colors.observe(() => { if (this.colorName) this.reconcileColors(this.colorName, this.colorOrigin) })
+    // A remote withdrawal may be the last legacy reference. Sweep after synced
+    // overlay/base updates too, so an idle room does not retain old shared text.
+    this.overlays.observeDeep(() => this.reconcileLegacyBaseTexts())
+    this.deleted.observeDeep(() => this.reconcileLegacyBaseTexts())
+    this.bases.observe(() => this.reconcileLegacyBaseTexts())
   }
 
   /** Claim the lowest unused slot, retaining existing slots across reconnects. */
@@ -80,14 +85,13 @@ export class RoomDoc {
     const at = this.overlayAt.get(person)
     return at === undefined ? undefined : Math.max(0, now - at)
   }
-  /** Drop everything a person has shared: overlays, deletions and their timestamp. */
+  /** Drop a person's overlays, deletions and timestamp. Their daemon owns base-text cleanup. */
   clearOverlays(person: string, origin?: unknown): number {
     const n = this.changedPaths(person).length
     this.doc.transact(() => {
       this.overlays.delete(person)
       this.deleted.delete(person)
       this.overlayAt.delete(person)
-      this.reconcileBaseTexts(origin)
     }, origin)
     return n
   }
@@ -168,44 +172,48 @@ export class RoomDoc {
     })
   }
   get metaMap(): Y.Map<string | number> { return this.doc.getMap<string | number>('meta') }
-  /** Base-commit text of files someone has changed, keyed "<sha>:<path>", so browsers can three-way merge. */
+  /** Legacy shared base text, keyed "<sha>:<path>". New clients only read and collect it. */
   get baseTexts(): Y.Map<string> { return this.doc.getMap<string>('basetext') }
-  baseText(sha: string, relpath: string): string | undefined { return this.baseTexts.get(`${sha}:${relpath}`) }
-  /** One CRDT set member per (base-text key, participant), so concurrent users never overwrite a shared array. */
-  get baseTextRefs(): Y.Map<true> { return this.doc.getMap<true>('basetextRefs') }
-  baseTextOwners(sha: string, relpath: string): string[] {
+  /** Each participant owns one nested map, with keys "<sha>:<path>". */
+  get ownedBaseTexts(): Y.Map<Y.Map<string>> { return this.doc.getMap<Y.Map<string>>('basetextByPerson') }
+  baseText(person: string, sha: string, relpath: string): string | undefined {
     const key = `${sha}:${relpath}`
-    const owners: string[] = []
-    for (const encoded of this.baseTextRefs.keys()) {
-      try {
-        const pair: unknown = JSON.parse(encoded)
-        if (Array.isArray(pair) && pair[0] === key && typeof pair[1] === 'string') owners.push(pair[1])
-      } catch { /* malformed legacy data is removed by reconciliation */ }
-    }
-    return owners.sort()
+    return this.ownedBaseTexts.get(person)?.get(key) ?? this.baseTexts.get(key)
   }
-  /** Repair references from live overlays and deletion marks, including legacy text without refs. */
-  reconcileBaseTexts(origin?: unknown): void {
-    const wanted = new Set<string>()
+  /** Remove only this participant's entries that no longer back their live work. */
+  reconcileBaseTexts(person: string, origin?: unknown): void {
+    const owned = this.ownedBaseTexts.get(person)
+    const wanted = new Set(this.changedPaths(person).map(path => `${this.baseOf(person)}:${path}`))
+    this.doc.transact(() => {
+      if (owned) {
+        for (const key of owned.keys()) if (!wanted.has(key)) owned.delete(key)
+        if (owned.size === 0) this.ownedBaseTexts.delete(person)
+      }
+      this.reconcileLegacyBaseTexts(origin)
+    }, origin)
+  }
+  /** Legacy entries stay readable while any participant still uses that base. */
+  private reconcileLegacyBaseTexts(origin?: unknown): void {
     const unused: string[] = []
     for (const key of this.baseTexts.keys()) {
       const colon = key.indexOf(':')
       if (colon < 0) { unused.push(key); continue }
       const sha = key.slice(0, colon), relpath = key.slice(colon + 1)
-      const owners = this.whoChanged(relpath).filter(person => this.baseOf(person) === sha)
-      if (!owners.length) unused.push(key)
-      else for (const person of owners) wanted.add(JSON.stringify([key, person]))
+      if (!this.whoChanged(relpath).some(person => this.baseOf(person) === sha)) unused.push(key)
     }
+    if (!unused.length) return
     this.doc.transact(() => {
-      for (const key of this.baseTextRefs.keys()) if (!wanted.has(key)) this.baseTextRefs.delete(key)
-      for (const key of wanted) if (!this.baseTextRefs.has(key)) this.baseTextRefs.set(key, true)
       for (const key of unused) this.baseTexts.delete(key)
     }, origin)
   }
-  setBaseText(sha: string, relpath: string, text: string, origin?: unknown): void {
+  setBaseText(person: string, sha: string, relpath: string, text: string, origin?: unknown): void {
     const k = `${sha}:${relpath}`
-    if (this.baseTexts.has(k)) return
-    this.doc.transact(() => { this.baseTexts.set(k, text) }, origin)
+    if (this.ownedBaseTexts.get(person)?.has(k)) return
+    this.doc.transact(() => {
+      let owned = this.ownedBaseTexts.get(person)
+      if (!owned) { owned = new Y.Map<string>(); this.ownedBaseTexts.set(person, owned) }
+      owned.set(k, text)
+    }, origin)
   }
   /** Each person's own HEAD: the commit their overlay is a delta from. */
   get bases(): Y.Map<string> { return this.doc.getMap<string>('bases') }

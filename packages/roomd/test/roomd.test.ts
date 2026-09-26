@@ -661,7 +661,7 @@ describe('roomd v2 push-only overlays', () => {
     expect(worker.roomDoc.changedPaths('Alice+w')).toEqual([])
     await fsp.writeFile(path.join(workerDir, 'notes.txt'), 'lead notes\nworker line\n')
     await waitFor(() => worker.roomDoc.changedPaths('Alice+w').includes('notes.txt'))
-    expect(worker.roomDoc.baseText(carried, 'notes.txt')).toBe('lead notes\n')
+    expect(worker.roomDoc.baseText(worker.name, carried, 'notes.txt')).toBe('lead notes\n')
   })
 
   it('in a team room a carried worker publishes against the lead\'s base, which teammates have, without the carried files', async () => {
@@ -677,8 +677,8 @@ describe('roomd v2 push-only overlays', () => {
     await fsp.writeFile(path.join(workerDir, 'other.py'), 'other\nworker line\n')
     await waitFor(() => worker.roomDoc.changedPaths('Alice+w').length === 2)
     expect(worker.roomDoc.text('app.py', 'Alice+w')).toBe('lead WIP\nworker line\n')
-    expect(worker.roomDoc.baseText(leadHead, 'app.py')).toBe('base\n')
-    expect(worker.roomDoc.baseText(leadHead, 'other.py')).toBe('other\n')
+    expect(worker.roomDoc.baseText(worker.name, leadHead, 'app.py')).toBe('base\n')
+    expect(worker.roomDoc.baseText(worker.name, leadHead, 'other.py')).toBe('other\n')
     // Reverting to the carried text withdraws the overlay again.
     await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\n')
     await waitFor(() => !worker.roomDoc.changedPaths('Alice+w').includes('app.py'))
@@ -774,12 +774,12 @@ describe('sharing levels', () => {
     await fsp.writeFile(path.join(dir, 'a.py'), 'private a\n')
     await waitFor(() => daemon.roomDoc.text('a.py', 'Ceiling') === 'private a\n')
     const base = daemon.roomDoc.baseOf('Ceiling')!
-    expect(daemon.roomDoc.baseText(base, 'a.py')).toBe('base a\n')
+    expect(daemon.roomDoc.baseText('Ceiling', base, 'a.py')).toBe('base a\n')
     ceiling = 'intent'
     await fsp.writeFile(path.join(dir, 'b.py'), 'private b\n')
     await waitFor(() => daemon.share === 'intent')
     expect(daemon.roomDoc.changedPaths('Ceiling')).toEqual([])
-    expect(daemon.roomDoc.baseText(base, 'a.py')).toBeUndefined()
+    expect(daemon.roomDoc.baseText('Ceiling', base, 'a.py')).toBeUndefined()
   })
 
   it('narrows full to declared without withdrawing in-scope text, then widens only on reconciliation', async () => {
@@ -791,8 +791,8 @@ describe('sharing levels', () => {
     const base = daemon.roomDoc.baseOf('Decline')!
     await daemon.setShare('declared', ['b.py'])
     expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['b.py'])
-    expect(daemon.roomDoc.baseText(base, 'a.py')).toBeUndefined()
-    expect(daemon.roomDoc.baseText(base, 'b.py')).toBe('base b\n')
+    expect(daemon.roomDoc.baseText('Decline', base, 'a.py')).toBeUndefined()
+    expect(daemon.roomDoc.baseText('Decline', base, 'b.py')).toBe('base b\n')
     const widening = daemon.setShare('full')
     expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['b.py'])
     await widening
@@ -807,13 +807,13 @@ describe('sharing levels', () => {
     await waitFor(() => daemon.roomDoc.text('reverted.py', 'Withdraw') === 'changed\n')
     await fsp.writeFile(path.join(dir, 'reverted.py'), 'old\n')
     await waitFor(() => !daemon.roomDoc.changedPaths('Withdraw').includes('reverted.py'))
-    expect(daemon.roomDoc.baseText(base, 'reverted.py')).toBeUndefined()
+    expect(daemon.roomDoc.baseText('Withdraw', base, 'reverted.py')).toBeUndefined()
     await fsp.unlink(path.join(dir, 'deleted.py'))
     await waitFor(() => daemon.roomDoc.deletedFor('Withdraw').has('deleted.py'))
-    expect(daemon.roomDoc.baseTextOwners(base, 'deleted.py')).toEqual(['Withdraw'])
+    expect(daemon.roomDoc.baseText('Withdraw', base, 'deleted.py')).toBe('old\n')
     await daemon.setShare('intent')
     expect(daemon.roomDoc.deletedFor('Withdraw').has('deleted.py')).toBe(false)
-    expect(daemon.roomDoc.baseText(base, 'reverted.py')).toBeUndefined()
+    expect(daemon.roomDoc.baseText('Withdraw', base, 'reverted.py')).toBeUndefined()
   })
 
   it('withdraws base text published before HEAD advanced', async () => {
@@ -821,15 +821,15 @@ describe('sharing levels', () => {
     const daemon = await start({ room: room(), dir, name: 'Advance', basePollMs: 20 })
     const oldBase = daemon.base
     await fsp.writeFile(path.join(dir, 'a.py'), 'changed a\n')
-    await waitFor(() => daemon.roomDoc.baseText(oldBase, 'a.py') === 'base a\n')
+    await waitFor(() => daemon.roomDoc.baseText('Advance', oldBase, 'a.py') === 'base a\n')
     sh(dir, ['add', 'a.py']); sh(dir, ['commit', '-qm', 'advance'])
     await waitFor(() => daemon.base !== oldBase)
     await fsp.writeFile(path.join(dir, 'b.py'), 'changed b\n')
     await waitFor(() => daemon.roomDoc.text('b.py', 'Advance') === 'changed b\n')
     await daemon.setShare('intent')
     expect(daemon.roomDoc.changedPaths('Advance')).toEqual([])
-    expect(daemon.roomDoc.baseText(oldBase, 'a.py')).toBeUndefined()
-    expect(daemon.roomDoc.baseText(daemon.base, 'b.py')).toBeUndefined()
+    expect(daemon.roomDoc.baseText('Advance', oldBase, 'a.py')).toBeUndefined()
+    expect(daemon.roomDoc.baseText('Advance', daemon.base, 'b.py')).toBeUndefined()
   })
 
   it('collects a previous process’s base text after restart and narrowing', async () => {
@@ -843,10 +843,10 @@ describe('sharing levels', () => {
     await first.stop()
     const second = await start({ room: url, dir, name: 'Restart', share: 'intent' })
     expect(second.roomDoc.changedPaths('Restart')).toEqual([])
-    expect(keeper.roomDoc.baseText(base, 'a.py')).toBeUndefined()
+    expect(keeper.roomDoc.baseText('Restart', base, 'a.py')).toBeUndefined()
   })
 
-  it('keeps a shared base text until its last participant withdraws', async () => {
+  it('keeps each participant’s base text when another withdraws', async () => {
     const origin = await makeRepo({ 'a.py': 'base\n' })
     const url = room()
     const alice = await start({ room: url, dir: await cloneRepo(origin), name: 'Alice' })
@@ -855,24 +855,24 @@ describe('sharing levels', () => {
     await fsp.writeFile(path.join(bob.dir, 'a.py'), 'bob\n')
     await waitFor(() => alice.roomDoc.text('a.py', 'Alice') === 'alice\n' && alice.roomDoc.text('a.py', 'Bob') === 'bob\n')
     const base = alice.base
-    expect(alice.roomDoc.baseTextOwners(base, 'a.py')).toEqual(['Alice', 'Bob'])
+    expect(alice.roomDoc.baseText('Alice', base, 'a.py')).toBe('base\n')
+    expect(alice.roomDoc.baseText('Bob', base, 'a.py')).toBe('base\n')
     await alice.setShare('intent')
-    expect(bob.roomDoc.baseText(base, 'a.py')).toBe('base\n')
-    expect(bob.roomDoc.baseTextOwners(base, 'a.py')).toEqual(['Bob'])
+    expect(bob.roomDoc.baseText('Alice', base, 'a.py')).toBeUndefined()
+    expect(bob.roomDoc.baseText('Bob', base, 'a.py')).toBe('base\n')
   })
 
-  it('bounds base references through repeated edit and commit cycles', async () => {
+  it('bounds owned base texts through repeated edit and commit cycles', async () => {
     const dir = await makeRepo({ 'a.py': 'base\n' })
     const daemon = await start({ room: room(), dir, name: 'Cycles', basePollMs: 20 })
     for (let i = 0; i < 3; i++) {
       const base = daemon.base
       await fsp.writeFile(path.join(dir, 'a.py'), `edit ${i}\n`)
       await waitFor(() => daemon.roomDoc.text('a.py', 'Cycles') === `edit ${i}\n`)
-      expect(daemon.roomDoc.baseTextOwners(base, 'a.py')).toEqual(['Cycles'])
+      expect(daemon.roomDoc.baseText('Cycles', base, 'a.py')).toBeDefined()
       sh(dir, ['add', 'a.py']); sh(dir, ['commit', '-qm', `edit ${i}`])
       await waitFor(() => daemon.base !== base && !daemon.roomDoc.changedPaths('Cycles').includes('a.py'))
-      expect(daemon.roomDoc.baseTexts.size).toBe(0)
-      expect(daemon.roomDoc.baseTextRefs.size).toBe(0)
+      expect(daemon.roomDoc.ownedBaseTexts.size).toBe(0)
     }
   })
 
@@ -895,7 +895,7 @@ describe('sharing levels', () => {
     expect((daemon as unknown as { isShared(path: string): boolean }).isShared('unchanged.py')).toBe(false)
     release()
     await waitFor(() => daemon.roomDoc.text('allowed.py', 'Allowed') === 'edit\n')
-    expect(daemon.roomDoc.baseTextOwners(daemon.base, 'allowed.py')).toEqual(['Allowed'])
+    expect(daemon.roomDoc.baseText('Allowed', daemon.base, 'allowed.py')).toBe('base\n')
   })
 
   it('collects a legacy base entry with no live overlay during startup', async () => {
@@ -903,10 +903,9 @@ describe('sharing levels', () => {
     const url = room()
     const keeper = await start({ room: url, dir: await cloneRepo(dir), name: 'Keeper', share: 'intent' })
     const base = keeper.base
-    keeper.roomDoc.setBaseText(base, 'a.py', 'base\n')
-    expect(keeper.roomDoc.baseTextRefs.size).toBe(0)
+    keeper.roomDoc.baseTexts.set(`${base}:a.py`, 'base\n')
     await start({ room: url, dir, name: 'Collector', share: 'intent' })
-    expect(keeper.roomDoc.baseText(base, 'a.py')).toBeUndefined()
+    expect(keeper.roomDoc.baseText('Collector', base, 'a.py')).toBeUndefined()
   })
 
   it('adopts a legacy base entry for a surviving overlay during startup', async () => {
@@ -916,10 +915,9 @@ describe('sharing levels', () => {
     const base = keeper.base
     keeper.roomDoc.setBaseOf('Legacy', base)
     keeper.roomDoc.setOverlay('Legacy', 'a.py', 'legacy edit\n')
-    keeper.roomDoc.setBaseText(base, 'a.py', 'base\n')
+    keeper.roomDoc.baseTexts.set(`${base}:a.py`, 'base\n')
     await start({ room: url, dir: origin, name: 'Collector', share: 'intent' })
-    expect(keeper.roomDoc.baseText(base, 'a.py')).toBe('base\n')
-    expect(keeper.roomDoc.baseTextOwners(base, 'a.py')).toEqual(['Legacy'])
+    expect(keeper.roomDoc.baseText('Legacy', base, 'a.py')).toBe('base\n')
   })
 
   it('does not let an old withheld scan remove an overlay after sharing widens', async () => {

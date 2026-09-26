@@ -156,7 +156,7 @@ describe('merged pane participant choices', () => {
     for (const person of ['Ada', 'Ben', 'Cy']) {
       room.setBaseOf(person, 'base')
       for (const path of ['a.ts', 'b.ts']) {
-        room.setBaseText('base', path, 'base')
+        room.setBaseText(person, 'base', path, 'base')
         room.setOverlay(person, path, person)
       }
     }
@@ -241,7 +241,7 @@ it('shows annotations and details in Merged, Diff and File without floating code
   vi.stubGlobal('window', dom.window)
   const room = new RoomDoc()
   room.setBaseOf('Ada', 'base')
-  room.setBaseText('base', 'a.ts', 'base\nkeep\n')
+  room.setBaseText('Ada', 'base', 'a.ts', 'base\nkeep\n')
   room.setOverlay('Ada', 'a.ts', 'edit\nkeep\n')
   const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
   try {
@@ -264,15 +264,44 @@ it('shows annotations and details in Merged, Diff and File without floating code
   } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
 })
 
+it('reads the selected participant’s base in the File tab', () => {
+  const dom = new JSDOM('<body></body>')
+  vi.stubGlobal('document', dom.window.document)
+  vi.stubGlobal('window', dom.window)
+  const room = new RoomDoc()
+  room.setMeta({ base: 'sha' })
+  for (const [person, base] of [['Ada', 'Ada base'], ['Ben', 'Ben base']] as const) {
+    room.setBaseOf(person, 'sha')
+    room.setBaseText(person, 'sha', 'a.ts', `${base}\nkept\n`)
+    room.setOverlay(person, 'a.ts', `${person} edit\nkept\n`)
+  }
+  const reads = vi.spyOn(room, 'baseText')
+  const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
+  try {
+    const panel = centrePanel(conn, createFocusState())
+    document.body.append(panel)
+    Array.from(panel.querySelectorAll<HTMLButtonElement>('.tab')).find(b => b.textContent === 'File')!.click()
+    const select = panel.querySelector<HTMLSelectElement>('.person-select')!
+    select.value = 'Ben'
+    select.dispatchEvent(new dom.window.Event('change'))
+    expect(reads).toHaveBeenCalledWith('Ben', 'sha', 'a.ts')
+    panel.querySelector('.code-line')?.dispatchEvent(new dom.window.Event('pointerenter'))
+    expect(panel.querySelector('.line-annotation')?.textContent).toBe('changed by Ben')
+    select.value = 'Ada'
+    select.dispatchEvent(new dom.window.Event('change'))
+    expect(reads).toHaveBeenCalledWith('Ada', 'sha', 'a.ts')
+  } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
+})
+
 it('measures a carried worker in the Merged tab against its own base', () => {
   const dom = new JSDOM('<body></body>')
   vi.stubGlobal('document', dom.window.document)
   vi.stubGlobal('window', dom.window)
   const room = new RoomDoc()
   room.setMeta({ base: 'head' })
-  room.setBaseText('head', 'a.ts', 'base\nkeep\n')
+  room.setBaseText('lead', 'head', 'a.ts', 'base\nkeep\n')
   room.setBaseOf('lead+w', 'carried')
-  room.setBaseText('carried', 'a.ts', 'carried\nkeep\n')
+  room.setBaseText('lead+w', 'carried', 'a.ts', 'carried\nkeep\n')
   room.setOverlay('lead+w', 'a.ts', 'carried\nworker\n')
   room.setOverlay('lead', 'a.ts', 'carried\nkeep\n')
   const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn

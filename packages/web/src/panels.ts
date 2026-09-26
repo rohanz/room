@@ -758,7 +758,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const text = conn.room.text(selected.path, person)
       if (text === undefined) return empty(`No overlay available for ${person}`)
       const sha = conn.room.baseOf(person)
-      const base = sha ? conn.room.baseText(sha, selected.path) : undefined
+      const base = sha ? conn.room.baseText(person, sha, selected.path) : undefined
       paint([person], [base, text], () => classifyNWay(base ?? '', [{ name: person, text }]).map(line => ({ ...line, aLine: line.lineNumbers[person] })), false)
       return
     }
@@ -783,12 +783,13 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       legend.replaceChildren(...active.map(person => h('span', {}, dot(person, person, conn.room), ` lines by ${person}`)))
       // Each version is measured against its own base (a carried worker's is its carried commit), as the tools do.
       const sha = conn.room.meta.base ?? conn.room.baseOf(people[0])
-      const base = sha ? conn.room.baseText(sha, selected.path) : undefined
+      const baseOwner = people.find(person => conn.room.baseOf(person) === sha && conn.room.baseText(person, sha!, selected.path) !== undefined)
+      const base = sha && baseOwner ? conn.room.baseText(baseOwner, sha, selected.path) : undefined
       if (base === undefined) legend.append(h('span', { class: 'muted' }, 'Base unavailable; showing changes against an empty file'))
       const versions = active.map(name => {
         const own = conn.room.baseOf(name)
-        const ownBase = own && own !== sha ? conn.room.baseText(own, selected.path) : undefined
-        return { name, text: conn.room.text(selected.path, name) ?? '', ...(ownBase === undefined ? {} : { base: ownBase }) }
+        const ownBase = own ? conn.room.baseText(name, own, selected.path) : undefined
+        return { name, text: conn.room.text(selected.path, name) ?? '', ...(ownBase === undefined || ownBase === base ? {} : { base: ownBase }) }
       })
       paint(active, [base, ...versions.flatMap(v => [v.text, v.base])], () => classifyNWay(base ?? '', versions), true, conflicts.filter(s => s.people.every(p => active.includes(p))))
       return
