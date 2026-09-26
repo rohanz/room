@@ -65,6 +65,8 @@ an area only for the person who changed that file.
 shares plans and claims with no file text; `room_share` changes it live and a server can set
 a ceiling. At `declared`, changed files you declared stay shared while they differ from your base,
 including after `room_done` and daemon restart. “Share plans only” withdraws their file text.
+Changing the sharing level, ignoring a file, or making it too large also withdraws it;
+declare it again to share it.
 Reading someone who shares less degrades to a one-line answer rather than an error.
 An unrecognised sharing level falls back to `intent` and reports the invalid setting;
 it never widens sharing to full text.

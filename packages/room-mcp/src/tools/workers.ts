@@ -45,7 +45,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const summary = String(a.summary ?? '').trim()
       if (!summary) return 'error: summary is required'
       const sc = s.room.scope(s.me.name)
-      if (s.daemon.share === 'declared') await s.daemon.publishCurrent()
+      if (s.daemon.share === 'declared') {
+        try { await s.daemon.publishCurrent() }
+        catch (error) { return `Room couldn't confirm your latest changes were shared (${error instanceof Error ? error.message : String(error)}). Your scope and claims are kept; try done again.` }
+      }
       // Claims mirroring a worker that is still running are the worker's, not this task's: they stay until it finishes.
       const live = new Set(runningWorkers(s).map(x => x.w.tag))
       const kept = mine(s).filter(c => c.mirrorOf && live.has(c.mirrorOf)).length
@@ -65,7 +68,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       s.daemon.touch()
       const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : 'You remain in the room.'}`]
       const retained = s.daemon.share === 'declared' ? s.daemon.retainedDeclared() : []
-      if (retained.length) out.push(`${retained.length} changed file(s) you declared earlier stay shared while they differ from your base: ${retained.slice(0, 8).join(', ')}${retained.length > 8 ? `, +${retained.length - 8} more` : ''}. To withdraw them, say: share plans only.`)
+      if (retained.length) out.push(`${retained.length} changed file(s) you declared earlier stay shared while they differ from your base: ${retained.slice(0, 8).join(', ')}${retained.length > 8 ? `, +${retained.length - 8} more` : ''}. A sharing-level change, ignore rule, or size limit withdraws them; declare them again to share. Share plans only withdraws them.`)
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary)
       const command = s.lastPreview?.testsCommand
       if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed === true && command) {

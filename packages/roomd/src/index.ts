@@ -126,6 +126,8 @@ export interface RoomdOptions {
   startupTimeoutMs?: number
   /** Overrides for tests. */
   debounceMs?: number
+  publishAttempts?: number
+  publishDeadlineMs?: number
   trackedRefreshMs?: number
   /** How often to check whether local HEAD moved (commit/pull); default 3s. */
   basePollMs?: number
@@ -259,6 +261,8 @@ class Daemon implements Roomd {
   private readonly label?: string
   private readonly log: (line: string) => void
   private readonly debounceMs: number
+  private readonly publishAttempts: number
+  private readonly publishDeadlineMs: number
   private readonly trackedRefreshMs: number
   private readonly basePollMs: number
   private readonly sizeCap: number
@@ -327,6 +331,8 @@ class Daemon implements Roomd {
       return () => clearTimeout(timer)
     })
     this.debounceMs = options.debounceMs ?? 300
+    this.publishAttempts = options.publishAttempts ?? 3
+    this.publishDeadlineMs = options.publishDeadlineMs ?? 10_000
     this.watchedDirectory = createHash('sha256').update(machineHostname).update('\0').update(machineIdentity(this.log)).update('\0').update(fs.realpathSync(this.dir)).digest('hex')
     this.batch = new DiskBatch(paths => {
       const work = this.enqueue(async () => {
@@ -433,7 +439,7 @@ class Daemon implements Roomd {
     this.trimBusIfLeader()
     if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader())
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
-    this.every(this.basePollMs, () => this.enqueue(() => this.pollHead()))
+    this.every(this.basePollMs, () => this.enqueue(async () => { await this.pollHead() }))
     this.roomDoc.metaMap.observe(() => observeCallback(() => this.refreshBaseStatus(), error => this.log(`warn: ${errMsg(error)}`)))
     // Under 'declared' the published set follows the person's scope; re-evaluate when it changes.
     this.roomDoc.scopes.observe(ev => {
@@ -460,9 +466,21 @@ class Daemon implements Roomd {
   retainedDeclared(): string[] { return [...this.retainedDeclaredPaths].sort() }
 
   publishCurrent(): Promise<void> {
-    return this.enqueue(async () => {
-      await this.pollHead()
-      await this.seedLocalOverlay()
+    const work = this.workQueue.then(async () => {
+      if (this.stopped) throw new Error('daemon stopped')
+      const deadline = Date.now() + this.publishDeadlineMs
+      for (let attempt = 0; attempt < this.publishAttempts; attempt++) {
+        if (Date.now() >= deadline) throw new Error('publication timed out')
+        const reconciled = await this.pollHead(true)
+        if (reconciled || await this.reconcile(await gitChanged(this.dir), true)) return
+        if (this.stopped) throw new Error('daemon stopped')
+      }
+      throw new Error('HEAD or sharing changed during publication')
+    })
+    this.workQueue = work.catch(error => { this.log(`warn: ${errMsg(error)}`) })
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('publication timed out')), this.publishDeadlineMs)
+      void work.then(() => { clearTimeout(timer); resolve() }, error => { clearTimeout(timer); reject(error) })
     })
   }
 
@@ -778,17 +796,18 @@ class Daemon implements Roomd {
   }
 
   /** Local HEAD moved (commit, pull, checkout): re-seed the overlay and maybe advance the room base. */
-  private async pollHead(): Promise<void> {
-    if (this.stopped) return
+  private async pollHead(explicit = false): Promise<boolean> {
+    if (this.stopped) return false
     const wasSecondary = !!this.publishUnder
     this.choosePublisher()
-    if (wasSecondary && !this.publishUnder) await this.seedLocalOverlay()
+    let reconciled = false
+    if (wasSecondary && !this.publishUnder) reconciled = await this.reconcile(await gitChanged(this.dir), explicit)
     const [head, branch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)])
     if (head === this.base && branch === this.branch) {
       // HEAD unchanged, but a commit we are ahead with may have been pushed since last check.
       const roomBase = this.roomDoc.meta.base
       if (roomBase && roomBase !== head) await this.refreshBaseStatus()
-      return
+      return reconciled
     }
     const prev = this.base
     const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : []
@@ -802,9 +821,10 @@ class Daemon implements Roomd {
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.maybeAdvance(roomBase, head)
-    await this.seedLocalOverlay()
+    reconciled = await this.reconcile(await gitChanged(this.dir), explicit)
     if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot)
     await this.refreshBaseStatus()
+    return reconciled
   }
 
   private readonly unpushedPairs = new Set<string>()
@@ -945,8 +965,8 @@ class Daemon implements Roomd {
   }
 
   /** Publish the disk state of these paths and the published ones, reading every base text in one git process. */
-  private async reconcile(extra: Iterable<string>): Promise<void> {
-    if (this.stopped) return
+  private async reconcile(extra: Iterable<string>, explicit = false): Promise<boolean> {
+    if (this.stopped) return false
     const generation = this.sharingGeneration
     const paths = Array.from(this.pathsToReconcile(extra))
     const base = this.base, shared = this.shared
@@ -961,16 +981,19 @@ class Daemon implements Roomd {
       gitBlobInfoMany(this.dir, base, oversized),
     ])
     // One HEAD check per batch: a move since the read is left to pollHead, which reseeds against the new HEAD.
-    if (this.stopped) return
-    if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
-    if (await gitHead(this.dir) !== base) return
-    if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
+    if (this.stopped) return false
+    if (generation !== this.sharingGeneration) { this.markSharingDirty(); return false }
+    if (await gitHead(this.dir) !== base) return false
+    if (generation !== this.sharingGeneration) { this.markSharingDirty(); return false }
     for (const relpath of paths) {
-      if (this.stopped) return
-      if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
-      await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs })
+      if (this.stopped) return false
+      if (generation !== this.sharingGeneration) { this.markSharingDirty(); return false }
+      await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs }, explicit)
       if (this.phase === 'seed') this.onSeedProgress?.()
     }
+    if (this.stopped) return false
+    if (generation !== this.sharingGeneration) { this.markSharingDirty(); return false }
+    return await gitHead(this.dir) === base
   }
 
   private markSharingDirty(): void {
@@ -1068,7 +1091,7 @@ class Daemon implements Roomd {
   }
 
   /** `read`: base texts already read at `read.base` (and `read.shared`) with HEAD checked once for the batch (reconcile). */
-  private async publishDiskState(relpath: string, read?: { base: string; texts: Map<string, string | undefined>; shared: string; sharedTexts?: Map<string, string | undefined>; blobs?: Map<string, GitBlobInfo | undefined> }): Promise<void> {
+  private async publishDiskState(relpath: string, read?: { base: string; texts: Map<string, string | undefined>; shared: string; sharedTexts?: Map<string, string | undefined>; blobs?: Map<string, GitBlobInfo | undefined> }, explicit = false): Promise<void> {
     if (this.stopped) return
     try {
       const generation = this.sharingGeneration
@@ -1087,7 +1110,7 @@ class Daemon implements Roomd {
         this.retainedDeclaredPaths.delete(relpath)
         return
       }
-      if (this.batch.deferHot(relpath)) return
+      if (!explicit && this.batch.deferHot(relpath)) return
       const publishingBase = this.base, sharedBase = this.shared
       const batched = read?.base === publishingBase && read.shared === sharedBase && read.texts.has(relpath)
       const headText = () => batched ? Promise.resolve(read!.texts.get(relpath)) : gitShow(this.dir, publishingBase, relpath)
