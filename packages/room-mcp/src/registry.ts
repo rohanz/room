@@ -346,7 +346,7 @@ export class Rooms {
   }
 
   /** Continue an exited, retained worker in its original checkout and host conversation. */
-  async resumeWorker(s: Session, w: Worker, message: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at = Date.now(), exitWaitMs = 30_000): Promise<string> {
+  async resumeWorker(s: Session, w: Worker, message: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000): Promise<string> {
     // An exit callback starts retirement asynchronously. Let that check finish before competing
     // for the same worktree lock; it retains any worker with work to collect.
     await this.retiring.get(s)
@@ -392,7 +392,7 @@ export class Rooms {
         try { launched = launchWorkerProcess({ rooms: this, session: s, id, tag: w.tag, dir: w.dir,
           lead: w.lead, owner: s.me.owner ?? s.me.name, host: w.host, model: w.model, effort: w.effort,
           share: w.share ?? 'intent', gen: w.gen ?? 1, budget, server, isWorker,
-          token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, log, at: () => at },
+          token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, log, at },
         { mode: 'resume', message, sessionId: w.hostSessionId!, oldPort: w.port }, launchLease,
         ({ proc, port, startedAt }) => !!s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running',
           startedAt, summary: undefined, exitCode: undefined, finishedAt: undefined,

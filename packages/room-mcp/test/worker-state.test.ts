@@ -9,26 +9,45 @@ describe('workerRealState probes', () => {
   it('probes a vanished checkout only through the lead, retaining unmerged commits', async () => {
     const git = vi.fn(async (dir: string, args: string[]) => {
       expect(dir).toBe('/lead')
-      return args[0] === 'for-each-ref' ? 'refs/heads/room/w\n' : '2\n'
+      if (args[0] === 'for-each-ref') return 'refs/heads/room/w\n'
+      if (args[0] === 'rev-list') return `${'a'.repeat(40)}\n${'b'.repeat(40)}\n`
+      throw new Error('no carry ref')
     })
     const owned = vi.fn(async () => true)
     const state = await workerRealState('/lead', worker, { ownership: true, branch: true, git: true, process: true,
       probes: { exists: () => false, owned, git, process: () => false, changedPaths: vi.fn() } })
     expect(state).toMatchObject({ worktree: 'vanished', owned: false, branch: 'present', branchAhead: 2, process: 'gone', hostSession: true, finished: true })
     expect(owned).not.toHaveBeenCalled()
-    expect(git).toHaveBeenCalledTimes(2)
+    expect(git).toHaveBeenCalledTimes(3)
   })
-  it('excludes the recorded carry base when counting a vanished branch', async () => {
+  it('does not exclude a base commit without positive carry provenance', async () => {
     const git = vi.fn(async (dir: string, args: string[]) => {
       expect(dir).toBe('/lead')
       if (args[0] === 'for-each-ref') return 'refs/heads/room/w\n'
-      expect(args).toEqual(['rev-list', '--count', 'refs/heads/room/w', '^HEAD', '^carry-base'])
-      return '0\n'
+      if (args[0] === 'rev-list') {
+        expect(args).toEqual(['rev-list', 'refs/heads/room/w', '^HEAD'])
+        return `${'a'.repeat(40)}\n`
+      }
+      throw new Error('no carry ref')
     })
     const state = await workerRealState('/lead', { ...worker, base: 'carry-base' }, {
       branch: true, probes: { exists: () => false, git },
     })
-    expect(state.branchAhead).toBe(0)
+    expect(state.branchAhead).toBe(1)
+  })
+  it('counts a recorded carry-looking commit when its author is not Room', async () => {
+    const commit = 'a'.repeat(40)
+    const git = vi.fn(async (_dir: string, args: string[]) => {
+      if (args[0] === 'for-each-ref') return 'refs/heads/room/w\n'
+      if (args[0] === 'rev-list') return `${commit}\n`
+      if (args[0] === 'rev-parse') return `${commit}\n`
+      if (args[0] === 'show') return 'Lead\0lead@example.test\0room: carried-in uncommitted work from lead\n'
+      throw new Error(`unexpected git command: ${args.join(' ')}`)
+    })
+    const state = await workerRealState('/lead', { ...worker, base: commit, carriedBase: commit }, {
+      branch: true, probes: { exists: () => false, git },
+    })
+    expect(state.branchAhead).toBe(1)
   })
   it('does not query branch, ownership, or process when those facts are unnecessary', async () => {
     const git = vi.fn(), owned = vi.fn(), process = vi.fn()

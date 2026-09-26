@@ -347,8 +347,20 @@ export interface PreparedWorktree {
   carryError?: string
 }
 
-/** Subject of the commit that carries a lead's uncommitted work into a new worker's worktree. */
-const carriedSubject = (leadName: string) => `room: carried-in uncommitted work from ${leadName}`
+/** Identity of the commit that carries a lead's uncommitted work into a worker's worktree. */
+export const ROOM_CARRY_IDENTITY = {
+  authorName: 'Room',
+  authorEmail: 'room@localhost',
+  subjectPrefix: 'room: carried-in uncommitted work from ',
+  isRoomCarryCommit(name: string, email: string, subject: string): boolean {
+    return name === ROOM_CARRY_IDENTITY.authorName
+      && email === ROOM_CARRY_IDENTITY.authorEmail
+      && subject.startsWith(ROOM_CARRY_IDENTITY.subjectPrefix)
+      && /^.+$/.test(subject.slice(ROOM_CARRY_IDENTITY.subjectPrefix.length))
+  },
+} as const
+
+const carriedSubject = (leadName: string) => `${ROOM_CARRY_IDENTITY.subjectPrefix}${leadName}`
 
 /** A worktree for the worker, created from the lead's HEAD on branch room/<tag>; reused if it already exists. */
 const internalGit = (dir: string, args: string[]) => git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', ...args])
@@ -508,7 +520,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     }
     if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
     const staged = (await internalGit(dir, ['diff', '--cached', '--name-only', '-z'])).split('\0').filter(Boolean)
-    if (staged.length) await git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Room', '-c', 'user.email=room@localhost', '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', carriedSubject(leadName)])
+    if (staged.length) await git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', `user.name=${ROOM_CARRY_IDENTITY.authorName}`, '-c', `user.email=${ROOM_CARRY_IDENTITY.authorEmail}`, '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', carriedSubject(leadName)])
     const commit = (await git(dir, ['rev-parse', 'HEAD'])).trim()
     const paths = [...new Set([...staged, ...carriedUntracked.map(x => x.path)])].sort()
     if (paths.length) await internalGit(repoDir, ['update-ref', carryRef(tag), commit])

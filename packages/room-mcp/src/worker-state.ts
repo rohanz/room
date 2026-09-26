@@ -4,16 +4,16 @@ import path from 'node:path'
 import { type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
-import { isOwnedWorkerWorktree, pidIsOurWorker, type ProcessInfo } from './workers.js'
+import { isOwnedWorkerWorktree, pidIsOurWorker, ROOM_CARRY_IDENTITY, type ProcessInfo } from './workers.js'
 
 type OwnershipRecord = Pick<Worker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'> | Pick<RetiredWorker, 'name' | 'tag' | 'lead' | 'keptWorktree'>
 export interface WorkerRealState {
   worktree: 'present' | 'vanished'
   owned?: boolean
   branch?: 'present' | 'absent'
-  /** Commits on refs/heads/room/<tag> absent from the lead HEAD and recorded base. */
+  /** Commits on refs/heads/room/<tag> absent from the lead HEAD, excluding verified Room carry. */
   branchAhead?: number
-  /** Retirement count also considers detached HEAD and excludes the carried base. */
+  /** Retirement count also considers detached HEAD and excludes verified Room carry. */
   ahead?: number
   process?: 'ours' | 'gone'
   hostSession: boolean
@@ -34,8 +34,26 @@ export interface WorkerStateProbes {
   process?: (w: Worker) => boolean
 }
 
-function workerCommitExclusions(leadHead: string, w: Pick<Worker, 'base'>): string[] {
-  return [`^${leadHead}`, ...(w.base ? [`^${w.base}`] : [])]
+/** A base may be a user commit. Only a recorded commit with Room's carry identity is excluded. */
+async function workerCommitCount(runGit: typeof git, dir: string, ref: string, leadHead: string,
+  w: Pick<Worker, 'tag' | 'carriedBase'>): Promise<number> {
+  const commits = (await runGit(dir, ['rev-list', ref, `^${leadHead}`])).trim().split('\n').filter(Boolean)
+  if (!commits.length) return 0
+  const recorded = new Set<string>()
+  if (w.carriedBase) recorded.add(w.carriedBase)
+  try {
+    recorded.add((await runGit(dir, ['rev-parse', '--verify', `refs/room/carry/${w.tag}`])).trim())
+  } catch { /* Older workers may not have a carry ref. */ }
+  const present = new Set(commits)
+  for (const commit of recorded) {
+    if (!/^[0-9a-f]{40,64}$/.test(commit) || !present.has(commit)) continue
+    try {
+      const identity = (await runGit(dir, ['show', '-s', '--format=%an%x00%ae%x00%s', commit])).trim()
+      const [name, email, subject] = identity.split('\0')
+      if (ROOM_CARRY_IDENTITY.isRoomCarryCommit(name, email, subject)) present.delete(commit)
+    } catch { /* Unverifiable commits remain user work. */ }
+  }
+  return present.size
 }
 
 /** Select expensive probes at each call site. Git in a vanished checkout is never attempted. */
@@ -60,7 +78,7 @@ export async function workerRealState(leadDir: string, w: Worker, options: {
     const ref = `refs/heads/${w.branch}`
     state.branch = (await runGit(leadDir, ['for-each-ref', '--format=%(refname)', ref])).split('\n').includes(ref) ? 'present' : 'absent'
     if (state.branch === 'present') {
-      const count = Number((await runGit(leadDir, ['rev-list', '--count', ref, ...workerCommitExclusions('HEAD', w)])).trim())
+      const count = await workerCommitCount(runGit, leadDir, ref, 'HEAD', w)
       if (!Number.isSafeInteger(count)) throw new Error(`could not count commits on ${w.branch}`)
       state.branchAhead = count
     }
@@ -76,10 +94,10 @@ export async function workerRealState(leadDir: string, w: Worker, options: {
       state.clean = state.uncommitted === 0
       const head = (await runGit(leadDir, ['rev-parse', 'HEAD'])).trim()
       const branch = `refs/heads/${w.branch}`
-      const exclusions = workerCommitExclusions(head, w)
-      const count = (await runGit(w.dir, ['rev-list', '--count', branch, ...exclusions])).trim()
-      const worktreeCount = (await runGit(w.dir, ['rev-list', '--count', 'HEAD', ...exclusions])).trim()
-      if (/^\d+$/.test(count) && /^\d+$/.test(worktreeCount)) state.ahead = Math.max(Number(count), Number(worktreeCount))
+      state.ahead = Math.max(
+        await workerCommitCount(runGit, w.dir, branch, head, w),
+        await workerCommitCount(runGit, w.dir, 'HEAD', head, w),
+      )
       if (w.base && state.ahead === 0) {
         const own = (await runGit(w.dir, ['rev-list', '--count', `${w.base}..${branch}`])).trim()
         state.merged = /^\d+$/.test(own) && Number(own) > 0

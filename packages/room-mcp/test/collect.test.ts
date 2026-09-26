@@ -50,8 +50,10 @@ function commitLines() {
 /** Commit files on a worker's branch the way spawn carries the lead's uncommitted work, and record that commit as the worker's base. */
 function carry(t: ReturnType<typeof setup>, dir: string, tag: string, files: Record<string, string>) {
   for (const [p, text] of Object.entries(files)) put(dir, p, text)
-  git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'room: carried-in uncommitted work from lead')
-  t.s.room.workers.set(tag, { ...t.s.room.workers.get(tag)!, base: git(dir, 'rev-parse', 'HEAD') })
+  git(dir, 'add', '-A'); git(dir, '-c', 'user.name=Room', '-c', 'user.email=room@localhost', 'commit', '-qm', 'room: carried-in uncommitted work from lead')
+  const commit = git(dir, 'rev-parse', 'HEAD')
+  git(dir, 'update-ref', `refs/room/carry/${tag}`, commit)
+  t.s.room.workers.set(tag, { ...t.s.room.workers.get(tag)!, base: commit, carriedBase: commit })
 }
 
 async function startWorktreeProcess() {
@@ -290,6 +292,19 @@ describe('room_collect', () => {
     expect(reply).toContain('branch room/test kept: it has 2 commits not in your HEAD')
     expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
     expectRetired(t)
+  })
+  it('keeps a user commit at the worker base after the lead resets behind it', async () => {
+    const t = setup()
+    put(lead, 'user.txt', 'user commit')
+    git(lead, 'add', 'user.txt'); git(lead, 'commit', '-qm', 'user commit')
+    const userCommit = git(lead, 'rev-parse', 'HEAD')
+    git(worker, 'merge', '--ff-only', userCommit)
+    t.s.room.workers.set('test', { ...t.w, base: userCommit } as never)
+    git(lead, 'reset', '--hard', 'HEAD^')
+    fs.rmSync(worker, { recursive: true, force: true })
+    const reply = await t.call({ tag: 'test', discard: true })
+    expect(reply).toContain('branch room/test kept: it has 1 commit not in your HEAD')
+    expect(git(lead, 'rev-parse', 'room/test')).toBe(userCommit)
   })
   it('deletes a vanished worker branch containing only the carried base', async () => {
     const t = setup()

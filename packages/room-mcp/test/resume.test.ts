@@ -9,7 +9,7 @@ import { RoomDoc, type Worker } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { Rooms } from '../src/registry.js'
 import { decideResume, type WorkerRealState } from '../src/worker-state.js'
-import { persistWorkerStopReason } from '../src/workers.js'
+import { persistWorkerStopReason, pidIsOurWorker } from '../src/workers.js'
 import type { Session } from '../src/session.js'
 import type { PreparedWorktree, SpawnSpec } from '../src/workers.js'
 
@@ -216,6 +216,27 @@ describe('resumed worker boundaries', () => {
     expect(t.room.messages().filter(m => m.type === 'note' && m.to === w.name && m.text === 'one follow-up')).toHaveLength(1)
   }, 8_000)
 
+  it('records the resumed process start after a ten-second previous-exit wait', async () => {
+    const t = setup()
+    t.seed('slow-exit')
+    const w = t.room.workers.get('slow-exit')!
+    const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
+    let oldExit!: (code: number | null) => void
+    const oldProcess = { pid: 9001, onExit: (cb: typeof oldExit) => { oldExit = cb }, kill: () => true }
+    rooms.setHandle(t.session, w.id!, oldProcess)
+    rooms.watchWorkerProcess(t.session, w.id!, oldProcess, 'old process', () => {})
+    let clock = Date.now()
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    try {
+      const sending = rooms.resumeWorker(t.session, w, 'follow-up', () => ({ pid: process.pid, onExit: () => {}, kill: () => true }))
+      setTimeout(() => { clock += 10_000; oldExit(0) }, 20)
+      expect(await sending).toContain('resumed slow-exit')
+      const resumed = t.room.workers.get('slow-exit')!
+      rooms.dropHandle(t.session, resumed.id)
+      expect(pidIsOurWorker(resumed.pid, resumed, () => ({ start: clock, command: `claude --resume ${resumed.hostSessionId}` }))).toBe(true)
+    } finally { now.mockRestore() }
+  })
+
   it('does not post a message when resume cannot reserve a launch slot', async () => {
     const t = setup(1)
     t.seed('busy', { status: 'running' })
@@ -231,7 +252,7 @@ describe('resumed worker boundaries', () => {
     const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
     const w = t.room.workers.get('stuck')!
     rooms.setHandle(t.session, w.id!, { pid: 9001, onExit: () => {}, kill: () => true })
-    const reply = await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('must not start') }, undefined, undefined, () => {}, Date.now(), 20)
+    const reply = await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('must not start') }, undefined, undefined, () => {}, Date.now, 20)
     expect(reply).toBe('error: could not resume stuck: previous process did not exit within 1 second; message was not delivered and worker was not resumed')
     expect(t.specs).toHaveLength(0)
     expect(t.room.workers.get('stuck')?.status).toBe('done')
