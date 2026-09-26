@@ -29,7 +29,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (level === 'declared' && !s.room.scope(s.me.name)) {
         const retained = s.daemon.retainedDeclared()
         out.push(retained.length
-          ? `${retained.length} changed file(s) you declared earlier remain shared: ${retained.join(', ')}`
+          ? `${retained.length} changed file(s) you declared earlier remain shared: ${retained.slice(0, 8).join(', ')}${retained.length > 8 ? `, +${retained.length - 8} more` : ''}`
           : 'no scope declared yet, so nothing is shared until room_scope(area, summary, paths)')
       }
       return out.join('\n')

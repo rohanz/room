@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { execFileSync } from 'node:child_process'
@@ -99,9 +99,12 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(result).toContain('BROADCAST-INTERRUPT-2')
     expect(result).toContain('BROADCAST-NOTIFY-1')
     expect(result).not.toContain('OLD-NOTIFY')
+    // Receipts are written in the worker process and reach the lead's document through the relay.
+    await vi.waitFor(() => {
+      expect(lead.room.seen('Ada+q').has(early.id)).toBe(true)
+      expect(lead.room.seen('Ada+q').has(late.id)).toBe(true)
+    }, { timeout: 5000 })
     expect(lead.room.seen('Ada+q').has(old.id)).toBe(false)
-    expect(lead.room.seen('Ada+q').has(early.id)).toBe(true)
-    expect(lead.room.seen('Ada+q').has(late.id)).toBe(true)
     expect(await mcp.call('room_wait', { timeoutMs: 10 })).not.toMatch(/BROADCAST-(NOTIFY|INTERRUPT)/)
   }, 45_000)
 

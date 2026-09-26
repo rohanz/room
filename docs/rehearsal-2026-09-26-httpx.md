@@ -81,3 +81,9 @@ Fixes 1 and 2 are below.
   - at declared, `room_done` lists the changed files that stay shared until they are committed or
     reverted.
 - The full suite passed three times (1667 tests), with typecheck and knip clean.
+- The live check on 0.16.14 passed: after finishing, Ben said "httpx/_urlparse.py stays shared until you
+  commit or revert it", and after a revert he said nothing was shared.
+- The Astra review of 0.16.14 found that `room_done` read an unreconciled retained set: an unpublished
+  first edit was dropped when the scope cleared. It also found that `room_share` could say "nothing is
+  shared" while retained files were, and that the README was stale. 0.16.15 fixes all of them, with
+  real-daemon tests.

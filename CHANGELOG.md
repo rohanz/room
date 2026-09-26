@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.15
+
+Fixes from the Astra review of 0.16.14 (declared-sharing retention).
+
+- At declared sharing, `room_done` refreshes HEAD and publishes current changes before it clears the scope. An edit not yet published is kept shared, and files just committed or reverted are not listed.
+- The `room_done` and `room_share` replies list the changed files declared earlier that stay shared while they differ from your base, and say that "share plans only" withdraws them. `room_share` no longer says nothing is shared when retained files are.
+- The declared level is described as "files in your declared area and changed files declared earlier". The README no longer claims that declared output is withdrawn after `room_done` or on restart.
+- Real-daemon tests cover a pending edit, commit and revert before done, and withdrawal through a level change. The auto-join test waits for receipts relayed from the worker process instead of reading them at once.
+
 ## 0.16.14
 
 From the httpx rehearsal at declared sharing (docs/rehearsal-2026-09-26-httpx.md).
