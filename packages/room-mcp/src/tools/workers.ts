@@ -282,7 +282,7 @@ export function install(state: HandlerState): void {
         signalled = proc.kill()
         how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled: the process is already gone`
       } else if (decideStop(await workerRealState(s.dir, w, { process: true, probe: ctx.probe })).host === 'signal') {
-        signalled = signalWorker(w.pid)
+        signalled = signalWorker(w.pid, 'SIGTERM', undefined, undefined, w, ctx.probe)
         how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled (it exited just now, or is not ours to signal)`
       } else {
         signalled = false

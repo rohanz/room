@@ -173,7 +173,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
           const deadline = now() + 5_000
           while (state.workerAlive(s, w) && now() < deadline) await sleep(50)
-          if (state.workerAlive(s, w) && decideStop(await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })).host === 'signal') signalWorker(w.pid, 'SIGKILL')
+          if (state.workerAlive(s, w) && decideStop(await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })).host === 'signal') signalWorker(w.pid, 'SIGKILL', undefined, undefined, w, state.ctx?.probe)
           const hardDeadline = now() + 5_000
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep(50)
           if (state.workerAlive(s, w)) throw new Error('worker process has not stopped')

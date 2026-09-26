@@ -338,6 +338,10 @@ export interface PreparedWorktree {
   dir: string
   branch: string
   created: boolean
+  /** The branch may predate a newly created checkout. */
+  branchCreated?: boolean
+  /** Ref values to restore if preparation is rolled back; absent refs were created here. */
+  previousCarryRefs?: Record<string, string>
   base?: string
   carried?: { count: number; commit: string; paths: string[] }
   carriedBase?: string
@@ -418,9 +422,13 @@ export function clearWorkerStopState(repoDir: string, tag: string, workerId?: st
 export async function cleanupPreparedWorktree(repoDir: string, prepared: PreparedWorktree): Promise<void> {
   if (!prepared.created) return
   await internalGit(repoDir, ['worktree', 'remove', '--force', prepared.dir])
+  if (!prepared.branchCreated) return
   await internalGit(repoDir, ['branch', '-D', prepared.branch])
-  try { await internalGit(repoDir, ['update-ref', '-d', carryRef(prepared.branch.slice(5))]) } catch { /* no carry ref */ }
-  try { await internalGit(repoDir, ['update-ref', '-d', carriedUntrackedRef(prepared.branch.slice(5))]) } catch { /* no untracked ref */ }
+  for (const ref of [carryRef(prepared.branch.slice(5)), carriedUntrackedRef(prepared.branch.slice(5))]) {
+    const previous = prepared.previousCarryRefs?.[ref]
+    if (previous) await internalGit(repoDir, ['update-ref', ref, previous])
+    else try { await internalGit(repoDir, ['update-ref', '-d', ref]) } catch { /* no ref was created */ }
+  }
   await fs.promises.rm((await carryRecord(repoDir, prepared.branch.slice(5))).file, { force: true })
 }
 
@@ -448,15 +456,19 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   try { await git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); hasBranch = true } catch { /* new branch */ }
   if (hasBranch && ownerId && !record?.ownerId) throw new Error(`branch ${branch} has unknown ownership; choose another tag`)
   if (hasBranch && !carry) throw new Error(`branch ${branch} already exists; choose a new tag for carry=false`)
+  const previousCarryRefs: Record<string, string> = {}
+  if (!hasBranch) for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
+    try { previousCarryRefs[ref] = (await git(repoDir, ['rev-parse', '--verify', ref])).trim() } catch { /* absent */ }
+  }
   let base: string | undefined
   if (!hasBranch) {
     try { base = (await git(repoDir, ['rev-parse', '--verify', 'HEAD'])).trim() }
     catch { throw new Error('make a first commit before spawning workers') }
   }
   await internalGit(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, base!])
-  if (!base) return { dir, branch, created: true, ...record }
+  if (!base) return { dir, branch, created: true, branchCreated: false, ...record }
   if (!carry) {
-    const result: PreparedWorktree = { dir, branch, created: true, base }
+    const result: PreparedWorktree = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base }
     await (await carryRecord(repoDir, tag)).write({ base, ownerId })
     return result
   }
@@ -526,12 +538,12 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     if (paths.length) await internalGit(repoDir, ['update-ref', carryRef(tag), commit])
     retainUntrackedTree(repoDir, tag, carriedUntracked)
     if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
-    const result: PreparedWorktree = { dir, branch, created: true, base: commit, carriedBase: staged.length ? commit : undefined, carried: paths.length ? { count: paths.length, commit, paths } : undefined, carriedUntracked, skippedCarry }
+    const result: PreparedWorktree = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base: commit, carriedBase: staged.length ? commit : undefined, carried: paths.length ? { count: paths.length, commit, paths } : undefined, carriedUntracked, skippedCarry }
     await (await carryRecord(repoDir, tag)).write({ base: result.base, carriedBase: result.carriedBase, carried: result.carried, carriedUntracked, skippedCarry, ownerId })
     return result
   } catch (e) {
     if ((e as Error).message === 'lead changed during carry; retrying snapshot') {
-      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true })
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs })
       if (retry >= 2) throw new Error('lead changed repeatedly during carry; try spawning again when HEAD is stable')
       return prepareWorktree(repoDir, tag, leadName, linkExclusions, ownerId, retry + 1, carry)
     }
@@ -539,13 +551,14 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
       await internalGit(dir, ['reset', '--hard', base])
       await internalGit(dir, ['clean', '-fdx'])
       for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
-        try { await internalGit(repoDir, ['update-ref', '-d', ref]) } catch { /* ref was never written */ }
+        if (previousCarryRefs[ref]) await internalGit(repoDir, ['update-ref', ref, previousCarryRefs[ref]])
+        else try { await internalGit(repoDir, ['update-ref', '-d', ref]) } catch { /* ref was never written */ }
       }
     } catch {
-      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true })
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs })
       await internalGit(repoDir, ['worktree', 'add', '-q', '-b', branch, dir, base])
     }
-    return { dir, branch, created: true, base, carryFailed: true, carryError: (e as Error).message }
+    return { dir, branch, created: true, branchCreated: true, previousCarryRefs, base, carryFailed: true, carryError: (e as Error).message }
   }
 }
 
@@ -565,8 +578,9 @@ export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>
 }
 
 /** Signal only the worker host pid. Its group may also contain processes outside the worktree. */
-export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', worktreeDir?: string, list: () => CwdProcess[] = listCwdProcesses): boolean {
+export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', worktreeDir?: string, list: () => CwdProcess[] = listCwdProcesses, worker?: Parameters<typeof pidIsOurWorker>[1], probe?: (pid: number) => ProcessInfo | undefined): boolean {
   if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false
+  if (worker && !pidIsOurWorker(pid, worker, probe)) return false
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false
   try { process.kill(pid, signal); return true } catch { return false }
 }
@@ -597,7 +611,7 @@ export const defaultSpawner: Spawner = spec => {
     onExit: cb => { child.once('close', code => { try { fs.closeSync(fd) } catch { /* closed */ } cb(code) }) },
     onError: cb => { child.once('error', err => { try { fs.closeSync(fd) } catch { /* closed */ } cb(err) }) },
     onSessionId: cb => { sessionIdCallback = cb; if (sessionId) cb(sessionId) },
-    kill: () => signalWorker(child.pid ?? -1, 'SIGTERM', spec.cwd),
+    kill: () => { try { return child.kill('SIGTERM') } catch { return false } },
   }
 }
 
@@ -606,32 +620,64 @@ export function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
 }
 
-export interface ProcessInfo { start?: number; command?: string }
-/** What `ps` knows about a pid: start time (ms since epoch) and command line; undefined when unknown. */
+export interface ProcessInfo { start?: number; command?: string; env?: Record<string, string>; cwd?: string }
+/** Process identity from ps plus the environment/cwd when the host permits reading them. */
 function probeProcess(pid: number): ProcessInfo | undefined {
   if (!pid || pid <= 0) return undefined
   try {
     const start = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim()
     const command = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim()
     const t = Date.parse(start)
-    return { ...(Number.isFinite(t) ? { start: t } : {}), ...(command ? { command } : {}) }
+    const info: ProcessInfo = { ...(Number.isFinite(t) ? { start: t } : {}), ...(command ? { command } : {}) }
+    if (process.platform === 'linux') {
+      try {
+        info.env = Object.fromEntries(fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').filter(Boolean).map(entry => {
+          const equal = entry.indexOf('=')
+          return [entry.slice(0, equal), entry.slice(equal + 1)]
+        }))
+      } catch { /* another user's process, or it exited */ }
+      try { info.cwd = fs.realpathSync(`/proc/${pid}/cwd`) } catch { /* unavailable */ }
+    } else if (process.platform === 'darwin') {
+      try {
+        const expanded = execFileSync('ps', ['eww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 })
+        const env: Record<string, string> = {}
+        const environmentText = expanded.startsWith(command) ? expanded.slice(command.length) : ''
+        for (const match of environmentText.matchAll(/(?:^|\s)(ROOM_TAG|ROOM_LEAD)=([^\s]+)/g)) env[match[1]] = match[2]
+        info.env = env
+      } catch { /* environment unavailable */ }
+      try {
+        const cwd = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout: 3000 }).split('\n').find(line => line.startsWith('n'))
+        if (cwd) info.cwd = cwd.slice(1)
+      } catch { /* cwd unavailable */ }
+    }
+    return info
   } catch { return undefined }
 }
 
 /**
  * May this session signal `pid` as this worker? Only when it is alive, started within 5 s of the recorded
- * spawn, and its command line is a claude/codex invocation mentioning the worker's tag,
- * worktree, or retained host session id (used by `codex exec resume`).
+ * spawn, and its exact host session argument, Room environment, or exact worktree cwd matches.
  * A recycled pid after a lead restart fails at least one of these.
  */
-export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string; dir: string; hostSessionId?: string }, probe: (pid: number) => ProcessInfo | undefined = probeProcess): boolean {
+export function pidIsOurWorker(pid: number, w: { startedAt: number; tag: string; dir: string; branch?: string; lead?: string; hostSessionId?: string }, probe: (pid: number) => ProcessInfo | undefined = probeProcess): boolean {
   if (!pidAlive(pid)) return false
   const info = probe(pid)
   if (!info?.start || !info.command) return false
   if (Math.abs(info.start - w.startedAt) > 5000) return false
   if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info.command)) return false
-  return info.command.includes(w.tag) || info.command.includes(w.dir)
-    || (!!w.hostSessionId && info.command.includes(w.hostSessionId))
+  const session = w.hostSessionId?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (session && new RegExp(`(?:^|\\s)(?:--session-id|--resume|resume)\\s+["']?${session}(?=["']?(?:\\s|$))`).test(info.command)) return true
+  if (w.lead && info.env?.ROOM_TAG === w.tag && info.env.ROOM_LEAD === w.lead) return true
+  if (info.cwd && fs.existsSync(path.join(w.dir, '.git'))) {
+    try {
+      const root = fs.realpathSync(w.dir)
+      if (fs.realpathSync(info.cwd) !== root) return false
+      const top = execFileSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      const branch = execFileSync('git', ['-C', root, 'branch', '--show-current'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      if (fs.realpathSync(top) === root && branch === (w.branch ?? `room/${w.tag}`)) return true
+    } catch { /* inaccessible or no longer the worker worktree */ }
+  }
+  return false
 }
 
 export interface CwdProcess { pid: number; cwd: string; command: string }

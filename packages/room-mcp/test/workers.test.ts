@@ -260,6 +260,38 @@ describe('worker plumbing', () => {
     expect(readFileSync(join(second.dir, 'modified.txt'), 'utf8')).toBe('second WIP\n')
   })
 
+  it('keeps an existing branch and its unmerged commit when launch fails after recreating its checkout', async () => {
+    const { repo, git } = realRepo()
+    const ownerId = 'local/x/main|rohanz'
+    writeFileSync(join(repo, 'modified.txt'), 'carried input\n')
+    writeFileSync(join(repo, 'untracked-input.txt'), 'private input\n')
+    const first = await prepareWorktree(repo, 'survivor', 'rohanz', [], ownerId)
+    writeFileSync(join(first.dir, 'worker.txt'), 'preserved worker work\n')
+    git('-C', first.dir, 'add', 'worker.txt')
+    git('-C', first.dir, 'commit', '-qm', 'preserve worker work')
+    const workerHead = git('rev-parse', 'room/survivor')
+    const carryHead = git('rev-parse', 'refs/room/carry/survivor')
+    const untrackedTree = git('rev-parse', 'refs/room/carry-untracked/survivor')
+    rmSync(first.dir, { recursive: true, force: true })
+
+    const { a } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base: git('rev-parse', 'HEAD') })
+    let session: Session | null = fakeSession(a, lead)
+    session.dir = repo
+    const tools = createTools({
+      getSession: () => session, setSession: s => { session = s }, cwd: repo,
+      worktree: (root, tag) => prepareWorktree(root, tag, 'rohanz', [], ownerId),
+      spawner: () => { throw new Error('forced launch failure') },
+    })
+    try {
+      expect(await tools.call('room_spawn', { tag: 'survivor', task: 'continue work' })).toContain('forced launch failure')
+      expect(git('rev-parse', '--verify', 'refs/heads/room/survivor')).toBe(workerHead)
+      expect(git('show', 'room/survivor:worker.txt')).toBe('preserved worker work')
+      expect(git('rev-parse', 'refs/room/carry/survivor')).toBe(carryHead)
+      expect(git('rev-parse', 'refs/room/carry-untracked/survivor')).toBe(untrackedTree)
+    } finally { await tools.shutdown() }
+  })
+
   it('retries against a new HEAD when the lead commits during the snapshot', async () => {
     const { repo, git } = realRepo()
     writeFileSync(join(repo, 'modified.txt'), 'dirty\n')
@@ -772,13 +804,36 @@ function setupLead() {
 }
 
 describe('worker safety', () => {
+  it('does not identify an unrelated claude session from a tag substring', () => {
+    const rec = { startedAt: 1_000_000, tag: 'a', dir: '/repo/.room/workers/a', lead: 'rohanz', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b' }
+    expect(pidIsOurWorker(process.pid, rec, () => ({ start: 1_001_000, command: 'claude -p unrelated task' }))).toBe(false)
+    expect(pidIsOurWorker(process.pid, rec, () => ({ start: 1_001_000, command: `claude --session-id ${rec.hostSessionId}-other -p task` }))).toBe(false)
+  })
+
+  it('recognizes a worker after lead restart by its exact host session argument', () => {
+    const rec = { startedAt: 1_000_000, tag: 'a', dir: '/repo/.room/workers/a', lead: 'rohanz', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b' }
+    expect(pidIsOurWorker(process.pid, rec, () => ({ start: 1_001_000, command: `claude -p task --session-id ${rec.hostSessionId}` }))).toBe(true)
+    expect(pidIsOurWorker(process.pid, rec, () => ({ start: 1_001_000, command: 'codex exec resume e1be43be-03a3-45b8-b267-cd48780e2a0b --json' }))).toBe(true)
+  })
+
+  it('uses cwd only for the exact checked-out worker branch', async () => {
+    const { repo } = realRepo()
+    const prepared = await prepareWorktree(repo, 'cwd-worker')
+    const rec = { startedAt: 1_000_000, tag: 'cwd-worker', dir: prepared.dir, branch: prepared.branch, lead: 'rohanz' }
+    const probe = () => ({ start: 1_001_000, command: 'claude -p task', cwd: prepared.dir })
+    expect(pidIsOurWorker(process.pid, rec, probe)).toBe(true)
+    expect(pidIsOurWorker(process.pid, { ...rec, branch: 'room/another' }, probe)).toBe(false)
+    expect(pidIsOurWorker(process.pid, rec, () => ({ ...probe(), cwd: repo }))).toBe(false)
+  })
+
   it('a pid this session did not spawn is signalled only if it started with the worker record and runs a worker command', () => {
-    const rec = { startedAt: 1_000_000, tag: 'money', dir: '/repo/.room/workers/money' }
+    const rec = { startedAt: 1_000_000, tag: 'money', dir: '/repo/.room/workers/money', lead: 'rohanz' }
     const me = process.pid // alive; the probe decides the rest
     expect(pidIsOurWorker(-1, rec)).toBe(false)
     expect(pidIsOurWorker(0, rec)).toBe(false)
-    expect(pidIsOurWorker(me, rec, () => ({ start: 1_002_000, command: 'claude -p You are worker "money", dispatched by rohanz' }))).toBe(true)
-    expect(pidIsOurWorker(me, rec, () => ({ start: 1_002_000, command: '/usr/local/bin/codex exec -s workspace-write worker money' }))).toBe(true)
+    expect(pidIsOurWorker(me, rec, () => ({ start: 1_002_000, command: 'claude -p task', env: { ROOM_TAG: 'money', ROOM_LEAD: 'rohanz' } }))).toBe(true)
+    expect(pidIsOurWorker(me, rec, () => ({ start: 1_002_000, command: '/usr/local/bin/codex exec -s workspace-write', env: { ROOM_TAG: 'money', ROOM_LEAD: 'rohanz' } }))).toBe(true)
+    expect(pidIsOurWorker(me, rec, () => ({ start: 1_002_000, command: 'claude -p task', env: { ROOM_TAG: 'money', ROOM_LEAD: 'someone-else' } }))).toBe(false)
     // recycled pid: right command line, wrong start time
     expect(pidIsOurWorker(me, rec, () => ({ start: 1_020_000, command: 'claude -p worker money' }))).toBe(false)
     // right time, unrelated process
@@ -1142,9 +1197,9 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const child = spawn('sleep', ['100'], { detached: true, stdio: 'ignore' }); child.unref()
     const exited = new Promise<void>(r => child.once('exit', () => r()))
     // a record from before the restart: no entry in procs, but ps says this pid is the worker's claude
-    a.setWorker({ tag: 'money', name: 'rohanz+money', host: 'claude', task: 'x', dir: '/repo/.room/workers/money', branch: 'room/money', pid: child.pid!, startedAt, status: 'done', lead: 'rohanz', gen: 1, summary: 'done but alive' })
+    a.setWorker({ tag: 'money', name: 'rohanz+money', host: 'claude', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b', task: 'x', dir: '/repo/.room/workers/money', branch: 'room/money', pid: child.pid!, startedAt, status: 'done', lead: 'rohanz', gen: 1, summary: 'done but alive' })
     let ls: Session | null = fakeSession(a, lead)
-    const probe = () => ({ start: startedAt, command: 'claude -p You are worker "money"' })
+    const probe = () => ({ start: startedAt, command: 'claude -p task --session-id e1be43be-03a3-45b8-b267-cd48780e2a0b' })
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe })
     expect(await tools.call('room_leave', {})).toContain('still running: money')
     expect(await tools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('done but its process is still alive')
