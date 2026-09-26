@@ -259,7 +259,7 @@ export function install(state: HandlerState): void {
       for (const sess of [s, ...rooms.all().filter(x => x !== s)]) for (const w of myWorkers(sess)) if (w.status === 'running' || pidAlive(w.pid) || workerAlive(sess, w)) out.push({ s: sess, w })
       return out
     }
-  const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason']): Promise<string> => {
+  const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason'], cancelled?: AbortSignal): Promise<string> => {
       const proc = rooms.handle(s, w.id)
       if (!proc) {
         const processState = await workerRealState(s.dir, w, { process: true, probe: ctx.probe })
@@ -299,14 +299,21 @@ export function install(state: HandlerState): void {
         how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`
       }
       if (!signalled && pidAlive(w.pid)) how = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
-      // Keep an owned handle until exit confirms the process can no longer publish live state.
-      if (stopReason && signalled) {
-        try { persistWorkerStopReason(s.dir, w.tag, stopReason, w.id) } catch (e) { state.log(`could not persist stop reason for ${w.tag}: ${e}`) }
-      }
-      if (signalled) s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
-      if (signalled || proc || pidAlive(w.pid)) s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : pidAlive(w.pid) ? how : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
       await stopCwdProcesses()
       if (proc && !pidAlive(w.pid)) releaseWorkerProcessPort(proc)
+      // Shutdown may have reached its deadline during cwd cleanup. Commit the stop only
+      // after every awaited step succeeds, so a later continuation cannot rewrite the record.
+      if (cancelled?.aborted) return how + cleanupText()
+      if (stopReason && cleanupError) throw new Error(cleanupError)
+      if (signalled || proc || pidAlive(w.pid)) s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : pidAlive(w.pid) ? how : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
+      // Keep an owned handle until exit confirms the process can no longer publish live state.
+      if (signalled) {
+        if (stopReason) {
+          try { persistWorkerStopReason(s.dir, w.tag, stopReason, w.id) }
+          catch (e) { throw new Error(`could not persist stop reason for ${w.tag}: ${e instanceof Error ? e.message : String(e)}`) }
+        }
+        s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
+      }
       return how + cleanupText()
     }
 

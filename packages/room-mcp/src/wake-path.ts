@@ -15,7 +15,7 @@ const SOCKET_POST_TIMEOUT_MS = 1_500
 let parentArgsCache: string | undefined
 function claudeParentArgs(): string {
   if (parentArgsCache !== undefined) return parentArgsCache
-  try { parentArgsCache = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() }
+  try { parentArgsCache = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } }).trim() }
   catch { parentArgsCache = '' }
   return parentArgsCache
 }

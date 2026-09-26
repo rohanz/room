@@ -12,7 +12,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerProcessOwnership, probeProcess, workerEnv, codexSessionId, type SpawnSpec } from '../src/workers.js'
+import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerProcessOwnership, probeProcess, parsePsLstartUtc, persistedWorkerStopReason, workerEnv, codexSessionId, type SpawnSpec } from '../src/workers.js'
 import { reserveWorkerPort } from '../src/port-reservations.js'
 
 // Disk cleanup and patch restoration are exercised with real worktrees in collect.test.ts.
@@ -833,9 +833,26 @@ describe('worker safety', () => {
   })
 
   it('reads macOS lstart to the second with an injected boot-time guard', () => {
+    const line = 'Mon Sep 21 12:34:56 2026'
+    expect(parsePsLstartUtc(line)).toBe(Date.UTC(2026, 8, 21, 12, 34, 56) / 1000)
     expect(probeProcess(42, { platform: 'darwin', readFile: () => { throw new Error('unexpected') }, readLink: () => '',
-      exec: (file, args) => file === 'sysctl' ? '{ sec = 1234567, usec = 0 }' : args[1] === 'lstart=' ? 'Mon Sep 21 12:34:56 2026' : '/opt/homebrew/bin/node' }))
-      .toEqual({ startTime: `darwin:1234567:${Date.parse('Mon Sep 21 12:34:56 2026') / 1000}`, executable: 'node' })
+      exec: (file, args) => file === 'sysctl' ? '{ sec = 1234567, usec = 0 }' : args[1] === 'lstart=' ? line : '/opt/homebrew/bin/node' }))
+      .toEqual({ startTime: `darwin:1234567:${Date.UTC(2026, 8, 21, 12, 34, 56) / 1000}`, executable: 'node' })
+  })
+
+  it('keeps the worker record and disk stop reason untouched if shutdown dismissal errors', async () => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'erroring', task: 'x' })
+    const before = { ...t.a.workers.get('erroring')! }
+    const post = t.a.post.bind(t.a)
+    vi.spyOn(t.a, 'post').mockImplementation((...args) => {
+      if ((args[1] as { type?: string }).type === 'note') throw new Error('note failed')
+      return post(...args)
+    })
+    await t.leadTools.shutdown()
+    expect(t.killed).toEqual([1])
+    expect(t.a.workers.get('erroring')).toEqual(before)
+    expect(persistedWorkerStopReason(dir, 'erroring', before.id)).toBeUndefined()
   })
 
   it('dismissing a worker whose process is unknown and old leaves the pid alone and keeps its status', async () => {

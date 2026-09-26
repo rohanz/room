@@ -631,10 +631,22 @@ const systemProcessReaders: ProcessReaders = {
   platform: process.platform,
   readFile: file => fs.readFileSync(file, 'utf8'),
   readLink: file => fs.readlinkSync(file),
-  exec: (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }),
+  exec: (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000,
+    ...(file === 'ps' ? { env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } } : {}) }),
 }
 
-/** Read the kernel's process birth marker and executable, without inspecting argv or environment. */
+/** Parse the C-locale `ps` start line as UTC, independent of the MCP process's timezone. */
+export function parsePsLstartUtc(line: string): number | undefined {
+  const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(line.trim())
+  if (!match) return undefined
+  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(match[1])
+  const seconds = Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])) / 1000
+  return Number.isInteger(seconds) ? seconds : undefined
+}
+
+/** Read the kernel's process birth marker and executable, without inspecting argv or environment.
+ * macOS gives Node one-second start-time resolution. Reuse of the same pid in that same second is
+ * not a practical risk: pids increment and wrap only after about 99,999, and the executable must also match. */
 export function probeProcess(pid: number, readers: ProcessReaders = systemProcessReaders): ProcessInfo | undefined {
   if (!pid || pid <= 0) return undefined
   try {
@@ -652,8 +664,8 @@ export function probeProcess(pid: number, readers: ProcessReaders = systemProces
     }
     if (readers.platform === 'darwin') {
       const lstart = readers.exec('ps', ['-o', 'lstart=', '-p', String(pid)]).trim()
-      const startSeconds = Date.parse(lstart) / 1000
-      if (!Number.isInteger(startSeconds)) return undefined
+      const startSeconds = parsePsLstartUtc(lstart)
+      if (startSeconds === undefined) return undefined
       const boot = readers.exec('sysctl', ['-n', 'kern.boottime']).match(/sec\s*=\s*(\d+)/)?.[1]
       if (!boot) return undefined
       let executable: string | undefined
@@ -690,7 +702,8 @@ function pidHasWorkerCwd(pid: number, dir: string, list: () => CwdProcess[] = li
 }
 
 function processName(pid: number): string {
-  try { return path.basename(execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 }).trim()) || 'process' }
+  try { return path.basename(execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000,
+    env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } }).trim()) || 'process' }
   catch { return 'process' }
 }
 

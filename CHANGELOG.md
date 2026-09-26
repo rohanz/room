@@ -2,6 +2,7 @@
 
 ## 0.16.7
 
+- macOS worker start times now come from C-locale, UTC `ps` output and are parsed as UTC. Shutdown logs failed or timed-out dismissals with the worker tag and leaves their records and persisted stop reasons untouched for restart recovery.
 - Merge preview extraction now treats EPIPE, ENOTCONN and ECONNRESET on the archive pipe as consumer disconnects and decides the result from git and tar exit codes; it no longer destroys tar stdin on exit while writes may be pending.
 - Worker process recovery now requires the recorded PID and exact OS start identity, plus the expected host executable (`claude`, `codex`, or `node`). Linux uses `/proc/<pid>/stat` field 22 with the boot ID; macOS uses `ps` start time to the second with a boot-time guard. Spawn and resume record the identity immediately after launch. Legacy records without it remain unverified. Session IDs, command text, environment and worktree cwd no longer authorize a signal.
 - An unreadable live worker PID is now reported to the lead as unverified and left running. Shutdown, discard, collect, resume, and automatic retirement keep its record instead of claiming it was stopped or exited; the safeguard also covers done and dismissed records.

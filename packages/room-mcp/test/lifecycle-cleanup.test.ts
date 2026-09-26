@@ -9,7 +9,7 @@ import { RoomDoc, type RetiredWorker } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { handlers as joinHandlers } from '../src/tools/join.js'
 import { install as installWorkerHandlers } from '../src/tools/workers.js'
-import type { HandlerState } from '../src/tools/context.js'
+import { createHandlerState, type HandlerState } from '../src/tools/context.js'
 
 describe('worker lifecycle cleanup', () => {
   it('signals only processes whose resolved cwd is inside the worktree, then escalates survivors', async () => {
@@ -161,5 +161,34 @@ describe('worker lifecycle cleanup', () => {
     expect(dismissWorker).toHaveBeenCalledOnce()
     expect(result).toContain('stopped processes: node (pid 123)')
     room.doc.destroy()
+  })
+
+  it('shutdown times out a stalled dismissal without changing the worker record', async () => {
+    const room = new RoomDoc()
+    const worker = { id: 'stalled-id', tag: 'stalled', name: 'lead+stalled', lead: 'lead', host: 'codex' as const,
+      task: 'x', dir: '/missing', branch: 'room/stalled', pid: process.pid, processStartTime: 'test:start', startedAt: 1, status: 'running' as const }
+    room.setWorker(worker)
+    const before = { ...room.workers.get(worker.tag)! }
+    const s = { room, dir: '/missing', me: { name: 'lead', kind: 'agent' }, roomName: 'local/repo/main' } as Session
+    const log = vi.fn()
+    const state = createHandlerState({ getSession: () => s, setSession: () => {}, cwd: '/missing', leave: async () => {},
+      probe: () => ({ startTime: 'test:start', executable: 'codex' }), log })
+    let release!: () => void
+    const stalled = new Promise<void>(resolve => { release = resolve })
+    state.runningWorkers = () => [{ s, w: worker }]
+    state.dismissWorker = async (_s, w, _why, _reason, cancelled) => {
+      await stalled
+      if (!cancelled?.aborted) room.updateWorker(w.tag, { status: 'dismissed', stopReason: 'lead-session-ended' }, w.id)
+      return 'late dismissal'
+    }
+    state.closeWorkersRoom = async () => {}
+    state.cleanupMine = () => 0
+    try {
+      await state.shutdown()
+      release()
+      await stalled
+      expect(room.workers.get(worker.tag)).toEqual(before)
+      expect(log).toHaveBeenCalledWith('shutdown dismissal timed out for stalled; worker record kept for restart')
+    } finally { release(); room.doc.destroy() }
   })
 })

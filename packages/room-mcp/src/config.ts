@@ -109,7 +109,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
 }
 
 /** Explicit worker host wins, then static plugin env, parent process and the SessionStart hint. */
-export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process.env, parentCommand: () => string = () => execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] })): string {
+export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process.env, parentCommand: () => string = () => execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } })): string {
   const host = (v: unknown) => v === 'claude' || v === 'codex' ? v : undefined
   if (host(env.ROOM_WORKER_HOST)) return env.ROOM_WORKER_HOST!
   if (host(env.ROOM_HOST)) return env.ROOM_HOST!

@@ -80,7 +80,7 @@ export interface HandlerState {
   closeWorkersRoom: () => Promise<void>
   runningWorkers: (s: Session) => { s: Session; w: Worker }[]
   hasCompany: (s: Session) => CompanyState
-  dismissWorker: (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason']) => string | Promise<string>
+  dismissWorker: (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason'], cancelled?: AbortSignal) => string | Promise<string>
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]
   shareOf: (s: Session, person: string) => ShareLevel
@@ -407,17 +407,24 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       const s = ctx.getSession()
       if (!s) return
       const running = (await Promise.all(runtime.runningWorkers(s).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
+      const cancellation = new AbortController()
+      const pending = new Set(running.map(r => r.w.tag))
       const stops = running.map(async r => {
-        try { await runtime.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended') }
-        catch { /* best effort */ }
+        try { await runtime.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended', cancellation.signal) }
+        catch (e) { log(`shutdown dismissal failed for ${r.w.tag}: ${e instanceof Error ? e.message : String(e)}`) }
+        finally { pending.delete(r.w.tag) }
       })
       if (stops.length) {
         let timer: ReturnType<typeof setTimeout> | undefined
-        await Promise.race([Promise.all(stops), new Promise<void>(resolve => {
-          timer = setTimeout(resolve, 1800)
+        const completed = await Promise.race([Promise.all(stops).then(() => true), new Promise<false>(resolve => {
+          timer = setTimeout(() => resolve(false), 1800)
           timer.unref()
         })])
         if (timer) clearTimeout(timer)
+        if (!completed) {
+          cancellation.abort()
+          for (const tag of pending) log(`shutdown dismissal timed out for ${tag}; worker record kept for restart`)
+        }
       }
       await runtime.closeWorkersRoom().catch(() => {})
       try { runtime.cleanupMine(s, 'session ended') } catch { /* best effort */ }
