@@ -32,8 +32,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function install(state: HandlerState): void {
-  const { ctx, presences, log, now } = state
+export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' | 'now'>): Pick<HandlerState, 'refreshPrs' | 'startPrSync' | 'stopPrSync' | 'prLines' | 'myPr' | 'postLedger'> {
+  const { ctx, presences, log, now } = deps
   let prTimer: ReturnType<typeof setInterval> | null = null
   let prSyncedSession: Session | null = null
   const fetchPrList = ctx.prs?.fetch ?? fetchPrs
@@ -78,5 +78,9 @@ export function install(state: HandlerState): void {
       s.room.post<NoteMsg>(s.me, { type: 'note', text: `${r.updated ? 'updated' : 'posted'} the room ledger on PR #${pr.number}${r.url ? ` (${r.url})` : ''}`, priority: 'fyi' })
       return `${r.updated ? 'updated' : 'posted'} the room ledger comment on PR #${pr.number} "${pr.title}"${r.url ? `: ${r.url}` : ''} (${body.split('\n').length} lines)`
     }
-  Object.assign(state, { refreshPrs, startPrSync, stopPrSync, prLines, myPr, postLedger })
+  return { refreshPrs, startPrSync, stopPrSync, prLines, myPr, postLedger }
+}
+
+export function install(state: HandlerState): void {
+  Object.assign(state, createPrs(state))
 }

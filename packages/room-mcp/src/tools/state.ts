@@ -1,3 +1,4 @@
+import { createPrs } from './prs.js'
 import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
@@ -136,13 +137,15 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const claims = createClaims({ conflictPairs, mine, log, ctx, liveText, baseFor, now })
   const scheduleInboxWrite = () => primaryHooks?.scheduleWrite()
   const inboxServices = createInbox({ seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded })
+  const prs = createPrs({ ctx, presences, log, now })
   runtime = {
+    ...prs,
     ...inboxServices,
     ...claims,
     ...areas,
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, myWorkers: undefined!, workerAlive: undefined!,
     ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, others, presences,
-    shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, serverOf: undefined!, LOCAL_LOGIN: undefined!, codeLine: undefined!, refreshPrs: undefined!, startPrSync: undefined!, stopPrSync: undefined!, prLines: undefined!, myPr: undefined!, postLedger: undefined!, startWorkersBridge: undefined!,
+    shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, serverOf: undefined!, LOCAL_LOGIN: undefined!, codeLine: undefined!, startWorkersBridge: undefined!,
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite,
     upgraded, conflictPairs,

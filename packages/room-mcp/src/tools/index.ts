@@ -13,7 +13,7 @@ import { defs as collectDefs, handlers as collectHandlers } from './collect.js'
 import { defs as fileDefs, handlers as fileHandlers } from './files.js'
 import { defs as workerDefs, handlers as workerHandlers, install as installWorkers } from './workers.js'
 import { defs as shareDefs, handlers as shareHandlers, install as installShare } from './share.js'
-import { defs as prDefs, handlers as prHandlers, install as installPrs } from './prs.js'
+import { defs as prDefs, handlers as prHandlers } from './prs.js'
 
 export interface Tools {
   list(): ToolDef[]
@@ -47,7 +47,6 @@ export function createTools(ctx: ToolCtx): Tools {
   const state: HandlerState = createHandlerState(ctx)
   const initial = ctx.getSession()
   if (initial) trackConnection(initial, state.now)
-  installPrs(state)
   installJoin(state)
   installWorkers(state)
   installShare(state)
