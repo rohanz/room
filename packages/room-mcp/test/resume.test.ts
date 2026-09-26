@@ -9,14 +9,14 @@ import { RoomDoc, type Worker } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { Rooms } from '../src/registry.js'
 import { decideResume, type WorkerRealState } from '../src/worker-state.js'
-import { persistWorkerStopReason, pidIsOurWorker } from '../src/workers.js'
+import { persistWorkerStopReason } from '../src/workers.js'
 import type { Session } from '../src/session.js'
 import type { PreparedWorktree, SpawnSpec } from '../src/workers.js'
 
 const scratch: string[] = []
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
-function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise<PreparedWorktree>) {
+function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise<PreparedWorktree>, probe: (pid: number) => { startTime?: string; executable?: string } | undefined = () => undefined) {
   const dir = mkdtempSync(join(tmpdir(), 'room-resume-'))
   scratch.push(dir)
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
@@ -44,7 +44,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   const exits: ((code: number | null) => void)[] = []
   const errors: ((error: Error) => void)[] = []
   const tools = createTools({
-    getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers, log: line => logs.push(line), probe: () => undefined,
+    getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers, log: line => logs.push(line), probe,
     spawner: spec => { specs.push(spec); return { pid: 6000 + specs.length, onExit: cb => { exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => true } },
     worktree: worktree ?? (async (repo, tag) => {
       const workerDir = join(repo, '.room', 'workers', tag)
@@ -122,6 +122,20 @@ describe('resumed worker boundaries', () => {
     expect(t.specs[0].env.ROOM_SHARE).toBe('intent')
   })
 
+  it('puts a resumed follow-up only in the recipient inbox', async () => {
+    const t = setup()
+    t.seed('inbox')
+    const followUp = 'apply the review fix exactly once'
+    expect(await t.tools.call('room_send', { type: 'note', to: 'inbox', text: followUp })).toContain('resumed inbox')
+    const prompt = t.specs[0].args.join(' ')
+    expect(prompt).toMatch(/room_wait|room_state/)
+    expect(prompt).not.toContain(followUp)
+    const recipient = t.room.workers.get('inbox')!.name
+    const inbox = t.room.messages().filter(m => m.type === 'note' && m.to === recipient && m.text === followUp)
+    expect(inbox).toHaveLength(1)
+    expect(t.room.seen(recipient).has(inbox[0].id)).toBe(false)
+  })
+
   it('clears disk stop state after resume so a new registry does not dismiss it', async () => {
     const t = setup()
     t.seed('stopped', { status: 'dismissed', stopReason: 'lead-session-ended' })
@@ -139,6 +153,15 @@ describe('resumed worker boundaries', () => {
     t.seed('waiting')
     const reply = await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })
     expect(reply).toContain('max 1')
+    expect(t.specs).toHaveLength(0)
+  })
+
+  it('counts an unreadable live finished worker against both spawn and resume capacity', async () => {
+    const t = setup(1, undefined, pid => pid === 7001 ? {} : undefined)
+    t.seed('occupied', { pid: 7001, processStartTime: 'fixed-start' })
+    t.seed('waiting')
+    expect(await t.tools.call('room_spawn', { tag: 'new', task: 'test', host: 'claude' })).toContain('max 1')
+    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toContain('max 1')
     expect(t.specs).toHaveLength(0)
   })
 
@@ -178,8 +201,8 @@ describe('resumed worker boundaries', () => {
     t.seed('retry')
     const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
     const w = t.room.workers.get('retry')!
-    expect(await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('unavailable') }, undefined, 1)).toContain('could not resume retry')
-    const second = await rooms.resumeWorker(t.session, w, 'again', () => ({ pid: 9001, onExit: () => {}, kill: () => true }), undefined, 1)
+    expect(await rooms.resumeWorker(t.session, w, () => { throw new Error('unavailable') }, undefined, 1)).toContain('could not resume retry')
+    const second = await rooms.resumeWorker(t.session, w, () => ({ pid: 9001, onExit: () => {}, kill: () => true }), undefined, 1)
     expect(second).toContain('resumed retry')
   })
 
@@ -202,39 +225,45 @@ describe('resumed worker boundaries', () => {
     expect(t.room.messages()).toHaveLength(before)
   })
 
-  it('queues one follow-up through a slow previous process exit and does not warn that the restarted worker will not answer', async () => {
+  it('queues one follow-up through a controlled previous process exit and does not warn that the restarted worker will not answer', async () => {
     const t = setup()
     expect(await t.tools.call('room_spawn', { tag: 'slow', task: 'first', host: 'claude' })).toContain('spawned slow')
     const w = t.room.workers.get('slow')!
     t.room.updateWorker('slow', { status: 'done', summary: 'done', finishedAt: Date.now() }, w.id)
-    const sending = t.tools.call('room_send', { type: 'note', to: 'slow', text: 'one follow-up' })
-    setTimeout(() => t.exits[0](0), 5_200)
-    const reply = await sending
-    expect(reply).toContain('resumed slow with your message; slow had finished and was restarted')
-    expect(reply).not.toContain('will not answer')
-    expect(t.specs).toHaveLength(2)
-    expect(t.room.messages().filter(m => m.type === 'note' && m.to === w.name && m.text === 'one follow-up')).toHaveLength(1)
-  }, 8_000)
+    vi.useFakeTimers()
+    try {
+      const sending = t.tools.call('room_send', { type: 'note', to: 'slow', text: 'one follow-up' })
+      setTimeout(() => t.exits[0](0), 5_200)
+      await vi.advanceTimersByTimeAsync(5_200)
+      const reply = await sending
+      expect(reply).toContain('resumed slow with your message; slow had finished and was restarted')
+      expect(reply).not.toContain('will not answer')
+      expect(t.specs).toHaveLength(2)
+      expect(t.room.messages().filter(m => m.type === 'note' && m.to === w.name && m.text === 'one follow-up')).toHaveLength(1)
+    } finally { vi.useRealTimers() }
+  })
 
   it('records the resumed process start after a ten-second previous-exit wait', async () => {
     const t = setup()
     t.seed('slow-exit')
     const w = t.room.workers.get('slow-exit')!
-    const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
+    const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }), probe: pid => pid === 9002 ? { startTime: 'fixed-resume-start', executable: 'claude' } : undefined })
     let oldExit!: (code: number | null) => void
     const oldProcess = { pid: 9001, onExit: (cb: typeof oldExit) => { oldExit = cb }, kill: () => true }
     rooms.setHandle(t.session, w.id!, oldProcess)
     rooms.watchWorkerProcess(t.session, w.id!, oldProcess, 'old process', () => {})
-    let clock = Date.now()
-    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
     try {
-      const sending = rooms.resumeWorker(t.session, w, 'follow-up', () => ({ pid: process.pid, onExit: () => {}, kill: () => true }))
-      setTimeout(() => { clock += 10_000; oldExit(0) }, 20)
+      const sending = rooms.resumeWorker(t.session, w, () => ({ pid: 9002, onExit: () => {}, kill: () => true }))
+      setTimeout(() => oldExit(0), 10_000)
+      await vi.advanceTimersByTimeAsync(10_000)
       expect(await sending).toContain('resumed slow-exit')
       const resumed = t.room.workers.get('slow-exit')!
       rooms.dropHandle(t.session, resumed.id)
-      expect(pidIsOurWorker(resumed.pid, resumed, () => ({ startTime: resumed.processStartTime, executable: 'claude' }))).toBe(!!resumed.processStartTime)
-    } finally { now.mockRestore() }
+      expect(resumed.processStartTime).toBe('fixed-resume-start')
+      expect(resumed.startedAt).toBe(11_000)
+    } finally { vi.useRealTimers() }
   })
 
   it('does not post a message when resume cannot reserve a launch slot', async () => {
@@ -252,10 +281,30 @@ describe('resumed worker boundaries', () => {
     const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
     const w = t.room.workers.get('stuck')!
     rooms.setHandle(t.session, w.id!, { pid: 9001, onExit: () => {}, kill: () => true })
-    const reply = await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('must not start') }, undefined, undefined, () => {}, Date.now, 20)
+    const reply = await rooms.resumeWorker(t.session, w, () => { throw new Error('must not start') }, undefined, undefined, () => {}, Date.now, 20)
     expect(reply).toBe('error: could not resume stuck: previous process did not exit within 1 second; message was not delivered and worker was not resumed')
     expect(t.specs).toHaveLength(0)
     expect(t.room.workers.get('stuck')?.status).toBe('done')
+  })
+
+  it('bounds unknown ownership probes and lets other timers run during previous-exit wait', async () => {
+    const t = setup()
+    t.seed('unknown', { pid: 9001, processStartTime: 'fixed-old-start' })
+    const w = t.room.workers.get('unknown')!
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    let probes = 0
+    const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }),
+      probe: () => { vi.setSystemTime(++probes); return {} } })
+    try {
+      const otherTimer = vi.fn()
+      setTimeout(otherTimer, 0)
+      const waiting = (rooms as unknown as { waitForPreviousExit(s: Session, w: Worker, ms: number): Promise<string> }).waitForPreviousExit(t.session, w, 20)
+      await vi.advanceTimersByTimeAsync(20)
+      expect(await waiting).toBe('unknown')
+      expect(probes).toBeLessThan(10)
+      expect(otherTimer).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
   })
 
   it('cancels a queued follow-up without leaving a bus copy', async () => {

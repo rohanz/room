@@ -8,7 +8,7 @@ Verification: the eight-file focused Vitest run failed before executing tests be
 
 ## Fix now
 
-### 1. Discard can forget a worker whose process became unverifiable
+### 1. Discard can forget a worker whose process became unverifiable — FIXED in 0.16.9
 
 **Severity: P1 — correctness and work preservation.**
 
@@ -22,7 +22,7 @@ Verification: the eight-file focused Vitest run failed before executing tests be
 
 **Reproduced:** Using the actual discard and dismissal implementations with an injected changing probe, dismissal posted “left running, not stopped,” while discard returned “stopped w” and retired the record. Checkout deletion was not exercised.
 
-### 2. Resumed follow-ups still have two delivery paths
+### 2. Resumed follow-ups still have two delivery paths — FIXED in 0.16.9
 
 **Severity: P2 — duplicate instructions.**
 
@@ -36,7 +36,7 @@ Verification: the eight-file focused Vitest run failed before executing tests be
 
 **Reproduced:** A handler probe captured the follow-up as the resume argument and found identical text in an unreceipted bus message. Duplicate action by a live host remains inferred.
 
-### 3. Losing process verification during resume can monopolize the event loop
+### 3. Losing process verification during resume can monopolize the event loop — FIXED in 0.16.9
 
 **Severity: P2 — responsiveness and cancellation.**
 
@@ -50,7 +50,7 @@ Verification: the eight-file focused Vitest run failed before executing tests be
 
 **Reproduced:** With an always-unknown injected probe and a 40-ms deadline, the helper made 35,860 probes; a previously scheduled zero-delay timer did not run during the wait.
 
-### 4. Preview with a test command rejects shared workers with locally existing directories
+### 4. Preview with a test command rejects shared workers with locally existing directories — FIXED in 0.16.9
 
 **Severity: P2 — functional regression.**
 
@@ -64,7 +64,7 @@ Verification: the eight-file focused Vitest run failed before executing tests be
 
 **Reproduced:** An in-memory team-session fixture with a shared worker overlay and an existing local directory reached the exact exception. No test command or scratch-tree creation occurred.
 
-### 5. Spawn and resume still disagree about occupied worker slots
+### 5. Spawn and resume still disagree about occupied worker slots — FIXED in 0.16.9
 
 **Severity: P2 — resource-limit correctness.**
 
@@ -80,7 +80,7 @@ Verification: the eight-file focused Vitest run failed before executing tests be
 
 ## Tidy
 
-### 6. Collection retains a duplicate Git-directory resolver
+### 6. Collection retains a duplicate Git-directory resolver — FIXED in 0.16.9
 
 **Severity: P3 — incomplete unification.**
 
@@ -94,7 +94,7 @@ Verification: the eight-file focused Vitest run failed before executing tests be
 
 **Inferred:** Confirmed duplicate implementations by source inspection; no current behavioral difference demonstrated.
 
-### 7. The resumed-start regression does not assert the promised behavior
+### 7. The resumed-start regression does not assert the promised behavior — FIXED in 0.16.9
 
 **Severity: P3 — ineffective and host-dependent test.**
 

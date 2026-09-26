@@ -3,7 +3,7 @@ import path from 'node:path'
 import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
-import { MATERIALIZED_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
+import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { cleanupWorker, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidPresent, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, type ProcessProbe } from '../workers.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
@@ -185,6 +185,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep(50)
           if (state.workerAlive(s, w)) throw new Error('worker process has not stopped')
         }
+        const unsafeAfterDismissal = await unverifiedLive(s, w)
+        if (unsafeAfterDismissal) return unsafeAfterDismissal
         terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe))
         const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) })
         const missing = decideDiscard(afterStop) === 'prune'
@@ -275,8 +277,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const workerRoot = fs.realpathSync(w.dir)
         if (workerRoot === leadRoot) throw new Error('worker must have a separate worktree')
         await assertNoOperation(w.dir)
-        const common = async (dir: string) => fs.realpathSync(path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim()))
-        if (await common(lead.dir) !== await common(w.dir)) throw new Error('worker is not a worktree of this repository')
+        if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error('worker is not a worktree of this repository')
         if (w.branch !== 'room/' + w.tag || (await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) throw new Error('worker must be on branch room/' + w.tag)
         await git(w.dir, ['ls-files', '-z'])
         const cleanupErrors: string[] = []

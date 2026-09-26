@@ -1612,7 +1612,7 @@ describe('worker follow-up sessions', () => {
     expect(sent).toContain('money had finished and was restarted')
     expect(t.specs[1].env).toEqual(t.specs[0].env)
     expect(t.specs[1]).toMatchObject({ cwd: initial.dir, env: { ROOM_TAG: 'money', ROOM_WORKER_THREADS: t.specs[0].env.ROOM_WORKER_THREADS, ROOM_WORKER_MEM_GB: t.specs[0].env.ROOM_WORKER_MEM_GB } })
-    expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, 'fix the review finding', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
+    expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, 'Read your Room inbox with room_state or room_wait for the follow-up from your lead, then act on that message.', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
     expect(t.a.workers.get('money')).toMatchObject({ status: 'running', hostSessionId: initial.hostSessionId, dir: initial.dir, gen: initial.gen })
   })
 
@@ -1629,7 +1629,7 @@ describe('worker follow-up sessions', () => {
     await vi.waitFor(() => expect(t.a.workers.get('money')?.status).toBe('failed'))
     const sent = await t.leadTools.call('room_send', { type: 'note', to: 'rohanz+money', text: 'repair the failure' })
     expect(sent).toContain('resumed money with your message')
-    expect(t.specs[1].args).toEqual(['exec', 'resume', initial.hostSessionId, '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'repair the failure'])
+    expect(t.specs[1].args).toEqual(['exec', 'resume', initial.hostSessionId, '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'Read your Room inbox with room_state or room_wait for the follow-up from your lead, then act on that message.'])
     expect(t.specs[1].cwd).toBe(initial.dir)
     expect(t.a.workers.get('money')).toMatchObject({ status: 'running', exitCode: undefined, hostSessionId: initial.hostSessionId })
   })

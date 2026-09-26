@@ -12,7 +12,7 @@ import type { NoteMsg, Presence, Worker } from '@room/shared'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
-import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidIsOurWorker, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, probeProcess, type ProcessProbe, type SpawnedProcess, type Spawner } from './workers.js'
+import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidPresent, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, probeProcess, type ProcessProbe, type SpawnedProcess, type Spawner } from './workers.js'
 import { decideResume, decideRetire, processExited, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from './worker-launch.js'
@@ -281,13 +281,13 @@ export class Rooms {
   }
   releaseLaunch(): void { this.launching-- }
   launchUsage(running: number): number { return running + this.launching }
-  runningWorkerCount(s: Session): number {
+  occupiedWorkers(s: Session): { s: Session; w: Worker }[] {
     const sessions = [s, ...this.all().filter(x => x !== s)]
-    let count = 0
+    const occupied: { s: Session; w: Worker }[] = []
     for (const sess of sessions) for (const w of sess.room.workers.values()) {
-      if (w.lead === s.me.name && (w.status === 'running' || this.hasHandle(sess, w) || pidIsOurWorker(w.pid, w, this.probe.bind(this)))) count++
+      if (w.lead === s.me.name && (w.status === 'running' || this.hasHandle(sess, w) || pidPresent(w.pid, this.probe.bind(this)))) occupied.push({ s: sess, w })
     }
-    return count
+    return occupied
   }
   /** A worker id is unique per lead and tag, but the same lead may spawn the same tag in its own room and in the workers room: handles are keyed per room. */
   private static hkey(s: Session, id: string): string { return `${s.roomName}|${id}` }
@@ -303,12 +303,13 @@ export class Rooms {
   hasHandle(s: Session, w: Worker): boolean { return !!w.id && this.handles.has(Rooms.hkey(s, w.id)) }
 
   /** A just-finished host can still be closing. Its exit callback wakes the pending resume. */
-  private async waitForPreviousExit(s: Session, w: Worker, timeoutMs = 30_000): Promise<boolean> {
+  private async waitForPreviousExit(s: Session, w: Worker, timeoutMs = 30_000): Promise<'exited' | 'unknown' | 'timeout'> {
     const deadline = Date.now() + timeoutMs
     const signal = toolSignal.getStore()
     while (Date.now() < deadline && !signal?.aborted) {
       const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) })
-      if (state.process === 'not-ours') return true
+      if (state.process === 'not-ours') return 'exited'
+      if (state.process === 'unknown') return 'unknown'
       const key = Rooms.hkey(s, w.id!)
       await new Promise<void>(resolve => {
         let settled = false
@@ -326,10 +327,9 @@ export class Rooms {
         waiting.add(done); this.exitWaiters.set(key, waiting)
         const timer = setTimeout(done, Math.min(this.hasHandle(s, w) ? 1_000 : 100, Math.max(1, deadline - Date.now())))
         signal?.addEventListener('abort', done, { once: true })
-        if (!this.hasHandle(s, w) && !pidIsOurWorker(w.pid, w, this.probe.bind(this))) done()
       })
     }
-    return false
+    return 'timeout'
   }
 
   /** Spawn and resume share the same process-exit accounting and error reporting. */
@@ -348,7 +348,7 @@ export class Rooms {
   }
 
   /** Continue an exited, retained worker in its original checkout and host conversation. */
-  async resumeWorker(s: Session, w: Worker, message: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000): Promise<string> {
+  async resumeWorker(s: Session, w: Worker, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000): Promise<string> {
     // An exit callback starts retirement asynchronously. Let that check finish before competing
     // for the same worktree lock; it retains any worker with work to collect.
     await this.retiring.get(s)
@@ -368,7 +368,9 @@ export class Rooms {
       if (initial === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
       if (initial === 'no-session') return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`
       if (initial === 'unknown') return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`
-      if (initial === 'wait-exit' && !await this.waitForPreviousExit(s, w, exitWaitMs)) {
+      const previousExit = initial === 'wait-exit' ? await this.waitForPreviousExit(s, w, exitWaitMs) : 'exited'
+      if (previousExit === 'unknown') return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`
+      if (previousExit === 'timeout') {
         return toolCallAborted() ? 'error: tool call cancelled' : `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`
       }
       if (toolCallAborted()) return 'error: tool call cancelled'
@@ -386,7 +388,7 @@ export class Rooms {
       w = latest
       const id = w.id
       if (!id) return `error: ${w.tag} has no stable worker id; it cannot be resumed`
-      const running = this.runningWorkerCount(s)
+      const running = this.occupiedWorkers(s).length
       const launchLease = reserveWorkerLaunch(this, config.maxWorkers, running)
       if (!launchLease) return `error: ${this.launchUsage(running)} workers already running or starting (max ${config.maxWorkers}, ROOM_MAX_WORKERS); wait for one to finish`
       try {
@@ -397,7 +399,7 @@ export class Rooms {
           lead: w.lead, owner: s.me.owner ?? s.me.name, host: w.host, model: w.model, effort: w.effort,
           share: w.share ?? 'intent', gen: w.gen ?? 1, budget, server, isWorker,
           token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, probe: this.probe.bind(this), log, at },
-        { mode: 'resume', message, sessionId: w.hostSessionId!, oldPort: w.port }, launchLease,
+        { mode: 'resume', sessionId: w.hostSessionId!, oldPort: w.port }, launchLease,
         ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running',
           startedAt, processStartTime, summary: undefined, exitCode: undefined, finishedAt: undefined,
           dismissedAt: undefined, stopReason: undefined }, id)) }

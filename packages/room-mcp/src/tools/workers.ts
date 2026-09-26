@@ -254,11 +254,7 @@ export function install(state: HandlerState): void {
       try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
       await doLeave(ws)
     }
-  const runningWorkers = (s: Session): { s: Session; w: Worker }[] => {
-      const out: { s: Session; w: Worker }[] = []
-      for (const sess of [s, ...rooms.all().filter(x => x !== s)]) for (const w of myWorkers(sess)) if (w.status === 'running' || pidPresent(w.pid, ctx.probe) || workerAlive(sess, w)) out.push({ s: sess, w })
-      return out
-    }
+  const runningWorkers = (s: Session): { s: Session; w: Worker }[] => rooms.occupiedWorkers(s)
   const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason'], cancelled?: AbortSignal): Promise<string> => {
       const proc = rooms.handle(s, w.id)
       if (!proc) {

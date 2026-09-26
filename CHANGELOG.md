@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.9
+
+- Discard rechecks process ownership after dismissal and exit waiting; an unverifiable live worker keeps its record and worktree.
+- Resumed workers read the follow-up from their Room inbox. The launch prompt contains only inbox guidance, and launch failure leaves no bus copy.
+- Resume stops waiting with a verification error when ownership becomes unknown, without spinning through microtasks.
+- Merge previews with a test command reuse the combined tree's disk participant selection, so shared team overlays work even when a local worker directory exists.
+- Spawn and resume use one occupied-slot rule that counts unreadable live worker PIDs.
+- Collection uses Room's shared canonical Git common-directory resolver.
+- Resume regressions use fixed process identity, fake time and controlled exit callbacks.
+
 ## 0.16.8
 
 - Superseded graph refreshes rejoin the queue behind waiting paths instead of occupying all eight slots. Initial and rebuild readiness resolves after each path's first completed read, even if later edits keep superseding its refresh; later refreshes still update the graph.

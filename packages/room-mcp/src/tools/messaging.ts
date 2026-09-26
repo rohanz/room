@@ -118,7 +118,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const addressedWorker = to && s.room.workerOf(to)
       let restarted = false
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
-        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
+        const result = await rooms.resumeWorker(s, addressedWorker, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
         if (result.startsWith('error:')) return result
         restarted = true
         notes.push(result)

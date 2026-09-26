@@ -138,6 +138,22 @@ describe('room_collect', () => {
     expect(fs.existsSync(lead)).toBe(true)
     expect(t.s.room.retiredWorkers()[0]?.model).toBe('worker-model')
   })
+  it('keeps a finished worker when process ownership becomes unknown during discard', async () => {
+    const t = setup()
+    t.s.room.workers.set('test', { ...t.w, pid: 4242, processStartTime: 'fixed-start' } as never)
+    let readable = true
+    t.state.ctx = { probe: () => readable ? { startTime: 'fixed-start', executable: 'codex' } : {} } as never
+    t.state.dismissWorker = vi.fn(async () => {
+      readable = false
+      return "could not verify test's process; left running, not stopped"
+    }) as never
+    const reply = await t.call({ tag: 'test', discard: true })
+    expect(reply).toContain("could not verify test's process")
+    expect(reply).toContain('left running, not stopped')
+    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(t.s.room.retiredWorkers()).toHaveLength(0)
+    expect(fs.existsSync(worker)).toBe(true)
+  })
   it('stops worktree processes even when ignored output keeps the collected worktree', async () => {
     const t = setup()
     t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)

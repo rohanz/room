@@ -25,6 +25,10 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     byPerson.set(person, worker)
   }
   const previewWorker = (s: Session, person: string) => previewWorkers.get(s)?.get(person)
+  const diskWorkers = new Map(participants.flatMap(({ session, person }) => {
+    const worker = previewWorker(session, person)
+    return worker ? [[person, worker] as const] : []
+  }))
   // Capture each disk boundary once, before any Git or file read can yield. Collection
   // supplies the same roots it already validated for its entire operation.
   const previewDirs = new Set([caller.dir])
@@ -251,7 +255,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   }
 
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
-  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots }
+  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots, diskWorkers }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {

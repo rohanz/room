@@ -170,9 +170,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (run) {
         if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
         else {
-          const modeParticipants = (await Promise.all(participants.map(async ({ person, session }) => {
-            const w = session.room.workerOf(person)
-            if (!w || decidePreview(await workerRealState(session.dir, w), true) !== 'disk') return undefined
+          const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
+            const w = result.diskWorkers.get(person)
+            if (!w) return undefined
             const dir = result.roots.get(path.resolve(w.dir))
             if (!dir) throw new Error('uncaptured preview root: ' + w.dir)
             return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) }

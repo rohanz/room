@@ -65,6 +65,17 @@ it('room_preview_merge still reports a conflict on a file both changed', async (
   expect(result).toContain('file.txt')
 })
 
+it('runs a team preview from a shared worker overlay even when its local directory exists', async () => {
+  const t = setup()
+  const s = t.state.S()
+  s.local = undefined
+  s.room.setOverlay('lead+test', 'new.txt', 'shared change\n')
+  t.state.liveText = async (_session, file, person) => s.room.text(file, person)
+  const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat new.txt' })
+  expect(result).toContain('shared change')
+  expect(result).toContain('exit 0')
+})
+
 it('room_collect does not read files only the lead changed and leaves them untouched', async () => {
   const art = leadArt()
   put(worker, 'new.txt', 'worker change\n')
