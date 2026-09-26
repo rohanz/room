@@ -33371,9 +33371,9 @@ function launchWorkerProcess(policy, command, lease, onStarted, onSessionId) {
       link: command.links,
       carriedPaths: command.carriedPaths,
       port
-    }) : portChanged ? `${command.message}
+    }) : `Read your Room inbox with room_state or room_wait for the follow-up from your lead, then act on that message.${portChanged ? `
 
-Your dev-server port is ${port} (PORT=${port}).` : command.message;
+Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     let maxBudgetUsd;
     try {
       maxBudgetUsd = workerMaxBudget();
@@ -35653,13 +35653,13 @@ var init_registry = __esm({
       launchUsage(running) {
         return running + this.launching;
       }
-      runningWorkerCount(s) {
+      occupiedWorkers(s) {
         const sessions = [s, ...this.all().filter((x) => x !== s)];
-        let count = 0;
+        const occupied = [];
         for (const sess of sessions) for (const w of sess.room.workers.values()) {
-          if (w.lead === s.me.name && (w.status === "running" || this.hasHandle(sess, w) || pidIsOurWorker(w.pid, w, this.probe.bind(this)))) count++;
+          if (w.lead === s.me.name && (w.status === "running" || this.hasHandle(sess, w) || pidPresent(w.pid, this.probe.bind(this)))) occupied.push({ s: sess, w });
         }
-        return count;
+        return occupied;
       }
       /** A worker id is unique per lead and tag, but the same lead may spawn the same tag in its own room and in the workers room: handles are keyed per room. */
       static hkey(s, id2) {
@@ -35687,7 +35687,8 @@ var init_registry = __esm({
         const signal = toolSignal.getStore();
         while (Date.now() < deadline && !signal?.aborted) {
           const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) });
-          if (state.process === "not-ours") return true;
+          if (state.process === "not-ours") return "exited";
+          if (state.process === "unknown") return "unknown";
           const key = _Rooms.hkey(s, w.id);
           await new Promise((resolve5) => {
             let settled = false;
@@ -35706,10 +35707,9 @@ var init_registry = __esm({
             this.exitWaiters.set(key, waiting);
             const timer = setTimeout(done, Math.min(this.hasHandle(s, w) ? 1e3 : 100, Math.max(1, deadline - Date.now())));
             signal?.addEventListener("abort", done, { once: true });
-            if (!this.hasHandle(s, w) && !pidIsOurWorker(w.pid, w, this.probe.bind(this))) done();
           });
         }
-        return false;
+        return "timeout";
       }
       /** Spawn and resume share the same process-exit accounting and error reporting. */
       watchWorkerProcess(s, id2, proc, errorPrefix, log2, at = Date.now) {
@@ -35737,7 +35737,7 @@ var init_registry = __esm({
         proc.onExit((code) => exited(code));
       }
       /** Continue an exited, retained worker in its original checkout and host conversation. */
-      async resumeWorker(s, w, message, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log2 = console.error, at = Date.now, exitWaitMs = 3e4) {
+      async resumeWorker(s, w, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log2 = console.error, at = Date.now, exitWaitMs = 3e4) {
         await this.retiring.get(s);
         if (toolCallAborted()) return "error: tool call cancelled";
         const key = workerOperationKey(w);
@@ -35755,7 +35755,9 @@ var init_registry = __esm({
           if (initial === "missing") return `error: cannot resume ${w.tag}: its worktree no longer exists`;
           if (initial === "no-session") return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`;
           if (initial === "unknown") return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`;
-          if (initial === "wait-exit" && !await this.waitForPreviousExit(s, w, exitWaitMs)) {
+          const previousExit = initial === "wait-exit" ? await this.waitForPreviousExit(s, w, exitWaitMs) : "exited";
+          if (previousExit === "unknown") return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`;
+          if (previousExit === "timeout") {
             return toolCallAborted() ? "error: tool call cancelled" : `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`;
           }
           if (toolCallAborted()) return "error: tool call cancelled";
@@ -35773,7 +35775,7 @@ var init_registry = __esm({
           w = latest;
           const id2 = w.id;
           if (!id2) return `error: ${w.tag} has no stable worker id; it cannot be resumed`;
-          const running = this.runningWorkerCount(s);
+          const running = this.occupiedWorkers(s).length;
           const launchLease = reserveWorkerLaunch(this, config2.maxWorkers, running);
           if (!launchLease) return `error: ${this.launchUsage(running)} workers already running or starting (max ${config2.maxWorkers}, ROOM_MAX_WORKERS); wait for one to finish`;
           try {
@@ -35806,7 +35808,7 @@ var init_registry = __esm({
                   log: log2,
                   at
                 },
-                { mode: "resume", message, sessionId: w.hostSessionId, oldPort: w.port },
+                { mode: "resume", sessionId: w.hostSessionId, oldPort: w.port },
                 launchLease,
                 ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, {
                   pid: proc.pid,
@@ -46281,7 +46283,7 @@ function handlers5(state) {
       const addressedWorker = to2 && s.room.workerOf(to2);
       let restarted = false;
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== "running") {
-        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log);
+        const result = await rooms.resumeWorker(s, addressedWorker, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log);
         if (result.startsWith("error:")) return result;
         restarted = true;
         notes.push(result);
@@ -46599,6 +46601,10 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     byPerson.set(person, worker);
   }
   const previewWorker = (s, person) => previewWorkers.get(s)?.get(person);
+  const diskWorkers = new Map(participants.flatMap(({ session, person }) => {
+    const worker = previewWorker(session, person);
+    return worker ? [[person, worker]] : [];
+  }));
   const previewDirs = /* @__PURE__ */ new Set([caller.dir]);
   for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
     const worker = previewWorker(session, person);
@@ -46841,7 +46847,7 @@ ${conflicts.join("\n")}`);
     if (resolvable.length && options.resolve !== true) out2.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone.`);
   }
   out2.unshift(`preview merge of your changes with ${people.map((p) => `${p}'s`).join(", ")} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? "fallback" : "git"}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join("; ")}` : ""}):`);
-  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out: out2, ignoredNotes, roots };
+  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out: out2, ignoredNotes, roots, diskWorkers };
 }
 function supersetSide(a, b) {
   const contains2 = (outer, inner) => {
@@ -47033,9 +47039,9 @@ ${text}--- end ${p} ---`);
       if (run3) {
         if (hardCount) out2.push(`not running "${run3}": ${hardCount} conflict(s) need a human first`);
         else {
-          const modeParticipants = (await Promise.all(participants.map(async ({ person, session }) => {
-            const w = session.room.workerOf(person);
-            if (!w || decidePreview(await workerRealState(session.dir, w), true) !== "disk") return void 0;
+          const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
+            const w = result.diskWorkers.get(person);
+            if (!w) return void 0;
             const dir = result.roots.get(path21.resolve(w.dir));
             if (!dir) throw new Error("uncaptured preview root: " + w.dir);
             return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) };
@@ -47459,6 +47465,8 @@ repeat with force=true to delete them`;
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep2(50);
           if (state.workerAlive(s, w)) throw new Error("worker process has not stopped");
         }
+        const unsafeAfterDismissal = await unverifiedLive(s, w);
+        if (unsafeAfterDismissal) return unsafeAfterDismissal;
         terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe));
         const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) });
         const missing = decideDiscard(afterStop) === "prune";
@@ -47566,8 +47574,7 @@ repeat with force=true to delete them`;
           const workerRoot = fs22.realpathSync(w.dir);
           if (workerRoot === leadRoot) throw new Error("worker must have a separate worktree");
           await assertNoOperation(w.dir);
-          const common = async (dir) => fs22.realpathSync(path22.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim()));
-          if (await common(lead.dir) !== await common(w.dir)) throw new Error("worker is not a worktree of this repository");
+          if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error("worker is not a worktree of this repository");
           if (w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) throw new Error("worker must be on branch room/" + w.tag);
           await git(w.dir, ["ls-files", "-z"]);
           const cleanupErrors = [];
@@ -48368,11 +48375,7 @@ function install6(state) {
     }
     await doLeave(ws);
   };
-  const runningWorkers = (s) => {
-    const out2 = [];
-    for (const sess of [s, ...rooms.all().filter((x) => x !== s)]) for (const w of myWorkers(sess)) if (w.status === "running" || pidPresent(w.pid, ctx.probe) || workerAlive(sess, w)) out2.push({ s: sess, w });
-    return out2;
-  };
+  const runningWorkers = (s) => rooms.occupiedWorkers(s);
   const dismissWorker = async (s, w, why, stopReason, cancelled) => {
     const proc = rooms.handle(s, w.id);
     if (!proc) {
@@ -48831,7 +48834,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.8",
+  version: "0.16.9",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
