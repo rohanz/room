@@ -32,7 +32,6 @@ export async function ignoredWorkerArtifacts(w: Worker): Promise<string[]> {
 /** One worktree cannot be collected, discarded and auto-retired at the same time. */
 export function workerOperationKey(w: Pick<Worker, 'dir'>): string { return 'worker:' + path.resolve(w.dir) }
 
-/** A Room worker path is a chain of .room/workers/<name> directories ending on room/<name>. */
 /** Prune a vanished Room checkout, preserving any branch commits absent from the lead HEAD. */
 export async function pruneMissingWorkerWorktree(leadDir: string, w: Worker, manageBranch = true): Promise<string | undefined> {
   if (!roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) {

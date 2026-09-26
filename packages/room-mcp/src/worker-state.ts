@@ -7,6 +7,7 @@ import { workerChangedPaths } from '@room/roomd/baseline'
 import { RECORDED_PATH, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { workerProcessOwnership, type ProcessInfo, type ProcessOwnership } from './worker-process.js'
 
+/** A Room worker path is a chain of .room/workers/<name> directories ending on room/<name>. */
 export function roomWorkerPathMatchesBranch(leadDir: string, workerDir: string, branch: string, nested = false): boolean {
   const relative = path.relative(path.resolve(leadDir), path.resolve(workerDir)).split(path.sep)
   if (relative.length < 3 || relative.length % 3 !== 0 || (!nested && relative.length !== 3)) return false
@@ -56,7 +57,6 @@ export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<Worker, 'na
   } catch { return false }
 }
 
-
 /** Identity of the commit that carries a lead's uncommitted work into a worker's worktree. */
 export const ROOM_CARRY_IDENTITY = {
   authorName: 'Room',
@@ -70,7 +70,6 @@ export const ROOM_CARRY_IDENTITY = {
   },
 } as const
 
-type OwnershipRecord = Pick<Worker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'> | Pick<RetiredWorker, 'name' | 'tag' | 'lead' | 'keptWorktree'>
 export interface WorkerRealState {
   worktree: 'present' | 'vanished'
   owned?: boolean
@@ -123,7 +122,7 @@ async function workerCommitCount(runGit: typeof git, dir: string, ref: string, l
 /** Select expensive probes at each call site. Git in a vanished checkout is never attempted. */
 export async function workerRealState(leadDir: string, w: Worker, options: {
   ownership?: boolean; branch?: boolean; git?: boolean; process?: boolean
-  leadName?: string; workers?: Iterable<OwnershipRecord>; hasHandle?: boolean
+  leadName?: string; workers?: Iterable<WorktreeOwnershipRecord>; hasHandle?: boolean
   probe?: (pid: number) => ProcessInfo | undefined
   probes?: WorkerStateProbes
 } = {}): Promise<WorkerRealState> {
