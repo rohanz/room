@@ -38,7 +38,9 @@ function sharingSentence(s: Session): string {
   const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
   const parts = roomNameParts(s.roomName)
   const repo = parts.branch ? s.roomName.slice(0, -(parts.branch.length + 1)) : s.roomName
-  return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? 'intent')} with members of ${repo} on ${server}; ${sharingHumanChoices}`
+  const level = s.daemon.share ?? s.shareRequested ?? 'intent'
+  const choices = sharingHumanChoices(level)
+  return `note for your human: this clone now shares ${sharingDescription(level)} with members of ${repo} on ${server}${choices ? `; ${choices}` : '.'}`
 }
 
 /** Establish whether this session has a disclosure pending without consuming its one delivery. */

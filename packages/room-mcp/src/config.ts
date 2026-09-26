@@ -52,7 +52,11 @@ export function sharingDescription(level: ShareLevel): string {
 }
 
 /** Spoken choices in disclosures; keep tool syntax out of notes relayed to a person. */
-export const sharingHumanChoices = 'to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.'
+export function sharingHumanChoices(level: ShareLevel): string {
+  if (level === 'full') return 'to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.'
+  if (level === 'declared') return 'to keep file contents on this machine, say: share plans only.'
+  return ''
+}
 
 /** Missing means the default; an invalid supplied value can never widen sharing. */
 export function resolveShare(raw: unknown, source = 'share'): { level: ShareLevel; warning?: string } {

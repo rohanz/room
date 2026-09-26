@@ -171,6 +171,8 @@ export interface Roomd {
   setShare(level: ShareLevel, scopePaths?: string[]): Promise<void>
   /** Files not shared and why: over the per-file cap, over the total budget, matched by .roomignore, or withheld by the sharing level. */
   skipped(): Skipped
+  /** Changed declared files still shared after their scope ends. */
+  retainedDeclared(): string[]
 }
 
 export class RoomdError extends Error {
@@ -452,6 +454,8 @@ class Daemon implements Roomd {
   skipped(): Skipped {
     return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore), share: Array.from(this.skips.share).sort() }
   }
+
+  retainedDeclared(): string[] { return [...this.retainedDeclaredPaths].sort() }
 
   private skipSummary(): string {
     const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size + this.skips.share.size
