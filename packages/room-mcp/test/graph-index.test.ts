@@ -83,9 +83,10 @@ describe('GraphIndex', () => {
     })
     const gi = new GraphIndex(room, 'Rohan', repo, undefined, { random: () => 0, minPublishMs: 0, read })
     let settled = false
+    let outcome: 'resolved' | 'rejected' | undefined
     try {
       gi.start()
-      const captured = gi.ready.then(() => { settled = true }, () => { settled = true })
+      const captured = gi.ready.then(() => { settled = true; outcome = 'resolved' }, () => { settled = true; outcome = 'rejected' })
       await eventually(() => oldReads.length === 8)
       room.setMeta({ base: newBase })
       await new Promise(resolve => setTimeout(resolve, 20))
@@ -98,6 +99,7 @@ describe('GraphIndex', () => {
       expect(settled).toBe(false)
       newReads.splice(0).forEach(release => release())
       await captured
+      expect(outcome).toBe('resolved')
       expect(gi.graph.definersOf('current_0')).toEqual(['file0.py'])
       expect(gi.graph.usersOf('current_0')).toEqual(['file8.py'])
       expect(room.graphs.get('Rohan')?.base).toBe(newBase)
