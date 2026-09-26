@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.16
+
+Fixes from the Astra review of 0.16.15.
+
+- The flush `room_done` runs at declared sharing now confirms publication. It retries when HEAD or the sharing rules change mid-flush, within 3 attempts and 10 s. It publishes files that are otherwise rate-limited as hot, so a file reverted just before done is not listed. After a HEAD change it does not scan twice.
+- If Room cannot confirm the publication (git failure, stopped daemon, timeout), `room_done` keeps the scope and claims, does not mark a worker done, and says why.
+- The retained-files wording notes that a sharing-level change, an ignore rule or the size limit also withdraws a file.
+
 ## 0.16.15
 
 Fixes from the Astra review of 0.16.14 (declared-sharing retention).

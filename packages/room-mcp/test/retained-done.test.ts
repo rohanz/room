@@ -62,7 +62,7 @@ it('room_done publishes a pending first edit, and room_share reports retained te
   expect(daemon.retainedDeclared()).toEqual([])
   expect(daemon.roomDoc.overlayText('Rohan', 'src/a.py')).toBeUndefined()
   const done = await tools.call('room_done', { summary: 'edited a' })
-  expect(done).toContain('1 changed file(s) you declared earlier stay shared while they differ from your base: src/a.py. A sharing-level change, ignore rule, or size limit withdraws them; declare them again to share. Share plans only withdraws them.')
+  expect(done).toContain('1 changed file(s) you declared earlier stay shared while they differ from your base: src/a.py. A sharing-level change, an ignore rule or the size limit also withdraws them. To withdraw them now, say: share plans only.')
   expect(daemon.roomDoc.text('src/a.py', 'Rohan')).toBe('edited\n')
   expect(daemon.retainedDeclared()).toEqual(['src/a.py'])
   expect(await tools.call('room_share', { level: 'declared' })).toContain('1 changed file(s) you declared earlier remain shared: src/a.py')
