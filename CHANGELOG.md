@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.11
+
+- A resumed worker's message is delivered once its host process starts with that prompt. If cancellation or a later launch step stops the worker, `room_send` still records the answer or note with its seen receipt, and `room_state` explains why the worker stopped. Failures before process start leave no message.
+
 ## 0.16.10
 
 - `room_send` type `answer` without `inReplyTo` answers the sender's only unanswered question from the recipient (or, with no `to`, the only one addressed to the sender) and says `answered <id>`. With none or several it refuses and lists each candidate id with an 80-character preview (rehearsal 2026-09-25 finding 11).

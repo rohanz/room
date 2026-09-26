@@ -153,12 +153,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const notes: string[] = []
       if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`)
       const addressedWorker = to && s.room.workerOf(to)
-      let restarted = false
+      let deliveredInPrompt = false
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
         const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
-        if (result.startsWith('error:')) return result
-        restarted = true
-        notes.push(result)
+        if (typeof result === 'string' && result.startsWith('error:')) return result
+        deliveredInPrompt = true
+        notes.push(typeof result === 'string' ? result : result.reply)
       }
       let paths: string[] = [], symbols: string[] = []
       // Publish the timeline entry and its prompt-delivery receipt together. Bus
@@ -182,10 +182,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             msg = s.room.post<NoteMsg>(s.me, withPr({ type: 'note', text, ...(to ? { to } : {}) }))
             break
         }
-        if (restarted) s.room.markSeen(to!, [msg.id])
+        if (deliveredInPrompt) s.room.markSeen(to!, [msg.id])
       })
       if (msg.type === 'changed') notes.push(...await upgrade(s, msg, paths, symbols))
-      const notice = msg.to && !restarted ? recipientNotice(s, msg.to) : undefined
+      const notice = msg.to && !deliveredInPrompt ? recipientNotice(s, msg.to) : undefined
       if (notice) notes.push(msg.type === 'question' && notice.terminal ? unavailableQuestion(s, msg.id)! : notice.text)
       if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
       s.daemon.touch()

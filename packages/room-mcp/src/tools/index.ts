@@ -86,7 +86,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (s) { trackConnection(s, state.now); state.rooms.track(s) }
       try {
         const body = await h(name === 'room_wait' ? { ...(args ?? {}), [WAIT_SIGNAL]: signal } : args ?? {})
-        if (toolCallAborted()) return 'error: tool call cancelled'
+        if (toolCallAborted() && name !== 'room_send') return 'error: tool call cancelled'
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
         const s2 = ctx.getSession()
         if (s2 && s2 !== s) s2.refreshRuntime?.()

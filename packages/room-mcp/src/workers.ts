@@ -405,7 +405,7 @@ export function persistWorkerStopReason(repoDir: string, tag: string, reason: Wo
 export function persistedWorkerStopReason(repoDir: string, tag: string, workerId?: string): Worker['stopReason'] | undefined {
   const record = carryRecordSync(repoDir, tag).read<{ stopReason?: Worker['stopReason']; stopWorkerId?: string }>()
   if (record === undefined || (workerId && record.stopWorkerId && record.stopWorkerId !== workerId)) return undefined
-  return record.stopReason === 'lead-session-ended' ? record.stopReason : undefined
+  return record.stopReason === 'lead-session-ended' || record.stopReason === 'message-delivered-cancelled' || record.stopReason === 'message-delivered-failed' ? record.stopReason : undefined
 }
 
 /** Clear only the stop state for this process generation after resume has started successfully. */

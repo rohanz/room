@@ -17,7 +17,7 @@ import type { PreparedWorktree, SpawnSpec } from '../src/workers.js'
 const scratch: string[] = []
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
-function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise<PreparedWorktree>, probe: (pid: number) => { startTime?: string; executable?: string } | undefined = () => undefined, failStart = false, started: Promise<void> = Promise.resolve()) {
+function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise<PreparedWorktree>, probe: (pid: number) => { startTime?: string; executable?: string } | undefined = () => undefined, failStart = false, started: Promise<void> = Promise.resolve(), failWatch = false) {
   const dir = mkdtempSync(join(tmpdir(), 'room-resume-'))
   scratch.push(dir)
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
@@ -44,9 +44,12 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   const logs: string[] = []
   const exits: ((code: number | null) => void)[] = []
   const errors: ((error: Error) => void)[] = []
+  const kills: number[] = []
+  let notifySpawn!: () => void
+  const spawned = new Promise<void>(resolve => { notifySpawn = resolve })
   const tools = createTools({
     getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers, log: line => logs.push(line), probe, listCwdProcesses: () => [],
-    spawner: spec => { if (failStart) throw new Error('host unavailable'); specs.push(spec); return { pid: 6000 + specs.length, started, onExit: cb => { exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => true } },
+    spawner: spec => { if (failStart) throw new Error('host unavailable'); specs.push(spec); notifySpawn(); return { pid: 6000 + specs.length, started, onExit: cb => { if (failWatch) throw new Error('could not watch exit'); exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => { kills.push(1); return true } } },
     worktree: worktree ?? (async (repo, tag) => {
       const workerDir = join(repo, '.room', 'workers', tag)
       mkdirSync(workerDir, { recursive: true })
@@ -63,7 +66,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
       branch: `room/${tag}`, pid: -1, startedAt: 1, status: 'done', exitCode: 0, gen: 1, ...patch,
     })
   }
-  return { dir, room, session, tools, specs, exits, errors, logs, seed }
+  return { dir, room, session, tools, specs, spawned, exits, errors, kills, logs, seed }
 }
 
 describe('resumed worker boundaries', () => {
@@ -327,7 +330,7 @@ describe('resumed worker boundaries', () => {
     const recipient = t.room.workers.get('missing-host')!.name
     const before = t.room.messages().length
     const sending = t.tools.call('room_send', { type: 'note', to: 'missing-host', text: 'try this fix' })
-    await vi.waitFor(() => expect(t.specs).toHaveLength(1))
+    await t.spawned
     expect(t.room.messages()).toHaveLength(before)
     expect(t.room.seen(recipient).size).toBe(0)
     expect(t.room.workers.get('missing-host')?.status).toBe('done')
@@ -336,6 +339,67 @@ describe('resumed worker boundaries', () => {
     expect(t.room.messages()).toHaveLength(before)
     expect(t.room.seen(recipient).size).toBe(0)
     expect(t.room.workers.get('missing-host')?.status).toBe('done')
+  })
+
+  it.each(['answer', 'note'] as const)('records a delivered %s and stops the worker when cancelled after start', async type => {
+    let resolveStart!: () => void
+    const started = new Promise<void>(resolve => { resolveStart = resolve })
+    const t = setup(2, undefined, () => undefined, false, started)
+    t.seed('cancelled')
+    const recipient = t.room.workers.get('cancelled')!.name
+    const question = t.room.post({ name: recipient, kind: 'agent' }, { type: 'question', to: 'rohanz', text: 'Which field?' })
+    const before = t.room.messages().length
+    const controller = new AbortController()
+    const onBus: boolean[] = []
+    t.room.bus.observe(() => {
+      const delivered = t.room.messages().find(m => m.text === 'price_cents')
+      if (delivered) onBus.push(t.room.seen(recipient).has(delivered.id))
+    })
+    const sending = t.tools.call('room_send', { type, to: 'cancelled', text: 'price_cents', ...(type === 'answer' ? { inReplyTo: question.id } : {}) }, controller.signal)
+    await t.spawned
+    expect(t.room.messages()).toHaveLength(before)
+    controller.abort()
+    resolveStart()
+    const reply = await sending
+    expect(reply).toContain('stopped after receiving your message: cancelled')
+    expect(t.kills).toHaveLength(1)
+    const delivered = t.room.messages().filter(m => m.text === 'price_cents')
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].type).toBe(type)
+    if (type === 'answer') {
+      expect(delivered[0]).toMatchObject({ inReplyTo: question.id })
+      expect(await t.tools.call('room_send', { type: 'answer', to: 'cancelled', inReplyTo: question.id, text: 'duplicate' })).toContain('no unanswered questions')
+    }
+    expect(onBus).toEqual([true])
+    expect(t.room.seen(recipient).has(delivered[0].id)).toBe(true)
+    expect(t.room.workers.get('cancelled')).toMatchObject({ status: 'dismissed', stopReason: 'message-delivered-cancelled' })
+    expect(await t.tools.call('room_state', {})).toContain('stopped after receiving your message: cancelled')
+    if (type === 'note') {
+      expect(await t.tools.call('room_send', { type: 'note', to: 'cancelled', text: 'try again' })).toContain('resumed cancelled')
+      expect(t.room.workers.get('cancelled')).toMatchObject({ status: 'running', stopReason: undefined })
+    }
+  })
+
+  it('records a delivered follow-up when a post-start watcher fails', async () => {
+    const t = setup(2, undefined, () => undefined, false, Promise.resolve(), true)
+    t.seed('watch-failed')
+    const recipient = t.room.workers.get('watch-failed')!.name
+    const reply = await t.tools.call('room_send', { type: 'note', to: 'watch-failed', text: 'check the port' })
+    expect(reply).toContain('stopped after receiving your message: could not watch exit')
+    expect(t.kills).toHaveLength(1)
+    const message = t.room.messages().find(m => m.text === 'check the port')!
+    expect(t.room.seen(recipient).has(message.id)).toBe(true)
+    expect(t.room.workers.get('watch-failed')).toMatchObject({ status: 'dismissed', stopReason: 'message-delivered-failed' })
+  })
+
+  it('does not launch or post when cancelled before spawn', async () => {
+    const t = setup()
+    t.seed('before-spawn')
+    const controller = new AbortController()
+    controller.abort()
+    expect(await t.tools.call('room_send', { type: 'note', to: 'before-spawn', text: 'not delivered' }, controller.signal)).toBe('error: tool call cancelled')
+    expect(t.specs).toHaveLength(0)
+    expect(t.room.messages()).toHaveLength(0)
   })
 
   it('bounds an old process exit wait and says neither delivery nor restart happened', async () => {

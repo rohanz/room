@@ -61,6 +61,10 @@ export function summarizeFiles(paths: readonly string[], options: FileSummaryOpt
 const STOPPED_WITH_SESSION = 'stopped when your last session ended; its partial work is in its worktree'
 const STOPPED_UNWITNESSED = 'stopped while no session of yours was running; reason unknown'
 const stoppedWithSession = (w: Pick<Worker, 'stopReason'>): boolean => w.stopReason === 'lead-session-ended'
+const stoppedAfterMessage = (w: Pick<Worker, 'stopReason'>): string | undefined =>
+  w.stopReason?.startsWith('message-delivered-')
+    ? `stopped after receiving your message: ${w.stopReason === 'message-delivered-cancelled' ? 'cancelled' : 'launch failed'}`
+    : undefined
 
 /** Wording for action recency; connectivity and process liveness are separate facts. */
 export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; processGone?: boolean; worker?: Pick<Worker, 'status' | 'finishedAt' | 'stopReason'> } = {}): string {
@@ -278,11 +282,11 @@ export interface WorkerLineInput {
 export function workerLine({ worker: w, processGone = false, lastActive, changedCount, last, now = Date.now() }: WorkerLineInput): [string, string] {
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120)
-  const state = stoppedWithSession(w) ? STOPPED_WITH_SESSION
+  const state = stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION
     : w.stopReason ? `stopped (${w.stopReason})`
     : w.dismissedAt !== undefined || w.status === 'dismissed' ? `discard pending (${w.status})`
     : w.status === 'running' && processGone ? STOPPED_UNWITNESSED
-    : w.status === 'running' ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status
+    : w.status === 'running' ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status)
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${w.status === 'running' && processGone && !stoppedWithSession(w) ? ` · worktree ${w.dir}` : ''}${summary ? ` · ${summary}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
@@ -297,7 +301,7 @@ export function workerLines(inputs: readonly WorkerLineInput[], options: { all?:
     .sort((a, b) => a.worker.startedAt - b.worker.startedAt)
     .flatMap(workerLine)]
   for (const w of [...visibleRetired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
-    const state = w.disposition === 'stopped' ? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? 'reason unknown'})`) : w.disposition ?? w.outcome
+    const state = w.disposition === 'stopped' ? (stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? 'reason unknown'})`)) : w.disposition ?? w.outcome
     const kept = w.keptWorktree ? `, kept: ${w.keptReason ?? (w.summary.startsWith('kept for ') ? w.summary.slice(9) : `worktree at ${w.keptWorktree}`)}` : ''
     out.push(`  - ${w.tag} (${state}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ''}${w.model ? `, ${w.model}` : ''}${kept}): ${w.summary} · ${formatCount(w.fileCount, 'file')}`)
   }

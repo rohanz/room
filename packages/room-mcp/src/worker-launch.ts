@@ -3,11 +3,11 @@ import path from 'node:path'
 import type { Session } from './session.js'
 import type { Rooms } from './registry.js'
 import { toolCallAborted } from './registry.js'
-import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
+import { bindWorkerPortReservation, releaseWorkerProcessPort, reserveWorkerPort } from './port-reservations.js'
 import { defaultSpawner, probeProcess, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type ProcessInfo, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
 
 export class WorkerLaunchError extends Error {
-  constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string) { super(message) }
+  constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string, readonly delivered = false, readonly pid?: number) { super(message) }
 }
 
 export interface WorkerLaunchLease { release(): void }
@@ -42,6 +42,8 @@ export async function launchWorkerProcess(policy: Policy, command: Command, leas
   const { rooms, session: s, id, tag } = policy
   let reservation: ReturnType<typeof reserveWorkerPort> | undefined
   let passed = false
+  let delivered = false
+  let proc: SpawnedProcess | undefined
   try {
     try { reservation = reserveWorkerPort(id, policy.usedPorts ?? [], undefined, policy.preferredPort) }
     catch (e) { throw new WorkerLaunchError('port', String(e instanceof Error ? e.message : e)) }
@@ -69,30 +71,36 @@ export async function launchWorkerProcess(policy: Policy, command: Command, leas
     const priority = workerPriority(built, niceEnv)
     const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
     if (toolCallAborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled')
-    let proc: SpawnedProcess
     try { proc = (policy.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args,
       cwd: policy.dir, env, logFile, captureCodexSession: policy.host === 'codex' }) }
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
     try { await proc.started }
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
-    if (toolCallAborted()) {
-      try { proc.kill() } catch (e) { policy.log(`worker launch: could not stop cancelled ${tag}: ${e}`) }
-      throw new WorkerLaunchError('cancelled', 'tool call cancelled')
-    }
+    delivered = true
+    if (toolCallAborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)
     bindWorkerPortReservation(proc, reservation)
     passed = true
     rooms.setHandle(s, id, proc)
     const result = { proc, port, env, nice: priority.nice, logFile, portChanged,
       startedAt: (policy.at ?? Date.now)(), processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime }
     if (!onStarted(result)) {
-      rooms.dropHandle(s, id, proc)
-      try { proc.kill() } catch (e) { policy.log(`worker launch: could not stop stale ${tag}: ${e}`) }
-      throw new WorkerLaunchError('stale', `${tag} changed during launch; attempted to stop the new process`)
+      throw new WorkerLaunchError('stale', `${tag} changed during launch; attempted to stop the new process`, true)
     }
-    if (policy.host === 'codex') proc.onSessionId?.(sessionId => onSessionId?.(sessionId, proc))
+    if (policy.host === 'codex') {
+      const launchedProc = proc
+      proc.onSessionId?.(sessionId => onSessionId?.(sessionId, launchedProc))
+    }
     rooms.watchWorkerProcess(s, id, proc, command.mode === 'resume' ? `could not resume ${tag}` : `could not start ${built.cmd}`, policy.log, policy.at)
     lease.release()
     return result
+  } catch (e) {
+    if (delivered && proc) {
+      rooms.dropHandle(s, id, proc)
+      try { proc.kill() } catch (stopError) { policy.log(`worker launch: could not stop ${tag}: ${stopError}`) }
+      releaseWorkerProcessPort(proc)
+    }
+    if (e instanceof WorkerLaunchError) throw delivered ? new WorkerLaunchError(e.phase, e.message, true, proc?.pid) : e
+    throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e), delivered, proc?.pid)
   } finally {
     if (!passed) reservation?.release()
   }

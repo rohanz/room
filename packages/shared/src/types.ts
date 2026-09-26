@@ -156,8 +156,8 @@ export interface Worker {
   exitCode?: number
   finishedAt?: number
   dismissedAt?: number
-  /** Intentional shutdown, preserved across lead sessions. */
-  stopReason?: 'lead-session-ended'
+  /** Why the host was stopped, preserved across lead sessions. */
+  stopReason?: 'lead-session-ended' | 'message-delivered-cancelled' | 'message-delivered-failed'
   /** Participant name of the lead that spawned it. */
   lead: string
   /** Spawn generation for this tag: exit callbacks of an older process must not touch a newer record. */

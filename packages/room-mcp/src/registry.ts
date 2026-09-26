@@ -12,12 +12,13 @@ import type { NoteMsg, Presence, Worker } from '@room/shared'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
-import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidPresent, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, probeProcess, type CwdProcessLister, type ProcessProbe, type SpawnedProcess, type Spawner } from './workers.js'
+import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, persistWorkerStopReason, pidPresent, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, probeProcess, type CwdProcessLister, type ProcessProbe, type SpawnedProcess, type Spawner } from './workers.js'
 import { decideResume, decideRetire, processExited, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from './worker-launch.js'
 
 export type Role = 'primary' | 'workers'
+export interface DeliveredResume { delivered: true; reply: string }
 
 /** The MCP request's cancellation follows awaits into worker preparation and registry locks. */
 const toolSignal = new AsyncLocalStorage<AbortSignal>()
@@ -184,8 +185,8 @@ export class Rooms {
     const present = new Set(Array.from(s.awareness?.getStates().values() ?? []).flatMap(p => p.user?.name ? [p.user.name] : []))
     s.room.sweepRetiredWorkers(present)
     for (const w of s.room.workers.values()) {
-      // The next lead must be able to explain and resume this intentionally stopped work.
-      if (w.stopReason === 'lead-session-ended') continue
+      // The next lead must be able to explain and resume intentionally stopped work.
+      if (w.stopReason) continue
       // Keep a finished host session addressable until the lead explicitly collects or
       // discards it. If its checkout vanished, room_send must explain why it cannot resume.
       if (w.status === 'done' && w.hostSessionId) continue
@@ -352,7 +353,7 @@ export class Rooms {
   }
 
   /** Continue an exited, retained worker in its original checkout and host conversation. */
-  async resumeWorker(s: Session, w: Worker, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000): Promise<string> {
+  async resumeWorker(s: Session, w: Worker, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000): Promise<string | DeliveredResume> {
     // An exit callback starts retirement asynchronously. Let that check finish before competing
     // for the same worktree lock; it retains any worker with work to collect.
     await this.retiring.get(s)
@@ -366,7 +367,7 @@ export class Rooms {
       w = current
       if (w.lead !== s.me.name) return `error: ${w.tag} belongs to ${w.lead}`
       if (w.status === 'running') return `error: ${w.tag} is already running`
-      if (w.status === 'dismissed' && w.stopReason !== 'lead-session-ended') return `error: ${w.tag} was discarded and cannot be resumed`
+      if (w.status === 'dismissed' && w.stopReason !== 'lead-session-ended' && w.stopReason !== 'message-delivered-cancelled' && w.stopReason !== 'message-delivered-failed') return `error: ${w.tag} was discarded and cannot be resumed`
       const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) })
       const initial = decideResume(state)
       if (initial === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
@@ -409,6 +410,18 @@ export class Rooms {
           dismissedAt: undefined, stopReason: undefined }, id)) }
         catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
+          if (error.delivered) {
+            const reason = error.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
+            const stoppedAt = at()
+            const stopped = s.room.updateWorker(w.tag, { status: 'dismissed', dismissedAt: stoppedAt, finishedAt: stoppedAt,
+              startedAt: stoppedAt, processStartTime: undefined, summary: undefined,
+              stopReason: reason, ...(error.pid ? { pid: error.pid } : {}), exitCode: undefined }, id)
+            if (stopped) {
+              try { persistWorkerStopReason(s.dir, w.tag, reason, id) }
+              catch (persistError) { log(`worker resume: could not persist stop reason for ${w.tag}: ${persistError}`) }
+            }
+            return { delivered: true, reply: `stopped after receiving your message: ${error.phase === 'cancelled' ? 'cancelled' : error.message}` }
+          }
           if (error.phase === 'port') return `error: could not reserve a port for ${w.tag}: ${error.message}`
           if (error.phase === 'budget' || error.phase === 'cancelled') return `error: ${error.message}`
           if (error.phase === 'stale') return `error: ${w.tag} changed during resume; attempted to stop the new process`
