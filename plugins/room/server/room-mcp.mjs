@@ -7200,12 +7200,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name2}"`);
       return f;
     };
-    function addFormats(ajv, list, fs30, exportName) {
+    function addFormats(ajv, list, fs31, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs30[f]);
+        ajv.addFormat(f, fs31[f]);
     }
     module2.exports = exports2 = formatsPlugin;
     Object.defineProperty(exports2, "__esModule", { value: true });
@@ -9253,14 +9253,14 @@ var init_function = __esm({
     "use strict";
     init_object();
     init_equality();
-    callAll = (fs30, args3, i2 = 0) => {
+    callAll = (fs31, args3, i2 = 0) => {
       try {
-        for (; i2 < fs30.length; i2++) {
-          fs30[i2](...args3);
+        for (; i2 < fs31.length; i2++) {
+          fs31[i2](...args3);
         }
       } finally {
-        if (i2 < fs30.length) {
-          callAll(fs30, args3, i2 + 1);
+        if (i2 < fs31.length) {
+          callAll(fs31, args3, i2 + 1);
         }
       }
     };
@@ -11355,15 +11355,15 @@ var init_yjs = __esm({
           sortAndMergeDeleteSet(ds);
           transaction.afterState = getStateVector(transaction.doc.store);
           doc.emit("beforeObserverCalls", [transaction, doc]);
-          const fs30 = [];
+          const fs31 = [];
           transaction.changed.forEach(
-            (subs, itemtype) => fs30.push(() => {
+            (subs, itemtype) => fs31.push(() => {
               if (itemtype._item === null || !itemtype._item.deleted) {
                 itemtype._callObserver(transaction, subs);
               }
             })
           );
-          fs30.push(() => {
+          fs31.push(() => {
             transaction.changedParentTypes.forEach((events, type) => {
               if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
                 events = events.filter(
@@ -11374,19 +11374,19 @@ var init_yjs = __esm({
                   event._path = null;
                 });
                 events.sort((event1, event2) => event1.path.length - event2.path.length);
-                fs30.push(() => {
+                fs31.push(() => {
                   callEventHandlerListeners(type._dEH, events, transaction);
                 });
               }
             });
-            fs30.push(() => doc.emit("afterTransaction", [transaction, doc]));
-            fs30.push(() => {
+            fs31.push(() => doc.emit("afterTransaction", [transaction, doc]));
+            fs31.push(() => {
               if (transaction._needFormattingCleanup) {
                 cleanupYTextAfterTransaction(transaction);
               }
             });
           });
-          callAll(fs30, []);
+          callAll(fs31, []);
         } finally {
           if (doc.gc) {
             tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -24433,18 +24433,18 @@ var init_esm2 = __esm({
       return str3;
     };
     normalizePathToUnix = (path29) => toUnix(sysPath2.normalize(toUnix(path29)));
-    normalizeIgnored = (cwd2 = "") => (path29) => {
+    normalizeIgnored = (cwd = "") => (path29) => {
       if (typeof path29 === "string") {
-        return normalizePathToUnix(sysPath2.isAbsolute(path29) ? path29 : sysPath2.join(cwd2, path29));
+        return normalizePathToUnix(sysPath2.isAbsolute(path29) ? path29 : sysPath2.join(cwd, path29));
       } else {
         return path29;
       }
     };
-    getAbsolutePath = (path29, cwd2) => {
+    getAbsolutePath = (path29, cwd) => {
       if (sysPath2.isAbsolute(path29)) {
         return path29;
       }
-      return sysPath2.join(cwd2, path29);
+      return sysPath2.join(cwd, path29);
     };
     EMPTY_SET = Object.freeze(/* @__PURE__ */ new Set());
     DirEntry = class {
@@ -24619,13 +24619,13 @@ var init_esm2 = __esm({
        * @param paths_ file or file list. Other arguments are unused
        */
       add(paths_, _origAdd, _internal) {
-        const { cwd: cwd2 } = this.options;
+        const { cwd } = this.options;
         this.closed = false;
         this._closePromise = void 0;
         let paths = unifyPaths(paths_);
-        if (cwd2) {
+        if (cwd) {
           paths = paths.map((path29) => {
-            const absPath = getAbsolutePath(path29, cwd2);
+            const absPath = getAbsolutePath(path29, cwd);
             return absPath;
           });
         }
@@ -24658,11 +24658,11 @@ var init_esm2 = __esm({
         if (this.closed)
           return this;
         const paths = unifyPaths(paths_);
-        const { cwd: cwd2 } = this.options;
+        const { cwd } = this.options;
         paths.forEach((path29) => {
           if (!sysPath2.isAbsolute(path29) && !this._closers.has(path29)) {
-            if (cwd2)
-              path29 = sysPath2.join(cwd2, path29);
+            if (cwd)
+              path29 = sysPath2.join(cwd, path29);
             path29 = sysPath2.resolve(path29);
           }
           this._closePath(path29);
@@ -24912,11 +24912,11 @@ var init_esm2 = __esm({
         if (this.options.atomic && DOT_RE.test(path29))
           return true;
         if (!this._userIgnored) {
-          const { cwd: cwd2 } = this.options;
+          const { cwd } = this.options;
           const ign = this.options.ignored;
-          const ignored = (ign || []).map(normalizeIgnored(cwd2));
+          const ignored = (ign || []).map(normalizeIgnored(cwd));
           const ignoredPaths = [...this._ignoredPaths];
-          const list = [...ignoredPaths.map(normalizeIgnored(cwd2)), ...ignored];
+          const list = [...ignoredPaths.map(normalizeIgnored(cwd)), ...ignored];
           this._userIgnored = anymatch(list, void 0);
         }
         return this._userIgnored(path29, stats);
@@ -26204,12 +26204,12 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
     web: value(args3.web) ?? value(e.ROOM_WEB)
   };
 }
-function resolveSessionHost(dir, env = process.env, parentCommand = () => execFileSync3("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } })) {
+function resolveSessionHost(dir, env = process.env, parentCommand2 = () => execFileSync3("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } })) {
   const host = (v) => v === "claude" || v === "codex" ? v : void 0;
   if (host(env.ROOM_WORKER_HOST)) return env.ROOM_WORKER_HOST;
   if (host(env.ROOM_HOST)) return env.ROOM_HOST;
   try {
-    const command = path6.basename(parentCommand().trim()).toLowerCase();
+    const command = path6.basename(parentCommand2().trim()).toLowerCase();
     if (/^codex(?:[.-]|$)/.test(command)) return "codex";
     if (/^claude(?:[.-]|$)/.test(command)) return "claude";
   } catch {
@@ -26792,8 +26792,8 @@ function findThreadForDir(dir, since) {
         } catch {
         }
       }
-      const cwd2 = head.match(/"cwd":"([^"]+)"/)?.[1]?.replace(/^file:\/\//, "");
-      if (cwd2 && want.includes(path11.resolve(cwd2))) best = { id: m[1], mtime: st.mtimeMs };
+      const cwd = head.match(/"cwd":"([^"]+)"/)?.[1]?.replace(/^file:\/\//, "");
+      if (cwd && want.includes(path11.resolve(cwd))) best = { id: m[1], mtime: st.mtimeMs };
     }
   };
   walk(root, 0);
@@ -31322,8 +31322,8 @@ var require_tree_sitter = __commonJS({
                 } else {
                   const url = input;
                   if (typeof process !== "undefined" && process.versions && process.versions.node) {
-                    const fs30 = __require("fs");
-                    bytes = Promise.resolve(fs30.readFileSync(url));
+                    const fs31 = __require("fs");
+                    bytes = Promise.resolve(fs31.readFileSync(url));
                   } else {
                     bytes = fetch(url).then((response) => response.arrayBuffer().then((buffer) => {
                       if (response.ok) {
@@ -32934,7 +32934,7 @@ var init_claims2 = __esm({
 });
 
 // packages/room-mcp/src/index.ts
-import fs29 from "node:fs";
+import fs30 from "node:fs";
 import path28 from "node:path";
 
 // node_modules/zod/v4/core/util.js
@@ -43151,8 +43151,8 @@ function listCwdProcesses(platform = process.platform) {
       if (!/^\d+$/.test(entry)) continue;
       const pid = Number(entry);
       try {
-        const cwd2 = fs11.realpathSync(`/proc/${pid}/cwd`);
-        result.push({ pid, cwd: cwd2, command: "" });
+        const cwd = fs11.realpathSync(`/proc/${pid}/cwd`);
+        result.push({ pid, cwd, command: "" });
       } catch {
       }
     }
@@ -43171,17 +43171,17 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   const protectedPids = /* @__PURE__ */ new Set([process.pid, process.ppid, ...options.protectedPids ?? []]);
   const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig));
   const sleep2 = options.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
-  const resolved = (cwd2) => {
+  const resolved = (cwd) => {
     try {
-      return fs11.realpathSync(cwd2);
+      return fs11.realpathSync(cwd);
     } catch {
-      return path8.resolve(cwd2);
+      return path8.resolve(cwd);
     }
   };
   const list = options.list ?? listCwdProcesses;
   const insideWorktree = (p) => {
-    const cwd2 = resolved(p.cwd);
-    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd2 === root || cwd2.startsWith(root + path8.sep));
+    const cwd = resolved(p.cwd);
+    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path8.sep));
   };
   const targets = list().filter(insideWorktree);
   if (!targets.length) return [];
@@ -49674,10 +49674,88 @@ init_hooks_bridge();
 init_config();
 init_wake_path();
 
+// packages/room-mcp/src/workspace.ts
+init_src2();
+import fs29 from "node:fs";
+import { execFileSync as execFileSync6 } from "node:child_process";
+function fallbackWorkspace(env, processDir) {
+  const value2 = (key) => env[key]?.trim() || void 0;
+  return value2("ROOM_DIR") ?? value2("PWD") ?? value2("INIT_CWD") ?? processDir;
+}
+var parentCommand = () => execFileSync6("ps", ["-o", "command=", "-p", String(process.ppid)], {
+  encoding: "utf8",
+  timeout: 1e3,
+  stdio: ["ignore", "pipe", "ignore"]
+}).trim();
+function deferForSharedCodex(env, readParent = parentCommand, platform = process.platform) {
+  if (env.ROOM_HOST !== "codex" || env.ROOM_DIR && env.ROOM_DIR.trim()) return false;
+  if (platform === "win32") return true;
+  try {
+    const command = readParent().trim();
+    return !command || command.includes("app-server");
+  } catch {
+    return true;
+  }
+}
+function codexWorkspace(params2, insideWorktree = (dir) => {
+  try {
+    return execFileSync6("git", ["-C", dir, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() === "true";
+  } catch {
+    return false;
+  }
+}) {
+  const meta2 = params2._meta;
+  if (!meta2 || typeof meta2 !== "object") return void 0;
+  const turn = meta2["x-codex-turn-metadata"];
+  if (!turn || typeof turn !== "object") return void 0;
+  const workspaces = turn.workspaces;
+  if (!workspaces || typeof workspaces !== "object" || Array.isArray(workspaces)) return void 0;
+  const keys2 = Object.keys(workspaces);
+  if (keys2.length === 1) return keys2[0];
+  return keys2.find(insideWorktree);
+}
+async function sameWorkspace(a, b) {
+  try {
+    const [realA, realB] = [fs29.realpathSync(a), fs29.realpathSync(b)];
+    if (realA !== realB) return false;
+    const [gitA, gitB] = await Promise.allSettled([gitCommonDir(a), gitCommonDir(b)]);
+    if (gitA.status === "rejected" || gitB.status === "rejected") return gitA.status === gitB.status;
+    return fs29.realpathSync(gitA.value) === fs29.realpathSync(gitB.value);
+  } catch {
+    return false;
+  }
+}
+function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback, matches = sameWorkspace }) {
+  let boundDir;
+  let pending;
+  const bind = (dir) => {
+    boundDir = dir;
+    pending = initialize(dir);
+    return pending;
+  };
+  return {
+    start: () => deferred ? Promise.resolve(void 0) : bind(fallbackDir()),
+    current: () => pending,
+    async forCall(params2) {
+      const workspace = codexWorkspace(params2);
+      let usedFallback = false;
+      if (!pending) {
+        usedFallback = deferred && !workspace;
+        bind(deferred && workspace ? workspace : fallbackDir());
+      }
+      const runtime2 = await pending;
+      if (usedFallback) logFallback();
+      const warning = workspace && boundDir && !await matches(workspace, boundDir) ? `This Codex session's workspace is ${workspace}, but Room is attached to ${boundDir}; restart the session to switch.
+` : "";
+      return { runtime: runtime2, warning };
+    }
+  };
+}
+
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.23",
+  version: "0.16.24",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
@@ -49714,40 +49792,36 @@ var ROOM_LOG_MAX_BYTES = 1024 * 1024;
 function appendRoomLog(file, line, maxBytes = ROOM_LOG_MAX_BYTES) {
   try {
     try {
-      if (fs29.statSync(file).size >= maxBytes) fs29.renameSync(file, `${file}.1`);
+      if (fs30.statSync(file).size >= maxBytes) fs30.renameSync(file, `${file}.1`);
     } catch {
     }
-    fs29.appendFileSync(file, `${line}
+    fs30.appendFileSync(file, `${line}
 `, { mode: 384 });
   } catch {
   }
 }
-var LOG_FILE = process.env.ROOM_LOG_FILE;
+var LOG_FILE;
 var ROOM_LOG_FILE;
 var log = (s) => {
   try {
-    fs29.writeSync(2, `room-mcp: ${s}
+    fs30.writeSync(2, `room-mcp: ${s}
 `);
   } catch {
   }
   const at = (/* @__PURE__ */ new Date()).toISOString();
   if (LOG_FILE) {
     try {
-      fs29.appendFileSync(LOG_FILE, `${at} ${s}
+      fs30.appendFileSync(LOG_FILE, `${at} ${s}
 `);
     } catch {
     }
   }
   if (ROOM_LOG_FILE) appendRoomLog(ROOM_LOG_FILE, `${at} pid ${process.pid}${process.env.ROOM_TAG ? ` ${process.env.ROOM_TAG}` : ""}: ${s}`);
 };
-function cwd() {
-  const e = (k) => process.env[k] && process.env[k].trim() || void 0;
-  return e("ROOM_DIR") ?? e("PWD") ?? e("INIT_CWD") ?? process.cwd();
-}
 function createBundleUpdateNotice(file) {
   let startupMtime;
   try {
-    startupMtime = fs29.statSync(file).mtimeMs;
+    startupMtime = fs30.statSync(file).mtimeMs;
   } catch {
     return () => "";
   }
@@ -49755,7 +49829,7 @@ function createBundleUpdateNotice(file) {
   return () => {
     if (warned2) return "";
     try {
-      if (fs29.statSync(file).mtimeMs <= startupMtime) return "";
+      if (fs30.statSync(file).mtimeMs <= startupMtime) return "";
     } catch {
       return "";
     }
@@ -49764,123 +49838,138 @@ function createBundleUpdateNotice(file) {
   };
 }
 async function main() {
-  let session = null;
-  let startupNotice = "";
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? "");
-  const dir = cwd();
-  const startup = await resolveConfig({ dir, env: process.env });
-  LOG_FILE = startup.logFile;
-  ROOM_LOG_FILE = await gitCommonDir(dir).then((common) => path28.join(common, ROOM_LOG), () => void 0);
-  const tools = createTools({ getSession: () => session, setSession: (s) => {
-    session = s;
-    if (s) attachChannel(s);
-  }, cwd: dir, config: startup, attachChannel: (s) => attachChannel(s) });
-  const adopt = async (s) => {
-    await prepareTeamSharingDisclosure(s);
-    const disclosure = pendingTeamSharingDisclosure(s);
-    if (disclosure) writePendingHookContext(s.dir, "pendingDisclosure", disclosure, s.roomName);
-    tools.markHistorySeenOnJoin(s);
-    session = s;
-    attachChannel(s);
-    tools.attachHooks(s);
-    const n = tools.clearStale(s);
-    if (n) log(`cleared ${n} stale claim(s) from an earlier session`);
-  };
   const mcp = new Server(
     { name: "room", version: RELEASE_VERSION },
     { capabilities: { tools: {}, experimental: { "claude/channel": {} } }, instructions: AGENT_INSTRUCTIONS() }
   );
-  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.list() }));
-  mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-    await autoJoin.settle();
-    let disclosure = "";
-    if (session) {
-      const sentence = pendingTeamSharingDisclosure(session);
-      if (sentence) {
-        const delivery2 = consumeHookDisclosure(session, sentence);
-        if (delivery2 === "hook" || delivery2 === "tool") {
-          markTeamSharingDisclosureDelivered(session);
-          if (delivery2 === "tool") disclosure = sentence;
+  const binding = createWorkspaceBinding({
+    deferred: deferForSharedCodex(process.env),
+    fallbackDir: () => fallbackWorkspace(process.env, process.cwd()),
+    logFallback: () => log("Codex call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback"),
+    initialize: async (dir) => {
+      let session = null;
+      let startupNotice = "";
+      const startup = await resolveConfig({ dir, env: process.env });
+      LOG_FILE = startup.logFile;
+      ROOM_LOG_FILE = await gitCommonDir(dir).then((common) => path28.join(common, ROOM_LOG), () => void 0);
+      const tools = createTools({ getSession: () => session, setSession: (s) => {
+        session = s;
+        if (s) attachChannel(s);
+      }, cwd: dir, config: startup, attachChannel: (s) => attachChannel(s) });
+      const adopt = async (s) => {
+        await prepareTeamSharingDisclosure(s);
+        const disclosure = pendingTeamSharingDisclosure(s);
+        if (disclosure) writePendingHookContext(s.dir, "pendingDisclosure", disclosure, s.roomName);
+        tools.markHistorySeenOnJoin(s);
+        session = s;
+        attachChannel(s);
+        tools.attachHooks(s);
+        const n = tools.clearStale(s);
+        if (n) log(`cleared ${n} stale claim(s) from an earlier session`);
+      };
+      const call = async (req, signal) => {
+        await autoJoin.settle();
+        let disclosure = "";
+        if (session) {
+          const sentence = pendingTeamSharingDisclosure(session);
+          if (sentence) {
+            const delivery2 = consumeHookDisclosure(session, sentence);
+            if (delivery2 === "hook" || delivery2 === "tool") {
+              markTeamSharingDisclosureDelivered(session);
+              if (delivery2 === "tool") disclosure = sentence;
+            }
+          }
         }
-      }
+        const body2 = await tools.call(req.params.name, req.params.arguments ?? {}, signal);
+        const delivery = startupNotice ? consumeHookNotice(dir, startupNotice) : void 0;
+        const notice = session || delivery === "hook" || delivery === "pending" ? "" : startupNotice;
+        if (delivery !== "pending") startupNotice = "";
+        const updateNotice = bundleUpdateNotice();
+        return (notice ? notice + "\n\n" : "") + (disclosure ? disclosure + "\n\n" : "") + (updateNotice ? updateNotice + "\n\n" : "") + body2;
+      };
+      const attachedWakeSessions = /* @__PURE__ */ new WeakSet();
+      const attachChannel = (s) => {
+        if (attachedWakeSessions.has(s)) return;
+        attachedWakeSessions.add(s);
+        const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: (wake) => !!s.room.messages().find((m) => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log });
+        const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
+        s.room.bus.observe((ev) => {
+          for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
+            syncHookSeen(s);
+            if (m.from === s.me.name && m.fromKind !== "human" || s.room.seen(s.me.name).has(m.id)) continue;
+            router.push(shouldWake(
+              s.me,
+              { kind: "msg", msg: m },
+              myClaims(),
+              s.room.changedPaths(s.me.name).length > 0,
+              new Set(Array.from(s.room.workers.values()).filter((w) => w.lead === s.me.name).map((w) => w.name))
+            ));
+          }
+        });
+        log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
+      };
+      const prior = findRoomFile(dir);
+      const chosen = startup.server;
+      log(`room: ${startup.where.replace(/\?.*$/, "")} (${startup.whereRule === "env" ? startup.whereEnv ?? "ROOM_SERVER" : startup.whereRule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
+      const autoJoin = new AutoJoin({
+        local: chosen === LOCAL,
+        log,
+        async attempt(target) {
+          if (session?.local?.lost) await tools.drop(session, session.local.lost);
+          if (target) {
+            const s = await joinSession({ ...rejoinOptions(target, startup.credentialsPath), log });
+            if (!target.pinnedRoom) delete s.pinnedRoom;
+            return s;
+          }
+          if (chosen === LOCAL) return joinSession({ dir, room: startup.room, server: LOCAL, log });
+          if (startup.room) return joinSession({ dir, room: startup.room, server: chosen, log });
+          const derived = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
+          if (derived.roomName) return joinSession({ dir, server: chosen, log });
+          if (prior) {
+            const u = new URL(prior.room);
+            return joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: chosen, log });
+          }
+          log(`ready; ${dir} has no git origin \u2014 call room_join with a room name`);
+          return void 0;
+        },
+        async adopt(s) {
+          await adopt(s);
+          log("ready");
+        },
+        discard: (s) => leaveSession(s),
+        joined: () => !!session && !session.local?.lost,
+        report(line) {
+          startupNotice = line;
+          writePendingHookContext(dir, "pendingNotice", line);
+          log(line);
+        }
+      });
+      tools.setAutoJoin(autoJoin);
+      void autoJoin.ensure();
+      return { call, shutdown: async () => {
+        autoJoin.cancel();
+        await autoJoin.settle();
+        await tools.shutdown();
+      } };
     }
-    const body2 = await tools.call(req.params.name, req.params.arguments ?? {}, extra.signal);
-    const delivery = startupNotice ? consumeHookNotice(dir, startupNotice) : void 0;
-    const notice = session || delivery === "hook" || delivery === "pending" ? "" : startupNotice;
-    if (delivery !== "pending") startupNotice = "";
-    const updateNotice = bundleUpdateNotice();
-    return { content: [{ type: "text", text: (notice ? notice + "\n\n" : "") + (disclosure ? disclosure + "\n\n" : "") + (updateNotice ? updateNotice + "\n\n" : "") + body2 }] };
   });
-  const attachedWakeSessions = /* @__PURE__ */ new WeakSet();
-  const attachChannel = (s) => {
-    if (attachedWakeSessions.has(s)) return;
-    attachedWakeSessions.add(s);
-    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: (wake) => !!s.room.messages().find((m) => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log });
-    const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
-    s.room.bus.observe((ev) => {
-      for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-        syncHookSeen(s);
-        if (m.from === s.me.name && m.fromKind !== "human" || s.room.seen(s.me.name).has(m.id)) continue;
-        router.push(shouldWake(
-          s.me,
-          { kind: "msg", msg: m },
-          myClaims(),
-          s.room.changedPaths(s.me.name).length > 0,
-          new Set(Array.from(s.room.workers.values()).filter((w) => w.lead === s.me.name).map((w) => w.name))
-        ));
-      }
-    });
-    log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
-  };
+  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: DEFS }));
+  mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    const { runtime: runtime2, warning } = await binding.forCall(req.params);
+    const body2 = await runtime2.call(req, extra.signal);
+    return { content: [{ type: "text", text: warning + body2 }] };
+  });
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
-  const prior = findRoomFile(dir);
-  const chosen = startup.server;
-  log(`room: ${startup.where.replace(/\?.*$/, "")} (${startup.whereRule === "env" ? startup.whereEnv ?? "ROOM_SERVER" : startup.whereRule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
-  const autoJoin = new AutoJoin({
-    local: chosen === LOCAL,
-    log,
-    async attempt(target) {
-      if (session?.local?.lost) await tools.drop(session, session.local.lost);
-      if (target) {
-        const s = await joinSession({ ...rejoinOptions(target, startup.credentialsPath), log });
-        if (!target.pinnedRoom) delete s.pinnedRoom;
-        return s;
-      }
-      if (chosen === LOCAL) return joinSession({ dir, room: startup.room, server: LOCAL, log });
-      if (startup.room) return joinSession({ dir, room: startup.room, server: chosen, log });
-      const derived = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
-      if (derived.roomName) return joinSession({ dir, server: chosen, log });
-      if (prior) {
-        const u = new URL(prior.room);
-        return joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: chosen, log });
-      }
-      log(`ready; ${dir} has no git origin \u2014 call room_join with a room name`);
-      return void 0;
-    },
-    async adopt(s) {
-      await adopt(s);
-      log("ready");
-    },
-    discard: (s) => leaveSession(s),
-    joined: () => !!session && !session.local?.lost,
-    report(line) {
-      startupNotice = line;
-      writePendingHookContext(dir, "pendingNotice", line);
-      log(line);
-    }
-  });
-  tools.setAutoJoin(autoJoin);
-  void autoJoin.ensure();
+  await binding.start();
   let closing = false;
   const bye = async (reason) => {
     if (closing) return;
     closing = true;
     log(`stopping: ${reason}`);
-    autoJoin.cancel();
-    await autoJoin.settle();
     try {
-      await tools.shutdown();
+      await (await binding.current())?.shutdown();
     } catch {
     }
     process.exit(0);
