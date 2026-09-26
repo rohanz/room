@@ -68,15 +68,27 @@ export class GraphIndex {
   private jitterTimer?: ReturnType<typeof setTimeout>
   private endJitter?: () => void
   private unobserve: (() => void)[] = []
-  /** Resolves when the initial build is done. */
-  ready: Promise<void> = Promise.resolve()
+  private currentBuild: Promise<void> = Promise.resolve()
+  /** Resolves when the current build is done, even if a captured waiter is superseded. */
+  get ready(): Promise<void> { return this.waitForCurrentBuild() }
+
+  private async waitForCurrentBuild(): Promise<void> {
+    while (true) {
+      if (this.stopped) throw new Error('graph index is closed')
+      const build = this.currentBuild
+      try { await build }
+      catch (error) { if (build === this.currentBuild) throw error }
+      if (this.stopped) throw new Error('graph index is closed')
+      if (build === this.currentBuild) return
+    }
+  }
 
   constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number; read?: typeof gitShow } = {}) {
     this.graph = new SymbolGraph(path => this.cache.get(path))
   }
 
   start(): void {
-    this.ready = this.initialBuild()
+    this.currentBuild = this.initialBuild()
     const observe = <T>(root: Y.Map<Y.Map<T>>) => {
       const known = new Map([...root].map(([person, map]) => [person, new Set(map.keys())]))
       return (events: Y.YEvent<any>[]) => {
@@ -90,7 +102,7 @@ export class GraphIndex {
     this.room.overlays.observeDeep(onOverlays)
     this.room.deleted.observeDeep(onDeleted)
     this.unobserve.push(() => { this.room.overlays.unobserveDeep(onOverlays); this.room.deleted.unobserveDeep(onDeleted) })
-    const onMeta = () => { if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.ready = this.rebuild() }
+    const onMeta = () => { if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.currentBuild = this.rebuild() }
     this.room.metaMap.observe(onMeta)
     this.unobserve.push(() => this.room.metaMap.unobserve(onMeta))
   }
@@ -137,6 +149,7 @@ export class GraphIndex {
     const t0 = Date.now()
     const pathsToRefresh = Array.from(all)
     await ensureLanguages(pathsToRefresh)
+    if (generation !== this.generation || this.stopped) return
     await Promise.all(pathsToRefresh.map(path => this.refresh(path)))
     if (generation !== this.generation || this.stopped) return
     this.phase = 'ready'

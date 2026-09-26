@@ -64,6 +64,50 @@ describe('GraphIndex', () => {
     } finally { gi.stop(); if (release) release(); room.doc.destroy() }
   })
 
+  it('keeps a captured ready waiter pending through a base change and the queued ninth read', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'room-graph-ready-'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()
+    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+    for (let i = 0; i < 9; i++) writeFileSync(join(repo, `file${i}.py`), `def old_${i}(): pass\n`)
+    git('add', '.'); git('commit', '-qm', 'initial')
+    const oldBase = git('rev-parse', 'HEAD')
+    git('commit', '--allow-empty', '-qm', 'new base')
+    const newBase = git('rev-parse', 'HEAD')
+    const room = new RoomDoc(); room.setMeta({ base: oldBase })
+    const oldReads: (() => void)[] = [], newReads: (() => void)[] = []
+    const read = vi.fn(async (_dir: string, sha: string, path: string): Promise<string> => {
+      await new Promise<void>(resolve => (sha === oldBase ? oldReads : newReads).push(resolve))
+      return path === 'file8.py'
+        ? 'from file0 import current_0\ndef consumer(): return current_0()\n'
+        : `def current_${path.slice(4, -3)}(): pass\n`
+    })
+    const gi = new GraphIndex(room, 'Rohan', repo, undefined, { random: () => 0, minPublishMs: 0, read })
+    let settled = false
+    try {
+      gi.start()
+      const captured = gi.ready.then(() => { settled = true }, () => { settled = true })
+      await eventually(() => oldReads.length === 8)
+      room.setMeta({ base: newBase })
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(settled).toBe(false)
+      oldReads.splice(0).forEach(release => release())
+      await eventually(() => newReads.length === 8)
+      expect(settled).toBe(false)
+      newReads.splice(0).forEach(release => release())
+      await eventually(() => newReads.length === 1)
+      expect(settled).toBe(false)
+      newReads.splice(0).forEach(release => release())
+      await captured
+      expect(gi.graph.definersOf('current_0')).toEqual(['file0.py'])
+      expect(gi.graph.usersOf('current_0')).toEqual(['file8.py'])
+      expect(room.graphs.get('Rohan')?.base).toBe(newBase)
+    } finally {
+      oldReads.splice(0).forEach(release => release())
+      newReads.splice(0).forEach(release => release())
+      gi.stop(); room.doc.destroy(); rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
   it('lets a ninth path finish while eight edited paths are superseded', async () => {
     const room = new RoomDoc(); room.setMeta({ base })
     const first: (() => void)[] = [], later: (() => void)[] = []
@@ -240,9 +284,10 @@ describe('shared graph startup', () => {
     const gi = new GraphIndex(room, 'New', dir, undefined, { random: () => 0.5 })
     try {
       gi.start()
+      const ready = gi.ready
       await vi.advanceTimersByTimeAsync(1999)
       expect(room.graphs.has('New')).toBe(false)
-      gi.stop(); await gi.ready
+      gi.stop(); await expect(ready).rejects.toThrow('graph index is closed')
       await vi.advanceTimersByTimeAsync(4000)
       expect(room.graphs.has('New')).toBe(false)
     } finally { gi.stop(); room.doc.destroy(); vi.useRealTimers() }
