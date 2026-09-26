@@ -17452,7 +17452,7 @@ function areaMembershipSummary(areas) {
 function workerLine({ worker: w, processGone = false, lastActive, changedCount, last: last2, now = Date.now() }) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120);
-  const state = stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.stopReason ? `stopped (${w.stopReason})` : w.dismissedAt !== void 0 || w.status === "dismissed" ? "discarded" : w.status === "running" && processGone ? STOPPED_UNWITNESSED : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status;
+  const state = stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.stopReason ? `stopped (${w.stopReason})` : w.dismissedAt !== void 0 || w.status === "dismissed" ? `discard pending (${w.status})` : w.status === "running" && processGone ? STOPPED_UNWITNESSED : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status;
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.status === "running" && processGone && !stoppedWithSession(w) ? ` \xB7 worktree ${w.dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
@@ -17461,14 +17461,15 @@ function workerLine({ worker: w, processGone = false, lastActive, changedCount, 
 function workerLines(inputs, options = {}) {
   const retired = options.retiredWorkers ?? [];
   if (!inputs.length && !retired.length) return [];
-  const visible = inputs.filter((i2) => options.all || !!i2.worker.stopReason || i2.worker.dismissedAt === void 0 && i2.worker.status !== "dismissed");
-  const out2 = [`workers (${visible.length + (options.all ? retired.length : 0)}):`, ...[...visible].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
-  if (options.all) {
-    for (const w of [...retired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
-      const state = w.disposition === "stopped" ? stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? "reason unknown"})` : w.disposition ?? w.outcome;
-      out2.push(`  - ${w.tag} (${state}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ""}${w.model ? `, ${w.model}` : ""}): ${w.summary} \xB7 ${formatCount(w.fileCount, "file")}`);
-    }
-  } else if (retired.length) out2.push(`  retired: ${retired.length} (all=true lists them)`);
+  const visibleRetired = options.all ? retired : retired.filter((w) => !!w.keptWorktree);
+  const out2 = [`workers (${inputs.length + visibleRetired.length}):`, ...[...inputs].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
+  for (const w of [...visibleRetired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
+    const state = w.disposition === "stopped" ? stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? "reason unknown"})` : w.disposition ?? w.outcome;
+    const kept = w.keptWorktree ? `, kept: ${w.keptReason ?? (w.summary.startsWith("kept for ") ? w.summary.slice(9) : `worktree at ${w.keptWorktree}`)}` : "";
+    out2.push(`  - ${w.tag} (${state}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ""}${w.model ? `, ${w.model}` : ""}${kept}): ${w.summary} \xB7 ${formatCount(w.fileCount, "file")}`);
+  }
+  const hiddenRetired = retired.length - visibleRetired.length;
+  if (hiddenRetired) out2.push(`  retired: ${hiddenRetired} (all=true lists them)`);
   return out2;
 }
 var STOPPED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, scopeLine;
@@ -46301,11 +46302,15 @@ function handlers5(state) {
       const resolvedWorker = matches[0];
       let to2 = resolvedWorker?.worker.name ?? requestedTo;
       let inferredQuestionId;
-      if (a.type === "answer" && !a.inReplyTo) {
+      const unansweredQuestions = (from2) => {
         const answered = new Set(rooms.all().flatMap((room) => room.room.messages().filter((m) => m.type === "answer").map((m) => m.inReplyTo)));
-        const candidates = rooms.all().flatMap((room) => room.room.messages().filter((m) => m.type === "question" && m.to === room.me.name && (!to2 || m.from === to2) && !answered.has(m.id)).map((question2) => ({ room, question: question2 })));
-        if (candidates.length !== 1) return candidates.length ? `error: answer requires inReplyTo; unanswered questions:
-${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPreview(question2.text)}`).join("\n")}` : `error: answer requires inReplyTo; no unanswered question${to2 ? ` from ${to2}` : ""} addressed to you`;
+        return rooms.all().flatMap((room) => room.room.messages().filter((m) => m.type === "question" && m.to === room.me.name && (!from2 || m.from === from2) && !answered.has(m.id)).map((question2) => ({ room, question: question2 })));
+      };
+      const ambiguousAnswer = (candidates, from2) => candidates.length ? `error: answer requires inReplyTo; unanswered questions:
+${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPreview(question2.text)}`).join("\n")}` : `error: answer requires inReplyTo; no unanswered question${from2 ? ` from ${from2}` : ""} addressed to you`;
+      if (a.type === "answer" && !a.inReplyTo) {
+        const candidates = unansweredQuestions(to2);
+        if (candidates.length !== 1) return ambiguousAnswer(candidates, to2);
         byQuestion = candidates[0].room;
         question = candidates[0].question;
         to2 = question.from;
@@ -46337,6 +46342,10 @@ ${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPrevie
         if (result.startsWith("error:")) return result;
         restarted = true;
         notes.push(result);
+      }
+      if (inferredQuestionId) {
+        const candidates = unansweredQuestions(requestedTo && resolvedWorker ? resolvedWorker.worker.name : requestedTo);
+        if (candidates.length !== 1 || candidates[0].question.id !== inferredQuestionId || candidates[0].room !== byQuestion) return ambiguousAnswer(candidates, requestedTo && resolvedWorker ? resolvedWorker.worker.name : requestedTo);
       }
       let paths = [], symbols = [];
       s.room.doc.transact(() => {
@@ -46810,7 +46819,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
   const conflictingPaths = /* @__PURE__ */ new Map();
   for (const [index, { person, session }] of participants.entries()) {
     const declaredNote = shareOf(session, person) === "declared" ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : "";
-    const clean = [], conflicts = [], onlyOne = [], resolvable = [];
+    const clean = [], conflicts = [], onlyOne = [], sameChange = [], resolvable = [];
     const pair = pairs.get(person);
     for (const p of paths) {
       const mine = merged.get(p);
@@ -46818,7 +46827,13 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
       const b = await baseAt(pair, p);
       const mineT = mine ?? "", theirs = theirsRaw === void 0 ? b : theirsRaw;
       if (theirs === b) continue;
-      if (mine === b || mine === theirs) {
+      if (mine === theirs) {
+        const prior2 = owners.get(p) ?? [caller.me.name];
+        sameChange.push(`${prior2.join(" + ")} and ${person} made the same change: ${p}`);
+        owners.set(p, [.../* @__PURE__ */ new Set([...prior2, person])]);
+        continue;
+      }
+      if (mine === b) {
         onlyOne.push(`${p} (${person} only)`);
         merged.set(p, theirs);
         owners.set(p, [...owners.get(p) ?? [], person]);
@@ -46892,6 +46907,7 @@ ${detail.join("\n")}`);
     out2.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(" + ")}${pair && pair.sha !== ancestor ? ` (against ${pair.worker}'s base ${pair.sha.slice(0, 10)})` : ""}`);
     if (declaredNote) out2.push(declaredNote);
     if (onlyOne.length) out2.push(`only ${person} changed ${onlyOne.length === 1 ? "this file" : "these files"} since its start${pair?.carriedCommit ? ", which already includes your carried edits" : ""}: ${onlyOne.join(", ")}`);
+    out2.push(...sameChange);
     if (clean.length) out2.push(`both changed, merge cleanly: ${clean.join(", ")}`);
     if (conflicts.length) out2.push(`CONFLICTS:
 ${conflicts.join("\n")}`);
@@ -47747,7 +47763,7 @@ repeat with force=true to delete them`;
       out2.push("Changes from " + selected.map((x) => x.w.tag).join(", ") + ": " + (changes.map((x) => x.p).join(", ") || "already present") + ". Nothing committed or staged.");
       for (const { s, w } of selected) {
         releaseClaimsOnDone(s, () => false, w.name, false);
-        const retire = (summary, keptWorktree) => {
+        const retire = (summary, keptWorktree, keptReason) => {
           const retiredAt = Date.now();
           const files = result.paths.filter((p) => result.owners.get(p)?.includes(w.name));
           s.room.retireParticipant(w.name, {
@@ -47758,7 +47774,7 @@ repeat with force=true to delete them`;
             ...w.model ? { model: w.model } : {},
             task: w.task,
             summary,
-            ...keptWorktree ? { keptWorktree } : {},
+            ...keptWorktree ? { keptWorktree, keptReason } : {},
             files,
             fileCount: files.length,
             startedAt: w.startedAt,
@@ -47774,14 +47790,15 @@ repeat with force=true to delete them`;
         }
         if (w.exitCode !== 0) {
           out2.push("kept " + w.tag + ": clean exit not confirmed");
-          retire(w.summary ?? "", w.dir);
+          retire(w.summary ?? "", w.dir, "clean exit not confirmed");
           continue;
         }
         try {
           const children = descendants(s, w);
           if (children.length) {
-            out2.push("kept " + w.tag + ": nested workers remain: " + children.map((c) => c.tag).join(", "));
-            retire(w.summary ?? "", w.dir);
+            const reason = "nested workers remain: " + children.map((c) => c.tag).join(", ");
+            out2.push("kept " + w.tag + ": " + reason);
+            retire(w.summary ?? "", w.dir, reason);
             continue;
           }
           const ignored = await ignoredWorkerArtifacts(w);
@@ -47789,7 +47806,7 @@ repeat with force=true to delete them`;
             out2.push("kept " + w.tag + ": uncopied ignored artifacts");
             out2.push(...ignored.map((p) => `kept ${p} at ${path22.join(w.dir, p)}`));
             out2.push(`retained worktree: ${w.dir}`);
-            retire(`kept for ignored output at ${w.dir}`, w.dir);
+            retire(`kept for ignored output at ${w.dir}`, w.dir, "uncopied ignored artifacts");
             continue;
           }
           const terminated = [];
@@ -47799,11 +47816,11 @@ repeat with force=true to delete them`;
             if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
           } else {
             out2.push("kept " + w.tag + ": cleanup incomplete");
-            retire(w.summary ?? "", w.dir);
+            retire(w.summary ?? "", w.dir, "cleanup incomplete");
           }
         } catch (e) {
           out2.push("cleanup incomplete for " + w.tag + ": " + (e instanceof Error ? e.message : String(e)));
-          retire(w.summary ?? "", w.dir);
+          retire(w.summary ?? "", w.dir, "cleanup incomplete");
         }
       }
       return out2.join("\n");
@@ -48482,7 +48499,7 @@ function install6(state) {
     if (proc && !pidPresent(w.pid, ctx.probe)) releaseWorkerProcessPort(proc);
     if (cancelled?.aborted) return how + cleanupText();
     if (stopReason && cleanupError) throw new Error(cleanupError);
-    if (signalled || proc || pidPresent(w.pid, ctx.probe)) s.room.post(s.me, { type: "note", to: w.lead, priority: signalled ? "notify" : "interrupt", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
+    if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === "discarded by the lead" && w.lead === s.me.name)) s.room.post(s.me, { type: "note", to: w.lead, priority: signalled ? "notify" : "interrupt", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
     if (signalled) {
       if (stopReason) {
         try {
