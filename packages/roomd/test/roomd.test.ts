@@ -155,6 +155,62 @@ describe('roomd v2 push-only overlays', () => {
     await waitFor(() => daemon.roomDoc.text('app.py', 'Retry') === 'edit\n')
   })
 
+  it('reports a queued reconcile failure once and keeps retrying', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
+    const logs: string[] = [], retries: Array<() => void> = []
+    let failures = 2
+    const daemon = await start({ room: room(), dir, name: 'Queued', share: 'intent', log: line => logs.push(line),
+      retrySchedule: run => { retries.push(run); return () => {} },
+      beforePublishWrite: async () => { if (failures--) throw new Error('queued failure') },
+    })
+    const queued = daemon as Roomd & { enqueue(work: () => Promise<void>): Promise<void> }
+    await queued.enqueue(() => daemon.setShare('full'))
+    expect(logs.filter(line => line.includes('warn: queued failure'))).toHaveLength(1)
+    expect(retries).toHaveLength(1)
+    retries.shift()!()
+    await waitFor(() => retries.length === 1)
+    expect(logs.filter(line => line.includes('warn: queued failure'))).toHaveLength(2)
+    retries.shift()!()
+    await waitFor(() => daemon.roomDoc.text('app.py', 'Queued') === 'edit\n')
+  })
+
+  it('reports each retry when failures reuse one Error object', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
+    const logs: string[] = [], retries: Array<() => void> = []
+    const failure = new Error('reused failure')
+    let failures = 2
+    const daemon = await start({ room: room(), dir, name: 'Reused', share: 'intent', log: line => logs.push(line),
+      retrySchedule: run => { retries.push(run); return () => {} },
+      beforePublishWrite: async () => { if (failures--) throw failure },
+    })
+    await expect(daemon.setShare('full')).rejects.toThrow('reused failure')
+    expect(retries).toHaveLength(1)
+    retries.shift()!()
+    await waitFor(() => retries.length === 1)
+    expect(logs.filter(line => line.includes('warn: reused failure'))).toHaveLength(2)
+    retries.shift()!()
+    await waitFor(() => daemon.roomDoc.text('app.py', 'Reused') === 'edit\n')
+  })
+
+  it('reports a primitive reconcile throw once through the queue', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
+    const logs: string[] = [], retries: Array<() => void> = []
+    let fail = true
+    const daemon = await start({ room: room(), dir, name: 'Primitive', share: 'intent', log: line => logs.push(line),
+      retrySchedule: run => { retries.push(run); return () => {} },
+      beforePublishWrite: async () => { if (fail) { fail = false; throw 'primitive failure' } },
+    })
+    const queued = daemon as Roomd & { enqueue(work: () => Promise<void>): Promise<void> }
+    await queued.enqueue(() => daemon.setShare('full'))
+    expect(logs.filter(line => line.includes('warn: primitive failure'))).toHaveLength(1)
+    expect(retries).toHaveLength(1)
+    retries.shift()!()
+    await waitFor(() => daemon.roomDoc.text('app.py', 'Primitive') === 'edit\n')
+  })
+
   it('automatically sweeps a late remote base key after its owner has retired', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n' }), url = room()
     const scheduled: Array<() => Promise<void>> = []

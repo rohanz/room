@@ -6,13 +6,14 @@ import type { DiskBatch } from './disk-batch.js'
 import { clampShare, type ShareLevel } from './share-level.js'
 
 const errMsg = (error: unknown): string => error instanceof Error ? error.message : String(error)
+class ReportedFailure extends Error {
+  constructor(original: unknown) { super(errMsg(original)) }
+}
 
-/** For each path, this daemon's overlay is disk text only when eligible and different
- * from the current HEAD base; otherwise it is absent (or marked deleted when an
- * eligible base file is missing). Eligibility is decided below. The serialized queue
- * and failed-reconcile retry converge this state. Stopped guards prevent late writes;
- * sharing-generation guards prevent writes across scope/level changes; HEAD guards
- * prevent publishing against a stale base until the next poll reseeds it. */
+/** Eligible paths eventually converge to disk state compared with HEAD text, or the
+ * carried baseline for a carried untracked file. HEAD is checked once per reconcile
+ * batch; pollHead reseeds after later moves. Stopped guards prevent late writes and
+ * generation guards prevent writes across sharing changes. */
 export interface EligibilityFacts {
   ignored: boolean
   safe: boolean
@@ -72,7 +73,6 @@ interface PublicationHost {
 
 export class Publisher {
   constructor(private readonly host: PublicationHost) {}
-  private readonly reportedErrors = new WeakSet<object>()
   stopRetry(): void { this.retryTimer?.() }
   setRetained(paths: Set<string>): void { this.retainedDeclaredPaths = paths }
   retainedDeclared(): string[] { return [...this.retainedDeclaredPaths].sort() }
@@ -83,6 +83,7 @@ export class Publisher {
   private reconcileDirty = false
   private readonly inFlightPaths = new Map<string, number>()
   private sharingDirty = false
+  /** Exact paths published while declared; scope may end before teammates collect them. */
   private retainedDeclaredPaths: Set<string> = new Set<string>()
   retainLeavingScope(oldPaths: string[], nextPaths: string[]): void {
     if (!oldPaths.length || this.host.publishUnder) return
@@ -123,13 +124,10 @@ export class Publisher {
     }
   }
 
-  /** Re-evaluate every changed file against the current level: withdraw what is no longer allowed, publish what now is. */
+  /** Re-evaluate changed files against the current sharing level. */
   async resharePaths(): Promise<void> {
     if (this.host.stopped) return
-    const changed = await gitChanged(this.host.dir).catch(error => { this.reconcileFailed(error); throw error })
-    for (const relpath of this.host.roomDoc.changedPaths(this.host.name)) {
-      if (!eligibility(this.eligibilityFacts(relpath)).share) this.withhold(relpath, true)
-    }
+    const changed = await gitChanged(this.host.dir).catch(error => { throw this.reportFailure(error) })
     await this.reconcile(changed)
   }
 
@@ -206,10 +204,7 @@ export class Publisher {
   }
 
   reconcileFailed(error: unknown): void {
-    if (typeof error === 'object' && error !== null) {
-      if (this.reportedErrors.has(error)) return
-      this.reportedErrors.add(error)
-    }
+    if (error instanceof ReportedFailure) return
     this.host.log(`warn: ${errMsg(error)}`)
     if (this.host.stopped) return
     this.reconcileDirty = true
@@ -222,6 +217,11 @@ export class Publisher {
     }, delay)
   }
 
+  private reportFailure(error: unknown): ReportedFailure {
+    this.reconcileFailed(error)
+    return new ReportedFailure(error)
+  }
+
   reconciled(): void {
     if (!this.reconcileDirty) return
     this.reconcileDirty = false
@@ -230,6 +230,7 @@ export class Publisher {
     this.retryTimer = undefined
   }
 
+  /** Publish disk state for these paths and published paths, reading base texts in one git process. */
   async reconcile(extra: Iterable<string>): Promise<void> {
     if (this.host.stopped) return
     const generation = this.host.sharingGeneration
@@ -260,7 +261,7 @@ export class Publisher {
       }
       if (generation !== this.host.sharingGeneration) this.markSharingDirty()
       else this.reconciled()
-    } catch (error) { this.reconcileFailed(error); throw error }
+    } catch (error) { throw this.reportFailure(error) }
     finally { release() }
   }
 
@@ -273,6 +274,7 @@ export class Publisher {
     })
   }
 
+  /** `read` holds base texts at `read.base` and `read.shared`, after the batch HEAD check in reconcile. */
   async publishDiskState(relpath: string, read?: { base: string; texts: Map<string, string | undefined>; shared: string; sharedTexts?: Map<string, string | undefined>; blobs?: Map<string, GitBlobInfo | undefined> }): Promise<void> {
     if (this.host.stopped) return
     const release = this.trackPaths([relpath])

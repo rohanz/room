@@ -266,7 +266,6 @@ class Daemon implements Roomd {
   readonly shareCeiling?: () => ShareLevel
   /** Explicit scope paths (option / setShare); when unset, the person's scope in the room doc decides. */
   private explicitScopePaths?: string[]
-  /** Exact paths already published while declared; task scope may end before teammates collect them. */
   sharingGeneration = 0
   readonly retrySchedule: (run: () => void, delayMs: number) => () => void
   private remoteRepairTimer?: () => void
@@ -880,8 +879,6 @@ class Daemon implements Roomd {
     await this.publisher.reconcile(await gitChanged(this.dir))
   }
 
-  /** Publish the disk state of these paths and the published ones, reading every base text in one git process. */
-
   abs(relpath: string): string {
     return path.join(this.dir, ...relpath.split('/'))
   }
@@ -942,8 +939,6 @@ class Daemon implements Roomd {
     }
     return true
   }
-
-  /** `read`: base texts already read at `read.base` (and `read.shared`) with HEAD checked once for the batch (reconcile). */
 
   // ---- watcher -----------------------------------------------------------
 
