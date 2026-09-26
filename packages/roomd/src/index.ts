@@ -17,6 +17,8 @@ import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
 import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
+import { claimDigest, reanchorClaims } from './reanchor.js'
+import type { Claim, ReleaseMsg } from '@room/shared'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
 import { BASE_CATCH_UP, RoomDoc, colorFor, isRegenerableBuildPath, roomNameParts, scopeCovers, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
@@ -50,6 +52,7 @@ export function clampShare(level: ShareLevel, max: ShareLevel): ShareLevel {
 }
 /** Presence as this daemon publishes it: the shared Presence plus the sharing level. */
 export type SharePresence = Presence & { share?: ShareLevel }
+export { claimDigest } from './reanchor.js'
 
 const machineHostname = os.hostname()
 const machineIdentities = new Map<string, string>()
@@ -675,6 +678,7 @@ class Daemon implements Roomd {
       return
     }
     const prev = this.base
+    const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : []
     this.base = head
     this.branch = branch
     if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages())
@@ -685,6 +689,7 @@ class Daemon implements Roomd {
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.maybeAdvance(roomBase, head)
     await this.seedLocalOverlay()
+    if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot)
     await this.refreshBaseStatus()
   }
 
@@ -764,6 +769,49 @@ class Daemon implements Roomd {
       this.setStatus(`${this.isWorkerWorktree() ? 'worker worktree behind room base' : 'behind base'} by ${n || '?'} commit${n === 1 ? '' : 's'}${this.isWorkerWorktree() ? '' : `: ${BASE_CATCH_UP}`}`)
     } else if (rel === 'ahead') { await this.maybeAdvance(roomBase, this.base) }
     else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}${this.isWorkerWorktree() ? '' : `: ${BASE_CATCH_UP}`}`)
+  }
+
+  /** Capture the claimed code before a commit can clear its overlay. */
+  private async snapshotOwnClaims(prev: string): Promise<Claim[]> {
+    const owned = [...this.roomDoc.claims.values()].filter(c => c.by === this.name && !c.path.endsWith('/'))
+    const oldPaths = [...new Set(owned.filter(c => !this.roomDoc.overlayText(this.name, c.path) && !c.claimedHash).map(c => c.path))]
+    const oldTexts = oldPaths.length ? await gitShowMany(this.dir, prev, oldPaths) : new Map<string, string | undefined>()
+    return owned.map(c => {
+      const overlay = this.roomDoc.text(c.path, this.name)
+      if (overlay !== undefined) {
+        const range = this.roomDoc.claimRange(c)
+        return { ...c, ...range, claimedHash: claimDigest(overlay, range.from, range.to) }
+      }
+      if (c.claimedHash) return c
+      const oldText = oldTexts.get(c.path)
+      return { ...c, claimedHash: oldText === undefined ? undefined : claimDigest(oldText, c.from, c.to) }
+    })
+  }
+
+  /** Validate only this daemon's claims against the new HEAD or current overlay. */
+  private async reanchorOwnClaims(head: string, snapshot: readonly Claim[]): Promise<void> {
+    if (!snapshot.length || this.stopped || await gitHead(this.dir) !== head) return
+    const paths = [...new Set(snapshot.map(c => c.path))]
+    const headTexts = await gitShowMany(this.dir, head, paths)
+    if (this.stopped || await gitHead(this.dir) !== head) return
+    const currentTexts = new Map(paths.map(p => [p, this.roomDoc.text(p, this.name) ?? headTexts.get(p)]))
+    const { moves, releases } = reanchorClaims(this.name, snapshot, currentTexts)
+    const hashById = new Map(snapshot.map(c => [c.id, c.claimedHash]))
+    this.roomDoc.doc.transact(() => {
+      for (const move of moves) {
+        const current = this.roomDoc.claims.get(move.id)
+        if (current?.by === this.name) this.roomDoc.moveClaim(move.id, move.from, move.to, this, hashById.get(move.id))
+      }
+      for (const release of releases) {
+        const current = this.roomDoc.claims.get(release.id)
+        if (current?.by !== this.name) continue
+        this.roomDoc.removeClaim(release.id, this)
+        const text = `released your claim on ${release.path}:${release.from}-${release.to}: that code changed in ${head.slice(0, 10)}`
+        this.roomDoc.post<ReleaseMsg>({ name: this.name, kind: this.kind }, { type: 'release', claimId: release.id, path: release.path, summary: text }, this)
+        this.roomDoc.post<NoteMsg>({ name: 'room', kind: 'bot' }, { type: 'note', to: this.name, priority: 'notify', text }, this)
+        this.log(text)
+      }
+    }, this)
   }
 
   /** Publish what differs from HEAD: git's changed paths plus what this person already published, never every tracked file. */

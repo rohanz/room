@@ -47,6 +47,8 @@ export interface Claim {
   at: number
   /** Absent when the owner's overlay did not exist when the claim was made. */
   anchor?: ClaimAnchor
+  /** Digest of the covered lines at claim time; no source text is shared. */
+  claimedHash?: string
   plans?: Plan[]
   /** Id of the bus message announcing this claim (dependents are found through it). */
   msgId?: string

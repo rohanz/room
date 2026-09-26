@@ -2,6 +2,7 @@ import { createWriteIntentReader } from '../hooks-bridge.js'
 import { ConflictWatcher } from '../conflicts.js'
 import { sameCheckoutSession } from '../company.js'
 import { git, gitShow } from '@room/roomd/git'
+import { claimDigest } from '@room/roomd'
 import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
 import { coordinationPaths, coversPath, nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
@@ -53,12 +54,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         range = { from: Number(a.from), to: Number(a.to) }
       }
       const r = directory ? range : clampRange(range.from, range.to, n)
+      const claimedHash = !isNew && !directory ? claimDigest(t!, r.from, r.to) : undefined
       const intentFull = symbol ? `${symbol}: ${intent}` : intent
       const overl = s.room.openClaims().filter(c => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }))
       let claim!: Claim
       let msg!: ClaimMsg
       s.room.doc.transact(() => {
-        claim = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent: intentFull, ...(plans.length ? { plans } : {}) })
+        claim = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent: intentFull, ...(plans.length ? { plans } : {}), ...(claimedHash ? { claimedHash } : {}) })
         msg = s.room.post<ClaimMsg>(s.me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent: intentFull, ...(plans.length ? { plans } : {}) })
         for (const o of overl) {
           const text = `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intentFull}) overlapping ${describeClaim(o)}`

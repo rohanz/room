@@ -384,6 +384,17 @@ export class RoomDoc {
     return claim
   }
 
+  /** Replace a claim's line range and any obsolete overlay anchor after HEAD changes. */
+  moveClaim(id: string, from: number, to: number, origin?: unknown, claimedHash?: string): Claim | undefined {
+    const claim = this.claims.get(id)
+    if (!claim) return undefined
+    const text = this.overlayText(claim.by, claim.path)
+    const { anchor: _oldAnchor, ...rest } = claim
+    const next: Claim = { ...rest, from, to, ...(claimedHash !== undefined ? { claimedHash } : {}), ...(text ? { anchor: makeAnchor(text, from, to) } : {}) }
+    this.doc.transact(() => { this.claims.set(id, next) }, origin)
+    return next
+  }
+
   // ---- bus ---------------------------------------------------------------
 
   messages(): Msg[] { return this.bus.toArray() }
