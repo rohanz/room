@@ -1,3 +1,4 @@
+import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
 import fs from 'node:fs'
 import { Areas, CODEOWNERS_PATHS, RoomDoc, claimsOverlap, describeClaim, formatMsg, formatPlans, isAgentic, msgPaths, scopeCovers, sharesArea } from '@room/shared'
@@ -131,12 +132,14 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
   const areas = createAreas({ ctx, log, base, presences, others, shareOf, now, isMe })
+  const claims = createClaims({ conflictPairs, mine, log, ctx, liveText, baseFor, now })
   runtime = {
+    ...claims,
     ...areas,
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, myWorkers: undefined!, workerAlive: undefined!,
     ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, others, presences,
     shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, forMe: undefined!, inbox: undefined!, waitingOn: undefined!, describeUsers: undefined!,
-    planChanged: undefined!, followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, upgrade: undefined!, serverOf: undefined!, LOCAL_LOGIN: undefined!, codeLine: undefined!, refreshPrs: undefined!, startPrSync: undefined!, stopPrSync: undefined!, prLines: undefined!, myPr: undefined!, postLedger: undefined!, observeClaims: undefined!, startConflictWatcher: undefined!, startWorkersBridge: undefined!,
+    followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, upgrade: undefined!, serverOf: undefined!, LOCAL_LOGIN: undefined!, codeLine: undefined!, refreshPrs: undefined!, startPrSync: undefined!, stopPrSync: undefined!, prLines: undefined!, myPr: undefined!, postLedger: undefined!, startWorkersBridge: undefined!,
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite: () => primaryHooks?.scheduleWrite(),
     upgraded, conflictPairs,
