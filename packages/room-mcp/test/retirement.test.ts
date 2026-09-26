@@ -30,7 +30,7 @@ function registry(dir: string) {
   const room = new RoomDoc()
   const s = { room, dir, me: { name: 'lead' }, roomName: 'local/repo/main' } as Session
   let primary: Session | null = s
-  const rooms = new Rooms({ primary: () => primary, setPrimary: p => { primary = p }, observeClaims() {}, attach: () => ({ stop() {} }) })
+  const rooms = new Rooms({ primary: () => primary, setPrimary: p => { primary = p }, observeClaims() {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
   rooms.track(s)
   return { room, s, rooms, close: () => { rooms.remove(s); room.doc.destroy() } }
 }
@@ -180,7 +180,7 @@ describe('git facts and lead evaluation', () => {
     let alive = true
     const state = {
       S: () => r.s, rooms: r.rooms, now: Date.now, workerAlive: () => alive,
-      ctx: { sleep: async () => { await r.rooms.retireWorkers(r.s); alive = false } },
+      ctx: { listCwdProcesses: () => [], sleep: async () => { await r.rooms.retireWorkers(r.s); alive = false } },
     } as unknown as HandlerState
     const reply = await collectHandlers(state).room_collect({})
     expect(reply).toContain('Changes from w: already present. Nothing committed or staged.')

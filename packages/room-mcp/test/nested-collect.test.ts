@@ -23,7 +23,7 @@ function collect(room: RoomDoc, dir: string, name: string, workerAlive: (w: Work
   const s = { dir, me: { name, kind: 'agent' }, room, local: {}, roomName: 'local/shop', awareness: { getStates: () => new Map() } }
   const state = {
     S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers: async () => {}, handle: () => undefined },
-    workerAlive: (_s: Session, w: Worker) => workerAlive(w), now: Date.now, ctx: { sleep: async () => {} },
+    workerAlive: (_s: Session, w: Worker) => workerAlive(w), now: Date.now, ctx: { sleep: async () => {}, listCwdProcesses: () => [] },
   } as unknown as HandlerState
   return handlers(state).room_collect
 }
@@ -186,7 +186,7 @@ it('recovers the intentional shutdown reason for both worker levels after the re
     const fresh = new RoomDoc(new Y.Doc())
     fresh.setWorker(worker)
     const session = { dir: tag === 'lead' ? root : lead.dir, room: fresh } as Session
-    const registry = new Rooms({ primary: () => session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
+    const registry = new Rooms({ primary: () => session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
     registry.track(session)
     expect(fresh.workers.get(tag)).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
     registry.remove(session)

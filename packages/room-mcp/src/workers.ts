@@ -580,7 +580,7 @@ export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>
 }
 
 /** Signal only the worker host pid. Its group may also contain processes outside the worktree. */
-export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', worktreeDir?: string, list: () => CwdProcess[] = listCwdProcesses, worker?: Parameters<typeof pidIsOurWorker>[1], probe?: (pid: number) => ProcessInfo | undefined): boolean {
+export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', worktreeDir?: string, list: CwdProcessLister = listCwdProcesses, worker?: Parameters<typeof pidIsOurWorker>[1], probe?: (pid: number) => ProcessInfo | undefined): boolean {
   if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false
   if (worker && !pidIsOurWorker(pid, worker, probe)) return false
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false
@@ -723,9 +723,10 @@ export function pidIsOurWorker(pid: number, w: WorkerIdentity, probe: ProcessPro
   return workerProcessOwnership(pid, w, probe) === 'ours'
 }
 
-export interface CwdProcess { pid: number; cwd: string; command: string }
+interface CwdProcess { pid: number; cwd: string; command: string }
+export type CwdProcessLister = () => CwdProcess[]
 
-function pidHasWorkerCwd(pid: number, dir: string, list: () => CwdProcess[] = listCwdProcesses): boolean {
+function pidHasWorkerCwd(pid: number, dir: string, list: CwdProcessLister = listCwdProcesses): boolean {
   const resolved = (p: string) => { try { return fs.realpathSync(p) } catch { return path.resolve(p) } }
   const root = resolved(dir)
   return list().some(p => p.pid === pid && (resolved(p.cwd) === root || resolved(p.cwd).startsWith(root + path.sep)))
@@ -762,7 +763,7 @@ function listCwdProcesses(platform: NodeJS.Platform = process.platform): CwdProc
 
 /** Signal only a process with a cwd at or below the resolved worktree root. */
 export async function terminateWorktreeProcesses(dir: string, options: {
-  list?: () => CwdProcess[]
+  list?: CwdProcessLister
   signal?: (pid: number, signal: NodeJS.Signals) => void
   probe?: ProcessProbe
   sleep?: (ms: number) => Promise<void>

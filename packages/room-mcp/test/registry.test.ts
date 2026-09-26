@@ -50,6 +50,7 @@ function registry() {
   const events: string[] = []
   const rooms = new Rooms({
     primary: () => primary, setPrimary: s => { primary = s },
+    listCwdProcesses: () => [],
     observeClaims: s => events.push(`observe ${s.roomName}`),
     attach: (s, role) => { events.push(`attach ${role} ${s.roomName}`); return { stop: () => events.push(`stop ${role} ${s.roomName}`), flush: async () => { events.push(`flush ${s.roomName}`) } } },
   })
@@ -167,7 +168,7 @@ describe('worker identity', () => {
     const exits: ((code: number | null) => void)[] = []
     let n = 0
     const tools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined,
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined, listCwdProcesses: () => [],
       spawner: () => ({ pid: 100 + ++n, started: Promise.resolve(), onExit: cb => { exits.push(cb) }, kill: () => true }),
       worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
     })

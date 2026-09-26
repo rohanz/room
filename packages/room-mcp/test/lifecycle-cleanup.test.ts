@@ -110,7 +110,7 @@ describe('worker lifecycle cleanup', () => {
       room.workers.set('a', worker as never)
       const s = { room, dir: root, me: { name: 'lead', kind: 'agent' } } as Session
       const kill = vi.fn(() => { child.kill('SIGTERM'); return true })
-      const state = { ctx: {}, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
+      const state = { ctx: { listCwdProcesses: () => [{ pid: child.pid!, cwd: dir, command: 'node' }] }, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
       installWorkerHandlers(state)
       const reply = await state.dismissWorker(s, worker as never, 'stop')
       expect(reply).toMatch(new RegExp(`stopped processes: [^\\n]+ \\(pid ${child.pid}\\)`))
@@ -138,7 +138,7 @@ describe('worker lifecycle cleanup', () => {
     room.setOverlay(record.name, 'old.ts', 'ghost')
     const s = { room, dir: '/missing', me: { name: 'lead' }, roomName: 'local/repo/main' } as Session
     let current: Session | null = s
-    const rooms = new Rooms({ primary: () => current, setPrimary: next => { current = next }, observeClaims() {}, attach: () => ({ stop() {} }) })
+    const rooms = new Rooms({ primary: () => current, setPrimary: next => { current = next }, observeClaims() {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
     rooms.track(s)
     await rooms.retireWorkers(s)
     expect(room.workers.has(record.tag)).toBe(false)

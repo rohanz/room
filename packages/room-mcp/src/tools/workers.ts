@@ -280,7 +280,7 @@ export function install(state: HandlerState): void {
       let cleanupError: string | undefined
       const stopCwdProcesses = async () => {
         if (!ownedWorktree || cleanupError) return
-        try { stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids, probe: ctx.probe })) }
+        try { stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids, probe: ctx.probe, list: ctx.listCwdProcesses })) }
         catch (e) { cleanupError = `cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}` }
       }
       const cleanupText = () => (stopped.length ? `; stopped processes: ${stopped.join(', ')}` : '') + (cleanupError ? `; ${cleanupError}` : '')

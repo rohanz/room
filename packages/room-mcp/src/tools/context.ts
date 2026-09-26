@@ -11,7 +11,7 @@ import { ConflictWatcher } from '../conflicts.js'
 import { branchOf, fetchPrs, isPrName, openPrs, postPrNote, prLeader, renderPrNote, syncPrs, type PrInfo } from '../prs.js'
 import { Rooms, type Attachment, type Role } from '../registry.js'
 import { authFor, closeRoom, DEFAULT_SERVER, joinSession, leaveSession, LOCAL, parseServer, resolveServer, type JoinOptions, type Session } from '../session.js'
-import type { ProcessInfo, Spawner } from '../workers.js'
+import type { CwdProcessLister, ProcessInfo, Spawner } from '../workers.js'
 import { decideShutdown, workerRealState } from '../worker-state.js'
 import type { ResolvedConfig } from '../config.js'
 import { hasCompany, type CompanyState } from '../company.js'
@@ -57,6 +57,8 @@ export interface ToolCtx {
   config?: ResolvedConfig
   /** What `ps` knows about a pid; injectable for tests. */
   probe?: (pid: number) => ProcessInfo | undefined
+  /** Processes with a cwd; injectable for tests (default: OS process list). */
+  listCwdProcesses?: CwdProcessLister
 }
 
 export type Handler = (args: Record<string, unknown>) => Promise<string>
@@ -227,7 +229,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       flush: () => watcher?.flush() ?? Promise.resolve(),
     }
   }
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => runtime.observeClaims(s), attach, probe: ctx.probe })
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => runtime.observeClaims(s), attach, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
 
   // ---- pull requests as intent ------------------------------------------------
   /** Refresh the PR mirror in the doc when I am the elected maintainer (lowest present name). Never throws. */

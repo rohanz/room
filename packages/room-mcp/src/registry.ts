@@ -12,7 +12,7 @@ import type { NoteMsg, Presence, Worker } from '@room/shared'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
-import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidPresent, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, probeProcess, type ProcessProbe, type SpawnedProcess, type Spawner } from './workers.js'
+import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtifacts, persistedWorkerStopReason, pidPresent, pruneMissingWorkerWorktree, workerLogTail, workerOperationKey, probeProcess, type CwdProcessLister, type ProcessProbe, type SpawnedProcess, type Spawner } from './workers.js'
 import { decideResume, decideRetire, processExited, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from './worker-launch.js'
@@ -36,6 +36,7 @@ export interface Attachment {
 
 export interface RoomsOptions {
   probe?: ProcessProbe
+  listCwdProcesses?: CwdProcessLister
   /** The primary session lives with the host (tests and index.ts set it); the registry reads and writes it through these. */
   primary(): Session | null
   setPrimary(s: Session | null): void
@@ -224,7 +225,7 @@ export class Rooms {
         const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
         const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
         if (facts.clean && w.exitCode === 0) {
-          try { if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this) }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue }
+          try { if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this), list: this.o.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue }
           catch { continue }
         }
         const retiredAt = Date.now()

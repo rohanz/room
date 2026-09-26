@@ -8,12 +8,15 @@ import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import { RoomDoc, shouldWakeOnMsg } from '@room/shared'
 import type { Identity, Msg } from '@room/shared'
-import { createTools } from '../src/tools.js'
+import { createTools as createRoomTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerProcessOwnership, probeProcess, parsePsLstartUtc, persistedWorkerStopReason, workerEnv, codexSessionId, type SpawnSpec } from '../src/workers.js'
 import { reserveWorkerPort } from '../src/port-reservations.js'
+
+// Lifecycle workers and worktrees in this file are synthetic. Never scan host processes.
+const createTools = (ctx: Parameters<typeof createRoomTools>[0]) => createRoomTools({ listCwdProcesses: () => [], ...ctx })
 
 // Disk cleanup and patch restoration are exercised with real worktrees in collect.test.ts.
 // These lifecycle tests use synthetic worker directories and controlled process callbacks.
@@ -1395,6 +1398,7 @@ describe('worker scheduling priority', () => {
     const pidFile = join(scratch, 'pid')
     const cmd = workerPriority({ cmd: process.execPath, args: ['-e', `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`] })
     expect(cmd.nice).toBe(10)
+    expect(cmd.args.slice(0, 2)).toEqual(['-n', '10'])
     const child = defaultSpawner({ cmd: cmd.cmd, args: cmd.args, cwd: scratch, env: {}, logFile: join(scratch, 'worker.log') })
     const exited = new Promise<void>((resolve, reject) => { child.onExit(() => resolve()); child.onError?.(reject) })
     try {

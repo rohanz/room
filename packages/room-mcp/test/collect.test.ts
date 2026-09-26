@@ -35,7 +35,7 @@ function setup(status = 'done') {
   room.workers.set('test', w as never)
   const s = { dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } }
   const retireWorkers = vi.fn(async () => {})
-  const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers }, workerAlive: () => false } as unknown as HandlerState
+  const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers }, workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
   return { call: handlers(state).room_collect, retireWorkers, state, s, w }
 }
 
@@ -69,7 +69,7 @@ describe('room_collect', () => {
     const t = setup(status)
     const current = { ...t.w, id: 'worker-id', pid: process.pid, startedAt: Date.now(), exitCode: status === 'running' ? undefined : 0 }
     t.s.room.workers.set('test', current as never)
-    t.state.ctx = { probe: () => ({}) } as never
+    t.state.ctx = { listCwdProcesses: () => [], probe: () => ({}) } as never
     t.state.dismissWorker = vi.fn(async () => 'signalled')
     put(worker, 'new.txt', 'worker change')
     for (const args of [{ tag: 'test' }, { tag: 'test', discard: true }]) {
@@ -143,7 +143,7 @@ describe('room_collect', () => {
     const t = setup()
     t.s.room.workers.set('test', { ...t.w, pid: 4242, processStartTime: 'fixed-start' } as never)
     let readable = true
-    t.state.ctx = { probe: () => readable ? { startTime: 'fixed-start', executable: 'codex' } : {} } as never
+    t.state.ctx = { listCwdProcesses: () => [], probe: () => readable ? { startTime: 'fixed-start', executable: 'codex' } : {} } as never
     t.state.dismissWorker = vi.fn(async () => {
       readable = false
       return "could not verify test's process; left running, not stopped"
@@ -161,6 +161,7 @@ describe('room_collect', () => {
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
     const child = await startWorktreeProcess()
+    t.state.ctx.listCwdProcesses = () => [{ pid: child.pid!, cwd: worker, command: 'node' }]
     try {
       const reply = await t.call({ tag: 'test' })
       expect(reply).toContain('kept test: uncopied ignored artifacts')
@@ -198,7 +199,7 @@ describe('room_collect', () => {
     const child = await startWorktreeProcess()
     let live = true
     t.state.workerAlive = () => live
-    t.state.ctx = { sleep: async () => { child.kill('SIGTERM'); live = false } } as never
+    t.state.ctx = { listCwdProcesses: () => [{ pid: child.pid!, cwd: worker, command: 'node' }], sleep: async () => { child.kill('SIGTERM'); live = false } } as never
     try {
       const reply = await t.call({ tag: 'test' })
       expect(reply).toMatch(new RegExp(`stopped processes from test: [^\\n]+ \\(pid ${child.pid}\\)`))
@@ -209,6 +210,7 @@ describe('room_collect', () => {
     const t = setup('running')
     put(worker, 'file.txt', 'worker edit\n')
     const child = await startWorktreeProcess()
+    t.state.ctx.listCwdProcesses = () => [{ pid: child.pid!, cwd: worker, command: 'node' }]
     let live = true
     t.state.workerAlive = () => live
     t.state.dismissWorker = async () => { child.kill('SIGTERM'); live = false; return 'worker signalled' }
@@ -248,6 +250,7 @@ describe('room_collect', () => {
     const t = setup('failed')
     put(worker, 'artifact.bin', 'ignored output')
     const child = await startWorktreeProcess()
+    t.state.ctx.listCwdProcesses = () => [{ pid: child.pid!, cwd: worker, command: 'node' }]
     try {
       const reply = await t.call({ tag: 'test', discard: true })
       expect(reply).toContain('discard refused; ignored artifacts')
@@ -755,7 +758,7 @@ describe('room_collect', () => {
     let at = 0
     const sleep = vi.fn(async (ms: number) => { at += ms })
     t.state.now = () => at
-    t.state.ctx = { sleep } as HandlerState['ctx']
+    t.state.ctx = { listCwdProcesses: () => [], sleep } as HandlerState['ctx']
     t.state.workerAlive = () => at < 10_000
     put(worker, 'new.txt', 'new')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
@@ -765,7 +768,7 @@ describe('room_collect', () => {
   it('uses the confirmed exit record after waiting when cleaning up', async () => {
     const t = setup(); let alive = true
     t.state.workerAlive = () => alive
-    t.state.ctx = { sleep: async () => { alive = false; t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never) } } as HandlerState['ctx']
+    t.state.ctx = { listCwdProcesses: () => [], sleep: async () => { alive = false; t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never) } } as HandlerState['ctx']
     put(worker, 'new.txt', 'new')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
     expect(fs.existsSync(worker)).toBe(false)
@@ -774,7 +777,7 @@ describe('room_collect', () => {
     const t = setup()
     let at = 0
     t.state.now = () => at
-    t.state.ctx = { sleep: async (ms: number) => { at += ms } } as HandlerState['ctx']
+    t.state.ctx = { listCwdProcesses: () => [], sleep: async (ms: number) => { at += ms } } as HandlerState['ctx']
     t.state.workerAlive = () => true
     expect(await t.call({ tag: 'test' })).toContain('skipped test: process has not exited after 15 s')
     expect(at).toBe(15_000)

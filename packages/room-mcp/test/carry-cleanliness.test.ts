@@ -88,7 +88,7 @@ describe('carry and discard safety', () => {
       if (String(target) === record) throw new Error('late cleanup failure')
       return realRm(target, options)
     })
-    await expect(cleanupWorker(root, worker, true, true)).rejects.toThrow(/reconstructed base.*actual worker edits are in/)
+    await expect(cleanupWorker(root, worker, true, true, [], { list: () => [] })).rejects.toThrow(/reconstructed base.*actual worker edits are in/)
     expect(fs.existsSync(path.join(prepared.dir, '.git'))).toBe(true)
     expect(fs.readFileSync(patch!, 'utf8')).toContain('worker edit')
   })

@@ -39,7 +39,7 @@ function tool(roomName = 'local/a/main', spawner: (spec: { env: Record<string, s
     daemon: { share: 'full', touch() {}, async stop() {}, dir: repo, name: me.name, roomDoc: room, provider: null, branch: 'main', base: head } as never,
     shareMax: 'full', shareRequested: 'full', local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} },
   } as Session
-  const tools = createTools({ getSession: () => session, setSession: value => { session = value }, cwd: repo, probe: () => undefined, spawner })
+  const tools = createTools({ getSession: () => session, setSession: value => { session = value }, cwd: repo, probe: () => undefined, listCwdProcesses: () => [], spawner })
   shutdowns.push(async () => { await tools.shutdown(); graph.stop(); room.doc.destroy() })
   return { room, call: (args: Record<string, unknown>) => tools.call('room_spawn', { tag: 'w', task: 'test task', ...args }) as Promise<string> }
 }

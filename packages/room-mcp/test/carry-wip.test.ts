@@ -92,7 +92,7 @@ function world() {
   const prompts = new Map<string, string>()
   let pid = 4_000_000 // above any real pid: nothing is ever alive or signalled
   const leadTools = createTools({
-    getSession: () => ls, setSession: s => { ls = s }, cwd: repo, probe: () => undefined,
+    getSession: () => ls, setSession: s => { ls = s }, cwd: repo, probe: () => undefined, listCwdProcesses: () => [],
     spawner: spec => {
       prompts.set(spec.env.ROOM_TAG, spec.args.find(arg => arg.includes('You are worker')) ?? '')
       return { pid: pid++, started: Promise.resolve(), onExit: cb => { exits.set(spec.env.ROOM_TAG, cb) }, kill: () => true }
@@ -192,7 +192,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const record = path.join(repo, '.git', 'room-carry', 'retired.json')
     expect(fs.existsSync(record)).toBe(true)
     const w = { tag: 'retired', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0 } as Parameters<typeof cleanupWorker>[1]
-    expect(await cleanupWorker(repo, w, true)).toBe(true)
+    expect(await cleanupWorker(repo, w, true, false, [], { list: () => [] })).toBe(true)
     expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry/retired')).toThrow()
     expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry-untracked/retired')).toThrow()
     expect(fs.existsSync(record)).toBe(false)
@@ -209,7 +209,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
       return realRm(target, options)
     })
     const w = { tag: 'cleanup-fails', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof cleanupWorker>[1]
-    await expect(cleanupWorker(repo, w, true)).rejects.toThrow(/cleanup/)
+    await expect(cleanupWorker(repo, w, true, false, [], { list: () => [] })).rejects.toThrow(/cleanup/)
     expect(fs.existsSync(prepared.dir)).toBe(true)
     expect(git(repo, 'rev-parse', `refs/heads/${prepared.branch}`)).toBeTruthy()
     expect(git(repo, 'rev-parse', 'refs/room/carry-untracked/cleanup-fails')).toBeTruthy()

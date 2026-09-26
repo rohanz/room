@@ -128,7 +128,7 @@ it('rollback recovery skips invalid recorded paths before writing them', async (
   const invalid = ['../escape', 'a//b', 'a/./b', 'a/../b', '/tmp/nope']
   const w = { tag: 'recover', name: 'lead+recover', lead: 'lead', dir: prepared.dir, branch: prepared.branch,
     status: 'done', exitCode: 0, carriedUntracked: invalid.map(rel => ({ path: rel, sha: '0'.repeat(40) })) } as Worker
-  await expect(cleanupWorker(lead, w, true, true)).rejects.toThrow(/late failure/)
+  await expect(cleanupWorker(lead, w, true, true, [], { list: () => [] })).rejects.toThrow(/late failure/)
   expect(fs.existsSync(path.join(lead, 'escape'))).toBe(false)
 })
 

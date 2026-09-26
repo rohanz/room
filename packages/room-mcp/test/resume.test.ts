@@ -45,7 +45,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   const exits: ((code: number | null) => void)[] = []
   const errors: ((error: Error) => void)[] = []
   const tools = createTools({
-    getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers, log: line => logs.push(line), probe,
+    getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers, log: line => logs.push(line), probe, listCwdProcesses: () => [],
     spawner: spec => { if (failStart) throw new Error('host unavailable'); specs.push(spec); return { pid: 6000 + specs.length, started, onExit: cb => { exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => true } },
     worktree: worktree ?? (async (repo, tag) => {
       const workerDir = join(repo, '.room', 'workers', tag)
