@@ -75,13 +75,15 @@ export class Publisher {
   private readonly reportedErrors = new WeakSet<object>()
   stopRetry(): void { this.retryTimer?.() }
   setRetained(paths: Set<string>): void { this.retainedDeclaredPaths = paths }
+  retainedDeclared(): string[] { return [...this.retainedDeclaredPaths].sort() }
+  clearRetained(): void { this.retainedDeclaredPaths.clear() }
   private oversizedCache = new Map<string, { size: number; mtimeMs: number; base: string; changed: boolean; hash?: string }>()
   private retryTimer?: () => void
   private retryDelayMs = 1000
   private reconcileDirty = false
   private readonly inFlightPaths = new Map<string, number>()
   private sharingDirty = false
-  retainedDeclaredPaths: Set<string> = new Set<string>()
+  private retainedDeclaredPaths: Set<string> = new Set<string>()
   retainLeavingScope(oldPaths: string[], nextPaths: string[]): void {
     if (!oldPaths.length || this.host.publishUnder) return
     const known = new Set([...this.host.roomDoc.changedPaths(this.host.name), ...this.host.roomDoc.deletedFor(this.host.name).keys(), ...this.host.skips.share, ...this.host.batch.knownPaths(), ...this.inFlightPaths.keys()])

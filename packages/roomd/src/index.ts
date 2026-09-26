@@ -24,11 +24,11 @@ import { claimDigest, reanchorClaims } from './reanchor.js'
 import type { Claim, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { BASE_CATCH_UP, RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, roomNameParts, scopeCovers, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
+import { BASE_CATCH_UP, RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, roomNameParts, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
-import { baselineText, carriesWork, workerBaseline, type Baseline } from './baseline.js'
-import { git, gitBlobInfoMany, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitRoomRemoteBranchExists, gitShow, gitShowMany, gitSubject, gitTracked, type GitBlobInfo } from './git.js'
+import { carriesWork, workerBaseline, type Baseline } from './baseline.js'
+import { git, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitRoomRemoteBranchExists, gitShowMany, gitSubject, gitTracked } from './git.js'
 
 /** Keep event emitters and timers from leaking both sync throws and rejected promises. */
 export function observeCallback(fn: () => unknown, report: (error: unknown) => void): void {
@@ -391,7 +391,7 @@ class Daemon implements Roomd {
     this.branch = branch
     this.base = base
     this.tracked = tracked
-    this.publisher.retainedDeclaredPaths = new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl)
+    this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl))
     // Scope can change during sync or seed. Keep the observer live before either await.
     this.roomDoc.scopes.observe(ev => {
       if (!ev.keysChanged.has(this.name) || this.share !== 'declared' || this.explicitScopePaths) return
@@ -468,7 +468,7 @@ class Daemon implements Roomd {
     return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore), share: Array.from(this.skips.share).sort() }
   }
 
-  retainedDeclared(): string[] { return [...this.publisher.retainedDeclaredPaths].sort() }
+  retainedDeclared(): string[] { return this.publisher.retainedDeclared() }
 
   private skipSummary(): string {
     const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size + this.skips.share.size
@@ -495,7 +495,7 @@ class Daemon implements Roomd {
   /** Apply every effective boundary in one place, withdrawing existing text before any async reconcile. */
   setEffectiveShare(level: ShareLevel, scopeChanged = false): void {
     if (level !== this.share || scopeChanged) this.sharingGeneration++
-    if (level !== this.share) this.publisher.retainedDeclaredPaths.clear()
+    if (level !== this.share) this.publisher.clearRetained()
     this.share = level
     this.setStatus(this.currentStatus())
     const changed = new Set(this.roomDoc.changedPaths(this.name))
@@ -519,7 +519,6 @@ class Daemon implements Roomd {
     this.roomIgnore = parseRoomIgnore(text)
     if (this.roomIgnore.patterns) this.log(`${ROOMIGNORE}: ${this.roomIgnore.patterns} pattern(s)`)
   }
-
 
   async stop(reason = 'requested'): Promise<void> {
     if (this.stopped) return
