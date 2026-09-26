@@ -17452,7 +17452,7 @@ function areaMembershipSummary(areas) {
 function workerLine({ worker: w, processGone = false, lastActive, changedCount, last: last2, now = Date.now() }) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120);
-  const state = stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.stopReason ? `stopped (${w.stopReason})` : w.dismissedAt !== void 0 || w.status === "dismissed" ? `discard pending (${w.status})` : w.status === "running" && processGone ? STOPPED_UNWITNESSED : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status;
+  const state = stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.stopReason ? `stopped (${w.stopReason})` : w.dismissedAt !== void 0 || w.status === "dismissed" ? `discard pending (${w.status})` : w.status === "running" && processGone ? STOPPED_UNWITNESSED : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status);
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.status === "running" && processGone && !stoppedWithSession(w) ? ` \xB7 worktree ${w.dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
@@ -17464,7 +17464,7 @@ function workerLines(inputs, options = {}) {
   const visibleRetired = options.all ? retired : retired.filter((w) => !!w.keptWorktree);
   const out2 = [`workers (${inputs.length + visibleRetired.length}):`, ...[...inputs].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
   for (const w of [...visibleRetired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
-    const state = w.disposition === "stopped" ? stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? "reason unknown"})` : w.disposition ?? w.outcome;
+    const state = w.disposition === "stopped" ? stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? "reason unknown"})`) : w.disposition ?? w.outcome;
     const kept = w.keptWorktree ? `, kept: ${w.keptReason ?? (w.summary.startsWith("kept for ") ? w.summary.slice(9) : `worktree at ${w.keptWorktree}`)}` : "";
     out2.push(`  - ${w.tag} (${state}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ""}${w.model ? `, ${w.model}` : ""}${kept}): ${w.summary} \xB7 ${formatCount(w.fileCount, "file")}`);
   }
@@ -17472,7 +17472,7 @@ function workerLines(inputs, options = {}) {
   if (hiddenRetired) out2.push(`  retired: ${hiddenRetired} (all=true lists them)`);
   return out2;
 }
-var STOPPED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, scopeLine;
+var STOPPED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, stoppedAfterMessage, scopeLine;
 var init_views = __esm({
   "packages/shared/src/views.ts"() {
     "use strict";
@@ -17481,6 +17481,7 @@ var init_views = __esm({
     STOPPED_WITH_SESSION = "stopped when your last session ended; its partial work is in its worktree";
     STOPPED_UNWITNESSED = "stopped while no session of yours was running; reason unknown";
     stoppedWithSession = (w) => w.stopReason === "lead-session-ended";
+    stoppedAfterMessage = (w) => w.stopReason?.startsWith("message-delivered-") ? `stopped after receiving your message: ${w.stopReason === "message-delivered-cancelled" ? "cancelled" : "launch failed"}` : void 0;
     scopeLine = (scope) => `${scope.area}: ${scope.summary} (${scope.paths.join(", ")})`;
   }
 });
@@ -31937,7 +31938,7 @@ function persistWorkerStopReason(repoDir, tag, reason, workerId2) {
 function persistedWorkerStopReason(repoDir, tag, workerId2) {
   const record2 = carryRecordSync(repoDir, tag).read();
   if (record2 === void 0 || workerId2 && record2.stopWorkerId && record2.stopWorkerId !== workerId2) return void 0;
-  return record2.stopReason === "lead-session-ended" ? record2.stopReason : void 0;
+  return record2.stopReason === "lead-session-ended" || record2.stopReason === "message-delivered-cancelled" || record2.stopReason === "message-delivered-failed" ? record2.stopReason : void 0;
 }
 function clearWorkerStopState(repoDir, tag, workerId2) {
   const recordFile = carryRecordSync(repoDir, tag);
@@ -32145,6 +32146,19 @@ function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProces
   } catch {
     return false;
   }
+}
+async function stopWorkerWithEscalation(options) {
+  if (!await options.terminate()) return false;
+  const sleep2 = options.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
+  const now = options.now ?? Date.now;
+  const wait = async () => {
+    const deadline = now() + 5e3;
+    while (!options.exited() && now() < deadline) await sleep2(50);
+    return options.exited();
+  };
+  if (await wait()) return true;
+  await options.force();
+  return wait();
 }
 function pidAlive2(pid) {
   if (!pid || pid <= 0) return false;
@@ -32535,6 +32549,13 @@ var init_workers = __esm({
         kill: () => {
           try {
             return child.kill("SIGTERM");
+          } catch {
+            return false;
+          }
+        },
+        killForce: () => {
+          try {
+            return child.kill("SIGKILL");
           } catch {
             return false;
           }
@@ -33315,13 +33336,6 @@ function bindWorkerPortReservation(proc, reservation) {
     release();
     cb(code);
   });
-  if (proc.onError) {
-    const onError = proc.onError.bind(proc);
-    proc.onError = (cb) => onError((error2) => {
-      release();
-      cb(error2);
-    });
-  }
 }
 function releaseWorkerProcessPort(proc) {
   processReservations.get(proc)?.();
@@ -33352,6 +33366,11 @@ async function launchWorkerProcess(policy, command, lease, onStarted, onSessionI
   const { rooms, session: s, id: id2, tag } = policy;
   let reservation;
   let passed = false;
+  let delivered = false;
+  let proc;
+  let exited = false;
+  let watching = false;
+  let stoppingReason;
   try {
     try {
       reservation = reserveWorkerPort(id2, policy.usedPorts ?? [], void 0, policy.preferredPort);
@@ -33416,7 +33435,6 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     const priority2 = workerPriority(built, niceEnv);
     const logFile = path15.join(s.dir, ".room", "workers", `${tag}.log`);
     if (toolCallAborted()) throw new WorkerLaunchError("cancelled", "tool call cancelled");
-    let proc;
     try {
       proc = (policy.spawner ?? defaultSpawner)({
         cmd: priority2.cmd,
@@ -33434,14 +33452,7 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     } catch (e) {
       throw new WorkerLaunchError("start", String(e instanceof Error ? e.message : e));
     }
-    if (toolCallAborted()) {
-      try {
-        proc.kill();
-      } catch (e) {
-        policy.log(`worker launch: could not stop cancelled ${tag}: ${e}`);
-      }
-      throw new WorkerLaunchError("cancelled", "tool call cancelled");
-    }
+    delivered = true;
     bindWorkerPortReservation(proc, reservation);
     passed = true;
     rooms.setHandle(s, id2, proc);
@@ -33456,18 +33467,42 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
       processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime
     };
     if (!onStarted(result)) {
-      rooms.dropHandle(s, id2, proc);
-      try {
-        proc.kill();
-      } catch (e) {
-        policy.log(`worker launch: could not stop stale ${tag}: ${e}`);
-      }
-      throw new WorkerLaunchError("stale", `${tag} changed during launch; attempted to stop the new process`);
+      throw new WorkerLaunchError("stale", `${tag} changed during launch; attempted to stop the new process`, true);
     }
-    if (policy.host === "codex") proc.onSessionId?.((sessionId) => onSessionId?.(sessionId, proc));
-    rooms.watchWorkerProcess(s, id2, proc, command.mode === "resume" ? `could not resume ${tag}` : `could not start ${built.cmd}`, policy.log, policy.at);
+    rooms.watchWorkerProcess(s, id2, proc, command.mode === "resume" ? `could not resume ${tag}` : `could not start ${built.cmd}`, policy.log, policy.at, () => {
+      exited = true;
+      return stoppingReason;
+    });
+    watching = true;
+    if (policy.host === "codex") {
+      const launchedProc = proc;
+      proc.onSessionId?.((sessionId) => onSessionId?.(sessionId, launchedProc));
+    }
+    if (toolCallAborted()) throw new WorkerLaunchError("cancelled", "tool call cancelled", true);
     lease.release();
     return result;
+  } catch (e) {
+    let stopped = false;
+    if (delivered && proc) {
+      const launchedProc = proc;
+      const current = s.room.workers.get(tag);
+      const ownsRecord = current?.id === id2 && current.pid === launchedProc.pid;
+      const reason = e instanceof WorkerLaunchError && e.phase === "cancelled" ? "message-delivered-cancelled" : "message-delivered-failed";
+      if (ownsRecord) stoppingReason = reason;
+      try {
+        if (watching) stopped = await stopWorkerWithEscalation({
+          terminate: () => launchedProc.kill(),
+          exited: () => exited,
+          force: () => launchedProc.killForce?.() ?? false
+        });
+        else launchedProc.kill();
+      } catch (stopError) {
+        policy.log(`worker launch: could not stop ${tag}: ${stopError}`);
+      }
+      if (!stopped) stoppingReason = void 0;
+    }
+    if (e instanceof WorkerLaunchError) throw delivered ? new WorkerLaunchError(e.phase, e.message, true, proc?.pid, stopped) : e;
+    throw new WorkerLaunchError("start", String(e instanceof Error ? e.message : e), delivered, proc?.pid, stopped);
   } finally {
     if (!passed) reservation?.release();
   }
@@ -33480,11 +33515,17 @@ var init_worker_launch = __esm({
     init_port_reservations();
     init_workers();
     WorkerLaunchError = class extends Error {
-      constructor(phase, message) {
+      constructor(phase, message, delivered = false, pid, stopped = false) {
         super(message);
         this.phase = phase;
+        this.delivered = delivered;
+        this.pid = pid;
+        this.stopped = stopped;
       }
       phase;
+      delivered;
+      pid;
+      stopped;
     };
   }
 });
@@ -35408,7 +35449,7 @@ async function finishWorkerProcess(s, w, code, at = Date.now(), error2, unwitnes
     exitCode,
     finishedAt: w.finishedAt ?? at,
     ...stopReason ? { stopReason } : {},
-    ...w.status !== "running" ? {} : unwitnessed ? { status: stopReason ? "dismissed" : "failed", summary: `stopped while no session of yours was running; ${stopReason ?? "reason unknown"}; worktree: ${w.dir}; last lines of its log: ${tail || "(empty log)"}` } : { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" }
+    ...w.status !== "running" ? {} : unwitnessed ? { status: stopReason ? "dismissed" : "failed", summary: `stopped while no session of yours was running; ${stopReason ?? "reason unknown"}; worktree: ${w.dir}; last lines of its log: ${tail || "(empty log)"}` } : stopReason ? { status: "dismissed" } : { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" }
   }, w.id);
   if (!done) {
     const { releaseClaimsOnDone: releaseClaimsOnDone2 } = await Promise.resolve().then(() => (init_claims2(), claims_exports));
@@ -35551,7 +35592,7 @@ var init_registry = __esm({
         const present = new Set(Array.from(s.awareness?.getStates().values() ?? []).flatMap((p) => p.user?.name ? [p.user.name] : []));
         s.room.sweepRetiredWorkers(present);
         for (const w of s.room.workers.values()) {
-          if (w.stopReason === "lead-session-ended") continue;
+          if (w.stopReason) continue;
           if (w.status === "done" && w.hostSessionId) continue;
           if (this.reserving.has("discard:" + s.roomName + ":" + w.name)) continue;
           if (w.lead !== s.me.name || this.hasHandle(s, w)) continue;
@@ -35748,10 +35789,12 @@ var init_registry = __esm({
         return "timeout";
       }
       /** Spawn and resume share the same process-exit accounting and error reporting. */
-      watchWorkerProcess(s, id2, proc, errorPrefix, log2, at = Date.now) {
+      watchWorkerProcess(s, id2, proc, errorPrefix, log2, at = Date.now, observed) {
+        let processError;
         const exited = (code, error2) => {
+          const stopReason = observed?.();
           this.dropHandle(s, id2, proc);
-          const current = s.room.workerById(id2);
+          let current = s.room.workerById(id2);
           const notify = () => {
             const key = _Rooms.hkey(s, id2);
             for (const wake of this.exitWaiters.get(key) ?? []) wake();
@@ -35761,6 +35804,14 @@ var init_registry = __esm({
             notify();
             return;
           }
+          if (stopReason) {
+            s.room.updateWorker(current.tag, { stopReason }, id2);
+            current = s.room.workerById(id2);
+            if (!current) {
+              notify();
+              return;
+            }
+          }
           void finishWorkerProcess(s, current, code, at(), error2).then(() => {
             notify();
             return this.retireWorkers(s);
@@ -35769,8 +35820,10 @@ var init_registry = __esm({
             log2(`worker exit: ${e}`);
           });
         };
-        proc.onError?.((err2) => exited(-1, `${errorPrefix}: ${err2.message}`));
-        proc.onExit((code) => exited(code));
+        proc.onError?.((err2) => {
+          processError = `${errorPrefix}: ${err2.message}`;
+        });
+        proc.onExit((code) => exited(code, processError));
       }
       /** Continue an exited, retained worker in its original checkout and host conversation. */
       async resumeWorker(s, w, followUp, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log2 = console.error, at = Date.now, exitWaitMs = 3e4) {
@@ -35785,7 +35838,7 @@ var init_registry = __esm({
           w = current;
           if (w.lead !== s.me.name) return `error: ${w.tag} belongs to ${w.lead}`;
           if (w.status === "running") return `error: ${w.tag} is already running`;
-          if (w.status === "dismissed" && w.stopReason !== "lead-session-ended") return `error: ${w.tag} was discarded and cannot be resumed`;
+          if (w.status === "dismissed" && w.stopReason !== "lead-session-ended" && w.stopReason !== "message-delivered-cancelled" && w.stopReason !== "message-delivered-failed") return `error: ${w.tag} was discarded and cannot be resumed`;
           const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) });
           const initial = decideResume(state);
           if (initial === "missing") return `error: cannot resume ${w.tag}: its worktree no longer exists`;
@@ -35861,6 +35914,30 @@ var init_registry = __esm({
               );
             } catch (e) {
               const error2 = e instanceof WorkerLaunchError ? e : new WorkerLaunchError("start", String(e));
+              if (error2.delivered) {
+                if (!error2.stopped) return { delivered: true, reply: `could not stop ${w.tag} (pid ${error2.pid}); left running` };
+                const reason = error2.phase === "cancelled" ? "message-delivered-cancelled" : "message-delivered-failed";
+                const stoppedAt = at();
+                const stopped = s.room.updateWorker(w.tag, {
+                  status: "dismissed",
+                  dismissedAt: stoppedAt,
+                  finishedAt: stoppedAt,
+                  startedAt: stoppedAt,
+                  processStartTime: void 0,
+                  summary: void 0,
+                  stopReason: reason,
+                  ...error2.pid ? { pid: error2.pid } : {},
+                  exitCode: void 0
+                }, id2);
+                if (stopped) {
+                  try {
+                    persistWorkerStopReason(s.dir, w.tag, reason, id2);
+                  } catch (persistError) {
+                    log2(`worker resume: could not persist stop reason for ${w.tag}: ${persistError}`);
+                  }
+                }
+                return { delivered: true, reply: `stopped after receiving your message: ${error2.phase === "cancelled" ? "cancelled" : error2.message}` };
+              }
               if (error2.phase === "port") return `error: could not reserve a port for ${w.tag}: ${error2.message}`;
               if (error2.phase === "budget" || error2.phase === "cancelled") return `error: ${error2.message}`;
               if (error2.phase === "stale") return `error: ${w.tag} changed during resume; attempted to stop the new process`;
@@ -46346,12 +46423,12 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       const notes = [];
       if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`);
       const addressedWorker = to2 && s.room.workerOf(to2);
-      let restarted = false;
+      let deliveredInPrompt = false;
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== "running") {
         const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log);
-        if (result.startsWith("error:")) return result;
-        restarted = true;
-        notes.push(result);
+        if (typeof result === "string" && result.startsWith("error:")) return result;
+        deliveredInPrompt = true;
+        notes.push(typeof result === "string" ? result : result.reply);
       }
       let paths = [], symbols = [];
       s.room.doc.transact(() => {
@@ -46373,10 +46450,10 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
             msg = s.room.post(s.me, withPr({ type: "note", text, ...to2 ? { to: to2 } : {} }));
             break;
         }
-        if (restarted) s.room.markSeen(to2, [msg.id]);
+        if (deliveredInPrompt) s.room.markSeen(to2, [msg.id]);
       });
       if (msg.type === "changed") notes.push(...await upgrade(s, msg, paths, symbols));
-      const notice = msg.to && !restarted ? recipientNotice(s, msg.to) : void 0;
+      const notice = msg.to && !deliveredInPrompt ? recipientNotice(s, msg.to) : void 0;
       if (notice) notes.push(msg.type === "question" && notice.terminal ? unavailableQuestion(s, msg.id) : notice.text);
       if (msg.type === "question" && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`);
       s.daemon.touch();
@@ -47531,14 +47608,14 @@ repeat with force=true to delete them`;
           const how = await state.dismissWorker(s, w, "discarded by the lead");
           if (s.room.workers.get(w.tag)?.status === "running" && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) return "could not discard " + w.tag + ": " + how + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
           if (how.includes("cwd process cleanup failed:")) cleanupErrors.push(how);
-          const now = state.now ?? Date.now;
-          const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
-          const deadline = now() + 5e3;
-          while (state.workerAlive(s, w) && now() < deadline) await sleep2(50);
-          if (state.workerAlive(s, w) && decideStop(await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })).host === "signal") signalWorker(w.pid, "SIGKILL", void 0, void 0, w, state.ctx?.probe);
-          const hardDeadline = now() + 5e3;
-          while (state.workerAlive(s, w) && now() < hardDeadline) await sleep2(50);
-          if (state.workerAlive(s, w)) throw new Error("worker process has not stopped");
+          const stopped = await stopWorkerWithEscalation({
+            terminate: () => true,
+            exited: () => !state.workerAlive(s, w),
+            force: async () => decideStop(await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })).host === "signal" && signalWorker(w.pid, "SIGKILL", void 0, void 0, w, state.ctx?.probe),
+            now: state.now,
+            sleep: state.ctx?.sleep
+          });
+          if (!stopped) throw new Error("worker process has not stopped");
         }
         const unsafeAfterDismissal = await unverifiedLive(s, w);
         if (unsafeAfterDismissal) return unsafeAfterDismissal;
@@ -48690,7 +48767,7 @@ function createTools(ctx) {
         }
         try {
           const body2 = await h(name2 === "room_wait" ? { ...args3 ?? {}, [WAIT_SIGNAL]: signal } : args3 ?? {});
-          if (toolCallAborted()) return "error: tool call cancelled";
+          if (toolCallAborted() && name2 !== "room_send") return "error: tool call cancelled";
           if (name2 === "room_preview_merge" || name2.startsWith("room_pr_")) await state.rooms.retireWorkers();
           const s2 = ctx.getSession();
           if (s2 && s2 !== s) s2.refreshRuntime?.();
@@ -48918,7 +48995,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.10",
+  version: "0.16.11",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
