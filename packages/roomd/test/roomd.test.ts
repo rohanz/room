@@ -124,6 +124,21 @@ describe('roomd v2 push-only overlays', () => {
 
   afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
 
+  it('reconciles edited, restored, and deleted disk paths against HEAD', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
+    const daemon = await start({ room: room(), dir, name: 'Writer' })
+    expect(daemon.roomDoc.text('app.py', 'Writer')).toBe('edit\n')
+    await fsp.writeFile(path.join(dir, 'app.py'), 'base\n')
+    await waitFor(() => daemon.roomDoc.changedPaths('Writer').length === 0)
+    await fsp.unlink(path.join(dir, 'app.py'))
+    await waitFor(() => daemon.roomDoc.deletedFor('Writer').has('app.py'))
+    expect(daemon.roomDoc.text('app.py', 'Writer')).toBeUndefined()
+    await fsp.writeFile(path.join(dir, 'app.py'), 'base\n')
+    await waitFor(() => !daemon.roomDoc.deletedFor('Writer').has('app.py'))
+    expect(daemon.roomDoc.changedPaths('Writer')).toEqual([])
+  })
+
   it('automatically sweeps a late remote base key after its owner has retired', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n' }), url = room()
     const scheduled: Array<() => Promise<void>> = []
