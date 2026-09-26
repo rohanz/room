@@ -89,6 +89,10 @@ it.each(['fyi', 'notify', 'interrupt'] as const)('routes a broadcast %s note to 
   expect(messageForMe({ name: 'Kieran' }, note)).toBe(false)
   expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, note).wake).toBe(priority === 'interrupt')
   expect(shouldWakeOnMsg({ name: 'Kieran', kind: 'agent' }, note).wake).toBe(false)
+  expect(messageEndsWait(note, { me: 'Rohan' })).toBe(priority === 'interrupt')
+  expect(messageEndsWait(note, { me: 'Rohan', claimId: 'c_held' })).toBe(priority === 'interrupt')
+  expect(messageEndsWait(note, { me: 'Rohan', questionId: 'm_question' })).toBe(priority === 'interrupt')
+  expect(messageEndsWait(note, { me: 'Kieran' })).toBe(false)
   room.doc.destroy()
 })
 

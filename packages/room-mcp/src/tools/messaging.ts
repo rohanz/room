@@ -270,9 +270,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap(room => myWorkers(room)).filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
-          finish(capNotice + (running.length
-            ? `nothing yet; ${running.length} worker${running.length === 1 ? '' : 's'} still running (${running.map(w => w.tag).join(', ')}); nothing needs you`
-            : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held` : questionId ? `no answer to ${questionId}` : 'nothing happened'}. Continue independent work or wait again.`))
+          // Standalone handler callers may not have installed inbox delivery.
+          const unread = state.inbox?.(s) ?? ''
+          finish(capNotice + unread + (unread
+            ? `timeout after ${timeoutMs}ms: unread messages delivered above. Continue independent work or wait again.`
+            : running.length
+              ? `nothing yet; ${running.length} worker${running.length === 1 ? '' : 's'} still running (${running.map(w => w.tag).join(', ')}); nothing needs you`
+              : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held; ` : questionId ? `no answer to ${questionId}; ` : ''}nothing new. Continue independent work or wait again.`))
         }, timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {

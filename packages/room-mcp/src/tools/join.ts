@@ -82,6 +82,15 @@ export function rejoinOptions(s: Session, credentialsPath?: string): JoinOptions
   return { dir: s.dir, credentialsPath, name: s.me.owner ?? s.me.name, tag: s.me.label, room: s.roomName, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')), share: s.shareRequested, token: s.token }
 }
 
+/** Filter earlier history while preserving a worker's post-spawn briefing from its lead. */
+function markHistorySeenOnJoin(s: Session, seen: Set<string>): void {
+  const worker = s.room.workerOf(s.me.name)
+  for (const m of s.room.messages()) {
+    if (worker?.status === 'running' && m.type === 'note' && !m.to && m.from === worker.lead && m.at >= worker.startedAt && m.priority !== 'fyi') continue
+    seen.add(m.id)
+  }
+}
+
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
   async function configureLogin(a: Record<string, unknown>) {
@@ -175,7 +184,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, choice.where, s.me.name, s.shareRequested, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
-      for (const m of s.room.messages()) seen.add(m.id)
+      markHistorySeenOnJoin(s, seen)
       rooms.add(s, 'primary')
       const stale = cleanupMine(s, 'stale from an earlier session')
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
@@ -294,7 +303,7 @@ export function install(state: HandlerState): void {
         cleanupMine(s, `switched branch to ${branch}`)
         rooms.remove(s)
         await doLeave(s)
-        for (const m of n.room.messages()) seen.add(m.id)
+        markHistorySeenOnJoin(n, seen)
         rooms.add(n, 'primary'); cleanupMine(n, 'stale from an earlier session')
         return `[room] your clone switched to branch ${branch}: left ${current}, joined ${target}. Scope and claims were reset; declare a scope before editing.`
       } catch (e) {

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, messageEndsWait } from '@room/shared'
 import type { Identity, NoteMsg } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, type Session } from '../src/session.js'
@@ -795,6 +795,29 @@ describe('inbox', () => {
 })
 
 describe('wait', () => {
+  it('ends a pending wait when a broadcast interrupt arrives', async () => {
+    const t = setup()
+    const waiting = t.tools.call('room_wait', { timeoutMs: 2000 })
+    await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe('waiting'))
+    const note = t.other.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'stop the batch', priority: 'interrupt' })
+    expect(await waiting).toContain('stop the batch')
+    expect(messageEndsWait(note, { me: me.name })).toBe(true)
+    expect(t.room.seen(me.name).has(note.id)).toBe(true)
+  })
+
+  it('delivers a broadcast notify that arrived during a wait when it times out', async () => {
+    const t = setup()
+    const waiting = t.tools.call('room_wait', { timeoutMs: 80 })
+    await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe('waiting'))
+    const note = t.other.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'progress while waiting', priority: 'notify' })
+    const out = await waiting
+    expect(out).toContain('timeout after 80ms')
+    expect(out).toContain('progress while waiting')
+    expect(out).not.toContain('nothing happened')
+    expect(t.room.seen(me.name).has(note.id)).toBe(true)
+    expect((await t.tools.call('room_state', {})).startsWith('[inbox')).toBe(false)
+  })
+
   it('presents an addressed note as a note, without asking for an answer', async () => {
     const t = setup()
     t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'FYI: tests passed', to: 'Rohan' } as never)
@@ -841,6 +864,24 @@ describe('wait', () => {
       expect(await t.tools.call('room_wait', { timeoutMs: 30 })).toContain('timeout after 30ms')
     } finally { peer.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
   })
+})
+
+it('delivers a lead broadcast posted after spawn but before the worker joins, without replaying older history', async () => {
+  const t = setup({ joined: false })
+  const lead = { name: 'Kieran', kind: 'agent' } as const
+  const old = t.other.post<NoteMsg>(lead, { type: 'note', text: 'old history', priority: 'notify' })
+  t.other.setWorker({ tag: 'review', name: me.name, lead: lead.name, host: 'codex', task: 'review', dir,
+    branch: 'room/review', pid: 1, startedAt: old.at + 1, status: 'running' })
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(old.at + 2)
+  const fresh = t.other.post<NoteMsg>(lead, { type: 'note', text: 'post-spawn briefing', priority: 'notify' })
+  clock.mockRestore()
+  await t.tools.call('room_join', {})
+  const out = await t.tools.call('room_state', {})
+  const inbox = out.slice(0, out.indexOf('you: '))
+  expect(inbox).toContain('[inbox 1]')
+  expect(inbox).toContain('post-spawn briefing')
+  expect(inbox).not.toContain('old history')
+  expect(t.room.seen(me.name).has(fresh.id)).toBe(true)
 })
 
 describe('preview merge', () => {
