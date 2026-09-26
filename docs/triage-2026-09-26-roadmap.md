@@ -5,24 +5,24 @@ unverifiable. Probes in the session scratchpad; five suites plus targeted cases 
 
 ## Still real, ranked for a three-person trial on one shared branch
 
-1. **Claims are not revalidated after HEAD moves.** roomd never touches claims (only release, done and the
+1. **Claims are not revalidated after HEAD moves.** FIXED in 0.16.12 (c143ac2). roomd never touches claims (only release, done and the
    bridge call removeClaim, claims.ts:109,132). After a commit, clearOverlay drops the anchor text and
    claimRange falls back to the stored lines (doc.ts:362-378); a probe left a claim on a.py:10-12 open as
    {from:10,to:12}. Line ranges end up on different code and teammates get claim warnings for it. Fix: in
    pollHead, re-anchor against the new HEAD or release with a note.
-2. **A note without a recipient reaches nobody unless it is interrupt priority.** messages.ts:44 marks
+2. **A note without a recipient reaches nobody unless it is interrupt priority.** FIXED in 0.16.12 (688f820). messages.ts:44 marks
    notes inbox:false and messageForMe returns false before checking priority (messages.ts:83); probe for
    rohanz+w1: fyi false, notify false, interrupt true. "Tell everyone X" lands only in the feed.
-3. **A restart while the old process lingers renames you permanently.** session.ts:318-323 moves you to
+3. **A restart while the old process lingers renames you permanently.** FIXED in 0.16.12 (d9ee630). session.ts:318-323 moves you to
    +<host> and rememberTag (:337) saves it; later starts try it first (auto-tag.test.ts:143,151).
 4. **Answers reach only the asker** (AnswerMsg has one `to`, messaging.ts:192).
-5. **A preview without `run` says "merges cleanly" with no typecheck or tests**; only the skill mitigates it.
-6. **An unreachable server's sharing ceiling is cached as `full` for the process** (session.ts:214-223).
-7. **Declared-sharing output is lost on restart**: retainedDeclaredPaths is in memory only (roomd/index.ts:260).
+5. **A preview without `run` says "merges cleanly" with no typecheck or tests** (FIXED in 0.16.12 (688f820): the reply says no tests ran and names the test command); only the skill mitigates it.
+6. **An unreachable server's sharing ceiling is cached as `full` for the process** (FIXED in 0.16.12 (d9ee630)) (session.ts:214-223).
+7. **Declared-sharing output is lost on restart** (FIXED in 0.16.12 (d9ee630)): retainedDeclaredPaths is in memory only (roomd/index.ts:260).
 8. **room_state's recent bus is the last 10 messages by time, not ranked**, and has no lead summary line.
 9. **Hook state is per worktree, not per session** (before-edit.mjs:33-35): a second session in the same
    folder gets no inbox or claim context.
-10. **With no remote, a local commit says "ahead of base (unpushed): git push"** (git.ts:209, roomd:735).
+10. **With no remote, a local commit says "ahead of base (unpushed): git push"** (FIXED in 0.16.12 (688f820)) (git.ts:209, roomd:735).
 11. **`room`-authored notes and pr#<n> records are forgeable** (readonly.ts:141-146,259); the server keeps a
     second in-memory copy per room (readonly.ts:163-206). Low risk among trusted members.
 12. Lead and batch items: quiet-worker detection is only a label; detached background leads and observer

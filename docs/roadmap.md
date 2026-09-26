@@ -40,6 +40,20 @@ use broke and proposes the order of work.
 - **Implicit answers (rehearsal 2026-09-25 finding 11):** an answer without `inReplyTo` answers the sender's one open question from the recipient, or lists the candidates.
 - **Carried edits (every live check):** workers build on the lead's carried edits without asking; they ask only before changing or removing the lead's own lines.
 
+## Fixed in 0.16.12
+
+From the [2026-09-26 triage](triage-2026-09-26-roadmap.md):
+
+- **Claims revalidated after HEAD moves (triage 1):** your own claims follow their lines to the new HEAD, or are released with a note naming the commit.
+- **Notes to nobody (triage 2; carry-wip "broadcast rulings went out as fyi"):** an unaddressed notify or interrupt note reaches every other participant's inbox.
+- **Preview without `run` (triage 5; tree-sitter "a clean merge preview hid a semantic break"):** the reply says no tests ran and suggests the repository's test command. Running them by default remains open.
+- **"git push" with no remote (triage 10; 0.8.0 "labels compare against the room's base"):** says "committed locally" and gives push advice only when the remote branch exists.
+- **Lingering process renames you (triage 3):** the temporary `+<host>` name is not remembered.
+- **Unreachable sharing ceiling (triage 6):** not cached; the local choice applies and it is fetched again on reconnect.
+- **Declared output lost on restart (triage 7; review finding 29):** retained declared paths persist per worktree.
+
+Proved fixed earlier by the triage and marked inline below: preview em dash (0.15.1), preview environment leak, exit-status verdict, note recipient display, bare worker tag, Codex hook message to a Claude lead (0.10.2), double wakes, stale eval mocks (0.15.1), directory claims (0.10.2), questions to busy workers (before-edit hook), recovery patches for landed work and the spawn-time hook warning (0.14.1), the sharing banner (0.10.1), real-repo measurement (`measure-room-perf.mts`). "A collected worker cannot take a fix-up" is by design since 0.15.0.
+
 ## The design the gaps point at: cost scales with overlap
 
 The gap list below says what breaks. This is the one idea that fixes most of it. Multiplayer
@@ -174,14 +188,14 @@ context), Warp (already runs Claude Code, Codex and OpenCode), Zed's own agent (
 
 Deferred from the 2026-09-22 readiness review:
 
-- **Preserve finished `declared` output across completion and restart.** Persist the published-path
+- **Fixed in 0.16.12: Preserve finished `declared` output across completion and restart.** Persist the published-path
   boundary per worktree independently of the active scope, and use that boundary consistently for
   publishing, reads and previews. Remove its entries on deliberate withdrawal, clean integration
   or collection.
-- **Do not cache an unavailable server sharing ceiling as `full`.** Distinguish a failed ceiling
+- **Fixed in 0.16.12: Do not cache an unavailable server sharing ceiling as `full`.** Distinguish a failed ceiling
   fetch from a legacy server with no ceiling field and refresh it on reconnect. The server ceiling
   will not change during the first trial, so this is deferred.
-- **Revalidate claims after HEAD moves.** Release or redeclare unanchored claims after a base change
+- **Fixed in 0.16.12: Revalidate claims after HEAD moves.** Release or redeclare unanchored claims after a base change
   rather than leaving their line ranges attached to different code. This is too risky to change
   immediately before the first trial.
 
@@ -256,7 +270,7 @@ report the test runner's verdict; workers start at lower scheduling priority; re
 saved with a local room's memory.
 
 **Still open after 0.8.0 (third batch lead and the live tests):**
-- Labels compare against the room's base, not the last commit: after a lead commits locally its
+- **Fixed in 0.16.12** (push advice only with a remote branch; own committed files reseed against HEAD): labels compare against the room's base, not the last commit: after a lead commits locally its
   files still read "uncommitted, not yet pushed" and its branch "ahead of base: git push", even
   in a repo with no remote. Say "committed locally, not pushed" when the working tree matches
   HEAD, and drop the push advice when there is no remote.
@@ -287,18 +301,18 @@ saved with a local room's memory.
 
 ### From the tree-sitter batch (six Codex workers, 2026-09-21, open)
 
-- **A worker deep in a long turn does not see addressed questions.** One worker ignored three
+- **Fixed (before-edit hook delivers unread messages each tool call): A worker deep in a long turn does not see addressed questions.** One worker ignored three
   askers for about ten minutes until the lead interrupted it. Questions should reach a busy
   worker at its next tool call, not at the end of its turn.
-- **Directory claims block other people's own files.** A worker claimed a whole test directory
+- **Fixed in 0.10.2: Directory claims block other people's own files.** A worker claimed a whole test directory
   and two others stopped on files that were explicitly theirs. Warn on, or refuse, a directory
   claim that covers files in another participant's declared scope.
-- **A clean merge preview hid a semantic break.** Two workers shared `graph.ts` by region; the
+- **Partly fixed in 0.16.12 (a preview without `run` says no tests ran): A clean merge preview hid a semantic break.** Two workers shared `graph.ts` by region; the
   text merged cleanly, Room raised nothing, and one worker's change broke the other's tests.
   Preview should run typecheck and tests by default and report them next to "merges cleanly".
-- **A collected worker cannot take a fix-up.** Collection removes its session and worktree.
+- **Obsolete (by design since 0.15.0): A collected worker cannot take a fix-up.** Collection removes its session and worktree.
   Send review findings before collection, while the finished worker can resume.
-- **Noise:** fyi messages about cancelled plans while a claim is being narrowed; the sharing
+- **Noise:** (banner fixed in 0.10.1) fyi messages about cancelled plans while a claim is being narrowed; the sharing
   banner prepended to tool output when tools are driven from a script.
 
 ### Uncommitted work and worker worktrees
@@ -375,14 +389,14 @@ longer keeps a collected worktree.
 
 ### From the host-alignment batch (0.15.0, 2026-09-24, open)
 
-- **Three workers finished before the lead's review reached them** (identity, followup, checks),
+- **Fixed in 0.15.0: Three workers finished before the lead's review reached them** (identity, followup, checks),
   so each fix went to a new fix-up worker carrying the collected work. 0.15.0's resume removes
   that, but only once the lead runs a 0.15.0 bundle.
-- **The merge preview corrupted a UTF-8 em dash** in `hooks.test.ts` (U+2014 became U+0014), so
+- **Fixed in 0.15.1: The merge preview corrupted a UTF-8 em dash** in `hooks.test.ts` (U+2014 became U+0014), so
   an assertion failed in the preview but passed on the real tree.
-- **Every wake arrived twice** for a headless lead: once as a cross-session message and again
+- **Fixed in 0.15.1: Every wake arrived twice** for a headless lead: once as a cross-session message and again
   from `room_wait`. The lead could not tell a new event from a repeat.
-- **The eval mocks copy `tools/list`** and nothing checks them, so a description change
+- **Fixed in 0.15.1: The eval mocks copy `tools/list`** and nothing checks them, so a description change
   leaves the evals grading against stale text.
 
 ### After 0.12.0 (2026-09-23, open)
@@ -393,7 +407,7 @@ longer keeps a collected worktree.
   Find it with `--reporter=verbose` the next time it happens, and give CI a global timeout. Seen again
   2026-09-23 with the 0.13.0 merge; separately `workers.test.ts` "a finished worker whose process is
   alive can still be stopped" failed once in a full run and passes alone.
-- **Measure on real repos, not only fixtures.** The batch's join benchmark used 5,000 tracked
+- **Fixed (`measure-room-perf.mts`): Measure on real repos, not only fixtures.** The batch's join benchmark used 5,000 tracked
   files; the real failing repo had 399 tracked and 13 GB of untracked art. Keep a copy-on-write
   clone (`cp -Rc`) of one real, messy repo as the standing join and carry benchmark.
 
@@ -403,10 +417,10 @@ The busy-worker problem did not recur: every question was acknowledged within ab
 - **Fixed in 0.16.0: Kept worktrees for regenerable build output.** Collect kept three worktrees and listed about 35
   lines of ignored `dist/` and `*.tsbuildinfo` from the workers' own typechecks as artefacts worth
   keeping. The ignored-artefact rule should treat common build output like caches, or ask once.
-- **Recovery patches for work that already landed.** Discarding an already-collected worktree still
+- **Fixed in 0.14.1: Recovery patches for work that already landed.** Discarding an already-collected worktree still
   wrote a "recovery patch".
-- **The before-edit hook warning fired at spawn**, before the lead had edited anything.
-- **Broadcast rulings went out as `fyi`**, so the lead had to resend them as `notify`: a note to
+- **Fixed in 0.14.1: The before-edit hook warning fired at spawn**, before the lead had edited anything.
+- **Fixed in 0.16.12: Broadcast rulings went out as `fyi`**, so the lead had to resend them as `notify`: a note to
   everyone from a lead should reach them.
 
 ### From the carry-hardening batch (seven workers, 2026-09-23, open)
@@ -421,7 +435,7 @@ The busy-worker problem did not recur: every question was acknowledged within ab
   error handler on `tar`'s stdin; one full-suite run reported it as an unhandled error.
 - **Full-suite runs hung twice when two suites ran on the machine at once** (a lead's and a
   worker's); alone, the suite passes in about a minute.
-- **A restart while the old process lingers saves the tag `+agent`** permanently (`rememberTag`).
+- **Fixed in 0.16.12: A restart while the old process lingers saves the tag `+agent`** permanently (`rememberTag`).
 
 ### From the review-fixes batch (eight Codex workers, 2026-09-21, open)
 
@@ -429,18 +443,18 @@ Recurred from the tree-sitter batch: a busy worker left three questions unanswer
 ruled; a directory scope (`packages/room-mcp/test/`) was accepted without a warning; a collected
 worker could not take a fix-up, so the lead patched a finding itself. The semantic-break problem
 did not recur only because every preview was run with tests.
-- **Preview leaks its environment into the tests it runs.** The MCP process's `ROOM_HOST` reached
+- **Fixed in 0.10.2: Preview leaks its environment into the tests it runs.** The MCP process's `ROOM_HOST` reached
   the test run, so one suite failed only inside previews.
-- **Preview's verdict trusts the exit status alone.** A piped test command exited 0 while the
+- **Fixed in 0.10.2: Preview's verdict trusts the exit status alone.** A piped test command exited 0 while the
   runner printed failures, and the preview said "tests: PASSED".
-- **A note sent to one recipient shows no recipient.** The sender cannot tell it was addressed.
-- **A bare worker tag is accepted as an addressee.** The lead sent to `graph` instead of
+- **Fixed in 0.13.0: A note sent to one recipient shows no recipient.** The sender cannot tell it was addressed.
+- **Fixed in 0.10.2: A bare worker tag is accepted as an addressee.** The lead sent to `graph` instead of
   `rohanz+graph`; Room took it without complaint and it may have reached nobody. Resolve a bare
   tag to the sender's own worker, or refuse it.
-- **"Hooks are not running… In Codex, approve them" was shown to a Claude lead.**
+- **Fixed in 0.10.2: "Hooks are not running… In Codex, approve them" was shown to a Claude lead.**
 - Still open from the review itself: finding 6 (notices posted as `room` and `pr#<n>` records are
   still forgeable by a member; the identity guard keeps a second copy of each room document in
-  server memory), finding 29 (finished output published at `declared` is lost on a restart after
+  server memory), finding 29 (fixed in 0.16.12: finished output published at `declared` is lost on a restart after
   `room_done`, and collection does not withdraw it), finding 30 (the demo script was not run end
   to end).
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.12
+
+Behaviour fixes from the 2026-09-26 roadmap triage, for a three-person trial on one shared branch and the declared-sharing rehearsal.
+
+- **Claims follow their code when HEAD moves** (triage item 1). After your commit or pull, the daemon finds each of your own open claims' lines (as they stand in your overlay, else as claimed) exactly once in the new file and moves the range. If the lines are gone or appear more than once, it releases the claim and tells you: "released your claim on <path>:<a>-<b>: that code changed in <commit>". Claims record a SHA-256 digest of the covered lines, never the source text. Other participants' claims are never touched.
+- **A note to nobody reaches everyone** (item 2). An unaddressed note at notify or interrupt priority goes to every other participant's inbox; a broadcast notify is read on their next action and a broadcast interrupt wakes them. fyi stays feed-only, and the sender does not receive its own note.
+- **Untested previews say so** (item 5). `room_preview_merge` without `run` adds "no tests were run on the combined code; pass run=\"<cmd>\" to check it", naming `npm test`, `pytest`/`uv run pytest` or `make test` when the repository has one.
+- **Local commits without a remote branch say "committed locally"** (item 10) instead of "ahead of base (unpushed): git push". A local room advances its base because its participants share one object store. A team room does not, because teammates could not fetch the commit. Push advice appears only when `origin/<branch>` exists.
+- **A lingering previous process no longer renames you permanently** (item 3). The temporary `+<host>` name is not remembered, so the next start returns to the remembered or bare name when it is free.
+- **An unreachable server's sharing ceiling is not cached** (item 6). The local choice applies, never widened, and the ceiling is fetched again on reconnect.
+- **Declared-sharing output survives a restart** (item 7). Retained declared paths are saved per worktree under its git dir and restored on start, so teammates still see finished work after `room_done` and a daemon restart. The record is cleared on withdrawal, clean integration or collection. Carry records and this record share one atomic writer.
+
 ## 0.16.11
 
 - A resumed worker's message is delivered once its host process starts with that prompt. After cancellation or a later launch failure, Room waits for the host's exit before reporting it stopped and releasing its handle and port. It uses the discard stop sequence (TERM, then KILL after five seconds, with a final five-second wait). If signalling fails or exit is unconfirmed, `room_send` reports the PID as left running and keeps the worker, handle and port. The delivered answer or note stays posted with its seen receipt. Failures before process start leave no message.
