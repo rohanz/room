@@ -18,6 +18,7 @@
 import crypto from 'node:crypto'
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose'
 import { FileStore, type Store, type StoredSession } from './store.js'
+import { assertValidParticipantName, validParticipantName } from './names.js'
 
 export type { StoredSession } from './store.js'
 export type Provider = 'github' | 'oidc'
@@ -118,6 +119,7 @@ export class Auth {
     for (const [k, v] of this.devices) if (v.exp < this.now()) this.devices.delete(k)
   }
   private newSession(s: Omit<StoredSession, 'at'>): { session: string; login: string; provider: Provider; expiresIn: number } {
+    assertValidParticipantName(s.login)
     const session = crypto.randomBytes(32).toString('hex')
     const stored: StoredSession = { ...s, at: this.now() }
     this.sessions.set(session, stored)
@@ -171,6 +173,7 @@ export class Auth {
     if (!u.ok) return { error: `could not read the GitHub user (HTTP ${u.status})` }
     const login = ((await u.json()) as { login?: string }).login
     if (!login) return { error: 'GitHub returned no login' }
+    if (!validParticipantName(login)) return { error: 'GitHub login contains control characters' }
     return this.newSession({ provider: 'github', login, ghToken: b.access_token })
   }
 
@@ -251,6 +254,7 @@ export class Auth {
     }
     const login = email || claims.preferred_username?.trim() || claims.sub
     if (!login) return fail(d, 'ID token has no email, preferred_username or sub')
+    if (!validParticipantName(login)) return fail(d, 'ID token participant name contains control characters')
     if (!claims.sub) return fail(d, 'ID token has no sub')
     // The identity is the issuer's stable subject, namespaced so it can never collide with a GitHub
     // login or with a display login from another IdP; the login stays what people recognise.

@@ -7,6 +7,7 @@
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import * as Y from 'yjs'
+import { validParticipantName } from './names.js'
 
 const MESSAGE_SYNC = 0
 const SYNC_STEP2 = 1
@@ -55,7 +56,7 @@ const MESSAGE_AWARENESS = 1
 
 /** A login may appear as itself or as login+<label>. */
 export function ownsName(name: string, login: string): boolean {
-  return name === login || (name.startsWith(login + '+') && name.length > login.length + 1)
+  return validParticipantName(name) && validParticipantName(login) && (name === login || (name.startsWith(login + '+') && name.length > login.length + 1))
 }
 
 /** Keep owned presence and null (leaving) entries, preserving their IDs, clocks and JSON. */

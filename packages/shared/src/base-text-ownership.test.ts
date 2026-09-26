@@ -145,6 +145,28 @@ describe('participant-owned base texts', () => {
     }
   })
 
+  it('sweeps a late flat key for a departed owner on another participant’s reconcile', () => {
+    const [a, b] = peers()
+    a.setOverlay('Gone', 'file.py', 'edit')
+    sync(a, b)
+    b.clearOverlays('Gone')
+    a.setBaseText('Gone', 'sha', 'file.py', 'late base')
+    sync(a, b)
+    expect(b.ownedBaseTexts.get('Gone\u0000sha:file.py')).toBe('late base')
+    b.reconcileBaseTexts('Keeper')
+    sync(a, b)
+    expect(a.baseText('Gone', 'sha', 'file.py')).toBeUndefined()
+    expect(b.baseText('Gone', 'sha', 'file.py')).toBeUndefined()
+  })
+
+  it('matches the complete owner prefix when clearing flat keys', () => {
+    const room = new RoomDoc()
+    room.setOverlay('A\u0000B', 'file.py', 'other edit')
+    room.ownedBaseTexts.set('A\u0000B\u0000sha:file.py', 'other owner')
+    room.clearOverlays('A')
+    expect(room.ownedBaseTexts.get('A\u0000B\u0000sha:file.py')).toBe('other owner')
+  })
+
   it('leaves no orphaned base texts through repeated worker retirements', () => {
     const [a, b] = peers()
     for (let i = 0; i < 3; i++) {

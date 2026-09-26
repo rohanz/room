@@ -1,5 +1,14 @@
 import type { Identity, Kind } from './types.js'
 
+/** Names are flat base-text key prefixes and must not contain a key separator or controls. */
+export function validParticipantName(name: string): boolean {
+  return name.length > 0 && !/[\x00-\x1f\x7f-\x9f]/u.test(name)
+}
+
+export function assertValidParticipantName(name: string): void {
+  if (!validParticipantName(name)) throw new Error('participant name must be nonempty and contain no control characters')
+}
+
 /** Join-order slots. Ordered so the first few participants are far apart in hue (blue, orange,
  *  purple, green, red, magenta, teal, brown); every colour reads on both the light and dark grounds. */
 export const PALETTE = ['#2e86de', '#c9761a', '#6d4fc2', '#27ae60', '#c0392b', '#b5179e', '#0f8b8d', '#8d6e63'] as const

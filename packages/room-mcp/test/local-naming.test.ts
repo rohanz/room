@@ -70,6 +70,11 @@ it.each(['', '   ', '!@#$'])('rejects empty sanitized local name %j', async room
   expect(ensureLocalRelay).not.toHaveBeenCalled()
 })
 
+it.each([{ name: 'A\u0000B' }, { name: 'A\nB' }, { name: 'Ada', tag: 'bad\u0000tag' }])('rejects control characters in participant identity before relay setup', async identity => {
+  await expect(joinSession({ dir, server: 'local', room: 'demo', ...identity })).rejects.toThrow(/control character/i)
+  expect(ensureLocalRelay).not.toHaveBeenCalled()
+})
+
 function transitionTools() {
   let session: Session | null = null
   const joiner = vi.fn(async (opts: { room?: string }) => {

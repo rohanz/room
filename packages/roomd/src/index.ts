@@ -20,9 +20,9 @@ import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
 import { claimDigest, reanchorClaims } from './reanchor.js'
 import type { Claim, ReleaseMsg } from '@room/shared'
-import type * as Y from 'yjs'
+import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { BASE_CATCH_UP, RoomDoc, colorFor, isRegenerableBuildPath, roomNameParts, scopeCovers, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
+import { BASE_CATCH_UP, RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, roomNameParts, scopeCovers, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { baselineText, carriesWork, workerBaseline, type Baseline } from './baseline.js'
@@ -270,6 +270,8 @@ class Daemon implements Roomd {
   private retainedDeclaredPaths: Set<string> = new Set<string>()
   private sharingGeneration = 0
   private sharingDirty = false
+  private remoteRepairTimer?: NodeJS.Timeout
+  private unobserveOwnedData?: () => void
   private beforePublishWrite?: (relpath: string) => Promise<void>
   private beforeBaseRead?: (relpath: string) => Promise<void>
 
@@ -300,6 +302,9 @@ class Daemon implements Roomd {
   onSeedProgress?: () => void
 
   constructor(options: RoomdOptions) {
+    assertValidParticipantName(options.name)
+    if (options.owner) assertValidParticipantName(options.owner)
+    if (options.label) assertValidParticipantName(options.label)
     this.dir = path.resolve(options.dir)
     this.name = options.name
     this.kind = options.kind ?? 'human'
@@ -375,6 +380,7 @@ class Daemon implements Roomd {
     }
     this.roomDoc.bus.observe(onBaseNotice)
     this.unobserveBus = () => this.roomDoc.bus.unobserve(onBaseNotice)
+    this.observeOwnedData()
     this.markIntegratedBaseNotices(this.roomDoc.messages())
     this.phase = 'base'
     this.choosePublisher()
@@ -552,6 +558,8 @@ class Daemon implements Roomd {
     if (this.stopped) return
     this.stopped = true
     this.unobserveBus?.()
+    this.unobserveOwnedData?.()
+    clearTimeout(this.remoteRepairTimer)
     this.flushSkipLog()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
     for (const timer of this.timers) clearInterval(timer)
@@ -690,6 +698,39 @@ class Daemon implements Roomd {
   // ---- base commit tracking ---------------------------------------------
 
   private unobserveBus?: () => void
+
+  /** A live owner can restore a peer's mistaken eviction from its current disk and sharing policy. */
+  private observeOwnedData(): void {
+    const removedOwnEntry = (events: Y.YEvent<Y.AbstractType<unknown>>[], transaction: Y.Transaction) => {
+      if (transaction.origin === this || this.stopped) return
+      if (events.some(event => event instanceof Y.YMapEvent && (
+        event.target === this.roomDoc.overlays || event.target === this.roomDoc.deleted
+          ? event.changes.keys.get(this.name)?.action === 'delete'
+          : event.path[0] === this.name && [...event.changes.keys.values()].some(change => change.action === 'delete')
+      ))) this.scheduleRemoteRepair()
+    }
+    const removedBaseText = (event: Y.YMapEvent<string>, transaction: Y.Transaction) => {
+      if (transaction.origin === this || this.stopped) return
+      if ([...event.changes.keys].some(([key, change]) => change.action === 'delete' && key.startsWith(`${this.name}\u0000`) && !key.slice(this.name.length + 1).includes('\u0000'))) this.scheduleRemoteRepair()
+    }
+    this.roomDoc.overlays.observeDeep(removedOwnEntry)
+    this.roomDoc.deleted.observeDeep(removedOwnEntry)
+    this.roomDoc.ownedBaseTexts.observe(removedBaseText)
+    this.unobserveOwnedData = () => {
+      this.roomDoc.overlays.unobserveDeep(removedOwnEntry)
+      this.roomDoc.deleted.unobserveDeep(removedOwnEntry)
+      this.roomDoc.ownedBaseTexts.unobserve(removedBaseText)
+    }
+  }
+
+  private scheduleRemoteRepair(): void {
+    if (this.remoteRepairTimer) return
+    this.remoteRepairTimer = setTimeout(() => {
+      this.remoteRepairTimer = undefined
+      this.markSharingDirty()
+    }, 40)
+    this.remoteRepairTimer.unref?.()
+  }
 
   /** Record receipts before any synchronous delivery observer sees a new bus entry. */
   private markIntegratedBaseNotices(notices: readonly Msg[]): void {

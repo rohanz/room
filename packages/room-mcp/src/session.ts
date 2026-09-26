@@ -16,7 +16,7 @@ import { ensureLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
-import { RoomDoc, type Identity, type Kind } from '@room/shared'
+import { RoomDoc, assertValidParticipantName, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
 import { createClaudeTranscriptModelRefresh, DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
@@ -320,10 +320,15 @@ async function reserveAutoName(dir: string, room: string, name: string, worktree
 
 /** Resolve identity before roomd can publish any overlays under it. The probe never publishes a user. */
 export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string, shareCeiling?: () => ShareLevel): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string; refreshRuntime: () => void }> {
+  assertValidParticipantName(options.name)
+  if (options.owner) assertValidParticipantName(options.owner)
+  if (options.label) assertValidParticipantName(options.label)
+  if (explicitTag) assertValidParticipantName(explicitTag)
   let name = options.name, label = options.label
   let autoTagNote: string | undefined
   let releaseName: (() => void) | undefined
   const rememberedTag = explicitTag === undefined ? (await readChoice(options.dir))?.tags?.[await worktreePath(options.dir)] : undefined
+  if (rememberedTag) assertValidParticipantName(rememberedTag)
   if (explicitTag === undefined) {
     const doc = new Y.Doc()
     const url = new URL(options.room)
@@ -419,6 +424,7 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
 export async function joinSession(opts: JoinOptions): Promise<Session> {
   const dir = resolve(opts.dir)
   const config = await resolveConfig({ dir, env: process.env, args: opts })
+  for (const value of [config.name, config.owner, config.tag]) if (value) assertValidParticipantName(value)
   configureCredentials(config.credentialsPath)
   if (opts.log) setServerLog(opts.log)
   const chosen = config.server
@@ -447,6 +453,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
   const owner = auth.login ?? config.owner ?? config.name ?? await defaultName(dir)
   if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
+  assertValidParticipantName(owner)
   const name = label ? `${owner}+${label}` : owner
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`)
   const { login: _login, ...creds } = auth
@@ -519,6 +526,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   // A dispatched worker is named after its lead's verified owner (ROOM_OWNER), not this clone's git config.
   const owner = opts.name ?? await defaultName(dir)
   if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
+  assertValidParticipantName(owner)
   const label = opts.tag?.trim().replace(/[^A-Za-z0-9_-]/g, '') || undefined
   const kindEnv = opts.kind?.trim()
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'

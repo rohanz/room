@@ -2,6 +2,8 @@
 
 ## 0.16.12
 
+- Live daemons reconcile after a peer removes their overlays, deletion marks, or base texts, restoring only what the current sharing level allows. Reconciliation, eviction, and retirement sweep flat base texts left by departed owners, including late updates. Participant names with control characters are rejected at join and server identity checks, and flat-key cleanup matches the exact owner prefix.
+
 Behaviour fixes from the 2026-09-26 roadmap triage, for a three-person trial on one shared branch and the declared-sharing rehearsal.
 
 - Claim re-anchoring uses the digest recorded at claim time, including when an overlay appears later without an anchor. Daemons skip worker mirrors; the bridge updates mirrors when workers move or release claims.

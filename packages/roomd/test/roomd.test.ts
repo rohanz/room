@@ -124,6 +124,42 @@ describe('roomd v2 push-only overlays', () => {
 
   afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
 
+  it('reconciles remotely cleared own overlays, deletion marks and base texts without a disk event', async () => {
+    const dir = await makeRepo({ 'edit.py': 'base\n', 'gone.py': 'old\n' })
+    fs.writeFileSync(path.join(dir, 'edit.py'), 'changed\n')
+    fs.unlinkSync(path.join(dir, 'gone.py'))
+    const url = room()
+    const owner = await start({ dir, room: url, name: 'Owner', basePollMs: 60_000, trackedRefreshMs: 60_000 })
+    const peer = new RoomDoc()
+    const connection = hub.connect(url, peer.doc)
+    try {
+      const base = owner.shared
+      await waitFor(() => peer.overlayText('Owner', 'edit.py')?.toString() === 'changed\n' && peer.deleted.get('Owner')?.has('gone.py') === true)
+      peer.clearOverlays('Owner')
+      await waitFor(() => peer.overlayText('Owner', 'edit.py')?.toString() === 'changed\n'
+        && peer.deleted.get('Owner')?.has('gone.py') === true
+        && peer.baseText('Owner', base, 'edit.py') === 'base\n'
+        && peer.baseText('Owner', base, 'gone.py') === 'old\n')
+    } finally { connection.destroy(); peer.doc.destroy() }
+  })
+
+  it('restores a racing live publisher after a peer sweeps its late base key', async () => {
+    const dir = await makeRepo({ 'edit.py': 'base\n' })
+    fs.writeFileSync(path.join(dir, 'edit.py'), 'changed\n')
+    const url = room()
+    const owner = await start({ dir, room: url, name: 'Owner', basePollMs: 60_000, trackedRefreshMs: 60_000 })
+    const peer = new RoomDoc()
+    const connection = hub.connect(url, peer.doc)
+    try {
+      await waitFor(() => peer.overlayText('Owner', 'edit.py')?.toString() === 'changed\n')
+      peer.clearOverlays('Owner')
+      owner.roomDoc.setBaseText('Owner', owner.shared, 'edit.py', 'late base', owner)
+      peer.reconcileBaseTexts('Peer')
+      await waitFor(() => peer.overlayText('Owner', 'edit.py')?.toString() === 'changed\n'
+        && peer.baseText('Owner', owner.shared, 'edit.py') === 'base\n')
+    } finally { connection.destroy(); peer.doc.destroy() }
+  })
+
   it('carries reported runtime metadata through subsequent status updates', async () => {
     const dir = await makeRepo({ 'app.py': 'x = 1\n' })
     const daemon = await start({ dir, room: room(), name: 'Ada', kind: 'agent', host: 'codex', model: 'gpt-6-astra', effort: 'medium' })

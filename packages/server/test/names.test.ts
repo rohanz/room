@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest'
-import { docNameOf, roomNameOf, repoOf, githubRepoOf } from '../src/names.js'
+import { validParticipantName as sharedValidParticipantName } from '@room/shared'
+import { docNameOf, roomNameOf, repoOf, githubRepoOf, validParticipantName, assertValidParticipantName } from '../src/names.js'
+
+describe('participant names', () => {
+  it.each([
+    ['', false],
+    ['rohan', true],
+    ['rohan+codex', true],
+    ['Zoë 李', true],
+    ['rohan\u0000', false],
+    ['rohan\u0001', false],
+    ['rohan\n', false],
+    ['rohan\u001f', false],
+    ['rohan\u007f', false],
+    ['rohan\u0080', false],
+    ['rohan\u009f', false],
+  ] as const)('server and shared validators agree for %j', (name, expected) => {
+    expect(validParticipantName(name)).toBe(expected)
+    expect(sharedValidParticipantName(name)).toBe(expected)
+    if (expected) expect(() => assertValidParticipantName(name)).not.toThrow()
+    else expect(() => assertValidParticipantName(name)).toThrow('participant name must be nonempty and contain no control characters')
+  })
+})
 
 describe('room names', () => {
   it('a websocket request path is keyed by its decoded room name, query dropped', () => {

@@ -374,6 +374,8 @@ it('a login owns itself and login+tag, nothing else', () => {
   expect(ownsName('rohanz+', 'rohanz')).toBe(false)
   expect(ownsName('rohanzz', 'rohanz')).toBe(false)
   expect(ownsName('kieran', 'rohanz')).toBe(false)
+  expect(ownsName('rohanz+bad\u0000tag', 'rohanz')).toBe(false)
+  expect(ownsName('rohanz\n', 'rohanz\n')).toBe(false)
 })
 
 it('capDocSize drops writes once the room is over the cap and keeps reads flowing', () => {

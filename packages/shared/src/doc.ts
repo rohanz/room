@@ -88,6 +88,7 @@ export class RoomDoc {
       this.deleted.delete(person)
       this.overlayAt.delete(person)
       this.clearPersonBaseTexts(person)
+      this.sweepOrphanedBaseTexts()
     }, origin)
     return n
   }
@@ -175,6 +176,20 @@ export class RoomDoc {
   get ownedBaseTexts(): Y.Map<string> { return this.doc.getMap<string>('basetextFlat') }
   private baseTextKey(person: string, sha: string, relpath: string): string { return `${person}\u0000${sha}:${relpath}` }
   private baseTextPrefix(person: string): string { return `${person}\u0000` }
+  private isPersonBaseTextKey(key: string, person: string): boolean {
+    return key.startsWith(this.baseTextPrefix(person)) && !key.slice(person.length + 1).includes('\u0000')
+  }
+  /** Remove flat entries whose owners have no published overlay or deletion mark. */
+  sweepOrphanedBaseTexts(origin?: unknown): void {
+    this.doc.transact(() => {
+      for (const key of this.ownedBaseTexts.keys()) {
+        const split = key.lastIndexOf('\u0000')
+        if (split < 0) continue
+        const person = key.slice(0, split)
+        if (!this.overlays.get(person)?.size && !this.deleted.get(person)?.size) this.ownedBaseTexts.delete(key)
+      }
+    }, origin)
+  }
   private oldOwnedBaseTexts(person: string): Y.Map<string> | undefined {
     return this.doc.getMap<Y.Map<string>>('basetextByPerson').get(person)
   }
@@ -188,8 +203,9 @@ export class RoomDoc {
     this.doc.transact(() => {
       const prefix = this.baseTextPrefix(person)
       for (const key of this.ownedBaseTexts.keys()) {
-        if (key.startsWith(prefix) && !wanted.has(key.slice(prefix.length))) this.ownedBaseTexts.delete(key)
+        if (this.isPersonBaseTextKey(key, person) && !wanted.has(key.slice(prefix.length))) this.ownedBaseTexts.delete(key)
       }
+      this.sweepOrphanedBaseTexts(origin)
       const oldOwned = this.oldOwnedBaseTexts(person)
       if (oldOwned) {
         for (const key of oldOwned.keys()) if (!wanted.has(key)) oldOwned.delete(key)
@@ -199,8 +215,7 @@ export class RoomDoc {
   }
   /** Only eviction/retirement may remove another participant's entries: that owner has stopped. */
   private clearPersonBaseTexts(person: string): void {
-    const prefix = this.baseTextPrefix(person)
-    for (const key of this.ownedBaseTexts.keys()) if (key.startsWith(prefix)) this.ownedBaseTexts.delete(key)
+    for (const key of this.ownedBaseTexts.keys()) if (this.isPersonBaseTextKey(key, person)) this.ownedBaseTexts.delete(key)
     this.doc.getMap<Y.Map<string>>('basetextByPerson').delete(person) // pre-flat, participant-owned map
   }
   setBaseText(person: string, sha: string, relpath: string, text: string, origin?: unknown): void {
