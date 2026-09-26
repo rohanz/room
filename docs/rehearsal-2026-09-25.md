@@ -120,3 +120,26 @@ New findings:
 10. **Old branches in the same repository are visible to agents.** Ben saw last run's finished
     commit on the old `rehearsal` branch via `git fetch` (and said it did not look). The public trial
     repository will not have such branches; keep it that way.
+
+## Third run, 2026-09-26 (Room 0.16.9, Fly v64, Claude Code 2.1.282, Codex 0.156.1)
+
+Same cards on a fresh branch `rehearsal-3` at the snapshot commit, three fresh clones, driven the same
+way, with the friend checklist's words: "join the room", "take issue N", "commit and push it".
+
+- **Fly from idle again:** the machine was stopped; Ana was in the room 22 s after "join the room".
+- **All three done in about seven minutes, all pushed straight to the shared branch** in order (Ana
+  `d180802`, Ben `0713e79`, Cy `0c20698`, a fast-forward). Ana's agent pushed to the room's branch with
+  no side branch and no refusal (rehearsal finding 2 is fixed in practice).
+- **Coordination worked without the humans:** Ben found five lines it needed inside Cy's claimed range,
+  asked Cy, waited for Cy to finish and release them, then edited; Cy handled a note that belonged to its
+  own issue. Ben's preview of all three people's work: no conflicts, 641 tests passing.
+- **Result:** the combined branch passes the trial check (286) and the whole suite (992); the ETag and
+  the `content_md5` deprecation match upstream's behaviour. Cy received two base notices, both valid when
+  delivered (before it had pulled).
+
+New finding:
+
+11. **An answer without `inReplyTo` is refused.** Cy replied to Ben's question with `type: answer` and no
+    `inReplyTo`; Room refused ("answer requires inReplyTo") and Cy resent it as a note, so Ben's question
+    was never marked answered. Room could fill `inReplyTo` with the latest unanswered question from that
+    recipient when there is exactly one.
