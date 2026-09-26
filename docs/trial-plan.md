@@ -69,6 +69,24 @@ Keep the room's exported ledger and each person's notes.
       code, stay on `trial`, `uv run --group tests pytest -q tests/sansio tests/test_http.py tests/test_wrappers.py`;
       when your task is done, say: **“commit and push it to trial”**.
 
+### Friend checklist (ready to send)
+
+> **Before the day**
+> 1. You need git, Node.js 22 or later (`node --version`), `uv`, a GitHub account with access to the
+>    trial repo, and Claude Code 2.1.224 or later (`claude --version`; 2.1.234 on native Windows) or Codex.
+> 2. Install Room:
+>    - Claude Code: `claude plugin marketplace add rohanz/room && claude plugin install room@room`
+>    - Codex: `codex plugin marketplace add rohanz/room && codex plugin add room@room`
+> 3. Clone the trial repo and check out `trial`.
+>
+> **On the day**
+> 1. Start your agent in the clone as usual. In Codex, accept the prompt to trust Room's hooks.
+> 2. Say **"join the room"**, open the login link it gives you, and enter the code.
+> 3. Say **"take issue N"** (your issue number). Talk to your agent normally; you don't need Room words.
+> 4. When it's done, say **"commit and push it to trial"**. If it asks before pulling or rebasing, that's
+>    expected: say yes if the summary looks right.
+> 5. Afterwards, tell Rohan anything that confused you or felt slow.
+
 ## On the day
 
 Everyone clones the fork, checks out `trial`, starts their agent, says "join the room", then

@@ -19,7 +19,7 @@ native Windows). See [Claude Code wake-ups](#claude-code).
 
 ## Getting started
 
-You need Git, Node.js 24 LTS, and Codex or Claude Code with plugin support. Trust Room’s hooks
+You need Git, Node.js 22 or later, and Codex or Claude Code with plugin support. Trust Room’s hooks
 when prompted or through `/hooks`. The demo uses `uv`.
 Start in your repository and ask for your feature as usual. Room stays silent while you work alone.
 [Walk through a first session](docs/onboarding.md).
