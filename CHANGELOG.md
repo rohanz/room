@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.18
+
+Fixes from the Astra review of 0.16.17.
+
+- The retention snapshot also covers changed files withheld by the sharing level and paths being reconciled at that moment, so a file declared and then released before its first publication is kept.
+- The scope observer starts before the daemon's initial sync and seed, so a scope that ends during startup is retained.
+- A reconcile that fails, for example on a git error, retries with backoff from 1 s up to 30 s and stops once a reconcile succeeds. DiskBatch always cleans up and rearms after a throw or rejection.
+- A secondary session in a shared checkout names the publishing session and that session's sharing level at every level, from one helper.
+- The share report lists the files still shared from earlier declared areas. `room_done`, `room_share` and the share report use one list format.
+
 ## 0.16.17
 
 Declared-sharing retention is now level-triggered. This replaces the 0.16.15–0.16.16 flush, which had three rounds of timing races.
