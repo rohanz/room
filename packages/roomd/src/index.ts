@@ -145,6 +145,8 @@ export interface RoomdOptions {
   providerFactory?: (serverUrl: string, roomName: string, doc: Y.Doc) => WebsocketProvider
   /** Test scheduler for remote repair; callback is awaited by the test without a wall clock. */
   remoteRepairSchedule?: (run: () => Promise<void>) => () => void
+  /** Test scheduler for failed reconciliation retries. */
+  retrySchedule?: (run: () => void, delayMs: number) => () => void
   /** Rolling bus size and maintenance interval. Defaults: ROOM_BUS_KEEP/2000 and 60s. */
   busKeep?: number
   busTrimMs?: number
@@ -277,6 +279,11 @@ class Daemon implements Roomd {
   private retainedDeclaredPaths: Set<string> = new Set<string>()
   private sharingGeneration = 0
   private sharingDirty = false
+  private readonly inFlightPaths = new Map<string, number>()
+  private reconcileDirty = false
+  private retryDelayMs = 1000
+  private retryTimer?: () => void
+  private readonly retrySchedule: (run: () => void, delayMs: number) => () => void
   private remoteRepairTimer?: () => void
   private readonly remoteRepairSchedule: (run: () => Promise<void>) => () => void
   private unobserveOwnedData?: () => void
@@ -326,6 +333,11 @@ class Daemon implements Roomd {
       timer.unref?.()
       return () => clearTimeout(timer)
     })
+    this.retrySchedule = options.retrySchedule ?? ((run, delay) => {
+      const timer = setTimeout(run, delay)
+      timer.unref?.()
+      return () => clearTimeout(timer)
+    })
     this.debounceMs = options.debounceMs ?? 300
     this.watchedDirectory = createHash('sha256').update(machineHostname).update('\0').update(machineIdentity(this.log)).update('\0').update(fs.realpathSync(this.dir)).digest('hex')
     this.batch = new DiskBatch(paths => {
@@ -339,7 +351,7 @@ class Daemon implements Roomd {
       this.diskWork.add(work)
       void work.finally(() => this.diskWork.delete(work))
       return work
-    }, this.debounceMs, Date.now, options.hotThrottleMs)
+    }, this.debounceMs, Date.now, options.hotThrottleMs, error => this.reconcileFailed(error))
     this.trackedRefreshMs = options.trackedRefreshMs ?? 10_000
     this.basePollMs = options.basePollMs ?? 3_000
     this.sizeCap = options.sizeCap ?? 512 * 1024
@@ -384,6 +396,14 @@ class Daemon implements Roomd {
     this.base = base
     this.tracked = tracked
     this.retainedDeclaredPaths = new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl)
+    // Scope can change during sync or seed. Keep the observer live before either await.
+    this.roomDoc.scopes.observe(ev => {
+      if (!ev.keysChanged.has(this.name) || this.share !== 'declared' || this.explicitScopePaths) return
+      const old = ev.changes.keys.get(this.name)?.oldValue as { paths?: string[] } | undefined
+      this.retainLeavingScope(old?.paths ?? [], this.scopePaths())
+      this.setEffectiveShare(this.share, true)
+      observeCallback(() => this.resharePaths(), error => this.log(`warn: ${errMsg(error)}`))
+    })
 
     await this.step('sync', () => this.waitForSync())
     // The daemon owns base receipts. Observe before the initial sweep so a notice
@@ -436,14 +456,6 @@ class Daemon implements Roomd {
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
     this.every(this.basePollMs, () => this.enqueue(async () => { await this.pollHead() }))
     this.roomDoc.metaMap.observe(() => observeCallback(() => this.refreshBaseStatus(), error => this.log(`warn: ${errMsg(error)}`)))
-    // Under 'declared' the published set follows the person's scope; re-evaluate when it changes.
-    this.roomDoc.scopes.observe(ev => {
-      if (!ev.keysChanged.has(this.name) || this.share !== 'declared' || this.explicitScopePaths) return
-      const old = ev.changes.keys.get(this.name)?.oldValue as { paths?: string[] } | undefined
-      this.retainLeavingScope(old?.paths ?? [], this.scopePaths())
-      this.setEffectiveShare(this.share, true)
-      observeCallback(() => this.resharePaths(), error => this.log(`warn: ${errMsg(error)}`))
-    })
     await this.refreshBaseStatus()
     this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
     this.started = true
@@ -503,7 +515,7 @@ class Daemon implements Roomd {
 
   private retainLeavingScope(oldPaths: string[], nextPaths: string[]): void {
     if (!oldPaths.length || this.publishUnder) return
-    const known = new Set([...this.roomDoc.changedPaths(this.name), ...this.roomDoc.deletedFor(this.name).keys(), ...this.batch.knownPaths()])
+    const known = new Set([...this.roomDoc.changedPaths(this.name), ...this.roomDoc.deletedFor(this.name).keys(), ...this.skips.share, ...this.batch.knownPaths(), ...this.inFlightPaths.keys()])
     for (const relpath of known) {
       if (scopeCovers({ paths: oldPaths }, relpath) && !scopeCovers({ paths: nextPaths }, relpath)) this.retainedDeclaredPaths.add(relpath)
     }
@@ -536,7 +548,8 @@ class Daemon implements Roomd {
   /** Re-evaluate every changed file against the current level: withdraw what is no longer allowed, publish what now is. */
   private async resharePaths(): Promise<void> {
     if (this.stopped) return
-    await this.reconcile(await gitChanged(this.dir))
+    const changed = await gitChanged(this.dir).catch(error => { this.reconcileFailed(error); throw error })
+    await this.reconcile(changed)
   }
 
   /** Withdraw a file from the room without touching disk; remembers it as withheld when it differs from base. */
@@ -587,6 +600,7 @@ class Daemon implements Roomd {
     this.unobserveBus?.()
     this.unobserveOwnedData?.()
     this.remoteRepairTimer?.()
+    this.retryTimer?.()
     this.flushSkipLog()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
     for (const timer of this.timers) clearInterval(timer)
@@ -659,8 +673,41 @@ class Daemon implements Roomd {
   }
 
   private enqueue(work: () => Promise<void>): Promise<void> {
-    this.workQueue = this.workQueue.then(() => this.stopped ? undefined : work()).catch(error => this.log(`warn: ${errMsg(error)}`))
+    this.workQueue = this.workQueue.then(() => this.stopped ? undefined : work()).catch(error => this.reconcileFailed(error))
     return this.workQueue
+  }
+
+  private trackPaths(paths: Iterable<string>): () => void {
+    const held = [...paths]
+    for (const p of held) this.inFlightPaths.set(p, (this.inFlightPaths.get(p) ?? 0) + 1)
+    return () => {
+      for (const p of held) {
+        const n = this.inFlightPaths.get(p) ?? 0
+        if (n <= 1) this.inFlightPaths.delete(p)
+        else this.inFlightPaths.set(p, n - 1)
+      }
+    }
+  }
+
+  private reconcileFailed(error: unknown): void {
+    this.log(`warn: ${errMsg(error)}`)
+    if (this.stopped) return
+    this.reconcileDirty = true
+    if (this.retryTimer) return
+    const delay = this.retryDelayMs
+    this.retryDelayMs = Math.min(delay * 2, 30_000)
+    this.retryTimer = this.retrySchedule(() => {
+      this.retryTimer = undefined
+      if (!this.stopped) void this.resharePaths().catch(() => {})
+    }, delay)
+  }
+
+  private reconciled(): void {
+    if (!this.reconcileDirty) return
+    this.reconcileDirty = false
+    this.retryDelayMs = 1000
+    this.retryTimer?.()
+    this.retryTimer = undefined
   }
 
   private currentStatus(): string {
@@ -954,29 +1001,34 @@ class Daemon implements Roomd {
     if (this.stopped) return
     const generation = this.sharingGeneration
     const paths = Array.from(this.pathsToReconcile(extra))
-    const base = this.base, shared = this.shared
-    const oversized = paths.filter(p => {
-      try { const stat = fs.lstatSync(this.abs(p)); return stat.isFile() && stat.size > this.sizeCap } catch { return false }
-    })
-    const oversizedSet = new Set(oversized)
-    const ordinary = paths.filter(p => !oversizedSet.has(p))
-    const [texts, sharedTexts, blobs] = await Promise.all([
-      gitShowMany(this.dir, base, ordinary),
-      shared === base ? undefined : gitShowMany(this.dir, shared, ordinary),
-      gitBlobInfoMany(this.dir, base, oversized),
-    ])
-    // One HEAD check per batch: a move since the read is left to pollHead, which reseeds against the new HEAD.
-    if (this.stopped) return
-    if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
-    if (await gitHead(this.dir) !== base) return
-    if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
-    for (const relpath of paths) {
+    const release = this.trackPaths(paths)
+    try {
+      const base = this.base, shared = this.shared
+      const oversized = paths.filter(p => {
+        try { const stat = fs.lstatSync(this.abs(p)); return stat.isFile() && stat.size > this.sizeCap } catch { return false }
+      })
+      const oversizedSet = new Set(oversized)
+      const ordinary = paths.filter(p => !oversizedSet.has(p))
+      const [texts, sharedTexts, blobs] = await Promise.all([
+        gitShowMany(this.dir, base, ordinary),
+        shared === base ? undefined : gitShowMany(this.dir, shared, ordinary),
+        gitBlobInfoMany(this.dir, base, oversized),
+      ])
+      // One HEAD check per batch: a move since the read is left to pollHead, which reseeds against the new HEAD.
       if (this.stopped) return
       if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
-      await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs })
-      if (this.phase === 'seed') this.onSeedProgress?.()
-    }
-    if (generation !== this.sharingGeneration) this.markSharingDirty()
+      if (await gitHead(this.dir) !== base) return
+      if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
+      for (const relpath of paths) {
+        if (this.stopped) return
+        if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
+        await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs })
+        if (this.phase === 'seed') this.onSeedProgress?.()
+      }
+      if (generation !== this.sharingGeneration) this.markSharingDirty()
+      else this.reconciled()
+    } catch (error) { this.reconcileFailed(error); throw error }
+    finally { release() }
   }
 
   private markSharingDirty(): void {
@@ -1076,6 +1128,7 @@ class Daemon implements Roomd {
   /** `read`: base texts already read at `read.base` (and `read.shared`) with HEAD checked once for the batch (reconcile). */
   private async publishDiskState(relpath: string, read?: { base: string; texts: Map<string, string | undefined>; shared: string; sharedTexts?: Map<string, string | undefined>; blobs?: Map<string, GitBlobInfo | undefined> }): Promise<void> {
     if (this.stopped) return
+    const release = this.trackPaths([relpath])
     try {
       const generation = this.sharingGeneration
       const sharingChanged = () => {
@@ -1221,6 +1274,7 @@ class Daemon implements Roomd {
         this.log(droppedStale ? `dropped stale overlay ${relpath}` : afterDeleted ? `marked ${relpath} deleted` : afterText === undefined ? `cleared ${relpath} overlay` : `published ${relpath} overlay`)
       }
     } finally {
+      release()
       this.roomDoc.reconcileBaseTexts(this.name, this)
     }
   }
@@ -1323,16 +1377,19 @@ class Daemon implements Roomd {
 
   private async onDiskChange(relpath: string, isNew: boolean): Promise<void> {
     if (this.stopped) return
-    if (await gitIgnored(this.dir, relpath)) {
-      this.tracked.delete(relpath)
-      this.withdrawIgnored(relpath, '.gitignore')
-      return
-    }
-    if (!this.tracked.has(relpath) && !this.roomDoc.changedPaths(this.name).includes(relpath)) {
-      if (!isNew || !fs.existsSync(this.abs(relpath))) return
-      this.tracked.add(relpath)
-    }
-    await this.publishDiskState(relpath)
+    const release = this.trackPaths([relpath])
+    try {
+      if (await gitIgnored(this.dir, relpath)) {
+        this.tracked.delete(relpath)
+        this.withdrawIgnored(relpath, '.gitignore')
+        return
+      }
+      if (!this.tracked.has(relpath) && !this.roomDoc.changedPaths(this.name).includes(relpath)) {
+        if (!isNew || !fs.existsSync(this.abs(relpath))) return
+        this.tracked.add(relpath)
+      }
+      await this.publishDiskState(relpath)
+    } finally { release() }
   }
 
   /** Does git track (or offer as untracked) any file under this directory? */

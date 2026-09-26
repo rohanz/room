@@ -12,7 +12,42 @@ describe('disk publish scheduling', () => {
     await vi.advanceTimersByTimeAsync(300)
     expect(batch.knownPaths()).toEqual(['a'])
     finish()
+    for (let i = 0; i < 4; i++) await Promise.resolve()
+    expect(batch.knownPaths()).toEqual([])
+    batch.stop()
+  })
+  it('keeps overlapping runs counted until both finish, even after stop', async () => {
+    vi.useFakeTimers()
+    const finishes: Array<() => void> = []
+    const batch = new DiskBatch(() => new Promise<void>(resolve => { finishes.push(resolve) }))
+    batch.add('a', false)
+    await vi.advanceTimersByTimeAsync(300)
+    batch.add('a', false)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(batch.knownPaths()).toEqual(['a'])
+    finishes[0]()
     await Promise.resolve()
+    expect(batch.knownPaths()).toEqual(['a'])
+    batch.stop()
+    finishes[1]()
+    for (let i = 0; i < 4; i++) await Promise.resolve()
+    expect(batch.knownPaths()).toEqual([])
+  })
+  it.each(['throw', 'reject'])('cleans up a synchronous %s and rearms pending work', async mode => {
+    vi.useFakeTimers()
+    const errors: unknown[] = []
+    const run = vi.fn((paths: Map<string, boolean>) => {
+      if (paths.has('a')) {
+        batch.add('b', false)
+        if (mode === 'throw') throw new Error('git failed')
+        return Promise.reject(new Error('git failed'))
+      }
+    })
+    const batch = new DiskBatch(run, 300, Date.now, 30_000, error => errors.push(error))
+    batch.add('a', false)
+    await vi.advanceTimersByTimeAsync(600)
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(errors).toHaveLength(1)
     expect(batch.knownPaths()).toEqual([])
     batch.stop()
   })

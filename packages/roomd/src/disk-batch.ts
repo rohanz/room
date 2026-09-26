@@ -9,7 +9,7 @@ export class DiskBatch {
   private settleAt = 0
   private stopped = false
 
-  constructor(private run: (paths: Map<string, boolean>) => void | Promise<void>, private debounceMs = 300, private now = Date.now, private hotThrottleMs = 30_000) {}
+  constructor(private run: (paths: Map<string, boolean>) => void | Promise<void>, private debounceMs = 300, private now = Date.now, private hotThrottleMs = 30_000, private onError: (error: unknown) => void = () => {}) {}
 
   get size(): number { return this.pending.size }
   knownPaths(): string[] { return [...new Set([...this.pending.keys(), ...this.active.keys()])] }
@@ -52,7 +52,9 @@ export class DiskBatch {
       for (const [p, fresh] of this.pending) if (this.due(p) <= this.now()) { ready.set(p, fresh); this.pending.delete(p) }
       if (ready.size) {
         for (const p of ready.keys()) this.active.set(p, (this.active.get(p) ?? 0) + 1)
-        void Promise.resolve(this.run(ready)).finally(() => {
+        void Promise.resolve().then(() => this.run(ready)).catch(error => {
+          try { this.onError(error) } catch { /* error reporting must not strand a batch */ }
+        }).finally(() => {
           for (const p of ready.keys()) {
             const count = this.active.get(p) ?? 0
             if (count <= 1) this.active.delete(p)
