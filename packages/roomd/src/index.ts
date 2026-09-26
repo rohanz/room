@@ -115,6 +115,8 @@ export interface RoomdOptions {
   log?: (line: string) => void
   /** Test hook: awaited inside the publish path after the base text is read, before the room is written. */
   beforePublishWrite?: (relpath: string) => Promise<void>
+  /** Test hook: await before using a path's base text. */
+  beforeBaseRead?: (relpath: string) => Promise<void>
   /** Test hook: called after a watched disk change has finished processing, including skipped files. */
   onScanned?: (relpath: string) => void
   /** Max time to wait for the initial sync; default 15s. */
@@ -266,7 +268,11 @@ class Daemon implements Roomd {
   private explicitScopePaths?: string[]
   /** Exact paths already published while declared; task scope may end before teammates collect them. */
   private retainedDeclaredPaths: Set<string> = new Set<string>()
+  /** Base texts this daemon inserted, including keys from earlier HEADs. */
+  private readonly publishedBaseTexts = new Set<string>()
+  private sharingGeneration = 0
   private beforePublishWrite?: (relpath: string) => Promise<void>
+  private beforeBaseRead?: (relpath: string) => Promise<void>
 
   private onScanned?: (relpath: string) => void
 
@@ -330,6 +336,7 @@ class Daemon implements Roomd {
     this.explicitScopePaths = options.scopePaths
     this.onScanned = options.onScanned
     this.beforePublishWrite = options.beforePublishWrite
+    this.beforeBaseRead = options.beforeBaseRead
     const { serverUrl, roomName } = splitRoomUrl(options.room)
     let decodedRoomName = roomName
     try { decodedRoomName = decodeURIComponent(roomName) } catch { /* use the literal name */ }
@@ -410,7 +417,11 @@ class Daemon implements Roomd {
     this.every(this.basePollMs, () => this.enqueue(() => this.pollHead()))
     this.roomDoc.metaMap.observe(() => observeCallback(() => this.refreshBaseStatus(), error => this.log(`warn: ${errMsg(error)}`)))
     // Under 'declared' the published set follows the person's scope; re-evaluate when it changes.
-    this.roomDoc.scopes.observe(ev => { if (ev.keysChanged.has(this.name) && this.share === 'declared' && !this.explicitScopePaths) observeCallback(() => this.resharePaths(), error => this.log(`warn: ${errMsg(error)}`)) })
+    this.roomDoc.scopes.observe(ev => {
+      if (!ev.keysChanged.has(this.name) || this.share !== 'declared' || this.explicitScopePaths) return
+      this.setEffectiveShare(this.share, true)
+      observeCallback(() => this.resharePaths(), error => this.log(`warn: ${errMsg(error)}`))
+    })
     await this.refreshBaseStatus()
     this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
     this.started = true
@@ -439,24 +450,24 @@ class Daemon implements Roomd {
   async setShare(level: ShareLevel, scopePaths?: string[]): Promise<void> {
     level = clampShare(level, this.shareCeiling?.() ?? 'full')
     const before = this.share
+    const priorPaths = this.scopePaths()
     // Paths passed here are a one-off override; `undefined` keeps following the declared scope.
     this.explicitScopePaths = scopePaths
-    this.setEffectiveShare(level)
+    const nextPaths = this.scopePaths()
+    this.setEffectiveShare(level, priorPaths.length !== nextPaths.length || priorPaths.some((path, i) => path !== nextPaths[i]))
     if (before !== level) this.log(`sharing ${before} -> ${level}`)
     await this.resharePaths()
   }
 
   /** Apply every effective boundary in one place, withdrawing existing text before any async reconcile. */
-  private setEffectiveShare(level: ShareLevel): void {
+  private setEffectiveShare(level: ShareLevel, scopeChanged = false): void {
+    if (level !== this.share || scopeChanged) this.sharingGeneration++
     if (level !== this.share) this.retainedDeclaredPaths.clear()
     this.share = level
     this.setStatus(this.currentStatus())
     const changed = new Set(this.roomDoc.changedPaths(this.name))
-    const base = this.roomDoc.baseOf(this.name)
     const paths = new Set(changed)
-    if (base) for (const key of this.roomDoc.baseTexts.keys()) {
-      if (key.startsWith(`${base}:`)) paths.add(key.slice(base.length + 1))
-    }
+    for (const key of this.publishedBaseTexts) paths.add(key.slice(key.indexOf(':') + 1))
     for (const relpath of paths) {
       if (!this.sharedAtCurrentLevel(relpath)) this.withhold(relpath, changed.has(relpath))
     }
@@ -505,10 +516,13 @@ class Daemon implements Roomd {
         this.roomDoc.clearOverlay(this.name, relpath, this)
         this.roomDoc.unmarkDeleted(this.name, relpath, this)
       }
-      const base = this.roomDoc.baseOf(this.name)
-      if (base && ![...new Set([...this.roomDoc.overlays.keys(), ...this.roomDoc.deleted.keys()])]
-        .some(person => person !== this.name && this.roomDoc.baseOf(person) === base && this.roomDoc.changedPaths(person).includes(relpath))) {
-        this.roomDoc.baseTexts.delete(`${base}:${relpath}`)
+      for (const key of this.publishedBaseTexts) {
+        if (key.slice(key.indexOf(':') + 1) !== relpath) continue
+        const base = key.slice(0, key.indexOf(':'))
+        if ([...new Set([...this.roomDoc.overlays.keys(), ...this.roomDoc.deleted.keys()])]
+          .some(person => person !== this.name && this.roomDoc.baseOf(person) === base && this.roomDoc.changedPaths(person).includes(relpath))) continue
+        this.roomDoc.baseTexts.delete(key)
+        this.publishedBaseTexts.delete(key)
       }
     }, this)
     if (had) this.log(`withdrew ${relpath} overlay (sharing ${this.share})`)
@@ -871,6 +885,7 @@ class Daemon implements Roomd {
   /** Publish the disk state of these paths and the published ones, reading every base text in one git process. */
   private async reconcile(extra: Iterable<string>): Promise<void> {
     if (this.stopped) return
+    const generation = this.sharingGeneration
     const paths = Array.from(this.pathsToReconcile(extra))
     const base = this.base, shared = this.shared
     const oversized = paths.filter(p => {
@@ -884,9 +899,9 @@ class Daemon implements Roomd {
       gitBlobInfoMany(this.dir, base, oversized),
     ])
     // One HEAD check per batch: a move since the read is left to pollHead, which reseeds against the new HEAD.
-    if (this.stopped || await gitHead(this.dir) !== base) return
+    if (this.stopped || generation !== this.sharingGeneration || await gitHead(this.dir) !== base || generation !== this.sharingGeneration) return
     for (const relpath of paths) {
-      if (this.stopped) return
+      if (this.stopped || generation !== this.sharingGeneration) return
       await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs })
       if (this.phase === 'seed') this.onSeedProgress?.()
     }
@@ -980,6 +995,8 @@ class Daemon implements Roomd {
   /** `read`: base texts already read at `read.base` (and `read.shared`) with HEAD checked once for the batch (reconcile). */
   private async publishDiskState(relpath: string, read?: { base: string; texts: Map<string, string | undefined>; shared: string; sharedTexts?: Map<string, string | undefined>; blobs?: Map<string, GitBlobInfo | undefined> }): Promise<void> {
     if (this.stopped) return
+    const generation = this.sharingGeneration
+    const sharingChanged = () => generation !== this.sharingGeneration
     this.choosePublisher()
     if (this.publishUnder) return
     this.skips.size.delete(relpath)
@@ -997,7 +1014,10 @@ class Daemon implements Roomd {
     const carried = this.carried()
     const carriedFile = carried?.untracked.has(relpath) === true
     /** What the disk is compared with: HEAD's text, or a carried untracked file's carried text (the lead's, not a worker change). */
-    const baseText = () => carriedFile ? baselineText(carried!, relpath, async () => undefined) : headText()
+    const baseText = async () => {
+      await this.beforeBaseRead?.(relpath)
+      return carriedFile ? baselineText(carried!, relpath, async () => undefined) : headText()
+    }
     /** The base text published under baseOf: the compared text, unless baseOf is another commit or holds no carried text of its own. */
     const publishedText = async (compared: string | undefined) => {
       if (sharedBase !== publishingBase) return batched && read!.sharedTexts ? read!.sharedTexts.get(relpath) : gitShow(this.dir, sharedBase, relpath)
@@ -1029,8 +1049,11 @@ class Daemon implements Roomd {
 
     if (!exists) {
       const base = await baseText()
+      if (sharingChanged()) return
       const published = base === undefined ? undefined : await publishedText(base)
+      if (sharingChanged()) return
       if (this.stopped || moved() || await headMoved()) { this.scheduleDisk(relpath, true); return }
+      if (sharingChanged()) return
       if (published === undefined) {
         this.roomDoc.doc.transact(() => {
           this.roomDoc.clearOverlay(this.name, relpath, this)
@@ -1039,9 +1062,11 @@ class Daemon implements Roomd {
         this.retainedDeclaredPaths.delete(relpath)
         droppedStale = beforeText !== undefined || beforeDeleted
       } else if (!this.isShared(relpath)) {
+        if (sharingChanged()) return
         this.withhold(relpath, true)
         return
       } else {
+        if (sharingChanged()) return
         this.skips.share.delete(relpath)
         this.roomDoc.doc.transact(() => {
           this.roomDoc.markDeleted(this.name, relpath, this)
@@ -1049,29 +1074,37 @@ class Daemon implements Roomd {
         }, this)
       }
     } else if (!this.isShared(relpath)) {
+      if (sharingChanged()) return
       // Withheld by the sharing level: publish nothing, but remember whether it differs from base.
       const disk = this.readText(relpath, true)
       const changed = disk === undefined && this.skips.size.has(relpath)
         ? await oversizedChanged() : disk !== undefined && disk !== await baseText()
+      if (sharingChanged()) return
       this.withhold(relpath, changed)
       return
     } else {
+      if (sharingChanged()) return
       this.skips.share.delete(relpath)
 
       const disk = this.readText(relpath)
       if (disk === undefined) {
         if (this.skips.size.has(relpath)) await oversizedChanged()
+        if (sharingChanged()) return
         this.roomDoc.clearOverlay(this.name, relpath, this)
         this.roomDoc.unmarkDeleted(this.name, relpath, this)
         this.retainedDeclaredPaths.delete(relpath)
         return
       }
       const base = await baseText()
+      if (sharingChanged()) return
       const published = disk === base ? undefined : await publishedText(base)
       await this.beforePublishWrite?.(relpath)
+      if (sharingChanged()) return
       if (this.stopped || this.publishUnder || !this.isSafeRoomPath(relpath) || moved() || await headMoved()) { this.scheduleDisk(relpath, true); return }
+      if (sharingChanged()) return
       // The level or scope may have changed while we waited on git: never write text the current level withholds.
-      if (!this.isShared(relpath)) { this.withhold(relpath, disk !== base); return }
+      if (!this.isShared(relpath)) { if (!sharingChanged()) this.withhold(relpath, disk !== base); return }
+      if (sharingChanged()) return
       if (disk !== base && this.sharedBytes(relpath) + disk.length > this.totalBudget) {
         if (!this.skips.budget.has(relpath)) { this.skips.budget.add(relpath); this.noteSkip(relpath, `over the ${Math.round(this.totalBudget / 1024)} KB total budget`) }
         this.roomDoc.clearOverlay(this.name, relpath, this)
@@ -1085,7 +1118,13 @@ class Daemon implements Roomd {
         if (disk === base) this.roomDoc.clearOverlay(this.name, relpath, this)
         else {
           this.roomDoc.setOverlay(this.name, relpath, disk, this)
-          if (disk.length <= this.sizeCap) this.roomDoc.setBaseText(sharedBase, relpath, published ?? '', this)
+          if (disk.length <= this.sizeCap) {
+            const key = `${sharedBase}:${relpath}`
+            if (!this.roomDoc.baseTexts.has(key)) {
+              this.roomDoc.setBaseText(sharedBase, relpath, published ?? '', this)
+              this.publishedBaseTexts.add(key)
+            }
+          }
         }
       }, this)
     }

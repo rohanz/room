@@ -815,6 +815,72 @@ describe('sharing levels', () => {
     expect(daemon.roomDoc.baseText(base, 'reverted.py')).toBeUndefined()
   })
 
+  it('withdraws base text published before HEAD advanced', async () => {
+    const dir = await makeRepo({ 'a.py': 'base a\n', 'b.py': 'base b\n' })
+    const daemon = await start({ room: room(), dir, name: 'Advance', basePollMs: 20 })
+    const oldBase = daemon.base
+    await fsp.writeFile(path.join(dir, 'a.py'), 'changed a\n')
+    await waitFor(() => daemon.roomDoc.baseText(oldBase, 'a.py') === 'base a\n')
+    sh(dir, ['add', 'a.py']); sh(dir, ['commit', '-qm', 'advance'])
+    await waitFor(() => daemon.base !== oldBase)
+    await fsp.writeFile(path.join(dir, 'b.py'), 'changed b\n')
+    await waitFor(() => daemon.roomDoc.text('b.py', 'Advance') === 'changed b\n')
+    await daemon.setShare('intent')
+    expect(daemon.roomDoc.changedPaths('Advance')).toEqual([])
+    expect(daemon.roomDoc.baseText(oldBase, 'a.py')).toBeUndefined()
+    expect(daemon.roomDoc.baseText(daemon.base, 'b.py')).toBeUndefined()
+  })
+
+  it('does not let an old withheld scan remove an overlay after sharing widens', async () => {
+    const dir = await makeRepo({ 'a.py': 'base\n' })
+    let release!: () => void
+    let parked!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const reached = new Promise<void>(resolve => { parked = resolve })
+    let holdNextRead = true
+    const daemon = await start({ room: room(), dir, name: 'Widen', share: 'intent',
+      beforeBaseRead: async relpath => {
+        if (relpath !== 'a.py' || !holdNextRead) return
+        holdNextRead = false
+        parked()
+        await held
+      },
+    })
+    await fsp.writeFile(path.join(dir, 'a.py'), 'changed\n')
+    await reached
+    await daemon.setShare('declared', ['a.py'])
+    expect(daemon.roomDoc.text('a.py', 'Widen')).toBe('changed\n')
+    release()
+    await daemon.settle()
+    expect(daemon.roomDoc.text('a.py', 'Widen')).toBe('changed\n')
+    expect(daemon.skipped().share).toEqual([])
+  })
+
+  it('does not let an old withheld scan remove an overlay after scope expands', async () => {
+    const dir = await makeRepo({ 'a.py': 'base\n' })
+    let release!: () => void
+    let parked!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const reached = new Promise<void>(resolve => { parked = resolve })
+    let holdNextRead = true
+    const daemon = await start({ room: room(), dir, name: 'Scope', share: 'declared',
+      beforeBaseRead: async relpath => {
+        if (relpath !== 'a.py' || !holdNextRead) return
+        holdNextRead = false
+        parked()
+        await held
+      },
+    })
+    await fsp.writeFile(path.join(dir, 'a.py'), 'changed\n')
+    await reached
+    daemon.roomDoc.setScope({ by: 'Scope', byKind: 'agent', area: 'app', summary: 'edit app', paths: ['a.py'] })
+    await waitFor(() => daemon.roomDoc.text('a.py', 'Scope') === 'changed\n')
+    release()
+    await daemon.settle()
+    expect(daemon.roomDoc.text('a.py', 'Scope')).toBe('changed\n')
+    expect(daemon.skipped().share).toEqual([])
+  })
+
   it('checks a changed ceiling before the first overlay publish', async () => {
     const dir = await makeRepo({ 'a.txt': 'base\n' })
     await fsp.writeFile(path.join(dir, 'a.txt'), 'private edit\n')
