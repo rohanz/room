@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process'
 import type { WakeEvent } from './wake.js'
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 import { sendChannelNotification } from './channel.js'
+import { dropSatisfiedBaseNotice } from './base-notice.js'
+import type { Session } from './session.js'
 
 type Notification = { method: 'notifications/claude/channel'; params: { content: string; meta: Record<string, string> } }
 type WakeEnv = NodeJS.ProcessEnv
@@ -77,6 +79,7 @@ function postSocketWake(socketPath: string, token: string | undefined, content: 
 
 export interface SocketWakeOptions extends WakeAvailability {
   notify: (notification: Notification) => Promise<unknown>
+  recipient?: Pick<Session, 'dir' | 'room' | 'me'>
   /** Checked immediately before sending, since room_wait may consume a queued event. */
   isUnread?: (wake: WakeEvent) => boolean
   /** A pending room_wait will deliver this event itself. */
@@ -120,7 +123,14 @@ export class SocketWakeRouter {
 
   private async channel(wake: WakeEvent): Promise<void> {
     if (this.o.channel === '') return
+    if (wake.meta.type === 'base' && await this.satisfied(wake)) return
     await sendChannelNotification(wake, this.o.notify)
+  }
+
+  private async satisfied(wake: WakeEvent): Promise<boolean> {
+    const s = this.o.recipient
+    const m = s?.room.messages().find(m => m.id === wake.meta.msg_id)
+    return !!s && !!m && dropSatisfiedBaseNotice(s, m)
   }
 
   private channelAdmitted(): boolean {
@@ -139,7 +149,10 @@ export class SocketWakeRouter {
   }
 
   private async flush(): Promise<void> {
-    const items = this.pending.splice(0).filter(w => !this.o.isPendingWait?.(w) && this.unread(w))
+    const items: WakeEvent[] = []
+    for (const w of this.pending.splice(0)) {
+      if (!this.o.isPendingWait?.(w) && this.unread(w) && (w.meta.type !== 'base' || !await this.satisfied(w))) items.push(w)
+    }
     if (!items.length || this.closed) return
     this.lastSentAt = Date.now()
     const count = items.length

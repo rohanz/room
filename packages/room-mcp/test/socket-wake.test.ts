@@ -3,6 +3,8 @@ import net from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { RoomDoc } from '@room/shared'
 import * as channel from '../src/channel.js'
 import { SocketWakeRouter, claudeWakeAvailable } from '../src/wake-path.js'
 import { shouldWake } from '../src/wake.js'
@@ -19,6 +21,30 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'room-socket-wake-'))
 afterEach(() => vi.unstubAllEnvs())
 
 describe('Claude socket wake', () => {
+  it.each(['socket', 'channels'])('skips a satisfied base before %s delivery and records seen', async mode => {
+    const dir = tmp()
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
+    try {
+      git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+      fs.writeFileSync(path.join(dir, 'app.txt'), 'base\n')
+      git('add', '.'); git('commit', '-qm', 'base')
+      const base = git('rev-parse', 'HEAD')
+      git('commit', '--allow-empty', '-qm', 'on top')
+      const room = new RoomDoc()
+      const recipient = { dir, room, me }
+      const msg = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base, prev: base, commits: 1, paths: ['app.txt'], summary: 'already here' })
+      const post = vi.fn(async () => {}), notify = vi.fn(async () => {})
+      const router = new SocketWakeRouter({ host: 'claude', recipient, env: { ROOM_WAKE: mode, CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, parentArgs: flag, notify, post, windowMs: 1 })
+      try {
+        router.push(shouldWake(me, { kind: 'msg', msg }, [], true))
+        await pause(30)
+        expect(post).not.toHaveBeenCalled()
+        expect(notify).not.toHaveBeenCalled()
+        expect(room.seen(me.name).has(msg.id)).toBe(true)
+        expect(room.messages()).toContainEqual(msg)
+      } finally { router.close() }
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
   it('posts the first event immediately, one follow-up for five events, then resets after quiet', async () => {
     vi.useFakeTimers()
     const post = vi.fn(async () => {})

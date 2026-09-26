@@ -87,6 +87,17 @@ it.each(['room_wait', 'room_state'])('a successful Claude push leaves the messag
   }
 })
 
+it.each(['room_wait', 'room_state'])('drops a satisfied base before %s delivers its reply', async tool => {
+  const t = setup()
+  const msg = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base, prev: base, commits: 1, paths: ['app.py'], summary: 'already pulled' })
+  const result = await t.tools.call(tool, { timeoutMs: 1 })
+  expect(result).not.toContain('[inbox 1]')
+  if (tool === 'room_state') expect(result).toContain('already pulled') // the timeline keeps the bus message
+  expect(t.room.seen(me.name).has(msg.id)).toBe(true)
+  expect(t.room.messages()).toContainEqual(msg)
+  await t.tools.shutdown()
+})
+
 it('a socket wake leaves the message unread until a Room tool delivers it', async () => {
   const t = setup()
   const s = t.session!

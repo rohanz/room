@@ -516,6 +516,54 @@ describe('hooks bridge + plugin hook scripts', () => {
     b.stop()
   })
 
+  it('skips an already integrated base at Codex queue and hook context delivery', async () => {
+    const checkout = mkdtempSync(join(tmpdir(), 'room-stale-hook-'))
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8' }).trim()
+    try {
+      git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+      writeFileSync(join(checkout, 'app.py'), 'x = 1\n')
+      git('add', '.'); git('commit', '-qm', 'base')
+      const base = git('rev-parse', 'HEAD')
+      git('commit', '--allow-empty', '-qm', 'on top')
+      writeFileSync(join(checkout, '.git/room-session.json'), JSON.stringify({ session_id: 'stale-thread', at: Date.now(), cwd: checkout }))
+      const room = new RoomDoc(), s = { ...session(room), dir: checkout }
+      room.setOverlay(s.me.name, 'app.py', 'x = 2\n')
+      const queued: string[] = []
+      const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false, queue: async (_id, text) => { queued.push(text) } })
+      b.start()
+      const msg = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base, prev: base, commits: 1, paths: ['app.py'], summary: 'already here' })
+      await b.maybeWake(msg)
+      await new Promise(r => setTimeout(r, 220))
+      expect(queued).toEqual([])
+      expect(room.seen(s.me.name).has(msg.id)).toBe(true)
+      expect(JSON.parse(readFileSync(join(checkout, '.git/room-state.json'), 'utf8')).unread).toEqual([])
+      expect(room.messages()).toContainEqual(msg)
+      b.stop()
+    } finally { rmSync(checkout, { recursive: true, force: true }) }
+  })
+
+  it('omits a satisfied base from hook additional context without a queue delivery', async () => {
+    const checkout = mkdtempSync(join(tmpdir(), 'room-stale-hook-only-'))
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8' }).trim()
+    try {
+      git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+      writeFileSync(join(checkout, 'app.py'), 'x = 1\n')
+      git('add', '.'); git('commit', '-qm', 'base')
+      const base = git('rev-parse', 'HEAD')
+      const room = new RoomDoc(), s = { ...session(room), dir: checkout }
+      const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false, queue: async () => { throw Error('queue should not run') } })
+      vi.stubEnv('ROOM_HOST', 'claude')
+      b.start()
+      const msg = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base, prev: base, commits: 1, paths: ['app.py'], summary: 'hook-only stale notice' })
+      await new Promise(r => setTimeout(r, 220))
+      expect(room.seen(s.me.name).has(msg.id)).toBe(true)
+      expect(JSON.parse(readFileSync(join(checkout, '.git/room-state.json'), 'utf8')).unread).toEqual([])
+      const output = await runHook('before-edit.mjs', { cwd: checkout, tool_name: 'Read' })
+      expect(output).not.toContain('hook-only stale notice')
+      b.stop()
+    } finally { rmSync(checkout, { recursive: true, force: true }) }
+  })
+
   it('does not wake an idle session merely because another participant joins', async () => {
     writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'idle-thread', at: Date.now(), cwd: dir }))
     const s = session(new RoomDoc())

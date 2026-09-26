@@ -1,6 +1,7 @@
 import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
 import type { Session } from '../session.js'
 import { syncHookSeen } from '../hooks-bridge.js'
+import { dropSatisfiedBaseNotice } from '../base-notice.js'
 import { isPrName } from '../prs.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -165,7 +166,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (an) { received(x, an); return `answered: ${formatMsg(an)}` }
       }
       if (questionId) { const notice = unavailableQuestion(qRoom, questionId); if (notice) return notice }
-      const waitResult = (x: Session, m: Msg, workersRoom = false): string | undefined => {
+      const waitResult = async (x: Session, m: Msg, workersRoom = false): Promise<string | undefined> => {
+        if (await dropSatisfiedBaseNotice(x, m)) return
         if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
           received(x, m)
           if (m.type === 'answer') return `answered: ${formatMsg(m)}`
@@ -182,7 +184,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       candidates.sort((a, b) => (a.m.priority === 'interrupt' ? 0 : a.m.type === 'question' ? 1 : 2)
         - (b.m.priority === 'interrupt' ? 0 : b.m.type === 'question' ? 1 : 2) || a.m.at - b.m.at)
       for (const { x, m } of candidates) {
-        const ended = waitResult(x, m, x !== s)
+        const ended = await waitResult(x, m, x !== s)
         if (ended) return ended
       }
       if (offline(s)) return 'offline: queued/not delivered; room_wait cannot observe new messages until reconnected'
@@ -221,10 +223,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const onWorkersBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           if (!ws) return
-          for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            const ended = waitResult(ws, m, true)
+          void (async () => { for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
+            const ended = await waitResult(ws, m, true)
             if (ended) return finish(ended)
-          }
+          } })()
         }
         timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap(room => myWorkers(room)).filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
@@ -234,10 +236,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }, timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
-          for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            const ended = waitResult(s, m)
+          void (async () => { for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
+            const ended = await waitResult(s, m)
             if (ended) return finish(ended)
-          }
+          } })()
         }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)
         if (questionId) qRoom.room.doc.on('update', onRecipient)

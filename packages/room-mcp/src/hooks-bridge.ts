@@ -20,6 +20,7 @@ import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
 import { claudeWakeUnavailable } from './prompt.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
+import { dropSatisfiedBaseNotice } from './base-notice.js'
 
 function gitStatePath(root: string, name: string): string {
   return path.join(worktreeGitDirFromDotGit(root), name)
@@ -175,6 +176,7 @@ export class HooksBridge {
   private startedAt = Date.now()
   private unobserve: (() => void)[] = []
   private delivering = new Set<string>()
+  private preflighting = false
   private generation = 0
   private stopped = false
   constructor(private s: Session, private o: HooksBridgeOptions) {
@@ -192,7 +194,7 @@ export class HooksBridge {
       // Receipts must remove delivered ids from the hook snapshot immediately,
       // before the next tool's hook can replay a stale inbox.
       const receipts = this.s.room.seen(this.s.me.name)
-      const onSeen = () => this.write()
+      const onSeen = () => { if (!this.preflighting) this.write() }
       receipts.observe(onSeen)
       this.unobserve.push(() => receipts.unobserve(onSeen))
     }
@@ -229,7 +231,16 @@ export class HooksBridge {
     if (this.timer) return
     this.timer = setTimeout(() => {
       this.timer = null
-      try { this.write() } catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`) }
+      void (async () => {
+        try {
+          this.preflighting = true
+          for (const m of this.s.room.messages()) {
+            if (m.type === 'base' && !this.isSeen(m.id) && this.o.forMe(m)) await dropSatisfiedBaseNotice(this.s, m)
+          }
+          if (!this.stopped) this.write()
+        } catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`) }
+        finally { this.preflighting = false }
+      })()
     }, 150)
     this.timer.unref?.()
   }
@@ -324,6 +335,7 @@ export class HooksBridge {
       syncHookSeen(this.s)
       if (!active()) return
       if (this.isSeen(m.id)) return
+      if (await dropSatisfiedBaseNotice(this.s, m)) return
       try {
         await (this.o.queue ?? defaultQueue)(session.id, text)
         if (!active()) return
