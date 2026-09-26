@@ -31848,14 +31848,15 @@ function clearWorkerStopState(repoDir, tag, workerId2) {
 async function cleanupPreparedWorktree(repoDir, prepared) {
   if (!prepared.created) return;
   await internalGit(repoDir, ["worktree", "remove", "--force", prepared.dir]);
+  if (!prepared.branchCreated) return;
   await internalGit(repoDir, ["branch", "-D", prepared.branch]);
-  try {
-    await internalGit(repoDir, ["update-ref", "-d", carryRef(prepared.branch.slice(5))]);
-  } catch {
-  }
-  try {
-    await internalGit(repoDir, ["update-ref", "-d", carriedUntrackedRef(prepared.branch.slice(5))]);
-  } catch {
+  for (const ref of [carryRef(prepared.branch.slice(5)), carriedUntrackedRef(prepared.branch.slice(5))]) {
+    const previous = prepared.previousCarryRefs?.[ref];
+    if (previous) await internalGit(repoDir, ["update-ref", ref, previous]);
+    else try {
+      await internalGit(repoDir, ["update-ref", "-d", ref]);
+    } catch {
+    }
   }
   await fs13.promises.rm((await carryRecord(repoDir, prepared.branch.slice(5))).file, { force: true });
 }
@@ -31884,6 +31885,13 @@ async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, 
   }
   if (hasBranch && ownerId && !record2?.ownerId) throw new Error(`branch ${branch} has unknown ownership; choose another tag`);
   if (hasBranch && !carry) throw new Error(`branch ${branch} already exists; choose a new tag for carry=false`);
+  const previousCarryRefs = {};
+  if (!hasBranch) for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
+    try {
+      previousCarryRefs[ref] = (await git(repoDir, ["rev-parse", "--verify", ref])).trim();
+    } catch {
+    }
+  }
   let base;
   if (!hasBranch) {
     try {
@@ -31893,9 +31901,9 @@ async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, 
     }
   }
   await internalGit(repoDir, hasBranch ? ["worktree", "add", "-q", dir, branch] : ["worktree", "add", "-q", "-b", branch, dir, base]);
-  if (!base) return { dir, branch, created: true, ...record2 };
+  if (!base) return { dir, branch, created: true, branchCreated: false, ...record2 };
   if (!carry) {
-    const result = { dir, branch, created: true, base };
+    const result = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base };
     await (await carryRecord(repoDir, tag)).write({ base, ownerId });
     return result;
   }
@@ -31993,12 +32001,12 @@ async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, 
     if (paths.length) await internalGit(repoDir, ["update-ref", carryRef(tag), commit]);
     retainUntrackedTree(repoDir, tag, carriedUntracked);
     if (!await snapshotStable()) throw new Error("lead changed during carry; retrying snapshot");
-    const result = { dir, branch, created: true, base: commit, carriedBase: staged.length ? commit : void 0, carried: paths.length ? { count: paths.length, commit, paths } : void 0, carriedUntracked, skippedCarry };
+    const result = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base: commit, carriedBase: staged.length ? commit : void 0, carried: paths.length ? { count: paths.length, commit, paths } : void 0, carriedUntracked, skippedCarry };
     await (await carryRecord(repoDir, tag)).write({ base: result.base, carriedBase: result.carriedBase, carried: result.carried, carriedUntracked, skippedCarry, ownerId });
     return result;
   } catch (e) {
     if (e.message === "lead changed during carry; retrying snapshot") {
-      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true });
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs });
       if (retry >= 2) throw new Error("lead changed repeatedly during carry; try spawning again when HEAD is stable");
       return prepareWorktree(repoDir, tag, leadName, linkExclusions, ownerId, retry + 1, carry);
     }
@@ -32006,16 +32014,17 @@ async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, 
       await internalGit(dir, ["reset", "--hard", base]);
       await internalGit(dir, ["clean", "-fdx"]);
       for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
-        try {
+        if (previousCarryRefs[ref]) await internalGit(repoDir, ["update-ref", ref, previousCarryRefs[ref]]);
+        else try {
           await internalGit(repoDir, ["update-ref", "-d", ref]);
         } catch {
         }
       }
     } catch {
-      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true });
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs });
       await internalGit(repoDir, ["worktree", "add", "-q", "-b", branch, dir, base]);
     }
-    return { dir, branch, created: true, base, carryFailed: true, carryError: e.message };
+    return { dir, branch, created: true, branchCreated: true, previousCarryRefs, base, carryFailed: true, carryError: e.message };
   }
 }
 function workerEnv(base, extra) {
@@ -32023,8 +32032,9 @@ function workerEnv(base, extra) {
   for (const [k, v] of Object.entries(base)) if (v !== void 0 && !LEAD_ONLY_ENV.includes(k)) out2[k] = v;
   return { ...out2, ...extra };
 }
-function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses) {
+function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses, worker, probe) {
   if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false;
+  if (worker && !pidIsOurWorker(pid, worker, probe)) return false;
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false;
   try {
     process.kill(pid, signal);
@@ -32048,7 +32058,35 @@ function probeProcess(pid) {
     const start2 = execFileSync4("ps", ["-o", "lstart=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
     const command = execFileSync4("ps", ["-o", "command=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
     const t = Date.parse(start2);
-    return { ...Number.isFinite(t) ? { start: t } : {}, ...command ? { command } : {} };
+    const info2 = { ...Number.isFinite(t) ? { start: t } : {}, ...command ? { command } : {} };
+    if (process.platform === "linux") {
+      try {
+        info2.env = Object.fromEntries(fs13.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter(Boolean).map((entry) => {
+          const equal = entry.indexOf("=");
+          return [entry.slice(0, equal), entry.slice(equal + 1)];
+        }));
+      } catch {
+      }
+      try {
+        info2.cwd = fs13.realpathSync(`/proc/${pid}/cwd`);
+      } catch {
+      }
+    } else if (process.platform === "darwin") {
+      try {
+        const expanded = execFileSync4("ps", ["eww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 3e3 });
+        const env = {};
+        const environmentText = expanded.startsWith(command) ? expanded.slice(command.length) : "";
+        for (const match of environmentText.matchAll(/(?:^|\s)(ROOM_TAG|ROOM_LEAD)=([^\s]+)/g)) env[match[1]] = match[2];
+        info2.env = env;
+      } catch {
+      }
+      try {
+        const cwd2 = execFileSync4("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8", timeout: 3e3 }).split("\n").find((line) => line.startsWith("n"));
+        if (cwd2) info2.cwd = cwd2.slice(1);
+      } catch {
+      }
+    }
+    return info2;
   } catch {
     return void 0;
   }
@@ -32059,7 +32097,20 @@ function pidIsOurWorker(pid, w, probe = probeProcess) {
   if (!info2?.start || !info2.command) return false;
   if (Math.abs(info2.start - w.startedAt) > 5e3) return false;
   if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info2.command)) return false;
-  return info2.command.includes(w.tag) || info2.command.includes(w.dir) || !!w.hostSessionId && info2.command.includes(w.hostSessionId);
+  const session = w.hostSessionId?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (session && new RegExp(`(?:^|\\s)(?:--session-id|--resume|resume)\\s+["']?${session}(?=["']?(?:\\s|$))`).test(info2.command)) return true;
+  if (w.lead && info2.env?.ROOM_TAG === w.tag && info2.env.ROOM_LEAD === w.lead) return true;
+  if (info2.cwd && fs13.existsSync(path12.join(w.dir, ".git"))) {
+    try {
+      const root = fs13.realpathSync(w.dir);
+      if (fs13.realpathSync(info2.cwd) !== root) return false;
+      const top = execFileSync4("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+      const branch = execFileSync4("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+      if (fs13.realpathSync(top) === root && branch === (w.branch ?? `room/${w.tag}`)) return true;
+    } catch {
+    }
+  }
+  return false;
 }
 function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
   const resolved = (p) => {
@@ -32358,7 +32409,13 @@ var init_workers = __esm({
           sessionIdCallback = cb;
           if (sessionId) cb(sessionId);
         },
-        kill: () => signalWorker(child.pid ?? -1, "SIGTERM", spec16.cwd)
+        kill: () => {
+          try {
+            return child.kill("SIGTERM");
+          } catch {
+            return false;
+          }
+        }
       };
     };
   }
@@ -47253,7 +47310,7 @@ repeat with force=true to delete them`;
           const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
           const deadline = now() + 5e3;
           while (state.workerAlive(s, w) && now() < deadline) await sleep2(50);
-          if (state.workerAlive(s, w) && decideStop(await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })).host === "signal") signalWorker(w.pid, "SIGKILL");
+          if (state.workerAlive(s, w) && decideStop(await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })).host === "signal") signalWorker(w.pid, "SIGKILL", void 0, void 0, w, state.ctx?.probe);
           const hardDeadline = now() + 5e3;
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep2(50);
           if (state.workerAlive(s, w)) throw new Error("worker process has not stopped");
@@ -48179,7 +48236,7 @@ function install6(state) {
       signalled = proc.kill();
       how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled: the process is already gone`;
     } else if (decideStop(await workerRealState(s.dir, w, { process: true, probe: ctx.probe })).host === "signal") {
-      signalled = signalWorker(w.pid);
+      signalled = signalWorker(w.pid, "SIGTERM", void 0, void 0, w, ctx.probe);
       how = signalled ? `pid ${w.pid} signalled` : `pid ${w.pid} not signalled (it exited just now, or is not ours to signal)`;
     } else {
       signalled = false;
