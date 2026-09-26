@@ -1,3 +1,4 @@
+import { createWorkerRuntime } from './workers.js'
 import { createJoin } from './join.js'
 import { createShare } from './share.js'
 import { createPrs } from './prs.js'
@@ -142,16 +143,18 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const prs = createPrs({ ctx, presences, log, now })
   const share = createShare()
   const join = createJoin({ ctx, log, doJoin, doLeave, seen, rooms, now, presences, runningWorkers: s => rooms.occupiedWorkers(s) })
+  const workers = createWorkerRuntime({ ctx, rooms, doJoin, doLeave, seen, log, cleanupMine: join.cleanupMine, now })
   runtime = {
+    ...workers,
     ...join,
     ...share,
     ...prs,
     ...inboxServices,
     ...claims,
     ...areas,
-    ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, myWorkers: undefined!, workerAlive: undefined!,
-    ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, others, presences,
-    shareOf, withheld, setPresence, base, baseFor, baseText, liveText, lines, startWorkersBridge: undefined!,
+    ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, 
+    hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), others, presences,
+    shareOf, withheld, setPresence, base, baseFor, baseText, liveText, lines, 
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite,
     upgraded, conflictPairs,

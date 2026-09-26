@@ -257,8 +257,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function install(state: HandlerState): void {
-  const { ctx, rooms, doJoin, doLeave, seen, log, cleanupMine } = state
+export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | 'doJoin' | 'doLeave' | 'seen' | 'log' | 'cleanupMine' | 'now'>): Pick<HandlerState, 'myWorkers' | 'workerAlive' | 'ensureWorkersRoom' | 'closeWorkersRoom' | 'runningWorkers' | 'dismissWorker' | 'startWorkersBridge'> {
+  const { ctx, rooms, doJoin, doLeave, seen, log, cleanupMine, now } = deps
   const myWorkers = (s: Session): Worker[] => Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name)
   const workerAlive = (s: Session, w: Worker): boolean => rooms.hasHandle(s, w) || pidIsOurWorker(w.pid, w, ctx.probe)
   const ensureWorkersRoom = async (lead: Session): Promise<Session> => {
@@ -334,7 +334,7 @@ export function install(state: HandlerState): void {
           try { persistWorkerStopReason(s.dir, w.tag, stopReason, w.id) }
           catch (e) { throw new Error(`could not persist stop reason for ${w.tag}: ${e instanceof Error ? e.message : String(e)}`) }
         }
-        s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: state.now(), ...(stopReason ? { stopReason } : {}) }, w.id)
+        s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: now(), ...(stopReason ? { stopReason } : {}) }, w.id)
       }
       return how + cleanupText()
     }
@@ -345,5 +345,9 @@ export function install(state: HandlerState): void {
     ctx.attachChannel?.(s)
     return bridge
   }
-  Object.assign(state, { myWorkers, workerAlive, ensureWorkersRoom, closeWorkersRoom, runningWorkers, dismissWorker, startWorkersBridge })
+  return { myWorkers, workerAlive, ensureWorkersRoom, closeWorkersRoom, runningWorkers, dismissWorker, startWorkersBridge }
+}
+
+export function install(state: HandlerState): void {
+  Object.assign(state, createWorkerRuntime(state))
 }
