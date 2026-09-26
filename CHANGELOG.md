@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.17
+
+Declared-sharing retention is now level-triggered. This replaces the 0.16.15–0.16.16 flush, which had three rounds of timing races.
+
+- When a declared scope stops covering a path (done, clear, or a narrower scope), the daemon synchronously retains every path in the old scope that it knows differs from base: published, marked deleted, or pending in its watcher batch. Normal reconciliation then publishes pending edits, keeps hot-file throttling, and drops a path once it matches base again.
+- `room_done` no longer waits on publication, and has no failure branch.
+- When two sessions use one checkout, the primary session publishes. A secondary session's join, share and done replies say so and name the publisher instead of describing their own declared area.
+
 ## 0.16.16
 
 Fixes from the Astra review of 0.16.15.
