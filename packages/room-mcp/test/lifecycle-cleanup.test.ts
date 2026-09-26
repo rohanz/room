@@ -9,7 +9,7 @@ import { Rooms } from '../src/registry.js'
 import { RoomDoc, type RetiredWorker } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { handlers as joinHandlers } from '../src/tools/join.js'
-import { install as installWorkerHandlers } from '../src/tools/workers.js'
+import { createWorkerRuntime } from '../src/tools/workers.js'
 import { type HandlerState } from '../src/tools/context.js'
 
 describe('worker lifecycle cleanup', () => {
@@ -112,8 +112,8 @@ describe('worker lifecycle cleanup', () => {
       const s = { room, dir: root, me: { name: 'lead', kind: 'agent' } } as Session
       const kill = vi.fn(() => { child.kill('SIGTERM'); return true })
       const state = { ctx: { listCwdProcesses: () => [{ pid: child.pid!, cwd: dir, command: 'node' }] }, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
-      installWorkerHandlers(state)
-      const reply = await state.dismissWorker(s, worker as never, 'stop')
+      const { dismissWorker } = createWorkerRuntime(state)
+      const reply = await dismissWorker(s, worker as never, 'stop')
       expect(reply).toMatch(new RegExp(`stopped processes: [^\\n]+ \\(pid ${child.pid}\\)`))
       expect(kill).toHaveBeenCalledOnce()
       room.doc.destroy()

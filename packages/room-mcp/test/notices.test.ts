@@ -5,7 +5,7 @@ import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { handlers } from '../src/tools/messaging.js'
-import { install, releaseClaimsOnDone } from '../src/tools/claims.js'
+import { createClaims, releaseClaimsOnDone } from '../src/tools/claims.js'
 
 const close: (() => void)[] = []
 afterEach(() => { close.splice(0).forEach(f => f()); vi.useRealTimers() })
@@ -180,7 +180,7 @@ describe('finishing claim notices', () => {
 
   it('keeps explicit plan cancellations as interrupts with their explanation', () => {
     const { s, state } = fixture()
-    install(state)
+    state.planChanged = createClaims({ conflictPairs: new Set(), mine: () => [], log: vi.fn(), ctx: state.ctx, liveText: async () => undefined, baseFor: () => '' }).planChanged
     const c = s.room.addClaim({ by: 'lead', byKind: 'agent', path: 'a.ts', from: 1, to: 1, intent: 'fix' })
     const shown = s.room.post(s.me, { type: 'claim', claimId: c.id, path: c.path, from_line: 1, to_line: 1, intent: 'fix' })
     s.room.setClaimMsg(c.id, shown.id)

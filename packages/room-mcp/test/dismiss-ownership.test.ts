@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { RoomDoc, type Worker } from '@room/shared'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
-import { install } from '../src/tools/workers.js'
+import { createWorkerRuntime } from '../src/tools/workers.js'
 
 const terminate = vi.hoisted(() => vi.fn<(_dir: string) => Promise<string[]>>())
 vi.mock('../src/workers.js', async importOriginal => ({
@@ -39,7 +39,7 @@ function fixture(ownedWorktree: boolean | 'noncanonical' | 'nested') {
   const s = { dir: leadDir, room, me: { name: 'lead', kind: 'agent' } } as Session
   const kill = vi.fn(() => true)
   const state = { ctx: {}, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
-  install(state)
+  state.dismissWorker = createWorkerRuntime(state).dismissWorker
   return { state, s, w, kill, room, dir, parentDir }
 }
 

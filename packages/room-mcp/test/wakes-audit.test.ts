@@ -4,7 +4,7 @@ import { RoomDoc, type Worker } from '@room/shared'
 import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
-import { handlers, install } from '../src/tools/messaging.js'
+import { createInbox, handlers } from '../src/tools/messaging.js'
 
 const cleanups: (() => void)[] = []
 afterEach(() => { cleanups.splice(0).forEach(f => f()); vi.useRealTimers() })
@@ -201,7 +201,7 @@ it.each([false, true])('keeps the second same-tick question unread during a wait
 it('puts an unread worker question ahead of notes with a clear reply instruction', () => {
   const { main, rooms, makeSession, state } = fixture()
   const workers = makeSession('workers'); rooms.add(workers, 'workers')
-  install(state)
+  state.inbox = createInbox(state).inbox
   main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'note', to: 'lead', text: 'routine' })
   const q = workers.room.post({ name: 'lead+money', kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })
   const block = state.inbox(main)

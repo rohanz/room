@@ -80,7 +80,3 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
     }
   return { refreshPrs, startPrSync, stopPrSync, prLines, myPr, postLedger }
 }
-
-export function install(state: HandlerState): void {
-  Object.assign(state, createPrs(state))
-}

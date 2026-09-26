@@ -5,18 +5,16 @@ import { createPrs } from './prs.js'
 import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
-import fs from 'node:fs'
-import { Areas, CODEOWNERS_PATHS, RoomDoc, claimsOverlap, describeClaim, formatMsg, formatPlans, isAgentic, msgPaths, scopeCovers, sharesArea } from '@room/shared'
-import type { Claim, ConflictMsg, Msg, NoteMsg, Plan, PlanMsg, Presence, Priority, ReleaseMsg, Scope, Worker } from '@room/shared'
-import { git, gitShow } from '@room/roomd/git'
+import { isAgentic, scopeCovers, type Presence } from '@room/shared'
+import { gitShow } from '@room/roomd/git'
 import { workerBaseline } from '@room/roomd/baseline'
 import type { ShareLevel, SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
 import { ConflictWatcher } from '../conflicts.js'
-import { branchOf, fetchPrs, isPrName, openPrs, postPrNote, prLeader, renderPrNote, syncPrs, type PrInfo } from '../prs.js'
+import { isPrName } from '../prs.js'
 import { Rooms, type Attachment, type Role } from '../registry.js'
-import { authFor, closeRoom, DEFAULT_SERVER, joinSession, leaveSession, LOCAL, parseServer, resolveServer, type JoinOptions, type Session } from '../session.js'
+import { authFor, closeRoom, joinSession, leaveSession, type Session } from '../session.js'
 import { decideShutdown, workerRealState } from '../worker-state.js'
 import { hasCompany } from '../company.js'
 import { repairRetired } from '../retire.js'
@@ -36,7 +34,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   let roomBridge: Bridge | null = null
   /** The primary session's hooks bridge (state file); the inbox asks it to rewrite after marking messages seen. */
   let primaryHooks: HooksBridge | null = null
-  let runtime!: HandlerState
   const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { session: a.session, token: a.token }) })
   /**
    * Everything a joined session needs running. The primary gets the hooks bridge (state file + wake),
@@ -44,29 +41,29 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
    * file is the team room's), the host's channel push, and the bridge to the lead's team room.
    */
   const attach = (s: Session, role: Role, lead?: Session): Attachment => {
-    const hooks = new HooksBridge(s, { forMe: m => runtime.forMe(s, m), isSeen: id => seen.has(id), company: () => runtime.hasCompany(s), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}) })
+    const hooks = new HooksBridge(s, { forMe: m => inboxServices.forMe(s, m), isSeen: id => seen.has(id), company: () => company(s), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}) })
     hooks.start()
     if (role === 'primary') primaryHooks = hooks
     let watcher: ConflictWatcher | null = null
     let bridge: Bridge | null = null
     if (role === 'primary') {
-      watcher = runtime.startConflictWatcher(s)
-      runtime.startPrSync(s)
+      watcher = claims.startConflictWatcher(s)
+      prs.startPrSync(s)
     } else if (lead) {
-      bridge = runtime.startWorkersBridge(lead, s)
+      bridge = workers.startWorkersBridge(lead, s)
       roomBridge = bridge
     }
     return {
       stop() {
         hooks.stop(); watcher?.stop()
         if (primaryHooks === hooks) primaryHooks = null
-        if (role === 'primary') runtime.stopPrSync()
+        if (role === 'primary') prs.stopPrSync()
         if (bridge) { bridge.stop(); if (roomBridge === bridge) roomBridge = null }
       },
       flush: () => watcher?.flush() ?? Promise.resolve(),
     }
   }
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => runtime.observeClaims(s), attach, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => claims.observeClaims(s), attach, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
 
   const S = (): Session => {
     const s = ctx.getSession()
@@ -137,14 +134,15 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
   const areas = createAreas({ ctx, log, base, presences, others, shareOf, now, isMe })
-  const claims = createClaims({ conflictPairs, mine, log, ctx, liveText, baseFor, now })
+  const claims = createClaims({ conflictPairs, mine, log, ctx, liveText, baseFor })
   const scheduleInboxWrite = () => primaryHooks?.scheduleWrite()
   const inboxServices = createInbox({ seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded })
   const prs = createPrs({ ctx, presences, log, now })
   const share = createShare()
   const join = createJoin({ ctx, log, doJoin, doLeave, seen, rooms, now, presences, runningWorkers: s => rooms.occupiedWorkers(s) })
   const workers = createWorkerRuntime({ ctx, rooms, doJoin, doLeave, seen, log, cleanupMine: join.cleanupMine, now })
-  runtime = {
+  const company = (s: Session) => hasCompany(s, workers.runningWorkers(s).map(r => r.w), now())
+  const state: HandlerState = {
     ...workers,
     ...join,
     ...share,
@@ -153,21 +151,21 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ...claims,
     ...areas,
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, 
-    hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), others, presences,
+    hasCompany: company, others, presences,
     shareOf, withheld, setPresence, base, baseFor, baseText, liveText, lines, 
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite,
     upgraded, conflictPairs,
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
-    clearStale: (s: Session) => { runtime.evictStale(s); return runtime.cleanupMine(s, 'stale from an earlier session') },
+    clearStale: (s: Session) => { join.evictStale(s); return state.cleanupMine(s, 'stale from an earlier session') },
     async shutdown() {
       const s = ctx.getSession()
       if (!s) return
-      const running = (await Promise.all(runtime.runningWorkers(s).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
+      const running = (await Promise.all(state.runningWorkers(s).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
       const cancellation = new AbortController()
       const pending = new Set(running.map(r => r.w.tag))
       const stops = running.map(async r => {
-        try { await runtime.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended', cancellation.signal) }
+        try { await state.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended', cancellation.signal) }
         catch (e) { log(`shutdown dismissal failed for ${r.w.tag}: ${e instanceof Error ? e.message : String(e)}`) }
         finally { pending.delete(r.w.tag) }
       })
@@ -183,18 +181,18 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
           for (const tag of pending) log(`shutdown dismissal timed out for ${tag}; worker record kept for restart`)
         }
       }
-      await runtime.closeWorkersRoom().catch(() => {})
-      try { runtime.cleanupMine(s, 'session ended') } catch { /* best effort */ }
+      await state.closeWorkersRoom().catch(() => {})
+      try { state.cleanupMine(s, 'session ended') } catch { /* best effort */ }
       rooms.remove(s)
       await doLeave(s)
     },
     async drop(s: Session, reason: string) {
       log(`leaving ${s.roomName}: ${reason}`)
-      try { runtime.cleanupMine(s, reason) } catch { /* best effort */ }
+      try { state.cleanupMine(s, reason) } catch { /* best effort */ }
       rooms.remove(s)
       await doLeave(s)
     },
     async flushConflicts() { await rooms.flush() },
   }
-  return runtime
+  return state
 }

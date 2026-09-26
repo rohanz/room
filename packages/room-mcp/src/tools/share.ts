@@ -64,7 +64,3 @@ export function createShare(): Pick<HandlerState, 'shareLine'> {
     }
   return { shareLine }
 }
-
-export function install(state: HandlerState): void {
-  Object.assign(state, createShare())
-}

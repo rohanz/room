@@ -294,7 +294,3 @@ function compactState(lines: string[], summarizedClaims: number): string {
   if (omitted || summarizedClaims) kept.push(`omitted: ${summarizedClaims} unrelated claim details, ${omitted} state lines; room_state all=true for everything, room_state path=... for a path.`)
   return kept.join('\n')
 }
-
-export function install(state: HandlerState): void {
-  Object.assign(state, createAreas(state))
-}

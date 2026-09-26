@@ -162,8 +162,8 @@ function parsePlans(v: unknown): Plan[] | string {
 }
 
 
-export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' | 'log' | 'ctx' | 'liveText' | 'baseFor' | 'now'>): Pick<HandlerState, 'observeClaims' | 'planChanged' | 'startConflictWatcher'> {
-  const { conflictPairs, mine, log, ctx, liveText, baseFor, now } = deps
+export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' | 'log' | 'ctx' | 'liveText' | 'baseFor'>): Pick<HandlerState, 'observeClaims' | 'planChanged' | 'startConflictWatcher'> {
+  const { conflictPairs, mine, log, ctx, liveText, baseFor } = deps
   const observeClaims = (s: Session) => {
       s.room.claims.observe((ev, tr) => {
         if (tr.local) return
@@ -205,8 +205,4 @@ export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' |
     return watcher
   }
   return { observeClaims, planChanged, startConflictWatcher }
-}
-
-export function install(state: HandlerState): void {
-  Object.assign(state, createClaims(state))
 }

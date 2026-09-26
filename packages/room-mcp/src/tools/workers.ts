@@ -347,7 +347,3 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
   }
   return { myWorkers, workerAlive, ensureWorkersRoom, closeWorkersRoom, runningWorkers, dismissWorker, startWorkersBridge }
 }
-
-export function install(state: HandlerState): void {
-  Object.assign(state, createWorkerRuntime(state))
-}

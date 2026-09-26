@@ -340,7 +340,3 @@ export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | '
       : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
   return { followBranch, evictStale, cleanupMine, serverOf, LOCAL_LOGIN, codeLine }
 }
-
-export function install(state: HandlerState): void {
-  Object.assign(state, createJoin(state))
-}

@@ -412,7 +412,3 @@ export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 
     }
   return { forMe, inbox, describeUsers, waitingOn, upgrade }
 }
-
-export function install(state: HandlerState): void {
-  Object.assign(state, createInbox(state))
-}
