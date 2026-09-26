@@ -16,6 +16,7 @@ import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtif
 import { decideResume, decideRetire, processExited, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from './worker-launch.js'
+import { retireCollected } from './retire.js'
 
 export type Role = 'primary' | 'workers'
 export interface DeliveredResume { delivered: true; reply: string }
@@ -207,7 +208,7 @@ export class Rooms {
           try { await pruneMissingWorkerWorktree(s.dir, w) } catch { continue }
           if (s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
           const retiredAt = Date.now()
-          s.room.retireParticipant(w.name, {
+          retireCollected(s, w, {
             name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
             task: w.task, summary: 'worktree was already gone', files: [], fileCount: 0,
             startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
@@ -230,7 +231,7 @@ export class Rooms {
           catch { continue }
         }
         const retiredAt = Date.now()
-        s.room.retireParticipant(w.name, {
+        retireCollected(s, w, {
           name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
           task: w.task, summary: w.summary ?? '', files, fileCount: files.length, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? done?.at ?? retiredAt, retiredAt, outcome,

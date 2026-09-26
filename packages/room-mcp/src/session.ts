@@ -212,14 +212,29 @@ export function parseServer(raw: string): { server: string; token?: string } {
 const shareMaxCache = new Map<string, ShareLevel>()
 const shareSessions = new Map<string, Set<Session>>()
 /** Track every live session on a server so a learned policy reaches all of them. */
-export function trackServerShare(server: string, session: Session): () => void {
+export async function trackServerShare(server: string, session: Session): Promise<() => void> {
   let sessions = shareSessions.get(server)
   if (!sessions) { sessions = new Set(); shareSessions.set(server, sessions) }
   sessions.add(session)
-  return () => {
+  const untrack = () => {
     sessions!.delete(session)
     if (!sessions!.size) shareSessions.delete(server)
   }
+  // A join can spend time resolving its identity and seeding before it registers.
+  // Apply the policy known now, including any ceiling learned during that gap.
+  try {
+    for (;;) {
+      const max = shareMaxCache.get(server) ?? session.shareMax
+      session.shareMax = max
+      const level = clampShare(session.shareRequested, max)
+      if (session.daemon.share !== level) await session.daemon.setShare(level)
+      if (shareMaxCache.get(server) === undefined || shareMaxCache.get(server) === max) break
+    }
+  } catch (error) {
+    untrack()
+    throw error
+  }
+  return untrack
 }
 /** The server's sharing ceiling. Unknown results use the local choice and are retried. */
 export async function serverShareMax(server: string, fallback: ShareLevel = 'intent', fetcher: typeof serverFetch = serverFetch, refresh = false): Promise<ShareLevel> {
@@ -304,7 +319,7 @@ async function reserveAutoName(dir: string, room: string, name: string, worktree
 }
 
 /** Resolve identity before roomd can publish any overlays under it. The probe never publishes a user. */
-export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string; refreshRuntime: () => void }> {
+export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string, shareCeiling?: () => ShareLevel): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string; refreshRuntime: () => void }> {
   let name = options.name, label = options.label
   let autoTagNote: string | undefined
   let releaseName: (() => void) | undefined
@@ -365,7 +380,7 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
     }
   }
   let daemon: Roomd
-  try { daemon = await startRoomd({ ...options, name, label, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) }) }
+  try { daemon = await startRoomd({ ...options, name, label, shareCeiling, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) }) }
   catch (e) { releaseName?.(); throw e }
   if (releaseName) {
     const stop = daemon.stop.bind(daemon)
@@ -450,7 +465,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await serverShareMax(server, shareRequested)
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const { daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag)
+  const { daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag, () => shareMaxCache.get(server) ?? shareMax)
   const view = await viewToken(server, roomName, creds)
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
@@ -472,8 +487,10 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     ...(token ? { token } : {}),
     ...(config.room ? { pinnedRoom: true } : {}),
   }
+  let untrackShare: () => void
+  try { untrackShare = await trackServerShare(server, session) }
+  catch (error) { graph.stop(); await daemon.stop(); throw error }
   trackConnection(session)
-  const untrackShare = trackServerShare(server, session)
   const stop = session.daemon.stop.bind(session.daemon)
   session.daemon.stop = async () => { try { await stop() } finally { untrackShare() } }
   let refreshing = false

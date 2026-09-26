@@ -223,8 +223,9 @@ export class Bridge {
     const mirrored = this.team.room.claims.get(teamId)
     if (!local || !mirrored) return
     const { id: _id, at: _at, anchor: _anchor, ...rest } = local as Claim & { anchor?: unknown }
+    const { anchor: _mirrorAnchor, ...mirrorRest } = mirrored
     this.team.room.doc.transact(() => this.team.room.claims.set(teamId, {
-      ...mirrored, ...rest, id: teamId, at: mirrored.at, by: this.team.me.name, byKind: this.team.me.kind,
+      ...mirrorRest, ...rest, id: teamId, at: mirrored.at, by: this.team.me.name, byKind: this.team.me.kind,
       intent: `[${mirrored.mirrorOf}] ${local.intent}`, mirrorOf: mirrored.mirrorOf,
     }), this)
   }

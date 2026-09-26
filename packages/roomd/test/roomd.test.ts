@@ -767,6 +767,25 @@ describe('sharing levels', () => {
   const presence = (d: Roomd) => d.provider.awareness.getLocalState() as { share?: string; status?: string }
   afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
 
+  it('checks a changed ceiling before the first overlay publish', async () => {
+    const dir = await makeRepo({ 'a.txt': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'a.txt'), 'private edit\n')
+    let ceiling: 'full' | 'intent' = 'full'
+    let release!: () => void
+    let parked!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const reached = new Promise<void>(resolve => { parked = resolve })
+    const pending = start({ room: room(), dir, name: 'Late', share: 'full', shareCeiling: () => ceiling,
+      beforePublishWrite: async () => { parked(); await held },
+    })
+    await reached
+    ceiling = 'intent'
+    release()
+    const daemon = await pending
+    expect(daemon.roomDoc.changedPaths('Late')).toEqual([])
+    expect(daemon.share).toBe('intent')
+  })
+
   it('parseShare and clampShare', () => {
     expect(parseShare('Declared ')).toBe('declared')
     expect(parseShare('everything')).toBeUndefined()
@@ -863,6 +882,20 @@ describe('sharing levels', () => {
     expect(restarted.roomDoc.text('private.py', 'Decl')).toBeUndefined()
     const teammate = await start({ room: url, dir: await cloneRepo(dir), name: 'Peer', share: 'intent' })
     expect(teammate.roomDoc.text('app.py', 'Decl')).toBe('finished\n')
+  })
+
+  it('does not publish server A retained output when the same checkout joins server B', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'finished\n')
+    const name = `same-${Math.random().toString(36).slice(2, 8)}`
+    const first = await start({ room: `ws://server-a/${name}`, dir, name: 'Decl', share: 'declared' })
+    first.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'app', summary: 'finish app', paths: ['app.py'] })
+    await waitFor(() => first.roomDoc.text('app.py', 'Decl') === 'finished\n')
+    first.roomDoc.clearScope('Decl')
+    await first.stop()
+    const second = await start({ room: `ws://server-b/${name}`, dir, name: 'Decl', share: 'declared' })
+    expect(second.roomDoc.changedPaths('Decl')).toEqual([])
+    expect(second.roomDoc.text('app.py', 'Decl')).toBeUndefined()
   })
 
   it('does not publish retained declared output into a different room from the same checkout', async () => {

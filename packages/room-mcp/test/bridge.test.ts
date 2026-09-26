@@ -136,6 +136,20 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     expect(t.team.b.openClaims()).toEqual([])
   })
 
+  it('keeps a moved worker mirror on the worker range when the lead edits its overlay', () => {
+    const t = setup()
+    t.team.a.setOverlay(lead.name, 'app.py', 'lead one\nlead two\nlead three\n')
+    t.local.b.setOverlay(worker.name, 'app.py', 'worker one\nworker two\nworker three\n')
+    const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'move' })
+    const id = t.team.b.openClaims()[0].id
+    t.local.b.moveClaim(c.id, 2, 2)
+    expect(t.team.b.claims.get(id)).toMatchObject({ from: 2, to: 2, mirrorOf: 'money' })
+    expect(t.team.b.openClaims()[0]).toMatchObject({ from: 2, to: 2 })
+    t.team.a.setOverlay(lead.name, 'app.py', 'inserted\nlead one\nlead two\nlead three\n')
+    expect(t.team.b.openClaims()[0]).toMatchObject({ from: 2, to: 2 })
+    expect(t.team.b.claims.get(id)?.anchor).toBeUndefined()
+  })
+
   it('stop() removes the mirrored claims and stops relaying', () => {
     const t = setup()
     t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'bump x' })

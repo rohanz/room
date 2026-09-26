@@ -3,7 +3,7 @@ import path from 'node:path'
 import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
-import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath, worktreeGitDirSync } from '@room/roomd'
+import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidPresent, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../workers.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
@@ -11,6 +11,7 @@ import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFi
 import { releaseClaimsOnDone } from './claims.js'
 import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import type { Session } from '../session.js'
+import { retireCollected } from '../retire.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
@@ -28,12 +29,6 @@ const collectQueues = new Map<string, { tail: Promise<void>; tag: string }>()
 
 /** Only signal processes after confirming this is still the worker's owned git worktree. */
 const ownershipRecords = (s: Session) => [...s.room.retiredWorkers(), ...s.room.workers.values()]
-
-/** Every collection retirement closes the worker's retained publisher, even if its checkout is kept. */
-function retireCollected(s: Session, w: Worker, record: RetiredWorker): void {
-  if (fs.existsSync(path.join(w.dir, '.git'))) fs.rmSync(path.join(worktreeGitDirSync(w.dir), 'room-retained-declared.json'), { force: true })
-  s.room.retireParticipant(w.name, record)
-}
 
 async function stopOwnedWorktreeProcesses(leadDir: string, w: Worker, leadName: string, workers: Iterable<Worker | RetiredWorker>, errors?: string[], probe?: ProcessProbe, list?: CwdProcessLister): Promise<string[]> {
   if (!decideStop(await workerRealState(leadDir, w, { ownership: true, leadName, workers })).cwd) return []

@@ -132,7 +132,7 @@ it('applies a newly learned ceiling to both sessions on one server without widen
   const a = setup(), b = setup()
   const one = await a.joiner({ server, share: 'full' })
   const two = await b.joiner({ server, share: 'full' })
-  const stopA = trackServerShare(server, one), stopB = trackServerShare(server, two)
+  const stopA = await trackServerShare(server, one), stopB = await trackServerShare(server, two)
   cleanup.push(stopA, stopB)
   const fetcher = vi.fn().mockRejectedValueOnce(new Error('offline'))
     .mockResolvedValueOnce(new Response(JSON.stringify({ shareMax: 'intent' })))
@@ -147,6 +147,26 @@ it('applies a newly learned ceiling to both sessions on one server without widen
   expect([one.daemon.share, two.daemon.share]).toEqual(['intent', 'intent'])
   await serverShareMax(server, 'full', fetcher, true)
   expect([one.daemon.share, two.daemon.share]).toEqual(['declared', 'declared'])
+})
+
+it('clamps a session at registration when another session learned intent during its start', async () => {
+  const server = 'ws://late-registration-ceiling'
+  let continueStart!: () => void
+  const held = new Promise<void>(resolve => { continueStart = resolve })
+  const a = setup()
+  const starting = (async () => {
+    const fallback = await serverShareMax(server, 'full', vi.fn(async () => { throw new Error('offline') }))
+    await held // name resolution and daemon startup completed after the other session learned the ceiling
+    const session = await a.joiner({ server, share: fallback })
+    const untrack = await trackServerShare(server, session)
+    cleanup.push(untrack)
+    return session
+  })()
+  await serverShareMax(server, 'full', vi.fn(async () => new Response(JSON.stringify({ shareMax: 'intent' }))))
+  continueStart()
+  const session = await starting
+  expect(session.shareMax).toBe('intent')
+  expect(session.daemon.share).toBe('intent')
 })
 
 it('delivers automatic-join disclosure on the first tool reply only', async () => {

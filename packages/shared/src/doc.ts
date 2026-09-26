@@ -353,13 +353,14 @@ export class RoomDoc {
 
   addClaim(input: Omit<Claim, 'id' | 'at' | 'anchor'>, origin?: unknown): Claim {
     const text = this.overlayText(input.by, input.path)
-    const anchor = text ? makeAnchor(text, input.from, input.to) : undefined
+    const anchor = text && !input.mirrorOf ? makeAnchor(text, input.from, input.to) : undefined
     const claim: Claim = { ...input, id: newId('c_'), at: Date.now(), ...(anchor ? { anchor } : {}) }
     this.doc.transact(() => { this.claims.set(claim.id, claim) }, origin)
     return claim
   }
 
   claimRange(claim: Claim): { from: number; to: number } {
+    if (claim.mirrorOf) return { from: claim.from, to: claim.to }
     const text = this.overlayText(claim.by, claim.path)
     if (!text || !claim.anchor) return { from: claim.from, to: claim.to }
     try {
@@ -390,7 +391,7 @@ export class RoomDoc {
     if (!claim) return undefined
     const text = this.overlayText(claim.by, claim.path)
     const { anchor: _oldAnchor, ...rest } = claim
-    const next: Claim = { ...rest, from, to, ...(claimedHash !== undefined ? { claimedHash } : {}), ...(text ? { anchor: makeAnchor(text, from, to) } : {}) }
+    const next: Claim = { ...rest, from, to, ...(claimedHash !== undefined ? { claimedHash } : {}), ...(text && !claim.mirrorOf ? { anchor: makeAnchor(text, from, to) } : {}) }
     this.doc.transact(() => { this.claims.set(id, next) }, origin)
     return next
   }

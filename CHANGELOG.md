@@ -8,6 +8,10 @@ Behaviour fixes from the 2026-09-26 roadmap triage, for a three-person trial on 
 - The bridge delivers unaddressed team notify and interrupt notes once to each local worker, without forwarding fyi or echoing them into the team room.
 - A newly learned server sharing ceiling updates every live session on that server. Failed refreshes retain the last known ceiling.
 - Retained declared paths are bound to their room and participant, and collection clears their record even when a worker worktree is kept.
+- Retained declared paths now also bind to the normalized server URL, without credentials. Switching the same checkout and identity to another server cannot republish the previous server's paths.
+- Worker claim mirrors store the worker's range without a lead overlay anchor; moving a worker claim and editing the lead's overlay no longer shifts its displayed mirror.
+- A session applies the latest known server sharing ceiling at registration and checks it through daemon startup before publishing file text, including when another session learns a narrower ceiling mid-start.
+- Automatic worker retirement uses the same retained-path cleanup as manual collection, including dismissed dirty workers whose worktrees remain.
 
 - **Claims follow their code when HEAD moves** (triage item 1). After your commit or pull, the daemon finds each of your own open claims' lines, by the digest recorded when you claimed them, exactly once in the new file and moves the range. If you edited those lines, or they are gone or appear more than once, it releases the claim and tells you (re-claim to keep going): "released your claim on <path>:<a>-<b>: that code changed in <commit>". Claims record a SHA-256 digest of the covered lines, never the source text. Other participants' claims are never touched.
 - **A note to nobody reaches everyone** (item 2). An unaddressed note at notify or interrupt priority goes to every other participant's inbox; a broadcast notify is read on their next action and a broadcast interrupt wakes them. fyi stays feed-only, and the sender does not receive its own note.

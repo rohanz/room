@@ -132,6 +132,8 @@ export interface RoomdOptions {
   totalBudget?: number
   /** Sharing level; default 'full'. */
   share?: ShareLevel
+  /** Current server ceiling, checked again before each overlay write during startup. */
+  shareCeiling?: () => ShareLevel
   /** Paths whose files are published under 'declared'. Default: the person's scope in the room doc, kept in sync as it changes. */
   scopePaths?: string[]
   /** In-memory transport override for tests that cannot open loopback sockets. */
@@ -259,6 +261,7 @@ class Daemon implements Roomd {
   private readonly skips = { size: new Set<string>(), budget: new Set<string>(), ignore: new Set<string>(), share: new Set<string>() }
   private readonly roomUrl: string
   share: ShareLevel
+  private readonly shareCeiling?: () => ShareLevel
   /** Explicit scope paths (option / setShare); when unset, the person's scope in the room doc decides. */
   private explicitScopePaths?: string[]
   /** Exact paths already published while declared; task scope may end before teammates collect them. */
@@ -322,7 +325,8 @@ class Daemon implements Roomd {
     this.busKeep = Math.max(0, options.busKeep ?? (Number.isFinite(envKeep) ? envKeep : 2000))
     this.busTrimMs = options.busTrimMs ?? 60_000
     this.skipLogMs = options.skipLogMs ?? 10_000
-    this.share = options.share ?? 'full'
+    this.shareCeiling = options.shareCeiling
+    this.share = clampShare(options.share ?? 'full', this.shareCeiling?.() ?? 'full')
     this.explicitScopePaths = options.scopePaths
     this.onScanned = options.onScanned
     this.beforePublishWrite = options.beforePublishWrite
@@ -354,7 +358,7 @@ class Daemon implements Roomd {
     this.branch = branch
     this.base = base
     this.tracked = tracked
-    this.retainedDeclaredPaths = new RetainedDeclaredPaths(this.dir, this.roomName, this.name)
+    this.retainedDeclaredPaths = new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl)
 
     await this.step('sync', () => this.waitForSync())
     // The daemon owns base receipts. Observe before the initial sweep so a notice
@@ -433,6 +437,7 @@ class Daemon implements Roomd {
   // ---- sharing level ----------------------------------------------------
 
   async setShare(level: ShareLevel, scopePaths?: string[]): Promise<void> {
+    level = clampShare(level, this.shareCeiling?.() ?? 'full')
     const before = this.share
     if (before !== level) this.retainedDeclaredPaths.clear()
     this.share = level
@@ -461,6 +466,12 @@ class Daemon implements Roomd {
 
   /** May this file's text (or its deletion) be published at the current level? */
   private isShared(relpath: string): boolean {
+    const allowed = clampShare(this.share, this.shareCeiling?.() ?? 'full')
+    if (allowed !== this.share) {
+      this.retainedDeclaredPaths.clear()
+      this.share = allowed
+      this.setStatus(this.currentStatus())
+    }
     if (this.share === 'full') return true
     if (this.share === 'intent') return false
     return this.retainedDeclaredPaths.has(relpath) || scopeCovers({ paths: this.scopePaths() }, relpath)
