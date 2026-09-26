@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.19
+
+Refactor, no behaviour change (audit 2026-09-24 finding 28, first half).
+
+- Tool services are built by typed factories: areas, claims, inbox, PRs, sharing, join and worker runtime. `tools/state.ts` composes them in dependency order in one place. `HandlerState` no longer starts with about 40 `undefined!` placeholders filled by ordered `install()` calls, so typechecking proves every service exists before a handler uses it. Orphaned comments from the old monolith are removed.
+
 ## 0.16.18
 
 Fixes from the Astra review of 0.16.17.

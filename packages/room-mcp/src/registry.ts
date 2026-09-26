@@ -77,7 +77,7 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
       : stopReason ? { status: 'dismissed' as const } : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
   }, w.id)
   if (!done) {
-    // tools/context constructs Rooms: defer this dependency until all tool definitions are loaded.
+    // tools/state constructs Rooms: defer this dependency until all tool definitions are loaded.
     const { releaseClaimsOnDone } = await import('./tools/claims.js')
     const current = s.room.workers.get(w.tag)
     if (!current || current.id !== w.id || current.gen !== w.gen || current.startedAt !== w.startedAt) return
