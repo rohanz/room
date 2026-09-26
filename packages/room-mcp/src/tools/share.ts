@@ -53,7 +53,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function install(state: HandlerState): void {
+export function createShare(): Pick<HandlerState, 'shareLine'> {
   const shareLine = (s: Session): string => {
       const level = s.daemon.share ?? s.shareRequested ?? 'intent'
       const clamped = s.shareRequested && s.shareRequested !== level ? ` (asked for ${s.shareRequested}; the server caps sharing at ${s.shareMax}, ROOM_SHARE_MAX)` : ''
@@ -62,5 +62,9 @@ export function install(state: HandlerState): void {
       const retained = level === 'declared' && !secondary ? s.daemon.retainedDeclared?.() ?? [] : []
       return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${secondary ?? sharingDescription(level)}${clamped}${held.length && !secondary ? `; withheld ${held.length} changed file(s): ${held.join(', ')}` : ''}${retained.length ? `; still shared from earlier: ${retainedList(retained)}` : ''}`
     }
-  Object.assign(state, { shareLine })
+  return { shareLine }
+}
+
+export function install(state: HandlerState): void {
+  Object.assign(state, createShare())
 }

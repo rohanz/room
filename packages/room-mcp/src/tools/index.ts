@@ -12,7 +12,7 @@ import { defs as messagingDefs, handlers as messagingHandlers, WAIT_SIGNAL } fro
 import { defs as collectDefs, handlers as collectHandlers } from './collect.js'
 import { defs as fileDefs, handlers as fileHandlers } from './files.js'
 import { defs as workerDefs, handlers as workerHandlers, install as installWorkers } from './workers.js'
-import { defs as shareDefs, handlers as shareHandlers, install as installShare } from './share.js'
+import { defs as shareDefs, handlers as shareHandlers } from './share.js'
 import { defs as prDefs, handlers as prHandlers } from './prs.js'
 
 export interface Tools {
@@ -49,7 +49,6 @@ export function createTools(ctx: ToolCtx): Tools {
   if (initial) trackConnection(initial, state.now)
   installJoin(state)
   installWorkers(state)
-  installShare(state)
   let autoJoin: AutoJoinHandle | undefined
   const notJoined = () => autoJoin?.failure ? `error: not in a room. ${autoJoin.failure}`
     : ctx.config?.server === LOCAL ? 'error: not in the local room; room_join to join it.'
