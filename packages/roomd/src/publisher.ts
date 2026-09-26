@@ -83,7 +83,7 @@ export class Publisher {
   private reconcileDirty = false
   private readonly inFlightPaths = new Map<string, number>()
   private sharingDirty = false
-  /** Exact paths published while declared; scope may end before teammates collect them. */
+  /** Changed paths whose declared scope ended; they stay shared while they differ from base. */
   private retainedDeclaredPaths: Set<string> = new Set<string>()
   retainLeavingScope(oldPaths: string[], nextPaths: string[]): void {
     if (!oldPaths.length || this.host.publishUnder) return

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.21
+
+Refactor of the daemon's publication path. The only intended behaviour change is that each failure is logged once.
+
+- Publication moved from the `Daemon` class into `roomd/src/publisher.ts`: reconciliation, per-path publication, resharing, base-text writes, declared retention, in-flight tracking and failure retry. `index.ts` drops from 1,432 to about 1,100 lines, and the daemon keeps lifecycle, provider, presence, watcher and HEAD polling.
+- One pure `eligibility(facts)` decides whether a path may be shared: ignore rules, safe path, sharing level, scope or retention, size, budget. Publication and resharing both use it, with table tests.
+- The publication invariant is written down: eligible paths converge to disk state against HEAD, or against the carried baseline for carried untracked files. HEAD is checked once per batch and reseeded by polling. Stopped and sharing-generation guards stop late writes.
+- Each failed reconciliation has one reporting owner. A failure used to be logged twice, once where it was caught and once in the work queue. Retries continue when the same error object or a non-Error value is thrown again.
+- Sharing-level helpers moved to `roomd/src/share-level.ts`. `roomd` has no import cycles.
+
 ## 0.16.20
 
 Refactor, no behaviour change (audit 2026-09-24 finding 28, second half).
