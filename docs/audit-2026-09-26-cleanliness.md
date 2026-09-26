@@ -22,7 +22,7 @@ Verification: the eight-file focused Vitest run failed before executing tests be
 
 **Reproduced:** Using the actual discard and dismissal implementations with an injected changing probe, dismissal posted “left running, not stopped,” while discard returned “stopped w” and retired the record. Checkout deletion was not exercised.
 
-### 2. Resumed follow-ups still have two delivery paths — FIXED in 0.16.9
+### 2. Resumed follow-ups use prompt delivery and a receipted timeline copy — FIXED in 0.16.9
 
 **Severity: P2 — duplicate instructions.**
 
@@ -32,7 +32,7 @@ Verification: the eight-file focused Vitest run failed before executing tests be
 
 **Consequence:** The resumed agent can receive the same instruction again through its inbox, potentially repeating work or interpreting it as another request.
 
-**Smallest clean change:** Make the bus message the sole substantive instruction; use the resume prompt only to direct the worker to its inbox. Preserve the no-post-on-launch-failure behavior. Test prompt content and recipient inbox delivery together.
+**Fix:** Carry the follow-up text in the resume prompt. After a successful launch, post the bus copy for the timeline and record the resumed worker's per-name seen receipt in the same transaction, before any inbox or wake observer can handle it. A failed launch posts nothing. Regression tests cover the prompt, worker tools, hook snapshot and wake, lead timeline, and launch failure.
 
 **Reproduced:** A handler probe captured the follow-up as the resume argument and found identical text in an unreceipted bus message. Duplicate action by a live host remains inferred.
 

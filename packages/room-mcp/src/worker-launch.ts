@@ -28,7 +28,7 @@ interface Policy {
 }
 type Command =
   | { mode: 'fresh'; task: string; links: string[]; carriedPaths?: string[]; sessionId?: string }
-  | { mode: 'resume'; sessionId: string; oldPort?: number }
+  | { mode: 'resume'; sessionId: string; followUp: string; oldPort?: number }
 
 export interface WorkerLaunchResult {
   proc: SpawnedProcess; port: number; env: Record<string, string>; nice: number; logFile: string
@@ -59,7 +59,7 @@ export function launchWorkerProcess(policy: Policy, command: Command, lease: Wor
       ? workerPrompt(policy.lead, tag, command.task, { threads: policy.budget.threads,
         memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort: policy.effort,
         link: command.links, carriedPaths: command.carriedPaths, port })
-      : `Read your Room inbox with room_state or room_wait for the follow-up from your lead, then act on that message.${portChanged ? `\n\nYour dev-server port is ${port} (PORT=${port}).` : ''}`
+      : `${command.followUp}${portChanged ? `\n\nYour dev-server port is ${port} (PORT=${port}).` : ''}`
     let maxBudgetUsd: string | undefined
     try { maxBudgetUsd = workerMaxBudget() }
     catch (e) { throw new WorkerLaunchError('budget', String(e instanceof Error ? e.message : e)) }

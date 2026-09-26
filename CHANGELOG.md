@@ -3,7 +3,7 @@
 ## 0.16.9
 
 - Discard rechecks process ownership after dismissal and exit waiting; an unverifiable live worker keeps its record and worktree.
-- Resumed workers read the follow-up from their Room inbox. The launch prompt contains only inbox guidance, and launch failure leaves no bus copy.
+- Resumed workers receive the follow-up in the launch prompt. After launch, Room posts one timeline copy with the worker's seen receipt already recorded, so its inbox, hooks and wakes do not redeliver it; launch failure leaves no bus copy.
 - Resume stops waiting with a verification error when ownership becomes unknown, without spinning through microtasks.
 - Merge previews with a test command reuse the combined tree's disk participant selection, so shared team overlays work even when a local worker directory exists.
 - Spawn and resume use one occupied-slot rule that counts unreadable live worker PIDs.

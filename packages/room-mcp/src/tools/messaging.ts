@@ -113,36 +113,41 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.type === 'answer' && (typeof a.inReplyTo !== 'string' || !a.inReplyTo)) return 'error: answer requires inReplyTo'
       if (a.type === 'answer' && !question?.from && !to) return 'error: answer requires to (could not infer from inReplyTo)'
       if (!['changed', 'question', 'answer', 'note'].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`
-      let msg: Msg
+      let msg!: Msg
       const notes: string[] = []
       const addressedWorker = to && s.room.workerOf(to)
       let restarted = false
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
-        const result = await rooms.resumeWorker(s, addressedWorker, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
+        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
         if (result.startsWith('error:')) return result
         restarted = true
         notes.push(result)
       }
-      switch (a.type) {
-        case 'changed': {
-          const paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
-          const symbols = Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
-          msg = s.room.post<ChangedMsg>(s.me, withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }))
-          notes.push(...await upgrade(s, msg, paths, symbols))
-          break
+      let paths: string[] = [], symbols: string[] = []
+      // Publish the timeline entry and its prompt-delivery receipt together. Bus
+      // observers must never see a resumed follow-up as unread by the worker.
+      s.room.doc.transact(() => {
+        switch (a.type) {
+          case 'changed': {
+            paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
+            symbols = Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
+            msg = s.room.post<ChangedMsg>(s.me, withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }))
+            break
+          }
+          case 'question':
+            msg = s.room.post<QuestionMsg>(s.me, withPr({ type: 'question', text, to: to! }))
+            break
+          case 'answer': {
+            msg = s.room.post<AnswerMsg>(s.me, withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: a.inReplyTo as string, text }))
+            break
+          }
+          case 'note':
+            msg = s.room.post<NoteMsg>(s.me, withPr({ type: 'note', text, ...(to ? { to } : {}) }))
+            break
         }
-        case 'question':
-          msg = s.room.post<QuestionMsg>(s.me, withPr({ type: 'question', text, to: to! }))
-          break
-        case 'answer': {
-          msg = s.room.post<AnswerMsg>(s.me, withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: a.inReplyTo as string, text }))
-          break
-        }
-        case 'note':
-          msg = s.room.post<NoteMsg>(s.me, withPr({ type: 'note', text, ...(to ? { to } : {}) }))
-          break
-        default: return `error: type must be changed|question|answer|note (got ${String(a.type)})`
-      }
+        if (restarted) s.room.markSeen(to!, [msg.id])
+      })
+      if (msg.type === 'changed') notes.push(...await upgrade(s, msg, paths, symbols))
       const notice = msg.to && !restarted ? recipientNotice(s, msg.to) : undefined
       if (notice) notes.push(msg.type === 'question' && notice.terminal ? unavailableQuestion(s, msg.id)! : notice.text)
       if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
