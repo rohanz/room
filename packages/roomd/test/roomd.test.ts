@@ -799,7 +799,7 @@ describe('sharing levels', () => {
     expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['a.py', 'b.py'])
   })
 
-  it('withdraws a deletion mark and base text left after an overlay was reverted', async () => {
+  it('withdraws a deletion mark and collects base text when an overlay is reverted', async () => {
     const dir = await makeRepo({ 'deleted.py': 'old\n', 'reverted.py': 'old\n' })
     const daemon = await start({ room: room(), dir, name: 'Withdraw' })
     const base = daemon.roomDoc.baseOf('Withdraw')!
@@ -807,9 +807,10 @@ describe('sharing levels', () => {
     await waitFor(() => daemon.roomDoc.text('reverted.py', 'Withdraw') === 'changed\n')
     await fsp.writeFile(path.join(dir, 'reverted.py'), 'old\n')
     await waitFor(() => !daemon.roomDoc.changedPaths('Withdraw').includes('reverted.py'))
-    expect(daemon.roomDoc.baseText(base, 'reverted.py')).toBe('old\n')
+    expect(daemon.roomDoc.baseText(base, 'reverted.py')).toBeUndefined()
     await fsp.unlink(path.join(dir, 'deleted.py'))
     await waitFor(() => daemon.roomDoc.deletedFor('Withdraw').has('deleted.py'))
+    expect(daemon.roomDoc.baseTextOwners(base, 'deleted.py')).toEqual(['Withdraw'])
     await daemon.setShare('intent')
     expect(daemon.roomDoc.deletedFor('Withdraw').has('deleted.py')).toBe(false)
     expect(daemon.roomDoc.baseText(base, 'reverted.py')).toBeUndefined()
@@ -829,6 +830,96 @@ describe('sharing levels', () => {
     expect(daemon.roomDoc.changedPaths('Advance')).toEqual([])
     expect(daemon.roomDoc.baseText(oldBase, 'a.py')).toBeUndefined()
     expect(daemon.roomDoc.baseText(daemon.base, 'b.py')).toBeUndefined()
+  })
+
+  it('collects a previous process’s base text after restart and narrowing', async () => {
+    const dir = await makeRepo({ 'a.py': 'base\n' })
+    const url = room()
+    const keeper = await start({ room: url, dir: await cloneRepo(dir), name: 'Keeper', share: 'intent' })
+    const first = await start({ room: url, dir, name: 'Restart' })
+    await fsp.writeFile(path.join(dir, 'a.py'), 'edit\n')
+    await waitFor(() => keeper.roomDoc.text('a.py', 'Restart') === 'edit\n')
+    const base = first.base
+    await first.stop()
+    const second = await start({ room: url, dir, name: 'Restart', share: 'intent' })
+    expect(second.roomDoc.changedPaths('Restart')).toEqual([])
+    expect(keeper.roomDoc.baseText(base, 'a.py')).toBeUndefined()
+  })
+
+  it('keeps a shared base text until its last participant withdraws', async () => {
+    const origin = await makeRepo({ 'a.py': 'base\n' })
+    const url = room()
+    const alice = await start({ room: url, dir: await cloneRepo(origin), name: 'Alice' })
+    const bob = await start({ room: url, dir: await cloneRepo(origin), name: 'Bob' })
+    await fsp.writeFile(path.join(alice.dir, 'a.py'), 'alice\n')
+    await fsp.writeFile(path.join(bob.dir, 'a.py'), 'bob\n')
+    await waitFor(() => alice.roomDoc.text('a.py', 'Alice') === 'alice\n' && alice.roomDoc.text('a.py', 'Bob') === 'bob\n')
+    const base = alice.base
+    expect(alice.roomDoc.baseTextOwners(base, 'a.py')).toEqual(['Alice', 'Bob'])
+    await alice.setShare('intent')
+    expect(bob.roomDoc.baseText(base, 'a.py')).toBe('base\n')
+    expect(bob.roomDoc.baseTextOwners(base, 'a.py')).toEqual(['Bob'])
+  })
+
+  it('bounds base references through repeated edit and commit cycles', async () => {
+    const dir = await makeRepo({ 'a.py': 'base\n' })
+    const daemon = await start({ room: room(), dir, name: 'Cycles', basePollMs: 20 })
+    for (let i = 0; i < 3; i++) {
+      const base = daemon.base
+      await fsp.writeFile(path.join(dir, 'a.py'), `edit ${i}\n`)
+      await waitFor(() => daemon.roomDoc.text('a.py', 'Cycles') === `edit ${i}\n`)
+      expect(daemon.roomDoc.baseTextOwners(base, 'a.py')).toEqual(['Cycles'])
+      sh(dir, ['add', 'a.py']); sh(dir, ['commit', '-qm', `edit ${i}`])
+      await waitFor(() => daemon.base !== base && !daemon.roomDoc.changedPaths('Cycles').includes('a.py'))
+      expect(daemon.roomDoc.baseTexts.size).toBe(0)
+      expect(daemon.roomDoc.baseTextRefs.size).toBe(0)
+    }
+  })
+
+  it('retries an allowed file after an old full publish is dropped by a declared ceiling', async () => {
+    const dir = await makeRepo({ 'allowed.py': 'base\n' })
+    let ceiling: 'full' | 'declared' = 'full'
+    let release!: () => void
+    let parked!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const reached = new Promise<void>(resolve => { parked = resolve })
+    let hold = true
+    const daemon = await start({ room: room(), dir, name: 'Allowed', share: 'full', scopePaths: ['allowed.py'], shareCeiling: () => ceiling,
+      beforePublishWrite: async () => { if (hold) { hold = false; parked(); await held } },
+    })
+    await fsp.writeFile(path.join(dir, 'allowed.py'), 'edit\n')
+    await reached
+    ceiling = 'declared'
+    // An unchanged, out-of-scope file can detect the new ceiling while the allowed publish is in flight.
+    // The ceiling callback has no own reshare; the dropped publish must mark reconciliation dirty.
+    expect((daemon as unknown as { isShared(path: string): boolean }).isShared('unchanged.py')).toBe(false)
+    release()
+    await waitFor(() => daemon.roomDoc.text('allowed.py', 'Allowed') === 'edit\n')
+    expect(daemon.roomDoc.baseTextOwners(daemon.base, 'allowed.py')).toEqual(['Allowed'])
+  })
+
+  it('collects a legacy base entry with no live overlay during startup', async () => {
+    const dir = await makeRepo({ 'a.py': 'base\n' })
+    const url = room()
+    const keeper = await start({ room: url, dir: await cloneRepo(dir), name: 'Keeper', share: 'intent' })
+    const base = keeper.base
+    keeper.roomDoc.setBaseText(base, 'a.py', 'base\n')
+    expect(keeper.roomDoc.baseTextRefs.size).toBe(0)
+    await start({ room: url, dir, name: 'Collector', share: 'intent' })
+    expect(keeper.roomDoc.baseText(base, 'a.py')).toBeUndefined()
+  })
+
+  it('adopts a legacy base entry for a surviving overlay during startup', async () => {
+    const origin = await makeRepo({ 'a.py': 'base\n' })
+    const url = room()
+    const keeper = await start({ room: url, dir: await cloneRepo(origin), name: 'Keeper', share: 'intent' })
+    const base = keeper.base
+    keeper.roomDoc.setBaseOf('Legacy', base)
+    keeper.roomDoc.setOverlay('Legacy', 'a.py', 'legacy edit\n')
+    keeper.roomDoc.setBaseText(base, 'a.py', 'base\n')
+    await start({ room: url, dir: origin, name: 'Collector', share: 'intent' })
+    expect(keeper.roomDoc.baseText(base, 'a.py')).toBe('base\n')
+    expect(keeper.roomDoc.baseTextOwners(base, 'a.py')).toEqual(['Legacy'])
   })
 
   it('does not let an old withheld scan remove an overlay after sharing widens', async () => {

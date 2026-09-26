@@ -268,9 +268,8 @@ class Daemon implements Roomd {
   private explicitScopePaths?: string[]
   /** Exact paths already published while declared; task scope may end before teammates collect them. */
   private retainedDeclaredPaths: Set<string> = new Set<string>()
-  /** Base texts this daemon inserted, including keys from earlier HEADs. */
-  private readonly publishedBaseTexts = new Set<string>()
   private sharingGeneration = 0
+  private sharingDirty = false
   private beforePublishWrite?: (relpath: string) => Promise<void>
   private beforeBaseRead?: (relpath: string) => Promise<void>
 
@@ -383,6 +382,7 @@ class Daemon implements Roomd {
     this.setStatus(this.currentStatus())
     await this.refreshShared()
     this.roomDoc.setBaseOf(this.name, this.shared, this)
+    this.roomDoc.reconcileBaseTexts(this)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== this.base) {
       const rel = await gitRelation(this.dir, this.base, roomBase)
@@ -466,9 +466,7 @@ class Daemon implements Roomd {
     this.share = level
     this.setStatus(this.currentStatus())
     const changed = new Set(this.roomDoc.changedPaths(this.name))
-    const paths = new Set(changed)
-    for (const key of this.publishedBaseTexts) paths.add(key.slice(key.indexOf(':') + 1))
-    for (const relpath of paths) {
+    for (const relpath of changed) {
       if (!this.sharedAtCurrentLevel(relpath)) this.withhold(relpath, changed.has(relpath))
     }
   }
@@ -516,14 +514,7 @@ class Daemon implements Roomd {
         this.roomDoc.clearOverlay(this.name, relpath, this)
         this.roomDoc.unmarkDeleted(this.name, relpath, this)
       }
-      for (const key of this.publishedBaseTexts) {
-        if (key.slice(key.indexOf(':') + 1) !== relpath) continue
-        const base = key.slice(0, key.indexOf(':'))
-        if ([...new Set([...this.roomDoc.overlays.keys(), ...this.roomDoc.deleted.keys()])]
-          .some(person => person !== this.name && this.roomDoc.baseOf(person) === base && this.roomDoc.changedPaths(person).includes(relpath))) continue
-        this.roomDoc.baseTexts.delete(key)
-        this.publishedBaseTexts.delete(key)
-      }
+      this.roomDoc.reconcileBaseTexts(this)
     }, this)
     if (had) this.log(`withdrew ${relpath} overlay (sharing ${this.share})`)
     this.retainedDeclaredPaths.delete(relpath)
@@ -535,7 +526,7 @@ class Daemon implements Roomd {
   private withdrawIgnored(relpath: string, reason: string): void {
     const had = this.roomDoc.overlayText(this.name, relpath) !== undefined || (this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false)
     if (had) {
-      this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this) }, this)
+      this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this); this.roomDoc.reconcileBaseTexts(this) }, this)
       this.log(`withdrew ${relpath} (${reason})`)
     }
     this.retainedDeclaredPaths.delete(relpath)
@@ -626,6 +617,7 @@ class Daemon implements Roomd {
         for (const p of this.roomDoc.changedPaths(this.name)) {
           this.roomDoc.clearOverlay(this.name, p, this); this.roomDoc.unmarkDeleted(this.name, p, this)
         }
+        this.roomDoc.reconcileBaseTexts(this)
       }, this)
       this.log(`publishing under ${next} (same watched directory)`)
     } else this.log('publishing watched directory')
@@ -737,6 +729,7 @@ class Daemon implements Roomd {
     this.tracked = await gitTracked(this.dir)
     await this.refreshShared()
     this.roomDoc.setBaseOf(this.name, this.shared, this)
+    this.roomDoc.reconcileBaseTexts(this)
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
     const roomBase = this.roomDoc.meta.base
     if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.maybeAdvance(roomBase, head)
@@ -899,12 +892,25 @@ class Daemon implements Roomd {
       gitBlobInfoMany(this.dir, base, oversized),
     ])
     // One HEAD check per batch: a move since the read is left to pollHead, which reseeds against the new HEAD.
-    if (this.stopped || generation !== this.sharingGeneration || await gitHead(this.dir) !== base || generation !== this.sharingGeneration) return
+    if (this.stopped) return
+    if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
+    if (await gitHead(this.dir) !== base) return
+    if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
     for (const relpath of paths) {
-      if (this.stopped || generation !== this.sharingGeneration) return
+      if (this.stopped) return
+      if (generation !== this.sharingGeneration) { this.markSharingDirty(); return }
       await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs })
       if (this.phase === 'seed') this.onSeedProgress?.()
     }
+  }
+
+  private markSharingDirty(): void {
+    if (this.stopped || this.sharingDirty) return
+    this.sharingDirty = true
+    void this.enqueue(async () => {
+      this.sharingDirty = false
+      await this.resharePaths()
+    })
   }
 
   private abs(relpath: string): string {
@@ -995,148 +1001,153 @@ class Daemon implements Roomd {
   /** `read`: base texts already read at `read.base` (and `read.shared`) with HEAD checked once for the batch (reconcile). */
   private async publishDiskState(relpath: string, read?: { base: string; texts: Map<string, string | undefined>; shared: string; sharedTexts?: Map<string, string | undefined>; blobs?: Map<string, GitBlobInfo | undefined> }): Promise<void> {
     if (this.stopped) return
-    const generation = this.sharingGeneration
-    const sharingChanged = () => generation !== this.sharingGeneration
-    this.choosePublisher()
-    if (this.publishUnder) return
-    this.skips.size.delete(relpath)
-    this.skips.budget.delete(relpath)
-    if (!this.isSafeRoomPath(relpath)) {
-      this.roomDoc.clearOverlay(this.name, relpath, this)
-      this.roomDoc.unmarkDeleted(this.name, relpath, this)
-      this.retainedDeclaredPaths.delete(relpath)
-      return
-    }
-    if (this.batch.deferHot(relpath)) return
-    const publishingBase = this.base, sharedBase = this.shared
-    const batched = read?.base === publishingBase && read.shared === sharedBase && read.texts.has(relpath)
-    const headText = () => batched ? Promise.resolve(read!.texts.get(relpath)) : gitShow(this.dir, publishingBase, relpath)
-    const carried = this.carried()
-    const carriedFile = carried?.untracked.has(relpath) === true
-    /** What the disk is compared with: HEAD's text, or a carried untracked file's carried text (the lead's, not a worker change). */
-    const baseText = async () => {
-      await this.beforeBaseRead?.(relpath)
-      return carriedFile ? baselineText(carried!, relpath, async () => undefined) : headText()
-    }
-    /** The base text published under baseOf: the compared text, unless baseOf is another commit or holds no carried text of its own. */
-    const publishedText = async (compared: string | undefined) => {
-      if (sharedBase !== publishingBase) return batched && read!.sharedTexts ? read!.sharedTexts.get(relpath) : gitShow(this.dir, sharedBase, relpath)
-      return carriedFile && !carried!.carriedCommit ? headText() : compared
-    }
-    const moved = () => publishingBase !== this.base || sharedBase !== this.shared
-    const headMoved = async () => !batched && await gitHead(this.dir) !== publishingBase
-    const oversizedChanged = async () => {
-      const stat = fs.statSync(this.abs(relpath))
-      const cached = this.oversizedCache.get(relpath)
-      const sameFile = cached?.size === stat.size && cached.mtimeMs === stat.mtimeMs
-      if (sameFile && cached.base === publishingBase) {
-        if (!cached.changed) this.skips.size.delete(relpath)
-        return cached.changed
+    try {
+      const generation = this.sharingGeneration
+      const sharingChanged = () => {
+        if (generation === this.sharingGeneration) return false
+        this.markSharingDirty()
+        return true
       }
-      const blob = read?.base === publishingBase && read.blobs?.has(relpath)
-        ? read.blobs.get(relpath) : (await gitBlobInfoMany(this.dir, publishingBase, [relpath])).get(relpath)
-      let hash = sameFile ? cached.hash : undefined
-      if (blob?.size === stat.size && !hash) hash = (await git(this.dir, ['hash-object', '--no-filters', '--', relpath])).trim()
-      const changed = !blob || blob.size !== stat.size || hash !== blob.hash
-      this.oversizedCache.set(relpath, { size: stat.size, mtimeMs: stat.mtimeMs, base: publishingBase, changed, ...(hash ? { hash } : {}) })
-      if (!changed) this.skips.size.delete(relpath)
-      return changed
-    }
-    const exists = fs.existsSync(this.abs(relpath))
-    const beforeText = this.roomDoc.text(relpath, this.name)
-    const beforeDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false
-    let droppedStale = false
-
-    if (!exists) {
-      const base = await baseText()
-      if (sharingChanged()) return
-      const published = base === undefined ? undefined : await publishedText(base)
-      if (sharingChanged()) return
-      if (this.stopped || moved() || await headMoved()) { this.scheduleDisk(relpath, true); return }
-      if (sharingChanged()) return
-      if (published === undefined) {
-        this.roomDoc.doc.transact(() => {
-          this.roomDoc.clearOverlay(this.name, relpath, this)
-          this.roomDoc.unmarkDeleted(this.name, relpath, this)
-        }, this)
+      this.choosePublisher()
+      if (this.publishUnder) return
+      this.skips.size.delete(relpath)
+      this.skips.budget.delete(relpath)
+      if (!this.isSafeRoomPath(relpath)) {
+        this.roomDoc.clearOverlay(this.name, relpath, this)
+        this.roomDoc.unmarkDeleted(this.name, relpath, this)
         this.retainedDeclaredPaths.delete(relpath)
-        droppedStale = beforeText !== undefined || beforeDeleted
+        return
+      }
+      if (this.batch.deferHot(relpath)) return
+      const publishingBase = this.base, sharedBase = this.shared
+      const batched = read?.base === publishingBase && read.shared === sharedBase && read.texts.has(relpath)
+      const headText = () => batched ? Promise.resolve(read!.texts.get(relpath)) : gitShow(this.dir, publishingBase, relpath)
+      const carried = this.carried()
+      const carriedFile = carried?.untracked.has(relpath) === true
+      /** What the disk is compared with: HEAD's text, or a carried untracked file's carried text (the lead's, not a worker change). */
+      const baseText = async () => {
+        await this.beforeBaseRead?.(relpath)
+        return carriedFile ? baselineText(carried!, relpath, async () => undefined) : headText()
+      }
+      /** The base text published under baseOf: the compared text, unless baseOf is another commit or holds no carried text of its own. */
+      const publishedText = async (compared: string | undefined) => {
+        if (sharedBase !== publishingBase) return batched && read!.sharedTexts ? read!.sharedTexts.get(relpath) : gitShow(this.dir, sharedBase, relpath)
+        return carriedFile && !carried!.carriedCommit ? headText() : compared
+      }
+      const moved = () => publishingBase !== this.base || sharedBase !== this.shared
+      const headMoved = async () => !batched && await gitHead(this.dir) !== publishingBase
+      const oversizedChanged = async () => {
+        const stat = fs.statSync(this.abs(relpath))
+        const cached = this.oversizedCache.get(relpath)
+        const sameFile = cached?.size === stat.size && cached.mtimeMs === stat.mtimeMs
+        if (sameFile && cached.base === publishingBase) {
+          if (!cached.changed) this.skips.size.delete(relpath)
+          return cached.changed
+        }
+        const blob = read?.base === publishingBase && read.blobs?.has(relpath)
+          ? read.blobs.get(relpath) : (await gitBlobInfoMany(this.dir, publishingBase, [relpath])).get(relpath)
+        let hash = sameFile ? cached.hash : undefined
+        if (blob?.size === stat.size && !hash) hash = (await git(this.dir, ['hash-object', '--no-filters', '--', relpath])).trim()
+        const changed = !blob || blob.size !== stat.size || hash !== blob.hash
+        this.oversizedCache.set(relpath, { size: stat.size, mtimeMs: stat.mtimeMs, base: publishingBase, changed, ...(hash ? { hash } : {}) })
+        if (!changed) this.skips.size.delete(relpath)
+        return changed
+      }
+      const exists = fs.existsSync(this.abs(relpath))
+      const beforeText = this.roomDoc.text(relpath, this.name)
+      const beforeDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false
+      let droppedStale = false
+
+      if (!exists) {
+        const base = await baseText()
+        if (sharingChanged()) return
+        const published = base === undefined ? undefined : await publishedText(base)
+        if (sharingChanged()) return
+        if (this.stopped || moved() || await headMoved()) { this.scheduleDisk(relpath, true); return }
+        if (sharingChanged()) return
+        if (published === undefined) {
+          this.roomDoc.doc.transact(() => {
+            this.roomDoc.clearOverlay(this.name, relpath, this)
+            this.roomDoc.unmarkDeleted(this.name, relpath, this)
+          }, this)
+          this.retainedDeclaredPaths.delete(relpath)
+          droppedStale = beforeText !== undefined || beforeDeleted
+        } else if (!this.isShared(relpath)) {
+          if (sharingChanged()) return
+          this.withhold(relpath, true)
+          return
+        } else {
+          if (sharingChanged()) return
+          this.skips.share.delete(relpath)
+          this.roomDoc.doc.transact(() => {
+            this.roomDoc.markDeleted(this.name, relpath, this)
+            this.roomDoc.clearOverlay(this.name, relpath, this)
+            this.roomDoc.setBaseText(sharedBase, relpath, published, this)
+          }, this)
+        }
       } else if (!this.isShared(relpath)) {
         if (sharingChanged()) return
-        this.withhold(relpath, true)
+        // Withheld by the sharing level: publish nothing, but remember whether it differs from base.
+        const disk = this.readText(relpath, true)
+        const changed = disk === undefined && this.skips.size.has(relpath)
+          ? await oversizedChanged() : disk !== undefined && disk !== await baseText()
+        if (sharingChanged()) return
+        this.withhold(relpath, changed)
         return
       } else {
         if (sharingChanged()) return
         this.skips.share.delete(relpath)
-        this.roomDoc.doc.transact(() => {
-          this.roomDoc.markDeleted(this.name, relpath, this)
-          this.roomDoc.clearOverlay(this.name, relpath, this)
-        }, this)
-      }
-    } else if (!this.isShared(relpath)) {
-      if (sharingChanged()) return
-      // Withheld by the sharing level: publish nothing, but remember whether it differs from base.
-      const disk = this.readText(relpath, true)
-      const changed = disk === undefined && this.skips.size.has(relpath)
-        ? await oversizedChanged() : disk !== undefined && disk !== await baseText()
-      if (sharingChanged()) return
-      this.withhold(relpath, changed)
-      return
-    } else {
-      if (sharingChanged()) return
-      this.skips.share.delete(relpath)
 
-      const disk = this.readText(relpath)
-      if (disk === undefined) {
-        if (this.skips.size.has(relpath)) await oversizedChanged()
+        const disk = this.readText(relpath)
+        if (disk === undefined) {
+          if (this.skips.size.has(relpath)) await oversizedChanged()
+          if (sharingChanged()) return
+          this.roomDoc.clearOverlay(this.name, relpath, this)
+          this.roomDoc.unmarkDeleted(this.name, relpath, this)
+          this.retainedDeclaredPaths.delete(relpath)
+          return
+        }
+        const base = await baseText()
         if (sharingChanged()) return
-        this.roomDoc.clearOverlay(this.name, relpath, this)
-        this.roomDoc.unmarkDeleted(this.name, relpath, this)
-        this.retainedDeclaredPaths.delete(relpath)
-        return
-      }
-      const base = await baseText()
-      if (sharingChanged()) return
-      const published = disk === base ? undefined : await publishedText(base)
-      await this.beforePublishWrite?.(relpath)
-      if (sharingChanged()) return
-      if (this.stopped || this.publishUnder || !this.isSafeRoomPath(relpath) || moved() || await headMoved()) { this.scheduleDisk(relpath, true); return }
-      if (sharingChanged()) return
-      // The level or scope may have changed while we waited on git: never write text the current level withholds.
-      if (!this.isShared(relpath)) { if (!sharingChanged()) this.withhold(relpath, disk !== base); return }
-      if (sharingChanged()) return
-      if (disk !== base && this.sharedBytes(relpath) + disk.length > this.totalBudget) {
-        if (!this.skips.budget.has(relpath)) { this.skips.budget.add(relpath); this.noteSkip(relpath, `over the ${Math.round(this.totalBudget / 1024)} KB total budget`) }
-        this.roomDoc.clearOverlay(this.name, relpath, this)
-        this.roomDoc.unmarkDeleted(this.name, relpath, this)
-        this.retainedDeclaredPaths.delete(relpath)
-        return
-      }
-      this.skips.budget.delete(relpath)
-      this.roomDoc.doc.transact(() => {
-        this.roomDoc.unmarkDeleted(this.name, relpath, this)
-        if (disk === base) this.roomDoc.clearOverlay(this.name, relpath, this)
-        else {
-          this.roomDoc.setOverlay(this.name, relpath, disk, this)
-          if (disk.length <= this.sizeCap) {
-            const key = `${sharedBase}:${relpath}`
-            if (!this.roomDoc.baseTexts.has(key)) {
+        const published = disk === base ? undefined : await publishedText(base)
+        await this.beforePublishWrite?.(relpath)
+        if (sharingChanged()) return
+        if (this.stopped || this.publishUnder || !this.isSafeRoomPath(relpath) || moved() || await headMoved()) { this.scheduleDisk(relpath, true); return }
+        if (sharingChanged()) return
+        // The level or scope may have changed while we waited on git: never write text the current level withholds.
+        if (!this.isShared(relpath)) { if (!sharingChanged()) this.withhold(relpath, disk !== base); return }
+        if (sharingChanged()) return
+        if (disk !== base && this.sharedBytes(relpath) + disk.length > this.totalBudget) {
+          if (!this.skips.budget.has(relpath)) { this.skips.budget.add(relpath); this.noteSkip(relpath, `over the ${Math.round(this.totalBudget / 1024)} KB total budget`) }
+          this.roomDoc.clearOverlay(this.name, relpath, this)
+          this.roomDoc.unmarkDeleted(this.name, relpath, this)
+          this.retainedDeclaredPaths.delete(relpath)
+          return
+        }
+        this.skips.budget.delete(relpath)
+        this.roomDoc.doc.transact(() => {
+          this.roomDoc.unmarkDeleted(this.name, relpath, this)
+          if (disk === base) this.roomDoc.clearOverlay(this.name, relpath, this)
+          else {
+            this.roomDoc.setOverlay(this.name, relpath, disk, this)
+            if (disk.length <= this.sizeCap) {
               this.roomDoc.setBaseText(sharedBase, relpath, published ?? '', this)
-              this.publishedBaseTexts.add(key)
             }
           }
-        }
-      }, this)
-    }
+        }, this)
+      }
 
-    const afterText = this.roomDoc.text(relpath, this.name)
-    const afterDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false
-    if (this.share === 'declared' && (afterText !== undefined || afterDeleted)) this.retainedDeclaredPaths.add(relpath)
-    else if (afterText === undefined && !afterDeleted) this.retainedDeclaredPaths.delete(relpath)
-    if (beforeText !== afterText || beforeDeleted !== afterDeleted) {
-      this.batch.published(relpath)
-      this.bumpLastActive()
-      this.log(droppedStale ? `dropped stale overlay ${relpath}` : afterDeleted ? `marked ${relpath} deleted` : afterText === undefined ? `cleared ${relpath} overlay` : `published ${relpath} overlay`)
+      const afterText = this.roomDoc.text(relpath, this.name)
+      const afterDeleted = this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false
+      if (this.share === 'declared' && (afterText !== undefined || afterDeleted)) this.retainedDeclaredPaths.add(relpath)
+      else if (afterText === undefined && !afterDeleted) this.retainedDeclaredPaths.delete(relpath)
+      if (beforeText !== afterText || beforeDeleted !== afterDeleted) {
+        this.batch.published(relpath)
+        this.bumpLastActive()
+        this.log(droppedStale ? `dropped stale overlay ${relpath}` : afterDeleted ? `marked ${relpath} deleted` : afterText === undefined ? `cleared ${relpath} overlay` : `published ${relpath} overlay`)
+      }
+    } finally {
+      this.roomDoc.reconcileBaseTexts(this)
     }
   }
 

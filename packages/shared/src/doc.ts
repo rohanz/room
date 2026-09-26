@@ -87,6 +87,7 @@ export class RoomDoc {
       this.overlays.delete(person)
       this.deleted.delete(person)
       this.overlayAt.delete(person)
+      this.reconcileBaseTexts(origin)
     }, origin)
     return n
   }
@@ -170,6 +171,37 @@ export class RoomDoc {
   /** Base-commit text of files someone has changed, keyed "<sha>:<path>", so browsers can three-way merge. */
   get baseTexts(): Y.Map<string> { return this.doc.getMap<string>('basetext') }
   baseText(sha: string, relpath: string): string | undefined { return this.baseTexts.get(`${sha}:${relpath}`) }
+  /** One CRDT set member per (base-text key, participant), so concurrent users never overwrite a shared array. */
+  get baseTextRefs(): Y.Map<true> { return this.doc.getMap<true>('basetextRefs') }
+  baseTextOwners(sha: string, relpath: string): string[] {
+    const key = `${sha}:${relpath}`
+    const owners: string[] = []
+    for (const encoded of this.baseTextRefs.keys()) {
+      try {
+        const pair: unknown = JSON.parse(encoded)
+        if (Array.isArray(pair) && pair[0] === key && typeof pair[1] === 'string') owners.push(pair[1])
+      } catch { /* malformed legacy data is removed by reconciliation */ }
+    }
+    return owners.sort()
+  }
+  /** Repair references from live overlays and deletion marks, including legacy text without refs. */
+  reconcileBaseTexts(origin?: unknown): void {
+    const wanted = new Set<string>()
+    const unused: string[] = []
+    for (const key of this.baseTexts.keys()) {
+      const colon = key.indexOf(':')
+      if (colon < 0) { unused.push(key); continue }
+      const sha = key.slice(0, colon), relpath = key.slice(colon + 1)
+      const owners = this.whoChanged(relpath).filter(person => this.baseOf(person) === sha)
+      if (!owners.length) unused.push(key)
+      else for (const person of owners) wanted.add(JSON.stringify([key, person]))
+    }
+    this.doc.transact(() => {
+      for (const key of this.baseTextRefs.keys()) if (!wanted.has(key)) this.baseTextRefs.delete(key)
+      for (const key of wanted) if (!this.baseTextRefs.has(key)) this.baseTextRefs.set(key, true)
+      for (const key of unused) this.baseTexts.delete(key)
+    }, origin)
+  }
   setBaseText(sha: string, relpath: string, text: string, origin?: unknown): void {
     const k = `${sha}:${relpath}`
     if (this.baseTexts.has(k)) return
