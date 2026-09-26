@@ -12,6 +12,7 @@ import { readBaseline, workerBaseline, type BaselineRead } from '@room/roomd/bas
 const isSourcePath = (path: string): boolean => specForPath(path) !== undefined
 const MAX_FILES = 3000
 const MAX_BYTES = 256 * 1024
+const MAX_REFRESH_CONCURRENCY = 8
 /** Snapshot limits: every publish is appended to the room's persisted update log, so keep each one small and rare. */
 const MAX_EDGES = 4000
 const MAX_OBSERVED = 200
@@ -49,9 +50,11 @@ export async function consumesSymbol(consumer: string, text: string, provider: s
 export class GraphIndex {
   readonly graph: SymbolGraph
   private cache = new Map<string, FileSymbols | undefined>()
-  private pending = new Map<string, Promise<void>>()
+  private pending = new Map<string, { promise: Promise<void>; resolve: () => void }>()
+  /** Owns the concurrency limit and per-path deduplication for initial and overlay refreshes. */
+  private refreshQueue: string[] = []
+  private activeRefreshes = 0
   private revisions = new Map<string, number>()
-  private previousChanged = new Set<string>()
   private observedByPath = new Map<string, ObservedContractChange[]>()
   private degradedPaths = new Set<string>()
   private generation = 0
@@ -73,20 +76,32 @@ export class GraphIndex {
   }
 
   start(): void {
-    for (const person of new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) {
-      for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) this.previousChanged.add(p)
-    }
     this.ready = this.initialBuild()
-    const onOverlays = (events: Y.YEvent<any>[]) => { if (!this.stopped) this.refreshChanged(touchedPaths(events)) }
+    const observe = <T>(root: Y.Map<Y.Map<T>>) => {
+      const known = new Map([...root].map(([person, map]) => [person, new Set(map.keys())]))
+      return (events: Y.YEvent<any>[]) => {
+        if (this.stopped) return
+        const paths = touchedPaths(events, root, known)
+        if (this.base) for (const path of paths) if (isSourcePath(path)) void this.refresh(path)
+      }
+    }
+    const onOverlays = observe(this.room.overlays)
+    const onDeleted = observe(this.room.deleted)
     this.room.overlays.observeDeep(onOverlays)
-    this.room.deleted.observeDeep(onOverlays)
-    this.unobserve.push(() => { this.room.overlays.unobserveDeep(onOverlays); this.room.deleted.unobserveDeep(onOverlays) })
+    this.room.deleted.observeDeep(onDeleted)
+    this.unobserve.push(() => { this.room.overlays.unobserveDeep(onOverlays); this.room.deleted.unobserveDeep(onDeleted) })
     const onMeta = () => { if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.ready = this.rebuild() }
     this.room.metaMap.observe(onMeta)
     this.unobserve.push(() => this.room.metaMap.unobserve(onMeta))
   }
 
-  stop(): void { this.stopped = true; clearTimeout(this.jitterTimer); this.endJitter?.(); clearTimeout(this.publishing); for (const u of this.unobserve) u(); this.unobserve = [] }
+  stop(): void {
+    this.stopped = true
+    clearTimeout(this.jitterTimer); this.endJitter?.(); clearTimeout(this.publishing)
+    for (const path of this.refreshQueue.splice(0)) { this.pending.get(path)?.resolve(); this.pending.delete(path) }
+    for (const u of this.unobserve) u()
+    this.unobserve = []
+  }
 
   private async initialBuild(): Promise<void> {
     await new Promise<void>(resolve => {
@@ -117,25 +132,13 @@ export class GraphIndex {
     for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) all.add(p)
     for (const p of this.cache.keys()) if (!all.has(p)) { this.cache.delete(p); this.graph.remove(p) }
     const t0 = Date.now()
-    const queue = Array.from(all)
-    await ensureLanguages(queue)
-    await Promise.all(Array.from({ length: Math.min(8, queue.length) }, async () => {
-      while (queue.length && generation === this.generation && !this.stopped) await this.refresh(queue.shift()!)
-    }))
+    const pathsToRefresh = Array.from(all)
+    await ensureLanguages(pathsToRefresh)
+    await Promise.all(pathsToRefresh.map(path => this.refresh(path)))
     if (generation !== this.generation || this.stopped) return
     this.phase = 'ready'
     this.publish('ready')
     this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`)
-  }
-
-  /** Refresh the paths an overlay event touched (all changed paths when a whole person's map changed) and any that left the changed set. */
-  private refreshChanged(touched?: Set<string>): void {
-    if (!this.base) return
-    const changed = new Set<string>()
-    for (const person of new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) changed.add(p)
-    const left = [...this.previousChanged].filter(p => !changed.has(p))
-    for (const p of new Set([...(touched ? [...touched].filter(isSourcePath) : changed), ...left])) void this.refresh(p)
-    this.previousChanged = changed
   }
 
   /** Current text for a path as the index sees it. */
@@ -149,65 +152,82 @@ export class GraphIndex {
   }
 
   refresh(path: string): Promise<void> {
+    if (this.stopped) return Promise.resolve()
     this.revisions.set(path, (this.revisions.get(path) ?? 0) + 1)
     const inflight = this.pending.get(path)
-    if (inflight) return inflight
-    const p = (async () => {
-      while (!this.stopped) {
-        const revision = this.revisions.get(path), generation = this.generation
-        await ensureLanguages([path])
-        const text = await this.textFor(path)
-        const parsed = text === undefined || text.length > MAX_BYTES ? undefined : parseFile(path, text)
-        const symbols: FileSymbols | undefined = parsed ? {
-          defs: parsed.defs.map(definition => definition.name),
-          refs: parsed.refs,
-          imports: parsed.imports,
-        } as FileSymbols & { imports?: string[] } : undefined
-        const mine = this.room.text(path, this.me)
-        const mineDeleted = this.room.deleted.get(this.me)?.has(path) ?? false
-        // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
-        const own = workerBaseline(this.room.workerOf(this.me))
-        const read = (sha: string, file: string) => gitShow(this.dir, sha, file)
-        const baseRead: BaselineRead | undefined = mine !== undefined || mineDeleted
-          ? own ? await readBaseline(own, path, read) : await read(this.base, path).then(
-            text => text === undefined ? { kind: 'absent' as const } : { kind: 'available' as const, text },
-            error => ({ kind: 'unavailable' as const, error: error instanceof Error ? error : new Error(String(error)) }),
-          ) : undefined
-        if (this.stopped) return
-        if (generation !== this.generation || revision !== this.revisions.get(path)) continue
-        if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
-        else { this.cache.set(path, symbols); this.graph.set(path, text) }
-        if (mine !== undefined || mineDeleted) {
-          if (baseRead?.kind === 'unavailable') {
-            this.degradedPaths.add(path)
-            this.observedByPath.delete(path)
-            this.log(`graph: baseline unavailable for ${path}; observed contract coverage degraded: ${baseRead.error.message}`)
-            break
-          }
-          this.degradedPaths.delete(path)
-          const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
-          if (changes.length) this.observedByPath.set(path, changes)
-          else this.observedByPath.delete(path)
-        } else { this.observedByPath.delete(path); this.degradedPaths.delete(path) }
-        break
-      }
-    })().catch(e => this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`)).finally(() => {
-      this.pending.delete(path)
-      if (!this.stopped && !this.pending.size) {
-        clearTimeout(this.publishing)
-        this.publishing = setTimeout(() => {
-          try { this.publish(this.phase) } catch (e) { this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`) }
-        }, 100)
-      }
-    })
-    this.pending.set(path, p)
-    return p
+    if (inflight) return inflight.promise
+    let resolve!: () => void
+    const promise = new Promise<void>(r => { resolve = r })
+    this.pending.set(path, { promise, resolve })
+    this.refreshQueue.push(path)
+    this.drainRefreshQueue()
+    return promise
+  }
+
+  private drainRefreshQueue(): void {
+    while (!this.stopped && this.activeRefreshes < MAX_REFRESH_CONCURRENCY && this.refreshQueue.length) {
+      const path = this.refreshQueue.shift()!
+      this.activeRefreshes++
+      void this.runRefresh(path).catch(e => this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`)).finally(() => {
+        this.activeRefreshes--
+        this.pending.get(path)?.resolve()
+        this.pending.delete(path)
+        if (!this.stopped && !this.pending.size) {
+          clearTimeout(this.publishing)
+          this.publishing = setTimeout(() => {
+            try { this.publish(this.phase) } catch (e) { this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`) }
+          }, 100)
+        }
+        this.drainRefreshQueue()
+      })
+    }
+  }
+
+  private async runRefresh(path: string): Promise<void> {
+    while (!this.stopped) {
+      const revision = this.revisions.get(path), generation = this.generation
+      await ensureLanguages([path])
+      const text = await this.textFor(path)
+      const parsed = text === undefined || text.length > MAX_BYTES ? undefined : parseFile(path, text)
+      const symbols: FileSymbols | undefined = parsed ? {
+        defs: parsed.defs.map(definition => definition.name),
+        refs: parsed.refs,
+        imports: parsed.imports,
+      } as FileSymbols & { imports?: string[] } : undefined
+      const mine = this.room.text(path, this.me)
+      const mineDeleted = this.room.deleted.get(this.me)?.has(path) ?? false
+      // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
+      const own = workerBaseline(this.room.workerOf(this.me))
+      const read = (sha: string, file: string) => gitShow(this.dir, sha, file)
+      const baseRead: BaselineRead | undefined = mine !== undefined || mineDeleted
+        ? own ? await readBaseline(own, path, read) : await read(this.base, path).then(
+          text => text === undefined ? { kind: 'absent' as const } : { kind: 'available' as const, text },
+          error => ({ kind: 'unavailable' as const, error: error instanceof Error ? error : new Error(String(error)) }),
+        ) : undefined
+      if (this.stopped) return
+      if (generation !== this.generation || revision !== this.revisions.get(path)) continue
+      if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
+      else { this.cache.set(path, symbols); this.graph.set(path, text) }
+      if (mine !== undefined || mineDeleted) {
+        if (baseRead?.kind === 'unavailable') {
+          this.degradedPaths.add(path)
+          this.observedByPath.delete(path)
+          this.log(`graph: baseline unavailable for ${path}; observed contract coverage degraded: ${baseRead.error.message}`)
+          break
+        }
+        this.degradedPaths.delete(path)
+        const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
+        if (changes.length) this.observedByPath.set(path, changes)
+        else this.observedByPath.delete(path)
+      } else { this.observedByPath.delete(path); this.degradedPaths.delete(path) }
+      break
+    }
   }
 
   /** Wait for overlay work already queued as well as base rebuilds. */
   async whenIdle(): Promise<void> {
     await this.ready
-    while (this.pending.size) await Promise.all(this.pending.values())
+    while (this.pending.size) await Promise.all([...this.pending.values()].map(entry => entry.promise))
   }
 
   private publish(status: 'ready' | 'indexing' | 'error'): void {
@@ -252,17 +272,23 @@ export class GraphIndex {
 
 /**
  * Paths named by observeDeep events on overlays or deleted (person -> path -> text): a text edit, a
- * path set or removed, or every path of a person whose map arrived. Undefined when a person's whole
- * map left, since their paths are gone from the doc and others' or base text may now apply.
+ * path set or removed, or all old and new paths when a person's whole map changes.
  */
-function touchedPaths(events: Y.YEvent<any>[]): Set<string> | undefined {
+function touchedPaths<T>(events: Y.YEvent<any>[], root: Y.Map<Y.Map<T>>, known: Map<string, Set<string>>): Set<string> {
   const paths = new Set<string>()
   for (const event of events) {
     if (event.path.length >= 2) paths.add(String(event.path[1]))
-    else if (event.path.length === 1) for (const key of event.changes.keys.keys()) paths.add(key)
+    else if (event.path.length === 1) {
+      for (const key of event.changes.keys.keys()) paths.add(key)
+      const person = String(event.path[0])
+      known.set(person, new Set(root.get(person)?.keys() ?? []))
+    }
     else for (const [person, change] of event.changes.keys) {
-      if (change.action !== 'add') return undefined
-      for (const key of (event.target as Y.Map<Y.Map<unknown>>).get(person)?.keys() ?? []) paths.add(key)
+      if (change.action !== 'add') for (const key of known.get(person) ?? []) paths.add(key)
+      const current = root.get(person)
+      for (const key of current?.keys() ?? []) paths.add(key)
+      if (current) known.set(person, new Set(current.keys()))
+      else known.delete(person)
     }
   }
   return paths
