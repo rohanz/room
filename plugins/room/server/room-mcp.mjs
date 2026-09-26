@@ -32061,15 +32061,16 @@ function parsePsLstartUtc(line) {
 }
 function probeProcess(pid, readers = systemProcessReaders) {
   if (!pid || pid <= 0) return void 0;
+  const unreadable = () => pidAlive2(pid) ? {} : void 0;
   try {
     if (readers.platform === "linux") {
       const stat4 = readers.readFile(`/proc/${pid}/stat`);
       const close = stat4.lastIndexOf(")");
-      if (close < 0) return void 0;
+      if (close < 0) return unreadable();
       const startTicks = stat4.slice(close + 1).trim().split(/\s+/)[19];
-      if (!/^\d+$/.test(startTicks ?? "")) return void 0;
+      if (!/^\d+$/.test(startTicks ?? "")) return unreadable();
       const bootId = readers.readFile("/proc/sys/kernel/random/boot_id").trim();
-      if (!bootId) return void 0;
+      if (!bootId) return unreadable();
       let executable;
       try {
         executable = path12.basename(readers.readLink(`/proc/${pid}/exe`));
@@ -32080,9 +32081,9 @@ function probeProcess(pid, readers = systemProcessReaders) {
     if (readers.platform === "darwin") {
       const lstart = readers.exec("ps", ["-o", "lstart=", "-p", String(pid)]).trim();
       const startSeconds = parsePsLstartUtc(lstart);
-      if (startSeconds === void 0) return void 0;
+      if (startSeconds === void 0) return unreadable();
       const boot = readers.exec("sysctl", ["-n", "kern.boottime"]).match(/sec\s*=\s*(\d+)/)?.[1];
-      if (!boot) return void 0;
+      if (!boot) return unreadable();
       let executable;
       try {
         executable = path12.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
@@ -32092,12 +32093,16 @@ function probeProcess(pid, readers = systemProcessReaders) {
     }
   } catch {
   }
-  return void 0;
+  return unreadable();
+}
+function pidPresent(pid, probe = probeProcess) {
+  return pid > 0 && probe(pid) !== void 0;
 }
 function workerProcessOwnership(pid, w, probe = probeProcess) {
-  if (!pidAlive2(pid)) return "not-ours";
-  if (!w.processStartTime) return "unknown";
+  if (!pid || pid <= 0) return "not-ours";
   const info2 = probe(pid);
+  if (!info2) return "not-ours";
+  if (!w.processStartTime) return "unknown";
   if (!info2?.startTime || !info2.executable) return "unknown";
   if (info2.startTime !== w.processStartTime) return "not-ours";
   const executable = path12.basename(info2.executable);
@@ -32154,7 +32159,6 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   const root = fs13.existsSync(dir) ? fs13.realpathSync(dir) : path12.resolve(dir);
   const protectedPids = /* @__PURE__ */ new Set([process.pid, process.ppid, ...options.protectedPids ?? []]);
   const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig));
-  const alive = options.alive ?? pidAlive2;
   const sleep2 = options.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
   const resolved = (cwd2) => {
     try {
@@ -32173,7 +32177,7 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   const beforeTerm = new Set(list().filter(insideWorktree).map((p) => p.pid));
   const named = [];
   for (const p of targets) {
-    if (!beforeTerm.has(p.pid)) continue;
+    if (!beforeTerm.has(p.pid) || !pidPresent(p.pid, options.probe)) continue;
     const name2 = p.command || processName(p.pid);
     try {
       signal(p.pid, "SIGTERM");
@@ -32185,7 +32189,7 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   if (!named.length) return [];
   await sleep2(300);
   const stillInside = new Set(list().filter(insideWorktree).map((p) => p.pid));
-  for (const p of targets) if (stillInside.has(p.pid) && alive(p.pid)) {
+  for (const p of targets) if (stillInside.has(p.pid) && pidPresent(p.pid, options.probe)) {
     try {
       signal(p.pid, "SIGKILL");
     } catch (error2) {
@@ -33315,7 +33319,7 @@ Your dev-server port is ${port} (PORT=${port}).` : command.message;
       logFile,
       portChanged,
       startedAt: (policy.at ?? Date.now)(),
-      processStartTime: probeProcess(proc.pid)?.startTime
+      processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime
     };
     if (!onStarted(result)) {
       rooms.dropHandle(s, id2, proc);
@@ -34788,7 +34792,7 @@ function createHandlerState(ctx) {
       flush: () => watcher?.flush() ?? Promise.resolve()
     };
   };
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: (s) => ctx.setSession(s), observeClaims: (s) => runtime2.observeClaims(s), attach: attach2 });
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: (s) => ctx.setSession(s), observeClaims: (s) => runtime2.observeClaims(s), attach: attach2, probe: ctx.probe });
   const S = () => {
     const s = ctx.getSession();
     if (!s) throw new NotJoined();
@@ -35319,6 +35323,9 @@ var init_registry = __esm({
       launching = 0;
       retirementTimers = /* @__PURE__ */ new Map();
       retiring = /* @__PURE__ */ new Map();
+      probe(pid) {
+        return (this.o.probe ?? probeProcess)(pid);
+      }
       // ---- sessions ---------------------------------------------------------------
       primary() {
         return this.o.primary();
@@ -35421,8 +35428,8 @@ var init_registry = __esm({
           const lock = workerOperationKey(w);
           if (!this.reserve(lock)) continue;
           try {
-            const state = await workerRealState(s.dir, w, { process: true });
-            if (!processExited(state) || pidAlive2(w.pid)) continue;
+            const state = await workerRealState(s.dir, w, { process: true, probe: this.probe.bind(this) });
+            if (!processExited(state)) continue;
             if (w.status !== "done") s.room.clearWorkerCoordination(w.name);
             if (w.status === "running") {
               await finishWorkerProcess(s, w, null, Date.now(), void 0, true);
@@ -35466,7 +35473,7 @@ var init_registry = __esm({
             const files = [.../* @__PURE__ */ new Set([...s.room.changedPaths(w.name), ...done?.type === "done" ? done.changed : []])].sort();
             if (facts.clean && w.exitCode === 0) {
               try {
-                if (!await cleanupWorker(s.dir, w, true, false, [], {}, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue;
+                if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this) }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue;
               } catch {
                 continue;
               }
@@ -35552,7 +35559,7 @@ var init_registry = __esm({
         const sessions = [s, ...this.all().filter((x) => x !== s)];
         let count = 0;
         for (const sess of sessions) for (const w of sess.room.workers.values()) {
-          if (w.lead === s.me.name && (w.status === "running" || this.hasHandle(sess, w) || pidIsOurWorker(w.pid, w))) count++;
+          if (w.lead === s.me.name && (w.status === "running" || this.hasHandle(sess, w) || pidIsOurWorker(w.pid, w, this.probe.bind(this)))) count++;
         }
         return count;
       }
@@ -35581,7 +35588,7 @@ var init_registry = __esm({
         const deadline = Date.now() + timeoutMs2;
         const signal = toolSignal.getStore();
         while (Date.now() < deadline && !signal?.aborted) {
-          const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) });
+          const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) });
           if (state.process === "not-ours") return true;
           const key = _Rooms.hkey(s, w.id);
           await new Promise((resolve5) => {
@@ -35601,7 +35608,7 @@ var init_registry = __esm({
             this.exitWaiters.set(key, waiting);
             const timer = setTimeout(done, Math.min(this.hasHandle(s, w) ? 1e3 : 100, Math.max(1, deadline - Date.now())));
             signal?.addEventListener("abort", done, { once: true });
-            if (!this.hasHandle(s, w) && !pidIsOurWorker(w.pid, w)) done();
+            if (!this.hasHandle(s, w) && !pidIsOurWorker(w.pid, w, this.probe.bind(this))) done();
           });
         }
         return false;
@@ -35645,7 +35652,7 @@ var init_registry = __esm({
           if (w.lead !== s.me.name) return `error: ${w.tag} belongs to ${w.lead}`;
           if (w.status === "running") return `error: ${w.tag} is already running`;
           if (w.status === "dismissed" && w.stopReason !== "lead-session-ended") return `error: ${w.tag} was discarded and cannot be resumed`;
-          const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) });
+          const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) });
           const initial = decideResume(state);
           if (initial === "missing") return `error: cannot resume ${w.tag}: its worktree no longer exists`;
           if (initial === "no-session") return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`;
@@ -35654,7 +35661,7 @@ var init_registry = __esm({
             return toolCallAborted() ? "error: tool call cancelled" : `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`;
           }
           if (toolCallAborted()) return "error: tool call cancelled";
-          const settled = decideResume(await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) }));
+          const settled = decideResume(await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) }));
           if (settled === "missing") return `error: cannot resume ${w.tag}: its worktree no longer exists`;
           if (settled === "unknown") return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`;
           if (settled === "wait-exit") return `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`;
@@ -35697,6 +35704,7 @@ var init_registry = __esm({
                   claudeChannel,
                   preferredPort: w.port,
                   spawner,
+                  probe: this.probe.bind(this),
                   log: log2,
                   at
                 },
@@ -47192,10 +47200,10 @@ var defs7 = [{
 var split = (value2) => value2.split("\0").filter(Boolean);
 var collectQueues = /* @__PURE__ */ new Map();
 var ownershipRecords = (s) => [...s.room.retiredWorkers(), ...s.room.workers.values()];
-async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors) {
+async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors, probe) {
   if (!decideStop(await workerRealState(leadDir, w, { ownership: true, leadName, workers })).cwd) return [];
   try {
-    return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [] });
+    return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [], probe });
   } catch (e) {
     errors?.push(`cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}`);
     return [];
@@ -47227,7 +47235,7 @@ async function assertNoOperation(dir) {
 }
 function handlers7(state) {
   const unverifiedLive = async (s, w) => {
-    if (!pidAlive2(w.pid)) return void 0;
+    if (!pidPresent(w.pid, state.ctx?.probe)) return void 0;
     const facts = await workerRealState(s.dir, w, { process: true, hasHandle: !!state.rooms.handle?.(s, w.id), probe: state.ctx?.probe });
     return facts.process === "ours" ? void 0 : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
   };
@@ -47240,7 +47248,7 @@ function handlers7(state) {
       if (lead === s.me.name) return { owned: true, liveLead };
       visited.add(lead);
       const active = [...s.room.workers.values()].find((parent) => parent.name === lead);
-      if (active && !discarding.has(lead) && !liveLead && (state.workerAlive(s, active) || pidAlive2(active.pid))) liveLead = lead;
+      if (active && !discarding.has(lead) && !liveLead && (state.workerAlive(s, active) || pidPresent(active.pid, state.ctx?.probe))) liveLead = lead;
       lead = known.find((parent) => parent.name === lead)?.lead ?? "";
     }
     return { owned: false };
@@ -47288,14 +47296,14 @@ function handlers7(state) {
         if (!rooms.reserve(lock3)) return "error: this worker is already being handled or retired";
         try {
           const cleanupErrors = [];
-          const terminated = await stopOwnedWorktreeProcesses(s2.dir, w2, s2.me.name, ownershipRecords(s2), cleanupErrors);
+          const terminated = await stopOwnedWorktreeProcesses(s2.dir, w2, s2.me.name, ownershipRecords(s2), cleanupErrors, state.ctx?.probe);
           const missing = decideDiscard(await workerRealState(s2.dir, w2)) === "prune";
           const missingDetail = missing ? await pruneMissingWorkerWorktree(s2.dir, w2) : void 0;
           const ignored = missing ? [] : await ignoredWorkerArtifacts(w2);
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}
 retained worktree: ${w2.dir}${terminated.length ? "\nstopped processes: " + terminated.join(", ") : ""}${cleanupErrors.length ? "\n" + cleanupErrors.join("; ") : ""}
 repeat with force=true to delete them`;
-          if (!missing && !await cleanupWorker(s2.dir, w2, true, true, terminated, {}, s2.me.name, ownershipRecords(s2))) throw new Error("worker is not an owned Room worktree");
+          if (!missing && !await cleanupWorker(s2.dir, w2, true, true, terminated, { probe: state.ctx?.probe }, s2.me.name, ownershipRecords(s2))) throw new Error("worker is not an owned Room worktree");
           const archive = s2.room.doc.getArray("retiredWorkers");
           const index = archive.toArray().findIndex((item) => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead);
           if (index >= 0) s2.room.doc.transact(() => {
@@ -47338,10 +47346,10 @@ repeat with force=true to delete them`;
         const cleanupErrors = [];
         const beforeStop = await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe });
         const verifiedProcess = decideStop(beforeStop).host === "signal";
-        const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors);
-        if (state.workerAlive(s, w) || pidAlive2(w.pid)) {
+        const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe);
+        if (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe)) {
           const how = await state.dismissWorker(s, w, "discarded by the lead");
-          if (s.room.workers.get(w.tag)?.status === "running" && (state.workerAlive(s, w) || pidAlive2(w.pid))) return "could not discard " + w.tag + ": " + how + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
+          if (s.room.workers.get(w.tag)?.status === "running" && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) return "could not discard " + w.tag + ": " + how + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
           if (how.includes("cwd process cleanup failed:")) cleanupErrors.push(how);
           const now = state.now ?? Date.now;
           const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
@@ -47352,7 +47360,7 @@ repeat with force=true to delete them`;
           while (state.workerAlive(s, w) && now() < hardDeadline) await sleep2(50);
           if (state.workerAlive(s, w)) throw new Error("worker process has not stopped");
         }
-        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors));
+        terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe));
         const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) });
         const missing = decideDiscard(afterStop) === "prune";
         let missingDetail;
@@ -47377,7 +47385,7 @@ repeat with force=true to delete them`;
           ].join("\n");
         }
         const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w) : void 0;
-        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, {}, s.me.name, ownershipRecords(s))) throw new Error("worker is not an owned Room worktree");
+        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe }, s.me.name, ownershipRecords(s))) throw new Error("worker is not an owned Room worktree");
         releaseClaimsOnDone(s, () => false, w.name, false);
         const retiredAt = Date.now();
         s.room.retireParticipant(w.name, {
@@ -47431,7 +47439,7 @@ repeat with force=true to delete them`;
           out2.push(unsafe);
           continue;
         }
-        const stopped = w.pid !== void 0 && !state.workerAlive(s, w) && !pidAlive2(w.pid);
+        const stopped = w.pid !== void 0 && !state.workerAlive(s, w) && !pidPresent(w.pid, state.ctx?.probe);
         const decision = decideCollect(await workerRealState(lead.dir, w), !!a.tag, stopped);
         if (decision === "skip-status") {
           out2.push("skipped " + w.tag + ": " + w.status + (w.status === "failed" ? ` (${failureReason(w)})` : ""));
@@ -47464,7 +47472,7 @@ repeat with force=true to delete them`;
           if (w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) throw new Error("worker must be on branch room/" + w.tag);
           await git(w.dir, ["ls-files", "-z"]);
           const cleanupErrors = [];
-          const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors);
+          const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe);
           if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
           out2.push(...cleanupErrors.map((error2) => `${w.tag}: ${error2}`));
           const now = state.now ?? Date.now;
@@ -47623,7 +47631,7 @@ repeat with force=true to delete them`;
             continue;
           }
           const terminated = [];
-          if (await cleanupWorker(s.dir, w, true, false, terminated, {}, s.me.name, ownershipRecords(s))) {
+          if (await cleanupWorker(s.dir, w, true, false, terminated, { probe: state.ctx?.probe }, s.me.name, ownershipRecords(s))) {
             retire(w.summary ?? "");
             out2.push("cleaned up " + w.tag + ": temporary files, branch and logs");
             if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
@@ -48161,6 +48169,7 @@ function handlers8(state) {
               claudeChannel: config2.claudeChannel,
               usedPorts,
               spawner: ctx.spawner,
+              probe: ctx.probe,
               log: state.log,
               at: now
             },
@@ -48262,15 +48271,15 @@ function install6(state) {
   };
   const runningWorkers = (s) => {
     const out2 = [];
-    for (const sess of [s, ...rooms.all().filter((x) => x !== s)]) for (const w of myWorkers(sess)) if (w.status === "running" || pidAlive2(w.pid) || workerAlive(sess, w)) out2.push({ s: sess, w });
+    for (const sess of [s, ...rooms.all().filter((x) => x !== s)]) for (const w of myWorkers(sess)) if (w.status === "running" || pidPresent(w.pid, ctx.probe) || workerAlive(sess, w)) out2.push({ s: sess, w });
     return out2;
   };
   const dismissWorker = async (s, w, why, stopReason, cancelled) => {
     const proc = rooms.handle(s, w.id);
     if (!proc) {
       const processState = await workerRealState(s.dir, w, { process: true, probe: ctx.probe });
-      if (processState.process === "not-ours" && pidAlive2(w.pid)) return `pid ${w.pid} belongs to another process; not signalled`;
-      if (processState.process === "unknown" && pidAlive2(w.pid)) {
+      if (processState.process === "not-ours" && pidPresent(w.pid, ctx.probe)) return `pid ${w.pid} belongs to another process; not signalled`;
+      if (processState.process === "unknown") {
         const message = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
         s.room.post(s.me, { type: "note", to: w.lead, priority: "interrupt", text: message });
         return message;
@@ -48284,7 +48293,7 @@ function install6(state) {
     const stopCwdProcesses = async () => {
       if (!ownedWorktree || cleanupError) return;
       try {
-        stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids }));
+        stopped.push(...await terminateWorktreeProcesses(w.dir, { protectedPids, probe: ctx.probe }));
       } catch (e) {
         cleanupError = `cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}`;
       }
@@ -48305,12 +48314,12 @@ function install6(state) {
       signalled = false;
       how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`;
     }
-    if (!signalled && pidAlive2(w.pid)) how = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
+    if (!signalled && pidPresent(w.pid, ctx.probe)) how = proc ? `pid ${w.pid} not signalled: worker process is still alive` : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
     await stopCwdProcesses();
-    if (proc && !pidAlive2(w.pid)) releaseWorkerProcessPort(proc);
+    if (proc && !pidPresent(w.pid, ctx.probe)) releaseWorkerProcessPort(proc);
     if (cancelled?.aborted) return how + cleanupText();
     if (stopReason && cleanupError) throw new Error(cleanupError);
-    if (signalled || proc || pidAlive2(w.pid)) s.room.post(s.me, { type: "note", to: w.lead, priority: signalled ? "notify" : "interrupt", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : pidAlive2(w.pid) ? how : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
+    if (signalled || proc || pidPresent(w.pid, ctx.probe)) s.room.post(s.me, { type: "note", to: w.lead, priority: signalled ? "notify" : "interrupt", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
     if (signalled) {
       if (stopReason) {
         try {
