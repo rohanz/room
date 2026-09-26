@@ -528,7 +528,8 @@ describe('roomd v2 push-only overlays', () => {
   })
 
   it('logs an unpushed HEAD/base pair once across repeated polls, and logs new pairs', async () => {
-    const dir = await makeRepo({ 'app.py': 'base\n' }) // deliberately no remote
+    const origin = await makeRepo({ 'app.py': 'base\n' })
+    const dir = await cloneRepo(origin)
     const logs: string[] = []
     const daemon = await start({ room: room(), dir, name: 'Alice', basePollMs: 60_000, log: line => logs.push(line) })
     const base = daemon.roomDoc.meta.base!

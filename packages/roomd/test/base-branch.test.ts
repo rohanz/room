@@ -34,7 +34,7 @@ function provider(doc: Y.Doc): WebsocketProvider {
   } as unknown as WebsocketProvider
 }
 
-async function setup(): Promise<{ dir: string; base: string; poll: () => Promise<void> ; daemon: Roomd }> {
+async function setup(local = false): Promise<{ dir: string; base: string; poll: () => Promise<void> ; daemon: Roomd }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-base-'))
   roots.push(root)
   const origin = path.join(root, 'origin.git')
@@ -50,7 +50,8 @@ async function setup(): Promise<{ dir: string; base: string; poll: () => Promise
   sh(dir, 'push', '-q', '-u', 'origin', 'rehearsal')
   const base = sh(dir, 'rev-parse', 'HEAD')
   const daemon = await startRoomd({
-    dir, room: `ws://memory/${encodeURIComponent('github.com/owner/repo/rehearsal')}`,
+    dir, room: `ws://memory/${encodeURIComponent(local ? 'local/repo/rehearsal' : 'github.com/owner/repo/rehearsal')}`,
+    ...(local ? { localKey: 'test-local-key' } : {}),
     name: 'Alice', kind: 'agent', providerFactory: (_server, _name, doc) => provider(doc),
     basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
   })
@@ -59,6 +60,30 @@ async function setup(): Promise<{ dir: string; base: string; poll: () => Promise
 }
 
 describe('room branch base tracking', () => {
+  it.each(['missing origin', 'missing tracking branch'] as const)('advances a local commit with %s', async missing => {
+    const { dir, base, daemon, poll } = await setup(true)
+    if (missing === 'missing origin') sh(dir, 'remote', 'remove', 'origin')
+    else sh(dir, 'update-ref', '-d', 'refs/remotes/origin/rehearsal')
+    sh(dir, 'commit', '--allow-empty', '-qm', 'local change')
+    const local = sh(dir, 'rev-parse', 'HEAD')
+    await poll()
+    expect(daemon.roomDoc.meta.base).toBe(local)
+    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toMatchObject([
+      { prev: base, base: local, commits: 1 },
+    ])
+    expect((daemon.provider.awareness.getLocalState() as { status: string }).status).toBe('committed locally')
+  })
+
+  it('keeps a team-room base unchanged for a commit with no remote branch', async () => {
+    const { dir, base, daemon, poll } = await setup()
+    sh(dir, 'update-ref', '-d', 'refs/remotes/origin/rehearsal')
+    sh(dir, 'commit', '--allow-empty', '-qm', 'local only')
+    await poll()
+    expect(daemon.roomDoc.meta.base).toBe(base)
+    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toHaveLength(0)
+    expect((daemon.provider.awareness.getLocalState() as { status: string }).status).toBe('committed locally')
+  })
+
   it('does not announce or advance a detached HEAD, then advances when back on the pushed room branch', async () => {
     const { dir, base, daemon, poll } = await setup()
     sh(dir, 'checkout', '--detach', '-q')

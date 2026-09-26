@@ -24,6 +24,26 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { people: strs('participants in merge order; default all'), person: str('one participant'), includeOffline: { type: 'boolean', description: 'include offline overlays' }, run: str('test command'), resolve: { type: 'boolean', description: 'resolve superset conflicts' } } } }
 ]
 
+/** Suggest a test command for a preview whose combined tree was not tested. */
+export function suggestedTestCommand(files: Readonly<Record<string, string | undefined>>): string {
+  try {
+    if (files['package.json'] && typeof JSON.parse(files['package.json']).scripts?.test === 'string') return 'npm test'
+  } catch { /* An unreadable package manifest offers no suggestion. */ }
+  if (files['pyproject.toml'] && /pytest/i.test(files['pyproject.toml'])) return files['uv.lock'] !== undefined ? 'uv run pytest' : 'pytest'
+  if (files.Makefile && /^test\s*:/m.test(files.Makefile)) return 'make test'
+  return '<your test command>'
+}
+
+/** Read only root test manifests; unreadable files offer no command hint. */
+export function testCommandFor(dir: string): string {
+  const files: Record<string, string | undefined> = {}
+  for (const file of ['package.json', 'pyproject.toml', 'uv.lock', 'Makefile']) {
+    try { files[file] = fs.readFileSync(path.join(dir, file), 'utf8') }
+    catch { files[file] = undefined }
+  }
+  return suggestedTestCommand(files)
+}
+
 /** A secondary Room process has no overlay of its own, but still reads this checkout's files. */
 function ownUnpublishedCheckout(s: Session, person: string): boolean {
   const publisher = s.awareness.getLocalState()?.publishUnder
@@ -158,6 +178,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
+      const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
       const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out } = result
       if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, 'no mergeable changes', ...result.ignoredNotes].join('\n')
@@ -166,6 +187,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (skippedNote) out.push(skippedNote)
       for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
       out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
+      if (noTestsNote) out.push(noTestsNote)
       let ranOk = !run
       if (run) {
         if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)

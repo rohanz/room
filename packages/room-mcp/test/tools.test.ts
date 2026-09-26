@@ -16,6 +16,7 @@ import { sendChannelNotification } from '../src/channel.js'
 import { SocketWakeRouter } from '../src/wake-path.js'
 import { waitConsumesMessage } from '../src/tools/messaging.js'
 import { shouldWake } from '../src/wake.js'
+import { suggestedTestCommand, testCommandFor } from '../src/tools/files.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -764,6 +765,20 @@ describe('branch follow', () => {
 })
 
 describe('inbox', () => {
+  it('delivers a broadcast notify note on the next tool call, leaving fyi in the feed', async () => {
+    const t = setup()
+    const k = { name: 'Kieran', kind: 'agent' as const }
+    for (const priority of ['fyi', 'notify'] as const) {
+      t.other.post(k, { type: 'note', text: `${priority} update`, priority } as never)
+    }
+    const out = await t.tools.call('room_state', {})
+    const block = out.slice(0, out.indexOf('you: '))
+    expect(block).toContain('[inbox 1]')
+    expect(block).toContain('notify update')
+    expect(block).not.toContain('fyi update')
+    expect((await t.tools.call('room_state', {})).startsWith('[inbox')).toBe(false)
+  })
+
   it('prefixes tool replies with unread messages for me, once, highest priority first', async () => {
     const t = setup()
     const k = { name: 'Kieran', kind: 'agent' as const }
@@ -829,6 +844,25 @@ describe('wait', () => {
 })
 
 describe('preview merge', () => {
+  it('skips unreadable test files while suggesting a command', () => {
+    const root = mkdtempSync(join(tmpdir(), 'room-test-command-'))
+    try {
+      mkdirSync(join(root, 'package.json'))
+      writeFileSync(join(root, 'Makefile'), 'test:\n\techo test\n')
+      expect(testCommandFor(root)).toBe('make test')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it.each([
+    [{ 'package.json': '{"scripts":{"test":"vitest run"}}' }, 'npm test'],
+    [{ 'pyproject.toml': '[tool.pytest.ini_options]\n' }, 'pytest'],
+    [{ 'pyproject.toml': '[tool.pytest.ini_options]\n', 'uv.lock': '' }, 'uv run pytest'],
+    [{ Makefile: 'build:\n\techo build\ntest:\n\techo test\n' }, 'make test'],
+    [{ 'package.json': '{"scripts":{"build":"tsc"}}' }, '<your test command>'],
+  ] as const)('suggests the repository test command for %j', (files, command) => {
+    expect(suggestedTestCommand(files)).toBe(command)
+  })
+
   it('preserves live Unicode UTF-8 bytes with and without a run command', async () => {
     const t = setup()
     const value = 'em dash —, CJK 漢, emoji 😀\n'
@@ -837,6 +871,7 @@ describe('preview merge', () => {
     const textOnly = await t.tools.call('room_preview_merge', { person: 'Kieran' })
     expect(textOnly).toContain('unicode.txt (Kieran only)')
     expect(textOnly).toContain('final combined tree:')
+    expect(textOnly).toContain('no tests were run on the combined code; pass run="<your test command>" to check it')
     const hex = Buffer.from(value, 'utf8').toString('hex')
     const command = `python3 -c 'from pathlib import Path; expected = bytes.fromhex("${hex}"); assert all(Path(p).read_bytes() == expected for p in ("unicode.txt", "unicode-mine.txt")); print("1 passed")'`
     const run = await t.tools.call('room_preview_merge', { person: 'Kieran', run: command })

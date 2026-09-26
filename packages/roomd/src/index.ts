@@ -25,7 +25,7 @@ import { BASE_CATCH_UP, RoomDoc, colorFor, isRegenerableBuildPath, roomNameParts
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { baselineText, carriesWork, workerBaseline, type Baseline } from './baseline.js'
-import { git, gitBlobInfoMany, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitShow, gitShowMany, gitSubject, gitTracked, type GitBlobInfo } from './git.js'
+import { git, gitBlobInfoMany, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitRoomRemoteBranchExists, gitShow, gitShowMany, gitSubject, gitTracked, type GitBlobInfo } from './git.js'
 
 /** Keep event emitters and timers from leaking both sync throws and rejected promises. */
 export function observeCallback(fn: () => unknown, report: (error: unknown) => void): void {
@@ -729,10 +729,18 @@ class Daemon implements Roomd {
     this.shared = !this.localRoom && this.carried()?.carriedCommit ? (await git(this.dir, ['rev-parse', `${this.base}^`])).trim() : this.base
   }
 
-  /** Advance the shared base only once the commit is on the remote; teammates cannot pull an unpushed commit. */
+  private localCommittedHead?: string
+
+  /** A remote branch requires push; without one, local participants share the object store. */
   private async maybeAdvance(from: string, to: string): Promise<void> {
     if (this.isWorkerWorktree()) { this.setStatus('worker worktree ahead of room base'); return }
     if (this.warnBranchSwitch()) return
+    if (!await gitRoomRemoteBranchExists(this.dir, this.roomBranch())) {
+      if (this.localRoom) await this.advanceBase(from, to)
+      this.localCommittedHead = to
+      this.setStatus('committed locally')
+      return
+    }
     const pushed = await gitPushedRoomHead(this.dir, to, this.roomBranch())
     if (pushed && pushed !== from && await gitRelation(this.dir, pushed, from) === 'ahead') {
       await this.advanceBase(from, pushed)
@@ -762,7 +770,10 @@ class Daemon implements Roomd {
     if (this.stopped) return
     if (!this.isWorkerWorktree() && this.warnBranchSwitch()) return
     const roomBase = this.roomDoc.meta.base
-    if (!roomBase || roomBase === this.base) { this.setStatus('synced'); return }
+    if (!roomBase || roomBase === this.base) {
+      this.setStatus(this.localCommittedHead === this.base && !await gitRoomRemoteBranchExists(this.dir, this.roomBranch()) ? 'committed locally' : 'synced')
+      return
+    }
     const rel = await gitRelation(this.dir, this.base, roomBase)
     if (rel === 'behind') {
       const n = await gitCountBetween(this.dir, this.base, roomBase).catch(() => 0)

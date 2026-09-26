@@ -213,3 +213,12 @@ export async function gitPushedRoomHead(dir: string, head: string, branch: strin
     return (await git(dir, ['merge-base', head, ref])).trim() || undefined
   } catch { return undefined }
 }
+
+/** Whether the room branch has an origin tracking ref, which makes push advice meaningful. */
+export async function gitRoomRemoteBranchExists(dir: string, branch: string): Promise<boolean> {
+  try { await git(dir, ['rev-parse', '--verify', `refs/remotes/origin/${branch}^{commit}`]); return true }
+  catch (error) {
+    if (error instanceof Error && error.message.includes('timed out')) throw error
+    return false
+  }
+}

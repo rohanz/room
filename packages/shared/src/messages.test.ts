@@ -81,6 +81,17 @@ it('addresses a note as a waking notification while leaving broadcast notes as F
   room.doc.destroy()
 })
 
+it.each(['fyi', 'notify', 'interrupt'] as const)('routes a broadcast %s note to other participants with the matching wake behavior', priority => {
+  const room = new RoomDoc()
+  const note = room.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'shared update', priority })
+  expect(messageForMe({ name: 'Rohan' }, note)).toBe(priority !== 'fyi')
+  expect(messageForMe({ name: 'Ada' }, note)).toBe(priority !== 'fyi')
+  expect(messageForMe({ name: 'Kieran' }, note)).toBe(false)
+  expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, note).wake).toBe(priority === 'interrupt')
+  expect(shouldWakeOnMsg({ name: 'Kieran', kind: 'agent' }, note).wake).toBe(false)
+  room.doc.destroy()
+})
+
 it('keeps a lead asleep for its own worker progress notes, but wakes for actionable worker events', () => {
   const me = { name: 'Rohan', kind: 'agent' } as const
   const ownWorkers = new Set(['Rohan+money'])
