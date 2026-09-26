@@ -24983,6 +24983,12 @@ var init_src2 = __esm({
       retainedDeclared() {
         return [...this.retainedDeclaredPaths].sort();
       }
+      publishCurrent() {
+        return this.enqueue(async () => {
+          await this.pollHead();
+          await this.seedLocalOverlay();
+        });
+      }
       skipSummary() {
         const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size + this.skips.share.size;
         if (!n) return "";
@@ -25914,7 +25920,7 @@ function resolveServer(raw) {
   return w === "team" ? DEFAULT_SERVER : w;
 }
 function sharingDescription(level) {
-  return level === "full" ? "the full text of files you change" : level === "declared" ? "only the files in your declared area" : "only your plans, no file text";
+  return level === "full" ? "the full text of files you change" : level === "declared" ? "files in your declared area and changed files declared earlier" : "only your plans, no file text";
 }
 function sharingHumanChoices(level) {
   if (level === "full") return "to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.";
@@ -46395,7 +46401,10 @@ function handlers3(state) {
       }
       if (level !== before) s.room.post(s.me, { type: "note", text: `now sharing ${sharingDescription(level)}`, priority: "fyi" });
       const out2 = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`];
-      if (level === "declared" && !s.room.scope(s.me.name)) out2.push("no scope declared yet, so nothing is shared until room_scope(area, summary, paths)");
+      if (level === "declared" && !s.room.scope(s.me.name)) {
+        const retained = s.daemon.retainedDeclared();
+        out2.push(retained.length ? `${retained.length} changed file(s) you declared earlier remain shared: ${retained.slice(0, 8).join(", ")}${retained.length > 8 ? `, +${retained.length - 8} more` : ""}` : "no scope declared yet, so nothing is shared until room_scope(area, summary, paths)");
+      }
       return out2.join("\n");
     }
   };
@@ -48817,6 +48826,7 @@ function handlers8(state) {
       const summary = String(a.summary ?? "").trim();
       if (!summary) return "error: summary is required";
       const sc = s.room.scope(s.me.name);
+      if (s.daemon.share === "declared") await s.daemon.publishCurrent();
       const live = new Set(runningWorkers(s).map((x) => x.w.tag));
       const kept = mine(s).filter((c) => c.mirrorOf && live.has(c.mirrorOf)).length;
       const released = releaseClaimsOnDone(s, (c) => !!c.mirrorOf && live.has(c.mirrorOf));
@@ -48833,7 +48843,7 @@ function handlers8(state) {
       s.daemon.touch();
       const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : "You remain in the room."}`];
       const retained = s.daemon.share === "declared" ? s.daemon.retainedDeclared() : [];
-      if (retained.length) out2.push(`${retained.length} changed file(s) from your declared area stay shared until you commit or revert them: ${retained.slice(0, 8).join(", ")}${retained.length > 8 ? `, +${retained.length - 8} more` : ""}`);
+      if (retained.length) out2.push(`${retained.length} changed file(s) you declared earlier stay shared while they differ from your base: ${retained.slice(0, 8).join(", ")}${retained.length > 8 ? `, +${retained.length - 8} more` : ""}. To withdraw them, say: share plans only.`);
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary);
       const command = s.lastPreview?.testsCommand;
       if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed === true && command) {
@@ -49577,7 +49587,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.14",
+  version: "0.16.15",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
