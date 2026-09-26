@@ -1030,6 +1030,72 @@ it('does not record a claim for a path nobody else is near', async () => {
   } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
 })
 
+it.each(['scope', 'claim', 'changed'] as const)('requires a claim for nearby %s evidence', async reason => {
+  const t = setup()
+  try {
+    if (reason === 'scope') t.other.setScope({ by: 'Ada', byKind: 'agent', area: 'api', summary: 'edit', paths: ['src/'] })
+    if (reason === 'claim') t.other.addClaim({ by: 'Ada', byKind: 'agent', path: 'src/file.ts', from: 1, to: 1, intent: 'edit' })
+    if (reason === 'changed') t.other.setOverlay('Ada', 'src/file.ts', 'changed')
+    expect(await t.tools.call('room_claim', { path: 'src/file.ts', intent: 'edit', from: 1, to: 1 })).toContain('claimed')
+  } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+})
+
+it('does not treat changed paths from another session in this checkout as claim evidence', async () => {
+  const t = setup()
+  const s = t.session!
+  s.awareness.setLocalStateField('watchedDirectory', 'same-checkout')
+  const old = addPresence(s.awareness, 'Rohan+old')
+  old.setLocalStateField('watchedDirectory', 'same-checkout')
+  applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(old, [old.clientID]), 'test')
+  try {
+    t.other.setOverlay('Rohan+old', 'src/file.ts', 'changed')
+    expect(await t.tools.call('room_claim', { path: 'src/file.ts', intent: 'edit', from: 1, to: 1 })).toBe('src/file.ts: no claim needed; nobody else is near this path')
+  } finally { old.destroy(); await t.tools.shutdown(); s.awareness.destroy() }
+})
+
+it('scoped room_state shows scope overlap, hides unrelated claims and their owners', async () => {
+  const t = setup()
+  const ada = addPresence(t.session!.awareness, 'Ada')
+  const bea = addPresence(t.session!.awareness, 'Bea')
+  try {
+    await t.tools.call('room_scope', { area: 'src', summary: 'edit', paths: ['src/'] })
+    t.other.setScope({ by: 'Ada', byKind: 'agent', area: 'src', summary: 'review', paths: ['src/file.ts'] })
+    t.other.addClaim({ by: 'Bea', byKind: 'agent', path: 'other/file.ts', from: 1, to: 1, intent: 'elsewhere' })
+    const out = await t.tools.call('room_state', {})
+    expect(out).toContain('Ada')
+    expect(out).toContain("1 others: Bea's agent (all:true for detail)")
+    expect(out).toContain('Bea: 1 claim(s)')
+    expect(out).not.toContain('elsewhere')
+  } finally { ada.destroy(); bea.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
+})
+
+it('scoped room_state shows a participant whose changed path alone overlaps my work', async () => {
+  const t = setup()
+  const ada = addPresence(t.session!.awareness, 'Ada')
+  try {
+    await t.tools.call('room_scope', { area: 'src', summary: 'edit', paths: ['src/'] })
+    t.other.setOverlay('Ada', 'src/file.ts', 'changed')
+    const out = await t.tools.call('room_state', {})
+    expect(out.slice(out.indexOf('participants overlapping your work'), out.indexOf('open claims'))).toContain("  - Ada's agent:")
+    expect(out).toContain('  - Ada: src/file.ts')
+    expect(out).not.toContain("1 others: Ada's agent (all:true for detail)")
+  } finally { ada.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
+})
+
+it('scoped room_state hides a disjoint claim owner while still showing same-path claim details', async () => {
+  const t = setup()
+  const ada = addPresence(t.session!.awareness, 'Ada')
+  try {
+    await t.tools.call('room_scope', { area: 'src', summary: 'edit', paths: ['src/file.ts'] })
+    t.room.addClaim({ by: 'Rohan', byKind: 'agent', path: 'src/file.ts', from: 1, to: 2, intent: 'top' })
+    t.other.addClaim({ by: 'Ada', byKind: 'agent', path: 'src/file.ts', from: 10, to: 12, intent: 'bottom' })
+    const out = await t.tools.call('room_state', {})
+    expect(out).toContain("1 others: Ada's agent (all:true for detail)")
+    expect(out).toContain('Ada: 1 claim(s)')
+    expect(out).toContain('bottom')
+  } finally { ada.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
+})
+
 it('states local sharing first and exposes the browser link only on request', async () => {
   const t = setup()
   const s = t.session!

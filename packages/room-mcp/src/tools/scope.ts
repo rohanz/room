@@ -2,6 +2,7 @@ import { sharingDescription } from '../config.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
+import { coordinationPaths } from '@room/shared'
 import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
@@ -100,10 +101,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const myPaths = [...(s.room.scope(s.me.name)?.paths ?? []), ...s.room.changedPaths(s.me.name), ...myClaims.map(c => c.path)]
       const overlapsMyPath = (p: string) => myPaths.some(q => scopeCovers({ paths: [q] }, p) || scopeCovers({ paths: [p] }, q))
       const pathInView = (p: string) => all || overlapsMyPath(p) || mineA.includes(areasOf(s).areaOf(p))
+      const nearby = coordinationPaths(s.room, s.me.name)
       const inView = (person: string) => {
         if (all || person === s.me.name || sameCheckoutSession(s, person)) return true
-        const sc = s.room.scope(person)
-        if (sc?.paths.some(overlapsMyPath)) return true
+        if (nearby.some(entry => entry.by === person && entry.reason !== 'claim' && overlapsMyPath(entry.path))) return true
         const theirs = s.room.openClaims().filter(c => c.by === person)
         return theirs.some(c => myClaims.some(m => claimsOverlap(c, m)))
       }

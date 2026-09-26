@@ -1019,7 +1019,12 @@ it('company includes who and their scope; nearby claims are needed only for over
   const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
   writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'near', at: Date.now(), cwd: dir }))
   b.write()
-  expect(JSON.parse(readFileSync(b.stateFile(), 'utf8')).others).toEqual(["Ada's agent", 'Cy'])
+  const snapshot = JSON.parse(readFileSync(b.stateFile(), 'utf8'))
+  expect(snapshot.others).toEqual(["Ada's agent", 'Cy'])
+  expect(snapshot.near).toEqual([
+    { by: 'Ada', path: 'api/', reason: 'scope' },
+    { by: 'Bea', path: 'other.py', reason: 'changed' },
+  ])
   const announce = await runHook('session-start.mjs', { cwd: dir, session_id: 'near' })
   expect(announce).toContain("Ada's agent is here, on orders: api/")
   expect(announce).toContain('Cy is here')
@@ -1043,6 +1048,26 @@ it('announces unchanged near evidence once and stays silent with an adequate own
   b.write()
   expect(await runHook('before-edit.mjs', input)).toBe('')
   b.stop(); peer.destroy(); s.awareness.destroy()
+})
+
+it('hook snapshot excludes own agent claims but retains same-name non-agent claims as nearby work', () => {
+  const s = session(new RoomDoc())
+  s.room.addClaim({ by: 'Rohan', byKind: 'agent', path: 'agent.py', from: 1, to: 1, intent: 'my edit' })
+  s.room.addClaim({ by: 'Rohan', byKind: 'human', path: 'human.py', from: 1, to: 1, intent: 'human edit' })
+  s.room.addClaim({ by: 'Rohan', byKind: undefined as never, path: 'legacy.py', from: 1, to: 1, intent: 'legacy edit' })
+  const bridge = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
+  bridge.write()
+  const snapshot = JSON.parse(readFileSync(bridge.stateFile(), 'utf8'))
+  expect(snapshot.ownClaims).toEqual([{ path: 'agent.py', from: 1, to: 1 }])
+  expect(snapshot.claims).toMatchObject([
+    { path: 'human.py', by: 'Rohan', intent: 'human edit' },
+    { path: 'legacy.py', by: 'Rohan', intent: 'legacy edit' },
+  ])
+  expect(snapshot.near).toEqual([
+    { by: 'Rohan', path: 'human.py', reason: 'claim' },
+    { by: 'Rohan', path: 'legacy.py', reason: 'claim' },
+  ])
+  bridge.stop(); s.awareness.destroy(); s.room.doc.destroy()
 })
 
 it('publishes known unavailable Claude wake capability', () => {
@@ -1091,6 +1116,14 @@ it('matches the shared overlap rule on exact files, directory boundaries and nor
   }
   for (const parent of ['', '  ', '/', '/..', 'C:\\..', '.', './']) {
     expect(hook.containsPath(parent, 'src/a.ts')).toBe(shared.containsPath(parent, 'src/a.ts'))
+  }
+  const evidence = [
+    { by: 'Ada', path: 'api/', reason: 'scope' as const },
+    { by: 'Bea', path: 'src/a.ts', reason: 'changed' as const },
+    { by: 'Cy', path: 'api/tax.py', reason: 'claim' as const },
+  ]
+  for (const path of ['api/tax.py', './api/new.py', 'api-other/tax.py', 'src/a.ts']) {
+    expect(shared.nearPath(path, evidence)).toEqual(evidence.filter(entry => hook.coversPath(path, entry.path)))
   }
 })
 

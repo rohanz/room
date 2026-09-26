@@ -4,7 +4,7 @@ import { sameCheckoutSession } from '../company.js'
 import { git, gitShow } from '@room/roomd/git'
 import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
-import { coversPath, nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { coordinationPaths, coversPath, nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -22,12 +22,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
       if (typeof a.intent !== 'string' || !a.intent) return 'error: intent is required'
       const p = a.path, intent = a.intent
-      const nearby = [
-        ...s.room.allScopes().flatMap(sc => sc.paths.map(path => ({ by: sc.by, path, reason: 'scope' as const }))),
-        ...s.room.openClaims().map(c => ({ by: c.by, path: c.path, reason: 'claim' as const })),
-        ...[...new Set([...s.room.overlays.keys(), ...s.room.deleted.keys()])].flatMap(by => s.room.changedPaths(by).map(path => ({ by, path, reason: 'changed' as const }))),
-      ]
-      if (!nearPath(p, nearby.filter(entry => entry.by !== s.me.name && (entry.reason !== 'changed' || !sameCheckoutSession(s, entry.by)))).length) return `${p}: no claim needed; nobody else is near this path`
+      const nearby = coordinationPaths(s.room, s.me.name)
+      if (!nearPath(p, nearby.filter(entry => entry.reason !== 'changed' || !sameCheckoutSession(s, entry.by))).length) return `${p}: no claim needed; nobody else is near this path`
       const plans = parsePlans(a.plans)
       if (typeof plans === 'string') return plans
       const directory = p.endsWith('/')
