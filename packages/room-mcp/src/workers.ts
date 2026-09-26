@@ -62,7 +62,7 @@ export async function pruneMissingWorkerWorktree(leadDir: string, w: Worker, man
   const count = state.branchAhead!
   if (count) return `branch ${w.branch} kept: it has ${count} commit${count === 1 ? '' : 's'} not in your HEAD`
   await git(leadDir, ['branch', '-D', w.branch])
-  return `branch ${w.branch} deleted (its commits are already in your HEAD)`
+  return `branch ${w.branch} deleted (it has no commits of its own beyond your HEAD)`
 }
 
 type WorktreeOwnershipRecord = Pick<Worker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'>
