@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.8
+
+- A "base moved" notice is no longer delivered when the recipient's checkout already contains that commit (`git merge-base --is-ancestor <base> HEAD`). The check runs just before delivery on the Codex queue, the hook snapshot, room_wait and tool-reply inboxes, and Claude wakes, and marks the notice seen. It still appears in the timeline. Git errors deliver the notice as before (`packages/room-mcp/src/base-notice.ts`).
+- Claim guidance, hook snapshots and room_state build scope, claim and changed-path evidence with one `coordinationPaths` builder (`packages/shared/src/near.ts`). One deliberate fix: room_state no longer hides a participant whose changed paths alone made the claim hook warn.
+- The graph index refreshes only the paths each overlay event touched, including removals, through one queue of 8 shared with the initial build. One edit with 40 other changed files now refreshes 1 file instead of 41.
+
 ## 0.16.7
 
 - macOS worker start times now come from C-locale, UTC `ps` output and are parsed as UTC. Shutdown logs failed or timed-out dismissals with the worker tag and leaves their records and persisted stop reasons untouched for restart recovery.

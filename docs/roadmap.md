@@ -27,6 +27,12 @@ use broke and proposes the order of work.
 - **Worker lifecycle (2026-09-24 cleanliness audit finding 18):** one real-state report and one decision table per lifecycle operation, and one launcher for fresh and resumed workers.
 - **Resume race (0.16.4 live check):** a message sent right after a worker finishes waits for the old process to exit and resumes the worker once, or says plainly that it was not delivered. It is never left on the bus twice.
 
+## Fixed in 0.16.8
+
+- **Proximity evidence (2026-09-24 cleanliness audit finding 16):** one `coordinationPaths` builder in `packages/shared/src/near.ts` for claim guidance, hook snapshots and room-state visibility; room_state now shows a participant whose changed paths alone made the claim hook warn.
+- **Graph refreshes (2026-09-24 cleanliness audit finding 21):** an overlay event refreshes only the paths it touched, and initial and incremental refreshes share one queue of 8.
+- **Stale base notices (rehearsal 2026-09-25, second run, finding 9):** a base notice whose commit is already in the recipient's HEAD is marked seen instead of delivered, on every delivery path.
+
 ## The design the gaps point at: cost scales with overlap
 
 The gap list below says what breaks. This is the one idea that fixes most of it. Multiplayer
@@ -155,8 +161,6 @@ context), Warp (already runs Claude Code, Codex and OpenCode), Zed's own agent (
 
 ### Deferred from the 2026-09-24 cleanliness audit, after the trial
 
-- **16:** Build proximity evidence once for claim guidance, hook snapshots and room-state visibility.
-- **21:** Refresh only affected graph paths through a bounded queue when an overlay changes.
 - **28:** Replace ordered service-locator initialization with typed services and split worker Git recovery from process lifecycle in small steps.
 
 ## Sharing rules (smaller, can ship before the structural work)

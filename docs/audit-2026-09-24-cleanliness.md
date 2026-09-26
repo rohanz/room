@@ -134,7 +134,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** **Verified with pure helpers:** `coversPath('.', 'src/a.ts')` is true, but `scopeCovers({paths:['.']}, 'src/a.ts')` is false; a root scope affects claim guidance but not declared-sharing eligibility or scope-based routing consistently.
 - **Smallest clean change:** Define normalization once in shared code, then separate directional containment from symmetric overlap and use the appropriate operation everywhere. Keep the dependency-free hook mirror generated or parity-tested; do not replace directional sharing checks with symmetric overlap.
 
-### 16. Claim tools and hook snapshots separately assemble proximity evidence — DEFERRED (roadmap)
+### 16. Claim tools and hook snapshots separately assemble proximity evidence — FIXED in 0.16.8 (bd75ea3)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/tools/claims.ts:24`, `packages/room-mcp/src/hooks-bridge.ts:219`, `packages/room-mcp/src/tools/scope.ts:96`.
@@ -175,7 +175,7 @@ Verification: `npm run typecheck` passed. Ten focused Vitest files passed, **188
 - **Consequence:** The exported API suggests multiple authorities for configuration, relay admission and message kinds; the stale predicate would reject a real kind if reused. Repository searches found no production consumers; **external consumers are unknown**.
 - **Smallest clean change:** Move test probes to test helpers, test `resolveConfig` directly, remove unused internal exports, and derive any retained message predicate from `MessageKinds`. Check intended external API compatibility before removal.
 
-### 21. One overlay event schedules refresh of every changed source path — DEFERRED (roadmap)
+### 21. One overlay event schedules refresh of every changed source path — FIXED in 0.16.8 (06c3697)
 
 - **Severity:** tidy.
 - **Locations:** `packages/room-mcp/src/graph-index.ts:78`, `packages/room-mcp/src/graph-index.ts:128`, `packages/room-mcp/src/graph-index.ts:146`, `packages/room-mcp/src/graph-index.ts:119`.

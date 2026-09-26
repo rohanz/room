@@ -7347,6 +7347,13 @@ var init_format = __esm({
 });
 
 // packages/shared/src/near.ts
+function coordinationPaths(room, excludingParticipant, options = {}) {
+  return [
+    ...room.allScopes().filter((scope) => scope.by !== excludingParticipant).flatMap((scope) => scope.paths.map((path25) => ({ by: scope.by, path: path25, reason: "scope" }))),
+    ...room.openClaims().filter((claim2) => claim2.by !== excludingParticipant || options.includeOwnNonAgentClaims && !isAgentic(claim2.byKind)).map((claim2) => ({ by: claim2.by, path: claim2.path, reason: "claim" })),
+    ...[.../* @__PURE__ */ new Set([...room.overlays.keys(), ...room.deleted.keys()])].filter((by) => by !== excludingParticipant).flatMap((by) => room.changedPaths(by).map((path25) => ({ by, path: path25, reason: "changed" })))
+  ];
+}
 function normalizeCoordinationPath(p) {
   const parts2 = [];
   for (const part of p.replaceAll("\\", "/").split("/")) {
@@ -7371,6 +7378,7 @@ function nearPath(path25, others) {
 var init_near = __esm({
   "packages/shared/src/near.ts"() {
     "use strict";
+    init_identity();
   }
 });
 
@@ -25650,6 +25658,24 @@ var init_channel = __esm({
   }
 });
 
+// packages/room-mcp/src/base-notice.ts
+async function dropSatisfiedBaseNotice(s, m) {
+  if (m.type !== "base") return false;
+  try {
+    await git(s.dir, ["merge-base", "--is-ancestor", m.base, "HEAD"]);
+    s.room.markSeen(s.me.name, [m.id]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+var init_base_notice = __esm({
+  "packages/room-mcp/src/base-notice.ts"() {
+    "use strict";
+    init_git();
+  }
+});
+
 // packages/room-mcp/src/wake-path.ts
 import net from "node:net";
 import { execFileSync as execFileSync3 } from "node:child_process";
@@ -25730,6 +25756,7 @@ var init_wake_path = __esm({
     "use strict";
     init_config();
     init_channel();
+    init_base_notice();
     SOCKET_WAKE_WINDOW_MS = 5e3;
     SOCKET_POST_TIMEOUT_MS = 1500;
     SocketWakeRouter = class {
@@ -25776,7 +25803,13 @@ var init_wake_path = __esm({
       }
       async channel(wake) {
         if (this.o.channel === "") return;
+        if (wake.meta.type === "base" && await this.satisfied(wake)) return;
         await sendChannelNotification(wake, this.o.notify);
+      }
+      async satisfied(wake) {
+        const s = this.o.recipient;
+        const m = s?.room.messages().find((m2) => m2.id === wake.meta.msg_id);
+        return !!s && !!m && dropSatisfiedBaseNotice(s, m);
       }
       channelAdmitted() {
         const env = this.o.env ?? process.env;
@@ -25793,7 +25826,10 @@ var init_wake_path = __esm({
         });
       }
       async flush() {
-        const items = this.pending.splice(0).filter((w) => !this.o.isPendingWait?.(w) && this.unread(w));
+        const items = [];
+        for (const w of this.pending.splice(0)) {
+          if (!this.o.isPendingWait?.(w) && this.unread(w) && (w.meta.type !== "base" || !await this.satisfied(w))) items.push(w);
+        }
         if (!items.length || this.closed) return;
         this.lastSentAt = Date.now();
         const count = items.length;
@@ -26190,6 +26226,7 @@ var init_hooks_bridge = __esm({
     init_config();
     init_prompt();
     init_company();
+    init_base_notice();
     SESSION_FRESH_MS = 10 * 60 * 1e3;
     HooksBridge = class {
       constructor(s, o) {
@@ -26207,6 +26244,7 @@ var init_hooks_bridge = __esm({
       startedAt = Date.now();
       unobserve = [];
       delivering = /* @__PURE__ */ new Set();
+      preflighting = false;
       generation = 0;
       stopped = false;
       start() {
@@ -26222,7 +26260,9 @@ var init_hooks_bridge = __esm({
             this.s.awareness.off("change", kick);
           });
           const receipts = this.s.room.seen(this.s.me.name);
-          const onSeen = () => this.write();
+          const onSeen = () => {
+            if (!this.preflighting) this.write();
+          };
           receipts.observe(onSeen);
           this.unobserve.push(() => receipts.unobserve(onSeen));
         }
@@ -26263,11 +26303,19 @@ var init_hooks_bridge = __esm({
         if (this.timer) return;
         this.timer = setTimeout(() => {
           this.timer = null;
-          try {
-            this.write();
-          } catch (e) {
-            this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`);
-          }
+          void (async () => {
+            try {
+              this.preflighting = true;
+              for (const m of this.s.room.messages()) {
+                if (m.type === "base" && !this.isSeen(m.id) && this.o.forMe(m)) await dropSatisfiedBaseNotice(this.s, m);
+              }
+              if (!this.stopped) this.write();
+            } catch (e) {
+              this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`);
+            } finally {
+              this.preflighting = false;
+            }
+          })();
         }, 150);
         this.timer.unref?.();
       }
@@ -26279,11 +26327,7 @@ var init_hooks_bridge = __esm({
         const openClaims = this.s.room.openClaims();
         const ownClaims = openClaims.filter((c) => c.by === me && isAgentic(c.byKind)).map((c) => ({ path: c.path, from: c.from, to: c.to }));
         const claims = openClaims.filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
-        const near = [
-          ...this.s.room.allScopes().filter((sc) => sc.by !== me).flatMap((sc) => sc.paths.map((path25) => ({ by: sc.by, path: path25, reason: "scope" }))),
-          ...claims.map((c) => ({ by: c.by, path: c.path, reason: "claim" })),
-          ...[.../* @__PURE__ */ new Set([...this.s.room.overlays.keys(), ...this.s.room.deleted.keys()])].filter((by) => by !== me).flatMap((by) => this.s.room.changedPaths(by).map((path25) => ({ by, path: path25, reason: "changed" })))
-        ];
+        const near = coordinationPaths(this.s.room, me, { includeOwnNonAgentClaims: true });
         const company = this.o.company?.() ?? hasCompany(this.s, [], this.o.now?.() ?? Date.now());
         const presences = [...this.s.awareness.getStates().values()];
         const others = company.others.map((name2) => displayName({ name: name2, kind: (presences.find((p) => p.user?.name === name2 && p.user.kind === "agent") ?? presences.find((p) => p.user?.name === name2))?.user?.kind ?? this.s.room.scope(name2)?.byKind ?? "agent" }));
@@ -26366,6 +26410,7 @@ Call room_state, then react per the room-etiquette skill.`;
           syncHookSeen(this.s);
           if (!active()) return;
           if (this.isSeen(m.id)) return;
+          if (await dropSatisfiedBaseNotice(this.s, m)) return;
           try {
             await (this.o.queue ?? defaultQueue)(session.id, text);
             if (!active()) return;
@@ -31042,14 +31087,20 @@ async function consumesSymbol(consumer, text, provider, symbol, known) {
   for (const path25 of files.keys()) graph.set(path25, "");
   return graph.dependenciesOf(consumer).some((dep) => dep.symbol === name2 && dep.definedIn.includes(provider));
 }
-function touchedPaths(events) {
+function touchedPaths(events, root, known) {
   const paths = /* @__PURE__ */ new Set();
   for (const event of events) {
     if (event.path.length >= 2) paths.add(String(event.path[1]));
-    else if (event.path.length === 1) for (const key of event.changes.keys.keys()) paths.add(key);
-    else for (const [person, change] of event.changes.keys) {
-      if (change.action !== "add") return void 0;
-      for (const key of event.target.get(person)?.keys() ?? []) paths.add(key);
+    else if (event.path.length === 1) {
+      for (const key of event.changes.keys.keys()) paths.add(key);
+      const person = String(event.path[0]);
+      known.set(person, new Set(root.get(person)?.keys() ?? []));
+    } else for (const [person, change] of event.changes.keys) {
+      if (change.action !== "add") for (const key of known.get(person) ?? []) paths.add(key);
+      const current = root.get(person);
+      for (const key of current?.keys() ?? []) paths.add(key);
+      if (current) known.set(person, new Set(current.keys()));
+      else known.delete(person);
     }
   }
   return paths;
@@ -31062,7 +31113,7 @@ function hashOf(text) {
   }
   return h >>> 0;
 }
-var isSourcePath, MAX_FILES, MAX_BYTES2, MAX_EDGES, MAX_OBSERVED, MAX_SNAPSHOT_BYTES, MIN_PUBLISH_MS, GraphIndex;
+var isSourcePath, MAX_FILES, MAX_BYTES2, MAX_REFRESH_CONCURRENCY, MAX_EDGES, MAX_OBSERVED, MAX_SNAPSHOT_BYTES, MIN_PUBLISH_MS, GraphIndex;
 var init_graph_index = __esm({
   "packages/room-mcp/src/graph-index.ts"() {
     "use strict";
@@ -31074,6 +31125,7 @@ var init_graph_index = __esm({
     isSourcePath = (path25) => specForPath(path25) !== void 0;
     MAX_FILES = 3e3;
     MAX_BYTES2 = 256 * 1024;
+    MAX_REFRESH_CONCURRENCY = 8;
     MAX_EDGES = 4e3;
     MAX_OBSERVED = 200;
     MAX_SNAPSHOT_BYTES = 200 * 1024;
@@ -31096,8 +31148,10 @@ var init_graph_index = __esm({
       graph;
       cache = /* @__PURE__ */ new Map();
       pending = /* @__PURE__ */ new Map();
+      /** Owns the concurrency limit and per-path deduplication for initial and overlay refreshes. */
+      refreshQueue = [];
+      activeRefreshes = 0;
       revisions = /* @__PURE__ */ new Map();
-      previousChanged = /* @__PURE__ */ new Set();
       observedByPath = /* @__PURE__ */ new Map();
       degradedPaths = /* @__PURE__ */ new Set();
       generation = 0;
@@ -31114,18 +31168,24 @@ var init_graph_index = __esm({
       /** Resolves when the initial build is done. */
       ready = Promise.resolve();
       start() {
-        for (const person of /* @__PURE__ */ new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) {
-          for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) this.previousChanged.add(p);
-        }
         this.ready = this.initialBuild();
-        const onOverlays = (events) => {
-          if (!this.stopped) this.refreshChanged(touchedPaths(events));
+        const observe = (root) => {
+          const known = new Map([...root].map(([person, map2]) => [person, new Set(map2.keys())]));
+          return (events) => {
+            if (this.stopped) return;
+            const paths = touchedPaths(events, root, known);
+            if (this.base) {
+              for (const path25 of paths) if (isSourcePath(path25)) void this.refresh(path25);
+            }
+          };
         };
+        const onOverlays = observe(this.room.overlays);
+        const onDeleted = observe(this.room.deleted);
         this.room.overlays.observeDeep(onOverlays);
-        this.room.deleted.observeDeep(onOverlays);
+        this.room.deleted.observeDeep(onDeleted);
         this.unobserve.push(() => {
           this.room.overlays.unobserveDeep(onOverlays);
-          this.room.deleted.unobserveDeep(onOverlays);
+          this.room.deleted.unobserveDeep(onDeleted);
         });
         const onMeta = () => {
           if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.ready = this.rebuild();
@@ -31138,6 +31198,10 @@ var init_graph_index = __esm({
         clearTimeout(this.jitterTimer);
         this.endJitter?.();
         clearTimeout(this.publishing);
+        for (const path25 of this.refreshQueue.splice(0)) {
+          this.pending.get(path25)?.resolve();
+          this.pending.delete(path25);
+        }
         for (const u of this.unobserve) u();
         this.unobserve = [];
       }
@@ -31184,24 +31248,13 @@ var init_graph_index = __esm({
           this.graph.remove(p);
         }
         const t0 = Date.now();
-        const queue = Array.from(all2);
-        await ensureLanguages(queue);
-        await Promise.all(Array.from({ length: Math.min(8, queue.length) }, async () => {
-          while (queue.length && generation === this.generation && !this.stopped) await this.refresh(queue.shift());
-        }));
+        const pathsToRefresh = Array.from(all2);
+        await ensureLanguages(pathsToRefresh);
+        await Promise.all(pathsToRefresh.map((path25) => this.refresh(path25)));
         if (generation !== this.generation || this.stopped) return;
         this.phase = "ready";
         this.publish("ready");
         this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`);
-      }
-      /** Refresh the paths an overlay event touched (all changed paths when a whole person's map changed) and any that left the changed set. */
-      refreshChanged(touched) {
-        if (!this.base) return;
-        const changed = /* @__PURE__ */ new Set();
-        for (const person of /* @__PURE__ */ new Set([...this.room.overlays.keys(), ...this.room.deleted.keys()])) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) changed.add(p);
-        const left = [...this.previousChanged].filter((p) => !changed.has(p));
-        for (const p of /* @__PURE__ */ new Set([...touched ? [...touched].filter(isSourcePath) : changed, ...left])) void this.refresh(p);
-        this.previousChanged = changed;
       }
       /** Current text for a path as the index sees it. */
       async textFor(path25) {
@@ -31217,74 +31270,91 @@ var init_graph_index = __esm({
         return gitShow(this.dir, this.base, path25);
       }
       refresh(path25) {
+        if (this.stopped) return Promise.resolve();
         this.revisions.set(path25, (this.revisions.get(path25) ?? 0) + 1);
         const inflight = this.pending.get(path25);
-        if (inflight) return inflight;
-        const p = (async () => {
-          while (!this.stopped) {
-            const revision = this.revisions.get(path25), generation = this.generation;
-            await ensureLanguages([path25]);
-            const text = await this.textFor(path25);
-            const parsed = text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path25, text);
-            const symbols = parsed ? {
-              defs: parsed.defs.map((definition) => definition.name),
-              refs: parsed.refs,
-              imports: parsed.imports
-            } : void 0;
-            const mine = this.room.text(path25, this.me);
-            const mineDeleted = this.room.deleted.get(this.me)?.has(path25) ?? false;
-            const own2 = workerBaseline(this.room.workerOf(this.me));
-            const read = (sha, file) => gitShow(this.dir, sha, file);
-            const baseRead = mine !== void 0 || mineDeleted ? own2 ? await readBaseline(own2, path25, read) : await read(this.base, path25).then(
-              (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
-              (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
-            ) : void 0;
-            if (this.stopped) return;
-            if (generation !== this.generation || revision !== this.revisions.get(path25)) continue;
-            if (!symbols || text === void 0) {
-              this.cache.delete(path25);
-              this.graph.remove(path25);
-            } else {
-              this.cache.set(path25, symbols);
-              this.graph.set(path25, text);
-            }
-            if (mine !== void 0 || mineDeleted) {
-              if (baseRead?.kind === "unavailable") {
-                this.degradedPaths.add(path25);
-                this.observedByPath.delete(path25);
-                this.log(`graph: baseline unavailable for ${path25}; observed contract coverage degraded: ${baseRead.error.message}`);
-                break;
-              }
-              this.degradedPaths.delete(path25);
-              const changes = observedContractChanges(baseRead?.kind === "available" ? baseRead.text : "", mineDeleted ? "" : mine ?? "", path25, parseFile).map((change) => ({ path: path25, ...change }));
-              if (changes.length) this.observedByPath.set(path25, changes);
-              else this.observedByPath.delete(path25);
-            } else {
-              this.observedByPath.delete(path25);
-              this.degradedPaths.delete(path25);
-            }
-            break;
-          }
-        })().catch((e) => this.log(`graph: ${path25}: ${e instanceof Error ? e.message : e}`)).finally(() => {
-          this.pending.delete(path25);
-          if (!this.stopped && !this.pending.size) {
-            clearTimeout(this.publishing);
-            this.publishing = setTimeout(() => {
-              try {
-                this.publish(this.phase);
-              } catch (e) {
-                this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`);
-              }
-            }, 100);
-          }
+        if (inflight) return inflight.promise;
+        let resolve5;
+        const promise = new Promise((r) => {
+          resolve5 = r;
         });
-        this.pending.set(path25, p);
-        return p;
+        this.pending.set(path25, { promise, resolve: resolve5 });
+        this.refreshQueue.push(path25);
+        this.drainRefreshQueue();
+        return promise;
+      }
+      drainRefreshQueue() {
+        while (!this.stopped && this.activeRefreshes < MAX_REFRESH_CONCURRENCY && this.refreshQueue.length) {
+          const path25 = this.refreshQueue.shift();
+          this.activeRefreshes++;
+          void this.runRefresh(path25).catch((e) => this.log(`graph: ${path25}: ${e instanceof Error ? e.message : e}`)).finally(() => {
+            this.activeRefreshes--;
+            this.pending.get(path25)?.resolve();
+            this.pending.delete(path25);
+            if (!this.stopped && !this.pending.size) {
+              clearTimeout(this.publishing);
+              this.publishing = setTimeout(() => {
+                try {
+                  this.publish(this.phase);
+                } catch (e) {
+                  this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`);
+                }
+              }, 100);
+            }
+            this.drainRefreshQueue();
+          });
+        }
+      }
+      async runRefresh(path25) {
+        while (!this.stopped) {
+          const revision = this.revisions.get(path25), generation = this.generation;
+          await ensureLanguages([path25]);
+          const text = await this.textFor(path25);
+          const parsed = text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path25, text);
+          const symbols = parsed ? {
+            defs: parsed.defs.map((definition) => definition.name),
+            refs: parsed.refs,
+            imports: parsed.imports
+          } : void 0;
+          const mine = this.room.text(path25, this.me);
+          const mineDeleted = this.room.deleted.get(this.me)?.has(path25) ?? false;
+          const own2 = workerBaseline(this.room.workerOf(this.me));
+          const read = (sha, file) => gitShow(this.dir, sha, file);
+          const baseRead = mine !== void 0 || mineDeleted ? own2 ? await readBaseline(own2, path25, read) : await read(this.base, path25).then(
+            (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
+            (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
+          ) : void 0;
+          if (this.stopped) return;
+          if (generation !== this.generation || revision !== this.revisions.get(path25)) continue;
+          if (!symbols || text === void 0) {
+            this.cache.delete(path25);
+            this.graph.remove(path25);
+          } else {
+            this.cache.set(path25, symbols);
+            this.graph.set(path25, text);
+          }
+          if (mine !== void 0 || mineDeleted) {
+            if (baseRead?.kind === "unavailable") {
+              this.degradedPaths.add(path25);
+              this.observedByPath.delete(path25);
+              this.log(`graph: baseline unavailable for ${path25}; observed contract coverage degraded: ${baseRead.error.message}`);
+              break;
+            }
+            this.degradedPaths.delete(path25);
+            const changes = observedContractChanges(baseRead?.kind === "available" ? baseRead.text : "", mineDeleted ? "" : mine ?? "", path25, parseFile).map((change) => ({ path: path25, ...change }));
+            if (changes.length) this.observedByPath.set(path25, changes);
+            else this.observedByPath.delete(path25);
+          } else {
+            this.observedByPath.delete(path25);
+            this.degradedPaths.delete(path25);
+          }
+          break;
+        }
       }
       /** Wait for overlay work already queued as well as base rebuilds. */
       async whenIdle() {
         await this.ready;
-        while (this.pending.size) await Promise.all(this.pending.values());
+        while (this.pending.size) await Promise.all([...this.pending.values()].map((entry) => entry.promise));
       }
       publish(status) {
         if (this.stopped) return;
@@ -35039,12 +35109,8 @@ function handlers(state) {
       if (typeof a.path !== "string" || !a.path) return "error: path is required";
       if (typeof a.intent !== "string" || !a.intent) return "error: intent is required";
       const p = a.path, intent = a.intent;
-      const nearby = [
-        ...s.room.allScopes().flatMap((sc) => sc.paths.map((path25) => ({ by: sc.by, path: path25, reason: "scope" }))),
-        ...s.room.openClaims().map((c) => ({ by: c.by, path: c.path, reason: "claim" })),
-        ...[.../* @__PURE__ */ new Set([...s.room.overlays.keys(), ...s.room.deleted.keys()])].flatMap((by) => s.room.changedPaths(by).map((path25) => ({ by, path: path25, reason: "changed" })))
-      ];
-      if (!nearPath(p, nearby.filter((entry) => entry.by !== s.me.name && (entry.reason !== "changed" || !sameCheckoutSession(s, entry.by)))).length) return `${p}: no claim needed; nobody else is near this path`;
+      const nearby = coordinationPaths(s.room, s.me.name);
+      if (!nearPath(p, nearby.filter((entry) => entry.reason !== "changed" || !sameCheckoutSession(s, entry.by))).length) return `${p}: no claim needed; nobody else is near this path`;
       const plans = parsePlans(a.plans);
       if (typeof plans === "string") return plans;
       const directory = p.endsWith("/");
@@ -45297,6 +45363,7 @@ init_src();
 
 // packages/room-mcp/src/tools/index.ts
 init_hooks_bridge();
+init_base_notice();
 init_company();
 init_connection();
 init_registry();
@@ -45315,6 +45382,7 @@ init_config();
 init_prompt();
 init_connection();
 init_company();
+init_src();
 init_src();
 init_git();
 init_baseline();
@@ -45419,10 +45487,10 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       const myPaths = [...s.room.scope(s.me.name)?.paths ?? [], ...s.room.changedPaths(s.me.name), ...myClaims.map((c) => c.path)];
       const overlapsMyPath = (p) => myPaths.some((q) => scopeCovers({ paths: [q] }, p) || scopeCovers({ paths: [p] }, q));
       const pathInView = (p) => all2 || overlapsMyPath(p) || mineA.includes(areasOf(s).areaOf(p));
+      const nearby = coordinationPaths(s.room, s.me.name);
       const inView = (person) => {
         if (all2 || person === s.me.name || sameCheckoutSession(s, person)) return true;
-        const sc = s.room.scope(person);
-        if (sc?.paths.some(overlapsMyPath)) return true;
+        if (nearby.some((entry) => entry.by === person && entry.reason !== "claim" && overlapsMyPath(entry.path))) return true;
         const theirs = s.room.openClaims().filter((c) => c.by === person);
         return theirs.some((c) => myClaims.some((m2) => claimsOverlap(c, m2)));
       };
@@ -46063,6 +46131,7 @@ init_claims2();
 // packages/room-mcp/src/tools/messaging.ts
 init_src();
 init_hooks_bridge();
+init_base_notice();
 init_prs();
 init_context();
 var WAIT_DEFAULT = 3e4;
@@ -46240,7 +46309,8 @@ function handlers5(state) {
         const notice = unavailableQuestion(qRoom, questionId);
         if (notice) return notice;
       }
-      const waitResult = (x, m, workersRoom = false) => {
+      const waitResult = async (x, m, workersRoom = false) => {
+        if (await dropSatisfiedBaseNotice(x, m)) return;
         if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
           received(x, m);
           if (m.type === "answer") return `answered: ${formatMsg(m)}`;
@@ -46257,7 +46327,7 @@ function handlers5(state) {
       const candidates = [s, ...rooms.all().filter((x) => x !== s)].flatMap((x) => x.room.messages().filter((m) => !seen.has(m.id) && !x.room.seen(x.me.name).has(m.id)).map((m) => ({ x, m })));
       candidates.sort((a2, b) => (a2.m.priority === "interrupt" ? 0 : a2.m.type === "question" ? 1 : 2) - (b.m.priority === "interrupt" ? 0 : b.m.type === "question" ? 1 : 2) || a2.m.at - b.m.at);
       for (const { x, m } of candidates) {
-        const ended = waitResult(x, m, x !== s);
+        const ended = await waitResult(x, m, x !== s);
         if (ended) return ended;
       }
       if (offline(s)) return "offline: queued/not delivered; room_wait cannot observe new messages until reconnected";
@@ -46299,10 +46369,12 @@ function handlers5(state) {
         };
         const onWorkersBus = (ev) => {
           if (!ws) return;
-          for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-            const ended = waitResult(ws, m, true);
-            if (ended) return finish(ended);
-          }
+          void (async () => {
+            for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
+              const ended = await waitResult(ws, m, true);
+              if (ended) return finish(ended);
+            }
+          })();
         };
         timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap((room) => myWorkers(room)).filter((w) => w.status === "running" && w.exitCode === void 0).map((w) => [w.name, w])).values()];
@@ -46312,10 +46384,12 @@ function handlers5(state) {
           if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`);
         };
         const onBus = (ev) => {
-          for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-            const ended = waitResult(s, m);
-            if (ended) return finish(ended);
-          }
+          void (async () => {
+            for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
+              const ended = await waitResult(s, m);
+              if (ended) return finish(ended);
+            }
+          })();
         };
         s.room.claims.observe(onClaims);
         s.room.bus.observe(onBus);
@@ -48512,6 +48586,13 @@ function createTools(ctx) {
           const prefix = moved ? `${moved}
 
 ` : "";
+          if (s2 && name2 !== "room_join" && name2 !== "room_create") {
+            for (const source of [s2, state.rooms.workers()].filter((x) => !!x)) {
+              for (const m of source.room.messages()) {
+                if (m.type === "base" && state.forMe(source, m) && !source.room.seen(source.me.name).has(m.id)) await dropSatisfiedBaseNotice(source, m);
+              }
+            }
+          }
           const unread = s2 && name2 !== "room_join" && name2 !== "room_create" ? state.inbox(s2) : "";
           const sharing = s2 ? await teamSharingNote(s2) : "";
           const health2 = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name2, !s2.local) : "";
@@ -48732,7 +48813,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.7",
+  version: "0.16.8",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
@@ -48871,7 +48952,7 @@ async function main() {
   const attachChannel = (s) => {
     if (attachedWakeSessions.has(s)) return;
     attachedWakeSessions.add(s);
-    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: (wake) => !!s.room.messages().find((m) => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log });
+    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), recipient: s, isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: (wake) => !!s.room.messages().find((m) => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log });
     const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
     s.room.bus.observe((ev) => {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
