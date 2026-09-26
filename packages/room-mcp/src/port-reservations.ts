@@ -35,10 +35,6 @@ export function bindWorkerPortReservation(proc: SpawnedProcess, reservation: Por
   processReservations.set(proc, release)
   const onExit = proc.onExit.bind(proc)
   proc.onExit = cb => onExit(code => { release(); cb(code) })
-  if (proc.onError) {
-    const onError = proc.onError.bind(proc)
-    proc.onError = cb => onError(error => { release(); cb(error) })
-  }
 }
 
 /** Used when a worker is already gone before a collect, discard or stop observes it. */

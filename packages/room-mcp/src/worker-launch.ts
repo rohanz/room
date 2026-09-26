@@ -3,11 +3,11 @@ import path from 'node:path'
 import type { Session } from './session.js'
 import type { Rooms } from './registry.js'
 import { toolCallAborted } from './registry.js'
-import { bindWorkerPortReservation, releaseWorkerProcessPort, reserveWorkerPort } from './port-reservations.js'
-import { defaultSpawner, probeProcess, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type ProcessInfo, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
+import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
+import { defaultSpawner, probeProcess, stopWorkerWithEscalation, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type ProcessInfo, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
 
 export class WorkerLaunchError extends Error {
-  constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string, readonly delivered = false, readonly pid?: number) { super(message) }
+  constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string, readonly delivered = false, readonly pid?: number, readonly stopped = false) { super(message) }
 }
 
 export interface WorkerLaunchLease { release(): void }
@@ -44,6 +44,9 @@ export async function launchWorkerProcess(policy: Policy, command: Command, leas
   let passed = false
   let delivered = false
   let proc: SpawnedProcess | undefined
+  let exited = false
+  let watching = false
+  let stoppingReason: import('@room/shared').Worker['stopReason'] | undefined
   try {
     try { reservation = reserveWorkerPort(id, policy.usedPorts ?? [], undefined, policy.preferredPort) }
     catch (e) { throw new WorkerLaunchError('port', String(e instanceof Error ? e.message : e)) }
@@ -77,7 +80,6 @@ export async function launchWorkerProcess(policy: Policy, command: Command, leas
     try { await proc.started }
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
     delivered = true
-    if (toolCallAborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)
     bindWorkerPortReservation(proc, reservation)
     passed = true
     rooms.setHandle(s, id, proc)
@@ -86,21 +88,34 @@ export async function launchWorkerProcess(policy: Policy, command: Command, leas
     if (!onStarted(result)) {
       throw new WorkerLaunchError('stale', `${tag} changed during launch; attempted to stop the new process`, true)
     }
+    rooms.watchWorkerProcess(s, id, proc, command.mode === 'resume' ? `could not resume ${tag}` : `could not start ${built.cmd}`, policy.log, policy.at, () => { exited = true; return stoppingReason })
+    watching = true
     if (policy.host === 'codex') {
       const launchedProc = proc
       proc.onSessionId?.(sessionId => onSessionId?.(sessionId, launchedProc))
     }
-    rooms.watchWorkerProcess(s, id, proc, command.mode === 'resume' ? `could not resume ${tag}` : `could not start ${built.cmd}`, policy.log, policy.at)
+    if (toolCallAborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)
     lease.release()
     return result
   } catch (e) {
+    let stopped = false
     if (delivered && proc) {
-      rooms.dropHandle(s, id, proc)
-      try { proc.kill() } catch (stopError) { policy.log(`worker launch: could not stop ${tag}: ${stopError}`) }
-      releaseWorkerProcessPort(proc)
+      const launchedProc = proc
+      const current = s.room.workers.get(tag)
+      const ownsRecord = current?.id === id && current.pid === launchedProc.pid
+      const reason = e instanceof WorkerLaunchError && e.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
+      if (ownsRecord) stoppingReason = reason
+      try {
+        if (watching) stopped = await stopWorkerWithEscalation({
+          terminate: () => launchedProc.kill(), exited: () => exited,
+          force: () => launchedProc.killForce?.() ?? false,
+        })
+        else launchedProc.kill() // No exit observer was installed; never report a confirmed stop.
+      } catch (stopError) { policy.log(`worker launch: could not stop ${tag}: ${stopError}`) }
+      if (!stopped) stoppingReason = undefined
     }
-    if (e instanceof WorkerLaunchError) throw delivered ? new WorkerLaunchError(e.phase, e.message, true, proc?.pid) : e
-    throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e), delivered, proc?.pid)
+    if (e instanceof WorkerLaunchError) throw delivered ? new WorkerLaunchError(e.phase, e.message, true, proc?.pid, stopped) : e
+    throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e), delivered, proc?.pid, stopped)
   } finally {
     if (!passed) reservation?.release()
   }

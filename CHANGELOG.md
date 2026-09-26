@@ -2,7 +2,7 @@
 
 ## 0.16.11
 
-- A resumed worker's message is delivered once its host process starts with that prompt. If cancellation or a later launch step stops the worker, `room_send` still records the answer or note with its seen receipt, and `room_state` explains why the worker stopped. Failures before process start leave no message.
+- A resumed worker's message is delivered once its host process starts with that prompt. After cancellation or a later launch failure, Room waits for the host's exit before reporting it stopped and releasing its handle and port. It uses the discard stop sequence (TERM, then KILL after five seconds, with a final five-second wait). If signalling fails or exit is unconfirmed, `room_send` reports the PID as left running and keeps the worker, handle and port. The delivered answer or note stays posted with its seen receipt. Failures before process start leave no message.
 
 ## 0.16.10
 

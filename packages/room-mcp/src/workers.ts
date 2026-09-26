@@ -127,6 +127,8 @@ export interface SpawnedProcess {
   onSessionId?(cb: (id: string) => void): void
   /** SIGTERM the worker; true when a signal was actually delivered (false: no pid, or the process is gone). */
   kill(): boolean
+  /** SIGKILL the same child after SIGTERM's grace period. */
+  killForce?(): boolean
 }
 /** Injectable for tests: how a worker process is started. */
 export type Spawner = (spec: SpawnSpec) => SpawnedProcess
@@ -634,7 +636,29 @@ export const defaultSpawner: Spawner = spec => {
     onError: cb => { child.once('error', cb) },
     onSessionId: cb => { sessionIdCallback = cb; if (sessionId) cb(sessionId) },
     kill: () => { try { return child.kill('SIGTERM') } catch { return false } },
+    killForce: () => { try { return child.kill('SIGKILL') } catch { return false } },
   }
+}
+
+/** Shared bounded host stop: TERM, five seconds to exit, KILL, five seconds to exit. */
+export async function stopWorkerWithEscalation(options: {
+  terminate(): boolean | Promise<boolean>
+  exited(): boolean
+  force(): boolean | Promise<boolean>
+  sleep?: (ms: number) => Promise<void>
+  now?: () => number
+}): Promise<boolean> {
+  if (!await options.terminate()) return false
+  const sleep = options.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const now = options.now ?? Date.now
+  const wait = async () => {
+    const deadline = now() + 5_000
+    while (!options.exited() && now() < deadline) await sleep(50)
+    return options.exited()
+  }
+  if (await wait()) return true
+  await options.force()
+  return wait()
 }
 
 export function pidAlive(pid: number): boolean {

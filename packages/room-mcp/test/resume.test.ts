@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -15,11 +15,12 @@ import type { Session } from '../src/session.js'
 import type { PreparedWorktree, SpawnSpec } from '../src/workers.js'
 
 const scratch: string[] = []
-afterEach(() => { vi.unstubAllEnvs(); for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
-function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise<PreparedWorktree>, probe: (pid: number) => { startTime?: string; executable?: string } | undefined = () => undefined, failStart = false, started: Promise<void> = Promise.resolve(), failWatch = false) {
+function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise<PreparedWorktree>, probe: (pid: number) => { startTime?: string; executable?: string } | undefined = () => undefined, failStart = false, started: Promise<void> = Promise.resolve(), failWatch = false, stop: { term?: boolean; exitOnTerm?: boolean; exitOnForce?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'room-resume-'))
   scratch.push(dir)
+  vi.stubEnv('XDG_CONFIG_HOME', dir)
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
   git('init', '-q', '-b', 'main')
   git('config', 'user.email', 'test@test')
@@ -49,7 +50,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   const spawned = new Promise<void>(resolve => { notifySpawn = resolve })
   const tools = createTools({
     getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers, log: line => logs.push(line), probe, listCwdProcesses: () => [],
-    spawner: spec => { if (failStart) throw new Error('host unavailable'); specs.push(spec); notifySpawn(); return { pid: 6000 + specs.length, started, onExit: cb => { if (failWatch) throw new Error('could not watch exit'); exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => { kills.push(1); return true } } },
+    spawner: spec => { if (failStart) throw new Error('host unavailable'); specs.push(spec); notifySpawn(); return { pid: 6000 + specs.length, started, onExit: cb => { if (failWatch) throw new Error('could not watch exit'); exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => { kills.push(1); if (stop.exitOnTerm) queueMicrotask(() => exits.at(-1)?.(0)); return stop.term ?? true }, killForce: () => { kills.push(9); if (stop.exitOnForce) queueMicrotask(() => exits.at(-1)?.(null)); return true } } },
     worktree: worktree ?? (async (repo, tag) => {
       const workerDir = join(repo, '.room', 'workers', tag)
       mkdirSync(workerDir, { recursive: true })
@@ -66,7 +67,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
       branch: `room/${tag}`, pid: -1, startedAt: 1, status: 'done', exitCode: 0, gen: 1, ...patch,
     })
   }
-  return { dir, room, session, tools, specs, spawned, exits, errors, kills, logs, seed }
+  return { dir, room, session, tools, specs, spawned, exits, errors, kills, logs, seed, portFile: (port: number) => join(dir, 'room', 'ports', String(port)) }
 }
 
 describe('resumed worker boundaries', () => {
@@ -100,6 +101,7 @@ describe('resumed worker boundaries', () => {
     expect(t.specs[1].args).toContain('--resume')
     expect(t.room.workers.get('policy')).toMatchObject({ status: 'running', pid: 6002 })
     t.errors[1](new Error('host failed'))
+    t.exits[1](-1)
     await vi.waitFor(() => expect(t.room.workers.get('policy')).toMatchObject({ status: 'failed', exitCode: -1 }))
     await vi.waitFor(() => expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('could not resume policy: host failed'))).toBe(true))
     expect(t.logs).toEqual([])
@@ -248,6 +250,7 @@ describe('resumed worker boundaries', () => {
     t.seed('crash')
     expect(await t.tools.call('room_send', { type: 'note', to: 'crash', text: 'again' })).toContain('resumed crash')
     t.errors[0](new Error('host unavailable'))
+    t.exits[0](-1)
     await vi.waitFor(() => expect(t.room.workers.get('crash')).toMatchObject({ status: 'failed', exitCode: -1 }))
     await vi.waitFor(() => expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('could not resume crash: host unavailable'))).toBe(true))
   })
@@ -360,9 +363,15 @@ describe('resumed worker boundaries', () => {
     expect(t.room.messages()).toHaveLength(before)
     controller.abort()
     resolveStart()
+    await vi.waitFor(() => expect(t.kills).toEqual([1]))
+    const active = t.room.workers.get('cancelled')!
+    expect(active).toMatchObject({ status: 'running', pid: 6001 })
+    expect(existsSync(t.portFile(active.port!))).toBe(true)
+    t.exits[0](0)
     const reply = await sending
     expect(reply).toContain('stopped after receiving your message: cancelled')
     expect(t.kills).toHaveLength(1)
+    expect(existsSync(t.portFile(active.port!))).toBe(false)
     const delivered = t.room.messages().filter(m => m.text === 'price_cents')
     expect(delivered).toHaveLength(1)
     expect(delivered[0].type).toBe(type)
@@ -380,16 +389,94 @@ describe('resumed worker boundaries', () => {
     }
   })
 
-  it('records a delivered follow-up when a post-start watcher fails', async () => {
+  it('keeps a delivered follow-up running when its exit watcher cannot be installed', async () => {
     const t = setup(2, undefined, () => undefined, false, Promise.resolve(), true)
     t.seed('watch-failed')
     const recipient = t.room.workers.get('watch-failed')!.name
     const reply = await t.tools.call('room_send', { type: 'note', to: 'watch-failed', text: 'check the port' })
-    expect(reply).toContain('stopped after receiving your message: could not watch exit')
+    expect(reply).toContain('could not stop watch-failed (pid 6001); left running')
     expect(t.kills).toHaveLength(1)
     const message = t.room.messages().find(m => m.text === 'check the port')!
     expect(t.room.seen(recipient).has(message.id)).toBe(true)
-    expect(t.room.workers.get('watch-failed')).toMatchObject({ status: 'dismissed', stopReason: 'message-delivered-failed' })
+    expect(t.room.workers.get('watch-failed')).toMatchObject({ status: 'running', pid: 6001 })
+    expect(existsSync(t.portFile(t.room.workers.get('watch-failed')!.port!))).toBe(true)
+  })
+
+  it('keeps the handle, port and running record when TERM is refused after delivery', async () => {
+    const handles = vi.spyOn(Rooms.prototype, 'setHandle')
+    let resolveStart!: () => void
+    const started = new Promise<void>(resolve => { resolveStart = resolve })
+    const t = setup(2, undefined, () => undefined, false, started, false, { term: false })
+    t.seed('refused')
+    const controller = new AbortController()
+    const sending = t.tools.call('room_send', { type: 'note', to: 'refused', text: 'sent' }, controller.signal)
+    await t.spawned
+    controller.abort()
+    resolveStart()
+    expect(await sending).toContain('could not stop refused (pid 6001); left running')
+    const w = t.room.workers.get('refused')!
+    const registry = handles.mock.instances.at(-1)!
+    expect(registry.handle(t.session, w.id)?.pid).toBe(6001)
+    expect(w).toMatchObject({ status: 'running', pid: 6001, stopReason: undefined })
+    expect(t.kills).toEqual([1])
+    expect(existsSync(t.portFile(w.port!))).toBe(true)
+    expect(t.room.messages().some(m => m.text === 'sent')).toBe(true)
+    expect(await t.tools.call('room_send', { type: 'note', to: 'refused', text: 'again' })).toContain('sent ')
+    expect(t.specs).toHaveLength(1)
+    t.exits[0](0)
+    await vi.waitFor(() => expect(existsSync(t.portFile(w.port!))).toBe(false))
+    expect(registry.handle(t.session, w.id)).toBeUndefined()
+  })
+
+  it('escalates ignored TERM to KILL and waits for exit before recording stopped', async () => {
+    const handles = vi.spyOn(Rooms.prototype, 'setHandle')
+    let resolveStart!: () => void
+    const started = new Promise<void>(resolve => { resolveStart = resolve })
+    const t = setup(2, undefined, () => undefined, false, started, false, { exitOnForce: true })
+    t.seed('stubborn')
+    const controller = new AbortController()
+    const sending = t.tools.call('room_send', { type: 'note', to: 'stubborn', text: 'sent' }, controller.signal)
+    await t.spawned
+    vi.useFakeTimers()
+    try {
+      controller.abort()
+      resolveStart()
+      await vi.advanceTimersByTimeAsync(1)
+      const w = t.room.workers.get('stubborn')!
+      const registry = handles.mock.instances.at(-1)!
+      expect(w.status).toBe('running')
+      expect(registry.handle(t.session, w.id)?.pid).toBe(6001)
+      expect(existsSync(t.portFile(w.port!))).toBe(true)
+      await vi.advanceTimersByTimeAsync(5_100)
+      expect(await sending).toContain('stopped after receiving your message: cancelled')
+      expect(t.kills).toEqual([1, 9])
+      expect(t.room.workers.get('stubborn')).toMatchObject({ status: 'dismissed', stopReason: 'message-delivered-cancelled' })
+      expect(existsSync(t.portFile(w.port!))).toBe(false)
+      expect(registry.handle(t.session, w.id)).toBeUndefined()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('leaves an unresponsive worker running after both stop deadlines', async () => {
+    const handles = vi.spyOn(Rooms.prototype, 'setHandle')
+    let resolveStart!: () => void
+    const started = new Promise<void>(resolve => { resolveStart = resolve })
+    const t = setup(2, undefined, () => undefined, false, started)
+    t.seed('unresponsive')
+    const controller = new AbortController()
+    const sending = t.tools.call('room_send', { type: 'note', to: 'unresponsive', text: 'sent' }, controller.signal)
+    await t.spawned
+    vi.useFakeTimers()
+    try {
+      controller.abort()
+      resolveStart()
+      await vi.advanceTimersByTimeAsync(10_100)
+      expect(await sending).toContain('could not stop unresponsive (pid 6001); left running')
+      const w = t.room.workers.get('unresponsive')!
+      expect(w).toMatchObject({ status: 'running', stopReason: undefined })
+      expect(handles.mock.instances.at(-1)!.handle(t.session, w.id)?.pid).toBe(6001)
+      expect(existsSync(t.portFile(w.port!))).toBe(true)
+      expect(t.kills).toEqual([1, 9])
+    } finally { vi.useRealTimers() }
   })
 
   it('does not launch or post when cancelled before spawn', async () => {

@@ -4,7 +4,7 @@ import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidPresent, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, type CwdProcessLister, type ProcessProbe } from '../workers.js'
+import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidPresent, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../workers.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode } from './files.js'
@@ -177,14 +177,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const how = await state.dismissWorker(s, w, 'discarded by the lead')
           if (s.room.workers.get(w.tag)?.status === 'running' && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) return 'could not discard ' + w.tag + ': ' + how + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
           if (how.includes('cwd process cleanup failed:')) cleanupErrors.push(how)
-          const now = state.now ?? Date.now
-          const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
-          const deadline = now() + 5_000
-          while (state.workerAlive(s, w) && now() < deadline) await sleep(50)
-          if (state.workerAlive(s, w) && decideStop(await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })).host === 'signal') signalWorker(w.pid, 'SIGKILL', undefined, undefined, w, state.ctx?.probe)
-          const hardDeadline = now() + 5_000
-          while (state.workerAlive(s, w) && now() < hardDeadline) await sleep(50)
-          if (state.workerAlive(s, w)) throw new Error('worker process has not stopped')
+          const stopped = await stopWorkerWithEscalation({
+            terminate: () => true, exited: () => !state.workerAlive(s, w),
+            force: async () => decideStop(await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })).host === 'signal'
+              && signalWorker(w.pid, 'SIGKILL', undefined, undefined, w, state.ctx?.probe),
+            now: state.now, sleep: state.ctx?.sleep,
+          })
+          if (!stopped) throw new Error('worker process has not stopped')
         }
         const unsafeAfterDismissal = await unverifiedLive(s, w)
         if (unsafeAfterDismissal) return unsafeAfterDismissal

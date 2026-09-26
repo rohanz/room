@@ -73,7 +73,7 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
     ...(stopReason ? { stopReason } : {}),
     ...(w.status !== 'running' ? {}
       : unwitnessed ? { status: stopReason ? 'dismissed' as const : 'failed' as const, summary: `stopped while no session of yours was running; ${stopReason ?? 'reason unknown'}; worktree: ${w.dir}; last lines of its log: ${tail || '(empty log)'}` }
-      : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
+      : stopReason ? { status: 'dismissed' as const } : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
   }, w.id)
   if (!done) {
     // tools/context constructs Rooms: defer this dependency until all tool definitions are loaded.
@@ -338,18 +338,25 @@ export class Rooms {
   }
 
   /** Spawn and resume share the same process-exit accounting and error reporting. */
-  watchWorkerProcess(s: Session, id: string, proc: SpawnedProcess, errorPrefix: string, log: (line: string) => void, at: () => number = Date.now): void {
+  watchWorkerProcess(s: Session, id: string, proc: SpawnedProcess, errorPrefix: string, log: (line: string) => void, at: () => number = Date.now, observed?: () => Worker['stopReason'] | undefined): void {
+    let processError: string | undefined
     const exited = (code: number | null, error?: string) => {
+      const stopReason = observed?.()
       this.dropHandle(s, id, proc)
-      const current = s.room.workerById(id)
+      let current = s.room.workerById(id)
       const notify = () => { const key = Rooms.hkey(s, id); for (const wake of this.exitWaiters.get(key) ?? []) wake(); this.exitWaiters.delete(key) }
       if (!current || current.pid !== proc.pid) { notify(); return }
+      if (stopReason) {
+        s.room.updateWorker(current.tag, { stopReason }, id)
+        current = s.room.workerById(id)
+        if (!current) { notify(); return }
+      }
       void finishWorkerProcess(s, current, code, at(), error)
         .then(() => { notify(); return this.retireWorkers(s) })
         .catch(e => { notify(); log(`worker exit: ${e}`) })
     }
-    proc.onError?.(err => exited(-1, `${errorPrefix}: ${err.message}`))
-    proc.onExit(code => exited(code))
+    proc.onError?.(err => { processError = `${errorPrefix}: ${err.message}` })
+    proc.onExit(code => exited(code, processError))
   }
 
   /** Continue an exited, retained worker in its original checkout and host conversation. */
@@ -411,6 +418,7 @@ export class Rooms {
         catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
           if (error.delivered) {
+            if (!error.stopped) return { delivered: true, reply: `could not stop ${w.tag} (pid ${error.pid}); left running` }
             const reason = error.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
             const stoppedAt = at()
             const stopped = s.room.updateWorker(w.tag, { status: 'dismissed', dismissedAt: stoppedAt, finishedAt: stoppedAt,
