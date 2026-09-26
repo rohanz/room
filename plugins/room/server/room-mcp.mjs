@@ -7275,6 +7275,42 @@ var init_identity = __esm({
   }
 });
 
+// packages/shared/src/near.ts
+function coordinationPaths(room, excludingParticipant, options = {}) {
+  return [
+    ...room.allScopes().filter((scope) => scope.by !== excludingParticipant).flatMap((scope) => scope.paths.map((path29) => ({ by: scope.by, path: path29, reason: "scope" }))),
+    ...room.openClaims().filter((claim2) => claim2.by !== excludingParticipant || options.includeOwnNonAgentClaims && !isAgentic(claim2.byKind)).map((claim2) => ({ by: claim2.by, path: claim2.path, reason: "claim" })),
+    ...[.../* @__PURE__ */ new Set([...room.overlays.keys(), ...room.deleted.keys()])].filter((by) => by !== excludingParticipant).flatMap((by) => room.changedPaths(by).map((path29) => ({ by, path: path29, reason: "changed" })))
+  ];
+}
+function normalizeCoordinationPath(p) {
+  const parts2 = [];
+  for (const part of p.replaceAll("\\", "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === ".." && parts2.length && parts2.at(-1) !== "..") parts2.pop();
+    else parts2.push(part);
+  }
+  return parts2.join("/") || ".";
+}
+function containsPath(parent, child) {
+  const valid = (p) => p.trim().length > 0 && !/^(?:[\\/]|[a-z]:)/i.test(p) && (normalizeCoordinationPath(p) !== "." || p === "." || p === "./");
+  if (!valid(parent) || !valid(child)) return false;
+  const a = normalizeCoordinationPath(parent), b = normalizeCoordinationPath(child);
+  return a === "." || a === b || b.startsWith(a + "/");
+}
+function coversPath(a, b) {
+  return containsPath(a, b) || containsPath(b, a);
+}
+function nearPath(path29, others) {
+  return others.filter((other) => coversPath(path29, other.path));
+}
+var init_near = __esm({
+  "packages/shared/src/near.ts"() {
+    "use strict";
+    init_identity();
+  }
+});
+
 // packages/shared/src/messages.ts
 function messageKind(m) {
   const kind = MessageKinds[m.type];
@@ -7310,18 +7346,20 @@ function formatMsg(m, context) {
 function formatPlans(plans) {
   return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
 }
-var who, to, priority, BASE_CATCH_UP, builtins, MessageKinds;
+var who, to, priority, scopePaths, BASE_CATCH_UP, builtins, MessageKinds;
 var init_messages = __esm({
   "packages/shared/src/messages.ts"() {
     "use strict";
     init_claims();
     init_identity();
+    init_near();
     who = (m) => displayName({ name: m.from, kind: m.fromKind });
     to = (m) => m.to ? ` \u2192 ${displayName({ name: m.to, kind: "agent" })}` : "";
     priority = (m) => `[${m.priority}] `;
+    scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
     BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.";
     builtins = {
-      claim: { priority: "fyi", audience: "claim-holders", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
+      claim: { priority: "fyi", audience: "claim-holders", inbox: false, wakes: "never", format: (m, context) => context?.claims && !context.claims.some((c) => c.id === m.claimId) ? `${priority(m)}earlier: ${who(m)} claimed ${m.path}:${m.from_line}-${m.to_line} (${new Date(m.at).toISOString().slice(11, 19)}) \u2014 ${m.intent}` : `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
       release: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
       changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: "addressed", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
       question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
@@ -7334,7 +7372,7 @@ var init_messages = __esm({
       base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => (m.fromKind === "human" || m.from !== ctx.me.name) && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 ${BASE_CATCH_UP}` },
       plan: { priority: "fyi", audience: "broadcast", wakes: "interrupt", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""}${m.text ? ` \u2014 ${m.text}` : ""}` },
       scope: { priority: "notify", audience: "everyone", inbox: false, wakes: "never", format: (m, context) => {
-        const current = context?.scopes.some((s) => s.by === m.from && s.area === m.area) && context.messages.filter((x) => x.type === "scope" && x.from === m.from).at(-1)?.id === m.id;
+        const current = context?.scopes.some((s) => s.by === m.from && s.area === m.area && s.summary === m.summary && scopePaths(s.paths) === scopePaths(m.paths)) && context.messages.filter((x) => x.type === "scope" && x.from === m.from && x.area === m.area && x.summary === m.summary && scopePaths(x.paths) === scopePaths(m.paths)).at(-1)?.id === m.id;
         return current ? `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` : `${priority(m)}earlier: ${who(m)} was on ${m.area} (${new Date(m.at).toISOString().slice(11, 19)}): ${m.summary} (${m.paths.join(", ")})`;
       } }
     };
@@ -7353,42 +7391,6 @@ var init_format = __esm({
   "packages/shared/src/format.ts"() {
     "use strict";
     init_messages();
-  }
-});
-
-// packages/shared/src/near.ts
-function coordinationPaths(room, excludingParticipant, options = {}) {
-  return [
-    ...room.allScopes().filter((scope) => scope.by !== excludingParticipant).flatMap((scope) => scope.paths.map((path29) => ({ by: scope.by, path: path29, reason: "scope" }))),
-    ...room.openClaims().filter((claim2) => claim2.by !== excludingParticipant || options.includeOwnNonAgentClaims && !isAgentic(claim2.byKind)).map((claim2) => ({ by: claim2.by, path: claim2.path, reason: "claim" })),
-    ...[.../* @__PURE__ */ new Set([...room.overlays.keys(), ...room.deleted.keys()])].filter((by) => by !== excludingParticipant).flatMap((by) => room.changedPaths(by).map((path29) => ({ by, path: path29, reason: "changed" })))
-  ];
-}
-function normalizeCoordinationPath(p) {
-  const parts2 = [];
-  for (const part of p.replaceAll("\\", "/").split("/")) {
-    if (!part || part === ".") continue;
-    if (part === ".." && parts2.length && parts2.at(-1) !== "..") parts2.pop();
-    else parts2.push(part);
-  }
-  return parts2.join("/") || ".";
-}
-function containsPath(parent, child) {
-  const valid = (p) => p.trim().length > 0 && !/^(?:[\\/]|[a-z]:)/i.test(p) && (normalizeCoordinationPath(p) !== "." || p === "." || p === "./");
-  if (!valid(parent) || !valid(child)) return false;
-  const a = normalizeCoordinationPath(parent), b = normalizeCoordinationPath(child);
-  return a === "." || a === b || b.startsWith(a + "/");
-}
-function coversPath(a, b) {
-  return containsPath(a, b) || containsPath(b, a);
-}
-function nearPath(path29, others) {
-  return others.filter((other) => coversPath(path29, other.path));
-}
-var init_near = __esm({
-  "packages/shared/src/near.ts"() {
-    "use strict";
-    init_identity();
   }
 });
 
@@ -23305,6 +23307,7 @@ function reanchorClaims(owner, claims, texts) {
   for (const claim2 of claims) {
     if (claim2.by !== owner || claim2.path.endsWith("/")) continue;
     const text = texts.get(claim2.path);
+    if (text !== void 0 && claim2.claimedHash && claimDigest(text, claim2.from, claim2.to) === claim2.claimedHash) continue;
     const lines = text?.split("\n");
     if (text?.endsWith("\n")) lines?.pop();
     const width = claim2.to - claim2.from + 1;
@@ -25466,11 +25469,11 @@ var init_src2 = __esm({
         return `; skipped ${n} file(s) (${parts2.join(", ")})`;
       }
       // ---- sharing level ----------------------------------------------------
-      async setShare(level, scopePaths) {
+      async setShare(level, scopePaths2) {
         level = clampShare(level, this.shareCeiling?.() ?? "full");
         const before = this.share;
         const priorPaths = this.scopePaths();
-        this.explicitScopePaths = scopePaths;
+        this.explicitScopePaths = scopePaths2;
         const nextPaths = this.scopePaths();
         if (before === "declared" && level === "declared") this.publisher.retainLeavingScope(priorPaths, nextPaths);
         this.setEffectiveShare(level, priorPaths.length !== nextPaths.length || priorPaths.some((path29, i2) => path29 !== nextPaths[i2]));
@@ -25722,30 +25725,22 @@ var init_src2 = __esm({
         }
         const prev = this.appliedHead;
         const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : [];
-        const oldBranch = this.branch, oldShared = this.shared, oldTracked = this.tracked;
         this.base = head;
         this.branch = branch;
-        try {
-          this.tracked = await gitTracked(this.dir);
-          await this.refreshShared();
-          await this.publisher.reconcile(await gitChanged(this.dir));
-          if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot);
-          if (await gitHead(this.dir) !== head) throw new Error("HEAD moved during reconciliation");
-          await this.refreshBaseStatus();
-          this.roomDoc.doc.transact(() => {
-            this.roomDoc.setBaseOf(this.name, this.shared, this);
-            this.roomDoc.reconcileBaseTexts(this.name, this);
-          }, this);
-          if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages());
-          this.appliedHead = head;
-          if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
-        } catch (error2) {
-          this.base = prev;
-          this.branch = oldBranch;
-          this.shared = oldShared;
-          this.tracked = oldTracked;
-          throw error2;
-        }
+        this.tracked = await gitTracked(this.dir);
+        await this.refreshShared();
+        this.roomDoc.doc.transact(() => {
+          this.roomDoc.setBaseOf(this.name, this.shared, this);
+          this.roomDoc.reconcileBaseTexts(this.name, this);
+        }, this);
+        await this.refreshBaseStatus();
+        await this.publisher.reconcile(await gitChanged(this.dir));
+        if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot);
+        if (await gitHead(this.dir) !== head) throw new Error("HEAD moved during reconciliation");
+        await this.refreshBaseStatus();
+        if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages());
+        this.appliedHead = head;
+        if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
       }
       unpushedPairs = /* @__PURE__ */ new Set();
       roomBranch() {
@@ -42611,7 +42606,7 @@ var Bridge = class {
     if (typeof d.setShare === "function") {
       const orig = d.setShare.bind(d);
       this.origSetShare = orig;
-      d.setShare = (level, scopePaths) => orig(level, scopePaths ?? this.sharePaths());
+      d.setShare = (level, scopePaths2) => orig(level, scopePaths2 ?? this.sharePaths());
     }
     for (const c of l.openClaims()) this.mirrorClaim(c.id);
     this.scheduleScope();
@@ -46043,6 +46038,7 @@ var Rooms = class _Rooms {
       if (!launchLease) return `error: ${this.launchUsage(running)} workers already running or starting (max ${config2.maxWorkers}, ROOM_MAX_WORKERS); wait for one to finish`;
       try {
         const { server, isWorker } = workerOrigin(s);
+        const spawnedAfter = s.room.lastMessages(1)[0]?.id ?? "";
         let launched;
         try {
           launched = await launchWorkerProcess(
@@ -46077,6 +46073,7 @@ var Rooms = class _Rooms {
               port,
               status: "running",
               startedAt,
+              spawnedAfter,
               processStartTime,
               summary: void 0,
               exitCode: void 0,
@@ -46738,7 +46735,7 @@ async function workerChangedCount(s, worker, processGone) {
     return overlayCount;
   }
 }
-var formatRoomMessage = (s, m) => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages() });
+var formatRoomMessage = (s, m) => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages(), claims: s.room.openClaims() });
 function handlers4(state) {
   const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine: scopeLine2, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine: personLine2, claimLine: claimLine2, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines, shareOf } = state;
   const pathState = async (a) => {
@@ -49680,7 +49677,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.22",
+  version: "0.16.23",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
