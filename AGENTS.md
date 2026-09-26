@@ -113,7 +113,7 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   Deploy with `--depot=false`; only server/web changes need a deploy, plugin changes need a bundle rebuild + push.
 
 - CI runs these same commands (`npm run typecheck`, `env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test`, `npm run build -w @room/web`, and `npm run build:plugin`) on every push to `main` and every pull request, and checks that committed plugin assets are up to date.
-- The plugin manifests and marketplace entry carry the release version (0.16.8); `package.json` versions at 0.1.0 are private workspace package versions, not the plugin release version. The MCP handshake reads the Claude plugin manifest version.
+- The plugin manifests and marketplace entry carry the release version (0.16.10); `package.json` versions at 0.1.0 are private workspace package versions, not the plugin release version. The MCP handshake reads the Claude plugin manifest version.
 - `env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test` runs every package's vitest suite
   (some suites listen on loopback; inherited ROOM_* variables change identity-sensitive tests).
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web

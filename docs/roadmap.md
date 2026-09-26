@@ -33,6 +33,13 @@ use broke and proposes the order of work.
 - **Graph refreshes (2026-09-24 cleanliness audit finding 21):** an overlay event refreshes only the paths it touched, and initial and incremental refreshes share one queue of 8.
 - **Stale base notices (rehearsal 2026-09-25, second run, finding 9):** a base notice whose commit is already in the recipient's HEAD is marked seen instead of delivered, on every delivery path.
 
+## Fixed in 0.16.10
+
+- **Workers in room_state (0.16.7 live check):** room_state shows the lead's current workers (running, finished but not collected, stopped) by default; retired history is listed with `all=true` and labelled collected, discarded or stopped (reason).
+- **Discard logs (0.16.x check):** discarding a worker whose worktree vanished now removes its `.log` and `.mcp.log`, through the same cleanup as a normal discard.
+- **Implicit answers (rehearsal 2026-09-25 finding 11):** an answer without `inReplyTo` answers the sender's one open question from the recipient, or lists the candidates.
+- **Carried edits (every live check):** workers build on the lead's carried edits without asking; they ask only before changing or removing the lead's own lines.
+
 ## The design the gaps point at: cost scales with overlap
 
 The gap list below says what breaks. This is the one idea that fixes most of it. Multiplayer
@@ -342,12 +349,6 @@ files, and large-repo collection and merge preview without a test command. Previ
 Still open from this audit: merge preview with `run` still materializes the lead's full
 tree. Fixed in 0.16.1: `*.tsbuildinfo` at a package root is regenerable output and no
 longer keeps a collected worktree.
-
-### Seen in the 0.16.7 live check (2026-09-26, open, small)
-
-- `room_state` without `all=true` shows no workers section, and a collected worker is listed as
-  "a (dismissed, …) · 1 file", the same label as a discarded one ("discarded · 0 files"). Label
-  collected workers as collected and show the lead's workers by default.
 
 ### Seen in the 0.16.4 live check (2026-09-25, open, small)
 

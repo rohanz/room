@@ -17452,7 +17452,7 @@ function areaMembershipSummary(areas) {
 function workerLine({ worker: w, processGone = false, lastActive, changedCount, last: last2, now = Date.now() }) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120);
-  const state = stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.status === "running" && processGone ? STOPPED_UNWITNESSED : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status;
+  const state = stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.stopReason ? `stopped (${w.stopReason})` : w.dismissedAt !== void 0 || w.status === "dismissed" ? "discarded" : w.status === "running" && processGone ? STOPPED_UNWITNESSED : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status;
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.status === "running" && processGone && !stoppedWithSession(w) ? ` \xB7 worktree ${w.dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
@@ -17460,15 +17460,15 @@ function workerLine({ worker: w, processGone = false, lastActive, changedCount, 
 }
 function workerLines(inputs, options = {}) {
   const retired = options.retiredWorkers ?? [];
-  if (!inputs.length && (!options.all || !retired.length)) return [];
-  const visible = inputs.filter((i2) => options.all || i2.worker.stopReason || i2.worker.status === "running" || i2.worker.status === "failed");
-  const finished = inputs.length - visible.length;
+  if (!inputs.length && !retired.length) return [];
+  const visible = inputs.filter((i2) => options.all || !!i2.worker.stopReason || i2.worker.dismissedAt === void 0 && i2.worker.status !== "dismissed");
   const out2 = [`workers (${visible.length + (options.all ? retired.length : 0)}):`, ...[...visible].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
   if (options.all) {
     for (const w of [...retired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
-      out2.push(`  - ${w.tag} (${w.outcome}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ""}${w.model ? `, ${w.model}` : ""}): ${w.summary} \xB7 ${formatCount(w.fileCount, "file")}`);
+      const state = w.disposition === "stopped" ? stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? "reason unknown"})` : w.disposition ?? w.outcome;
+      out2.push(`  - ${w.tag} (${state}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ""}${w.model ? `, ${w.model}` : ""}): ${w.summary} \xB7 ${formatCount(w.fileCount, "file")}`);
     }
-  } else if (finished) out2.push(`  finished: ${finished} (all=true lists them)`);
+  } else if (retired.length) out2.push(`  retired: ${retired.length} (all=true lists them)`);
   return out2;
 }
 var STOPPED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, scopeLine;
@@ -31788,7 +31788,7 @@ function workerPrompt(lead, tag, task, context) {
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : "normal"}; reasoning effort: ${context.effort ?? "host default"}. Stay within this budget and stagger heavy jobs.`,
       ...context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : [],
       ...context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(", ")}. Do not modify these paths or their contents; write outputs elsewhere.`] : [],
-      ...context.carriedPaths?.length ? [`Files carried from the lead's uncommitted work belong to the lead; coordinate with the lead before editing these where your task needs to: ${context.carriedPaths.slice(0, 20).join(", ")}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ""}.`] : []
+      ...context.carriedPaths?.length ? [`Carried edits are the lead's work in progress, already in your worktree for you to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Carried paths: ${context.carriedPaths.slice(0, 20).join(", ")}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ""}.`] : []
     ] : [],
     "",
     `TASK: ${task}`
@@ -32371,6 +32371,10 @@ async function cleanupWorker(leadDir, w, collected = false, discarded = false, t
     }
     throw new Error(`cleanup failed: ${error2.message}; reconstructed base at ${w.dir}; ${recoveryNote}`);
   }
+  cleanupWorkerLogs(leadDir, w);
+  return true;
+}
+function cleanupWorkerLogs(leadDir, w) {
   const parent = path12.basename(path12.dirname(w.dir)) === "workers" && path12.basename(path12.dirname(path12.dirname(w.dir))) === ".room" ? path12.resolve(w.dir, "../../..") : leadDir;
   for (const suffix of [".log", ".mcp.log"]) {
     try {
@@ -32384,7 +32388,6 @@ async function cleanupWorker(leadDir, w, collected = false, discarded = false, t
     } catch {
     }
   }
-  return true;
 }
 async function saveDiscardPatch(leadDir, w) {
   const dir = path12.join(leadDir, ".room", "discarded"), now = Date.now();
@@ -35583,7 +35586,9 @@ var init_registry = __esm({
                 startedAt: w.startedAt,
                 finishedAt: w.finishedAt ?? retiredAt2,
                 retiredAt: retiredAt2,
-                outcome: "dismissed"
+                outcome: "dismissed",
+                disposition: w.stopReason ? "stopped" : "discarded",
+                ...w.stopReason ? { stopReason: w.stopReason } : {}
               });
               continue;
             }
@@ -35619,6 +35624,8 @@ var init_registry = __esm({
               finishedAt: w.finishedAt ?? done?.at ?? retiredAt,
               retiredAt,
               outcome,
+              disposition: w.stopReason ? "stopped" : w.dismissedAt !== void 0 || w.status === "dismissed" ? "discarded" : "collected",
+              ...w.stopReason ? { stopReason: w.stopReason } : {},
               ...outcome === "dismissed" && facts.uncommitted !== void 0 ? { uncommitted: facts.uncommitted } : {}
             });
           } finally {
@@ -46196,6 +46203,10 @@ init_prs();
 init_context();
 var WAIT_DEFAULT = 3e4;
 var WAIT_MAX = 1e5;
+var questionPreview = (text) => {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > 80 ? `${line.slice(0, 79)}\u2026` : line;
+};
 var WAIT_SIGNAL = /* @__PURE__ */ Symbol("room_wait request signal");
 var pendingWaits = /* @__PURE__ */ new WeakMap();
 function waitConsumesMessage(s, m) {
@@ -46276,8 +46287,8 @@ function handlers5(state) {
   const handlers10 = {
     async room_send(a) {
       const lead = S();
-      const byQuestion = typeof a.inReplyTo === "string" && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : void 0;
-      const question = byQuestion?.room.messages().find((m) => m.id === a.inReplyTo && m.type === "question");
+      let byQuestion = typeof a.inReplyTo === "string" && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : void 0;
+      let question = byQuestion?.room.messages().find((m) => m.id === a.inReplyTo && m.type === "question");
       const requestedTo = a.type === "answer" && question ? question.from : typeof a.to === "string" && a.to ? a.to : void 0;
       const wsr = rooms.workers();
       const workerMatches = requestedTo ? rooms.all().flatMap((room) => myWorkers(room).filter((w) => w.tag === requestedTo).map((worker) => ({ room, worker }))) : [];
@@ -46288,7 +46299,18 @@ function handlers5(state) {
         return `error: worker tag ${requestedTo} is ambiguous; use a full name: ${names.join(", ")}`;
       }
       const resolvedWorker = matches[0];
-      const to2 = resolvedWorker?.worker.name ?? requestedTo;
+      let to2 = resolvedWorker?.worker.name ?? requestedTo;
+      let inferredQuestionId;
+      if (a.type === "answer" && !a.inReplyTo) {
+        const answered = new Set(rooms.all().flatMap((room) => room.room.messages().filter((m) => m.type === "answer").map((m) => m.inReplyTo)));
+        const candidates = rooms.all().flatMap((room) => room.room.messages().filter((m) => m.type === "question" && m.to === room.me.name && (!to2 || m.from === to2) && !answered.has(m.id)).map((question2) => ({ room, question: question2 })));
+        if (candidates.length !== 1) return candidates.length ? `error: answer requires inReplyTo; unanswered questions:
+${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPreview(question2.text)}`).join("\n")}` : `error: answer requires inReplyTo; no unanswered question${to2 ? ` from ${to2}` : ""} addressed to you`;
+        byQuestion = candidates[0].room;
+        question = candidates[0].question;
+        to2 = question.from;
+        inferredQuestionId = question.id;
+      }
       const exactWorkerRoom = to2 && wsr && wsr !== lead && (myWorkers(wsr).some((w) => w.name === to2) || wsr.room.retiredWorkers().some((w) => w.name === to2)) ? wsr : void 0;
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead;
       const text = typeof a.text === "string" && a.text ? a.text : typeof a.message === "string" ? a.message : "";
@@ -46303,11 +46325,11 @@ function handlers5(state) {
       const withPr = (o) => pr ? { ...o, priority: pr } : o;
       if (a.type === "changed" && (!Array.isArray(a.paths) || !a.paths.some((x) => typeof x === "string"))) return "error: changed requires paths";
       if (a.type === "question" && !to2) return "error: question requires to (whose agent)";
-      if (a.type === "answer" && (typeof a.inReplyTo !== "string" || !a.inReplyTo)) return "error: answer requires inReplyTo";
       if (a.type === "answer" && !question?.from && !to2) return "error: answer requires to (could not infer from inReplyTo)";
       if (!["changed", "question", "answer", "note"].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`;
       let msg;
       const notes = [];
+      if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`);
       const addressedWorker = to2 && s.room.workerOf(to2);
       let restarted = false;
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== "running") {
@@ -46329,7 +46351,7 @@ function handlers5(state) {
             msg = s.room.post(s.me, withPr({ type: "question", text, to: to2 }));
             break;
           case "answer": {
-            msg = s.room.post(s.me, withPr({ type: "answer", to: question?.from ?? to2, inReplyTo: a.inReplyTo, text }));
+            msg = s.room.post(s.me, withPr({ type: "answer", to: question?.from ?? to2, inReplyTo: inferredQuestionId ?? a.inReplyTo, text }));
             break;
           }
           case "note":
@@ -46869,7 +46891,7 @@ ${detail.join("\n")}`);
     }
     out2.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(" + ")}${pair && pair.sha !== ancestor ? ` (against ${pair.worker}'s base ${pair.sha.slice(0, 10)})` : ""}`);
     if (declaredNote) out2.push(declaredNote);
-    if (onlyOne.length) out2.push(pair?.carriedCommit ? `touched by one side only since ${person}'s base ${pair.sha.slice(0, 10)} (merge trivially; the lead's carried edits are in that base): ${onlyOne.join(", ")}` : `touched by one side only (merge trivially): ${onlyOne.join(", ")}`);
+    if (onlyOne.length) out2.push(`only ${person} changed ${onlyOne.length === 1 ? "this file" : "these files"} since its start${pair?.carriedCommit ? ", which already includes your carried edits" : ""}: ${onlyOne.join(", ")}`);
     if (clean.length) out2.push(`both changed, merge cleanly: ${clean.join(", ")}`);
     if (conflicts.length) out2.push(`CONFLICTS:
 ${conflicts.join("\n")}`);
@@ -47434,6 +47456,7 @@ function handlers7(state) {
           const terminated = await stopOwnedWorktreeProcesses(s2.dir, w2, s2.me.name, ownershipRecords(s2), cleanupErrors, state.ctx?.probe);
           const missing = decideDiscard(await workerRealState(s2.dir, w2)) === "prune";
           const missingDetail = missing ? await pruneMissingWorkerWorktree(s2.dir, w2) : void 0;
+          if (missing) cleanupWorkerLogs(s2.dir, w2);
           const ignored = missing ? [] : await ignoredWorkerArtifacts(w2);
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}
 retained worktree: ${w2.dir}${terminated.length ? "\nstopped processes: " + terminated.join(", ") : ""}${cleanupErrors.length ? "\n" + cleanupErrors.join("; ") : ""}
@@ -47444,7 +47467,7 @@ repeat with force=true to delete them`;
           if (index >= 0) s2.room.doc.transact(() => {
             archive.delete(index);
             const { keptWorktree: _keptWorktree, ...cleared } = r;
-            archive.insert(index, [{ ...cleared, summary: "discarded" }]);
+            archive.insert(index, [{ ...cleared, summary: "discarded", disposition: "discarded" }]);
           });
           return "discarded " + r.tag + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
         } catch (e) {
@@ -47508,6 +47531,7 @@ repeat with force=true to delete them`;
             const recordedPath = path22.basename(w.dir) === w.tag && path22.basename(path22.dirname(w.dir)) === "workers" && path22.basename(path22.dirname(path22.dirname(w.dir))) === ".room" && w.branch === `room/${w.tag}`;
             if (!verifiedProcess || !recordedPath || !(error2 instanceof Error) || !error2.message.includes("is not an owned Room worktree")) throw error2;
           }
+          cleanupWorkerLogs(s.dir, w);
         }
         const ownedWorktree = decideDiscard(afterStop) === "cleanup";
         const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w) : [];
@@ -47538,7 +47562,8 @@ repeat with force=true to delete them`;
           startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? retiredAt,
           retiredAt,
-          outcome: "dismissed"
+          outcome: "dismissed",
+          disposition: "discarded"
         });
         return [...childResults, (decideDiscard(afterStop) === "retain-directory" ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
       } catch (e) {
@@ -47739,7 +47764,8 @@ repeat with force=true to delete them`;
             startedAt: w.startedAt,
             finishedAt: w.finishedAt ?? retiredAt,
             retiredAt,
-            outcome: "dismissed"
+            outcome: "dismissed",
+            disposition: "collected"
           });
         };
         if (state.workerAlive(s, w)) {
@@ -48361,8 +48387,13 @@ function handlers8(state) {
         if (!spawnExplained.has(lead)) out2.push(`it joins ${s === lead ? "this room" : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`);
         spawnExplained.add(lead);
         if (carried || skippedCarry?.length) {
-          const count2 = carried?.paths?.length ?? carried?.count ?? 0;
-          out2.push(`carried your ${count2} uncommitted change${count2 === 1 ? "" : "s"} into its worktree${carried ? ` (commit ${carried.commit.slice(0, 10)})` : ""}${skippedCarry?.length ? `; not carried: ${skippedCarry.map(({ path: p, reason }) => `${p} (${reason})`).join(", ")}` : ""}`);
+          const copied = carriedUntracked?.length ?? 0;
+          const tracked = Math.max(0, (carried?.paths?.length ?? carried?.count ?? 0) - copied);
+          const parts2 = [
+            ...tracked ? [`${tracked} tracked change${tracked === 1 ? "" : "s"} (commit ${carried.commit.slice(0, 10)})`] : [],
+            ...copied ? [`${copied} untracked file${copied === 1 ? "" : "s"} copied`] : []
+          ];
+          out2.push(`${parts2.length ? `carried your uncommitted work into its worktree: ${parts2.join(", ")}` : "no uncommitted work carried"}${skippedCarry?.length ? `; not carried: ${skippedCarry.map(({ path: p, reason }) => `${p} (${reason})`).join(", ")}` : ""}`);
         } else if (created && !outside) {
           if (carryFailed && carryError) out2.push(`note: carry failed: ${carryError}`);
           const pending = await uncommittedCount(lead.dir).catch(() => 0);
@@ -48864,7 +48895,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.9",
+  version: "0.16.10",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",

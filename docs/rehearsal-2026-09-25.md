@@ -139,7 +139,7 @@ way, with the friend checklist's words: "join the room", "take issue N", "commit
 
 New finding:
 
-11. **An answer without `inReplyTo` is refused.** Cy replied to Ben's question with `type: answer` and no
+11. **An answer without `inReplyTo` is refused — FIXED in 0.16.10 (9c5143b).** Cy replied to Ben's question with `type: answer` and no
     `inReplyTo`; Room refused ("answer requires inReplyTo") and Cy resent it as a note, so Ben's question
     was never marked answered. Room could fill `inReplyTo` with the latest unanswered question from that
     recipient when there is exactly one.
