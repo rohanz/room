@@ -232,25 +232,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   }
   const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => runtime.observeClaims(s), attach, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
 
-  // ---- pull requests as intent ------------------------------------------------
-  /** Refresh the PR mirror in the doc when I am the elected maintainer (lowest present name). Never throws. */
-
-
-
-
-
-
-
-  /** room_state section: open PRs targeting this branch, from the mirror. */
-
-  /** The open PR whose head is this branch (any base), asked of GitHub; falls back to the mirror (PRs targeting this branch). */
-
-  /** Render the ledger and post it as the one room comment on the PR. */
-
-  /** Two room_claim calls on different machines can both pass the overlap pre-check. When the
-   *  other claim arrives, the owner of the lexicographically smaller id reports the conflict. */
-
-
   const S = (): Session => {
     const s = ctx.getSession()
     if (!s) throw new NotJoined()
@@ -262,21 +243,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   }
   const isMe = (s: Session, p: { name: string; kind: string }) => p.name === s.me.name && p.kind === s.me.kind
   const mine = (s: Session) => s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === s.me.kind)
-
-  /** Is this worker process ours: one we spawned, or one the configured probe verifies after a lead restart. */
-
-  /** Open (once) the local workers room next to a team session and bridge the two. */
-
-
-  /** Workers this lead has running, in every room it is in. */
-
-  /**
-   * Stop a running worker. A process this MCP instance spawned is signalled directly. One we only
-   * know by pid (the lead restarted) is signalled only if it is alive and started with the worker
-   * record: a recycled pid would belong to something else. The record becomes `dismissed` only when
-   * a signal was actually delivered; otherwise its status stands and the reply says so.
-   */
-
 
   const others = (s: Session): string[] => {
     const names = new Set<string>()
@@ -302,8 +268,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     if (level === 'declared' && p !== undefined && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p)) return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`
     return undefined
   }
-  /** One line for join/room_share replies: the level, and whether the server lowered it. */
-
   const setPresence = (s: Session, patch: Partial<Presence>) => {
     const cur = (s.awareness.getLocalState() ?? {}) as Partial<Presence>
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() })
@@ -336,64 +300,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   }
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
-  // ---- areas ------------------------------------------------------------------
-  /** Area index per session: CODEOWNERS at the room base (or top-level dirs). Loaded once per join. */
-
-
-
-  /** Areas a person is in: those covering their declared scope paths and their changed paths. */
-
-
-
-  /** Who else is in any of these areas, with the areas they share. */
-
-  /** "owners of api/: @rohanz, @kieran" for areas I do not own per CODEOWNERS; nothing without CODEOWNERS. */
-
-
-  /** Does a message concern my areas: any of its paths lands in one, or its sender is in one. */
-
-
-  // ---- inbox ----------------------------------------------------------------
-
-
-
-  // ---- scope upgrade rule ---------------------------------------------------
-  /** Who else is affected by these paths/symbols: scope covers a path, or their files mention a symbol. */
-
-
-  /** Who is around a file: scope owner, claimants, changers. */
-
-
-  /** Open plans by others on symbols that files in my scope (or my changed files) reference. */
-
-
-  /** A plan on a released-undone or re-declared claim: tell everyone who was shown the original, at interrupt. */
-
-  /** If the clone's branch changed since we joined, move to that branch's room. Returns a note for the agent, or ''. */
-
-
-  /** Uncommitted work shared by people who are gone: no presence, and nothing written for ROOM_STALE_DAYS (7). Evicted on join. */
-
-
-
-  /** Release my claims (cancelling their plans) and clear my scope. `why` goes in the release summary.
-   *  `keep` exempts claims (room_done keeps the mirrors of workers still running). */
-
-
-
-  // ---- rendering helpers ----------------------------------------------------
-
-
-
-  /** One line about what a person is doing: live scope, or their last done note, plus unpushed changes. */
-
-
-  // ---- login ------------------------------------------------------------------
-
-
-
-
-  // ---- handlers -------------------------------------------------------------
   runtime = {
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, myWorkers: undefined!, workerAlive: undefined!,
     ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, others, presences,
