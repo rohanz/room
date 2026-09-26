@@ -24420,6 +24420,7 @@ import fs6 from "node:fs";
 import path4 from "node:path";
 import os from "node:os";
 import { createHash, randomBytes } from "node:crypto";
+import { execFileSync as execFileSync2 } from "node:child_process";
 function observeCallback(fn, report) {
   void Promise.resolve().then(fn).catch(report);
 }
@@ -24678,6 +24679,13 @@ var init_src2 = __esm({
         this.base = base;
         this.tracked = tracked;
         await this.step("sync", () => this.waitForSync());
+        const onBaseNotice = (event) => {
+          const notices = event.changes.delta.flatMap((change) => change.insert ?? []);
+          this.markIntegratedBaseNotices(notices);
+        };
+        this.roomDoc.bus.observe(onBaseNotice);
+        this.unobserveBus = () => this.roomDoc.bus.unobserve(onBaseNotice);
+        this.markIntegratedBaseNotices(this.roomDoc.messages());
         this.phase = "base";
         this.choosePublisher();
         this.roomDoc.assignColor(this.name, this);
@@ -24818,6 +24826,7 @@ var init_src2 = __esm({
       async stop(reason = "requested") {
         if (this.stopped) return;
         this.stopped = true;
+        this.unobserveBus?.();
         this.flushSkipLog();
         this.log(`stopped: ${reason.replace(/\s+/g, " ")}`);
         for (const timer of this.timers) clearInterval(timer);
@@ -24944,6 +24953,26 @@ var init_src2 = __esm({
       }
       // ---- startup and disk -> overlay --------------------------------------
       // ---- base commit tracking ---------------------------------------------
+      unobserveBus;
+      /** Record receipts before any synchronous delivery observer sees a new bus entry. */
+      markIntegratedBaseNotices(notices) {
+        if (this.stopped) return;
+        const seen = this.roomDoc.seen(this.name);
+        const ids = [];
+        for (const notice of notices) {
+          if (notice.type !== "base" || seen.has(notice.id)) continue;
+          try {
+            execFileSync2("git", ["merge-base", "--is-ancestor", notice.base, "HEAD"], {
+              cwd: this.dir,
+              stdio: "ignore",
+              timeout: 2e3
+            });
+            ids.push(notice.id);
+          } catch {
+          }
+        }
+        this.roomDoc.markSeen(this.name, ids, this);
+      }
       /** Local HEAD moved (commit, pull, checkout): re-seed the overlay and maybe advance the room base. */
       async pollHead() {
         if (this.stopped) return;
@@ -24959,6 +24988,7 @@ var init_src2 = __esm({
         const prev = this.base;
         this.base = head;
         this.branch = branch;
+        if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages());
         this.tracked = await gitTracked(this.dir);
         await this.refreshShared();
         this.roomDoc.setBaseOf(this.name, this.shared, this);
@@ -25466,7 +25496,7 @@ var init_common = __esm({
 
 // packages/room-mcp/src/config.ts
 import os2 from "node:os";
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFileSync as execFileSync3 } from "node:child_process";
 import path5 from "node:path";
 import fs7 from "node:fs";
 function normaliseWhere(where) {
@@ -25546,7 +25576,7 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
     web: value(args3.web) ?? value(e.ROOM_WEB)
   };
 }
-function resolveSessionHost(dir, env = process.env, parentCommand = () => execFileSync2("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } })) {
+function resolveSessionHost(dir, env = process.env, parentCommand = () => execFileSync3("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } })) {
   const host = (v) => v === "claude" || v === "codex" ? v : void 0;
   if (host(env.ROOM_WORKER_HOST)) return env.ROOM_WORKER_HOST;
   if (host(env.ROOM_HOST)) return env.ROOM_HOST;
@@ -25658,31 +25688,13 @@ var init_channel = __esm({
   }
 });
 
-// packages/room-mcp/src/base-notice.ts
-async function dropSatisfiedBaseNotice(s, m) {
-  if (m.type !== "base") return false;
-  try {
-    await git(s.dir, ["merge-base", "--is-ancestor", m.base, "HEAD"]);
-    s.room.markSeen(s.me.name, [m.id]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-var init_base_notice = __esm({
-  "packages/room-mcp/src/base-notice.ts"() {
-    "use strict";
-    init_git();
-  }
-});
-
 // packages/room-mcp/src/wake-path.ts
 import net from "node:net";
-import { execFileSync as execFileSync3 } from "node:child_process";
+import { execFileSync as execFileSync4 } from "node:child_process";
 function claudeParentArgs() {
   if (parentArgsCache !== void 0) return parentArgsCache;
   try {
-    parentArgsCache = execFileSync3("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
+    parentArgsCache = execFileSync4("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
   } catch {
     parentArgsCache = "";
   }
@@ -25756,7 +25768,6 @@ var init_wake_path = __esm({
     "use strict";
     init_config();
     init_channel();
-    init_base_notice();
     SOCKET_WAKE_WINDOW_MS = 5e3;
     SOCKET_POST_TIMEOUT_MS = 1500;
     SocketWakeRouter = class {
@@ -25803,13 +25814,7 @@ var init_wake_path = __esm({
       }
       async channel(wake) {
         if (this.o.channel === "") return;
-        if (wake.meta.type === "base" && await this.satisfied(wake)) return;
         await sendChannelNotification(wake, this.o.notify);
-      }
-      async satisfied(wake) {
-        const s = this.o.recipient;
-        const m = s?.room.messages().find((m2) => m2.id === wake.meta.msg_id);
-        return !!s && !!m && dropSatisfiedBaseNotice(s, m);
       }
       channelAdmitted() {
         const env = this.o.env ?? process.env;
@@ -25826,10 +25831,7 @@ var init_wake_path = __esm({
         });
       }
       async flush() {
-        const items = [];
-        for (const w of this.pending.splice(0)) {
-          if (!this.o.isPendingWait?.(w) && this.unread(w) && (w.meta.type !== "base" || !await this.satisfied(w))) items.push(w);
-        }
+        const items = this.pending.splice(0).filter((w) => !this.o.isPendingWait?.(w) && this.unread(w));
         if (!items.length || this.closed) return;
         this.lastSentAt = Date.now();
         const count = items.length;
@@ -26226,7 +26228,6 @@ var init_hooks_bridge = __esm({
     init_config();
     init_prompt();
     init_company();
-    init_base_notice();
     SESSION_FRESH_MS = 10 * 60 * 1e3;
     HooksBridge = class {
       constructor(s, o) {
@@ -26244,7 +26245,6 @@ var init_hooks_bridge = __esm({
       startedAt = Date.now();
       unobserve = [];
       delivering = /* @__PURE__ */ new Set();
-      preflighting = false;
       generation = 0;
       stopped = false;
       start() {
@@ -26260,9 +26260,7 @@ var init_hooks_bridge = __esm({
             this.s.awareness.off("change", kick);
           });
           const receipts = this.s.room.seen(this.s.me.name);
-          const onSeen = () => {
-            if (!this.preflighting) this.write();
-          };
+          const onSeen = () => this.write();
           receipts.observe(onSeen);
           this.unobserve.push(() => receipts.unobserve(onSeen));
         }
@@ -26303,19 +26301,11 @@ var init_hooks_bridge = __esm({
         if (this.timer) return;
         this.timer = setTimeout(() => {
           this.timer = null;
-          void (async () => {
-            try {
-              this.preflighting = true;
-              for (const m of this.s.room.messages()) {
-                if (m.type === "base" && !this.isSeen(m.id) && this.o.forMe(m)) await dropSatisfiedBaseNotice(this.s, m);
-              }
-              if (!this.stopped) this.write();
-            } catch (e) {
-              this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`);
-            } finally {
-              this.preflighting = false;
-            }
-          })();
+          try {
+            this.write();
+          } catch (e) {
+            this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }, 150);
         this.timer.unref?.();
       }
@@ -26410,7 +26400,6 @@ Call room_state, then react per the room-etiquette skill.`;
           syncHookSeen(this.s);
           if (!active()) return;
           if (this.isSeen(m.id)) return;
-          if (await dropSatisfiedBaseNotice(this.s, m)) return;
           try {
             await (this.o.queue ?? defaultQueue)(session.id, text);
             if (!active()) return;
@@ -31165,10 +31154,26 @@ var init_graph_index = __esm({
       jitterTimer;
       endJitter;
       unobserve = [];
-      /** Resolves when the initial build is done. */
-      ready = Promise.resolve();
+      currentBuild = Promise.resolve();
+      /** Resolves when the current build is done, even if a captured waiter is superseded. */
+      get ready() {
+        return this.waitForCurrentBuild();
+      }
+      async waitForCurrentBuild() {
+        while (true) {
+          if (this.stopped) throw new Error("graph index is closed");
+          const build = this.currentBuild;
+          try {
+            await build;
+          } catch (error2) {
+            if (build === this.currentBuild) throw error2;
+          }
+          if (this.stopped) throw new Error("graph index is closed");
+          if (build === this.currentBuild) return;
+        }
+      }
       start() {
-        this.ready = this.initialBuild();
+        this.currentBuild = this.initialBuild();
         const observe = (root) => {
           const known = new Map([...root].map(([person, map2]) => [person, new Set(map2.keys())]));
           return (events) => {
@@ -31188,7 +31193,7 @@ var init_graph_index = __esm({
           this.room.deleted.unobserveDeep(onDeleted);
         });
         const onMeta = () => {
-          if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.ready = this.rebuild();
+          if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.currentBuild = this.rebuild();
         };
         this.room.metaMap.observe(onMeta);
         this.unobserve.push(() => this.room.metaMap.unobserve(onMeta));
@@ -31198,10 +31203,12 @@ var init_graph_index = __esm({
         clearTimeout(this.jitterTimer);
         this.endJitter?.();
         clearTimeout(this.publishing);
-        for (const path25 of this.refreshQueue.splice(0)) {
-          this.pending.get(path25)?.resolve();
-          this.pending.delete(path25);
+        for (const entry of this.pending.values()) {
+          entry.resolve();
+          entry.resolveIdle();
         }
+        this.pending.clear();
+        this.refreshQueue.length = 0;
         for (const u of this.unobserve) u();
         this.unobserve = [];
       }
@@ -31215,6 +31222,7 @@ var init_graph_index = __esm({
       }
       async rebuild() {
         const generation = ++this.generation;
+        for (const entry of this.pending.values()) entry.resolve();
         this.phase = "indexing";
         this.base = this.room.meta.base ?? "";
         this.observedByPath.clear();
@@ -31250,6 +31258,7 @@ var init_graph_index = __esm({
         const t0 = Date.now();
         const pathsToRefresh = Array.from(all2);
         await ensureLanguages(pathsToRefresh);
+        if (generation !== this.generation || this.stopped) return;
         await Promise.all(pathsToRefresh.map((path25) => this.refresh(path25)));
         if (generation !== this.generation || this.stopped) return;
         this.phase = "ready";
@@ -31267,18 +31276,31 @@ var init_graph_index = __esm({
           if (t !== void 0) return t;
         }
         if (!this.base) return void 0;
-        return gitShow(this.dir, this.base, path25);
+        return (this.opts.read ?? gitShow)(this.dir, this.base, path25);
       }
       refresh(path25) {
         if (this.stopped) return Promise.resolve();
         this.revisions.set(path25, (this.revisions.get(path25) ?? 0) + 1);
         const inflight = this.pending.get(path25);
-        if (inflight) return inflight.promise;
+        if (inflight) {
+          if (inflight.generation !== this.generation) {
+            inflight.resolve();
+            inflight.promise = new Promise((resolve6) => {
+              inflight.resolve = resolve6;
+            });
+            inflight.generation = this.generation;
+          }
+          return inflight.promise;
+        }
         let resolve5;
         const promise = new Promise((r) => {
           resolve5 = r;
         });
-        this.pending.set(path25, { promise, resolve: resolve5 });
+        let resolveIdle;
+        const idle = new Promise((r) => {
+          resolveIdle = r;
+        });
+        this.pending.set(path25, { generation: this.generation, promise, resolve: resolve5, idle, resolveIdle });
         this.refreshQueue.push(path25);
         this.drainRefreshQueue();
         return promise;
@@ -31287,10 +31309,19 @@ var init_graph_index = __esm({
         while (!this.stopped && this.activeRefreshes < MAX_REFRESH_CONCURRENCY && this.refreshQueue.length) {
           const path25 = this.refreshQueue.shift();
           this.activeRefreshes++;
-          void this.runRefresh(path25).catch((e) => this.log(`graph: ${path25}: ${e instanceof Error ? e.message : e}`)).finally(() => {
+          const generation = this.generation;
+          void this.runRefresh(path25).catch((e) => {
+            this.log(`graph: ${path25}: ${e instanceof Error ? e.message : e}`);
+            return generation === this.generation;
+          }).then((done) => {
             this.activeRefreshes--;
-            this.pending.get(path25)?.resolve();
-            this.pending.delete(path25);
+            const entry = this.pending.get(path25);
+            if (entry?.generation === generation) entry.resolve();
+            if (!done && !this.stopped) this.refreshQueue.push(path25);
+            else {
+              entry?.resolveIdle();
+              this.pending.delete(path25);
+            }
             if (!this.stopped && !this.pending.size) {
               clearTimeout(this.publishing);
               this.publishing = setTimeout(() => {
@@ -31306,7 +31337,7 @@ var init_graph_index = __esm({
         }
       }
       async runRefresh(path25) {
-        while (!this.stopped) {
+        if (!this.stopped) {
           const revision = this.revisions.get(path25), generation = this.generation;
           await ensureLanguages([path25]);
           const text = await this.textFor(path25);
@@ -31319,13 +31350,13 @@ var init_graph_index = __esm({
           const mine = this.room.text(path25, this.me);
           const mineDeleted = this.room.deleted.get(this.me)?.has(path25) ?? false;
           const own2 = workerBaseline(this.room.workerOf(this.me));
-          const read = (sha, file) => gitShow(this.dir, sha, file);
+          const read = (sha, file) => (this.opts.read ?? gitShow)(this.dir, sha, file);
           const baseRead = mine !== void 0 || mineDeleted ? own2 ? await readBaseline(own2, path25, read) : await read(this.base, path25).then(
             (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
             (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
           ) : void 0;
-          if (this.stopped) return;
-          if (generation !== this.generation || revision !== this.revisions.get(path25)) continue;
+          if (this.stopped) return true;
+          if (generation !== this.generation) return false;
           if (!symbols || text === void 0) {
             this.cache.delete(path25);
             this.graph.remove(path25);
@@ -31338,7 +31369,7 @@ var init_graph_index = __esm({
               this.degradedPaths.add(path25);
               this.observedByPath.delete(path25);
               this.log(`graph: baseline unavailable for ${path25}; observed contract coverage degraded: ${baseRead.error.message}`);
-              break;
+              return revision === this.revisions.get(path25);
             }
             this.degradedPaths.delete(path25);
             const changes = observedContractChanges(baseRead?.kind === "available" ? baseRead.text : "", mineDeleted ? "" : mine ?? "", path25, parseFile).map((change) => ({ path: path25, ...change }));
@@ -31348,13 +31379,14 @@ var init_graph_index = __esm({
             this.observedByPath.delete(path25);
             this.degradedPaths.delete(path25);
           }
-          break;
+          return revision === this.revisions.get(path25);
         }
+        return true;
       }
       /** Wait for overlay work already queued as well as base rebuilds. */
       async whenIdle() {
         await this.ready;
-        while (this.pending.size) await Promise.all([...this.pending.values()].map((entry) => entry.promise));
+        while (this.pending.size) await Promise.all([...this.pending.values()].map((entry) => entry.idle));
       }
       publish(status) {
         if (this.stopped) return;
@@ -31596,7 +31628,7 @@ var init_worker_state = __esm({
 });
 
 // packages/room-mcp/src/workers.ts
-import { execFileSync as execFileSync4, spawn as spawn2 } from "node:child_process";
+import { execFileSync as execFileSync5, spawn as spawn2 } from "node:child_process";
 import fs13 from "node:fs";
 import os4 from "node:os";
 import path12 from "node:path";
@@ -32194,7 +32226,7 @@ function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
 }
 function processName(pid) {
   try {
-    return path12.basename(execFileSync4("ps", ["-o", "comm=", "-p", String(pid)], {
+    return path12.basename(execFileSync5("ps", ["-o", "comm=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: 3e3,
       env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" }
@@ -32216,7 +32248,7 @@ function listCwdProcesses(platform = process.platform) {
       }
     }
   } else if (platform === "darwin") {
-    const output = execFileSync4("lsof", ["-a", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 5e3, maxBuffer: 8 * 1024 * 1024 });
+    const output = execFileSync5("lsof", ["-a", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 5e3, maxBuffer: 8 * 1024 * 1024 });
     let pid = 0;
     for (const line of output.split("\n")) {
       if (line.startsWith("p")) pid = Number(line.slice(1));
@@ -32494,7 +32526,7 @@ var init_workers = __esm({
       platform: process.platform,
       readFile: (file) => fs13.readFileSync(file, "utf8"),
       readLink: (file) => fs13.readlinkSync(file),
-      exec: (file, args3) => execFileSync4(file, args3, {
+      exec: (file, args3) => execFileSync5(file, args3, {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 3e3,
@@ -45363,7 +45395,6 @@ init_src();
 
 // packages/room-mcp/src/tools/index.ts
 init_hooks_bridge();
-init_base_notice();
 init_company();
 init_connection();
 init_registry();
@@ -46131,7 +46162,6 @@ init_claims2();
 // packages/room-mcp/src/tools/messaging.ts
 init_src();
 init_hooks_bridge();
-init_base_notice();
 init_prs();
 init_context();
 var WAIT_DEFAULT = 3e4;
@@ -46309,8 +46339,7 @@ function handlers5(state) {
         const notice = unavailableQuestion(qRoom, questionId);
         if (notice) return notice;
       }
-      const waitResult = async (x, m, workersRoom = false) => {
-        if (await dropSatisfiedBaseNotice(x, m)) return;
+      const waitResult = (x, m, workersRoom = false) => {
         if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
           received(x, m);
           if (m.type === "answer") return `answered: ${formatMsg(m)}`;
@@ -46327,7 +46356,7 @@ function handlers5(state) {
       const candidates = [s, ...rooms.all().filter((x) => x !== s)].flatMap((x) => x.room.messages().filter((m) => !seen.has(m.id) && !x.room.seen(x.me.name).has(m.id)).map((m) => ({ x, m })));
       candidates.sort((a2, b) => (a2.m.priority === "interrupt" ? 0 : a2.m.type === "question" ? 1 : 2) - (b.m.priority === "interrupt" ? 0 : b.m.type === "question" ? 1 : 2) || a2.m.at - b.m.at);
       for (const { x, m } of candidates) {
-        const ended = await waitResult(x, m, x !== s);
+        const ended = waitResult(x, m, x !== s);
         if (ended) return ended;
       }
       if (offline(s)) return "offline: queued/not delivered; room_wait cannot observe new messages until reconnected";
@@ -46369,12 +46398,10 @@ function handlers5(state) {
         };
         const onWorkersBus = (ev) => {
           if (!ws) return;
-          void (async () => {
-            for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-              const ended = await waitResult(ws, m, true);
-              if (ended) return finish(ended);
-            }
-          })();
+          for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
+            const ended = waitResult(ws, m, true);
+            if (ended) return finish(ended);
+          }
         };
         timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap((room) => myWorkers(room)).filter((w) => w.status === "running" && w.exitCode === void 0).map((w) => [w.name, w])).values()];
@@ -46384,12 +46411,10 @@ function handlers5(state) {
           if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`);
         };
         const onBus = (ev) => {
-          void (async () => {
-            for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-              const ended = await waitResult(s, m);
-              if (ended) return finish(ended);
-            }
-          })();
+          for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
+            const ended = waitResult(s, m);
+            if (ended) return finish(ended);
+          }
         };
         s.room.claims.observe(onClaims);
         s.room.bus.observe(onBus);
@@ -48586,13 +48611,6 @@ function createTools(ctx) {
           const prefix = moved ? `${moved}
 
 ` : "";
-          if (s2 && name2 !== "room_join" && name2 !== "room_create") {
-            for (const source of [s2, state.rooms.workers()].filter((x) => !!x)) {
-              for (const m of source.room.messages()) {
-                if (m.type === "base" && state.forMe(source, m) && !source.room.seen(source.me.name).has(m.id)) await dropSatisfiedBaseNotice(source, m);
-              }
-            }
-          }
           const unread = s2 && name2 !== "room_join" && name2 !== "room_create" ? state.inbox(s2) : "";
           const sharing = s2 ? await teamSharingNote(s2) : "";
           const health2 = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name2, !s2.local) : "";
@@ -48952,7 +48970,7 @@ async function main() {
   const attachChannel = (s) => {
     if (attachedWakeSessions.has(s)) return;
     attachedWakeSessions.add(s);
-    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), recipient: s, isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: (wake) => !!s.room.messages().find((m) => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log });
+    const router = new SocketWakeRouter({ host: resolveSessionHost(s.dir), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: (wake) => !!s.room.messages().find((m) => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log });
     const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
     s.room.bus.observe((ev) => {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
