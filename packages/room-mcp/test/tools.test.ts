@@ -17,6 +17,7 @@ import { SocketWakeRouter } from '../src/wake-path.js'
 import { waitConsumesMessage } from '../src/tools/messaging.js'
 import { shouldWake } from '../src/wake.js'
 import { suggestedTestCommand, testCommandFor } from '../src/tools/files.js'
+import { markHistorySeenOnJoin } from '../src/tools/join.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -587,10 +588,59 @@ describe('scope, claims, plans, ledger', () => {
     t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'changed', paths: ['app.py'], summary: 'tweaked b', symbols: ['b'] } as never)
     const out = await t.tools.call('room_scope', { area: 'API', summary: 'harden app', paths: ['app.py'] })
     expect(out).toContain('scope set: api: harden app (app.py)')
-    expect(out).toContain('api ledger (2):')
+    expect(out).toContain('api ledger (1):')
+    expect(out).not.toContain('is on api: harden app')
     expect(out).toContain('tweaked b')
     expect(t.room.scope('Rohan')?.area).toBe('api')
     expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'scope', priority: 'notify' })
+  })
+
+  it('reports a retired worker scope event as history', async () => {
+    const t = setup()
+    const worker = { name: 'Rohan+old', kind: 'agent' as const }
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    t.other.post(worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['app.py'] })
+    clock.mockRestore()
+    t.other.retireParticipant(worker.name, { name: worker.name, tag: 'old', lead: 'Rohan', host: 'codex', task: 'old work', summary: 'done', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' })
+    const out = await t.tools.call('room_scope', { area: 'api', summary: 'new work', paths: ['app.py'] })
+    expect(out).toContain('earlier: Rohan+old was on api (00:00:01): old work')
+    expect(out).not.toContain('Rohan+old is on api')
+    expect(out).not.toContain('is on api: new work')
+  })
+
+  it('renders a live scope as current in the ledger and recent bus', async () => {
+    const t = setup()
+    const worker = { name: 'Kieran', kind: 'agent' as const }
+    t.other.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'live work', paths: ['app.py'] })
+    t.other.post(worker, { type: 'scope', area: 'api', summary: 'live work', paths: ['app.py'] })
+    const scopeReply = await t.tools.call('room_scope', { area: 'api', summary: 'my work', paths: ['app.py'] })
+    expect(scopeReply).toContain("Kieran's agent is on api: live work")
+    const state = await t.tools.call('room_state', { all: true })
+    expect(state).toContain("Kieran's agent is on api: live work")
+  })
+
+  it('renders a previous area as history after a person moves scope', async () => {
+    const t = setup()
+    const worker = { name: 'Kieran', kind: 'agent' as const }
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    t.other.post(worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['app.py'] })
+    clock.mockReturnValue(2_000)
+    t.other.post(worker, { type: 'scope', area: 'web', summary: 'new work', paths: ['web/app.ts'] })
+    clock.mockRestore()
+    t.other.setScope({ by: worker.name, byKind: worker.kind, area: 'web', summary: 'new work', paths: ['web/app.ts'] })
+    const state = await t.tools.call('room_state', { all: true })
+    expect(state).toContain("earlier: Kieran's agent was on api (00:00:01): old work")
+    expect(state).toContain("Kieran's agent is on web: new work")
+  })
+
+  it('uses live scope wording in a worker last-message line', async () => {
+    const t = setup()
+    const worker = { name: 'Rohan+review', kind: 'agent' as const }
+    t.other.setWorker({ tag: 'review', name: worker.name, lead: 'Rohan', host: 'codex', task: 'review', dir, branch: 'room/review', pid: -1, startedAt: 1, status: 'done' })
+    t.other.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'review code', paths: ['app.py'] })
+    t.other.post(worker, { type: 'scope', area: 'api', summary: 'review code', paths: ['app.py'] })
+    const state = await t.tools.call('room_state', { all: true })
+    expect(state).toContain('last: [notify] Rohan+review is on api: review code')
   })
 
   it('a claim with plans notifies whoever uses the symbol; release reports unfulfilled plans', async () => {
@@ -892,10 +942,11 @@ describe('wait', () => {
 it('delivers a lead broadcast posted after spawn but before the worker joins, without replaying older history', async () => {
   const t = setup({ joined: false })
   const lead = { name: 'Kieran', kind: 'agent' } as const
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
   const old = t.other.post<NoteMsg>(lead, { type: 'note', text: 'old history', priority: 'notify' })
   t.other.setWorker({ tag: 'review', name: me.name, lead: lead.name, host: 'codex', task: 'review', dir,
-    branch: 'room/review', pid: 1, startedAt: old.at + 1, status: 'running' })
-  const clock = vi.spyOn(Date, 'now').mockReturnValue(old.at + 2)
+    branch: 'room/review', pid: 1, startedAt: old.at + 300_000, spawnedAfter: old.id, status: 'running' })
+  clock.mockReturnValue(old.at + 2)
   const fresh = t.other.post<NoteMsg>(lead, { type: 'note', text: 'post-spawn briefing', priority: 'notify' })
   clock.mockRestore()
   await t.tools.call('room_join', {})
@@ -905,6 +956,25 @@ it('delivers a lead broadcast posted after spawn but before the worker joins, wi
   expect(inbox).toContain('post-spawn briefing')
   expect(inbox).not.toContain('old history')
   expect(t.room.seen(me.name).has(fresh.id)).toBe(true)
+})
+
+it('keeps eligible lead notes when the spawn marker was trimmed', async () => {
+  const t = setup({ joined: false })
+  const lead = { name: 'Kieran', kind: 'agent' } as const
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+  const old = t.other.post<NoteMsg>(lead, { type: 'note', text: 'trimmed marker', priority: 'fyi' })
+  t.other.setWorker({ tag: 'review', name: me.name, lead: lead.name, host: 'codex', task: 'review', dir,
+    branch: 'room/review', pid: 1, startedAt: old.at + 300_000, spawnedAfter: old.id, status: 'running' })
+  t.other.bus.delete(0, 1)
+  const addressed = t.other.post<NoteMsg>(lead, { type: 'note', to: me.name, text: 'addressed briefing', priority: 'notify' })
+  const broadcast = t.other.post<NoteMsg>(lead, { type: 'note', text: 'broadcast briefing', priority: 'interrupt' })
+  const routine = t.other.post<NoteMsg>(lead, { type: 'note', text: 'routine history', priority: 'fyi' })
+  clock.mockRestore()
+  const seen = new Set<string>()
+  markHistorySeenOnJoin(fakeSession(t.room), seen)
+  expect(seen.has(addressed.id)).toBe(false)
+  expect(seen.has(broadcast.id)).toBe(false)
+  expect(seen.has(routine.id)).toBe(true)
 })
 
 describe('preview merge', () => {

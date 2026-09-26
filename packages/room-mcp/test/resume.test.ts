@@ -72,6 +72,13 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
 }
 
 describe('resumed worker boundaries', () => {
+  it('records the newest bus message as the worker spawn marker', async () => {
+    const t = setup()
+    const before = t.room.post(t.session.me, { type: 'note', text: 'earlier work', priority: 'fyi' })
+    expect(await t.tools.call('room_spawn', { tag: 'briefed', task: 'review', host: 'claude' })).toContain('spawned briefed')
+    expect(t.room.workers.get('briefed')?.spawnedAfter).toBe(before.id)
+  })
+
   it.each([
     ['vanished', false, 'gone', 'missing'],
     ['present', false, 'gone', 'no-session'],
@@ -96,7 +103,8 @@ describe('resumed worker boundaries', () => {
     t.exits[0](0)
     await vi.waitFor(() => expect(t.room.workers.get('policy')?.exitCode).toBe(0))
     const reply = await t.tools.call('room_send', { type: 'note', to: 'policy', text: 'again' })
-    expect(reply).toContain('resumed policy with your message; policy had finished and was restarted')
+    expect(reply).toContain("resumed policy's retained conversation with your message")
+    expect(reply).not.toContain('restarted')
     expect(t.specs[1]).toMatchObject({ cwd: first.dir, logFile: t.specs[0].logFile, env: t.specs[0].env })
     expect(t.specs[1].cmd).toBe('claude')
     expect(t.specs[1].args).toContain('--resume')
@@ -277,7 +285,7 @@ describe('resumed worker boundaries', () => {
       setTimeout(() => t.exits[0](0), 5_200)
       await vi.advanceTimersByTimeAsync(5_200)
       const reply = await sending
-      expect(reply).toContain('resumed slow with your message; slow had finished and was restarted')
+      expect(reply).toContain("resumed slow's retained conversation with your message")
       expect(reply).not.toContain('will not answer')
       expect(t.specs).toHaveLength(2)
       expect(t.room.messages().filter(m => m.type === 'note' && m.to === w.name && m.text === 'one follow-up')).toHaveLength(1)

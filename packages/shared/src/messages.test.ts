@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MessageKinds,
   RoomDoc,
@@ -12,6 +12,7 @@ import {
   type PlanMsg,
   type NoteMsg,
   type QuestionMsg,
+  type ScopeMsg,
 } from './index.js'
 
 declare module './types.js' {
@@ -64,6 +65,31 @@ describe('MessageKinds', () => {
     expect(shouldWakeOnMsg({ name: 'Ada', kind: 'agent' }, ping).wake).toBe(false)
     expect(formatMsg(ping)).toBe('[notify] ping from Kieran: please look')
   })
+})
+
+it('formats only the newest declared scope in a live area as current', () => {
+  const room = new RoomDoc()
+  const worker = { name: 'Rohan+worker', kind: 'agent' } as const
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+  try {
+    const old = room.post<ScopeMsg>(worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['api/a.ts'] })
+    room.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'old work', paths: ['api/a.ts'] })
+    expect(formatMsg(old, { scopes: room.allScopes(), messages: room.messages() })).toContain('is on api: old work')
+    clock.mockReturnValue(1_500)
+    const revised = room.post<ScopeMsg>(worker, { type: 'scope', area: 'api', summary: 'revised work', paths: ['api/b.ts'] })
+    room.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'revised work', paths: ['api/b.ts'] })
+    const revisedContext = { scopes: room.allScopes(), messages: room.messages() }
+    expect(formatMsg(old, revisedContext)).toContain('earlier: Rohan+worker was on api (00:00:01): old work')
+    expect(formatMsg(revised, revisedContext)).toContain('is on api: revised work')
+    clock.mockReturnValue(2_000)
+    const moved = room.post<ScopeMsg>(worker, { type: 'scope', area: 'web', summary: 'new work', paths: ['web/a.ts'] })
+    room.setScope({ by: worker.name, byKind: worker.kind, area: 'web', summary: 'new work', paths: ['web/a.ts'] })
+    const context = { scopes: room.allScopes(), messages: room.messages() }
+    expect(formatMsg(old, context)).toContain('earlier: Rohan+worker was on api (00:00:01): old work')
+    expect(formatMsg(moved, context)).toContain('Rohan+worker is on web: new work')
+    room.scopes.delete(worker.name)
+    expect(formatMsg(moved, { scopes: room.allScopes(), messages: room.messages() })).toContain('earlier: Rohan+worker was on web (00:00:02): new work')
+  } finally { clock.mockRestore(); room.doc.destroy() }
 })
 
 it('addresses a note as a waking notification while leaving broadcast notes as FYI', () => {

@@ -59,7 +59,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     const t = setup()
     const clock = vi.spyOn(Date, 'now').mockReturnValue(100)
     const old = t.local.a.post<NoteMsg>(lead, { type: 'note', text: 'before spawn', priority: 'notify' })
-    t.local.a.updateWorker('money', { startedAt: 150 })
+    t.local.a.updateWorker('money', { startedAt: 150, spawnedAfter: old.id })
     clock.mockReturnValue(200)
     t.team.b.post<NoteMsg>(kieran, { type: 'note', priority: 'interrupt', text: 'stop now' })
     const relayed = t.local.b.messages().find(m => m.type === 'note' && m.to === worker.name)!

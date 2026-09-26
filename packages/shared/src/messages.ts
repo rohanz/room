@@ -1,10 +1,11 @@
 import { claimsOverlap } from './claims.js'
 import { isAgentic, displayName } from './identity.js'
-import type { BuiltinMsgType, Claim, MessageMap, Msg, MsgBase, MsgType, Plan, Identity, Priority } from './types.js'
+import type { BuiltinMsgType, Claim, MessageMap, Msg, MsgBase, MsgType, Plan, Identity, Priority, Scope } from './types.js'
 
 export type MessageAudience = 'addressed' | 'broadcast' | 'claim-holders' | 'everyone'
 export interface MessageWakeContext { me: Identity; hasUncommitted: boolean; myClaims: readonly Claim[] }
 export type MessageWake<M extends MsgBase = Msg> = 'never' | 'interrupt' | 'addressed' | 'always' | ((m: M, ctx: MessageWakeContext) => boolean)
+export interface MessageFormatContext { scopes: readonly Scope[]; messages: readonly Msg[] }
 
 export interface MessageWaiting {
   claimId?: string
@@ -17,7 +18,7 @@ export interface MessageWaiting {
 }
 
 export interface MessageKind<M extends MsgBase = Msg> {
-  format: (message: M) => string
+  format: (message: M, context?: MessageFormatContext) => string
   audience: MessageAudience
   wakes: MessageWake<M>
   priority: Priority | ((m: { symbols?: readonly string[]; [key: string]: unknown }) => Priority)
@@ -45,7 +46,13 @@ const builtins = {
   done: { priority: 'fyi', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },
   base: { priority: 'notify', audience: 'everyone', wakes: (m, ctx) => (m.fromKind === 'human' || m.from !== ctx.me.name) && ctx.hasUncommitted, format: m => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — ${BASE_CATCH_UP}` },
   plan: { priority: 'fyi', audience: 'broadcast', wakes: 'interrupt', format: m => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''}${m.text ? ` — ${m.text}` : ''}` },
-  scope: { priority: 'notify', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})` },
+  scope: { priority: 'notify', audience: 'everyone', inbox: false, wakes: 'never', format: (m, context) => {
+    const current = context?.scopes.some(s => s.by === m.from && s.area === m.area)
+      && context.messages.filter(x => x.type === 'scope' && x.from === m.from).at(-1)?.id === m.id
+    return current
+      ? `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})`
+      : `${priority(m)}earlier: ${who(m)} was on ${m.area} (${new Date(m.at).toISOString().slice(11, 19)}): ${m.summary} (${m.paths.join(', ')})`
+  } },
 } satisfies Record<BuiltinMsgType, MessageKind<any>>
 
 /** The single policy registry for bus message presentation and delivery. */
@@ -93,7 +100,7 @@ export function messageEndsWait(m: Msg, waiting: MessageWaiting): boolean {
   return messageKind(m).endsWait?.(m, waiting) ?? false
 }
 
-export function formatMsg(m: Msg): string { return messageKind(m).format(m) }
+export function formatMsg(m: Msg, context?: MessageFormatContext): string { return messageKind(m).format(m, context) }
 
 export function formatPlans(plans: readonly Plan[]): string {
   return plans.map(p => `${p.kind} ${p.symbol}${p.detail ? ` → ${p.detail}` : ''}`).join('; ')

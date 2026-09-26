@@ -407,7 +407,6 @@ export class Rooms {
       if (!launchLease) return `error: ${this.launchUsage(running)} workers already running or starting (max ${config.maxWorkers}, ROOM_MAX_WORKERS); wait for one to finish`
       try {
         const { server, isWorker } = workerOrigin(s)
-        const wasDone = w.status === 'done'
         let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
         try { launched = await launchWorkerProcess({ rooms: this, session: s, id, tag: w.tag, dir: w.dir,
           lead: w.lead, owner: s.me.owner ?? s.me.name, host: w.host, model: w.model, effort: w.effort,
@@ -440,7 +439,7 @@ export class Rooms {
         let stopWarning = ''
         try { clearWorkerStopState(s.dir, w.tag, id) }
         catch (e) { stopWarning = `; warning: could not clear saved stop reason: ${e instanceof Error ? e.message : String(e)}`; log(`worker resume:${stopWarning}`) }
-        return `resumed ${w.tag} with your message${wasDone ? `; ${w.tag} had finished and was restarted` : ''}${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ''}${w.share ? '' : ' (legacy worker has no saved sharing level; using intent)'}${stopWarning}`
+        return `resumed ${w.tag}'s retained conversation with your message${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ''}${w.share ? '' : ' (legacy worker has no saved sharing level; using intent)'}${stopWarning}`
       } finally {
         launchLease.release()
       }

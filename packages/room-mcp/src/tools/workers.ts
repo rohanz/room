@@ -182,6 +182,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
         catch (e) { return abortPrepared(`error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
         const hostSessionId = host === 'claude' ? randomUUID() : undefined
+        const spawnedAfter = s.room.lastMessages(1)[0]?.id ?? ''
         let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
         try {
           launched = await launchWorkerProcess({ rooms, session: s, id, tag, dir, lead: s.me.name, owner,
@@ -195,7 +196,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               share: effectiveShare, ...(link.length ? { link } : {}), task, dir, branch,
               ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}),
               ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid,
-              startedAt, ...(processStartTime ? { processStartTime } : {}), status: 'running', lead: s.me.name, gen }
+              startedAt, spawnedAfter, ...(processStartTime ? { processStartTime } : {}), status: 'running', lead: s.me.name, gen }
             s.room.setWorker(w)
             return true
           }, (sessionId, proc) => {

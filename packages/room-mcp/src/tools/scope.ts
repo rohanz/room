@@ -34,6 +34,8 @@ async function workerChangedCount(s: Session, worker: import('@room/shared').Wor
   }
 }
 
+const formatRoomMessage = (s: Session, m: Msg): string => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages() })
+
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines, shareOf } = state
   const pathState: Handler = async a => {
@@ -66,13 +68,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await loadAreas(s)
       const areas = areasOf(s).areasOf([...paths, ...s.room.changedPaths(s.me.name)])
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas })
-      s.room.post<ScopeMsg>(s.me, { type: 'scope', area, summary, paths })
+      const posted = s.room.post<ScopeMsg>(s.me, { type: 'scope', area, summary, paths })
       setPresence(s, { status: `on ${area}: ${summary}`, areas })
       const out = [`scope set: ${scopeLine({ area, summary, paths } as Scope)}`]
       out.push(...areaLines(s, areas))
       const overlapping = s.room.allScopes().filter(sc => sc.by !== s.me.name && paths.some(p => scopeCovers(sc, p) || sc.paths.some(q => scopeCovers({ paths }, q))))
       for (const sc of overlapping) out.push(`overlaps ${sc.by}'s scope ${scopeLine(sc)} — coordinate before touching shared files`)
-      out.push(...ledgerLines(s, { area, limit: 20 }, area))
+      out.push(...ledgerLines(s, { area, limit: 20 }, area, posted.id))
       return out.join('\n')
     },
     async room_state(a) {
@@ -182,13 +184,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         .filter(x => all || x.to === s.me.name || x.from === s.me.name || x.type === 'base' || msgInMyAreas(s, x))
         .slice(-10)
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
-      for (const x of msgs) out.push(`  - [${x.id}] ${formatMsg(x)}`)
+      for (const x of msgs) out.push(`  - [${x.id}] ${formatRoomMessage(s, x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
-      out.push(...formatWorkerLines(await Promise.all(myWorkers(s).map(async worker => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
+      out.push(...formatWorkerLines(await Promise.all(myWorkers(s).map(async worker => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(s, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)
-        out.push(...formatWorkerLines(await Promise.all(myWorkers(ws).map(async worker => { const processGone = worker.status === 'running' && !state.workerAlive(ws, worker); return { worker, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatMsg(message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
+        out.push(...formatWorkerLines(await Promise.all(myWorkers(ws).map(async worker => { const processGone = worker.status === 'running' && !state.workerAlive(ws, worker); return { worker, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(ws, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
       }
       return a.all === true ? out.join('\n') : compactState(out, summarizedClaims)
     },
@@ -251,11 +253,11 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'base' | 'p
       const stale = !presences(s).some(p => p.user.name === c.by) && now() - c.at > STALE_MS
       return formatClaimLine(c, { yours: isMe(s, { name: c.by, kind: c.byKind }), stale })
     }
-  const ledgerLines = (s: Session, q: NonNullable<Parameters<RoomDoc['ledger']>[0]>, label: string): string[] => {
-      const entries = s.room.ledger({ ...q, limit: q.limit ?? 10 }).filter(m => !(m.to && m.to !== s.me.name && m.from !== s.me.name))
+  const ledgerLines = (s: Session, q: NonNullable<Parameters<RoomDoc['ledger']>[0]>, label: string, excludeId?: string): string[] => {
+      const entries = s.room.ledger({ ...q, limit: q.limit ?? 10 }).filter(m => m.id !== excludeId && !(m.to && m.to !== s.me.name && m.from !== s.me.name))
       const plans = s.room.openClaims().filter(c => c.plans?.length && !(c.by === s.me.name) && (q.path ? c.path === q.path : true) && (q.area ? s.room.allScopes().some(sc => sc.area === q.area && scopeCovers(sc, c.path)) : true))
       const out = [`${label} ledger (${entries.length}):`]
-      for (const m of entries) out.push(`  - ${new Date(m.at).toISOString().slice(11, 19)} ${formatMsg(m)}`)
+      for (const m of entries) out.push(`  - ${new Date(m.at).toISOString().slice(11, 19)} ${formatRoomMessage(s, m)}`)
       if (plans.length) { out.push('open plans by others:'); for (const c of plans) out.push(`  - ${c.by}'s agent in ${c.path}: ${formatPlans(c.plans!)}`) }
       return out
     }

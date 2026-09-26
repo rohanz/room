@@ -107,7 +107,7 @@ export interface HandlerState {
   cleanupMine: (s: Session, why: string, keep?: (claim: Claim) => boolean) => number
   upgrade: (s: Session, msg: Msg, paths: string[], symbols: string[]) => Promise<string[]>
   claimLine: (s: Session, claim: Claim) => string
-  ledgerLines: (s: Session, query: NonNullable<Parameters<RoomDoc['ledger']>[0]>, label: string) => string[]
+  ledgerLines: (s: Session, query: NonNullable<Parameters<RoomDoc['ledger']>[0]>, label: string, excludeId?: string) => string[]
   scopeLine: (scope: Scope) => string
   personLine: (s: Session, name: string) => string
   serverOf: (args: Record<string, unknown>) => string

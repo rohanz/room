@@ -81,12 +81,9 @@ describe('automatic join (real room-mcp processes)', () => {
     const lead = await joinSession({ dir, server: LOCAL, room, name: 'Ada' })
     cleanups.push(() => leaveSession(lead))
     const old = lead.room.post(lead.me, { type: 'note', text: 'OLD-NOTIFY', priority: 'notify' })
-    await new Promise(r => setTimeout(r, 5))
-    const startedAt = Date.now()
     const id = 'Ada/q#1'
     lead.room.setWorker({ id, tag: 'q', name: 'Ada+q', lead: 'Ada', host: 'codex', task: 'room_wait once', dir,
-      branch: 'main', pid: process.pid, startedAt, status: 'running' })
-    await new Promise(r => setTimeout(r, 5))
+      branch: 'main', pid: process.pid, startedAt: Date.now(), spawnedAfter: old.id, status: 'running' })
     const early = lead.room.post(lead.me, { type: 'note', text: 'BROADCAST-NOTIFY-1', priority: 'notify' })
     const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir,
       tag: 'q', lead: 'Ada', owner: 'Ada', share: 'full', gen: 1, id, logDir: dir, isWorker: false })

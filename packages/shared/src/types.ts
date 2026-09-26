@@ -153,6 +153,8 @@ export interface Worker {
   /** OS process start identity (boot plus start tick/second); absent on legacy records. */
   processStartTime?: string
   startedAt: number
+  /** Newest bus message when this worker was spawned; empty if the bus was empty. */
+  spawnedAfter?: string
   status: WorkerStatus
   summary?: string
   exitCode?: number
