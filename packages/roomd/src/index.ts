@@ -763,32 +763,23 @@ class Daemon implements Roomd {
     }
     const prev = this.appliedHead
     const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : []
-    const oldBranch = this.branch, oldShared = this.shared, oldTracked = this.tracked
     this.base = head
     this.branch = branch
-    try {
-      this.tracked = await gitTracked(this.dir)
-      await this.refreshShared()
-      await this.publisher.reconcile(await gitChanged(this.dir))
-      if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot)
-      if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
-      // refreshBaseStatus may advance meta.base after overlays; advanceBase guards concurrent meta-observer calls.
-      await this.refreshBaseStatus()
-      // Overlay updates have finished before readers can see the new base receipt.
-      this.roomDoc.doc.transact(() => {
-        this.roomDoc.setBaseOf(this.name, this.shared, this)
-        this.roomDoc.reconcileBaseTexts(this.name, this)
-      }, this)
-      if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages())
-      this.appliedHead = head
-      if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
-    } catch (error) {
-      this.base = prev
-      this.branch = oldBranch
-      this.shared = oldShared
-      this.tracked = oldTracked
-      throw error
-    }
+    this.tracked = await gitTracked(this.dir)
+    await this.refreshShared()
+    // The receipt may run ahead of overlays briefly; the transition is retried until every step succeeds.
+    this.roomDoc.doc.transact(() => {
+      this.roomDoc.setBaseOf(this.name, this.shared, this)
+      this.roomDoc.reconcileBaseTexts(this.name, this)
+    }, this)
+    await this.refreshBaseStatus()
+    await this.publisher.reconcile(await gitChanged(this.dir))
+    if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot)
+    if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
+    await this.refreshBaseStatus()
+    if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages())
+    this.appliedHead = head
+    if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
   }
 
   private readonly unpushedPairs = new Set<string>()

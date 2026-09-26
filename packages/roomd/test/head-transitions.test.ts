@@ -43,6 +43,7 @@ async function movedHead() {
   const retries: Array<() => void> = []
   daemon = await startRoomd({ dir, room: 'ws://memory/head-retry', name: 'Alice', providerFactory: (_s, _n, doc) => provider(doc),
     basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {}, retrySchedule: run => { retries.push(run); return () => {} } })
+  ;(daemon as Roomd & { watcher: { removeAllListeners(event: string): void } }).watcher.removeAllListeners('all')
   const oldHead = daemon.base
   const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(original, 2, 2) })
   fs.writeFileSync(path.join(dir, 'app.txt'), 'added\n' + original)
@@ -53,37 +54,74 @@ async function movedHead() {
 it('retries an injected Git failure through the whole HEAD transition', async () => {
   const { oldHead, newHead, claim, retries } = await movedHead()
   probe.failTracked = true
-  const queued = daemon as Roomd & { enqueue(work: () => Promise<void>): Promise<void> }
-  await queued.enqueue(async () => { await (daemon as Roomd & { pollHead(): Promise<void> }).pollHead() })
-  expect(daemon!.base).toBe(oldHead)
+  await daemon!.reconcileGitChanges()
+  expect(daemon!.base).toBe(newHead)
   expect(daemon!.roomDoc.baseOf('Alice')).toBe(oldHead)
   expect(retries).toHaveLength(1)
   retries.shift()!()
-  await queued.enqueue(async () => {})
+  await daemon!.reconcileGitChanges()
   expect(daemon!.base).toBe(newHead)
   expect(daemon!.roomDoc.baseOf('Alice')).toBe(newHead)
   expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
 })
 
-it('does not skip a second poll after a failed HEAD transition', async () => {
-  const { oldHead, newHead, claim } = await movedHead()
-  probe.failTracked = true
-  await expect((daemon as Roomd & { pollHead(): Promise<void> }).pollHead()).rejects.toThrow('injected git ls-files failure')
-  expect(daemon!.base).toBe(oldHead)
-  await (daemon as Roomd & { pollHead(): Promise<void> }).pollHead()
-  expect(daemon!.base).toBe(newHead)
-  expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
-})
-
-it('publishes the new base only after reconciling the new HEAD overlays', async () => {
-  const { oldHead, newHead } = await movedHead()
+it('keeps the new baseline after publishing a dirty overlay', async () => {
+  const { newHead } = await movedHead()
   fs.writeFileSync(path.join(dir!, 'app.txt'), 'dirty after commit\n')
-  let baseDuringPublish: string | undefined
-  ;(daemon as Roomd & { beforePublishWrite: (path: string) => Promise<void> }).beforePublishWrite = async () => {
-    baseDuringPublish = daemon!.roomDoc.baseOf('Alice')
-  }
-  await (daemon as Roomd & { pollHead(): Promise<void> }).pollHead()
-  expect(baseDuringPublish).toBe(oldHead)
+  await daemon!.reconcileGitChanges()
   expect(daemon!.roomDoc.baseOf('Alice')).toBe(newHead)
   expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('dirty after commit\n')
+  expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBe('added\nfirst\nclaimed\nlast\n')
+})
+
+it('retries after publication and claim re-anchoring without losing the baseline or moving claims twice', async () => {
+  const { newHead, claim, retries } = await movedHead()
+  fs.writeFileSync(path.join(dir!, 'app.txt'), 'added\nfirst\nclaimed\nlast\ndirty\n')
+  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<void>; markIntegratedBaseNotices(notices: unknown[]): void; appliedHead: string }
+  const reanchor = internal.reanchorOwnClaims.bind(internal)
+  const markNotices = internal.markIntegratedBaseNotices.bind(internal)
+  let notices = 0
+  internal.markIntegratedBaseNotices = messages => { notices++; markNotices(messages) }
+  let fail = true
+  internal.reanchorOwnClaims = async (head, claims) => {
+    await reanchor(head, claims)
+    if (fail) { fail = false; throw new Error('injected post-publication failure') }
+  }
+  await daemon!.reconcileGitChanges()
+  expect(internal.appliedHead).not.toBe(newHead)
+  expect(daemon!.roomDoc.baseOf('Alice')).toBe(newHead)
+  expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toContain('dirty')
+  expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBeDefined()
+  expect(notices).toBe(0)
+  expect(retries).toHaveLength(1)
+  retries.shift()!()
+  await daemon!.reconcileGitChanges()
+  expect(internal.appliedHead).toBe(newHead)
+  expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
+  expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toContain('dirty')
+  expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBeDefined()
+  expect(notices).toBe(1)
+})
+
+it('retries when HEAD moves during publication', async () => {
+  const { newHead, retries } = await movedHead()
+  fs.writeFileSync(path.join(dir!, 'app.txt'), 'dirty before next commit\n')
+  const internal = daemon as Roomd & { beforePublishWrite: (path: string) => Promise<void>; appliedHead: string }
+  let moved = false
+  internal.beforePublishWrite = async () => {
+    if (moved) return
+    moved = true
+    git(dir!, 'add', '-A'); git(dir!, 'commit', '-qm', 'move again')
+    fs.writeFileSync(path.join(dir!, 'app.txt'), 'dirty after next commit\n')
+  }
+  await daemon!.reconcileGitChanges()
+  expect(internal.appliedHead).not.toBe(newHead)
+  expect(retries).toHaveLength(1)
+  retries.shift()!()
+  await daemon!.reconcileGitChanges()
+  const finalHead = git(dir!, 'rev-parse', 'HEAD')
+  expect(internal.appliedHead).toBe(finalHead)
+  expect(daemon!.roomDoc.baseOf('Alice')).toBe(finalHead)
+  expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('dirty after next commit\n')
+  expect(daemon!.roomDoc.baseText('Alice', finalHead, 'app.txt')).toBe('dirty before next commit\n')
 })

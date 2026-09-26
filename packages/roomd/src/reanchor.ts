@@ -26,6 +26,7 @@ export function reanchorClaims(owner: string, claims: readonly Claim[], texts: R
   for (const claim of claims) {
     if (claim.by !== owner || claim.path.endsWith('/')) continue
     const text = texts.get(claim.path)
+    if (text !== undefined && claim.claimedHash && claimDigest(text, claim.from, claim.to) === claim.claimedHash) continue
     const lines = text?.split('\n')
     if (text?.endsWith('\n')) lines?.pop()
     const width = claim.to - claim.from + 1

@@ -34,9 +34,14 @@ describe('reanchorClaims', () => {
   })
 
   it('releases an ambiguous duplicate', () => {
-    expect(reanchorClaims('Alice', [claim()], new Map([['app.txt', original + original]]))).toEqual({
+    expect(reanchorClaims('Alice', [claim()], new Map([['app.txt', 'added\n' + original + original]]))).toEqual({
       moves: [], releases: [{ id: 'claim-Alice', path: 'app.txt', from: 2, to: 3 }],
     })
+  })
+
+  it('keeps a claim whose digest already matches its range on retry', () => {
+    const moved = 'added\n' + original + original
+    expect(reanchorClaims('Alice', [{ ...claim(), from: 3, to: 4 }], new Map([['app.txt', moved]]))).toEqual({ moves: [], releases: [] })
   })
 
   it('leaves another participant claim untouched', () => {
