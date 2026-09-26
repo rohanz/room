@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { codexSessionId } from '../src/worker-process.js'
 import { workerEnv, workerProcessEnv } from '../src/worker-config.js'
@@ -9,7 +10,7 @@ describe('worker module characterization', () => {
     expect(paths.includes('inputs/nested.txt')).toBe(true)
     expect(paths.includes('inputs-other')).toBe(false)
     expect(paths.exclusions).toEqual([':(exclude,literal)inputs', ':(exclude,literal)config.json'])
-    expect(workerOperationKey({ dir: '/repo/./.room/workers/a' })).toBe('worker:/repo/.room/workers/a')
+    expect(workerOperationKey({ dir: '/repo/./.room/workers/a' })).toBe(`worker:${path.resolve('/repo/./.room/workers/a')}`)
   })
 
   it('strips lead identity before adding worker identity and caps nested threads', () => {
@@ -17,7 +18,7 @@ describe('worker module characterization', () => {
       .toEqual({ KEEP: 'yes', ROOM_OWNER: 'worker' })
     const env = workerProcessEnv({ threads: 2, memGb: 1, host: 'codex', server: 'ws://local', room: 'r', dir: '/worker', tag: 'w', lead: 'l', owner: 'o', share: 'intent', gen: 1, id: 'id', logDir: '/lead', isWorker: true }, { OMP_NUM_THREADS: '8' })
     expect(env.OMP_NUM_THREADS).toBe('2')
-    expect(env.ROOM_LOG_FILE).toBe('/lead/.room/workers/w.mcp.log')
+    expect(env.ROOM_LOG_FILE).toBe(path.join('/lead', '.room', 'workers', 'w.mcp.log'))
   })
 
   it('accepts only a Codex thread-start event as a session id', () => {

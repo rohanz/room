@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.20
+
+Refactor, no behaviour change (audit 2026-09-24 finding 28, second half).
+
+- `workers.ts` (941 lines) is split along its function boundaries: `worker-config.ts` (host commands, prompts, budgets, environment, priority, ports), `worker-git.ts` (worktrees, carry, links, stop records, cleanup, recovery patches) and `worker-process.ts` (spawn, process identity, signals, termination, logs). Importers use the modules directly. This removes the `workers.ts` ↔ `worker-state.ts` import cycle. Characterization tests pin link exclusions, operation keys, the worker environment and Codex session parsing.
+- A proposed lifecycle transition table was dropped. It did not capture the facts the real gates use (exit code, live process, host session, worker id and budget), so it would have disagreed with them. The `decide*` functions in `worker-state.ts` remain the single source.
+
 ## 0.16.19
 
 Refactor, no behaviour change (audit 2026-09-24 finding 28, first half).

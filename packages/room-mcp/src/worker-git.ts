@@ -55,6 +55,7 @@ export async function uncommittedCount(dir: string): Promise<number> {
   return out.split('\n').filter(line => line.trim() && !/^..\s+"?\.room\//.test(line)).length
 }
 
+/** Resolve link paths before creating a worker worktree, so carry can exclude them. */
 export function resolveWorkerLinks(repoDir: string, requested?: unknown): string[] {
   let input = requested
   if (input === undefined) {
@@ -107,7 +108,6 @@ export function prepareWorkerLinks(repoDir: string, workerDir: string, requested
   return links.map(l => l.p)
 }
 
-/** Read a bounded suffix even for multi-GB logs, then take five non-empty, ANSI-free lines. */
 export interface PreparedWorktree {
   dir: string
   branch: string
@@ -323,6 +323,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   }
 }
 
+/** Remove only owned Room worktrees; failures require explicit discard. */
 export async function cleanupWorker(leadDir: string, w: Worker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
   if (!discarded && (w.status === 'failed' || w.exitCode !== 0)) return false
   if (decideDiscard(await workerRealState(leadDir, w, { ownership: true, leadName, workers })) !== 'cleanup') return false

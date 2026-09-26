@@ -39,7 +39,7 @@ export function codexSessionId(line: string): string | undefined {
   } catch { return undefined }
 }
 
-/** Resolve link paths before creating a worker worktree, so carry can exclude them. */
+/** Read a bounded suffix even for multi-GB logs, then take five non-empty, ANSI-free lines. */
 export function workerLogTail(logFile: string): string {
   let fd: number | undefined
   try {
@@ -303,5 +303,3 @@ export async function terminateWorktreeProcesses(dir: string, options: {
   }
   return named
 }
-
-/** Remove only owned Room worktrees; failures require explicit discard. */
