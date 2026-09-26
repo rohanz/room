@@ -11,7 +11,7 @@ export interface WorkerRealState {
   worktree: 'present' | 'vanished'
   owned?: boolean
   branch?: 'present' | 'absent'
-  /** Commits on refs/heads/room/<tag> absent from the lead HEAD. */
+  /** Commits on refs/heads/room/<tag> absent from the lead HEAD and recorded base. */
   branchAhead?: number
   /** Retirement count also considers detached HEAD and excludes the carried base. */
   ahead?: number
@@ -32,6 +32,10 @@ export interface WorkerStateProbes {
   git?: typeof git
   changedPaths?: typeof workerChangedPaths
   process?: (w: Worker) => boolean
+}
+
+function workerCommitExclusions(leadHead: string, w: Pick<Worker, 'base'>): string[] {
+  return [`^${leadHead}`, ...(w.base ? [`^${w.base}`] : [])]
 }
 
 /** Select expensive probes at each call site. Git in a vanished checkout is never attempted. */
@@ -56,7 +60,7 @@ export async function workerRealState(leadDir: string, w: Worker, options: {
     const ref = `refs/heads/${w.branch}`
     state.branch = (await runGit(leadDir, ['for-each-ref', '--format=%(refname)', ref])).split('\n').includes(ref) ? 'present' : 'absent'
     if (state.branch === 'present') {
-      const count = Number((await runGit(leadDir, ['rev-list', '--count', ref, '^HEAD'])).trim())
+      const count = Number((await runGit(leadDir, ['rev-list', '--count', ref, ...workerCommitExclusions('HEAD', w)])).trim())
       if (!Number.isSafeInteger(count)) throw new Error(`could not count commits on ${w.branch}`)
       state.branchAhead = count
     }
@@ -72,7 +76,7 @@ export async function workerRealState(leadDir: string, w: Worker, options: {
       state.clean = state.uncommitted === 0
       const head = (await runGit(leadDir, ['rev-parse', 'HEAD'])).trim()
       const branch = `refs/heads/${w.branch}`
-      const exclusions = [`^${head}`, ...(w.base ? [`^${w.base}`] : [])]
+      const exclusions = workerCommitExclusions(head, w)
       const count = (await runGit(w.dir, ['rev-list', '--count', branch, ...exclusions])).trim()
       const worktreeCount = (await runGit(w.dir, ['rev-list', '--count', 'HEAD', ...exclusions])).trim()
       if (/^\d+$/.test(count) && /^\d+$/.test(worktreeCount)) state.ahead = Math.max(Number(count), Number(worktreeCount))

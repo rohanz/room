@@ -18,6 +18,18 @@ describe('workerRealState probes', () => {
     expect(owned).not.toHaveBeenCalled()
     expect(git).toHaveBeenCalledTimes(2)
   })
+  it('excludes the recorded carry base when counting a vanished branch', async () => {
+    const git = vi.fn(async (dir: string, args: string[]) => {
+      expect(dir).toBe('/lead')
+      if (args[0] === 'for-each-ref') return 'refs/heads/room/w\n'
+      expect(args).toEqual(['rev-list', '--count', 'refs/heads/room/w', '^HEAD', '^carry-base'])
+      return '0\n'
+    })
+    const state = await workerRealState('/lead', { ...worker, base: 'carry-base' }, {
+      branch: true, probes: { exists: () => false, git },
+    })
+    expect(state.branchAhead).toBe(0)
+  })
   it('does not query branch, ownership, or process when those facts are unnecessary', async () => {
     const git = vi.fn(), owned = vi.fn(), process = vi.fn()
     const state = await workerRealState('/lead', worker, { probes: { exists: () => true, git, owned, process } })
