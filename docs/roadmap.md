@@ -350,6 +350,12 @@ Still open from this audit: merge preview with `run` still materializes the lead
 tree. Fixed in 0.16.1: `*.tsbuildinfo` at a package root is regenerable output and no
 longer keeps a collected worktree.
 
+### Seen in the 0.16.10 live check (2026-09-26, open, small)
+
+- The discard notice is posted from the lead to itself: "rohanz's agent → rohanz's agent: dismissed worker b
+  (rohanz+b): discarded by the lead". It adds nothing to a reply the lead already has; drop it when the lead
+  discarded the worker itself, or address it to the human.
+
 ### Seen in the 0.16.4 live check (2026-09-25, open, small)
 
 - **Worker link inputs and backslashes (found in the 0.16.6 path batch):** `link` paths are validated with backslashes as separators, but POSIX joins treat them as filename characters, so `safe\name` is accepted as a literal name while `safe\..` is refused. Conservative today; decide on one rule (probably reject backslashes, like collection) with a user-visible note.
