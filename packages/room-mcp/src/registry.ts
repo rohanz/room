@@ -407,6 +407,7 @@ export class Rooms {
       if (!launchLease) return `error: ${this.launchUsage(running)} workers already running or starting (max ${config.maxWorkers}, ROOM_MAX_WORKERS); wait for one to finish`
       try {
         const { server, isWorker } = workerOrigin(s)
+        const spawnedAfter = s.room.lastMessages(1)[0]?.id ?? ''
         let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
         try { launched = await launchWorkerProcess({ rooms: this, session: s, id, tag: w.tag, dir: w.dir,
           lead: w.lead, owner: s.me.owner ?? s.me.name, host: w.host, model: w.model, effort: w.effort,
@@ -414,7 +415,7 @@ export class Rooms {
           token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, probe: this.probe.bind(this), log, at },
         { mode: 'resume', sessionId: w.hostSessionId!, followUp, oldPort: w.port }, launchLease,
         ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running',
-          startedAt, processStartTime, summary: undefined, exitCode: undefined, finishedAt: undefined,
+          startedAt, spawnedAfter, processStartTime, summary: undefined, exitCode: undefined, finishedAt: undefined,
           dismissedAt: undefined, stopReason: undefined }, id)) }
         catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))

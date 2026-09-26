@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc } from '@room/shared'
-import type { Identity, ClaimMsg, NoteMsg, PlanMsg, ReleaseMsg } from '@room/shared'
+import { RoomDoc, formatMsg } from '@room/shared'
+import type { Identity, ClaimMsg, NoteMsg, PlanMsg, ReleaseMsg, ScopeMsg } from '@room/shared'
 import { Bridge } from '../src/bridge.js'
 import { markHistorySeenOnJoin } from '../src/tools/join.js'
 import type { Session } from '../src/session.js'
@@ -97,6 +97,20 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     expect(scopeMessages()).toHaveLength(1)
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'billing', summary: 'cents complete', paths: ['api/models.py'] })
     expect(scopeMessages()).toHaveLength(2)
+  })
+
+  it('renders the bridge union as history after restoring the lead scope without a new event', () => {
+    const t = setup()
+    const own = { by: lead.name, byKind: lead.kind, area: 'api', summary: 'lead work', paths: ['api/lead.py'] }
+    t.team.a.setScope(own)
+    t.team.a.post<ScopeMsg>(lead, { type: 'scope', area: own.area, summary: own.summary, paths: own.paths })
+    t.local.b.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'worker work', paths: ['api/worker.py'] })
+    const events = t.team.b.messages().filter((m): m is ScopeMsg => m.type === 'scope')
+    expect(events).toHaveLength(2)
+    t.bridge.stop()
+    const context = { scopes: t.team.b.allScopes(), messages: t.team.b.messages() }
+    expect(formatMsg(events[0], context)).toContain('is on api: lead work')
+    expect(formatMsg(events[1], context)).toContain('earlier:')
   })
 
   it("workers' claims are mirrored into the team room under the lead's name and removed with the original", () => {

@@ -1,5 +1,6 @@
 import { claimsOverlap } from './claims.js'
 import { isAgentic, displayName } from './identity.js'
+import { normalizeCoordinationPath } from './near.js'
 import type { BuiltinMsgType, Claim, MessageMap, Msg, MsgBase, MsgType, Plan, Identity, Priority, Scope } from './types.js'
 
 export type MessageAudience = 'addressed' | 'broadcast' | 'claim-holders' | 'everyone'
@@ -30,6 +31,7 @@ export interface MessageKind<M extends MsgBase = Msg> {
 const who = (m: MsgBase) => displayName({ name: m.from, kind: m.fromKind })
 const to = (m: MsgBase) => m.to ? ` → ${displayName({ name: m.to, kind: 'agent' })}` : ''
 const priority = (m: MsgBase) => `[${m.priority}] `
+const scopePaths = (paths: readonly string[]) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join('\u0000')
 
 export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.'
 
@@ -47,8 +49,8 @@ const builtins = {
   base: { priority: 'notify', audience: 'everyone', wakes: (m, ctx) => (m.fromKind === 'human' || m.from !== ctx.me.name) && ctx.hasUncommitted, format: m => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary}) — ${BASE_CATCH_UP}` },
   plan: { priority: 'fyi', audience: 'broadcast', wakes: 'interrupt', format: m => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` → now ${formatPlans([m.replacedBy])}` : ''}${m.text ? ` — ${m.text}` : ''}` },
   scope: { priority: 'notify', audience: 'everyone', inbox: false, wakes: 'never', format: (m, context) => {
-    const current = context?.scopes.some(s => s.by === m.from && s.area === m.area)
-      && context.messages.filter(x => x.type === 'scope' && x.from === m.from).at(-1)?.id === m.id
+    const current = context?.scopes.some(s => s.by === m.from && s.area === m.area && s.summary === m.summary && scopePaths(s.paths) === scopePaths(m.paths))
+      && context.messages.filter(x => x.type === 'scope' && x.from === m.from && x.area === m.area && x.summary === m.summary && scopePaths(x.paths) === scopePaths(m.paths)).at(-1)?.id === m.id
     return current
       ? `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(', ')})`
       : `${priority(m)}earlier: ${who(m)} was on ${m.area} (${new Date(m.at).toISOString().slice(11, 19)}): ${m.summary} (${m.paths.join(', ')})`

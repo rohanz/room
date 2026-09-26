@@ -73,7 +73,7 @@ it('formats only the newest declared scope in a live area as current', () => {
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
   try {
     const old = room.post<ScopeMsg>(worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['api/a.ts'] })
-    room.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'old work', paths: ['api/a.ts'] })
+    room.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'old work', paths: ['./api/a.ts', 'api/a.ts'] })
     expect(formatMsg(old, { scopes: room.allScopes(), messages: room.messages() })).toContain('is on api: old work')
     clock.mockReturnValue(1_500)
     const revised = room.post<ScopeMsg>(worker, { type: 'scope', area: 'api', summary: 'revised work', paths: ['api/b.ts'] })
@@ -87,6 +87,11 @@ it('formats only the newest declared scope in a live area as current', () => {
     const context = { scopes: room.allScopes(), messages: room.messages() }
     expect(formatMsg(old, context)).toContain('earlier: Rohan+worker was on api (00:00:01): old work')
     expect(formatMsg(moved, context)).toContain('Rohan+worker is on web: new work')
+    room.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'old work', paths: ['api/a.ts'] })
+    const restored = { scopes: room.allScopes(), messages: room.messages() }
+    expect(formatMsg(old, restored)).toContain('is on api: old work')
+    expect(formatMsg(revised, restored)).toContain('earlier: Rohan+worker was on api')
+    expect(formatMsg(moved, restored)).toContain('earlier: Rohan+worker was on web')
     room.scopes.delete(worker.name)
     expect(formatMsg(moved, { scopes: room.allScopes(), messages: room.messages() })).toContain('earlier: Rohan+worker was on web (00:00:02): new work')
   } finally { clock.mockRestore(); room.doc.destroy() }

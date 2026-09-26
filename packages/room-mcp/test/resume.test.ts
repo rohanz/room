@@ -11,6 +11,7 @@ import { Rooms } from '../src/registry.js'
 import { decideResume, type WorkerRealState } from '../src/worker-state.js'
 import { persistWorkerStopReason } from '../src/worker-git.js'
 import { HooksBridge } from '../src/hooks-bridge.js'
+import { markHistorySeenOnJoin } from '../src/tools/join.js'
 import type { Session } from '../src/session.js'
 import type { PreparedWorktree } from '../src/worker-git.js'
 import type { SpawnSpec } from '../src/worker-process.js'
@@ -77,6 +78,21 @@ describe('resumed worker boundaries', () => {
     const before = t.room.post(t.session.me, { type: 'note', text: 'earlier work', priority: 'fyi' })
     expect(await t.tools.call('room_spawn', { tag: 'briefed', task: 'review', host: 'claude' })).toContain('spawned briefed')
     expect(t.room.workers.get('briefed')?.spawnedAfter).toBe(before.id)
+  })
+
+  it('advances the briefing boundary when a finished worker resumes', async () => {
+    const t = setup()
+    t.seed('briefed')
+    const between = t.room.post(t.session.me, { type: 'note', text: 'before resume', priority: 'notify' })
+    expect(await t.tools.call('room_send', { type: 'note', to: 'briefed', text: 'continue' })).toContain('resumed briefed')
+    const worker = t.room.workers.get('briefed')!
+    expect(worker.spawnedAfter).toBe(between.id)
+    const after = t.room.post(t.session.me, { type: 'note', text: 'after resume', priority: 'notify' })
+    const joined = { ...t.session, me: { name: worker.name, kind: 'agent' as const } } as Session
+    const seen = new Set<string>()
+    markHistorySeenOnJoin(joined, seen)
+    expect(seen.has(between.id)).toBe(true)
+    expect(seen.has(after.id)).toBe(false)
   })
 
   it.each([
