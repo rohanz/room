@@ -24790,6 +24790,8 @@ var init_src2 = __esm({
       label;
       log;
       debounceMs;
+      publishAttempts;
+      publishDeadlineMs;
       trackedRefreshMs;
       basePollMs;
       sizeCap;
@@ -24858,6 +24860,8 @@ var init_src2 = __esm({
           return () => clearTimeout(timer);
         });
         this.debounceMs = options.debounceMs ?? 300;
+        this.publishAttempts = options.publishAttempts ?? 3;
+        this.publishDeadlineMs = options.publishDeadlineMs ?? 1e4;
         this.watchedDirectory = createHash3("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs7.realpathSync(this.dir)).digest("hex");
         this.batch = new DiskBatch((paths) => {
           const work = this.enqueue(async () => {
@@ -24960,7 +24964,9 @@ var init_src2 = __esm({
         this.trimBusIfLeader();
         if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader());
         this.every(this.trackedRefreshMs, () => this.refreshTracked());
-        this.every(this.basePollMs, () => this.enqueue(() => this.pollHead()));
+        this.every(this.basePollMs, () => this.enqueue(async () => {
+          await this.pollHead();
+        }));
         this.roomDoc.metaMap.observe(() => observeCallback(() => this.refreshBaseStatus(), (error2) => this.log(`warn: ${errMsg(error2)}`)));
         this.roomDoc.scopes.observe((ev) => {
           if (!ev.keysChanged.has(this.name) || this.share !== "declared" || this.explicitScopePaths) return;
@@ -24984,9 +24990,29 @@ var init_src2 = __esm({
         return [...this.retainedDeclaredPaths].sort();
       }
       publishCurrent() {
-        return this.enqueue(async () => {
-          await this.pollHead();
-          await this.seedLocalOverlay();
+        const work = this.workQueue.then(async () => {
+          if (this.stopped) throw new Error("daemon stopped");
+          const deadline = Date.now() + this.publishDeadlineMs;
+          for (let attempt = 0; attempt < this.publishAttempts; attempt++) {
+            if (Date.now() >= deadline) throw new Error("publication timed out");
+            const reconciled = await this.pollHead(true);
+            if (reconciled || await this.reconcile(await gitChanged(this.dir), true)) return;
+            if (this.stopped) throw new Error("daemon stopped");
+          }
+          throw new Error("HEAD or sharing changed during publication");
+        });
+        this.workQueue = work.catch((error2) => {
+          this.log(`warn: ${errMsg(error2)}`);
+        });
+        return new Promise((resolve5, reject) => {
+          const timer = setTimeout(() => reject(new Error("publication timed out")), this.publishDeadlineMs);
+          void work.then(() => {
+            clearTimeout(timer);
+            resolve5();
+          }, (error2) => {
+            clearTimeout(timer);
+            reject(error2);
+          });
         });
       }
       skipSummary() {
@@ -25281,16 +25307,17 @@ var init_src2 = __esm({
         this.roomDoc.markSeen(this.name, ids, this);
       }
       /** Local HEAD moved (commit, pull, checkout): re-seed the overlay and maybe advance the room base. */
-      async pollHead() {
-        if (this.stopped) return;
+      async pollHead(explicit = false) {
+        if (this.stopped) return false;
         const wasSecondary = !!this.publishUnder;
         this.choosePublisher();
-        if (wasSecondary && !this.publishUnder) await this.seedLocalOverlay();
+        let reconciled = false;
+        if (wasSecondary && !this.publishUnder) reconciled = await this.reconcile(await gitChanged(this.dir), explicit);
         const [head, branch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)]);
         if (head === this.base && branch === this.branch) {
           const roomBase2 = this.roomDoc.meta.base;
           if (roomBase2 && roomBase2 !== head) await this.refreshBaseStatus();
-          return;
+          return reconciled;
         }
         const prev = this.base;
         const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : [];
@@ -25304,9 +25331,10 @@ var init_src2 = __esm({
         if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
         const roomBase = this.roomDoc.meta.base;
         if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === "ahead") await this.maybeAdvance(roomBase, head);
-        await this.seedLocalOverlay();
+        reconciled = await this.reconcile(await gitChanged(this.dir), explicit);
         if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot);
         await this.refreshBaseStatus();
+        return reconciled;
       }
       unpushedPairs = /* @__PURE__ */ new Set();
       roomBranch() {
@@ -25446,8 +25474,8 @@ var init_src2 = __esm({
         await this.reconcile(await gitChanged(this.dir));
       }
       /** Publish the disk state of these paths and the published ones, reading every base text in one git process. */
-      async reconcile(extra) {
-        if (this.stopped) return;
+      async reconcile(extra, explicit = false) {
+        if (this.stopped) return false;
         const generation = this.sharingGeneration;
         const paths = Array.from(this.pathsToReconcile(extra));
         const base = this.base, shared = this.shared;
@@ -25466,25 +25494,31 @@ var init_src2 = __esm({
           shared === base ? void 0 : gitShowMany(this.dir, shared, ordinary),
           gitBlobInfoMany(this.dir, base, oversized)
         ]);
-        if (this.stopped) return;
+        if (this.stopped) return false;
         if (generation !== this.sharingGeneration) {
           this.markSharingDirty();
-          return;
+          return false;
         }
-        if (await gitHead(this.dir) !== base) return;
+        if (await gitHead(this.dir) !== base) return false;
         if (generation !== this.sharingGeneration) {
           this.markSharingDirty();
-          return;
+          return false;
         }
         for (const relpath of paths) {
-          if (this.stopped) return;
+          if (this.stopped) return false;
           if (generation !== this.sharingGeneration) {
             this.markSharingDirty();
-            return;
+            return false;
           }
-          await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs });
+          await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs }, explicit);
           if (this.phase === "seed") this.onSeedProgress?.();
         }
+        if (this.stopped) return false;
+        if (generation !== this.sharingGeneration) {
+          this.markSharingDirty();
+          return false;
+        }
+        return await gitHead(this.dir) === base;
       }
       markSharingDirty() {
         if (this.stopped || this.sharingDirty) return;
@@ -25581,7 +25615,7 @@ var init_src2 = __esm({
         return true;
       }
       /** `read`: base texts already read at `read.base` (and `read.shared`) with HEAD checked once for the batch (reconcile). */
-      async publishDiskState(relpath, read) {
+      async publishDiskState(relpath, read, explicit = false) {
         if (this.stopped) return;
         try {
           const generation = this.sharingGeneration;
@@ -25600,7 +25634,7 @@ var init_src2 = __esm({
             this.retainedDeclaredPaths.delete(relpath);
             return;
           }
-          if (this.batch.deferHot(relpath)) return;
+          if (!explicit && this.batch.deferHot(relpath)) return;
           const publishingBase = this.base, sharedBase = this.shared;
           const batched = read?.base === publishingBase && read.shared === sharedBase && read.texts.has(relpath);
           const headText = () => batched ? Promise.resolve(read.texts.get(relpath)) : gitShow(this.dir, publishingBase, relpath);
@@ -48826,7 +48860,13 @@ function handlers8(state) {
       const summary = String(a.summary ?? "").trim();
       if (!summary) return "error: summary is required";
       const sc = s.room.scope(s.me.name);
-      if (s.daemon.share === "declared") await s.daemon.publishCurrent();
+      if (s.daemon.share === "declared") {
+        try {
+          await s.daemon.publishCurrent();
+        } catch (error2) {
+          return `Room couldn't confirm your latest changes were shared (${error2 instanceof Error ? error2.message : String(error2)}). Your scope and claims are kept; try done again.`;
+        }
+      }
       const live = new Set(runningWorkers(s).map((x) => x.w.tag));
       const kept = mine(s).filter((c) => c.mirrorOf && live.has(c.mirrorOf)).length;
       const released = releaseClaimsOnDone(s, (c) => !!c.mirrorOf && live.has(c.mirrorOf));
@@ -48843,7 +48883,7 @@ function handlers8(state) {
       s.daemon.touch();
       const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : "You remain in the room."}`];
       const retained = s.daemon.share === "declared" ? s.daemon.retainedDeclared() : [];
-      if (retained.length) out2.push(`${retained.length} changed file(s) you declared earlier stay shared while they differ from your base: ${retained.slice(0, 8).join(", ")}${retained.length > 8 ? `, +${retained.length - 8} more` : ""}. To withdraw them, say: share plans only.`);
+      if (retained.length) out2.push(`${retained.length} changed file(s) you declared earlier stay shared while they differ from your base: ${retained.slice(0, 8).join(", ")}${retained.length > 8 ? `, +${retained.length - 8} more` : ""}. A sharing-level change, an ignore rule or the size limit also withdraws them. To withdraw them now, say: share plans only.`);
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary);
       const command = s.lastPreview?.testsCommand;
       if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed === true && command) {
@@ -49587,7 +49627,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.15",
+  version: "0.16.16",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
