@@ -1,3 +1,4 @@
+import { createAreas } from './scope.js'
 import fs from 'node:fs'
 import { Areas, CODEOWNERS_PATHS, RoomDoc, claimsOverlap, describeClaim, formatMsg, formatPlans, isAgentic, msgPaths, scopeCovers, sharesArea } from '@room/shared'
 import type { Claim, ConflictMsg, Msg, NoteMsg, Plan, PlanMsg, Presence, Priority, ReleaseMsg, Scope, Worker } from '@room/shared'
@@ -129,13 +130,13 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   }
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
+  const areas = createAreas({ ctx, log, base, presences, others, shareOf, now, isMe })
   runtime = {
+    ...areas,
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, myWorkers: undefined!, workerAlive: undefined!,
     ensureWorkersRoom: undefined!, closeWorkersRoom: undefined!, runningWorkers: undefined!, hasCompany: s => hasCompany(s, runtime.runningWorkers(s).map(r => r.w), now()), dismissWorker: undefined!, others, presences,
-    shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, loadAreas: undefined!, areasOf: undefined!,
-    areasFor: undefined!, myAreas: undefined!, inMyAreas: undefined!, areaLines: undefined!, ownerHints: undefined!, msgInMyAreas: undefined!, forMe: undefined!, inbox: undefined!, waitingOn: undefined!, describeUsers: undefined!,
-    planChanged: undefined!, followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, upgrade: undefined!, claimLine: undefined!, ledgerLines: undefined!, scopeLine: undefined!, personLine: undefined!,
-    serverOf: undefined!, LOCAL_LOGIN: undefined!, codeLine: undefined!, refreshPrs: undefined!, startPrSync: undefined!, stopPrSync: undefined!, prLines: undefined!, myPr: undefined!, postLedger: undefined!, observeClaims: undefined!, startConflictWatcher: undefined!, startWorkersBridge: undefined!,
+    shareOf, withheld, shareLine: undefined!, setPresence, base, baseFor, baseText, liveText, lines, forMe: undefined!, inbox: undefined!, waitingOn: undefined!, describeUsers: undefined!,
+    planChanged: undefined!, followBranch: undefined!, evictStale: undefined!, cleanupMine: undefined!, upgrade: undefined!, serverOf: undefined!, LOCAL_LOGIN: undefined!, codeLine: undefined!, refreshPrs: undefined!, startPrSync: undefined!, stopPrSync: undefined!, prLines: undefined!, myPr: undefined!, postLedger: undefined!, observeClaims: undefined!, startConflictWatcher: undefined!, startWorkersBridge: undefined!,
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite: () => primaryHooks?.scheduleWrite(),
     upgraded, conflictPairs,

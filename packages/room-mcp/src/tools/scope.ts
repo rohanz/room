@@ -198,8 +198,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function install(state: HandlerState): void {
-  const { ctx, log, base, presences, others, shareOf, now, isMe } = state
+export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'base' | 'presences' | 'others' | 'shareOf' | 'now' | 'isMe'>): Pick<HandlerState, 'loadAreas' | 'areasOf' | 'areasFor' | 'myAreas' | 'inMyAreas' | 'areaLines' | 'ownerHints' | 'msgInMyAreas' | 'claimLine' | 'ledgerLines' | 'scopeLine' | 'personLine'> {
+  const { ctx, log, base, presences, others, shareOf, now, isMe } = deps
   const STALE_MS = (ctx.config?.staleDays ?? 7) * 24 * 60 * 60 * 1000
   const areaIndex = new WeakMap<Session, Areas>()
   const loadAreas = async (s: Session): Promise<Areas> => {
@@ -272,7 +272,7 @@ export function install(state: HandlerState): void {
         share: shareOf(s, name),
       })
     }
-  Object.assign(state, { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine, ledgerLines, scopeLine, personLine })
+  return { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine, ledgerLines, scopeLine, personLine }
 }
 
 function commonDirectory(paths: string[]): string {
@@ -293,4 +293,8 @@ function compactState(lines: string[], summarizedClaims: number): string {
   }
   if (omitted || summarizedClaims) kept.push(`omitted: ${summarizedClaims} unrelated claim details, ${omitted} state lines; room_state all=true for everything, room_state path=... for a path.`)
   return kept.join('\n')
+}
+
+export function install(state: HandlerState): void {
+  Object.assign(state, createAreas(state))
 }

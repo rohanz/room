@@ -6,7 +6,7 @@ import { toolCallAborted, withToolSignal } from '../registry.js'
 import { LOCAL, NotLoggedIn, type Session } from '../session.js'
 import { NeedFetch, NotJoined, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { defs as joinDefs, handlers as joinHandlers, install as installJoin, markHistorySeenOnJoin, teamSharingNote } from './join.js'
-import { defs as scopeDefs, handlers as scopeHandlers, install as installScope } from './scope.js'
+import { defs as scopeDefs, handlers as scopeHandlers } from './scope.js'
 import { defs as claimDefs, handlers as claimHandlers, install as installClaims } from './claims.js'
 import { defs as messagingDefs, handlers as messagingHandlers, install as installMessaging, WAIT_SIGNAL } from './messaging.js'
 import { defs as collectDefs, handlers as collectHandlers } from './collect.js'
@@ -47,7 +47,6 @@ export function createTools(ctx: ToolCtx): Tools {
   const state: HandlerState = createHandlerState(ctx)
   const initial = ctx.getSession()
   if (initial) trackConnection(initial, state.now)
-  installScope(state)
   installClaims(state)
   installMessaging(state)
   installPrs(state)
