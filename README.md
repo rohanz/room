@@ -67,6 +67,7 @@ a ceiling. At `declared`, changed files you declared stay shared while they diff
 including after `room_done` and daemon restart. “Share plans only” withdraws their file text.
 Changing the sharing level, ignoring a file, or making it too large also withdraws it;
 declare it again to share it.
+When two sessions use one checkout, the primary session publishes its file text; the secondary session's declared area does not control that publication.
 Reading someone who shares less degrades to a one-line answer rather than an error.
 An unrecognised sharing level falls back to `intent` and reports the invalid setting;
 it never widens sharing to full text.

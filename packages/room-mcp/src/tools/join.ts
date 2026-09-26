@@ -39,8 +39,12 @@ function sharingSentence(s: Session): string {
   const parts = roomNameParts(s.roomName)
   const repo = parts.branch ? s.roomName.slice(0, -(parts.branch.length + 1)) : s.roomName
   const level = s.daemon.share ?? s.shareRequested ?? 'intent'
-  const choices = sharingHumanChoices(level)
-  return `note for your human: this clone now shares ${sharingDescription(level)} with members of ${repo} on ${server}${choices ? `; ${choices}` : '.'}`
+  const publisher = level === 'declared' ? s.awareness.getLocalState()?.publishUnder : undefined
+  const description = typeof publisher === 'string' && publisher
+    ? `file text under ${publisher}'s declared area (published by ${publisher})`
+    : sharingDescription(level)
+  const choices = publisher ? '' : sharingHumanChoices(level)
+  return `note for your human: this clone now shares ${description} with members of ${repo} on ${server}${choices ? `; ${choices}` : '.'}`
 }
 
 /** Establish whether this session has a disclosure pending without consuming its one delivery. */

@@ -1,6 +1,7 @@
 /** Watcher batching and hot-path rate limiting; all times are milliseconds. */
 export class DiskBatch {
   private pending = new Map<string, boolean>()
+  private active = new Map<string, number>()
   private arrivals = new Map<string, number>()
   private publications = new Map<string, number[]>()
   private hot = new Set<string>()
@@ -8,9 +9,10 @@ export class DiskBatch {
   private settleAt = 0
   private stopped = false
 
-  constructor(private run: (paths: Map<string, boolean>) => void, private debounceMs = 300, private now = Date.now) {}
+  constructor(private run: (paths: Map<string, boolean>) => void | Promise<void>, private debounceMs = 300, private now = Date.now, private hotThrottleMs = 30_000) {}
 
   get size(): number { return this.pending.size }
+  knownPaths(): string[] { return [...new Set([...this.pending.keys(), ...this.active.keys()])] }
 
   published(path: string): void {
     const now = this.now()
@@ -38,7 +40,7 @@ export class DiskBatch {
   }
 
   private due(path: string): number {
-    return this.hot.has(path) ? (this.publications.get(path)?.at(-1) ?? 0) + 30_000 : 0
+    return this.hot.has(path) ? (this.publications.get(path)?.at(-1) ?? 0) + this.hotThrottleMs : 0
   }
 
   private arm(): void {
@@ -48,7 +50,16 @@ export class DiskBatch {
     this.timer = setTimeout(() => {
       const ready = new Map<string, boolean>()
       for (const [p, fresh] of this.pending) if (this.due(p) <= this.now()) { ready.set(p, fresh); this.pending.delete(p) }
-      if (ready.size) this.run(ready)
+      if (ready.size) {
+        for (const p of ready.keys()) this.active.set(p, (this.active.get(p) ?? 0) + 1)
+        void Promise.resolve(this.run(ready)).finally(() => {
+          for (const p of ready.keys()) {
+            const count = this.active.get(p) ?? 0
+            if (count <= 1) this.active.delete(p)
+            else this.active.set(p, count - 1)
+          }
+        })
+      }
       this.arm()
     }, Math.max(0, next - this.now()))
   }

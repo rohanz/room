@@ -3,6 +3,19 @@ import { DiskBatch } from '../src/disk-batch.js'
 
 afterEach(() => vi.useRealTimers())
 describe('disk publish scheduling', () => {
+  it('exposes pending and in-flight paths for synchronous scope transitions', async () => {
+    vi.useFakeTimers()
+    let finish!: () => void
+    const batch = new DiskBatch(() => new Promise<void>(resolve => { finish = resolve }))
+    batch.add('a', false)
+    expect(batch.knownPaths()).toEqual(['a'])
+    await vi.advanceTimersByTimeAsync(300)
+    expect(batch.knownPaths()).toEqual(['a'])
+    finish()
+    await Promise.resolve()
+    expect(batch.knownPaths()).toEqual([])
+    batch.stop()
+  })
   it('batches at the trailing edge and preserves new-file classification', async () => {
     vi.useFakeTimers()
     const run = vi.fn(), batch = new DiskBatch(run)
