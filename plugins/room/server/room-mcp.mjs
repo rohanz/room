@@ -24980,6 +24980,9 @@ var init_src2 = __esm({
       skipped() {
         return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore), share: Array.from(this.skips.share).sort() };
       }
+      retainedDeclared() {
+        return [...this.retainedDeclaredPaths].sort();
+      }
       skipSummary() {
         const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size + this.skips.share.size;
         if (!n) return "";
@@ -25913,6 +25916,11 @@ function resolveServer(raw) {
 function sharingDescription(level) {
   return level === "full" ? "the full text of files you change" : level === "declared" ? "only the files in your declared area" : "only your plans, no file text";
 }
+function sharingHumanChoices(level) {
+  if (level === "full") return "to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.";
+  if (level === "declared") return "to keep file contents on this machine, say: share plans only.";
+  return "";
+}
 function resolveShare(raw, source = "share") {
   if (raw === void 0) return { level: "full" };
   const level = parseShare(typeof raw === "string" ? raw.trim() : raw);
@@ -26054,7 +26062,7 @@ function resolveSessionRuntime(dir, env = process.env) {
   const ownSession = env.ROOM_WORKER_ID ? session.worker_id === env.ROOM_WORKER_ID : !session.worker_id;
   return { model: (ownSession ? clean(session.model) : void 0) ?? clean(env.ROOM_WORKER_MODEL), effort: (ownSession ? effort(session.effort) : void 0) ?? effort(env.ROOM_WORKER_EFFORT) };
 }
-var DEFAULT_SERVER, LOCAL, DEFAULT_CLAUDE_CHANNEL, DEFAULT_MAX_WORKERS, DEFAULT_STALE_DAYS, value, positive, sharingHumanChoices;
+var DEFAULT_SERVER, LOCAL, DEFAULT_CLAUDE_CHANNEL, DEFAULT_MAX_WORKERS, DEFAULT_STALE_DAYS, value, positive;
 var init_config = __esm({
   "packages/room-mcp/src/config.ts"() {
     "use strict";
@@ -26071,7 +26079,6 @@ var init_config = __esm({
       const n = Number(v);
       return Number.isFinite(n) && n > 0 ? n : fallback2;
     };
-    sharingHumanChoices = "to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.";
   }
 });
 
@@ -46452,7 +46459,9 @@ function sharingSentence(s) {
   const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server;
   const parts2 = roomNameParts(s.roomName);
   const repo = parts2.branch ? s.roomName.slice(0, -(parts2.branch.length + 1)) : s.roomName;
-  return `note for your human: this clone now shares ${sharingDescription(s.daemon.share ?? s.shareRequested ?? "intent")} with members of ${repo} on ${server}; ${sharingHumanChoices}`;
+  const level = s.daemon.share ?? s.shareRequested ?? "intent";
+  const choices = sharingHumanChoices(level);
+  return `note for your human: this clone now shares ${sharingDescription(level)} with members of ${repo} on ${server}${choices ? `; ${choices}` : "."}`;
 }
 async function prepareTeamSharingDisclosure(s) {
   let state = disclosures.get(s);
@@ -48823,6 +48832,8 @@ function handlers8(state) {
       setPresence(s, { cursor: void 0, status: `done: ${summary.slice(0, 60)}` });
       s.daemon.touch();
       const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : "You remain in the room."}`];
+      const retained = s.daemon.share === "declared" ? s.daemon.retainedDeclared() : [];
+      if (retained.length) out2.push(`${retained.length} changed file(s) from your declared area stay shared until you commit or revert them: ${retained.slice(0, 8).join(", ")}${retained.length > 8 ? `, +${retained.length - 8} more` : ""}`);
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary);
       const command = s.lastPreview?.testsCommand;
       if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed === true && command) {
@@ -49566,7 +49577,7 @@ init_wake_path();
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.13",
+  version: "0.16.14",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
