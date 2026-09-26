@@ -31410,8 +31410,26 @@ var init_credentials = __esm({
 // packages/room-mcp/src/worker-state.ts
 import fs12 from "node:fs";
 import path11 from "node:path";
-function workerCommitExclusions(leadHead, w) {
-  return [`^${leadHead}`, ...w.base ? [`^${w.base}`] : []];
+async function workerCommitCount(runGit, dir, ref, leadHead, w) {
+  const commits = (await runGit(dir, ["rev-list", ref, `^${leadHead}`])).trim().split("\n").filter(Boolean);
+  if (!commits.length) return 0;
+  const recorded = /* @__PURE__ */ new Set();
+  if (w.carriedBase) recorded.add(w.carriedBase);
+  try {
+    recorded.add((await runGit(dir, ["rev-parse", "--verify", `refs/room/carry/${w.tag}`])).trim());
+  } catch {
+  }
+  const present = new Set(commits);
+  for (const commit of recorded) {
+    if (!/^[0-9a-f]{40,64}$/.test(commit) || !present.has(commit)) continue;
+    try {
+      const identity = (await runGit(dir, ["show", "-s", "--format=%an%x00%ae%x00%s", commit])).trim();
+      const [name2, email2, subject] = identity.split("\0");
+      if (ROOM_CARRY_IDENTITY.isRoomCarryCommit(name2, email2, subject)) present.delete(commit);
+    } catch {
+    }
+  }
+  return present.size;
 }
 async function workerRealState(leadDir, w, options = {}) {
   const deps = options.probes ?? {};
@@ -31432,7 +31450,7 @@ async function workerRealState(leadDir, w, options = {}) {
     const ref = `refs/heads/${w.branch}`;
     state.branch = (await runGit(leadDir, ["for-each-ref", "--format=%(refname)", ref])).split("\n").includes(ref) ? "present" : "absent";
     if (state.branch === "present") {
-      const count = Number((await runGit(leadDir, ["rev-list", "--count", ref, ...workerCommitExclusions("HEAD", w)])).trim());
+      const count = await workerCommitCount(runGit, leadDir, ref, "HEAD", w);
       if (!Number.isSafeInteger(count)) throw new Error(`could not count commits on ${w.branch}`);
       state.branchAhead = count;
     }
@@ -31449,10 +31467,10 @@ async function workerRealState(leadDir, w, options = {}) {
       state.clean = state.uncommitted === 0;
       const head = (await runGit(leadDir, ["rev-parse", "HEAD"])).trim();
       const branch = `refs/heads/${w.branch}`;
-      const exclusions = workerCommitExclusions(head, w);
-      const count = (await runGit(w.dir, ["rev-list", "--count", branch, ...exclusions])).trim();
-      const worktreeCount = (await runGit(w.dir, ["rev-list", "--count", "HEAD", ...exclusions])).trim();
-      if (/^\d+$/.test(count) && /^\d+$/.test(worktreeCount)) state.ahead = Math.max(Number(count), Number(worktreeCount));
+      state.ahead = Math.max(
+        await workerCommitCount(runGit, w.dir, branch, head, w),
+        await workerCommitCount(runGit, w.dir, "HEAD", head, w)
+      );
       if (w.base && state.ahead === 0) {
         const own2 = (await runGit(w.dir, ["rev-list", "--count", `${w.base}..${branch}`])).trim();
         state.merged = /^\d+$/.test(own2) && Number(own2) > 0;
@@ -31969,7 +31987,7 @@ async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, 
     };
     if (!await snapshotStable()) throw new Error("lead changed during carry; retrying snapshot");
     const staged = (await internalGit(dir, ["diff", "--cached", "--name-only", "-z"])).split("\0").filter(Boolean);
-    if (staged.length) await git(dir, ["-c", "core.hooksPath=/dev/null", "-c", "user.name=Room", "-c", "user.email=room@localhost", "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", carriedSubject(leadName)]);
+    if (staged.length) await git(dir, ["-c", "core.hooksPath=/dev/null", "-c", `user.name=${ROOM_CARRY_IDENTITY.authorName}`, "-c", `user.email=${ROOM_CARRY_IDENTITY.authorEmail}`, "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", carriedSubject(leadName)]);
     const commit = (await git(dir, ["rev-parse", "HEAD"])).trim();
     const paths = [.../* @__PURE__ */ new Set([...staged, ...carriedUntracked.map((x) => x.path)])].sort();
     if (paths.length) await internalGit(repoDir, ["update-ref", carryRef(tag), commit]);
@@ -32255,7 +32273,7 @@ async function saveDiscardPatch(leadDir, w) {
     fs13.rmSync(scratch, { recursive: true, force: true });
   }
 }
-var WORKERS_DIR, WORKER_PORT_START, WORKER_PORT_END, warnedMissingNice, WORKER_THREAD_CAPS, WORKER_EFFORTS, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, LEAD_ONLY_ENV, defaultSpawner;
+var WORKERS_DIR, WORKER_PORT_START, WORKER_PORT_END, warnedMissingNice, WORKER_THREAD_CAPS, WORKER_EFFORTS, ROOM_CARRY_IDENTITY, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, LEAD_ONLY_ENV, defaultSpawner;
 var init_workers = __esm({
   "packages/room-mcp/src/workers.ts"() {
     "use strict";
@@ -32271,7 +32289,15 @@ var init_workers = __esm({
     warnedMissingNice = false;
     WORKER_THREAD_CAPS = ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "LOKY_MAX_CPU_COUNT", "RAYON_NUM_THREADS"];
     WORKER_EFFORTS = ["minimal", "low", "medium", "high"];
-    carriedSubject = (leadName) => `room: carried-in uncommitted work from ${leadName}`;
+    ROOM_CARRY_IDENTITY = {
+      authorName: "Room",
+      authorEmail: "room@localhost",
+      subjectPrefix: "room: carried-in uncommitted work from ",
+      isRoomCarryCommit(name2, email2, subject) {
+        return name2 === ROOM_CARRY_IDENTITY.authorName && email2 === ROOM_CARRY_IDENTITY.authorEmail && subject.startsWith(ROOM_CARRY_IDENTITY.subjectPrefix) && /^.+$/.test(subject.slice(ROOM_CARRY_IDENTITY.subjectPrefix.length));
+      }
+    };
+    carriedSubject = (leadName) => `${ROOM_CARRY_IDENTITY.subjectPrefix}${leadName}`;
     internalGit = (dir, args3) => git(dir, ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args3]);
     carryRef = (tag) => `refs/room/carry/${tag}`;
     carriedUntrackedRef = (tag) => `refs/room/carry-untracked/${tag}`;
@@ -35522,7 +35548,7 @@ var init_registry = __esm({
         proc.onExit((code) => exited(code));
       }
       /** Continue an exited, retained worker in its original checkout and host conversation. */
-      async resumeWorker(s, w, message, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log2 = console.error, at = Date.now(), exitWaitMs = 3e4) {
+      async resumeWorker(s, w, message, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log2 = console.error, at = Date.now, exitWaitMs = 3e4) {
         await this.retiring.get(s);
         if (toolCallAborted()) return "error: tool call cancelled";
         const key = workerOperationKey(w);
@@ -35586,7 +35612,7 @@ var init_registry = __esm({
                   preferredPort: w.port,
                   spawner,
                   log: log2,
-                  at: () => at
+                  at
                 },
                 { mode: "resume", message, sessionId: w.hostSessionId, oldPort: w.port },
                 launchLease,
