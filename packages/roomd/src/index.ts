@@ -138,6 +138,12 @@ export interface RoomdOptions {
   remoteRepairSchedule?: (run: () => Promise<void>) => () => void
   /** Test scheduler for failed reconciliation retries. */
   retrySchedule?: (run: () => void, delayMs: number) => () => void
+  /** Test hook after the seed scan, before the watcher is established. */
+  beforeWatcherReady?: () => void
+  /** Slow Git-state reconciliation interval; default 60s. */
+  reconcileIntervalMs?: number
+  /** Test scheduler for the periodic reconciliation. */
+  periodicReconcileSchedule?: (run: () => void, intervalMs: number) => () => void
   /** Rolling bus size and maintenance interval. Defaults: ROOM_BUS_KEEP/2000 and 60s. */
   busKeep?: number
   busTrimMs?: number
@@ -234,6 +240,7 @@ class Daemon implements Roomd {
   readonly provider: WebsocketProvider
   branch = ''
   base = ''
+  private appliedHead = ''
   /**
    * The commit this person's overlays are published against (baseOf): HEAD, except for a carried worker
    * in a team room. Its HEAD is a commit of the lead's uncommitted work that exists only on the lead's
@@ -254,6 +261,11 @@ class Daemon implements Roomd {
   private readonly debounceMs: number
   private readonly trackedRefreshMs: number
   private readonly basePollMs: number
+  private readonly reconcileIntervalMs: number
+  private readonly periodicReconcileSchedule: (run: () => void, intervalMs: number) => () => void
+  private cancelPeriodicReconcile?: () => void
+  private reconcileQueued = false
+  private readonly beforeWatcherReady?: () => void
   readonly sizeCap: number
   readonly totalBudget: number
   private readonly connectTimeoutMs: number
@@ -338,6 +350,13 @@ class Daemon implements Roomd {
     }, this.debounceMs, Date.now, options.hotThrottleMs, error => this.publisher.reconcileFailed(error))
     this.trackedRefreshMs = options.trackedRefreshMs ?? 10_000
     this.basePollMs = options.basePollMs ?? 3_000
+    this.reconcileIntervalMs = options.reconcileIntervalMs ?? 60_000
+    this.periodicReconcileSchedule = options.periodicReconcileSchedule ?? ((run, intervalMs) => {
+      const timer = setInterval(run, intervalMs)
+      timer.unref?.()
+      return () => clearInterval(timer)
+    })
+    this.beforeWatcherReady = options.beforeWatcherReady
     this.sizeCap = options.sizeCap ?? 512 * 1024
     this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000
@@ -379,6 +398,7 @@ class Daemon implements Roomd {
     ]))
     this.branch = branch
     this.base = base
+    this.appliedHead = base
     this.tracked = tracked
     this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl))
     // Scope can change during sync or seed. Keep the observer live before either await.
@@ -436,6 +456,9 @@ class Daemon implements Roomd {
     if (!this.publishUnder) this.writeRoomFile()
     this.excludeRoomFile()
     await this.step('watch', () => this.startWatcher())
+    // Events can be missed between the seed scan and watch readiness.
+    await this.reconcileGitChanges()
+    if (this.reconcileIntervalMs > 0) this.cancelPeriodicReconcile = this.periodicReconcileSchedule(() => { void this.reconcileGitChanges() }, this.reconcileIntervalMs)
     this.trimBusIfLeader()
     if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader())
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
@@ -516,6 +539,7 @@ class Daemon implements Roomd {
     this.unobserveOwnedData?.()
     this.remoteRepairTimer?.()
     this.publisher.stopRetry()
+    this.cancelPeriodicReconcile?.()
     this.flushSkipLog()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
     for (const timer of this.timers) clearInterval(timer)
@@ -590,6 +614,18 @@ class Daemon implements Roomd {
   enqueue(work: () => Promise<void>): Promise<void> {
     this.workQueue = this.workQueue.then(() => this.stopped ? undefined : work()).catch(error => this.publisher.reconcileFailed(error))
     return this.workQueue
+  }
+
+  /** Level-triggered check, shared by startup, the slow timer and failed-publish retry. */
+  reconcileGitChanges(): Promise<void> {
+    if (this.reconcileQueued || this.stopped) return this.workQueue
+    this.reconcileQueued = true
+    return this.enqueue(async () => {
+      try {
+        await this.pollHead()
+        await this.publisher.reconcile(await gitChanged(this.dir))
+      } finally { this.reconcileQueued = false }
+    })
   }
 
 
@@ -719,27 +755,40 @@ class Daemon implements Roomd {
     this.choosePublisher()
     if (wasSecondary && !this.publishUnder) await this.publisher.reconcile(await gitChanged(this.dir))
     const [head, branch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)])
-    if (head === this.base && branch === this.branch) {
+    if (head === this.appliedHead && branch === this.branch) {
       // HEAD unchanged, but a commit we are ahead with may have been pushed since last check.
       const roomBase = this.roomDoc.meta.base
       if (roomBase && roomBase !== head) await this.refreshBaseStatus()
       return
     }
-    const prev = this.base
+    const prev = this.appliedHead
     const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : []
+    const oldBranch = this.branch, oldShared = this.shared, oldTracked = this.tracked
     this.base = head
     this.branch = branch
-    if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages())
-    this.tracked = await gitTracked(this.dir)
-    await this.refreshShared()
-    this.roomDoc.setBaseOf(this.name, this.shared, this)
-    this.roomDoc.reconcileBaseTexts(this.name, this)
-    if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
-    const roomBase = this.roomDoc.meta.base
-    if (roomBase && roomBase !== head && await gitRelation(this.dir, head, roomBase) === 'ahead') await this.maybeAdvance(roomBase, head)
-    await this.publisher.reconcile(await gitChanged(this.dir))
-    if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot)
-    await this.refreshBaseStatus()
+    try {
+      this.tracked = await gitTracked(this.dir)
+      await this.refreshShared()
+      await this.publisher.reconcile(await gitChanged(this.dir))
+      if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot)
+      if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
+      // refreshBaseStatus may advance meta.base after overlays; advanceBase guards concurrent meta-observer calls.
+      await this.refreshBaseStatus()
+      // Overlay updates have finished before readers can see the new base receipt.
+      this.roomDoc.doc.transact(() => {
+        this.roomDoc.setBaseOf(this.name, this.shared, this)
+        this.roomDoc.reconcileBaseTexts(this.name, this)
+      }, this)
+      if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages())
+      this.appliedHead = head
+      if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
+    } catch (error) {
+      this.base = prev
+      this.branch = oldBranch
+      this.shared = oldShared
+      this.tracked = oldTracked
+      throw error
+    }
   }
 
   private readonly unpushedPairs = new Set<string>()
@@ -807,6 +856,7 @@ class Daemon implements Roomd {
     const [commits, paths, summary] = await Promise.all([
       gitCountBetween(this.dir, from, to), gitPathsBetween(this.dir, from, to), gitSubject(this.dir, to),
     ])
+    if (this.roomDoc.meta.base !== from) return // A concurrent meta observer already advanced it.
     this.roomDoc.doc.transact(() => {
       this.roomDoc.setMeta({ base: to, branch: this.roomBranch() }, this)
       this.roomDoc.post<BaseMsg>({ name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }, { type: 'base', base: to, prev: from, commits, paths, summary }, this)
@@ -958,6 +1008,7 @@ class Daemon implements Roomd {
   }
 
   private async startWatcher(): Promise<void> {
+    this.beforeWatcherReady?.()
     const watchedFiles = new Set<string>()
     let warnedLarge = false
     const countFile = (absolute: string, add: boolean) => {

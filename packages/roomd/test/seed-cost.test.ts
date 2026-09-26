@@ -53,7 +53,8 @@ describe('overlay seed cost', () => {
     gitArgs.length = 0
     const d = await startLarge(dir)
     expect(hashes()).toBe(0)
-    expect(gitArgs.filter(args => args[0] === 'cat-file' && args.includes('--batch-check'))).toHaveLength(1)
+    // Seed and the required post-watcher catch-up each batch all large paths once.
+    expect(gitArgs.filter(args => args[0] === 'cat-file' && args.includes('--batch-check'))).toHaveLength(2)
     expect(d.skipped().size).toHaveLength(30)
     expect(d.roomDoc.changedPaths('T').sort()).toEqual(['small-0.txt', 'small-1.txt', 'small-2.txt'])
   })

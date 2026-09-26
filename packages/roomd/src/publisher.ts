@@ -65,6 +65,7 @@ interface PublicationHost {
   skipIgnored(relpath: string, reason: string): void
   bumpLastActive(): void
   enqueue(work: () => Promise<void>): Promise<void>
+  reconcileGitChanges(): Promise<void>
   choosePublisher(): void
   setEffectiveShare(level: ShareLevel): void
   scopePaths(): string[]
@@ -213,7 +214,7 @@ export class Publisher {
     this.retryDelayMs = Math.min(delay * 2, 30_000)
     this.retryTimer = this.host.retrySchedule(() => {
       this.retryTimer = undefined
-      if (!this.host.stopped) void this.resharePaths().catch(() => {})
+      if (!this.host.stopped) void this.host.reconcileGitChanges()
     }, delay)
   }
 
@@ -257,7 +258,7 @@ export class Publisher {
         if (this.host.stopped) return
         if (generation !== this.host.sharingGeneration) { this.markSharingDirty(); return }
         await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs })
-        if (this.host.phase === 'seed') this.host.onSeedProgress?.()
+        if (this.host.phase === 'seed' || this.host.phase === 'watch') this.host.onSeedProgress?.()
       }
       if (generation !== this.host.sharingGeneration) this.markSharingDirty()
       else this.reconciled()
