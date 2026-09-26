@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.14
+
+From the httpx rehearsal at declared sharing (docs/rehearsal-2026-09-26-httpx.md).
+
+- The first team-join disclosure offers only sharing levels narrower than the current one: full offers both, declared offers "share plans only", intent offers none.
+- At declared sharing, `room_done` lists the changed declared files that stay shared until they are committed or reverted, so an agent no longer tells its human that nothing is shared after it finishes.
+
 ## 0.16.13
 
 - Worker retirement removes a matching 0.16.12 retained-path record as well as the current per-identity record, so a later join cannot republish retired paths.
