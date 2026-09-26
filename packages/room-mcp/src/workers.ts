@@ -222,7 +222,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
       ...(context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : []),
       ...(context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(', ')}. Do not modify these paths or their contents; write outputs elsewhere.`] : []),
-      ...(context.carriedPaths?.length ? [`Files carried from the lead's uncommitted work belong to the lead; coordinate with the lead before editing these where your task needs to: ${context.carriedPaths.slice(0, 20).join(', ')}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ''}.`] : []),
+      ...(context.carriedPaths?.length ? [`Carried edits are the lead's work in progress, already in your worktree for you to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Carried paths: ${context.carriedPaths.slice(0, 20).join(', ')}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ''}.`] : []),
     ] : []),
     '',
     `TASK: ${task}`,

@@ -6,6 +6,10 @@ import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef }
 
 const WAIT_DEFAULT = 30_000
 const WAIT_MAX = 100_000
+const questionPreview = (text: string): string => {
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line
+}
 /** Internal argument supplied by the tool wrapper, never by MCP callers. */
 export const WAIT_SIGNAL = Symbol('room_wait request signal')
 
@@ -79,8 +83,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const handlers: Record<string, Handler> = {
     async room_send(a) {
       const lead = S()
-      const byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
-      const question = byQuestion?.room.messages().find(m => m.id === a.inReplyTo && m.type === 'question')
+      let byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
+      let question = byQuestion?.room.messages().find(m => m.id === a.inReplyTo && m.type === 'question')
       // A reply belongs to the asker. A stray `to` must never redirect the answer.
       const requestedTo = a.type === 'answer' && question ? question.from : typeof a.to === 'string' && a.to ? a.to : undefined
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
@@ -95,7 +99,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `error: worker tag ${requestedTo} is ambiguous; use a full name: ${names.join(', ')}`
       }
       const resolvedWorker = matches[0]
-      const to = resolvedWorker?.worker.name ?? requestedTo
+      let to = resolvedWorker?.worker.name ?? requestedTo
+      let inferredQuestionId: string | undefined
+      if (a.type === 'answer' && !a.inReplyTo) {
+        const answered = new Set(rooms.all().flatMap(room => room.room.messages()
+          .filter(m => m.type === 'answer').map(m => m.inReplyTo)))
+        const candidates = rooms.all().flatMap(room => room.room.messages()
+          .filter((m): m is QuestionMsg => m.type === 'question' && m.to === room.me.name
+            && (!to || m.from === to) && !answered.has(m.id))
+          .map(question => ({ room, question })))
+        if (candidates.length !== 1) return candidates.length
+          ? `error: answer requires inReplyTo; unanswered questions:\n${candidates.map(({ question }) => `${question.id}: ${questionPreview(question.text)}`).join('\n')}`
+          : `error: answer requires inReplyTo; no unanswered question${to ? ` from ${to}` : ''} addressed to you`
+        byQuestion = candidates[0].room
+        question = candidates[0].question
+        to = question.from
+        inferredQuestionId = question.id
+      }
       const exactWorkerRoom = to && wsr && wsr !== lead && (myWorkers(wsr).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : undefined
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead
       const text = typeof a.text === 'string' && a.text ? a.text : typeof a.message === 'string' ? a.message : ''
@@ -110,11 +130,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
       if (a.type === 'changed' && (!Array.isArray(a.paths) || !a.paths.some((x: unknown) => typeof x === 'string'))) return 'error: changed requires paths'
       if (a.type === 'question' && !to) return 'error: question requires to (whose agent)'
-      if (a.type === 'answer' && (typeof a.inReplyTo !== 'string' || !a.inReplyTo)) return 'error: answer requires inReplyTo'
       if (a.type === 'answer' && !question?.from && !to) return 'error: answer requires to (could not infer from inReplyTo)'
       if (!['changed', 'question', 'answer', 'note'].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       let msg!: Msg
       const notes: string[] = []
+      if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`)
       const addressedWorker = to && s.room.workerOf(to)
       let restarted = false
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
@@ -138,7 +158,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             msg = s.room.post<QuestionMsg>(s.me, withPr({ type: 'question', text, to: to! }))
             break
           case 'answer': {
-            msg = s.room.post<AnswerMsg>(s.me, withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: a.inReplyTo as string, text }))
+            msg = s.room.post<AnswerMsg>(s.me, withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }))
             break
           }
           case 'note':

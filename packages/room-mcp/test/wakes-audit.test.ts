@@ -49,6 +49,43 @@ it('automatically addresses an inReplyTo answer to the asker even when to is wro
   expect(main.room.messages().at(-1)).toMatchObject({ type: 'answer', to: 'worker', inReplyTo: question.id })
 })
 
+it('refuses an implicit answer when no unanswered question matches the recipient', async () => {
+  const { main, tools } = fixture()
+  main.room.colors.set('Ada', 0)
+  const answered = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Already handled?' })
+  main.room.post({ name: 'lead', kind: 'agent' }, { type: 'answer', to: 'Ada', inReplyTo: answered.id, text: 'Yes' })
+  expect(await tools.room_send({ type: 'answer', to: 'Ada', text: 'Again' })).toBe('error: answer requires inReplyTo; no unanswered question from Ada addressed to you')
+})
+
+it('answers the only unanswered question from the recipient and names it in the reply', async () => {
+  const { main, tools } = fixture()
+  main.room.colors.set('Ada', 0)
+  const question = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  const sent = await tools.room_send({ type: 'answer', to: 'Ada', text: 'price_cents' })
+  expect(sent).toContain(`answered ${question.id}`)
+  expect(main.room.messages().at(-1)).toMatchObject({ type: 'answer', to: 'Ada', inReplyTo: question.id, text: 'price_cents' })
+})
+
+it('infers the recipient when one unanswered question exists and to is omitted', async () => {
+  const { main, tools } = fixture()
+  const question = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Ready?' })
+  const sent = await tools.room_send({ type: 'answer', text: 'Yes' })
+  expect(sent).toContain(`answered ${question.id}`)
+  expect(main.room.messages().at(-1)).toMatchObject({ type: 'answer', to: 'Ada', inReplyTo: question.id })
+})
+
+it('lists multiple unanswered questions with previews when inReplyTo is omitted', async () => {
+  const { main, tools } = fixture()
+  const first = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  const second = main.room.post({ name: 'Bea', kind: 'agent' }, { type: 'question', to: 'lead', text: 'x'.repeat(100) })
+  const sent = await tools.room_send({ type: 'answer', text: 'The answer' })
+  expect(sent).toContain('error: answer requires inReplyTo')
+  expect(sent).toContain(`${first.id}: Which field?`)
+  expect(sent).toContain(`${second.id}: ${'x'.repeat(79)}…`)
+  expect(sent).not.toContain('x'.repeat(80))
+  expect(main.room.messages()).toHaveLength(2)
+})
+
 it('finds a read answer sent before room_wait even if another room holds the question', async () => {
   const { main, rooms, makeSession, state, tools } = fixture()
   const workers = makeSession('workers'); rooms.add(workers, 'workers')

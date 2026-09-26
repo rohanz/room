@@ -230,7 +230,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const t = world()
     await t.spawn('owned')
     const prompt = t.prompts.get('owned')!
-    expect(prompt).toContain('Files carried from the lead\'s uncommitted work belong to the lead; coordinate with the lead before editing these where your task needs to: gone.txt, notes.txt, run.sh, shared.txt, staged-new.txt, staged.txt.')
+    expect(prompt).toContain('Carried edits are the lead\'s work in progress, already in your worktree for you to build on. Edit around and after them freely; ask the lead before changing or removing the lead\'s own lines. Carried paths: gone.txt, notes.txt, run.sh, shared.txt, staged-new.txt, staged.txt.')
     expect(prompt).not.toContain('secret.env')
   })
 
@@ -246,7 +246,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
   it('does not mention carried files to a worker spawned from a clean lead', async () => {
     const t = world()
     await t.spawn('clean-prompt')
-    expect(t.prompts.get('clean-prompt')).not.toContain('Files carried from the lead\'s uncommitted work')
+    expect(t.prompts.get('clean-prompt')).not.toContain('Carried edits are the lead\'s work in progress')
   })
 
   it('(1) spawn carries tracked, staged, deleted and untracked WIP, never ignored or Room files, and reports it', async () => {
