@@ -17,5 +17,5 @@ it.each([
   ['over size cap', { withinSize: false }, { share: false, reason: 'size' }],
   ['over total budget', { withinBudget: false }, { share: false, reason: 'budget' }],
 ] as const)('%s', (_name, overrides, result) => {
-  expect(eligibility('src/a.py', { ...eligible, ...overrides })).toEqual(result)
+  expect(eligibility({ ...eligible, ...overrides })).toEqual(result)
 })

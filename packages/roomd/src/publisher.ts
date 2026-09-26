@@ -3,19 +3,7 @@ import { scopeCovers, type RoomDoc } from '@room/shared'
 import { baselineText, type Baseline } from './baseline.js'
 import { git, gitBlobInfoMany, gitChanged, gitHead, gitShow, gitShowMany, type GitBlobInfo } from './git.js'
 import type { DiskBatch } from './disk-batch.js'
-
-export type ShareLevel = 'intent' | 'declared' | 'full'
-export const SHARE_LEVELS: readonly ShareLevel[] = ['intent', 'declared', 'full']
-const SHARE_RANK: Record<ShareLevel, number> = { intent: 0, declared: 1, full: 2 }
-/** A level from user input; undefined when it is not one. */
-export function parseShare(v: unknown): ShareLevel | undefined {
-  const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
-  return (SHARE_LEVELS as readonly string[]).includes(s) ? s as ShareLevel : undefined
-}
-/** The level actually allowed: never above the server ceiling. */
-export function clampShare(level: ShareLevel, max: ShareLevel): ShareLevel {
-  return SHARE_RANK[level] > SHARE_RANK[max] ? max : level
-}
+import { clampShare, type ShareLevel } from './share-level.js'
 
 const errMsg = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
@@ -38,7 +26,7 @@ export interface EligibilityFacts {
 export type Eligibility = { share: true } | { share: false; reason: 'ignore' | 'unsafe' | 'level' | 'scope' | 'size' | 'budget' }
 
 /** One decision for whether a path may have an overlay or deletion mark. */
-export function eligibility(_path: string, facts: EligibilityFacts): Eligibility {
+export function eligibility(facts: EligibilityFacts): Eligibility {
   if (facts.ignored) return { share: false, reason: 'ignore' }
   if (!facts.safe) return { share: false, reason: 'unsafe' }
   if (facts.level === 'intent') return { share: false, reason: 'level' }
@@ -123,7 +111,7 @@ export class Publisher {
   }
 
   sharedAtCurrentLevel(relpath: string): boolean {
-    return eligibility(relpath, this.eligibilityFacts(relpath)).share
+    return eligibility(this.eligibilityFacts(relpath)).share
   }
 
   eligibilityFacts(relpath: string) {
@@ -140,7 +128,7 @@ export class Publisher {
     if (this.host.stopped) return
     const changed = await gitChanged(this.host.dir).catch(error => { this.reconcileFailed(error); throw error })
     for (const relpath of this.host.roomDoc.changedPaths(this.host.name)) {
-      if (!eligibility(relpath, this.eligibilityFacts(relpath)).share) this.withhold(relpath, true)
+      if (!eligibility(this.eligibilityFacts(relpath)).share) this.withhold(relpath, true)
     }
     await this.reconcile(changed)
   }
@@ -151,7 +139,7 @@ export class Publisher {
       const stat = fs.lstatSync(this.host.abs(relpath))
       if (!this.host.isSafeRoomPath(relpath) || stat.isSymbolicLink()) return undefined
       if (!stat.isFile()) return undefined
-      const size = eligibility(relpath, { ...this.eligibilityFacts(relpath), level: 'full', withinSize: stat.size <= this.host.sizeCap })
+      const size = eligibility({ ...this.eligibilityFacts(relpath), level: 'full', withinSize: stat.size <= this.host.sizeCap })
       if (!size.share && size.reason === 'size') {
         if (!this.host.skips.size.has(relpath) && !quiet) this.host.noteSkip(relpath, 'over size cap')
         this.host.skips.size.add(relpath)
@@ -300,7 +288,7 @@ export class Publisher {
       this.host.skips.size.delete(relpath)
       this.host.skips.budget.delete(relpath)
       const safe = this.host.isSafeRoomPath(relpath)
-      const pathEligibility = eligibility(relpath, { ...this.eligibilityFacts(relpath), safe })
+      const pathEligibility = eligibility({ ...this.eligibilityFacts(relpath), safe })
       if (!pathEligibility.share && pathEligibility.reason === 'unsafe') {
         this.host.roomDoc.clearOverlay(this.host.name, relpath, this.host)
         this.host.roomDoc.unmarkDeleted(this.host.name, relpath, this.host)
@@ -406,7 +394,7 @@ export class Publisher {
         // The level or scope may have changed while we waited on git: never write text the current level withholds.
         if (!this.isShared(relpath)) { if (!sharingChanged()) this.withhold(relpath, disk !== base); return }
         if (sharingChanged()) return
-        if (disk !== base && !eligibility(relpath, { ...this.eligibilityFacts(relpath), withinBudget: this.sharedBytes(relpath) + disk.length <= this.host.totalBudget }).share) {
+        if (disk !== base && !eligibility({ ...this.eligibilityFacts(relpath), withinBudget: this.sharedBytes(relpath) + disk.length <= this.host.totalBudget }).share) {
           if (!this.host.skips.budget.has(relpath)) { this.host.skips.budget.add(relpath); this.host.noteSkip(relpath, `over the ${Math.round(this.host.totalBudget / 1024)} KB total budget`) }
           this.host.roomDoc.clearOverlay(this.host.name, relpath, this.host)
           this.host.roomDoc.unmarkDeleted(this.host.name, relpath, this.host)
