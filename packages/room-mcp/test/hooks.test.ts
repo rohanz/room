@@ -1194,3 +1194,82 @@ it('Codex hook wakes for own worker questions and failures, but not progress not
   expect(queue).toHaveBeenCalledTimes(2)
   b.stop(); s.awareness.destroy(); s.room.doc.destroy()
 })
+
+it.each(['stop', 'leave'])('does not queue a base notice after %s during git preflight', async action => {
+  const s = session(new RoomDoc())
+  const queue = vi.fn(async () => {})
+  const b = new HooksBridge(s, { forMe: m => m.to === s.me.name || m.type === 'base', isSeen: () => false, queue })
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'preflight', at: Date.now(), cwd: dir }))
+  s.room.setOverlay(s.me.name, 'app.py', 'x = 2\n')
+  const msg = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'not-an-ancestor', prev: 'old', commits: 1, paths: ['app.py'], summary: 'move' })
+  const mocked = vi.mocked(execFile)
+  const original = mocked.getMockImplementation()!
+  let complete!: (error: Error) => void
+  mocked.mockImplementation(((...args: Parameters<typeof execFile>) => {
+    if (Array.isArray(args[1]) && args[1][0] === 'merge-base') {
+      complete = () => (args.at(-1) as (error: Error) => void)(new Error('not ancestor'))
+      return {} as ReturnType<typeof execFile>
+    }
+    return original(...args)
+  }) as typeof execFile)
+  try {
+    const waking = b.maybeWake(msg)
+    await vi.waitFor(() => expect(complete).toBeTypeOf('function'))
+    if (action === 'stop') b.stop()
+    else s.closed = { reason: 'left' }
+    complete(new Error('not ancestor'))
+    await waking
+    expect(queue).not.toHaveBeenCalled()
+  } finally { mocked.mockImplementation(original); b.stop(); s.awareness.destroy(); s.room.doc.destroy() }
+})
+
+it('runs one hook snapshot preflight at a time and repeats once after updates', async () => {
+  const s = session(new RoomDoc())
+  const b = new HooksBridge(s, { forMe: m => m.type === 'base', isSeen: () => false })
+  const mocked = vi.mocked(execFile)
+  const original = mocked.getMockImplementation()!
+  const callbacks: ((error: Error) => void)[] = []
+  mocked.mockImplementation(((...args: Parameters<typeof execFile>) => {
+    if (Array.isArray(args[1]) && args[1][0] === 'merge-base') {
+      callbacks.push(args.at(-1) as (error: Error) => void)
+      return {} as ReturnType<typeof execFile>
+    }
+    return original(...args)
+  }) as typeof execFile)
+  try {
+    b.start()
+    s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'unmerged', prev: 'old', commits: 1, paths: ['app.py'], summary: 'move' })
+    await vi.waitFor(() => expect(callbacks).toHaveLength(1))
+    for (let i = 0; i < 5; i++) b.scheduleWrite()
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(callbacks).toHaveLength(1)
+    callbacks[0](new Error('not ancestor'))
+    await vi.waitFor(() => expect(callbacks).toHaveLength(2))
+    callbacks[1](new Error('not ancestor'))
+    await vi.waitFor(() => expect(existsSync(b.stateFile())).toBe(true))
+    expect(callbacks).toHaveLength(2)
+  } finally { mocked.mockImplementation(original); b.stop(); s.awareness.destroy(); s.room.doc.destroy() }
+})
+
+it('does not publish a newly arrived base through a receipt write before filtering it', async () => {
+  const s = session(new RoomDoc())
+  const b = new HooksBridge(s, { forMe: m => m.type === 'base', isSeen: () => false })
+  const mocked = vi.mocked(execFile)
+  const original = mocked.getMockImplementation()!
+  mocked.mockImplementation(((...args: Parameters<typeof execFile>) => {
+    if (Array.isArray(args[1]) && args[1][0] === 'merge-base') {
+      queueMicrotask(() => (args.at(-1) as (error: null, stdout: string, stderr: string) => void)(null, '', ''))
+      return {} as ReturnType<typeof execFile>
+    }
+    return original(...args)
+  }) as typeof execFile)
+  try {
+    b.start()
+    await vi.waitFor(() => expect(existsSync(b.stateFile())).toBe(true))
+    const base = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'integrated', prev: 'old', commits: 1, paths: ['app.py'], summary: 'move' })
+    const note = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: s.me.name, text: 'shown' })
+    s.room.markSeen(s.me.name, [note.id])
+    expect(JSON.parse(readFileSync(b.stateFile(), 'utf8')).unread).not.toContainEqual(expect.objectContaining({ id: base.id }))
+    await vi.waitFor(() => expect(s.room.seen(s.me.name).has(base.id)).toBe(true))
+  } finally { mocked.mockImplementation(original); b.stop(); s.awareness.destroy(); s.room.doc.destroy() }
+})

@@ -79,7 +79,7 @@ function postSocketWake(socketPath: string, token: string | undefined, content: 
 
 export interface SocketWakeOptions extends WakeAvailability {
   notify: (notification: Notification) => Promise<unknown>
-  recipient?: Pick<Session, 'dir' | 'room' | 'me'>
+  recipient?: Pick<Session, 'dir' | 'room' | 'me' | 'closed'>
   /** Checked immediately before sending, since room_wait may consume a queued event. */
   isUnread?: (wake: WakeEvent) => boolean
   /** A pending room_wait will deliver this event itself. */
@@ -122,8 +122,9 @@ export class SocketWakeRouter {
   close(): void { this.closed = true; if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.pending = [] }
 
   private async channel(wake: WakeEvent): Promise<void> {
-    if (this.o.channel === '') return
+    if (this.closed || this.o.recipient?.closed || this.o.channel === '') return
     if (wake.meta.type === 'base' && await this.satisfied(wake)) return
+    if (this.closed || this.o.recipient?.closed || !this.unread(wake) || this.o.isPendingWait?.(wake)) return
     await sendChannelNotification(wake, this.o.notify)
   }
 
@@ -151,9 +152,10 @@ export class SocketWakeRouter {
   private async flush(): Promise<void> {
     const items: WakeEvent[] = []
     for (const w of this.pending.splice(0)) {
+      if (this.closed || this.o.recipient?.closed) return
       if (!this.o.isPendingWait?.(w) && this.unread(w) && (w.meta.type !== 'base' || !await this.satisfied(w))) items.push(w)
     }
-    if (!items.length || this.closed) return
+    if (!items.length || this.closed || this.o.recipient?.closed) return
     this.lastSentAt = Date.now()
     const count = items.length
     const shown = count > 5 ? 4 : 5

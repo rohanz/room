@@ -81,6 +81,20 @@ it('surfaces an addressed worker question before a routine note while waiting', 
   expect(result).toContain('answer it with room_send type=answer inReplyTo=')
 })
 
+it.each([false, true])('keeps the second same-tick question unread during a wait (workers room: %s)', async workersRoom => {
+  const { main, rooms, makeSession, state, tools } = fixture()
+  const source = workersRoom ? makeSession('workers') : main
+  if (workersRoom) rooms.add(source, 'workers')
+  const waiting = tools.room_wait({ timeoutMs: 1000 })
+  await vi.waitFor(() => expect(state.setPresence).toHaveBeenCalledWith(main, { status: 'waiting' }))
+  const a = source.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'first?' })
+  const b = source.room.post({ name: 'Bea', kind: 'agent' }, { type: 'question', to: 'lead', text: 'second?' })
+  expect(await waiting).toContain('first?')
+  expect(source.room.seen('lead').has(a.id)).toBe(true)
+  expect(source.room.seen('lead').has(b.id)).toBe(false)
+  expect(await tools.room_wait({ timeoutMs: 10 })).toContain('second?')
+})
+
 it('puts an unread worker question ahead of notes with a clear reply instruction', () => {
   const { main, rooms, makeSession, state } = fixture()
   const workers = makeSession('workers'); rooms.add(workers, 'workers')

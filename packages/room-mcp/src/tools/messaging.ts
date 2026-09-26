@@ -168,15 +168,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (questionId) { const notice = unavailableQuestion(qRoom, questionId); if (notice) return notice }
       const waitResult = async (x: Session, m: Msg, workersRoom = false): Promise<string | undefined> => {
         if (await dropSatisfiedBaseNotice(x, m)) return
+        if (s.closed || x.closed) return
         if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
-          received(x, m)
           if (m.type === 'answer') return `answered: ${formatMsg(m)}`
           if (m.type === 'done') return `worker done: ${formatMsg(m)}`
           if (m.type === 'merge-conflict') return formatMsg(m)
           if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`
           return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`
         }
-        if (m.priority === 'interrupt' && forMe(x, m)) { received(x, m); return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}` }
+        if (m.priority === 'interrupt' && forMe(x, m)) return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}`
       }
       const candidates = [s, ...rooms.all().filter(x => x !== s)].flatMap(x => x.room.messages()
         .filter(m => !seen.has(m.id) && !x.room.seen(x.me.name).has(m.id))
@@ -185,7 +185,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         - (b.m.priority === 'interrupt' ? 0 : b.m.type === 'question' ? 1 : 2) || a.m.at - b.m.at)
       for (const { x, m } of candidates) {
         const ended = await waitResult(x, m, x !== s)
-        if (ended) return ended
+        if (ended) { received(x, m); return ended }
       }
       if (offline(s)) return 'offline: queued/not delivered; room_wait cannot observe new messages until reconnected'
       const ws = rooms.all().find(x => x !== s) ?? null
@@ -203,7 +203,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         let finished = false
         let timer: ReturnType<typeof setTimeout> | undefined
         const finish = (r: string) => {
-          if (finished) return
+          if (finished) return false
           finished = true
           if (timer) clearTimeout(timer)
           s.room.claims.unobserve(onClaims)
@@ -214,6 +214,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           for (const [x, ends] of waiting) pendingWaits.get(x)?.delete(ends)
           setPresence(s, { status: 'idle' })
           resolve(r)
+          return true
+        }
+        // Bus observers may run in the same tick. Only the one reply accepted by
+        // finish gets a receipt; later work stays in the next wait's inbox.
+        let delivery = Promise.resolve()
+        const enqueue = (x: Session, ev: { changes: { delta: { insert?: unknown }[] } }, workersRoom = false) => {
+          const messages = ev.changes.delta.flatMap(d => (d.insert ?? []) as Msg[])
+          delivery = delivery.then(async () => {
+            for (const m of messages) {
+              if (finished || s.closed || x.closed) return
+              if (seen.has(m.id) || x.room.seen(x.me.name).has(m.id)) continue
+              const ended = await waitResult(x, m, workersRoom)
+              if (finished || s.closed || x.closed) return
+              if (seen.has(m.id) || x.room.seen(x.me.name).has(m.id)) continue
+              if (ended) { if (finish(ended)) received(x, m); return }
+            }
+          }).catch(error => state.log(`room_wait delivery failed: ${error instanceof Error ? error.message : String(error)}`))
         }
         const onAbort = () => finish('error: tool call cancelled')
         const onRecipient = () => {
@@ -223,10 +240,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const onWorkersBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
           if (!ws) return
-          void (async () => { for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            const ended = await waitResult(ws, m, true)
-            if (ended) return finish(ended)
-          } })()
+          enqueue(ws, ev, true)
         }
         timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap(room => myWorkers(room)).filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
@@ -236,12 +250,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }, timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
-          void (async () => { for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            const ended = await waitResult(s, m)
-            if (ended) return finish(ended)
-          } })()
+          enqueue(s, ev)
         }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)
+        // The initial inbox scan can await Git. Recheck after subscribing so a
+        // message posted during that gap cannot disappear between scan and bus.
+        for (const x of ws ? [s, ws] : [s]) {
+          const unread = x.room.messages().filter(m => !seen.has(m.id) && !x.room.seen(x.me.name).has(m.id))
+          if (unread.length) enqueue(x, { changes: { delta: [{ insert: unread }] } }, x !== s)
+        }
         if (questionId) qRoom.room.doc.on('update', onRecipient)
         signal?.addEventListener('abort', onAbort, { once: true })
         if (signal?.aborted) onAbort()

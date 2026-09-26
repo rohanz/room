@@ -21,6 +21,31 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'room-socket-wake-'))
 afterEach(() => vi.unstubAllEnvs())
 
 describe('Claude socket wake', () => {
+  it.each(['channels', 'socket'])('drops a %s wake when the room leaves during base preflight', async mode => {
+    const room = new RoomDoc()
+    const recipient = { dir: '/unused', room, me, closed: undefined as undefined | { reason: string } }
+    const msg = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'new', prev: 'old', commits: 1, paths: ['app.py'], summary: 'move' })
+    const notify = vi.fn(async () => {}), post = vi.fn(async () => {})
+    const router = new SocketWakeRouter({ host: 'claude', recipient, env: { ROOM_WAKE: mode, CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, parentArgs: flag, notify, post, windowMs: 1 })
+    let release!: () => void
+    let entered!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    ;(router as unknown as { satisfied: () => Promise<boolean> }).satisfied = async () => {
+      entered()
+      await new Promise<void>(resolve => { release = resolve })
+      return false
+    }
+    try {
+      router.push(shouldWake(me, { kind: 'msg', msg }, [], true))
+      await started
+      recipient.closed = { reason: 'left' }
+      release()
+      await pause(10)
+      expect(notify).not.toHaveBeenCalled()
+      expect(post).not.toHaveBeenCalled()
+    } finally { router.close(); room.doc.destroy() }
+  })
+
   it.each(['socket', 'channels'])('skips a satisfied base before %s delivery and records seen', async mode => {
     const dir = tmp()
     const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()

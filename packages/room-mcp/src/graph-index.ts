@@ -71,7 +71,7 @@ export class GraphIndex {
   /** Resolves when the initial build is done. */
   ready: Promise<void> = Promise.resolve()
 
-  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number } = {}) {
+  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number; read?: typeof gitShow } = {}) {
     this.graph = new SymbolGraph(path => this.cache.get(path))
   }
 
@@ -148,7 +148,7 @@ export class GraphIndex {
     if (mine !== undefined) return mine
     for (const person of this.room.overlays.keys()) { if (person === this.me) continue; const t = this.room.text(path, person); if (t !== undefined) return t }
     if (!this.base) return undefined
-    return gitShow(this.dir, this.base, path)
+    return (this.opts.read ?? gitShow)(this.dir, this.base, path)
   }
 
   refresh(path: string): Promise<void> {
@@ -168,10 +168,10 @@ export class GraphIndex {
     while (!this.stopped && this.activeRefreshes < MAX_REFRESH_CONCURRENCY && this.refreshQueue.length) {
       const path = this.refreshQueue.shift()!
       this.activeRefreshes++
-      void this.runRefresh(path).catch(e => this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`)).finally(() => {
+      void this.runRefresh(path).catch(e => { this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`); return true }).then(done => {
         this.activeRefreshes--
-        this.pending.get(path)?.resolve()
-        this.pending.delete(path)
+        if (!done && !this.stopped) this.refreshQueue.push(path)
+        else { this.pending.get(path)?.resolve(); this.pending.delete(path) }
         if (!this.stopped && !this.pending.size) {
           clearTimeout(this.publishing)
           this.publishing = setTimeout(() => {
@@ -183,8 +183,8 @@ export class GraphIndex {
     }
   }
 
-  private async runRefresh(path: string): Promise<void> {
-    while (!this.stopped) {
+  private async runRefresh(path: string): Promise<boolean> {
+    if (!this.stopped) {
       const revision = this.revisions.get(path), generation = this.generation
       await ensureLanguages([path])
       const text = await this.textFor(path)
@@ -198,14 +198,14 @@ export class GraphIndex {
       const mineDeleted = this.room.deleted.get(this.me)?.has(path) ?? false
       // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
       const own = workerBaseline(this.room.workerOf(this.me))
-      const read = (sha: string, file: string) => gitShow(this.dir, sha, file)
+      const read = (sha: string, file: string) => (this.opts.read ?? gitShow)(this.dir, sha, file)
       const baseRead: BaselineRead | undefined = mine !== undefined || mineDeleted
         ? own ? await readBaseline(own, path, read) : await read(this.base, path).then(
           text => text === undefined ? { kind: 'absent' as const } : { kind: 'available' as const, text },
           error => ({ kind: 'unavailable' as const, error: error instanceof Error ? error : new Error(String(error)) }),
         ) : undefined
-      if (this.stopped) return
-      if (generation !== this.generation || revision !== this.revisions.get(path)) continue
+      if (this.stopped) return true
+      if (generation !== this.generation || revision !== this.revisions.get(path)) return false
       if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
       else { this.cache.set(path, symbols); this.graph.set(path, text) }
       if (mine !== undefined || mineDeleted) {
@@ -213,15 +213,16 @@ export class GraphIndex {
           this.degradedPaths.add(path)
           this.observedByPath.delete(path)
           this.log(`graph: baseline unavailable for ${path}; observed contract coverage degraded: ${baseRead.error.message}`)
-          break
+          return true
         }
         this.degradedPaths.delete(path)
         const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
         if (changes.length) this.observedByPath.set(path, changes)
         else this.observedByPath.delete(path)
       } else { this.observedByPath.delete(path); this.degradedPaths.delete(path) }
-      break
+      return true
     }
+    return true
   }
 
   /** Wait for overlay work already queued as well as base rebuilds. */

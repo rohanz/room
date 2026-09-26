@@ -2,6 +2,7 @@
 
 ## 0.16.8
 
+- Serialized each `room_wait` delivery across the main and workers rooms, so simultaneous questions leave only the returned one seen. Codex and Claude wake paths recheck stop/leave after the asynchronous base check. Hook receipts prune already published lines immediately, while full snapshots share one bounded, single-flight base preflight. Superseded graph refreshes rejoin the queue behind waiting paths instead of occupying all eight slots.
 - A "base moved" notice is no longer delivered when the recipient's checkout already contains that commit (`git merge-base --is-ancestor <base> HEAD`). The check runs just before delivery on the Codex queue, the hook snapshot, room_wait and tool-reply inboxes, and Claude wakes, and marks the notice seen. It still appears in the timeline. Git errors deliver the notice as before (`packages/room-mcp/src/base-notice.ts`).
 - Claim guidance, hook snapshots and room_state build scope, claim and changed-path evidence with one `coordinationPaths` builder (`packages/shared/src/near.ts`). One deliberate fix: room_state no longer hides a participant whose changed paths alone made the claim hook warn.
 - The graph index refreshes only the paths each overlay event touched, including removals, through one queue of 8 shared with the initial build. One edit with 40 other changed files now refreshes 1 file instead of 41.

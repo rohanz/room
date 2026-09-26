@@ -26,6 +26,35 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('GraphIndex', () => {
+  it('lets a ninth path finish while eight edited paths are superseded', async () => {
+    const room = new RoomDoc(); room.setMeta({ base })
+    const first: (() => void)[] = [], later: (() => void)[] = []
+    let firstReads = 0
+    const read = vi.fn(async (_dir: string, _sha: string, path: string): Promise<string | undefined> => {
+      if (path === 'waiting.py') return undefined
+      if (path.startsWith('hot-')) {
+        const batch = firstReads++ < 8 ? first : later
+        await new Promise<void>(resolve => batch.push(resolve))
+      }
+      return undefined
+    })
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0, read })
+    try {
+      gi.start(); await gi.ready
+      for (let i = 0; i < 8; i++) room.setOverlay('Rohan', `hot-${i}.py`, `def old_${i}(): pass\n`)
+      await eventually(() => first.length === 8)
+      room.setOverlay('Rohan', 'waiting.py', 'def waiting(): pass\n')
+      for (let i = 0; i < 8; i++) room.setOverlay('Rohan', `hot-${i}.py`, `def new_${i}(): pass\n`)
+      first.splice(0).forEach(release => release())
+      await eventually(() => gi.graph.has('waiting.py'))
+      later.splice(0).forEach(release => release())
+      await gi.whenIdle()
+      expect(gi.graph.definersOf('waiting')).toEqual(['waiting.py'])
+    } finally {
+      gi.stop(); first.splice(0).forEach(release => release()); later.splice(0).forEach(release => release()); room.doc.destroy()
+    }
+  })
+
   it('indexes base source files, prefers overlays, and tracks overlay edits', async () => {
     const room = new RoomDoc()
     room.setMeta({ base })
