@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.24
+
+Found in the click rehearsal on codex-cli 0.157.1.
+
+- **Codex sessions join their own repository's room.** Codex 0.157 runs interactive sessions through a shared background app-server daemon. That daemon starts MCP servers with its own `PWD`, which is the folder of the first `codex` it served. Room trusted `PWD`, so a Codex session in one clone joined another clone's room. When Room's parent is a Codex `app-server` and no `ROOM_DIR` is set, it no longer trusts `PWD`. It binds to the session's workspace from the first tool call's `x-codex-turn-metadata`, the only place Codex reports it: `roots/list` returns no roots. A later call from a different workspace gets a plain warning. Claude Code, `codex exec` and Room's own workers keep startup binding.
+
 ## 0.16.23
 
 Fixes from the Astra review of 0.16.22.
