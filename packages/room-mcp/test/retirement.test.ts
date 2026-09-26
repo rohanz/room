@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { RoomDoc, type Worker } from '@room/shared'
 import { prepareWorktree, saveDiscardPatch } from '../src/workers.js'
-import { retainedDeclaredFile } from '@room/roomd'
+import { RetainedDeclaredPaths, retainedDeclaredFile } from '@room/roomd'
 import { decideRetire, workerRealState, type WorkerRealState } from '../src/worker-state.js'
 import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
@@ -329,6 +329,23 @@ it('clears a dismissed dirty worker retained-path record during automatic retire
   expect(existsSync(w.dir)).toBe(true)
   expect(existsSync(retained)).toBe(false)
   expect(existsSync(teamRetained)).toBe(true)
+  r.close()
+})
+
+it('removes a legacy-only retained record so a later worker join publishes nothing', async () => {
+  const { dir } = repo(), r = registry(dir)
+  const prepared = await prepareWorktree(dir, 'w', 'lead')
+  const w = { ...worker(prepared.dir), base: prepared.base, status: 'dismissed' as const, dismissedAt: 2 }
+  writeFileSync(join(w.dir, 'a'), 'dirty work')
+  const legacy = join(dirname(retainedDeclaredFile(w.dir, r.s.roomName, w.name, 'ws://team')), 'room-retained-declared.json')
+  writeFileSync(legacy, JSON.stringify({ server: 'ws://team', room: r.s.roomName, participant: w.name, paths: ['a'] }))
+  r.room.setWorker(w)
+  await r.rooms.retireWorkers()
+  expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('dismissed')
+  expect(existsSync(w.dir)).toBe(true)
+  expect(existsSync(legacy)).toBe(false)
+  expect([...new RetainedDeclaredPaths(w.dir, r.s.roomName, w.name, 'ws://team')]).toEqual([])
+  expect(existsSync(retainedDeclaredFile(w.dir, r.s.roomName, w.name, 'ws://team'))).toBe(false)
   r.close()
 })
 

@@ -53,6 +53,17 @@ export function retainedDeclaredFile(dir: string, room: string, participant: str
   return path.join(worktreeGitDirSync(dir), `room-retained-declared-${hash}.json`)
 }
 
+/** Withdraw this publisher's current and 0.16.12 records without touching another identity. */
+export function deleteRetainedDeclaredRecord(dir: string, room: string, participant: string, server: string): void {
+  const gitDir = worktreeGitDirSync(dir)
+  fs.rmSync(retainedDeclaredFile(dir, room, participant, server), { force: true })
+  const legacyFile = path.join(gitDir, 'room-retained-declared.json')
+  const legacy = readRecordSync<{ server?: unknown; room?: unknown; participant?: unknown }>(legacyFile)
+  if (legacy?.server === normaliseServer(server) && legacy.room === room && legacy.participant === participant) {
+    fs.rmSync(legacyFile, { force: true })
+  }
+}
+
 function normaliseServer(server: string): string {
   const url = new URL(server)
   url.username = ''

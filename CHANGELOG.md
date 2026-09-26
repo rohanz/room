@@ -2,6 +2,7 @@
 
 ## 0.16.13
 
+- Worker retirement removes a matching 0.16.12 retained-path record as well as the current per-identity record, so a later join cannot republish retired paths.
 - A daemon automatically sweeps flat base text added after its owner has retired. A live owner restores its real base content after a remote replacement, and reconciliation replaces incorrect existing content.
 - Fresh worker spawns roll back a prepared worktree only before the process starts. After start, cancellation or launch failure keeps the checkout and worker record, reports whether the stop was confirmed, and leaves collection or discard to the lead.
 - Retained declared paths are stored separately for each normalized server, room and participant. Opening a local workers room no longer erases the team room's record; matching records from 0.16.12 migrate on first use, and retirement removes only its matching record.

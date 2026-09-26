@@ -9,7 +9,7 @@ export { validRepoPath, isInsideRoot, containedRepoPath, MATERIALIZED_PATH, DISK
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
 import { commonGitDirFromDotGit } from './git-dirs.js'
 import { RetainedDeclaredPaths } from './retained-declared.js'
-export { retainedDeclaredFile } from './retained-declared.js'
+export { RetainedDeclaredPaths, retainedDeclaredFile, deleteRetainedDeclaredRecord } from './retained-declared.js'
 export { worktreeGitDirFromDotGit, worktreeGitDirSync, commonGitDirFromDotGit, gitCommonDir, realGitCommonDir, carryRecord, carryRecordSync } from './git-dirs.js'
 import fs from 'node:fs'
 import path from 'node:path'
