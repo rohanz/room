@@ -355,6 +355,12 @@ longer keeps a collected worktree.
 - **Worker link inputs and backslashes (found in the 0.16.6 path batch):** `link` paths are validated with backslashes as separators, but POSIX joins treat them as filename characters, so `safe\name` is accepted as a literal name while `safe\..` is refused. Conservative today; decide on one rule (probably reject backslashes, like collection) with a user-visible note.
 
 
+### Seen in the 0.16.10 review (2026-09-26, open, small)
+
+- If the host cancels room_send in the moment between a resumed worker starting with an answer as its prompt
+  and Room stopping it (worker-launch.ts, cancellation after spawn), Room reports an error and posts nothing,
+  although the worker may already have read the prompt. Preserve "delivered" across post-spawn failures.
+
 ### After 0.14.1 (2026-09-24, open)
 
 - **Fixed in 0.15.0: wake text and note wording.** Claude wakes summarize unread events,
