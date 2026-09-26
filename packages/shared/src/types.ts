@@ -148,6 +148,8 @@ export interface Worker {
   /** Lead-owned untracked files copied outside branch history; sha is a blob retained by a private Room tree ref. */
   carriedUntracked?: { path: string; sha: string; mode?: number }[]
   pid: number
+  /** OS process start identity (boot plus start tick/second); absent on legacy records. */
+  processStartTime?: string
   startedAt: number
   status: WorkerStatus
   summary?: string

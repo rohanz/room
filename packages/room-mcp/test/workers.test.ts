@@ -12,7 +12,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerProcessOwnership, workerEnv, codexSessionId, type SpawnSpec } from '../src/workers.js'
+import { prepareWorkerLinks, workerLogTail, workerBudget, workerPriority, defaultSpawner, pidAlive, prepareWorktree, cleanupPreparedWorktree, workerCommand, workerPrompt, validTag, pidIsOurWorker, workerProcessOwnership, probeProcess, workerEnv, codexSessionId, type SpawnSpec } from '../src/workers.js'
 import { reserveWorkerPort } from '../src/port-reservations.js'
 
 // Disk cleanup and patch restoration are exercised with real worktrees in collect.test.ts.
@@ -804,59 +804,38 @@ function setupLead() {
 }
 
 describe('worker safety', () => {
-  it('does not identify an unrelated claude session from a tag substring', () => {
-    const rec = { startedAt: 1_000_000, tag: 'a', dir: '/repo/.room/workers/a', lead: 'rohanz', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b' }
-    expect(pidIsOurWorker(process.pid, rec, () => ({ start: 1_001_000, command: 'claude -p unrelated task' }))).toBe(false)
-    expect(pidIsOurWorker(process.pid, rec, () => ({ start: 1_001_000, command: `claude --session-id ${rec.hostSessionId}-other -p task` }))).toBe(false)
+  it('uses exact OS start identity, host executable, and liveness after a lead restart', () => {
+    const rec = { host: 'claude' as const, processStartTime: 'linux:boot-a:12345', hostSessionId: 'session-1' }
+    const info = { startTime: rec.processStartTime, executable: '/usr/local/bin/claude' }
+    expect(workerProcessOwnership(process.pid, rec, () => info)).toBe('ours')
+    expect(workerProcessOwnership(process.pid, rec, () => ({ ...info, startTime: 'linux:boot-a:12346' }))).toBe('not-ours')
+    expect(workerProcessOwnership(process.pid, rec, () => ({ ...info, startTime: 'linux:boot-b:12345' }))).toBe('not-ours')
+    expect(workerProcessOwnership(process.pid, rec, () => ({ ...info, executable: '/usr/bin/vim' }))).toBe('not-ours')
+    expect(workerProcessOwnership(process.pid, { ...rec, processStartTime: undefined }, () => info)).toBe('unknown')
+    expect(workerProcessOwnership(process.pid, rec, () => undefined)).toBe('unknown')
+    expect(workerProcessOwnership(-1, rec, () => info)).toBe('not-ours')
   })
 
-  it('recognizes a worker after lead restart by its exact host session argument', () => {
-    const rec = { startedAt: 1_000_000, tag: 'a', dir: '/repo/.room/workers/a', lead: 'rohanz', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b' }
-    expect(pidIsOurWorker(process.pid, rec, () => ({ start: 1_001_000, command: `claude -p "task" --session-id ${rec.hostSessionId}` }))).toBe(true)
-    expect(pidIsOurWorker(process.pid, rec, () => ({ start: 1_001_000, command: 'codex exec resume e1be43be-03a3-45b8-b267-cd48780e2a0b --json' }))).toBe(true)
+  it('ignores prompt and session text even when they contain the worker session id', () => {
+    const rec = { host: 'codex' as const, processStartTime: 'linux:boot-a:12345', hostSessionId: 'session-1' }
+    expect(workerProcessOwnership(process.pid, rec, () => ({ startTime: rec.processStartTime, executable: 'codex',
+      command: 'codex exec --json "please mention session-1"', args: ['codex', 'exec', '--json', 'session-1'] }))).toBe('ours')
+    expect(workerProcessOwnership(process.pid, rec, () => ({ startTime: 'linux:boot-a:12346', executable: 'codex',
+      command: 'codex exec resume session-1' }))).toBe('not-ours')
+    expect(workerProcessOwnership(process.pid, rec, () => ({ startTime: rec.processStartTime, executable: 'node' }))).toBe('ours')
   })
 
-  it('never treats an id in prompt text as a host argument', () => {
-    const id = 'e1be43be-03a3-45b8-b267-cd48780e2a0b'
-    const rec = { id: 'worker-1', startedAt: 1_000_000, tag: 'a', dir: '/repo/.room/workers/a', lead: 'rohanz', hostSessionId: id }
-    const info = { start: 1_001_000, command: `claude -p "please mention --session-id ${id}"` }
-    expect(workerProcessOwnership(process.pid, rec, () => info)).toBe('unknown')
-    expect(pidIsOurWorker(process.pid, rec, () => info)).toBe(false)
-    expect(pidIsOurWorker(process.pid, rec, () => ({ ...info, args: ['claude', '-p', `please mention --session-id ${id}`] }))).toBe(false)
-    expect(pidIsOurWorker(process.pid, rec, () => ({ ...info, args: ['claude', '-p', 'task', '--session-id', id] }))).toBe(true)
-    expect(pidIsOurWorker(process.pid, rec, () => ({ ...info, env: { ROOM_WORKER_ID: rec.id } }))).toBe(true)
-    expect(pidIsOurWorker(process.pid, rec, () => ({ ...info, env: { ROOM_WORKER_ID: 'other-worker' }, args: ['claude', '--session-id', id] }))).toBe(false)
-    expect(pidIsOurWorker(process.pid, rec, () => ({ ...info, command: `node /opt/claude/cli.js --session-id ${id}` }))).toBe(true)
-    expect(pidIsOurWorker(process.pid, rec, () => ({ ...info, command: `vim -p "claude --session-id ${id}"` }))).toBe(false)
+  it('reads Linux stat field 22 with an injected boot id and executable reader', () => {
+    const stat = `42 (worker with ) in name) S ${Array(18).fill('0').join(' ')} 987654 0`
+    expect(probeProcess(42, { platform: 'linux', readFile: file => file.endsWith('/stat') ? stat : 'boot-123\n',
+      readLink: () => '/usr/local/bin/codex', exec: () => { throw new Error('unexpected') } }))
+      .toEqual({ startTime: 'linux:boot-123:987654', executable: 'codex' })
   })
 
-  it('uses cwd only for the exact checked-out worker branch', async () => {
-    const { repo } = realRepo()
-    const prepared = await prepareWorktree(repo, 'cwd-worker')
-    const rec = { startedAt: 1_000_000, tag: 'cwd-worker', dir: prepared.dir, branch: prepared.branch, lead: 'rohanz' }
-    const probe = () => ({ start: 1_001_000, command: 'claude -p task', cwd: prepared.dir })
-    expect(pidIsOurWorker(process.pid, rec, probe)).toBe(true)
-    expect(pidIsOurWorker(process.pid, { ...rec, branch: 'room/another' }, probe)).toBe(false)
-    expect(pidIsOurWorker(process.pid, rec, () => ({ ...probe(), cwd: repo }))).toBe(false)
-  })
-
-  it('a pid this session did not spawn is signalled only if it started with the worker record and runs a worker command', () => {
-    const rec = { startedAt: 1_000_000, tag: 'money', dir: '/repo/.room/workers/money', lead: 'rohanz' }
-    const me = process.pid // alive; the probe decides the rest
-    expect(pidIsOurWorker(-1, rec)).toBe(false)
-    expect(pidIsOurWorker(0, rec)).toBe(false)
-    expect(pidIsOurWorker(me, rec, () => ({ start: 1_002_000, command: 'claude -p task', env: { ROOM_TAG: 'money', ROOM_LEAD: 'rohanz' } }))).toBe(true)
-    expect(pidIsOurWorker(me, rec, () => ({ start: 1_002_000, command: '/usr/local/bin/codex exec -s workspace-write', env: { ROOM_TAG: 'money', ROOM_LEAD: 'rohanz' } }))).toBe(true)
-    expect(pidIsOurWorker(me, rec, () => ({ start: 1_002_000, command: 'claude -p task', env: { ROOM_TAG: 'money', ROOM_LEAD: 'someone-else' } }))).toBe(false)
-    // recycled pid: right command line, wrong start time
-    expect(pidIsOurWorker(me, rec, () => ({ start: 1_020_000, command: 'claude -p worker money' }))).toBe(false)
-    // right time, unrelated process
-    expect(pidIsOurWorker(me, rec, () => ({ start: 1_001_000, command: 'vim README.md' }))).toBe(false)
-    // a worker command that does not mention this worker
-    expect(pidIsOurWorker(me, rec, () => ({ start: 1_001_000, command: 'claude -p something else' }))).toBe(false)
-    expect(pidIsOurWorker(me, rec, () => undefined)).toBe(false)
-    // pid 1 is alive but a real probe will never match a worker record
-    expect(pidIsOurWorker(1, rec)).toBe(false)
+  it('reads macOS lstart to the second with an injected boot-time guard', () => {
+    expect(probeProcess(42, { platform: 'darwin', readFile: () => { throw new Error('unexpected') }, readLink: () => '',
+      exec: (file, args) => file === 'sysctl' ? '{ sec = 1234567, usec = 0 }' : args[1] === 'lstart=' ? 'Mon Sep 21 12:34:56 2026' : '/opt/homebrew/bin/node' }))
+      .toEqual({ startTime: `darwin:1234567:${Date.parse('Mon Sep 21 12:34:56 2026') / 1000}`, executable: 'node' })
   })
 
   it('dismissing a worker whose process is unknown and old leaves the pid alone and keeps its status', async () => {
@@ -882,6 +861,28 @@ describe('worker safety', () => {
     expect(a.workers.get('unknown')?.dismissedAt).toBeUndefined()
     expect(a.workers.get('unknown')?.stopReason).toBeUndefined()
     expect(a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && m.text === `could not verify unknown's process (pid ${process.pid}); left running, not stopped`)).toBe(true)
+  })
+
+  it.each(['done', 'failed', 'dismissed'] as const)('shutdown reports a live %s worker with unknown ownership', async status => {
+    const { a } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setWorker({ id: 'finished-unknown', tag: 'finished', name: 'rohanz+finished', host: 'claude', task: 'x', dir, branch: 'room/finished', pid: process.pid, startedAt: Date.now(), status, lead: 'rohanz' })
+    let session: Session | null = fakeSession(a, lead)
+    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => undefined, leave: async () => {} })
+    await tools.shutdown()
+    expect(a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && m.text === `could not verify finished's process (pid ${process.pid}); left running, not stopped`)).toBe(true)
+    expect(a.workers.get('finished')?.status).toBe(status)
+  })
+
+  it('leave includes a finished worker with a live, unverifiable pid in its process checks', async () => {
+    const { a } = pair()
+    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setWorker({ id: 'finished-unknown', tag: 'finished', name: 'rohanz+finished', host: 'claude', task: 'x', dir, branch: 'room/finished', pid: process.pid, startedAt: Date.now(), status: 'done', lead: 'rohanz' })
+    let session: Session | null = fakeSession(a, lead)
+    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => undefined, leave: async () => {} })
+    expect(await tools.call('room_leave', {})).toContain('1 worker(s) still running: finished')
+    expect(await tools.call('room_leave', { force: true })).toContain(`could not verify finished's process (pid ${process.pid}); left running, not stopped`)
+    expect(a.workers.get('finished')?.status).toBe('done')
   })
 
   it('room_leave refuses while workers run, force dismisses them; shutdown dismisses too', async () => {
@@ -1223,10 +1224,10 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     // a stand-in for the worker process that outlived the lead: its own process group, so the signal cannot reach the test runner
     const child = spawn('sleep', ['100'], { detached: true, stdio: 'ignore' }); child.unref()
     const exited = new Promise<void>(r => child.once('exit', () => r()))
-    // a record from before the restart: no entry in procs, but ps says this pid is the worker's claude
-    a.setWorker({ tag: 'money', name: 'rohanz+money', host: 'claude', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b', task: 'x', dir: '/repo/.room/workers/money', branch: 'room/money', pid: child.pid!, startedAt, status: 'done', lead: 'rohanz', gen: 1, summary: 'done but alive' })
+    // a record from before the restart: no process handle, but the OS start identity still matches
+    a.setWorker({ tag: 'money', name: 'rohanz+money', host: 'claude', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b', task: 'x', dir: '/repo/.room/workers/money', branch: 'room/money', pid: child.pid!, processStartTime: 'test:worker:1', startedAt, status: 'done', lead: 'rohanz', gen: 1, summary: 'done but alive' })
     let ls: Session | null = fakeSession(a, lead)
-    const probe = () => ({ start: startedAt, command: 'claude -p "task" --session-id e1be43be-03a3-45b8-b267-cd48780e2a0b' })
+    const probe = () => ({ startTime: 'test:worker:1', executable: 'claude' })
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe })
     expect(await tools.call('room_leave', {})).toContain('still running: money')
     expect(await tools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('done but its process is still alive')

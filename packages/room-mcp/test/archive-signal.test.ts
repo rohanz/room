@@ -5,6 +5,44 @@ import path from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { materializeGitTree } from '../src/tools/files.js'
 
+const pipeFault = vi.hoisted(() => ({ code: '' }))
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return {
+    ...actual,
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
+      const child = actual.spawn(...args)
+      if (args[0] === 'tar' && pipeFault.code) {
+        const code = pipeFault.code
+        process.nextTick(() => child.stdin?.emit('error', Object.assign(new Error('injected pipe disconnect'), { code })))
+      }
+      return child
+    },
+  }
+})
+
+it.each([0, 1])('decides an ENOTCONN pipe error by tar exit %i', async tarCode => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-archive-enotconn-'))
+  const bin = path.join(dir, 'bin'), repo = path.join(dir, 'repo'), destination = path.join(dir, 'out')
+  fs.mkdirSync(bin); fs.mkdirSync(repo); fs.mkdirSync(destination)
+  fs.writeFileSync(path.join(bin, 'tar'), `#!/bin/sh\nsleep 0.05\nexit ${tarCode}\n`, { mode: 0o755 })
+  execFileSync('git', ['init', '-q', repo])
+  fs.writeFileSync(path.join(repo, 'file.txt'), 'content')
+  execFileSync('git', ['-C', repo, 'add', 'file.txt'])
+  execFileSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'fixture'])
+  const ref = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+  vi.stubEnv('PATH', `${bin}:${process.env.PATH}`)
+  pipeFault.code = 'ENOTCONN'
+  try {
+    if (tarCode === 0) await expect(materializeGitTree(repo, ref, destination)).resolves.toBeUndefined()
+    else await expect(materializeGitTree(repo, ref, destination)).rejects.toThrow(/could not materialize/)
+  } finally {
+    pipeFault.code = ''
+    vi.unstubAllEnvs()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 it('contains an early tar exit while git archive is piping', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-archive-signal-'))
   const bin = path.join(dir, 'bin'), repo = path.join(dir, 'repo'), destination = path.join(dir, 'out')

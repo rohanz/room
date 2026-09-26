@@ -7,12 +7,12 @@ import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 
 describe('resumed worker process identity', () => {
-  it('recognizes a Codex resume command by its retained host session id', () => {
+  it('recognizes a Codex process by its OS start identity after resume', () => {
     const startedAt = Date.now()
     const sessionId = '550e8400-e29b-41d4-a716-446655440000'
-    const worker = { startedAt, tag: 'misc', dir: '/tmp/room/misc', hostSessionId: sessionId, name: 'rohanz+misc', lead: 'rohanz', host: 'codex', task: 'continue', branch: 'room/misc', pid: process.pid, status: 'running' } as Worker
+    const worker = { startedAt, processStartTime: 'test:resume:1', tag: 'misc', dir: '/tmp/room/misc', hostSessionId: sessionId, name: 'rohanz+misc', lead: 'rohanz', host: 'codex', task: 'continue', branch: 'room/misc', pid: process.pid, status: 'running' } as Worker
     const alive = pidIsOurWorker(process.pid, worker,
-      () => ({ start: startedAt, command: `codex exec resume ${sessionId} -c sandbox_mode=workspace-write --json Continue` }))
+      () => ({ startTime: worker.processStartTime, executable: 'codex' }))
     expect(alive).toBe(true)
     expect(workerLine({ worker, processGone: !alive, changedCount: 0, now: startedAt })[0]).not.toContain('stopped while no session')
   })

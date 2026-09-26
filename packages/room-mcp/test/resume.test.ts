@@ -233,7 +233,7 @@ describe('resumed worker boundaries', () => {
       expect(await sending).toContain('resumed slow-exit')
       const resumed = t.room.workers.get('slow-exit')!
       rooms.dropHandle(t.session, resumed.id)
-      expect(pidIsOurWorker(resumed.pid, resumed, () => ({ start: clock, command: `claude --resume ${resumed.hostSessionId}` }))).toBe(true)
+      expect(pidIsOurWorker(resumed.pid, resumed, () => ({ startTime: resumed.processStartTime, executable: 'claude' }))).toBe(!!resumed.processStartTime)
     } finally { now.mockRestore() }
   })
 

@@ -179,13 +179,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             isWorker, token: s.local ? undefined : s.token, claudeChannel: config.claudeChannel,
             usedPorts, spawner: ctx.spawner, log: state.log, at: now },
           { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, sessionId: hostSessionId }, launchLease,
-          ({ proc, port, nice, startedAt }) => {
+          ({ proc, port, nice, startedAt, processStartTime }) => {
             const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}),
               ...(hostSessionId ? { hostSessionId } : {}), budget: { threads, memGb, nice }, port,
               share: effectiveShare, ...(link.length ? { link } : {}), task, dir, branch,
               ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}),
               ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid,
-              startedAt, status: 'running', lead: s.me.name, gen }
+              startedAt, ...(processStartTime ? { processStartTime } : {}), status: 'running', lead: s.me.name, gen }
             s.room.setWorker(w)
             return true
           }, (sessionId, proc) => {
@@ -256,14 +256,15 @@ export function install(state: HandlerState): void {
     }
   const runningWorkers = (s: Session): { s: Session; w: Worker }[] => {
       const out: { s: Session; w: Worker }[] = []
-      for (const sess of [s, ...rooms.all().filter(x => x !== s)]) for (const w of myWorkers(sess)) if (w.status === 'running' || workerAlive(sess, w)) out.push({ s: sess, w })
+      for (const sess of [s, ...rooms.all().filter(x => x !== s)]) for (const w of myWorkers(sess)) if (w.status === 'running' || pidAlive(w.pid) || workerAlive(sess, w)) out.push({ s: sess, w })
       return out
     }
   const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason']): Promise<string> => {
       const proc = rooms.handle(s, w.id)
       if (!proc) {
         const processState = await workerRealState(s.dir, w, { process: true, probe: ctx.probe })
-        if (processState.process !== 'ours' && pidAlive(w.pid)) {
+        if (processState.process === 'not-ours' && pidAlive(w.pid)) return `pid ${w.pid} belongs to another process; not signalled`
+        if (processState.process === 'unknown' && pidAlive(w.pid)) {
           const message = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
           s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: 'interrupt', text: message })
           return message

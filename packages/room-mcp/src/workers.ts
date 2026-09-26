@@ -620,113 +620,61 @@ export function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
 }
 
-export interface ProcessInfo { start?: number; command?: string; args?: string[]; env?: Record<string, string>; cwd?: string }
-/** Process identity from ps plus the environment/cwd when the host permits reading them. */
-function probeProcess(pid: number): ProcessInfo | undefined {
+export interface ProcessInfo { startTime?: string; executable?: string }
+export interface ProcessReaders {
+  platform: NodeJS.Platform
+  readFile(file: string): string
+  readLink(file: string): string
+  exec(file: string, args: string[]): string
+}
+const systemProcessReaders: ProcessReaders = {
+  platform: process.platform,
+  readFile: file => fs.readFileSync(file, 'utf8'),
+  readLink: file => fs.readlinkSync(file),
+  exec: (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }),
+}
+
+/** Read the kernel's process birth marker and executable, without inspecting argv or environment. */
+export function probeProcess(pid: number, readers: ProcessReaders = systemProcessReaders): ProcessInfo | undefined {
   if (!pid || pid <= 0) return undefined
   try {
-    const start = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim()
-    const command = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim()
-    const t = Date.parse(start)
-    const info: ProcessInfo = { ...(Number.isFinite(t) ? { start: t } : {}), ...(command ? { command } : {}) }
-    if (process.platform === 'linux') {
-      try { info.args = fs.readFileSync(`/proc/${pid}/cmdline`).toString('utf8').split('\0').filter(Boolean) } catch { /* inaccessible */ }
-      try {
-        info.env = Object.fromEntries(fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').filter(Boolean).map(entry => {
-          const equal = entry.indexOf('=')
-          return [entry.slice(0, equal), entry.slice(equal + 1)]
-        }))
-      } catch { /* another user's process, or it exited */ }
-      try { info.cwd = fs.realpathSync(`/proc/${pid}/cwd`) } catch { /* unavailable */ }
-    } else if (process.platform === 'darwin') {
-      try {
-        const expanded = execFileSync('ps', ['eww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 })
-        const env: Record<string, string> = {}
-        const environmentText = expanded.startsWith(command) ? expanded.slice(command.length) : ''
-        for (const match of environmentText.matchAll(/(?:^|\s)(ROOM_TAG|ROOM_LEAD|ROOM_WORKER_ID)=([^\s]+)/g)) env[match[1]] = match[2]
-        info.env = env
-      } catch { /* environment unavailable */ }
-      try {
-        const cwd = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout: 3000 }).split('\n').find(line => line.startsWith('n'))
-        if (cwd) info.cwd = cwd.slice(1)
-      } catch { /* cwd unavailable */ }
+    if (readers.platform === 'linux') {
+      const stat = readers.readFile(`/proc/${pid}/stat`)
+      const close = stat.lastIndexOf(')')
+      if (close < 0) return undefined
+      const startTicks = stat.slice(close + 1).trim().split(/\s+/)[19]
+      if (!/^\d+$/.test(startTicks ?? '')) return undefined
+      const bootId = readers.readFile('/proc/sys/kernel/random/boot_id').trim()
+      if (!bootId) return undefined
+      let executable: string | undefined
+      try { executable = path.basename(readers.readLink(`/proc/${pid}/exe`)) } catch { /* start time is still useful to record */ }
+      return { startTime: `linux:${bootId}:${startTicks}`, executable }
     }
-    return info
-  } catch { return undefined }
+    if (readers.platform === 'darwin') {
+      const lstart = readers.exec('ps', ['-o', 'lstart=', '-p', String(pid)]).trim()
+      const startSeconds = Date.parse(lstart) / 1000
+      if (!Number.isInteger(startSeconds)) return undefined
+      const boot = readers.exec('sysctl', ['-n', 'kern.boottime']).match(/sec\s*=\s*(\d+)/)?.[1]
+      if (!boot) return undefined
+      let executable: string | undefined
+      try { executable = path.basename(readers.exec('ps', ['-o', 'comm=', '-p', String(pid)]).trim()) } catch { /* start time is still useful to record */ }
+      return { startTime: `darwin:${boot}:${startSeconds}`, executable }
+    }
+  } catch { /* process exited or the OS did not allow the read */ }
+  return undefined
 }
 
-/**
- * May this session signal `pid` as this worker? Only when it is alive, started within 5 s of the recorded
- * spawn, and its exact host session argument, Room environment, or exact worktree cwd matches.
- * A recycled pid after a lead restart fails at least one of these.
- */
-type WorkerIdentity = { id?: string; startedAt: number; tag: string; dir: string; branch?: string; lead?: string; hostSessionId?: string }
+type WorkerIdentity = Pick<Worker, 'processStartTime' | 'host'>
 export type ProcessOwnership = 'ours' | 'not-ours' | 'unknown'
-
-/** A flattened macOS command can prove an argument only outside quoted prompt text. */
-function commandTokens(command: string): { value: string; quoted: boolean }[] | undefined {
-  const tokens: { value: string; quoted: boolean }[] = []
-  let value = '', quote = '', quoted = false, active = false
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i]
-    if (ch === '\\' && i + 1 < command.length) { value += command[++i]; active = true; continue }
-    if (quote) { if (ch === quote) quote = ''; else value += ch; continue }
-    if (ch === '"' || ch === "'") { quote = ch; quoted = true; active = true; continue }
-    if (/\s/.test(ch)) { if (active) tokens.push({ value, quoted }); value = ''; quoted = active = false; continue }
-    value += ch; active = true
-  }
-  if (quote) return undefined
-  if (active) tokens.push({ value, quoted })
-  return tokens
-}
-
-function hostExecutable(args: string[]): boolean {
-  const exe = path.basename(args[0] ?? '')
-  if (exe === 'claude' || exe === 'codex') return true
-  if (exe !== 'node' && exe !== 'node.exe') return false
-  const entry = (args[1] ?? '').replaceAll('\\', '/')
-  return /(?:^|\/)(?:claude|codex)$/.test(entry)
-    || /(?:^|\/)claude(?:-code)?\/cli\.(?:js|mjs)$/.test(entry)
-    || /(?:^|\/)@anthropic-ai\/claude-code\/cli\.(?:js|mjs)$/.test(entry)
-    || /(?:^|\/)@openai\/codex\/bin\/codex\.(?:js|mjs)$/.test(entry)
-}
-
-function sessionArgument(args: string[], session: string, quoted: boolean[], exactArgv: boolean): boolean {
-  const promptAt = args.indexOf('-p')
-  const promptBoundary = exactArgv || promptAt < 0 || quoted[promptAt + 1]
-  for (let i = 1; i < args.length; i++) {
-    if (quoted[i] || quoted[i + 1]) continue
-    if (args[i] === '--session-id' && args[i + 1] === session && (i < promptAt || promptBoundary)) return true
-    if (args[i] === '--resume' && args[i + 1] === session && (promptAt < 0 || i < promptAt)) return true
-    if (args[i - 1] === 'exec' && args[i] === 'resume' && args[i + 1] === session) return true
-  }
-  return false
-}
 
 export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: (pid: number) => ProcessInfo | undefined = probeProcess): ProcessOwnership {
   if (!pidAlive(pid)) return 'not-ours'
+  if (!w.processStartTime) return 'unknown'
   const info = probe(pid)
-  if (!info?.start || (!info.command && !info.args?.length)) return 'unknown'
-  if (Math.abs(info.start - w.startedAt) > 5000) return 'not-ours'
-  const tokens = info.args ? info.args.map(value => ({ value, quoted: false })) : commandTokens(info.command ?? '')
-  if (!tokens?.length) return 'unknown'
-  const args = tokens.map(t => t.value)
-  if (!hostExecutable(args)) return 'not-ours'
-  // A present generation id is stronger than an old session id or reused tag.
-  if (info.env?.ROOM_WORKER_ID && w.id && info.env.ROOM_WORKER_ID !== w.id) return 'not-ours'
-  if (w.id && info.env?.ROOM_WORKER_ID === w.id) return 'ours'
-  if (w.hostSessionId && sessionArgument(args, w.hostSessionId, tokens.map(t => t.quoted), !!info.args)) return 'ours'
-  if (w.lead && info.env?.ROOM_TAG === w.tag && info.env.ROOM_LEAD === w.lead) return 'ours'
-  if (info.cwd && fs.existsSync(path.join(w.dir, '.git'))) {
-    try {
-      const root = fs.realpathSync(w.dir)
-      if (fs.realpathSync(info.cwd) !== root) return 'unknown'
-      const top = execFileSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-      const branch = execFileSync('git', ['-C', root, 'branch', '--show-current'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-      if (fs.realpathSync(top) === root && branch === (w.branch ?? `room/${w.tag}`)) return 'ours'
-    } catch { /* inaccessible or no longer the worker worktree */ }
-  }
-  return 'unknown'
+  if (!info?.startTime || !info.executable) return 'unknown'
+  if (info.startTime !== w.processStartTime) return 'not-ours'
+  const executable = path.basename(info.executable)
+  return executable === w.host || executable === 'node' ? 'ours' : 'not-ours'
 }
 
 export function pidIsOurWorker(pid: number, w: WorkerIdentity, probe: (pid: number) => ProcessInfo | undefined = probeProcess): boolean {

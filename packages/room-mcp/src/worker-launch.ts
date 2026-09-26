@@ -4,7 +4,7 @@ import type { Session } from './session.js'
 import type { Rooms } from './registry.js'
 import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
-import { defaultSpawner, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
+import { defaultSpawner, probeProcess, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type SpawnedProcess, type Spawner, type WorkerHost } from './workers.js'
 
 export class WorkerLaunchError extends Error {
   constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string) { super(message) }
@@ -33,6 +33,7 @@ type Command =
 export interface WorkerLaunchResult {
   proc: SpawnedProcess; port: number; env: Record<string, string>; nice: number; logFile: string
   portChanged: boolean; startedAt: number
+  processStartTime?: string
 }
 
 /** The caller owns the room record transition; this routine owns every process resource and callback. */
@@ -75,7 +76,8 @@ export function launchWorkerProcess(policy: Policy, command: Command, lease: Wor
     bindWorkerPortReservation(proc, reservation)
     passed = true
     rooms.setHandle(s, id, proc)
-    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, startedAt: (policy.at ?? Date.now)() }
+    const result = { proc, port, env, nice: priority.nice, logFile, portChanged,
+      startedAt: (policy.at ?? Date.now)(), processStartTime: probeProcess(proc.pid)?.startTime }
     if (!onStarted(result)) {
       rooms.dropHandle(s, id, proc)
       try { proc.kill() } catch (e) { policy.log(`worker launch: could not stop stale ${tag}: ${e}`) }

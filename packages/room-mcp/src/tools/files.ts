@@ -353,6 +353,8 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
   }
 }
 
+const CLOSED_ARCHIVE_PIPE_ERRORS = new Set(['EPIPE', 'ENOTCONN', 'ECONNRESET'])
+
 /** Extract one verified commit without placing a clone path or ref in a shell program. */
 export async function materializeGitTree(cloneDir: string, ref: string, destination: string): Promise<void> {
   if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`)
@@ -385,7 +387,7 @@ export async function materializeGitTree(cloneDir: string, ref: string, destinat
     extract.stderr.setEncoding('utf8'); extract.stderr.on('data', chunk => { extractError += String(chunk).slice(0, 4096) })
     archive.on('error', fail); extract.on('error', fail)
     const streamError = (error: NodeJS.ErrnoException) => {
-      if (error.code !== 'EPIPE') { fail(error); return }
+      if (!CLOSED_ARCHIVE_PIPE_ERRORS.has(error.code ?? '')) { fail(error); return }
       archive.stdout.unpipe(extract.stdin)
       archive.stdout.resume()
     }
@@ -399,7 +401,6 @@ export async function materializeGitTree(cloneDir: string, ref: string, destinat
       extractCode = code
       archive.stdout.unpipe(extract.stdin)
       archive.stdout.resume()
-      extract.stdin.destroy()
       finish()
     })
     archive.stdout.pipe(extract.stdin)

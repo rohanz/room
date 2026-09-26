@@ -396,8 +396,8 @@ export class Rooms {
           share: w.share ?? 'intent', gen: w.gen ?? 1, budget, server, isWorker,
           token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, log, at },
         { mode: 'resume', message, sessionId: w.hostSessionId!, oldPort: w.port }, launchLease,
-        ({ proc, port, startedAt }) => !!s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running',
-          startedAt, summary: undefined, exitCode: undefined, finishedAt: undefined,
+        ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running',
+          startedAt, processStartTime, summary: undefined, exitCode: undefined, finishedAt: undefined,
           dismissedAt: undefined, stopReason: undefined }, id)) }
         catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
