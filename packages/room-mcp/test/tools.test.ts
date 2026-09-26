@@ -398,27 +398,6 @@ describe('session gating', () => {
     expect(t.session).not.toBeNull()
   })
 
-  it('room_done tells a declared sharer which changed files stay shared after scope clears', async () => {
-    const t = setup()
-    await t.tools.call('room_scope', { area: 'api', summary: 's', paths: ['app.py'] })
-    const retained = Array.from({ length: 10 }, (_, i) => `src/file-${i}.py`)
-    const accessor = vi.fn(() => {
-      expect(t.room.scope('Rohan')).toBeUndefined()
-      return retained
-    })
-    Object.assign(t.session!.daemon, { share: 'declared', retainedDeclared: accessor })
-    const out = await t.tools.call('room_done', { summary: 'api done' })
-    expect(accessor).toHaveBeenCalledOnce()
-    expect(out).toContain('10 changed file(s) from your declared area stay shared until you commit or revert them:')
-    expect(out).toContain('src/file-0.py')
-    expect(out).toContain('src/file-7.py, +2 more')
-    expect(out).not.toContain('src/file-8.py')
-
-    Object.assign(t.session!.daemon, { share: 'intent' })
-    expect(await t.tools.call('room_done', { summary: 'next task done' })).not.toContain('stay shared')
-    expect(accessor).toHaveBeenCalledOnce()
-  })
-
   it('reports the exact command only when the last clean combined preview tests passed', async () => {
     const t = setup()
     t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))

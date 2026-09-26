@@ -46,10 +46,12 @@ if it refuses, stop and ask for help; never merge another branch into this one.
 On the first join to each server from a worktree, the agent relays one disclosure, including
 when you are alone or the destination came from an environment variable:
 
-> This clone now shares {sharing level} with members of {repo} on {server}; to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.
+Full-level example:
 
-The sharing level is stated plainly: “the full text of files you change”, “only the files in
-your declared area”, or “only your plans, no file text”.
+> This clone now shares the full text of files you change with members of {repo} on {server}; to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.
+
+The sharing level is stated plainly: “the full text of files you change”, “files in your
+declared area and changed files declared earlier”, or “only your plans, no file text”.
 
 When a second agent is tagged automatically (for example, `rohanz+claude`), that tag sticks
 to the clone across sessions so an offline overlay cannot be mistaken for another clone's work.
@@ -61,10 +63,11 @@ an area only for the person who changed that file.
 **Sharing levels.** By default the room sees the full text of files you change (`full`).
 `ROOM_SHARE=declared` shares text only under the paths you declared in your scope, `intent`
 shares plans and claims with no file text; `room_share` changes it live and a server can set
-a ceiling. For a first trial, keep the default `full`: finished uncommitted output at `declared`
-becomes unreadable after `room_done` and is withdrawn on restart. Reading someone who shares less
-degrades to a one-line answer rather than an error. An unrecognised sharing level falls back to `intent`
-and reports the invalid setting; it never widens sharing to full text.
+a ceiling. At `declared`, changed files you declared stay shared while they differ from your base,
+including after `room_done` and daemon restart. “Share plans only” withdraws their file text.
+Reading someone who shares less degrades to a one-line answer rather than an error.
+An unrecognised sharing level falls back to `intent` and reports the invalid setting;
+it never widens sharing to full text.
 
 **What reaches an agent.** Routine events (scopes, releases, change notes) stay in the feed;
 an agent's inbox only gets what is addressed to it, conflicts on its claims, and interrupts,

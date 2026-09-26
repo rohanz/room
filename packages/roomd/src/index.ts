@@ -173,6 +173,8 @@ export interface Roomd {
   skipped(): Skipped
   /** Changed declared files still shared after their scope ends. */
   retainedDeclared(): string[]
+  /** Refresh HEAD and publish current disk changes before ending a declared scope. */
+  publishCurrent(): Promise<void>
 }
 
 export class RoomdError extends Error {
@@ -456,6 +458,13 @@ class Daemon implements Roomd {
   }
 
   retainedDeclared(): string[] { return [...this.retainedDeclaredPaths].sort() }
+
+  publishCurrent(): Promise<void> {
+    return this.enqueue(async () => {
+      await this.pollHead()
+      await this.seedLocalOverlay()
+    })
+  }
 
   private skipSummary(): string {
     const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size + this.skips.share.size
