@@ -127,24 +127,35 @@ it('nests a worker lead under its human group once', async () => {
   expect(groups.workerGroups[0].nested).toMatchObject([{ lead: 'rohanz+lead', active: [{ name: 'rohanz+cat' }] }])
 })
 
-it('keeps running and failed worker details while compacting finished history', async () => {
+it('shows current running, done, and failed workers by default and labels retired history precisely', async () => {
   const { workerLines } = await import('./views.js')
   const worker: Worker = { name: 'lead+run', tag: 'run', lead: 'lead', host: 'codex', task: 'task', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'running' }
-  const retired = { name: 'lead+old', tag: 'old', lead: 'lead', host: 'codex' as const, model: 'actual-model', task: 'task', summary: 'shipped', files: ['a.ts'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' as const }
-  const inputs = (['running', 'failed', 'done', 'dismissed'] as const).map(status => ({ worker: { ...worker, tag: status, status }, changedCount: 0, now: 10 }))
-  const compact = workerLines(inputs, { retiredWorkers: [retired] }).join('\n')
+  const retired = { name: 'lead+old', tag: 'old', lead: 'lead', host: 'codex' as const, model: 'actual-model', task: 'task', summary: 'shipped', files: ['a.ts'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' as const, disposition: 'collected' as const }
+  const history = [retired, { ...retired, name: 'lead+discarded', tag: 'discarded', disposition: 'discarded' as const }, { ...retired, name: 'lead+stopped', tag: 'stopped', disposition: 'stopped' as const, stopReason: 'lead-session-ended' as const }]
+  const inputs = [
+    ...(['running', 'failed', 'done'] as const).map(status => ({ worker: { ...worker, tag: status, status }, changedCount: 0, now: 10 })),
+    { worker: { ...worker, tag: 'discarded-live', status: 'dismissed' as const, dismissedAt: 5 }, changedCount: 0, now: 10 },
+    { worker: { ...worker, tag: 'stopped-live', status: 'dismissed' as const, stopReason: 'lead-session-ended' as const }, changedCount: 0, now: 10 },
+  ]
+  const compact = workerLines(inputs, { retiredWorkers: history }).join('\n')
   expect(compact).toContain('running (codex, running')
   expect(compact).toContain('failed (codex, failed')
-  expect(compact).toContain('workers (2):')
-  expect(compact).toContain('finished: 2 (all=true lists them)')
-  expect(compact).not.toContain('done (codex')
+  expect(compact).toContain('done (codex, done')
+  expect(compact).toContain('workers (4):')
+  expect(compact).not.toContain('discarded-live')
+  expect(compact).toContain('stopped-live (codex, stopped when your last session ended; its partial work is in its worktree')
+  expect(compact).toContain('  retired: 3 (all=true lists them)')
   expect(compact).not.toContain('shipped')
-  const expanded = workerLines(inputs, { all: true, retiredWorkers: [retired] }).join('\n')
-  expect(expanded).toContain('done (codex, done')
-  expect(expanded).toContain('old (merged, actual-model): shipped · 60 files')
+  const expanded = workerLines(inputs, { all: true, retiredWorkers: history }).join('\n')
+  expect(expanded).toContain('workers (8):')
+  expect(expanded).toContain('discarded-live (codex, discarded')
+  expect(expanded).toContain('stopped-live (codex, stopped when your last session ended; its partial work is in its worktree')
+  expect(expanded).toContain('old (collected, actual-model): shipped · 60 files')
+  expect(expanded).toContain('discarded (discarded, actual-model)')
+  expect(expanded).toContain('stopped (stopped when your last session ended; its partial work is in its worktree, actual-model)')
   expect(expanded).not.toContain('all=true')
-  expect(workerLines([], { retiredWorkers: [retired] })).toEqual([])
-  expect(workerLines([], { all: true, retiredWorkers: [retired] })).toContain('workers (1):')
+  expect(workerLines([], { retiredWorkers: history })).toEqual(['workers (0):', '  retired: 3 (all=true lists them)'])
+  expect(workerLines([], { all: true, retiredWorkers: history })).toContain('workers (3):')
 })
 
 it('uses consistent activity wording at the action and worker thresholds', async () => {

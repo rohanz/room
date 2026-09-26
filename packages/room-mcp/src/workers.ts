@@ -863,6 +863,12 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
     } catch (restore) { throw new Error(`cleanup failed: ${(error as Error).message}; could not restore ${w.dir}: ${(restore as Error).message}; ${recoveryNote}`) }
     throw new Error(`cleanup failed: ${(error as Error).message}; reconstructed base at ${w.dir}; ${recoveryNote}`)
   }
+  cleanupWorkerLogs(leadDir, w)
+  return true
+}
+
+/** Remove a worker's local logs after either checkout cleanup or vanished-checkout pruning. */
+export function cleanupWorkerLogs(leadDir: string, w: Pick<Worker, 'dir' | 'tag'>): void {
   const parent = path.basename(path.dirname(w.dir)) === 'workers' && path.basename(path.dirname(path.dirname(w.dir))) === '.room'
     ? path.resolve(w.dir, '../../..') : leadDir
   for (const suffix of ['.log', '.mcp.log']) {
@@ -871,7 +877,6 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
   for (const dir of [path.join(parent, WORKERS_DIR), path.join(parent, '.room')]) {
     try { fs.rmdirSync(dir) } catch { /* another worker or a locked log keeps the directory */ }
   }
-  return true
 }
 
 /** One binary-capable snapshot against the fork, without modifying the worker's index. */

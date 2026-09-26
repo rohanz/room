@@ -279,6 +279,8 @@ export function workerLine({ worker: w, processGone = false, lastActive, changed
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120)
   const state = stoppedWithSession(w) ? STOPPED_WITH_SESSION
+    : w.stopReason ? `stopped (${w.stopReason})`
+    : w.dismissedAt !== undefined || w.status === 'dismissed' ? 'discarded'
     : w.status === 'running' && processGone ? STOPPED_UNWITNESSED
     : w.status === 'running' ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status
   return [
@@ -289,17 +291,17 @@ export function workerLine({ worker: w, processGone = false, lastActive, changed
 
 export function workerLines(inputs: readonly WorkerLineInput[], options: { all?: boolean; retiredWorkers?: readonly RetiredWorker[] } = {}): string[] {
   const retired = options.retiredWorkers ?? []
-  if (!inputs.length && (!options.all || !retired.length)) return []
-  const visible = inputs.filter(i => options.all || i.worker.stopReason || i.worker.status === 'running' || i.worker.status === 'failed')
-  const finished = inputs.length - visible.length
+  if (!inputs.length && !retired.length) return []
+  const visible = inputs.filter(i => options.all || !!i.worker.stopReason || (i.worker.dismissedAt === undefined && i.worker.status !== 'dismissed'))
   const out = [`workers (${visible.length + (options.all ? retired.length : 0)}):`, ...[...visible]
     .sort((a, b) => a.worker.startedAt - b.worker.startedAt)
     .flatMap(workerLine)]
   if (options.all) {
     for (const w of [...retired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
-      out.push(`  - ${w.tag} (${w.outcome}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ''}${w.model ? `, ${w.model}` : ''}): ${w.summary} · ${formatCount(w.fileCount, 'file')}`)
+      const state = w.disposition === 'stopped' ? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? 'reason unknown'})`) : w.disposition ?? w.outcome
+      out.push(`  - ${w.tag} (${state}${w.uncommitted ? ` with ${w.uncommitted} uncommitted files left in its worktree` : ''}${w.model ? `, ${w.model}` : ''}): ${w.summary} · ${formatCount(w.fileCount, 'file')}`)
     }
-  } else if (finished) out.push(`  finished: ${finished} (all=true lists them)`)
+  } else if (retired.length) out.push(`  retired: ${retired.length} (all=true lists them)`)
   return out
 }
 

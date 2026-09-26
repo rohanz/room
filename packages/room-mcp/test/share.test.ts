@@ -147,7 +147,7 @@ describe('reading someone who shares less than full', () => {
     const all = t.body(await t.tools.call('room_read', { diff: true,  person: 'Kieran' }))
     expect(all).toContain('+# k')
     expect(all).toContain('Kieran shares declared paths only')
-    expect(t.body(await t.tools.call('room_preview_merge', { person: 'Kieran' }))).toContain('touched by one side only')
+    expect(t.body(await t.tools.call('room_preview_merge', { person: 'Kieran' }))).toContain('only Kieran changed this file since its start')
   })
 
   it('full or an older client without the field reads as before', async () => {

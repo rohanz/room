@@ -312,6 +312,15 @@ describe('room_collect', () => {
     expect(git(lead, 'worktree', 'list', '--porcelain')).not.toContain(worker)
     expectRetired(t)
   })
+  it('removes both worker logs when discarding an already vanished worktree', async () => {
+    const t = setup()
+    for (const suffix of ['.log', '.mcp.log']) put(lead, `.room/workers/test${suffix}`, 'log')
+    fs.rmSync(worker, { recursive: true, force: true })
+    expect(await t.call({ tag: 'test', discard: true })).toContain('its worktree was already gone')
+    expect(fs.existsSync(path.join(lead, '.room/workers/test.log'))).toBe(false)
+    expect(fs.existsSync(path.join(lead, '.room/workers/test.mcp.log'))).toBe(false)
+    expect(t.s.room.retiredWorkers()[0].disposition).toBe('discarded')
+  })
   it('keeps unmerged branch commits when discarding a vanished worktree', async () => {
     const t = setup()
     seedPresence(t)
@@ -626,6 +635,7 @@ describe('room_collect', () => {
     expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
     expect(fs.existsSync(worker)).toBe(false); expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
     expect(fs.existsSync(path.join(lead, '.room'))).toBe(false)
+    expect(t.s.room.retiredWorkers()[0].disposition).toBe('collected')
   })
   it('applies ordinary changes but retains uncopied ignored artifacts and their worktree', async () => {
     const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)

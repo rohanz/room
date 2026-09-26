@@ -209,6 +209,7 @@ export class Rooms {
             name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
             task: w.task, summary: 'worktree was already gone', files: [], fileCount: 0,
             startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
+            disposition: w.stopReason ? 'stopped' : 'discarded', ...(w.stopReason ? { stopReason: w.stopReason } : {}),
           })
           continue
         }
@@ -231,6 +232,8 @@ export class Rooms {
           name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
           task: w.task, summary: w.summary ?? '', files, fileCount: files.length, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? done?.at ?? retiredAt, retiredAt, outcome,
+          disposition: w.stopReason ? 'stopped' : w.dismissedAt !== undefined || w.status === 'dismissed' ? 'discarded' : 'collected',
+          ...(w.stopReason ? { stopReason: w.stopReason } : {}),
           ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
         })
       } finally { this.unreserve(lock) }

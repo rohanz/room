@@ -210,8 +210,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`)
         spawnExplained.add(lead)
         if (carried || skippedCarry?.length) {
-          const count = carried?.paths?.length ?? carried?.count ?? 0
-          out.push(`carried your ${count} uncommitted change${count === 1 ? '' : 's'} into its worktree${carried ? ` (commit ${carried.commit.slice(0, 10)})` : ''}${skippedCarry?.length ? `; not carried: ${skippedCarry.map(({ path: p, reason }) => `${p} (${reason})`).join(', ')}` : ''}`)
+          const copied = carriedUntracked?.length ?? 0
+          const tracked = Math.max(0, (carried?.paths?.length ?? carried?.count ?? 0) - copied)
+          const parts = [
+            ...(tracked ? [`${tracked} tracked change${tracked === 1 ? '' : 's'} (commit ${carried!.commit.slice(0, 10)})`] : []),
+            ...(copied ? [`${copied} untracked file${copied === 1 ? '' : 's'} copied`] : []),
+          ]
+          out.push(`${parts.length ? `carried your uncommitted work into its worktree: ${parts.join(', ')}` : 'no uncommitted work carried'}${skippedCarry?.length ? `; not carried: ${skippedCarry.map(({ path: p, reason }) => `${p} (${reason})`).join(', ')}` : ''}`)
         } else if (created && !outside) {
           if (carryFailed && carryError) out.push(`note: carry failed: ${carryError}`)
           const pending = await uncommittedCount(lead.dir).catch(() => 0)

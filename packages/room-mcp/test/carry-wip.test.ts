@@ -130,7 +130,7 @@ function collected(reply: string): string[] {
 function previewed(reply: string): string[] {
   const out = new Set<string>()
   for (const line of reply.split('\n')) {
-    const only = /^touched by one side only (?:\(merge trivially\)|since .* \(merge trivially; the lead's carried edits are in that base\)): (.*)$/.exec(line)
+    const only = /^only .* changed (?:this file|these files) since (?:its start|their start)(?:, which already includes your carried edits)?: (.*)$/.exec(line)
     if (only) for (const item of only[1].split(', ')) out.add(item.replace(/ \([^)]*\)$/, ''))
     const both = /^both changed, merge cleanly: (.*)$/.exec(line)
     if (both) for (const item of both[1].split(', ')) out.add(item)
@@ -146,7 +146,7 @@ function expectCarried(dir: string, tag: string, baseSha: string | undefined) {
   expect(baseSha).toBe(sha)
   return sha
 }
-const CARRIED_LINE = /carried your (\d+) uncommitted changes? into its worktree \(commit ([0-9a-f]{10})\)/
+const CARRIED_LINE = /carried your uncommitted work into its worktree: (\d+) tracked changes? \(commit ([0-9a-f]{10})\)/
 
 describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () => {
   it('refuses to reuse a stale worker directory switched to another branch', async () => {
@@ -269,8 +269,9 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     // The reply names the carry, and no longer warns that the WIP is missing.
     const m = CARRIED_LINE.exec(reply)
     expect(m, reply).toBeTruthy()
-    expect(Number(m![1])).toBe(before.status.length)
+    expect(Number(m![1])).toBe(before.status.length - 2)
     expect(m![2]).toBe(sha.slice(0, 10))
+    expect(reply).toContain('2 untracked files copied')
     expect(reply).not.toMatch(/not in this worktree/)
     // The lead's repo, index and working tree are untouched.
     expect(leadState()).toEqual(before)
@@ -389,7 +390,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const preview = await t.call('room_preview_merge', { person: 'rohanz+six' })
     expect(preview).not.toContain('CONFLICTS')
     expect(preview).toContain('no conflicts')
-    expect(preview).toMatch(/touched by one side only since rohanz\+six's base .*lead's carried edits are in that base/)
+    expect(preview).toMatch(/only rohanz\+six changed this file since its start, which already includes your carried edits/)
     const files = previewed(preview)
     expect(files).toEqual(['keep.txt', 'shared.txt'])
     const reply = await t.call('room_collect', {})
@@ -405,7 +406,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     await t.finish('carried-line')
     const preview = await t.call('room_preview_merge', { person: 'rohanz+carried-line' })
     expect(preview).toMatch(/against rohanz\+carried-line's base/)
-    expect(preview).toMatch(/touched by one side only since rohanz\+carried-line's base [0-9a-f]{10} \(merge trivially; the lead's carried edits are in that base\): shared\.txt \(rohanz\+carried-line only\)/)
+    expect(preview).toMatch(/only rohanz\+carried-line changed this file since its start, which already includes your carried edits: shared\.txt \(rohanz\+carried-line only\)/)
   })
 
   it('(7) a clean lead behaves exactly as 0.10.2: base is HEAD, no carried commit, no carried line', async () => {

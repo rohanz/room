@@ -179,6 +179,9 @@ export interface RetiredWorker {
   finishedAt: number
   retiredAt: number
   outcome: 'merged' | 'dismissed' | 'clean'
+  /** How the worker left the room; older records have no disposition. */
+  disposition?: 'collected' | 'discarded' | 'stopped'
+  stopReason?: Worker['stopReason']
   /** Uncommitted/untracked files left on disk when explicitly dismissed. */
   uncommitted?: number
   /** Collected worktree retained for later explicit cleanup, usually because it has ignored output. */

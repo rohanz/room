@@ -77,15 +77,15 @@ it('reports the number of files actually carried from an untracked directory', a
   fs.mkdirSync(path.join(repo, 'newpkg'))
   for (let i = 0; i < 7; i++) fs.writeFileSync(path.join(repo, 'newpkg', `file${i}.txt`), String(i))
   const reply = await tool().call({})
-  expect(reply).toContain('carried your 7 uncommitted changes')
+  expect(reply).toContain('carried your uncommitted work into its worktree: 7 untracked files copied')
 })
 
 it('reports each spawn’s own carried file count', async () => {
   const t = tool()
   fs.writeFileSync(path.join(repo, 'first.txt'), 'one')
-  expect(await t.call({ tag: 'one' })).toContain('carried your 1 uncommitted change')
+  expect(await t.call({ tag: 'one' })).toContain('carried your uncommitted work into its worktree: 1 untracked file copied')
   fs.writeFileSync(path.join(repo, 'second.txt'), 'two')
-  expect(await t.call({ tag: 'two' })).toContain('carried your 2 uncommitted changes')
+  expect(await t.call({ tag: 'two' })).toContain('carried your uncommitted work into its worktree: 2 untracked files copied')
 })
 
 it('names a file excluded by the carry budget in the spawn reply', async () => {

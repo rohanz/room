@@ -550,10 +550,10 @@ describe('room_spawn / room_done / room_collect discard', () => {
     writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
     try {
       const first = await t.leadTools.call('room_spawn', { tag: 'wip1', task: 'a' })
-      expect(first).toMatch(/carried your 1 uncommitted change into its worktree \(commit [0-9a-f]{10}\)/)
+      expect(first).toContain('carried your uncommitted work into its worktree: 1 untracked file copied')
       expect(first).not.toContain('starts from HEAD')
       expect(t.a.workers.get('wip1')?.base).toBe(execFileSync('git', ['-C', join(dir, '.room', 'workers', 'wip1'), 'rev-parse', 'HEAD']).toString().trim())
-      expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).toMatch(/carried your 1 uncommitted change into its worktree/)
+      expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).toContain('carried your uncommitted work into its worktree: 1 untracked file copied')
       expect(t.a.workers.get('wip2')?.base).toBe(base)
       expect(t.a.workers.get('wip2')?.carriedUntracked?.map(x => x.path)).toEqual(['wip.txt'])
     } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
@@ -565,7 +565,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
       ...(tag === 'carried' ? { base: 'f'.repeat(40), carried: { count: 1, commit: 'f'.repeat(40) } } : { base, carryFailed: true }) }), 3)
     writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
     try {
-      expect(await t.leadTools.call('room_spawn', { tag: 'carried', task: 'first' })).toContain('carried your 1 uncommitted change')
+      expect(await t.leadTools.call('room_spawn', { tag: 'carried', task: 'first' })).toContain('carried your uncommitted work into its worktree: 1 tracked change')
       const first = await t.leadTools.call('room_spawn', { tag: 'fallback1', task: 'a' })
       expect(first).toContain('1 uncommitted change in your clone is not in this worktree, which starts from HEAD')
       expect(first).not.toContain('carried your')
@@ -648,7 +648,10 @@ describe('room_spawn / room_done / room_collect discard', () => {
     let ws: Session | null = fakeSession(local.b, workerId)
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
     await workerTools.call('room_done', { summary: 'cents done' })
-    expect(await leadTools.call('room_state', {})).toContain('finished: cents done')
+    const current = await leadTools.call('room_state', {})
+    expect(current).toContain('workers (1):')
+    expect(current).toContain('money (claude, done')
+    expect(current).toContain('finished: cents done')
     // its process (never exited in this test) is still alive: a plain leave refuses, force dismisses it
     expect(await leadTools.call('room_leave', {})).toContain('still running: money')
     expect(await leadTools.call('room_leave', { force: true })).toContain('left github.com/rohanz/x/main')
@@ -930,7 +933,9 @@ describe('worker safety', () => {
     expect(t2.a.messages().some(m => m.type === 'note' && m.text.includes('died'))).toBe(false)
     const session = fakeSession(t2.a, lead)
     const next = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
+    expect(await next.call('room_state', {})).toContain('workers (1):')
     expect(await next.call('room_state', {})).toContain('stopped when your last session ended; its partial work is in its worktree')
+    expect(await next.call('room_state', { all: true })).toContain('stopped when your last session ended; its partial work is in its worktree')
     await next.shutdown()
   })
 

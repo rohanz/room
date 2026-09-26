@@ -4,7 +4,7 @@ import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { cleanupWorker, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidPresent, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, type ProcessProbe } from '../workers.js'
+import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, signalWorker, pidPresent, workerOwnedPaths, workerOperationKey, terminateWorktreeProcesses, type ProcessProbe } from '../workers.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
 import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode } from './files.js'
@@ -130,6 +130,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           // A kept worktree that is no longer an owned Room worktree is refused, not forgotten: cleanupWorker decides.
           const missing = decideDiscard(await workerRealState(s.dir, w)) === 'prune'
           const missingDetail = missing ? await pruneMissingWorkerWorktree(s.dir, w) : undefined
+          if (missing) cleanupWorkerLogs(s.dir, w)
           const ignored = missing ? [] : await ignoredWorkerArtifacts(w)
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}${terminated.length ? '\nstopped processes: ' + terminated.join(', ') : ''}${cleanupErrors.length ? '\n' + cleanupErrors.join('; ') : ''}\nrepeat with force=true to delete them`
           if (!missing && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe }, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
@@ -138,7 +139,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (index >= 0) s.room.doc.transact(() => {
             archive.delete(index)
             const { keptWorktree: _keptWorktree, ...cleared } = r
-            archive.insert(index, [{ ...cleared, summary: 'discarded' }])
+            archive.insert(index, [{ ...cleared, summary: 'discarded', disposition: 'discarded' }])
           })
           return 'discarded ' + r.tag + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
         } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
@@ -203,6 +204,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               && w.branch === `room/${w.tag}`
             if (!verifiedProcess || !recordedPath || !(error instanceof Error) || !error.message.includes('is not an owned Room worktree')) throw error
           }
+          cleanupWorkerLogs(s.dir, w)
         }
         const ownedWorktree = decideDiscard(afterStop) === 'cleanup'
         const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w) : []
@@ -223,7 +225,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         s.room.retireParticipant(w.name, {
           name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}), task: w.task,
           summary: 'discarded', files: [], fileCount: 0, startedAt: w.startedAt,
-          finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
+          finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed', disposition: 'discarded',
         })
         return [...childResults, (decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
       } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
@@ -389,7 +391,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           s.room.retireParticipant(w.name, {
             name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
             task: w.task, summary, ...(keptWorktree ? { keptWorktree } : {}), files, fileCount: files.length,
-            startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
+            startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed', disposition: 'collected',
           })
         }
         if (state.workerAlive(s, w)) { out.push('kept ' + w.tag + ': clean exit not confirmed'); continue }
