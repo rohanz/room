@@ -439,13 +439,27 @@ class Daemon implements Roomd {
   async setShare(level: ShareLevel, scopePaths?: string[]): Promise<void> {
     level = clampShare(level, this.shareCeiling?.() ?? 'full')
     const before = this.share
-    if (before !== level) this.retainedDeclaredPaths.clear()
-    this.share = level
     // Paths passed here are a one-off override; `undefined` keeps following the declared scope.
     this.explicitScopePaths = scopePaths
-    this.setStatus(this.currentStatus())
+    this.setEffectiveShare(level)
     if (before !== level) this.log(`sharing ${before} -> ${level}`)
     await this.resharePaths()
+  }
+
+  /** Apply every effective boundary in one place, withdrawing existing text before any async reconcile. */
+  private setEffectiveShare(level: ShareLevel): void {
+    if (level !== this.share) this.retainedDeclaredPaths.clear()
+    this.share = level
+    this.setStatus(this.currentStatus())
+    const changed = new Set(this.roomDoc.changedPaths(this.name))
+    const base = this.roomDoc.baseOf(this.name)
+    const paths = new Set(changed)
+    if (base) for (const key of this.roomDoc.baseTexts.keys()) {
+      if (key.startsWith(`${base}:`)) paths.add(key.slice(base.length + 1))
+    }
+    for (const relpath of paths) {
+      if (!this.sharedAtCurrentLevel(relpath)) this.withhold(relpath, changed.has(relpath))
+    }
   }
 
   /** Paths that decide what 'declared' publishes: explicit ones, else the scope in the room doc. */
@@ -467,11 +481,11 @@ class Daemon implements Roomd {
   /** May this file's text (or its deletion) be published at the current level? */
   private isShared(relpath: string): boolean {
     const allowed = clampShare(this.share, this.shareCeiling?.() ?? 'full')
-    if (allowed !== this.share) {
-      this.retainedDeclaredPaths.clear()
-      this.share = allowed
-      this.setStatus(this.currentStatus())
-    }
+    if (allowed !== this.share) this.setEffectiveShare(allowed)
+    return this.sharedAtCurrentLevel(relpath)
+  }
+
+  private sharedAtCurrentLevel(relpath: string): boolean {
     if (this.share === 'full') return true
     if (this.share === 'intent') return false
     return this.retainedDeclaredPaths.has(relpath) || scopeCovers({ paths: this.scopePaths() }, relpath)
@@ -486,10 +500,18 @@ class Daemon implements Roomd {
   /** Withdraw a file from the room without touching disk; remembers it as withheld when it differs from base. */
   private withhold(relpath: string, changed: boolean): void {
     const had = this.roomDoc.overlayText(this.name, relpath) !== undefined || (this.roomDoc.deleted.get(this.name)?.has(relpath) ?? false)
-    if (had) {
-      this.roomDoc.doc.transact(() => { this.roomDoc.clearOverlay(this.name, relpath, this); this.roomDoc.unmarkDeleted(this.name, relpath, this) }, this)
-      this.log(`withdrew ${relpath} overlay (sharing ${this.share})`)
-    }
+    this.roomDoc.doc.transact(() => {
+      if (had) {
+        this.roomDoc.clearOverlay(this.name, relpath, this)
+        this.roomDoc.unmarkDeleted(this.name, relpath, this)
+      }
+      const base = this.roomDoc.baseOf(this.name)
+      if (base && ![...new Set([...this.roomDoc.overlays.keys(), ...this.roomDoc.deleted.keys()])]
+        .some(person => person !== this.name && this.roomDoc.baseOf(person) === base && this.roomDoc.changedPaths(person).includes(relpath))) {
+        this.roomDoc.baseTexts.delete(`${base}:${relpath}`)
+      }
+    }, this)
+    if (had) this.log(`withdrew ${relpath} overlay (sharing ${this.share})`)
     this.retainedDeclaredPaths.delete(relpath)
     if (changed) this.skips.share.add(relpath)
     else this.skips.share.delete(relpath)

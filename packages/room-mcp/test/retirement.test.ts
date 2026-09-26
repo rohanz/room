@@ -329,6 +329,26 @@ it('clears a dismissed dirty worker retained-path record during automatic retire
   r.close()
 })
 
+it('clears a retained-path record when repairing a legacy archived worker', async () => {
+  const { dir } = repo(), r = registry(dir)
+  const prepared = await prepareWorktree(dir, 'w', 'lead')
+  const w = { ...worker(prepared.dir), base: prepared.base }
+  const gitDir = execFileSync('git', ['-C', w.dir, 'rev-parse', '--absolute-git-dir']).toString().trim()
+  const retained = join(gitDir, 'room-retained-declared.json')
+  const record = { name: w.name, tag: w.tag, lead: w.lead, host: w.host, task: w.task,
+    summary: 'archived', files: [], fileCount: 0, startedAt: w.startedAt,
+    finishedAt: 2, retiredAt: 3, outcome: 'dismissed' as const }
+  r.room.retireParticipant(w.name, record)
+  r.room.setWorker(w)
+  r.room.setOverlay(w.name, 'a', 'ghost')
+  writeFileSync(retained, JSON.stringify({ server: 'ws://team', room: 'repo/main', participant: w.name, paths: ['a'] }))
+  await r.rooms.retireWorkers()
+  expect(r.room.workers.has(w.tag)).toBe(false)
+  expect(r.room.changedPaths(w.name)).toEqual([])
+  expect(existsSync(retained)).toBe(false)
+  r.close()
+})
+
 it('retains workers when the worktree, branch, fork commit or lead git state is unknown', async () => {
   const { dir } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w')

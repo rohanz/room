@@ -15,6 +15,7 @@ import type { CwdProcessLister, ProcessInfo, Spawner } from '../workers.js'
 import { decideShutdown, workerRealState } from '../worker-state.js'
 import type { ResolvedConfig } from '../config.js'
 import { hasCompany, type CompanyState } from '../company.js'
+import { repairRetired } from '../retire.js'
 
 export interface ToolDef {
   name: string
@@ -255,7 +256,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     if (!s) throw new NotJoined()
     for (const roomSession of new Set([s, ...rooms.all()])) {
       const present = new Set(Array.from(roomSession.awareness?.getStates().values() ?? []).flatMap(p => p.user?.name ? [p.user.name] : []))
-      roomSession.room.sweepRetiredWorkers(present)
+      repairRetired(roomSession, present)
     }
     return s
   }

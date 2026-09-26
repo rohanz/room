@@ -117,9 +117,9 @@ export class RoomDoc {
   workerById(id: string): Worker | undefined { for (const w of this.workers.values()) if (w.id === id) return w; return undefined }
   retiredWorkers(): RetiredWorker[] { return this.doc.getArray<RetiredWorker>('retiredWorkers').toArray() }
 
-  /** Repair older archives that left live records behind; this is document-only and cheap for room_state. */
-  sweepRetiredWorkers(present: ReadonlySet<string> = new Set()): number {
-    let swept = 0
+  /** Identify older archives that left live records behind. The caller performs retirement and checkout cleanup. */
+  legacyRetirements(present: ReadonlySet<string> = new Set()): { worker: Worker; record: RetiredWorker }[] {
+    const repairs: { worker: Worker; record: RetiredWorker }[] = []
     for (const retired of this.retiredWorkers()) {
       if (present.has(retired.name)) continue
       const currentWorkers = [...this.workers.values()].filter(w => w.name === retired.name)
@@ -128,10 +128,9 @@ export class RoomDoc {
       if (currentWorkers.length !== 1) continue
       const current = currentWorkers[0]
       if (current.startedAt !== retired.startedAt || current.lead !== retired.lead || current.tag !== retired.tag) continue
-      this.retireParticipant(retired.name, retired)
-      swept++
+      repairs.push({ worker: current, record: retired })
     }
-    return swept
+    return repairs
   }
 
   /** Remove coordination from a worker that can no longer act, including records from older releases. */

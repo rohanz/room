@@ -9,3 +9,8 @@ export function retireCollected(s: Session, w: Worker, record: RetiredWorker): v
   if (fs.existsSync(path.join(w.dir, '.git'))) fs.rmSync(path.join(worktreeGitDirSync(w.dir), 'room-retained-declared.json'), { force: true })
   s.room.retireParticipant(w.name, record)
 }
+
+/** Legacy archives can still contain live coordination; repair through normal retirement cleanup. */
+export function repairRetired(s: Session, present: ReadonlySet<string>): void {
+  for (const { worker, record } of s.room.legacyRetirements(present)) retireCollected(s, worker, record)
+}

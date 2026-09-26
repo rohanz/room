@@ -227,7 +227,7 @@ export async function trackServerShare(server: string, session: Session): Promis
       const max = shareMaxCache.get(server) ?? session.shareMax
       session.shareMax = max
       const level = clampShare(session.shareRequested, max)
-      if (session.daemon.share !== level) await session.daemon.setShare(level)
+      await session.daemon.setShare(level)
       if (shareMaxCache.get(server) === undefined || shareMaxCache.get(server) === max) break
     }
   } catch (error) {
@@ -251,7 +251,7 @@ export async function serverShareMax(server: string, fallback: ShareLevel = 'int
   await Promise.allSettled([...shareSessions.get(server) ?? []].map(async session => {
     session.shareMax = max
     const level = clampShare(session.shareRequested, max)
-    if (session.daemon.share !== level) await session.daemon.setShare(level)
+    await session.daemon.setShare(level)
   }))
   return max
 }

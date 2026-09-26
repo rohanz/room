@@ -169,6 +169,15 @@ it('clamps a session at registration when another session learned intent during 
   expect(session.daemon.share).toBe('intent')
 })
 
+it('reconciles at registration even when the daemon already reports the learned level', async () => {
+  const server = 'ws://matching-registration-ceiling'
+  await serverShareMax(server, 'full', vi.fn(async () => new Response(JSON.stringify({ shareMax: 'intent' }))))
+  const session = await setup().joiner({ server, share: 'intent' })
+  const reconcile = vi.spyOn(session.daemon, 'setShare')
+  cleanup.push(await trackServerShare(server, session))
+  expect(reconcile).toHaveBeenCalledWith('intent')
+})
+
 it('delivers automatic-join disclosure on the first tool reply only', async () => {
   const t = setup()
   const session = await t.joiner({ server: 'ws://team', room: 'repo/main', share: 'intent' })

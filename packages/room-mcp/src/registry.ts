@@ -16,7 +16,7 @@ import { cleanupWorker, clearWorkerStopState, defaultSpawner, ignoredWorkerArtif
 import { decideResume, decideRetire, processExited, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from './worker-launch.js'
-import { retireCollected } from './retire.js'
+import { repairRetired, retireCollected } from './retire.js'
 
 export type Role = 'primary' | 'workers'
 export interface DeliveredResume { delivered: true; reply: string }
@@ -184,7 +184,7 @@ export class Rooms {
   private async evaluateRetirement(s: Session): Promise<void> {
     // Older releases archived workers without necessarily withdrawing their live overlays.
     const present = new Set(Array.from(s.awareness?.getStates().values() ?? []).flatMap(p => p.user?.name ? [p.user.name] : []))
-    s.room.sweepRetiredWorkers(present)
+    repairRetired(s, present)
     for (const w of s.room.workers.values()) {
       // The next lead must be able to explain and resume intentionally stopped work.
       if (w.stopReason) continue

@@ -767,6 +767,54 @@ describe('sharing levels', () => {
   const presence = (d: Roomd) => d.provider.awareness.getLocalState() as { share?: string; status?: string }
   afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
 
+  it('withdraws an earlier full overlay and its base text when a ceiling narrows during a later publish', async () => {
+    const dir = await makeRepo({ 'a.py': 'base a\n', 'b.py': 'base b\n' })
+    let ceiling: 'full' | 'intent' = 'full'
+    const daemon = await start({ room: room(), dir, name: 'Ceiling', share: 'full', shareCeiling: () => ceiling })
+    await fsp.writeFile(path.join(dir, 'a.py'), 'private a\n')
+    await waitFor(() => daemon.roomDoc.text('a.py', 'Ceiling') === 'private a\n')
+    const base = daemon.roomDoc.baseOf('Ceiling')!
+    expect(daemon.roomDoc.baseText(base, 'a.py')).toBe('base a\n')
+    ceiling = 'intent'
+    await fsp.writeFile(path.join(dir, 'b.py'), 'private b\n')
+    await waitFor(() => daemon.share === 'intent')
+    expect(daemon.roomDoc.changedPaths('Ceiling')).toEqual([])
+    expect(daemon.roomDoc.baseText(base, 'a.py')).toBeUndefined()
+  })
+
+  it('narrows full to declared without withdrawing in-scope text, then widens only on reconciliation', async () => {
+    const dir = await makeRepo({ 'a.py': 'base a\n', 'b.py': 'base b\n' })
+    const daemon = await start({ room: room(), dir, name: 'Decline' })
+    await fsp.writeFile(path.join(dir, 'a.py'), 'private a\n')
+    await fsp.writeFile(path.join(dir, 'b.py'), 'private b\n')
+    await waitFor(() => daemon.roomDoc.changedPaths('Decline').length === 2)
+    const base = daemon.roomDoc.baseOf('Decline')!
+    await daemon.setShare('declared', ['b.py'])
+    expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['b.py'])
+    expect(daemon.roomDoc.baseText(base, 'a.py')).toBeUndefined()
+    expect(daemon.roomDoc.baseText(base, 'b.py')).toBe('base b\n')
+    const widening = daemon.setShare('full')
+    expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['b.py'])
+    await widening
+    expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['a.py', 'b.py'])
+  })
+
+  it('withdraws a deletion mark and base text left after an overlay was reverted', async () => {
+    const dir = await makeRepo({ 'deleted.py': 'old\n', 'reverted.py': 'old\n' })
+    const daemon = await start({ room: room(), dir, name: 'Withdraw' })
+    const base = daemon.roomDoc.baseOf('Withdraw')!
+    await fsp.writeFile(path.join(dir, 'reverted.py'), 'changed\n')
+    await waitFor(() => daemon.roomDoc.text('reverted.py', 'Withdraw') === 'changed\n')
+    await fsp.writeFile(path.join(dir, 'reverted.py'), 'old\n')
+    await waitFor(() => !daemon.roomDoc.changedPaths('Withdraw').includes('reverted.py'))
+    expect(daemon.roomDoc.baseText(base, 'reverted.py')).toBe('old\n')
+    await fsp.unlink(path.join(dir, 'deleted.py'))
+    await waitFor(() => daemon.roomDoc.deletedFor('Withdraw').has('deleted.py'))
+    await daemon.setShare('intent')
+    expect(daemon.roomDoc.deletedFor('Withdraw').has('deleted.py')).toBe(false)
+    expect(daemon.roomDoc.baseText(base, 'reverted.py')).toBeUndefined()
+  })
+
   it('checks a changed ceiling before the first overlay publish', async () => {
     const dir = await makeRepo({ 'a.txt': 'base\n' })
     await fsp.writeFile(path.join(dir, 'a.txt'), 'private edit\n')
