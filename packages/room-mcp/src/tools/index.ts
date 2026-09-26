@@ -4,7 +4,7 @@ import { connectedBefore, trackConnection } from '../connection.js'
 import { toolCallAborted, withToolSignal } from '../registry.js'
 import { LOCAL, NotLoggedIn, type Session } from '../session.js'
 import { createHandlerState, NeedFetch, NotJoined, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
-import { defs as joinDefs, handlers as joinHandlers, install as installJoin, teamSharingNote } from './join.js'
+import { defs as joinDefs, handlers as joinHandlers, install as installJoin, markHistorySeenOnJoin, teamSharingNote } from './join.js'
 import { defs as scopeDefs, handlers as scopeHandlers, install as installScope } from './scope.js'
 import { defs as claimDefs, handlers as claimHandlers, install as installClaims } from './claims.js'
 import { defs as messagingDefs, handlers as messagingHandlers, install as installMessaging, WAIT_SIGNAL } from './messaging.js'
@@ -23,6 +23,8 @@ export interface Tools {
   shutdown(): Promise<void>
   /** For sessions joined outside room_join (auto-join): clear stale state under my name. */
   clearStale(s: Session): number
+  /** Apply the same pre-join inbox boundary for explicit, automatic, and branch-change joins. */
+  markHistorySeenOnJoin(s: Session): void
   /** The automatic join: every tool call ensures it first; room_join/create retarget it, room_leave/close end it. */
   setAutoJoin(a: AutoJoinHandle): void
   /** Leave a session that can no longer reach its room, without dismissing workers. */
@@ -61,6 +63,7 @@ export function createTools(ctx: ToolCtx): Tools {
     list: () => DEFS,
     attachHooks: state.attachHooks,
     clearStale: state.clearStale,
+    markHistorySeenOnJoin: s => markHistorySeenOnJoin(s, state.seen),
     setAutoJoin(a) { autoJoin = a },
     drop: state.drop,
     shutdown: state.shutdown,

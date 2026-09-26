@@ -2,7 +2,7 @@
 
 ## 0.16.12
 
-- A broadcast interrupt note now ends `room_wait` under the same inbox and wake rule, including a wait for a specific answer or claim. On timeout, `room_wait` delivers any unread inbox messages and only says "nothing new" when the inbox is empty. A worker's first call also receives its lead's broadcast note sent after spawn but before join; older room history remains filtered.
+- A broadcast interrupt note now ends `room_wait` under the same inbox and wake rule, including a wait for a specific answer or claim. Message, interrupt, and timeout returns include every unread inbox item and receipt only delivered items. Automatic MCP joins now apply the same history boundary as explicit joins: a running worker keeps its own lead's notify and interrupt broadcasts posted after spawn, while older history is filtered.
 - Live daemons reconcile after a peer removes their overlays, deletion marks, or base texts, restoring only what the current sharing level allows. Reconciliation, eviction, and retirement sweep flat base texts left by departed owners, including late updates. Participant names with control characters are rejected at join and server identity checks, and flat-key cleanup matches the exact owner prefix.
 
 Behaviour fixes from the 2026-09-26 roadmap triage, for a three-person trial on one shared branch and the declared-sharing rehearsal.

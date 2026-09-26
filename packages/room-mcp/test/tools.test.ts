@@ -795,6 +795,29 @@ describe('inbox', () => {
 })
 
 describe('wait', () => {
+  it.each(['message', 'interrupt', 'timeout'] as const)('returns every unread inbox item on %s and receipts only what it delivered', async ending => {
+    const t = setup()
+    const k = { name: 'Kieran', kind: 'agent' as const }
+    const first = t.other.post<NoteMsg>(k, { type: 'note', text: 'first notify', priority: 'notify' })
+    const second = t.other.post<NoteMsg>(k, { type: 'note', text: 'second notify', priority: 'notify' })
+    const elsewhere = t.other.post<NoteMsg>(k, { type: 'note', text: 'for someone else', to: 'Ada', priority: 'notify' })
+    const waiting = t.tools.call('room_wait', { timeoutMs: ending === 'timeout' ? 40 : 2000 })
+    if (ending !== 'timeout') {
+      await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe('waiting'))
+      t.other.post(k, ending === 'interrupt'
+        ? { type: 'note', text: 'stop now', priority: 'interrupt' }
+        : { type: 'question', text: 'can you check?', to: me.name } as never)
+    }
+    const out = await waiting
+    expect(out).toContain('first notify')
+    expect(out).toContain('second notify')
+    expect(out).not.toContain('for someone else')
+    expect(t.room.seen(me.name).has(first.id)).toBe(true)
+    expect(t.room.seen(me.name).has(second.id)).toBe(true)
+    expect(t.room.seen(me.name).has(elsewhere.id)).toBe(false)
+    expect((await t.tools.call('room_state', {})).startsWith('[inbox')).toBe(false)
+  })
+
   it('ends a pending wait when a broadcast interrupt arrives', async () => {
     const t = setup()
     const waiting = t.tools.call('room_wait', { timeoutMs: 2000 })

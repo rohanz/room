@@ -13,9 +13,10 @@ import { RoomdError } from '@room/roomd'
 import { ensureLocalRelay, startRelay } from '@room/relay'
 import { AutoJoin } from '../src/auto-join.js'
 import { appendRoomLog } from '../src/index.js'
-import { LOCAL, NoRoom, type Session } from '../src/session.js'
+import { LOCAL, NoRoom, joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import type { ResolvedConfig } from '../src/config.js'
+import { workerProcessEnv } from '../src/workers.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const cleanups: (() => Promise<void> | void)[] = []
@@ -31,11 +32,11 @@ function repo(): string {
 }
 
 /** A real room-mcp process over stdio, as a host starts it; its stderr lines are collected. */
-async function startMcp(dir: string) {
+async function startMcp(dir: string, workerEnv: Record<string, string> = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'room-autojoin-home-'))
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('ROOM_')) env[k] = v
-  Object.assign(env, { HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), ROOM_DIR: dir })
+  Object.assign(env, { HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), ROOM_DIR: dir }, workerEnv)
   const lines: string[] = []
   const transport = new StdioClientTransport({ command: path.join(ROOT, 'node_modules/.bin/tsx'), args: [path.join(ROOT, 'packages/room-mcp/src/index.ts')], env, cwd: dir, stderr: 'pipe' })
   transport.stderr?.on('data', d => { lines.push(...String(d).split('\n').filter(Boolean)) })
@@ -74,6 +75,36 @@ async function wedgedRelay(commonDir: string, key: string): Promise<{ close(): v
 }
 
 describe('automatic join (real room-mcp processes)', () => {
+  it('a spawned worker auto-joins and its first wait delivers the lead broadcast before the later interrupt, without old history', async () => {
+    const dir = repo()
+    const room = 'local/demo/main'
+    const lead = await joinSession({ dir, server: LOCAL, room, name: 'Ada' })
+    cleanups.push(() => leaveSession(lead))
+    const old = lead.room.post(lead.me, { type: 'note', text: 'OLD-NOTIFY', priority: 'notify' })
+    await new Promise(r => setTimeout(r, 5))
+    const startedAt = Date.now()
+    const id = 'Ada/q#1'
+    lead.room.setWorker({ id, tag: 'q', name: 'Ada+q', lead: 'Ada', host: 'codex', task: 'room_wait once', dir,
+      branch: 'main', pid: process.pid, startedAt, status: 'running' })
+    await new Promise(r => setTimeout(r, 5))
+    const early = lead.room.post(lead.me, { type: 'note', text: 'BROADCAST-NOTIFY-1', priority: 'notify' })
+    const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir,
+      tag: 'q', lead: 'Ada', owner: 'Ada', share: 'full', gen: 1, id, logDir: dir, isWorker: false })
+    const mcp = await startMcp(dir, env)
+    await mcp.waitFor(/Ada\+q joined/, 30_000)
+    const waiting = mcp.call('room_wait', { timeoutMs: 3000 })
+    await new Promise(r => setTimeout(r, 100))
+    const late = lead.room.post(lead.me, { type: 'note', text: 'BROADCAST-INTERRUPT-2', priority: 'interrupt' })
+    const result = await waiting
+    expect(result).toContain('BROADCAST-INTERRUPT-2')
+    expect(result).toContain('BROADCAST-NOTIFY-1')
+    expect(result).not.toContain('OLD-NOTIFY')
+    expect(lead.room.seen('Ada+q').has(old.id)).toBe(false)
+    expect(lead.room.seen('Ada+q').has(early.id)).toBe(true)
+    expect(lead.room.seen('Ada+q').has(late.id)).toBe(true)
+    expect(await mcp.call('room_wait', { timeoutMs: 10 })).not.toMatch(/BROADCAST-(NOTIFY|INTERRUPT)/)
+  }, 45_000)
+
   it('a session whose first join hits a wedged relay owner joins by itself once that owner is gone', async () => {
     const dir = repo()
     const commonDir = path.join(dir, '.git')

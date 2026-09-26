@@ -89,6 +89,7 @@ async function main() {
     await prepareTeamSharingDisclosure(s)
     const disclosure = pendingTeamSharingDisclosure(s)
     if (disclosure) writePendingHookContext(s.dir, 'pendingDisclosure', disclosure, s.roomName)
+    tools.markHistorySeenOnJoin(s)
     session = s
     attachChannel(s)
     tools.attachHooks(s)

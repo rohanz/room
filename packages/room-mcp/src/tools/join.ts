@@ -83,7 +83,7 @@ export function rejoinOptions(s: Session, credentialsPath?: string): JoinOptions
 }
 
 /** Filter earlier history while preserving a worker's post-spawn briefing from its lead. */
-function markHistorySeenOnJoin(s: Session, seen: Set<string>): void {
+export function markHistorySeenOnJoin(s: Session, seen: Set<string>): void {
   const worker = s.room.workerOf(s.me.name)
   for (const m of s.room.messages()) {
     if (worker?.status === 'running' && m.type === 'note' && !m.to && m.from === worker.lead && m.at >= worker.startedAt && m.priority !== 'fyi') continue
