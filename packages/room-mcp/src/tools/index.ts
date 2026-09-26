@@ -1,5 +1,4 @@
 import { hookHealthNote } from '../hooks-bridge.js'
-import { dropSatisfiedBaseNotice } from '../base-notice.js'
 import { hasCompany } from '../company.js'
 import { connectedBefore, trackConnection } from '../connection.js'
 import { toolCallAborted, withToolSignal } from '../registry.js'
@@ -93,13 +92,6 @@ export function createTools(ctx: ToolCtx): Tools {
         if (s2 && s2 !== s) s2.refreshRuntime?.()
         if (s2 && autoJoin && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)
         const prefix = moved ? `${moved}\n\n` : ''
-        if (s2 && name !== 'room_join' && name !== 'room_create') {
-          for (const source of [s2, state.rooms.workers()].filter((x): x is Session => !!x)) {
-            for (const m of source.room.messages()) {
-              if (m.type === 'base' && state.forMe(source, m) && !source.room.seen(source.me.name).has(m.id)) await dropSatisfiedBaseNotice(source, m)
-            }
-          }
-        }
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) : ''
         const sharing = s2 ? await teamSharingNote(s2) : ''
         const health = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name, !s2.local) : ''

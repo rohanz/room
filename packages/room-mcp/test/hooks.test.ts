@@ -275,6 +275,23 @@ describe('shell edit hooks', () => {
 })
 
 describe('hooks bridge + plugin hook scripts', () => {
+  it('skips a daemon-receipted base in the hook snapshot and Codex queue', async () => {
+    const room = new RoomDoc(), s = session(room)
+    room.setOverlay(s.me.name, 'app.py', 'x = 2\n')
+    const msg = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'integrated', prev: 'old', commits: 1, paths: ['app.py'], summary: 'already pulled' })
+    room.markSeen(s.me.name, [msg.id])
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'seen-thread', at: Date.now(), cwd: dir }))
+    const queue = vi.fn(async () => {})
+    const bridge = new HooksBridge(s, { forMe: () => true, isSeen: id => room.seen(s.me.name).has(id), queue })
+    try {
+      bridge.start()
+      bridge.write()
+      await bridge.maybeWake(msg)
+      expect(JSON.parse(readFileSync(bridge.stateFile(), 'utf8')).unread).toEqual([])
+      expect(queue).not.toHaveBeenCalled()
+      expect(room.messages()).toContainEqual(msg)
+    } finally { bridge.stop(); s.awareness.destroy(); room.doc.destroy() }
+  })
   it('never imports another participant\'s hook receipts, including broadcast ids', () => {
     const s = session(new RoomDoc())
     const other = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Other', text: 'private' })
@@ -514,54 +531,6 @@ describe('hooks bridge + plugin hook scripts', () => {
     expect(queued[0]).toContain('thread-1: [room] [notify]')
     expect(queued[1]).toContain('stop!')
     b.stop()
-  })
-
-  it('skips an already integrated base at Codex queue and hook context delivery', async () => {
-    const checkout = mkdtempSync(join(tmpdir(), 'room-stale-hook-'))
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8' }).trim()
-    try {
-      git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
-      writeFileSync(join(checkout, 'app.py'), 'x = 1\n')
-      git('add', '.'); git('commit', '-qm', 'base')
-      const base = git('rev-parse', 'HEAD')
-      git('commit', '--allow-empty', '-qm', 'on top')
-      writeFileSync(join(checkout, '.git/room-session.json'), JSON.stringify({ session_id: 'stale-thread', at: Date.now(), cwd: checkout }))
-      const room = new RoomDoc(), s = { ...session(room), dir: checkout }
-      room.setOverlay(s.me.name, 'app.py', 'x = 2\n')
-      const queued: string[] = []
-      const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false, queue: async (_id, text) => { queued.push(text) } })
-      b.start()
-      const msg = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base, prev: base, commits: 1, paths: ['app.py'], summary: 'already here' })
-      await b.maybeWake(msg)
-      await new Promise(r => setTimeout(r, 220))
-      expect(queued).toEqual([])
-      expect(room.seen(s.me.name).has(msg.id)).toBe(true)
-      expect(JSON.parse(readFileSync(join(checkout, '.git/room-state.json'), 'utf8')).unread).toEqual([])
-      expect(room.messages()).toContainEqual(msg)
-      b.stop()
-    } finally { rmSync(checkout, { recursive: true, force: true }) }
-  })
-
-  it('omits a satisfied base from hook additional context without a queue delivery', async () => {
-    const checkout = mkdtempSync(join(tmpdir(), 'room-stale-hook-only-'))
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8' }).trim()
-    try {
-      git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
-      writeFileSync(join(checkout, 'app.py'), 'x = 1\n')
-      git('add', '.'); git('commit', '-qm', 'base')
-      const base = git('rev-parse', 'HEAD')
-      const room = new RoomDoc(), s = { ...session(room), dir: checkout }
-      const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false, queue: async () => { throw Error('queue should not run') } })
-      vi.stubEnv('ROOM_HOST', 'claude')
-      b.start()
-      const msg = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base, prev: base, commits: 1, paths: ['app.py'], summary: 'hook-only stale notice' })
-      await new Promise(r => setTimeout(r, 220))
-      expect(room.seen(s.me.name).has(msg.id)).toBe(true)
-      expect(JSON.parse(readFileSync(join(checkout, '.git/room-state.json'), 'utf8')).unread).toEqual([])
-      const output = await runHook('before-edit.mjs', { cwd: checkout, tool_name: 'Read' })
-      expect(output).not.toContain('hook-only stale notice')
-      b.stop()
-    } finally { rmSync(checkout, { recursive: true, force: true }) }
   })
 
   it('does not wake an idle session merely because another participant joins', async () => {
@@ -1193,83 +1162,4 @@ it('Codex hook wakes for own worker questions and failures, but not progress not
   await b.maybeWake(failed)
   expect(queue).toHaveBeenCalledTimes(2)
   b.stop(); s.awareness.destroy(); s.room.doc.destroy()
-})
-
-it.each(['stop', 'leave'])('does not queue a base notice after %s during git preflight', async action => {
-  const s = session(new RoomDoc())
-  const queue = vi.fn(async () => {})
-  const b = new HooksBridge(s, { forMe: m => m.to === s.me.name || m.type === 'base', isSeen: () => false, queue })
-  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'preflight', at: Date.now(), cwd: dir }))
-  s.room.setOverlay(s.me.name, 'app.py', 'x = 2\n')
-  const msg = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'not-an-ancestor', prev: 'old', commits: 1, paths: ['app.py'], summary: 'move' })
-  const mocked = vi.mocked(execFile)
-  const original = mocked.getMockImplementation()!
-  let complete!: (error: Error) => void
-  mocked.mockImplementation(((...args: Parameters<typeof execFile>) => {
-    if (Array.isArray(args[1]) && args[1][0] === 'merge-base') {
-      complete = () => (args.at(-1) as (error: Error) => void)(new Error('not ancestor'))
-      return {} as ReturnType<typeof execFile>
-    }
-    return original(...args)
-  }) as typeof execFile)
-  try {
-    const waking = b.maybeWake(msg)
-    await vi.waitFor(() => expect(complete).toBeTypeOf('function'))
-    if (action === 'stop') b.stop()
-    else s.closed = { reason: 'left' }
-    complete(new Error('not ancestor'))
-    await waking
-    expect(queue).not.toHaveBeenCalled()
-  } finally { mocked.mockImplementation(original); b.stop(); s.awareness.destroy(); s.room.doc.destroy() }
-})
-
-it('runs one hook snapshot preflight at a time and repeats once after updates', async () => {
-  const s = session(new RoomDoc())
-  const b = new HooksBridge(s, { forMe: m => m.type === 'base', isSeen: () => false })
-  const mocked = vi.mocked(execFile)
-  const original = mocked.getMockImplementation()!
-  const callbacks: ((error: Error) => void)[] = []
-  mocked.mockImplementation(((...args: Parameters<typeof execFile>) => {
-    if (Array.isArray(args[1]) && args[1][0] === 'merge-base') {
-      callbacks.push(args.at(-1) as (error: Error) => void)
-      return {} as ReturnType<typeof execFile>
-    }
-    return original(...args)
-  }) as typeof execFile)
-  try {
-    b.start()
-    s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'unmerged', prev: 'old', commits: 1, paths: ['app.py'], summary: 'move' })
-    await vi.waitFor(() => expect(callbacks).toHaveLength(1))
-    for (let i = 0; i < 5; i++) b.scheduleWrite()
-    await new Promise(resolve => setTimeout(resolve, 200))
-    expect(callbacks).toHaveLength(1)
-    callbacks[0](new Error('not ancestor'))
-    await vi.waitFor(() => expect(callbacks).toHaveLength(2))
-    callbacks[1](new Error('not ancestor'))
-    await vi.waitFor(() => expect(existsSync(b.stateFile())).toBe(true))
-    expect(callbacks).toHaveLength(2)
-  } finally { mocked.mockImplementation(original); b.stop(); s.awareness.destroy(); s.room.doc.destroy() }
-})
-
-it('does not publish a newly arrived base through a receipt write before filtering it', async () => {
-  const s = session(new RoomDoc())
-  const b = new HooksBridge(s, { forMe: m => m.type === 'base', isSeen: () => false })
-  const mocked = vi.mocked(execFile)
-  const original = mocked.getMockImplementation()!
-  mocked.mockImplementation(((...args: Parameters<typeof execFile>) => {
-    if (Array.isArray(args[1]) && args[1][0] === 'merge-base') {
-      queueMicrotask(() => (args.at(-1) as (error: null, stdout: string, stderr: string) => void)(null, '', ''))
-      return {} as ReturnType<typeof execFile>
-    }
-    return original(...args)
-  }) as typeof execFile)
-  try {
-    b.start()
-    await vi.waitFor(() => expect(existsSync(b.stateFile())).toBe(true))
-    const base = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'integrated', prev: 'old', commits: 1, paths: ['app.py'], summary: 'move' })
-    const note = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: s.me.name, text: 'shown' })
-    s.room.markSeen(s.me.name, [note.id])
-    expect(JSON.parse(readFileSync(b.stateFile(), 'utf8')).unread).not.toContainEqual(expect.objectContaining({ id: base.id }))
-    await vi.waitFor(() => expect(s.room.seen(s.me.name).has(base.id)).toBe(true))
-  } finally { mocked.mockImplementation(original); b.stop(); s.awareness.destroy(); s.room.doc.destroy() }
 })

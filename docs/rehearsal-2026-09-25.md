@@ -114,8 +114,9 @@ New findings:
    instruction "stay on the trial branch" matters.
 9. **A stale base notice reached Codex.** Cy got "rohanz+claude moved the base to d877e4e, git pull" after
    it had already pulled that commit and pushed on top of it (Codex reads queued messages at the end of
-   its turn). It handled it, but Room could drop a base notice whose commit is already in the
-   recipient's HEAD when it is delivered. **Fixed in 0.16.8 (90d47ee).**
+   its turn). It handled it. Room's clone daemon now marks such notices seen when HEAD moves
+   or when a notice arrives after its commit is already in HEAD. Delivery skips seen notices.
+   **Fixed in 0.16.8.**
 10. **Old branches in the same repository are visible to agents.** Ben saw last run's finished
     commit on the old `rehearsal` branch via `git fetch` (and said it did not look). The public trial
     repository will not have such branches; keep it that way.

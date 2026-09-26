@@ -20,7 +20,6 @@ import { resolveSessionHost } from './config.js'
 import type { Session } from './session.js'
 import { claudeWakeUnavailable } from './prompt.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
-import { dropSatisfiedBaseNotice } from './base-notice.js'
 
 function gitStatePath(root: string, name: string): string {
   return path.join(worktreeGitDirFromDotGit(root), name)
@@ -176,8 +175,6 @@ export class HooksBridge {
   private startedAt = Date.now()
   private unobserve: (() => void)[] = []
   private delivering = new Set<string>()
-  private preflighting = false
-  private writeDirty = false
   private generation = 0
   private stopped = false
   constructor(private s: Session, private o: HooksBridgeOptions) {
@@ -195,7 +192,7 @@ export class HooksBridge {
       // Receipts must remove delivered ids from the hook snapshot immediately,
       // before the next tool's hook can replay a stale inbox.
       const receipts = this.s.room.seen(this.s.me.name)
-      const onSeen = () => { this.pruneSeenSnapshot(); this.scheduleWrite(true) }
+      const onSeen = () => this.write()
       receipts.observe(onSeen)
       this.unobserve.push(() => receipts.unobserve(onSeen))
     }
@@ -227,54 +224,14 @@ export class HooksBridge {
   sessionFile(): string { return gitStatePath(this.s.dir, 'room-session.json') }
 
   /** Debounced: many small doc updates become one file write. */
-  scheduleWrite(immediate = false): void {
+  scheduleWrite(): void {
     if (this.o.writeState === false || this.stopped) return
-    if (this.preflighting) { this.writeDirty = true; return }
     if (this.timer) return
     this.timer = setTimeout(() => {
       this.timer = null
-      void this.publishFilteredState()
-    }, immediate ? 0 : 150)
+      try { this.write() } catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`) }
+    }, 150)
     this.timer.unref?.()
-  }
-
-  private async publishFilteredState(): Promise<void> {
-    if (this.preflighting || this.stopped) return
-    this.preflighting = true
-    const generation = this.generation
-    const active = () => !this.stopped && !this.s.closed && generation === this.generation
-    try {
-      const deadline = Date.now() + 2000
-      for (const m of this.s.room.messages()) {
-        if (!active()) return
-        if (m.type !== 'base' || this.isSeen(m.id) || !this.o.forMe(m)) continue
-        const remaining = deadline - Date.now()
-        if (remaining <= 0) break // Git is slow: publish the unread notice rather than stall the hook.
-        await dropSatisfiedBaseNotice(this.s, m, remaining)
-        if (!active()) return
-      }
-      if (active()) this.write()
-    } catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`) }
-    finally {
-      this.preflighting = false
-      if (this.writeDirty && active()) { this.writeDirty = false; this.scheduleWrite(true) }
-    }
-  }
-
-  /** A receipt can only remove lines from the last filtered snapshot. Do that now so
-   * the next hook cannot replay a delivered message while the next scan runs. */
-  private pruneSeenSnapshot(): void {
-    if (this.stopped) return
-    const file = this.stateFile()
-    const held = acquireNoticeLock(file)
-    if (!held) return
-    try {
-      const snapshot = JSON.parse(fs.readFileSync(file, 'utf8')) as HookState & { unread?: { id: string }[] }
-      if (!Array.isArray(snapshot.unread)) return
-      const unread = snapshot.unread.filter(m => !this.isSeen(m.id))
-      if (unread.length !== snapshot.unread.length) fs.writeFileSync(file, JSON.stringify({ ...snapshot, unread }, null, 1) + '\n')
-    } catch { /* There may be no snapshot yet. The scheduled scan will publish it. */ }
-    finally { held() }
   }
 
   write(): void {
@@ -350,7 +307,7 @@ export class HooksBridge {
   }
 
   private async deliver(m: Msg, session: { id: string; host: 'codex' | 'claude' }, generation: number): Promise<void> {
-    const active = () => !this.stopped && !this.s.closed && generation === this.generation
+    const active = () => !this.stopped && generation === this.generation
     if (!active()) return
     if (session.host === 'claude') {
       // The MCP channel notification (index.ts attachChannel) reaches a live Claude Code session.
@@ -367,14 +324,12 @@ export class HooksBridge {
       syncHookSeen(this.s)
       if (!active()) return
       if (this.isSeen(m.id)) return
-      if (await dropSatisfiedBaseNotice(this.s, m)) return
-      if (!active()) return
       try {
         await (this.o.queue ?? defaultQueue)(session.id, text)
         if (!active()) return
         this.woken.add(m.id)
         this.s.room.markSeen(this.s.me.name, [m.id])
-        if (this.o.writeState !== false) this.scheduleWrite(true)
+        if (this.o.writeState !== false) this.write()
         this.o.log?.(`woke session ${session.id.slice(0, 8)} for ${m.type} ${m.id}${attempt ? ` (attempt ${attempt + 1})` : ''}`)
         return
       } catch (e) {

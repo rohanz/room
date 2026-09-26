@@ -13,12 +13,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
 import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { BASE_CATCH_UP, RoomDoc, colorFor, isRegenerableBuildPath, roomNameParts, scopeCovers, type BaseMsg, type Kind, type NoteMsg, type Presence } from '@room/shared'
+import { BASE_CATCH_UP, RoomDoc, colorFor, isRegenerableBuildPath, roomNameParts, scopeCovers, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { baselineText, carriesWork, workerBaseline, type Baseline } from './baseline.js'
@@ -349,6 +350,15 @@ class Daemon implements Roomd {
     this.tracked = tracked
 
     await this.step('sync', () => this.waitForSync())
+    // The daemon owns base receipts. Observe before the initial sweep so a notice
+    // cannot arrive between the sweep and subscription.
+    const onBaseNotice = (event: Y.YArrayEvent<Msg>) => {
+      const notices = event.changes.delta.flatMap(change => (change.insert ?? []) as Msg[])
+      this.markIntegratedBaseNotices(notices)
+    }
+    this.roomDoc.bus.observe(onBaseNotice)
+    this.unobserveBus = () => this.roomDoc.bus.unobserve(onBaseNotice)
+    this.markIntegratedBaseNotices(this.roomDoc.messages())
     this.phase = 'base'
     this.choosePublisher()
     this.roomDoc.assignColor(this.name, this)
@@ -495,6 +505,7 @@ class Daemon implements Roomd {
   async stop(reason = 'requested'): Promise<void> {
     if (this.stopped) return
     this.stopped = true
+    this.unobserveBus?.()
     this.flushSkipLog()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
     for (const timer of this.timers) clearInterval(timer)
@@ -631,6 +642,25 @@ class Daemon implements Roomd {
 
   // ---- base commit tracking ---------------------------------------------
 
+  private unobserveBus?: () => void
+
+  /** Record receipts before any synchronous delivery observer sees a new bus entry. */
+  private markIntegratedBaseNotices(notices: readonly Msg[]): void {
+    if (this.stopped) return
+    const seen = this.roomDoc.seen(this.name)
+    const ids: string[] = []
+    for (const notice of notices) {
+      if (notice.type !== 'base' || seen.has(notice.id)) continue
+      try {
+        execFileSync('git', ['merge-base', '--is-ancestor', notice.base, 'HEAD'], {
+          cwd: this.dir, stdio: 'ignore', timeout: 2000,
+        })
+        ids.push(notice.id)
+      } catch { /* A missing commit or Git error leaves the notice deliverable. */ }
+    }
+    this.roomDoc.markSeen(this.name, ids, this)
+  }
+
   /** Local HEAD moved (commit, pull, checkout): re-seed the overlay and maybe advance the room base. */
   private async pollHead(): Promise<void> {
     if (this.stopped) return
@@ -647,6 +677,7 @@ class Daemon implements Roomd {
     const prev = this.base
     this.base = head
     this.branch = branch
+    if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages())
     this.tracked = await gitTracked(this.dir)
     await this.refreshShared()
     this.roomDoc.setBaseOf(this.name, this.shared, this)

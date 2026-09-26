@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
+import { RoomDoc } from '@room/shared'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, defaultIgnoredPath, RoomdError, clampShare, parseShare, type Roomd, type RoomdOptions } from '../src/index.js'
 import { normalizeGitOrigin, gitIgnored } from '../src/git.js'
@@ -547,6 +548,46 @@ describe('roomd v2 push-only overlays', () => {
     daemon.roomDoc.setMeta({ base })
     for (let i = 0; i < 4; i++) await poll()
     expect(warnings()).toHaveLength(3) // returning to an already-seen pair stays quiet
+  })
+
+  it('receipts integrated base notices on pull and arrival, while pending and invalid commits stay unread', async () => {
+    const origin = await makeRepo({ 'app.py': 'base\n' })
+    const dir = await cloneRepo(origin)
+    const daemon = await start({ room: room(), dir, name: 'Alice', basePollMs: 60_000 })
+    const old = sh(dir, ['rev-parse', 'HEAD'])
+    fs.writeFileSync(path.join(origin, 'app.py'), 'next\n')
+    sh(origin, ['commit', '-qam', 'next'])
+    const next = sh(origin, ['rev-parse', 'HEAD'])
+    sh(dir, ['fetch', '-q', 'origin'])
+    const post = (base: string) => daemon.roomDoc.post({ name: 'Bob', kind: 'agent' },
+      { type: 'base', base, prev: old, commits: 1, paths: ['app.py'], summary: 'next' })
+
+    const pending = post(next)
+    expect(daemon.roomDoc.seen('Alice').has(pending.id)).toBe(false)
+    sh(dir, ['merge', '--ff-only', 'origin/main'])
+    await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+    expect(daemon.roomDoc.seen('Alice').has(pending.id)).toBe(true)
+
+    const arrived = post(old)
+    expect(daemon.roomDoc.seen('Alice').has(arrived.id)).toBe(true)
+    const invalid = post('missing-commit')
+    expect(daemon.roomDoc.seen('Alice').has(invalid.id)).toBe(false)
+    expect(daemon.roomDoc.messages()).toContainEqual(pending)
+  })
+
+  it('receipts an integrated base notice during startup sync', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n' })
+    const base = sh(dir, ['rev-parse', 'HEAD'])
+    const roomUrl = room()
+    const remote = new RoomDoc()
+    const provider = hub.connect(roomUrl, remote.doc)
+    remote.setMeta({ base, branch: 'main' })
+    const notice = remote.post({ name: 'Bob', kind: 'agent' },
+      { type: 'base', base, prev: base, commits: 1, paths: ['app.py'], summary: 'already here' })
+    try {
+      const daemon = await start({ room: roomUrl, dir, name: 'Alice' })
+      expect(daemon.roomDoc.seen('Alice').has(notice.id)).toBe(true)
+    } finally { provider.destroy(); remote.doc.destroy() }
   })
 
   it('a pushed commit by a member advances the room base and posts a base entry; an unpushed one does not', async () => {

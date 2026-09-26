@@ -50,7 +50,7 @@ export async function consumesSymbol(consumer: string, text: string, provider: s
 export class GraphIndex {
   readonly graph: SymbolGraph
   private cache = new Map<string, FileSymbols | undefined>()
-  private pending = new Map<string, { promise: Promise<void>; resolve: () => void }>()
+  private pending = new Map<string, { generation: number; promise: Promise<void>; resolve: () => void; idle: Promise<void>; resolveIdle: () => void }>()
   /** Owns the concurrency limit and per-path deduplication for initial and overlay refreshes. */
   private refreshQueue: string[] = []
   private activeRefreshes = 0
@@ -98,7 +98,9 @@ export class GraphIndex {
   stop(): void {
     this.stopped = true
     clearTimeout(this.jitterTimer); this.endJitter?.(); clearTimeout(this.publishing)
-    for (const path of this.refreshQueue.splice(0)) { this.pending.get(path)?.resolve(); this.pending.delete(path) }
+    for (const entry of this.pending.values()) { entry.resolve(); entry.resolveIdle() }
+    this.pending.clear()
+    this.refreshQueue.length = 0
     for (const u of this.unobserve) u()
     this.unobserve = []
   }
@@ -114,6 +116,7 @@ export class GraphIndex {
 
   private async rebuild(): Promise<void> {
     const generation = ++this.generation
+    for (const entry of this.pending.values()) entry.resolve() // release any superseded build
     this.phase = 'indexing'
     this.base = this.room.meta.base ?? ''
     this.observedByPath.clear()
@@ -155,10 +158,19 @@ export class GraphIndex {
     if (this.stopped) return Promise.resolve()
     this.revisions.set(path, (this.revisions.get(path) ?? 0) + 1)
     const inflight = this.pending.get(path)
-    if (inflight) return inflight.promise
+    if (inflight) {
+      if (inflight.generation !== this.generation) {
+        inflight.resolve() // release the superseded rebuild
+        inflight.promise = new Promise<void>(resolve => { inflight.resolve = resolve })
+        inflight.generation = this.generation
+      }
+      return inflight.promise
+    }
     let resolve!: () => void
     const promise = new Promise<void>(r => { resolve = r })
-    this.pending.set(path, { promise, resolve })
+    let resolveIdle!: () => void
+    const idle = new Promise<void>(r => { resolveIdle = r })
+    this.pending.set(path, { generation: this.generation, promise, resolve, idle, resolveIdle })
     this.refreshQueue.push(path)
     this.drainRefreshQueue()
     return promise
@@ -168,10 +180,15 @@ export class GraphIndex {
     while (!this.stopped && this.activeRefreshes < MAX_REFRESH_CONCURRENCY && this.refreshQueue.length) {
       const path = this.refreshQueue.shift()!
       this.activeRefreshes++
-      void this.runRefresh(path).catch(e => { this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`); return true }).then(done => {
+      const generation = this.generation
+      void this.runRefresh(path).catch(e => { this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`); return generation === this.generation }).then(done => {
         this.activeRefreshes--
+        // The first completed read satisfies initial/rebuild readiness. A path
+        // edited during that read still refreshes again in the background.
+        const entry = this.pending.get(path)
+        if (entry?.generation === generation) entry.resolve()
         if (!done && !this.stopped) this.refreshQueue.push(path)
-        else { this.pending.get(path)?.resolve(); this.pending.delete(path) }
+        else { entry?.resolveIdle(); this.pending.delete(path) }
         if (!this.stopped && !this.pending.size) {
           clearTimeout(this.publishing)
           this.publishing = setTimeout(() => {
@@ -205,7 +222,7 @@ export class GraphIndex {
           error => ({ kind: 'unavailable' as const, error: error instanceof Error ? error : new Error(String(error)) }),
         ) : undefined
       if (this.stopped) return true
-      if (generation !== this.generation || revision !== this.revisions.get(path)) return false
+      if (generation !== this.generation) return false
       if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
       else { this.cache.set(path, symbols); this.graph.set(path, text) }
       if (mine !== undefined || mineDeleted) {
@@ -213,14 +230,14 @@ export class GraphIndex {
           this.degradedPaths.add(path)
           this.observedByPath.delete(path)
           this.log(`graph: baseline unavailable for ${path}; observed contract coverage degraded: ${baseRead.error.message}`)
-          return true
+          return revision === this.revisions.get(path)
         }
         this.degradedPaths.delete(path)
         const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
         if (changes.length) this.observedByPath.set(path, changes)
         else this.observedByPath.delete(path)
       } else { this.observedByPath.delete(path); this.degradedPaths.delete(path) }
-      return true
+      return revision === this.revisions.get(path)
     }
     return true
   }
@@ -228,7 +245,7 @@ export class GraphIndex {
   /** Wait for overlay work already queued as well as base rebuilds. */
   async whenIdle(): Promise<void> {
     await this.ready
-    while (this.pending.size) await Promise.all([...this.pending.values()].map(entry => entry.promise))
+    while (this.pending.size) await Promise.all([...this.pending.values()].map(entry => entry.idle))
   }
 
   private publish(status: 'ready' | 'indexing' | 'error'): void {

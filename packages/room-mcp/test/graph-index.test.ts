@@ -26,6 +26,44 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('GraphIndex', () => {
+  it('resolves initial readiness while a path is continually superseded', async () => {
+    const room = new RoomDoc(); room.setMeta({ base })
+    let edits = 0
+    const read = vi.fn(async (_dir: string, _sha: string, path: string): Promise<string | undefined> => {
+      if (path === 'utils.py') room.setOverlay('Rohan', path, `def changing_${++edits}(): pass\n`)
+      return path === 'utils.py' ? 'def original(): pass\n' : undefined
+    })
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0, read })
+    try {
+      gi.start()
+      await Promise.race([gi.ready, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('ready waited for supersessions')), 2000))])
+      expect(edits).toBeGreaterThan(1)
+      expect(room.graphs.get('Rohan')?.status).toBe('ready')
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it('waits for a read from the new base when rebuild supersedes an in-flight build', async () => {
+    const room = new RoomDoc(); room.setMeta({ base })
+    let release!: () => void
+    let first = true
+    const read = vi.fn(async (_dir: string, _sha: string, path: string): Promise<string | undefined> => {
+      if (path !== 'utils.py') return undefined
+      if (first) { first = false; await new Promise<void>(resolve => { release = resolve }) }
+      return 'def current(): pass\n'
+    })
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0, read })
+    try {
+      gi.start()
+      await eventually(() => typeof release === 'function')
+      execFileSync('git', ['-C', dir, 'commit', '--allow-empty', '-qm', 'next'])
+      room.setMeta({ base: execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD']).toString().trim() })
+      release()
+      await gi.ready
+      expect(gi.graph.has('utils.py')).toBe(true)
+      expect(room.graphs.get('Rohan')?.status).toBe('ready')
+    } finally { gi.stop(); if (release) release(); room.doc.destroy() }
+  })
+
   it('lets a ninth path finish while eight edited paths are superseded', async () => {
     const room = new RoomDoc(); room.setMeta({ base })
     const first: (() => void)[] = [], later: (() => void)[] = []
