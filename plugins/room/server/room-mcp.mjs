@@ -33371,7 +33371,7 @@ function launchWorkerProcess(policy, command, lease, onStarted, onSessionId) {
       link: command.links,
       carriedPaths: command.carriedPaths,
       port
-    }) : `Read your Room inbox with room_state or room_wait for the follow-up from your lead, then act on that message.${portChanged ? `
+    }) : `${command.followUp}${portChanged ? `
 
 Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     let maxBudgetUsd;
@@ -35737,7 +35737,7 @@ var init_registry = __esm({
         proc.onExit((code) => exited(code));
       }
       /** Continue an exited, retained worker in its original checkout and host conversation. */
-      async resumeWorker(s, w, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log2 = console.error, at = Date.now, exitWaitMs = 3e4) {
+      async resumeWorker(s, w, followUp, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log2 = console.error, at = Date.now, exitWaitMs = 3e4) {
         await this.retiring.get(s);
         if (toolCallAborted()) return "error: tool call cancelled";
         const key = workerOperationKey(w);
@@ -35808,7 +35808,7 @@ var init_registry = __esm({
                   log: log2,
                   at
                 },
-                { mode: "resume", sessionId: w.hostSessionId, oldPort: w.port },
+                { mode: "resume", sessionId: w.hostSessionId, followUp, oldPort: w.port },
                 launchLease,
                 ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, {
                   pid: proc.pid,
@@ -46283,32 +46283,34 @@ function handlers5(state) {
       const addressedWorker = to2 && s.room.workerOf(to2);
       let restarted = false;
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== "running") {
-        const result = await rooms.resumeWorker(s, addressedWorker, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log);
+        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log);
         if (result.startsWith("error:")) return result;
         restarted = true;
         notes.push(result);
       }
-      switch (a.type) {
-        case "changed": {
-          const paths = Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
-          const symbols = Array.isArray(a.symbols) ? a.symbols.filter((x) => typeof x === "string") : [];
-          msg = s.room.post(s.me, withPr({ type: "changed", paths, summary: text, ...symbols.length ? { symbols } : {}, ...to2 ? { to: to2 } : {} }));
-          notes.push(...await upgrade(s, msg, paths, symbols));
-          break;
+      let paths = [], symbols = [];
+      s.room.doc.transact(() => {
+        switch (a.type) {
+          case "changed": {
+            paths = Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
+            symbols = Array.isArray(a.symbols) ? a.symbols.filter((x) => typeof x === "string") : [];
+            msg = s.room.post(s.me, withPr({ type: "changed", paths, summary: text, ...symbols.length ? { symbols } : {}, ...to2 ? { to: to2 } : {} }));
+            break;
+          }
+          case "question":
+            msg = s.room.post(s.me, withPr({ type: "question", text, to: to2 }));
+            break;
+          case "answer": {
+            msg = s.room.post(s.me, withPr({ type: "answer", to: question?.from ?? to2, inReplyTo: a.inReplyTo, text }));
+            break;
+          }
+          case "note":
+            msg = s.room.post(s.me, withPr({ type: "note", text, ...to2 ? { to: to2 } : {} }));
+            break;
         }
-        case "question":
-          msg = s.room.post(s.me, withPr({ type: "question", text, to: to2 }));
-          break;
-        case "answer": {
-          msg = s.room.post(s.me, withPr({ type: "answer", to: question?.from ?? to2, inReplyTo: a.inReplyTo, text }));
-          break;
-        }
-        case "note":
-          msg = s.room.post(s.me, withPr({ type: "note", text, ...to2 ? { to: to2 } : {} }));
-          break;
-        default:
-          return `error: type must be changed|question|answer|note (got ${String(a.type)})`;
-      }
+        if (restarted) s.room.markSeen(to2, [msg.id]);
+      });
+      if (msg.type === "changed") notes.push(...await upgrade(s, msg, paths, symbols));
       const notice = msg.to && !restarted ? recipientNotice(s, msg.to) : void 0;
       if (notice) notes.push(msg.type === "question" && notice.terminal ? unavailableQuestion(s, msg.id) : notice.text);
       if (msg.type === "question" && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`);
