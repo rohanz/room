@@ -53,6 +53,15 @@ the merged answer. The fork's history stops at the base, so nothing local gives 
 5. Anything Room said that was untrue or confusing (quote it).
 Keep the room's exported ledger and each person's notes.
 
+## Freeze
+
+Frozen at **0.16.24** on 2026-09-27, after three rehearsals:
+- [Werkzeug](rehearsal-2026-09-25.md);
+- [httpx at declared sharing](rehearsal-2026-09-26-httpx.md);
+- [click at full sharing](rehearsal-2026-09-27-click.md).
+
+It is also frozen after the [design audit](audit-2026-09-27-design.md), whose post-trial work waits for after the trial. Nothing merges within 48 hours of the trial unless a rehearsal or live check blocks on it.
+
 ## Before the day
 
 - [ ] Rohan confirms the repo choice and creates the fork (public, under rohanz); `trial` branch at
@@ -61,7 +70,9 @@ Keep the room's exported ledger and each person's notes.
       at the same time. All used the owner's GitHub login; see the [results](rehearsal-2026-09-25.md).
 - [ ] Second hosted rehearsal: let the Fly machine idle first, then join with at least one other
       GitHub login to check wake-up and first-login behaviour.
-- [ ] Fix only what the rehearsal or the readiness review finds, then the 48-hour quiet period.
+- [x] Fix only what the rehearsals find (done through 0.16.24), then the 48-hour quiet period.
+- [x] Fresh-install simulation up to login ([results](fresh-install-2026-09-27.md)).
+- [ ] On the day, check `codex --version`. Codex 0.157 runs sessions through a shared app-server daemon; 0.16.24 handles it, but re-check it on newer versions.
 - [ ] Fly set to always-on the day before (`min_machines_running = 1`), back to stop-on-idle after.
 - [ ] Friend checklist sent: the two install commands per host; Claude Code 2.1.224 or later
       (`claude --version`; 2.1.234 on native Windows); trust the hooks in Codex when asked,
