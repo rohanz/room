@@ -222,6 +222,12 @@ the lead's name (`[tag] intent`), and any team message that touches a worker's f
 relayed to that worker as an interrupt. Questions from workers and their done messages
 stay on your machine; `room_state` shows both rooms.
 
+## Codex
+
+With Codex 0.157 or later, Room attaches to the session's folder on its first Room request.
+This behavior was observed with the shared app-server daemon in Codex 0.157.1. Saying
+"join the room" once per session is enough.
+
 ## Claude Code
 
 Claude Code 2.1 or later uses the same plugin as Codex. For a local checkout, install the

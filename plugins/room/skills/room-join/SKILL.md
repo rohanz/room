@@ -3,9 +3,10 @@ name: room-join
 description: Choose a local or team room when your human asks to join, create, move, or leave.
 ---
 
-You were joined automatically when this session started: a LOCAL room on this machine
-unless ROOM_SERVER is set or this clone remembers a choice. `room_state` says which on its
-first line.
+You join automatically: a LOCAL room on this machine unless ROOM_SERVER is set or this
+clone remembers a choice. In Codex 0.157 or later, Room attaches to this session's folder
+on the first Room request; the shared app-server daemon was observed in 0.157.1. Saying
+"join the room" once per session is enough. `room_state` says which room on its first line.
 
 Where to be is the user's call, by instruction:
 - "join the room" / "join the team room": `room_leave` if you are
