@@ -897,30 +897,6 @@ class Daemon implements Roomd {
     return path.join(this.dir, ...relpath.split('/'))
   }
 
-  /** Read UTF-8 text; undefined for missing, binary, or over-cap files. */
-  readText(relpath: string, quiet = false): string | undefined {
-    try {
-      const stat = fs.lstatSync(this.abs(relpath))
-      if (!this.isSafeRoomPath(relpath) || stat.isSymbolicLink()) return undefined
-      if (!stat.isFile()) return undefined
-      if (stat.size > this.sizeCap) {
-        if (!this.skips.size.has(relpath) && !quiet) this.noteSkip(relpath, 'over size cap')
-        this.skips.size.add(relpath)
-        return undefined
-      }
-      this.skips.size.delete(relpath)
-      const bytes = fs.readFileSync(this.abs(relpath))
-      try {
-        return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-      } catch {
-        if (!quiet) this.skipIgnored(relpath, 'not UTF-8')
-        return undefined
-      }
-    } catch {
-      return undefined
-    }
-  }
-
   private isIgnoredPath(relpath: string): boolean {
     if (!relpath || relpath === ROOM_FILE) return true
     if (defaultIgnoredPath(relpath)) {

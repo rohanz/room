@@ -59,7 +59,6 @@ interface PublicationHost {
   log(line: string): void
   abs(relpath: string): string
   isSafeRoomPath(relpath: string): boolean
-  readText(relpath: string, quiet?: boolean): string | undefined
   scheduleDisk(relpath: string, isNew: boolean): void
   noteSkip(relpath: string, reason: string): void
   skipIgnored(relpath: string, reason: string): void
@@ -126,7 +125,35 @@ export class Publisher {
   async resharePaths(): Promise<void> {
     if (this.host.stopped) return
     const changed = await gitChanged(this.host.dir).catch(error => { this.reconcileFailed(error); throw error })
+    for (const relpath of this.host.roomDoc.changedPaths(this.host.name)) {
+      if (!eligibility(relpath, this.eligibilityFacts(relpath)).share) this.withhold(relpath, true)
+    }
     await this.reconcile(changed)
+  }
+
+  /** Read UTF-8 text; undefined for missing, binary, or over-cap files. */
+  private readText(relpath: string, quiet = false): string | undefined {
+    try {
+      const stat = fs.lstatSync(this.host.abs(relpath))
+      if (!this.host.isSafeRoomPath(relpath) || stat.isSymbolicLink()) return undefined
+      if (!stat.isFile()) return undefined
+      const size = eligibility(relpath, { ...this.eligibilityFacts(relpath), level: 'full', withinSize: stat.size <= this.host.sizeCap })
+      if (!size.share && size.reason === 'size') {
+        if (!this.host.skips.size.has(relpath) && !quiet) this.host.noteSkip(relpath, 'over size cap')
+        this.host.skips.size.add(relpath)
+        return undefined
+      }
+      this.host.skips.size.delete(relpath)
+      const bytes = fs.readFileSync(this.host.abs(relpath))
+      try {
+        return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+      } catch {
+        if (!quiet) this.host.skipIgnored(relpath, 'not UTF-8')
+        return undefined
+      }
+    } catch {
+      return undefined
+    }
   }
 
   /** Withdraw a file from the room without touching disk; remembers it as withheld when it differs from base. */
@@ -336,7 +363,7 @@ export class Publisher {
       } else if (!this.isShared(relpath)) {
         if (sharingChanged()) return
         // Withheld by the sharing level: publish nothing, but remember whether it differs from base.
-        const disk = this.host.readText(relpath, true)
+        const disk = this.readText(relpath, true)
         const changed = disk === undefined && this.host.skips.size.has(relpath)
           ? await oversizedChanged() : disk !== undefined && disk !== await baseText()
         if (sharingChanged()) return
@@ -346,7 +373,7 @@ export class Publisher {
         if (sharingChanged()) return
         this.host.skips.share.delete(relpath)
 
-        const disk = this.host.readText(relpath)
+        const disk = this.readText(relpath)
         if (disk === undefined) {
           if (this.host.skips.size.has(relpath)) await oversizedChanged()
           if (sharingChanged()) return
