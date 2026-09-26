@@ -37,9 +37,9 @@ function fixture() {
 }
 
 describe('unavailable addressed recipients', () => {
-  it('records questions to exited workers, and send and wait return the same one-line notice', async () => {
+  it('records questions to another lead\'s exited worker, and send and wait return the same one-line notice', async () => {
     const { s, tools } = fixture()
-    s.room.setWorker(worker())
+    s.room.setWorker(worker({ lead: 'other' }))
     const sent = await tools.room_send({ type: 'question', to: 'lead+state', text: 'Can you review?' })
     const question = s.room.messages().find(m => m.type === 'question')!
     const notice = 'lead+state finished 3m ago and will not answer; its summary: Fixed state. Tests passed.'
@@ -113,7 +113,7 @@ describe('unavailable addressed recipients', () => {
   it.each(['done', 'failed', 'dismissed'] as const)('returns immediately for a %s worker whose process still lives', async status => {
     vi.useFakeTimers()
     const { s, state, tools } = fixture()
-    s.room.setWorker(worker({ status, exitCode: undefined, finishedAt: clock }))
+    s.room.setWorker(worker({ lead: 'other', status, exitCode: undefined, finishedAt: clock }))
     vi.mocked(state.workerAlive).mockReturnValue(true)
     const sent = await tools.room_send({ type: 'question', to: 'lead+state', text: 'More?' })
     const notice = 'lead+state reported ' + status + ' 0m ago and will not answer; its summary: Fixed state. Tests passed.'
@@ -149,7 +149,7 @@ describe('unavailable addressed recipients', () => {
 
   it('prefers an already recorded answer over the later exit', async () => {
     const { s, tools } = fixture()
-    s.room.setWorker(worker())
+    s.room.setWorker(worker({ lead: 'other' }))
     await tools.room_send({ type: 'question', to: 'lead+state', text: 'Review?' })
     const q = s.room.messages().at(-1)!
     s.room.post({ name: 'lead+state', kind: 'agent' }, { type: 'answer', inReplyTo: q.id, to: 'lead', text: 'Reviewed' })

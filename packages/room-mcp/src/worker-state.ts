@@ -112,3 +112,9 @@ export function decideShutdown(s: WorkerRealState): 'stop' | 'leave' { return de
 export function decidePreview(s: WorkerRealState, diskEligible: boolean): 'disk' | 'shared' {
   return diskEligible && s.worktree === 'present' ? 'disk' : 'shared'
 }
+export type ResumeDecision = 'missing' | 'no-session' | 'wait-exit' | 'ready'
+export function decideResume(s: WorkerRealState): ResumeDecision {
+  if (s.worktree === 'vanished') return 'missing'
+  if (!s.hostSession) return 'no-session'
+  return s.process === 'ours' ? 'wait-exit' : 'ready'
+}

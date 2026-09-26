@@ -825,7 +825,7 @@ describe('worker preview', () => {
       withheld: () => 'lead+test shares intent only; ask them or wait for their push',
       baseFor: () => base, shareOf: () => 'intent', liveText: async () => undefined,
     })
-    expect(await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })).toBe('lead+test shares intent only; ask them or wait for their push')
+    expect(await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })).toBe("lead+test's worktree no longer exists; lead+test shares intent only; ask them or wait for their push")
   })
   it('previews a vanished local worker from its shared overlay instead of its checkout', async () => {
     const t = setup()
@@ -839,6 +839,7 @@ describe('worker preview', () => {
       liveText: async (_s: unknown, p: string) => p === 'shared.txt' ? 'shared change\n' : undefined,
     })
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
+    expect(result).toContain("lead+test's worktree no longer exists; previewing its shared overlay instead")
     expect(result).toContain('shared.txt')
     expect(result).not.toContain('disk-only.txt')
   })

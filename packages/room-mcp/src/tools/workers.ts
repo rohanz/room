@@ -1,6 +1,6 @@
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidAlive, pidIsOurWorker, signalWorker, workerPriority, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses } from '../workers.js'
+import { pidAlive, pidIsOurWorker, signalWorker, WORKER_EFFORTS, prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree, terminateWorktreeProcesses } from '../workers.js'
 import { decideStop, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
 import fs from 'node:fs'
@@ -12,11 +12,12 @@ import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerId, workerIdBase, workerOrigin } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
-import { workerBudget, workerMaxBudget, workerProcessEnv, hostWorkerEffort, defaultSpawner, prepareWorktree, uncommittedCount, validTag, workerCommand, workerPrompt, persistWorkerStopReason, type PreparedWorktree, type SpawnedProcess, type WorkerHost } from '../workers.js'
+import { workerBudget, hostWorkerEffort, prepareWorktree, uncommittedCount, validTag, persistWorkerStopReason, type PreparedWorktree, type WorkerHost } from '../workers.js'
+import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from '../worker-launch.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
-import { bindWorkerPortReservation, releaseWorkerProcessPort, reserveWorkerPort, type PortReservation } from '../port-reservations.js'
+import { releaseWorkerProcessPort } from '../port-reservations.js'
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
   const paths = new Set<string>()
   for (const match of task.matchAll(/(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
@@ -111,13 +112,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // preparation below awaits git, and a second room_spawn for the same tag must not slip in meanwhile.
       if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
       const starting = runningWorkers(lead).length
-      if (!rooms.reserveLaunch(max, starting)) {
+      const launchLease = reserveWorkerLaunch(rooms, max, starting)
+      if (!launchLease) {
         rooms.unreserve(idBase)
         return `error: ${rooms.launchUsage(starting)} workers already running or starting (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`
       }
-      let launchReserved = true
-      let portReservation: PortReservation | undefined
-      let portPassedToProcess = false
       try {
         let dir: string, branch: string, base: string | undefined, created = false, outside = false
         let carried: PreparedWorktree['carried'], carryFailed = false, carryError: string | undefined
@@ -169,43 +168,43 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const port = (w as Worker & { port?: number }).port
           return typeof port === 'number' ? [port] : []
         })
-        let port: number
-        try { portReservation = reserveWorkerPort(id, usedPorts); port = portReservation.port }
-        catch (e) { return abortPrepared(`error: could not allocate a worker port: ${e instanceof Error ? e.message : String(e)}`) }
-        const env = workerProcessEnv({ threads, memGb, host, model, effort, server, room: s.roomName, dir, tag,
-          lead: s.me.name, owner, share: effectiveShare, gen, id,
-          token: s.local ? undefined : s.token, logDir: s.dir, isWorker, ...(port === undefined ? {} : { port }) })
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
         catch (e) { return abortPrepared(`error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
-        const scheduling = workerPriority({ cmd: host, args: [] })
-        const prompt = workerPrompt(s.me.name, tag, task, { threads, memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort, link, carriedPaths: carried?.paths, ...(port === undefined ? {} : { port }) })
         const hostSessionId = host === 'claude' ? randomUUID() : undefined
-        let maxBudgetUsd: string | undefined
-        try { maxBudgetUsd = workerMaxBudget() } catch (e) { return abortPrepared(`error: ${e instanceof Error ? e.message : String(e)}`) }
-        const { cmd, args } = workerCommand(host, model, prompt, config.claudeChannel, effort, { tag, sessionId: hostSessionId, maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels' })
-        const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
-        const priority = { cmd: scheduling.cmd, args: [...scheduling.args, ...args], nice: scheduling.nice }
-        let proc: SpawnedProcess
-        if (toolCallAborted()) return abortPrepared('error: tool call cancelled')
-        try { proc = (ctx.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args, cwd: dir, env, logFile, captureCodexSession: host === 'codex' }) }
-        catch (e) { return abortPrepared(`error: could not start ${cmd}: ${e instanceof Error ? e.message : String(e)}`) }
-        bindWorkerPortReservation(proc, portReservation)
-        portPassedToProcess = true
-        rooms.setHandle(s, id, proc)
-        const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(hostSessionId ? { hostSessionId } : {}), budget: { threads, memGb, nice: scheduling.nice }, ...(port === undefined ? {} : { port }), share: effectiveShare, ...(link.length ? { link } : {}), task, dir, branch, ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}), ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid, startedAt: now(), status: 'running', lead: s.me.name, gen }
-        s.room.setWorker(w)
-        rooms.releaseLaunch(); launchReserved = false
-        if (host === 'codex') proc.onSessionId?.(sessionId => {
-          const current = s.room.workerById(id)
-          if (current && current.pid === proc.pid && !current.hostSessionId) s.room.updateWorker(tag, { hostSessionId: sessionId }, id)
-        })
-        rooms.watchWorkerProcess(s, id, proc, `could not start ${cmd}`, state.log, now)
+        let launched: ReturnType<typeof launchWorkerProcess>
+        try {
+          launched = launchWorkerProcess({ rooms, session: s, id, tag, dir, lead: s.me.name, owner,
+            host, model, effort, share: effectiveShare, gen, budget: { threads, memGb }, server,
+            isWorker, token: s.local ? undefined : s.token, claudeChannel: config.claudeChannel,
+            usedPorts, spawner: ctx.spawner, log: state.log, at: now },
+          { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, sessionId: hostSessionId }, launchLease,
+          ({ proc, port, nice, startedAt }) => {
+            const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}),
+              ...(hostSessionId ? { hostSessionId } : {}), budget: { threads, memGb, nice }, port,
+              share: effectiveShare, ...(link.length ? { link } : {}), task, dir, branch,
+              ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}),
+              ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid,
+              startedAt, status: 'running', lead: s.me.name, gen }
+            s.room.setWorker(w)
+            return true
+          }, (sessionId, proc) => {
+            const current = s.room.workerById(id)
+            if (current && current.pid === proc.pid && !current.hostSessionId) s.room.updateWorker(tag, { hostSessionId: sessionId }, id)
+          })
+        } catch (e) {
+          const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
+          const prefix = error.phase === 'port' ? 'could not allocate a worker port: '
+            : error.phase === 'budget' || error.phase === 'cancelled' ? ''
+            : `could not start ${host}: `
+          return abortPrepared(`error: ${prefix}${error.message}`)
+        }
+        const { proc, port, env, nice, logFile } = launched
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid})${port === undefined ? '' : ` port ${port}`} in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
         const wakeNote = claudeWakeNote(lead, 'spawn')
         if (wakeNote) out.unshift(wakeNote)
-        out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${priority.nice ? `nice ${priority.nice}` : 'normal'}${effort ? ` · effort ${effort}` : ''}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
+        out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'}${effort ? ` · effort ${effort}` : ''}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
         if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`)
@@ -224,8 +223,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
         return out.join('\n')
       } finally {
-        if (!portPassedToProcess) portReservation?.release()
-        if (launchReserved) rooms.releaseLaunch()
+        launchLease.release()
         rooms.unreserve(idBase)
       }
     },

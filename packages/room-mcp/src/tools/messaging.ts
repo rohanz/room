@@ -108,26 +108,34 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (to && !s.room.workerOf(to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
+      if (a.type === 'changed' && (!Array.isArray(a.paths) || !a.paths.some((x: unknown) => typeof x === 'string'))) return 'error: changed requires paths'
+      if (a.type === 'question' && !to) return 'error: question requires to (whose agent)'
+      if (a.type === 'answer' && (typeof a.inReplyTo !== 'string' || !a.inReplyTo)) return 'error: answer requires inReplyTo'
+      if (a.type === 'answer' && !question?.from && !to) return 'error: answer requires to (could not infer from inReplyTo)'
+      if (!['changed', 'question', 'answer', 'note'].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       let msg: Msg
       const notes: string[] = []
+      const addressedWorker = to && s.room.workerOf(to)
+      let restarted = false
+      if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
+        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
+        if (result.startsWith('error:')) return result
+        restarted = true
+        notes.push(result)
+      }
       switch (a.type) {
         case 'changed': {
           const paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
           const symbols = Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
-          if (!paths.length) return 'error: changed requires paths'
           msg = s.room.post<ChangedMsg>(s.me, withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }))
           notes.push(...await upgrade(s, msg, paths, symbols))
           break
         }
         case 'question':
-          if (!to) return 'error: question requires to (whose agent)'
-          msg = s.room.post<QuestionMsg>(s.me, withPr({ type: 'question', text, to }))
+          msg = s.room.post<QuestionMsg>(s.me, withPr({ type: 'question', text, to: to! }))
           break
         case 'answer': {
-          if (typeof a.inReplyTo !== 'string' || !a.inReplyTo) return 'error: answer requires inReplyTo'
-          const dest = question?.from ?? to
-          if (!dest) return 'error: answer requires to (could not infer from inReplyTo)'
-          msg = s.room.post<AnswerMsg>(s.me, withPr({ type: 'answer', to: dest, inReplyTo: a.inReplyTo, text }))
+          msg = s.room.post<AnswerMsg>(s.me, withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: a.inReplyTo as string, text }))
           break
         }
         case 'note':
@@ -135,12 +143,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           break
         default: return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       }
-      const addressedWorker = msg.to && s.room.workerOf(msg.to)
-      if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
-        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
-        notes.push(result)
-      }
-      const notice = msg.to ? recipientNotice(s, msg.to) : undefined
+      const notice = msg.to && !restarted ? recipientNotice(s, msg.to) : undefined
       if (notice) notes.push(msg.type === 'question' && notice.terminal ? unavailableQuestion(s, msg.id)! : notice.text)
       if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
       s.daemon.touch()

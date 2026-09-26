@@ -145,17 +145,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         : ''
       if (!people.length) return ['no present participants to merge', skippedNote].filter(Boolean).join('\n')
       const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
+      const missingNotes: string[] = []
       for (const { person, session } of participants) {
         const held = withheld(session, person)
         const ownLocalWorker = session.local && session.room.workerOf(person)
-        const preview = ownLocalWorker && decidePreview(await workerRealState(session.dir, ownLocalWorker), ownLocalWorker.lead === caller.me.name)
-        if (held && !(held.startsWith(`${person} shares intent only;`) && preview === 'disk')) return held
+        const facts = ownLocalWorker && await workerRealState(session.dir, ownLocalWorker)
+        const preview = facts && decidePreview(facts, ownLocalWorker.lead === caller.me.name)
+        const missing = !!ownLocalWorker && facts?.worktree === 'vanished' && ownLocalWorker.lead === caller.me.name
+        if (missing) missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`)
+        if (held && !(held.startsWith(`${person} shares intent only;`) && preview === 'disk')) {
+          return missing ? `${person}'s worktree no longer exists; ${held}` : held
+        }
       }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
       const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out } = result
-      if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return ['no mergeable changes', ...result.ignoredNotes].join('\n')
-      if (!paths.length && !result.callerOnly) return [`none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
+      if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, 'no mergeable changes', ...result.ignoredNotes].join('\n')
+      if (!paths.length && !result.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
+      out.unshift(...missingNotes)
       if (skippedNote) out.push(skippedNote)
       for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
       out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)

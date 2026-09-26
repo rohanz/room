@@ -8,6 +8,7 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc, type Worker } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { Rooms } from '../src/registry.js'
+import { decideResume, type WorkerRealState } from '../src/worker-state.js'
 import { persistWorkerStopReason } from '../src/workers.js'
 import type { Session } from '../src/session.js'
 import type { PreparedWorktree, SpawnSpec } from '../src/workers.js'
@@ -39,10 +40,11 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   } as unknown as Session
   let current: Session | null = session
   const specs: SpawnSpec[] = []
+  const logs: string[] = []
   const exits: ((code: number | null) => void)[] = []
   const errors: ((error: Error) => void)[] = []
   const tools = createTools({
-    getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers,
+    getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers, log: line => logs.push(line),
     spawner: spec => { specs.push(spec); return { pid: 6000 + specs.length, onExit: cb => { exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => true } },
     worktree: worktree ?? (async (repo, tag) => {
       const workerDir = join(repo, '.room', 'workers', tag)
@@ -60,10 +62,45 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
       branch: `room/${tag}`, pid: -1, startedAt: 1, status: 'done', exitCode: 0, gen: 1, ...patch,
     })
   }
-  return { dir, room, session, tools, specs, exits, errors, seed }
+  return { dir, room, session, tools, specs, exits, errors, logs, seed }
 }
 
 describe('resumed worker boundaries', () => {
+  it.each([
+    ['vanished', false, 'gone', 'missing'],
+    ['present', false, 'gone', 'no-session'],
+    ['present', true, 'ours', 'wait-exit'],
+    ['present', true, 'gone', 'ready'],
+  ] as const)('resume decision: worktree %s, host session %s, process %s -> %s', (worktree, hostSession, process, expected) => {
+    expect(decideResume({ worktree, hostSession, process } as WorkerRealState)).toBe(expected)
+  })
+  it('characterizes fresh and resumed launch policy, handle lifetime, and replies', async () => {
+    vi.stubEnv('ROOM_WORKER_NICE', '0')
+    const t = setup(1)
+    const spawned = await t.tools.call('room_spawn', { tag: 'policy', task: 'first', host: 'claude', share: 'intent' })
+    const first = t.room.workers.get('policy')!
+    expect(spawned).toContain('spawned policy:')
+    expect(t.specs[0]).toMatchObject({ cwd: first.dir, logFile: join(t.dir, '.room', 'workers', 'policy.log'), env: {
+      ROOM_SHARE: 'intent', ROOM_WORKER_ID: first.id, ROOM_TAG: 'policy', ROOM_DIR: first.dir,
+      ROOM_LOG_FILE: join(t.dir, '.room', 'workers', 'policy.mcp.log'), PORT: String(first.port),
+    } })
+    expect(t.specs[0].cmd).toBe('claude')
+    expect(first.budget?.nice).toBe(0)
+    t.room.updateWorker('policy', { status: 'done', summary: 'done', finishedAt: Date.now() }, first.id)
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.room.workers.get('policy')?.exitCode).toBe(0))
+    const reply = await t.tools.call('room_send', { type: 'note', to: 'policy', text: 'again' })
+    expect(reply).toContain('resumed policy with your message; policy had finished and was restarted')
+    expect(t.specs[1]).toMatchObject({ cwd: first.dir, logFile: t.specs[0].logFile, env: t.specs[0].env })
+    expect(t.specs[1].cmd).toBe('claude')
+    expect(t.specs[1].args).toContain('--resume')
+    expect(t.room.workers.get('policy')).toMatchObject({ status: 'running', pid: 6002 })
+    t.errors[1](new Error('host failed'))
+    await vi.waitFor(() => expect(t.room.workers.get('policy')).toMatchObject({ status: 'failed', exitCode: -1 }))
+    await vi.waitFor(() => expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('could not resume policy: host failed'))).toBe(true))
+    expect(t.logs).toEqual([])
+  })
+
   it('keeps an intent worker at intent when its lead shares full', async () => {
     vi.stubEnv('ROOM_WORKER_NICE', '0')
     const t = setup()
@@ -153,5 +190,64 @@ describe('resumed worker boundaries', () => {
     t.errors[0](new Error('host unavailable'))
     await vi.waitFor(() => expect(t.room.workers.get('crash')).toMatchObject({ status: 'failed', exitCode: -1 }))
     await vi.waitFor(() => expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('could not resume crash: host unavailable'))).toBe(true))
+  })
+
+  it('refuses a vanished worktree before posting a message or starting a host', async () => {
+    const t = setup()
+    t.seed('vanished')
+    rmSync(t.room.workers.get('vanished')!.dir, { recursive: true, force: true })
+    const before = t.room.messages().length
+    expect(await t.tools.call('room_send', { type: 'note', to: 'vanished', text: 'again' })).toBe('error: cannot resume vanished: its worktree no longer exists')
+    expect(t.specs).toHaveLength(0)
+    expect(t.room.messages()).toHaveLength(before)
+  })
+
+  it('queues one follow-up through a slow previous process exit and does not warn that the restarted worker will not answer', async () => {
+    const t = setup()
+    expect(await t.tools.call('room_spawn', { tag: 'slow', task: 'first', host: 'claude' })).toContain('spawned slow')
+    const w = t.room.workers.get('slow')!
+    t.room.updateWorker('slow', { status: 'done', summary: 'done', finishedAt: Date.now() }, w.id)
+    const sending = t.tools.call('room_send', { type: 'note', to: 'slow', text: 'one follow-up' })
+    setTimeout(() => t.exits[0](0), 5_200)
+    const reply = await sending
+    expect(reply).toContain('resumed slow with your message; slow had finished and was restarted')
+    expect(reply).not.toContain('will not answer')
+    expect(t.specs).toHaveLength(2)
+    expect(t.room.messages().filter(m => m.type === 'note' && m.to === w.name && m.text === 'one follow-up')).toHaveLength(1)
+  }, 8_000)
+
+  it('does not post a message when resume cannot reserve a launch slot', async () => {
+    const t = setup(1)
+    t.seed('busy', { status: 'running' })
+    t.seed('waiting')
+    const before = t.room.messages().length
+    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toMatch(/^error: .*max 1/)
+    expect(t.room.messages()).toHaveLength(before)
+  })
+
+  it('bounds an old process exit wait and says neither delivery nor restart happened', async () => {
+    const t = setup()
+    t.seed('stuck')
+    const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
+    const w = t.room.workers.get('stuck')!
+    rooms.setHandle(t.session, w.id!, { pid: 9001, onExit: () => {}, kill: () => true })
+    const reply = await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('must not start') }, undefined, undefined, () => {}, Date.now(), 20)
+    expect(reply).toBe('error: could not resume stuck: previous process did not exit within 1 second; message was not delivered and worker was not resumed')
+    expect(t.specs).toHaveLength(0)
+    expect(t.room.workers.get('stuck')?.status).toBe('done')
+  })
+
+  it('cancels a queued follow-up without leaving a bus copy', async () => {
+    const t = setup()
+    await t.tools.call('room_spawn', { tag: 'cancel', task: 'first', host: 'claude' })
+    const w = t.room.workers.get('cancel')!
+    t.room.updateWorker('cancel', { status: 'done', summary: 'done', finishedAt: Date.now() }, w.id)
+    const before = t.room.messages().length
+    const controller = new AbortController()
+    const sending = t.tools.call('room_send', { type: 'note', to: 'cancel', text: 'never sent' }, controller.signal)
+    setTimeout(() => controller.abort(), 20)
+    expect(await sending).toBe('error: tool call cancelled')
+    expect(t.specs).toHaveLength(1)
+    expect(t.room.messages()).toHaveLength(before)
   })
 })
