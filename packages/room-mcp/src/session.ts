@@ -210,17 +210,18 @@ export function parseServer(raw: string): { server: string; token?: string } {
 }
 
 const shareMaxCache = new Map<string, ShareLevel>()
-/** The server's sharing ceiling (`shareMax` in GET /auth/config, from ROOM_SHARE_MAX). Older or unreachable servers: full. */
-export async function serverShareMax(server: string): Promise<ShareLevel> {
+/** The server's sharing ceiling. Unknown results use the local choice and are retried. */
+export async function serverShareMax(server: string, fallback: ShareLevel = 'intent', fetcher: typeof serverFetch = serverFetch): Promise<ShareLevel> {
   const hit = shareMaxCache.get(server)
   if (hit) return hit
-  let max: ShareLevel = 'full'
   try {
-    const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 })
-    if (res.ok) max = resolveShare(((await res.json()) as { shareMax?: unknown }).shareMax).level
+    const res = await fetcher(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 })
+    if (!res.ok) return fallback
+    const max = resolveShare(((await res.json()) as { shareMax?: unknown }).shareMax).level
+    shareMaxCache.set(server, max)
+    return max
   } catch { /* unreachable: the join will report it */ }
-  shareMaxCache.set(server, max)
-  return max
+  return fallback
 }
 
 /** Missing uses full; invalid levels fail closed to plans only. */
@@ -275,11 +276,14 @@ export function decodeRoom(encoded: string): string { try { return decodeURIComp
 
 /** Hold an automatic name from before the presence probe until the daemon stops.
  * Linked worktrees share this git common dir, so O_EXCL chooses exactly one winner. */
-async function reserveAutoName(dir: string, room: string, name: string): Promise<(() => void) | undefined> {
+async function reserveAutoName(dir: string, room: string, name: string, worktree: string): Promise<{ release?: () => void; sameWorktree: boolean }> {
   const folder = join(await gitCommonDir(dir), 'room-name-locks')
   mkdirSync(folder, { recursive: true, mode: 0o700 })
   const file = join(folder, createHash('sha256').update(`${room}\0${name}`).digest('hex'))
-  return acquireOwnedFile(file, { pid: process.pid })
+  const release = acquireOwnedFile(file, { pid: process.pid, worktree })
+  if (release) return { release, sameWorktree: false }
+  try { return { sameWorktree: JSON.parse(readFileSync(file, 'utf8')).worktree === worktree } }
+  catch { return { sameWorktree: false } }
 }
 
 /** Resolve identity before roomd can publish any overlays under it. The probe never publishes a user. */
@@ -316,12 +320,14 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
       const holdsWork = (candidate: string) => roomDoc.changedPaths(candidate).length > 0 || (roomDoc.deleted.get(candidate)?.size ?? 0) > 0
       const rememberedName = rememberedTag === undefined ? undefined : rememberedTag ? `${options.name}+${rememberedTag}` : options.name
       const reserved = new Set<string>()
+      let ownPreviousLock = false
+      const worktree = await worktreePath(options.dir)
       const host = resolveSessionHost(options.dir)
       for (let candidate = rememberedTag === undefined ? 0 : -1; ; candidate++) {
         const tag = candidate === -1 ? rememberedTag! : candidate === 0 ? '' : candidate === 1 ? host : `${host}-${candidate}`
         const candidateName = tag ? `${options.name}+${tag}` : options.name
-        const release = await reserveAutoName(options.dir, options.room, candidateName)
-        if (!release) { reserved.add(candidateName); continue }
+        const { release, sameWorktree } = await reserveAutoName(options.dir, options.room, candidateName, worktree)
+        if (!release) { reserved.add(candidateName); if (candidateName === (rememberedName ?? options.name)) ownPreviousLock = sameWorktree; continue }
         if (names.has(candidateName) || (tag !== rememberedTag && holdsWork(candidateName))) { release(); continue }
         releaseName = release
         label = tag || undefined
@@ -334,7 +340,7 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
         autoTagNote = `joined as ${name} (${rememberedPresent ? `remembered name ${rememberedName} is in use by another session` : barePresent ? `${options.name} is in use by another session` : `${options.name} still holds uncommitted work from another clone`})`
         ;(options.log ?? console.error)(autoTagNote)
       }
-      if ((label ?? '') !== rememberedTag) await rememberTag(options.dir, label ?? '')
+      if ((label ?? '') !== rememberedTag && !ownPreviousLock) await rememberTag(options.dir, label ?? '')
     } catch (e) { releaseName?.(); releaseName = undefined; throw e } finally {
       provider.destroy()
       provider.awareness.destroy()
@@ -424,7 +430,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (pre?.loginNeeded) throw new NotLoggedIn(server)
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2)
   const shareRequested = requestedShare(config.share)
-  const shareMax = await serverShareMax(server)
+  const shareMax = await serverShareMax(server, shareRequested)
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
   const { daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag)
@@ -450,6 +456,18 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     ...(config.room ? { pinnedRoom: true } : {}),
   }
   trackConnection(session)
+  if (!shareMaxCache.has(server)) {
+    let refreshing = false
+    session.provider.on('sync', (synced: boolean) => {
+      if (!synced || refreshing || shareMaxCache.has(server)) return
+      refreshing = true
+      void serverShareMax(server, session.shareRequested).then(async max => {
+        session.shareMax = max
+        const level = clampShare(session.shareRequested, max)
+        if (session.daemon.share !== level) await session.daemon.setShare(level)
+      }).catch(error => opts.log?.(`warn: could not refresh sharing ceiling: ${String(error)}`)).finally(() => { refreshing = false })
+    })
+  }
   watchClosed(session, opts.log)
   return session
 }

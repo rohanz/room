@@ -140,7 +140,7 @@ describe('automatic session tags', () => {
     expect(s.me.name).toBe('name+claude')
     expect(s.autoTagNote).toBe('joined as name+claude (name still holds uncommitted work from another clone)')
   })
-  it('rejoins under the tag remembered for this clone when the bare name is free', async () => {
+  it('rejoins under a tag remembered after a different session was present under the bare name', async () => {
     const dir = repo()
     const first = await start(['name'], undefined, [], [], dir)
     expect(first.me.name).toBe('name+claude')
@@ -148,7 +148,17 @@ describe('automatic session tags', () => {
     await writeChoice(dir, 'team')
     expect((await start([], undefined, [], [], dir)).me.name).toBe('name+claude')
   })
-  it('replaces a remembered bare tag when another session is present under that name', async () => {
+  it('does not remember a temporary tag while this worktree previous process holds the bare name lock', async () => {
+    const dir = repo()
+    const old = await start([], undefined, [], [], dir)
+    const replacement = await start([], undefined, [], [], dir)
+    expect(replacement.me.name).toBe('name+claude')
+    expect((await readChoice(dir))?.tags?.[await worktreePath(dir)]).toBe('')
+    await replacement.daemon.stop()
+    await old.daemon.stop()
+    expect((await start([], undefined, [], [], dir)).me.name).toBe('name')
+  })
+  it('replaces a remembered bare tag when another session is present, rather than only its old lock', async () => {
     const dir = repo()
     await rememberTag(dir, '')
     const s = await start(['name'], undefined, [], [], dir)

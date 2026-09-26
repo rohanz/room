@@ -1,6 +1,7 @@
 /** Owns Room's worktree-private and common Git directory rules, including carry records. */
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { boundedGitSync } from './baseline.js'
 import { git } from './git.js'
 
@@ -50,9 +51,17 @@ export async function realGitCommonDir(dir: string): Promise<string> {
 
 function recordAbsent(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === 'ENOENT' }
 
-function readRecord<T>(file: string): T | undefined {
+export function readRecordSync<T>(file: string): T | undefined {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T }
   catch (error) { if (recordAbsent(error)) return undefined; throw error }
+}
+
+/** Atomically replace a private Git record; carry and retained sharing use this writer. */
+export function writeRecordSync(file: string, record: object): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const temp = file + '.' + process.pid + '.' + randomBytes(4).toString('hex') + '.tmp'
+  try { fs.writeFileSync(temp, JSON.stringify(record), { mode: 0o600 }); fs.renameSync(temp, file) }
+  finally { try { fs.rmSync(temp, { force: true }) } catch { /* rename already succeeded */ } }
 }
 
 /** One accessor for <common git dir>/room-carry/<tag>.json and its atomic reads/writes. */
@@ -78,12 +87,7 @@ export function carryRecordSync(repoDir: string, tag: string) {
   const file = path.join(gitCommonDirSync(repoDir), 'room-carry', tag + '.json')
   return {
     file,
-    read: <T>(): T | undefined => readRecord<T>(file),
-    write(record: object): void {
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      const temp = file + '.' + process.pid + '.tmp'
-      try { fs.writeFileSync(temp, JSON.stringify(record), { mode: 0o600 }); fs.renameSync(temp, file) }
-      finally { try { fs.rmSync(temp, { force: true }) } catch { /* rename already succeeded */ } }
-    },
+    read: <T>(): T | undefined => readRecordSync<T>(file),
+    write(record: object): void { writeRecordSync(file, record) },
   }
 }

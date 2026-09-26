@@ -848,6 +848,23 @@ describe('sharing levels', () => {
     expect(daemon.roomDoc.changedPaths('Decl')).toEqual([])
   })
 
+  it('restores finished declared output after the daemon restarts with an empty scope', async () => {
+    const dir = await makeRepo({ 'app.py': 'base\n', 'private.py': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'app.py'), 'finished\n')
+    await fsp.writeFile(path.join(dir, 'private.py'), 'private\n')
+    const url = room()
+    const first = await start({ room: url, dir, name: 'Decl', share: 'declared' })
+    first.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'app', summary: 'finish app', paths: ['app.py'] })
+    await waitFor(() => first.roomDoc.text('app.py', 'Decl') === 'finished\n')
+    first.roomDoc.clearScope('Decl')
+    await first.stop()
+    const restarted = await start({ room: url, dir, name: 'Decl', share: 'declared' })
+    expect(restarted.roomDoc.text('app.py', 'Decl')).toBe('finished\n')
+    expect(restarted.roomDoc.text('private.py', 'Decl')).toBeUndefined()
+    const teammate = await start({ room: url, dir: await cloneRepo(dir), name: 'Peer', share: 'intent' })
+    expect(teammate.roomDoc.text('app.py', 'Decl')).toBe('finished\n')
+  })
+
   it('setShare withdraws overlays when the level drops and republishes when it rises', async () => {
     const dir = await makeRepo({ 'a.py': 'a\n', 'b.py': 'b\n' })
     const daemon = await start({ room: room(), dir, name: 'Dial' })

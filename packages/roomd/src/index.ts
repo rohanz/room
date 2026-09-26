@@ -8,6 +8,7 @@ import { readRoomFile, roomFilePath } from './room-file.js'
 export { validRepoPath, isInsideRoot, containedRepoPath, MATERIALIZED_PATH, DISK_READ_PATH, LINK_INPUT_PATH, RECORDED_PATH, CARRIED_PATH, type RepoPathSyntax, type RepoLeafPolicy, type RepoContainmentOptions } from './repo-path.js'
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
 import { commonGitDirFromDotGit } from './git-dirs.js'
+import { RetainedDeclaredPaths } from './retained-declared.js'
 export { worktreeGitDirFromDotGit, worktreeGitDirSync, commonGitDirFromDotGit, gitCommonDir, realGitCommonDir, carryRecord, carryRecordSync } from './git-dirs.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -260,7 +261,7 @@ class Daemon implements Roomd {
   /** Explicit scope paths (option / setShare); when unset, the person's scope in the room doc decides. */
   private explicitScopePaths?: string[]
   /** Exact paths already published while declared; task scope may end before teammates collect them. */
-  private readonly retainedDeclaredPaths = new Set<string>()
+  private retainedDeclaredPaths: Set<string> = new Set<string>()
   private beforePublishWrite?: (relpath: string) => Promise<void>
 
   private onScanned?: (relpath: string) => void
@@ -351,6 +352,7 @@ class Daemon implements Roomd {
     this.branch = branch
     this.base = base
     this.tracked = tracked
+    this.retainedDeclaredPaths = new RetainedDeclaredPaths(this.dir)
 
     await this.step('sync', () => this.waitForSync())
     // The daemon owns base receipts. Observe before the initial sweep so a notice
@@ -450,6 +452,7 @@ class Daemon implements Roomd {
       ...this.roomDoc.changedPaths(this.name),
       ...this.skips.size, ...this.skips.budget, ...this.skips.share,
       ...this.roomDoc.deletedFor(this.name).keys(),
+      ...this.retainedDeclaredPaths,
       ...extra,
     ])
   }

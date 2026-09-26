@@ -117,6 +117,16 @@ it('uses full only for missing share values and clamps malformed server ceilings
   expect(await serverShareMax('ws://malformed-ceiling')).toBe('intent')
 })
 
+it('does not cache an unreachable sharing ceiling and retries with an injected fetcher', async () => {
+  const fetcher = vi.fn()
+    .mockRejectedValueOnce(new Error('unreachable'))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ shareMax: 'intent' })))
+  expect(await serverShareMax('ws://retry-ceiling', 'declared', fetcher)).toBe('declared')
+  expect(await serverShareMax('ws://retry-ceiling', 'declared', fetcher)).toBe('intent')
+  expect(await serverShareMax('ws://retry-ceiling', 'declared', fetcher)).toBe('intent')
+  expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
 it('delivers automatic-join disclosure on the first tool reply only', async () => {
   const t = setup()
   const session = await t.joiner({ server: 'ws://team', room: 'repo/main', share: 'intent' })
