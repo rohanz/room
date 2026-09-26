@@ -25538,7 +25538,7 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
     web: value(args3.web) ?? value(e.ROOM_WEB)
   };
 }
-function resolveSessionHost(dir, env = process.env, parentCommand = () => execFileSync2("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] })) {
+function resolveSessionHost(dir, env = process.env, parentCommand = () => execFileSync2("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } })) {
   const host = (v) => v === "claude" || v === "codex" ? v : void 0;
   if (host(env.ROOM_WORKER_HOST)) return env.ROOM_WORKER_HOST;
   if (host(env.ROOM_HOST)) return env.ROOM_HOST;
@@ -25656,7 +25656,7 @@ import { execFileSync as execFileSync3 } from "node:child_process";
 function claudeParentArgs() {
   if (parentArgsCache !== void 0) return parentArgsCache;
   try {
-    parentArgsCache = execFileSync3("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    parentArgsCache = execFileSync3("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
   } catch {
     parentArgsCache = "";
   }
@@ -31444,7 +31444,7 @@ async function workerRealState(leadDir, w, options = {}) {
     exitCode: w.exitCode,
     dismissed: w.dismissedAt !== void 0 || w.status === "dismissed"
   };
-  if (options.process) state.process = options.hasHandle || (deps.process ?? ((worker) => pidIsOurWorker(worker.pid, worker, options.probe)))(w) ? "ours" : "gone";
+  if (options.process) state.process = options.hasHandle ? "ours" : (deps.process ?? ((worker) => workerProcessOwnership(worker.pid, worker, options.probe)))(w);
   if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers);
   if (options.branch) {
     const ref = `refs/heads/${w.branch}`;
@@ -31490,10 +31490,10 @@ function decideDiscard(s) {
   return s.worktree === "vanished" ? "prune" : s.owned ? "cleanup" : "retain-directory";
 }
 function decideStop(s) {
-  return { cwd: s.owned === true, host: s.process === "ours" ? "signal" : "gone" };
+  return { cwd: s.owned === true, host: s.process === "ours" ? "signal" : s.process === "unknown" ? "unknown" : "not-ours" };
 }
 function processExited(s) {
-  return s.exitCode !== void 0 || s.process !== "ours";
+  return s.process === "not-ours";
 }
 function decideRetire(s) {
   if (!processExited(s) || !s.finished) return void 0;
@@ -31503,7 +31503,7 @@ function decideRetire(s) {
   return void 0;
 }
 function decideLeave(s) {
-  return s.status !== "done" && s.status !== "failed" && s.status !== "dismissed" || s.process === "ours" ? "stop" : "leave";
+  return s.status !== "done" && s.status !== "failed" && s.status !== "dismissed" || s.process === "ours" || s.process === "unknown" ? "stop" : "leave";
 }
 function decideShutdown(s) {
   return decideLeave(s);
@@ -31514,7 +31514,7 @@ function decidePreview(s, diskEligible) {
 function decideResume(s) {
   if (s.worktree === "vanished") return "missing";
   if (!s.hostSession) return "no-session";
-  return s.process === "ours" ? "wait-exit" : "ready";
+  return s.process === "ours" ? "wait-exit" : s.process === "unknown" ? "unknown" : "ready";
 }
 var init_worker_state = __esm({
   "packages/room-mcp/src/worker-state.ts"() {
@@ -32052,65 +32052,59 @@ function pidAlive2(pid) {
     return e.code === "EPERM";
   }
 }
-function probeProcess(pid) {
+function parsePsLstartUtc(line) {
+  const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(line.trim());
+  if (!match) return void 0;
+  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]);
+  const seconds = Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])) / 1e3;
+  return Number.isInteger(seconds) ? seconds : void 0;
+}
+function probeProcess(pid, readers = systemProcessReaders) {
   if (!pid || pid <= 0) return void 0;
   try {
-    const start2 = execFileSync4("ps", ["-o", "lstart=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
-    const command = execFileSync4("ps", ["-o", "command=", "-p", String(pid)], { stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).toString().trim();
-    const t = Date.parse(start2);
-    const info2 = { ...Number.isFinite(t) ? { start: t } : {}, ...command ? { command } : {} };
-    if (process.platform === "linux") {
+    if (readers.platform === "linux") {
+      const stat4 = readers.readFile(`/proc/${pid}/stat`);
+      const close = stat4.lastIndexOf(")");
+      if (close < 0) return void 0;
+      const startTicks = stat4.slice(close + 1).trim().split(/\s+/)[19];
+      if (!/^\d+$/.test(startTicks ?? "")) return void 0;
+      const bootId = readers.readFile("/proc/sys/kernel/random/boot_id").trim();
+      if (!bootId) return void 0;
+      let executable;
       try {
-        info2.env = Object.fromEntries(fs13.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter(Boolean).map((entry) => {
-          const equal = entry.indexOf("=");
-          return [entry.slice(0, equal), entry.slice(equal + 1)];
-        }));
+        executable = path12.basename(readers.readLink(`/proc/${pid}/exe`));
       } catch {
       }
-      try {
-        info2.cwd = fs13.realpathSync(`/proc/${pid}/cwd`);
-      } catch {
-      }
-    } else if (process.platform === "darwin") {
-      try {
-        const expanded = execFileSync4("ps", ["eww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 3e3 });
-        const env = {};
-        const environmentText = expanded.startsWith(command) ? expanded.slice(command.length) : "";
-        for (const match of environmentText.matchAll(/(?:^|\s)(ROOM_TAG|ROOM_LEAD)=([^\s]+)/g)) env[match[1]] = match[2];
-        info2.env = env;
-      } catch {
-      }
-      try {
-        const cwd2 = execFileSync4("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8", timeout: 3e3 }).split("\n").find((line) => line.startsWith("n"));
-        if (cwd2) info2.cwd = cwd2.slice(1);
-      } catch {
-      }
+      return { startTime: `linux:${bootId}:${startTicks}`, executable };
     }
-    return info2;
+    if (readers.platform === "darwin") {
+      const lstart = readers.exec("ps", ["-o", "lstart=", "-p", String(pid)]).trim();
+      const startSeconds = parsePsLstartUtc(lstart);
+      if (startSeconds === void 0) return void 0;
+      const boot = readers.exec("sysctl", ["-n", "kern.boottime"]).match(/sec\s*=\s*(\d+)/)?.[1];
+      if (!boot) return void 0;
+      let executable;
+      try {
+        executable = path12.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
+      } catch {
+      }
+      return { startTime: `darwin:${boot}:${startSeconds}`, executable };
+    }
   } catch {
-    return void 0;
   }
+  return void 0;
+}
+function workerProcessOwnership(pid, w, probe = probeProcess) {
+  if (!pidAlive2(pid)) return "not-ours";
+  if (!w.processStartTime) return "unknown";
+  const info2 = probe(pid);
+  if (!info2?.startTime || !info2.executable) return "unknown";
+  if (info2.startTime !== w.processStartTime) return "not-ours";
+  const executable = path12.basename(info2.executable);
+  return executable === w.host || executable === "node" ? "ours" : "not-ours";
 }
 function pidIsOurWorker(pid, w, probe = probeProcess) {
-  if (!pidAlive2(pid)) return false;
-  const info2 = probe(pid);
-  if (!info2?.start || !info2.command) return false;
-  if (Math.abs(info2.start - w.startedAt) > 5e3) return false;
-  if (!/(^|[\s/])(claude|codex)(\s|$)/.test(info2.command)) return false;
-  const session = w.hostSessionId?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (session && new RegExp(`(?:^|\\s)(?:--session-id|--resume|resume)\\s+["']?${session}(?=["']?(?:\\s|$))`).test(info2.command)) return true;
-  if (w.lead && info2.env?.ROOM_TAG === w.tag && info2.env.ROOM_LEAD === w.lead) return true;
-  if (info2.cwd && fs13.existsSync(path12.join(w.dir, ".git"))) {
-    try {
-      const root = fs13.realpathSync(w.dir);
-      if (fs13.realpathSync(info2.cwd) !== root) return false;
-      const top = execFileSync4("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
-      const branch = execFileSync4("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
-      if (fs13.realpathSync(top) === root && branch === (w.branch ?? `room/${w.tag}`)) return true;
-    } catch {
-    }
-  }
-  return false;
+  return workerProcessOwnership(pid, w, probe) === "ours";
 }
 function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
   const resolved = (p) => {
@@ -32125,7 +32119,11 @@ function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
 }
 function processName(pid) {
   try {
-    return path12.basename(execFileSync4("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8", timeout: 3e3 }).trim()) || "process";
+    return path12.basename(execFileSync4("ps", ["-o", "comm=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 3e3,
+      env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" }
+    }).trim()) || "process";
   } catch {
     return "process";
   }
@@ -32324,7 +32322,7 @@ async function saveDiscardPatch(leadDir, w) {
     fs13.rmSync(scratch, { recursive: true, force: true });
   }
 }
-var WORKERS_DIR, WORKER_PORT_START, WORKER_PORT_END, warnedMissingNice, WORKER_THREAD_CAPS, WORKER_EFFORTS, ROOM_CARRY_IDENTITY, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, LEAD_ONLY_ENV, defaultSpawner;
+var WORKERS_DIR, WORKER_PORT_START, WORKER_PORT_END, warnedMissingNice, WORKER_THREAD_CAPS, WORKER_EFFORTS, ROOM_CARRY_IDENTITY, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, LEAD_ONLY_ENV, defaultSpawner, systemProcessReaders;
 var init_workers = __esm({
   "packages/room-mcp/src/workers.ts"() {
     "use strict";
@@ -32417,6 +32415,17 @@ var init_workers = __esm({
           }
         }
       };
+    };
+    systemProcessReaders = {
+      platform: process.platform,
+      readFile: (file) => fs13.readFileSync(file, "utf8"),
+      readLink: (file) => fs13.readlinkSync(file),
+      exec: (file, args3) => execFileSync4(file, args3, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3e3,
+        ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
+      })
     };
   }
 });
@@ -33298,7 +33307,16 @@ Your dev-server port is ${port} (PORT=${port}).` : command.message;
     bindWorkerPortReservation(proc, reservation);
     passed = true;
     rooms.setHandle(s, id2, proc);
-    const result = { proc, port, env, nice: priority2.nice, logFile, portChanged, startedAt: (policy.at ?? Date.now)() };
+    const result = {
+      proc,
+      port,
+      env,
+      nice: priority2.nice,
+      logFile,
+      portChanged,
+      startedAt: (policy.at ?? Date.now)(),
+      processStartTime: probeProcess(proc.pid)?.startTime
+    };
     if (!onStarted(result)) {
       rooms.dropHandle(s, id2, proc);
       try {
@@ -34906,19 +34924,28 @@ function createHandlerState(ctx) {
       const s = ctx.getSession();
       if (!s) return;
       const running = (await Promise.all(runtime2.runningWorkers(s).map(async (r) => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter((r) => r.action === "stop");
+      const cancellation = new AbortController();
+      const pending = new Set(running.map((r) => r.w.tag));
       const stops = running.map(async (r) => {
         try {
-          await runtime2.dismissWorker(r.s, r.w, "the lead's session ended", "lead-session-ended");
-        } catch {
+          await runtime2.dismissWorker(r.s, r.w, "the lead's session ended", "lead-session-ended", cancellation.signal);
+        } catch (e) {
+          log2(`shutdown dismissal failed for ${r.w.tag}: ${e instanceof Error ? e.message : String(e)}`);
+        } finally {
+          pending.delete(r.w.tag);
         }
       });
       if (stops.length) {
         let timer;
-        await Promise.race([Promise.all(stops), new Promise((resolve5) => {
-          timer = setTimeout(resolve5, 1800);
+        const completed = await Promise.race([Promise.all(stops).then(() => true), new Promise((resolve5) => {
+          timer = setTimeout(() => resolve5(false), 1800);
           timer.unref();
         })]);
         if (timer) clearTimeout(timer);
+        if (!completed) {
+          cancellation.abort();
+          for (const tag of pending) log2(`shutdown dismissal timed out for ${tag}; worker record kept for restart`);
+        }
       }
       await runtime2.closeWorkersRoom().catch(() => {
       });
@@ -35395,7 +35422,7 @@ var init_registry = __esm({
           if (!this.reserve(lock)) continue;
           try {
             const state = await workerRealState(s.dir, w, { process: true });
-            if (!processExited(state)) continue;
+            if (!processExited(state) || pidAlive2(w.pid)) continue;
             if (w.status !== "done") s.room.clearWorkerCoordination(w.name);
             if (w.status === "running") {
               await finishWorkerProcess(s, w, null, Date.now(), void 0, true);
@@ -35555,7 +35582,7 @@ var init_registry = __esm({
         const signal = toolSignal.getStore();
         while (Date.now() < deadline && !signal?.aborted) {
           const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) });
-          if (state.process !== "ours") return true;
+          if (state.process === "not-ours") return true;
           const key = _Rooms.hkey(s, w.id);
           await new Promise((resolve5) => {
             let settled = false;
@@ -35622,12 +35649,14 @@ var init_registry = __esm({
           const initial = decideResume(state);
           if (initial === "missing") return `error: cannot resume ${w.tag}: its worktree no longer exists`;
           if (initial === "no-session") return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`;
+          if (initial === "unknown") return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`;
           if (initial === "wait-exit" && !await this.waitForPreviousExit(s, w, exitWaitMs)) {
             return toolCallAborted() ? "error: tool call cancelled" : `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`;
           }
           if (toolCallAborted()) return "error: tool call cancelled";
           const settled = decideResume(await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w) }));
           if (settled === "missing") return `error: cannot resume ${w.tag}: its worktree no longer exists`;
+          if (settled === "unknown") return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`;
           if (settled === "wait-exit") return `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`;
           if (!w.id) return `error: ${w.tag} has no stable worker id; it cannot be resumed`;
           const budget = w.budget;
@@ -35673,11 +35702,12 @@ var init_registry = __esm({
                 },
                 { mode: "resume", message, sessionId: w.hostSessionId, oldPort: w.port },
                 launchLease,
-                ({ proc, port, startedAt }) => !!s.room.updateWorker(w.tag, {
+                ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, {
                   pid: proc.pid,
                   port,
                   status: "running",
                   startedAt,
+                  processStartTime,
                   summary: void 0,
                   exitCode: void 0,
                   finishedAt: void 0,
@@ -45913,7 +45943,7 @@ function handlers4(state) {
         const had = await clearChoice(s.dir).catch(() => false);
         forgot = had ? "; forgot the remembered room choice for this clone (next session starts local)" : "; nothing was remembered for this clone";
       }
-      return `left ${s.roomName}; released ${released} claim(s)${stopped.length ? "; stopped workers: " + stopped.join("; ") : ""}${forgot}`;
+      return `left ${s.roomName}; released ${released} claim(s)${stopped.length ? "; worker process checks: " + stopped.join("; ") : ""}${forgot}`;
     },
     async room_close(a) {
       const s = S();
@@ -47075,6 +47105,7 @@ ${verdict.text}` };
     fs21.rmSync(dir, { recursive: true, force: true });
   }
 }
+var CLOSED_ARCHIVE_PIPE_ERRORS = /* @__PURE__ */ new Set(["EPIPE", "ENOTCONN", "ECONNRESET"]);
 async function materializeGitTree(cloneDir, ref, destination) {
   if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`);
   await git(cloneDir, ["cat-file", "-e", `${ref}^{commit}`]);
@@ -47116,7 +47147,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     archive.on("error", fail);
     extract.on("error", fail);
     const streamError = (error2) => {
-      if (error2.code !== "EPIPE") {
+      if (!CLOSED_ARCHIVE_PIPE_ERRORS.has(error2.code ?? "")) {
         fail(error2);
         return;
       }
@@ -47137,7 +47168,6 @@ async function materializeGitTree(cloneDir, ref, destination) {
       extractCode = code;
       archive.stdout.unpipe(extract.stdin);
       archive.stdout.resume();
-      extract.stdin.destroy();
       finish();
     });
     archive.stdout.pipe(extract.stdin);
@@ -47196,6 +47226,11 @@ async function assertNoOperation(dir) {
   }
 }
 function handlers7(state) {
+  const unverifiedLive = async (s, w) => {
+    if (!pidAlive2(w.pid)) return void 0;
+    const facts = await workerRealState(s.dir, w, { process: true, hasHandle: !!state.rooms.handle?.(s, w.id), probe: state.ctx?.probe });
+    return facts.process === "ours" ? void 0 : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
+  };
   const ownership = (s, w, discarding) => {
     const known = [...s.room.workers.values(), ...s.room.retiredWorkers()];
     const visited = /* @__PURE__ */ new Set();
@@ -47289,6 +47324,8 @@ repeat with force=true to delete them`;
         return "error: this worker is already being handled or retired";
       }
       try {
+        const unsafe = await unverifiedLive(s, w);
+        if (unsafe) return unsafe;
         const children = descendants(s, w);
         if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map((c) => c.tag).join(", ")}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`;
         const childResults = [];
@@ -47389,6 +47426,11 @@ repeat with force=true to delete them`;
       for (const item of candidates) {
         const { s } = item;
         let { w } = item;
+        const unsafe = await unverifiedLive(s, w);
+        if (unsafe) {
+          out2.push(unsafe);
+          continue;
+        }
         const stopped = w.pid !== void 0 && !state.workerAlive(s, w) && !pidAlive2(w.pid);
         const decision = decideCollect(await workerRealState(lead.dir, w), !!a.tag, stopped);
         if (decision === "skip-status") {
@@ -47404,6 +47446,11 @@ repeat with force=true to delete them`;
         if (!workerLock) continue;
         workerLocks.push(workerLock);
         try {
+          const unsafeAfterLock = await unverifiedLive(s, w);
+          if (unsafeAfterLock) {
+            out2.push(unsafeAfterLock);
+            continue;
+          }
           if (decideCollect(await workerRealState(lead.dir, w), !!a.tag, stopped) === "missing") {
             await pruneMissingWorkerWorktree(lead.dir, w, false);
             out2.push(`${a.tag ? "nothing to collect" : "skipped " + w.tag}: worktree ${w.dir} is gone`);
@@ -47426,6 +47473,11 @@ repeat with force=true to delete them`;
           while (state.workerAlive(s, w) && now() < deadline) await sleep2(Math.min(250, deadline - now()));
           if (state.workerAlive(s, w)) {
             out2.push("skipped " + w.tag + ": process has not exited after 15 s");
+            continue;
+          }
+          const unsafeAfterWait = await unverifiedLive(s, w);
+          if (unsafeAfterWait) {
+            out2.push(unsafeAfterWait);
             continue;
           }
           const current = s.room.workers.get(w.tag);
@@ -48114,7 +48166,7 @@ function handlers8(state) {
             },
             { mode: "fresh", task, links: link, carriedPaths: carried?.paths, sessionId: hostSessionId },
             launchLease,
-            ({ proc: proc2, port: port2, nice: nice2, startedAt }) => {
+            ({ proc: proc2, port: port2, nice: nice2, startedAt, processStartTime }) => {
               const w = {
                 id: id2,
                 tag,
@@ -48135,6 +48187,7 @@ function handlers8(state) {
                 ...carriedUntracked?.length ? { carriedUntracked } : {},
                 pid: proc2.pid,
                 startedAt,
+                ...processStartTime ? { processStartTime } : {},
                 status: "running",
                 lead: s.me.name,
                 gen
@@ -48209,11 +48262,21 @@ function install6(state) {
   };
   const runningWorkers = (s) => {
     const out2 = [];
-    for (const sess of [s, ...rooms.all().filter((x) => x !== s)]) for (const w of myWorkers(sess)) if (w.status === "running" || workerAlive(sess, w)) out2.push({ s: sess, w });
+    for (const sess of [s, ...rooms.all().filter((x) => x !== s)]) for (const w of myWorkers(sess)) if (w.status === "running" || pidAlive2(w.pid) || workerAlive(sess, w)) out2.push({ s: sess, w });
     return out2;
   };
-  const dismissWorker = async (s, w, why, stopReason) => {
+  const dismissWorker = async (s, w, why, stopReason, cancelled) => {
     const proc = rooms.handle(s, w.id);
+    if (!proc) {
+      const processState = await workerRealState(s.dir, w, { process: true, probe: ctx.probe });
+      if (processState.process === "not-ours" && pidAlive2(w.pid)) return `pid ${w.pid} belongs to another process; not signalled`;
+      if (processState.process === "unknown" && pidAlive2(w.pid)) {
+        const message = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
+        s.room.post(s.me, { type: "note", to: w.lead, priority: "interrupt", text: message });
+        return message;
+      }
+      if (processState.process !== "ours") return `pid ${w.pid} not signalled: the process is gone; worker record kept`;
+    }
     const protectedPids = w.pid ? [w.pid] : [];
     const ownedWorktree = decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...s.room.workers.values()] })).cwd;
     const stopped = [];
@@ -48242,17 +48305,22 @@ function install6(state) {
       signalled = false;
       how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`;
     }
-    if (stopReason) {
-      try {
-        persistWorkerStopReason(s.dir, w.tag, stopReason, w.id);
-      } catch (e) {
-        state.log(`could not persist stop reason for ${w.tag}: ${e}`);
-      }
-    }
-    if (signalled || stopReason) s.room.updateWorker(w.tag, { ...w.status === "running" ? { status: "dismissed" } : {}, dismissedAt: state.now(), ...stopReason ? { stopReason } : {} }, w.id);
-    if (signalled || workerAlive(s, w)) s.room.post(s.me, { type: "note", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
+    if (!signalled && pidAlive2(w.pid)) how = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
     await stopCwdProcesses();
     if (proc && !pidAlive2(w.pid)) releaseWorkerProcessPort(proc);
+    if (cancelled?.aborted) return how + cleanupText();
+    if (stopReason && cleanupError) throw new Error(cleanupError);
+    if (signalled || proc || pidAlive2(w.pid)) s.room.post(s.me, { type: "note", to: w.lead, priority: signalled ? "notify" : "interrupt", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : pidAlive2(w.pid) ? how : `could not dismiss worker ${w.tag} (${w.name}): ${how}` });
+    if (signalled) {
+      if (stopReason) {
+        try {
+          persistWorkerStopReason(s.dir, w.tag, stopReason, w.id);
+        } catch (e) {
+          throw new Error(`could not persist stop reason for ${w.tag}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      s.room.updateWorker(w.tag, { ...w.status === "running" ? { status: "dismissed" } : {}, dismissedAt: state.now(), ...stopReason ? { stopReason } : {} }, w.id);
+    }
     return how + cleanupText();
   };
   const startWorkersBridge = (lead, s) => {
