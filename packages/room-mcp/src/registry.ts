@@ -8,7 +8,8 @@
  * bridge) so they start when a session is added and stop when it is removed, and the process
  * handles of workers this process spawned, keyed by the worker's stable id.
  */
-import type { NoteMsg, Presence, Worker } from '@room/shared'
+import type { DoneMsg, NoteMsg, Presence, Worker } from '@room/shared'
+import fs from 'node:fs'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
@@ -61,28 +62,60 @@ export function workerOrigin(s: Session): { server: string; isWorker: boolean } 
   }
 }
 
+function followUpAnswer(logFile: string, host: Worker['host'], runStart: number): string {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(logFile, 'r')
+    const size = fs.fstatSync(fd).size, start = Math.max(size >= runStart ? runStart : 0, size - 64 * 1024)
+    const buffer = Buffer.alloc(size - start)
+    fs.readSync(fd, buffer, 0, buffer.length, start)
+    const lines = buffer.toString('utf8').split(/\r?\n|\r/)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim()
+      if (!line) continue
+      if (host === 'claude') return line.slice(0, 300)
+      try {
+        const event = JSON.parse(line) as { type?: string; item?: { type?: string; text?: unknown } }
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
+          const text = event.item.text.trim().replace(/\s+/g, ' ')
+          if (text) return text.slice(0, 300)
+        }
+      } catch { /* Skip non-JSON log lines. */ }
+    }
+  } catch { /* A missing log has no report. */ }
+  finally { if (fd !== undefined) fs.closeSync(fd) }
+  return 'finished without a report'
+}
+
 /** A confirmed exit is recorded once, including when discovered after the lead restarts. */
 /** `unwitnessed`: a later lead found the recorded worker process gone, but cannot know why it stopped. */
 export async function finishWorkerProcess(s: Session, w: Worker, code: number | null, at = Date.now(), error?: string, unwitnessed = false): Promise<void> {
   const current = s.room.workers.get(w.tag)
   if (current !== w || w.exitCode !== undefined) return
-  const done = w.status === 'done'
+  const resumedDone = w.status === 'running' && w.resumeLogStart !== undefined && code === 0 && !unwitnessed && !error && !w.stopReason && w.dismissedAt === undefined
+  const done = w.status === 'done' || resumedDone
   const exitCode = code ?? -1
-  const tail = workerLogTail(path.join(s.dir, '.room', 'workers', `${w.tag}.log`))
+  const logFile = path.join(s.dir, '.room', 'workers', `${w.tag}.log`)
+  const tail = workerLogTail(logFile)
   const stopReason = w.stopReason ?? (unwitnessed ? persistedWorkerStopReason(s.dir, w.tag, w.id) : undefined)
+  const summary = resumedDone ? `${w.summary ? `${w.summary} ` : ''}(follow-up: ${followUpAnswer(logFile, w.host, w.resumeLogStart!)})` : undefined
   s.room.updateWorker(w.tag, {
     exitCode, finishedAt: w.finishedAt ?? at,
     ...(stopReason ? { stopReason } : {}),
     ...(w.status !== 'running' ? {}
       : unwitnessed ? { status: stopReason ? 'dismissed' as const : 'failed' as const, summary: `stopped while no session of yours was running; ${stopReason ?? 'reason unknown'}; worktree: ${w.dir}; last lines of its log: ${tail || '(empty log)'}` }
-      : stopReason ? { status: 'dismissed' as const } : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
+      : stopReason ? { status: 'dismissed' as const } : resumedDone ? { status: 'done' as const, summary }
+        : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
   }, w.id)
-  if (!done) {
+  if (!done || resumedDone) {
     // tools/state constructs Rooms: defer this dependency until all tool definitions are loaded.
     const { releaseClaimsOnDone } = await import('./tools/claims.js')
     const current = s.room.workers.get(w.tag)
     if (!current || current.id !== w.id || current.gen !== w.gen || current.startedAt !== w.startedAt) return
     releaseClaimsOnDone(s, undefined, w.name)
+  }
+  if (resumedDone) {
+    s.room.post<DoneMsg>({ name: w.name, kind: 'agent' }, { type: 'done', tag: w.tag, summary: summary!, changed: s.room.changedPaths(w.name), to: w.lead, priority: 'notify' })
   }
   if (!unwitnessed && !w.stopReason && w.dismissedAt === undefined && (exitCode !== 0 || !done)) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1000))
@@ -408,6 +441,8 @@ export class Rooms {
       try {
         const { server, isWorker } = workerOrigin(s)
         const spawnedAfter = s.room.lastMessages(1)[0]?.id ?? ''
+        let resumeLogStart = 0
+        try { resumeLogStart = fs.statSync(path.join(s.dir, '.room', 'workers', `${w.tag}.log`)).size } catch { /* A new log starts at zero. */ }
         let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
         try { launched = await launchWorkerProcess({ rooms: this, session: s, id, tag: w.tag, dir: w.dir,
           lead: w.lead, owner: s.me.owner ?? s.me.name, host: w.host, model: w.model, effort: w.effort,
@@ -415,7 +450,7 @@ export class Rooms {
           token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, probe: this.probe.bind(this), log, at },
         { mode: 'resume', sessionId: w.hostSessionId!, followUp, oldPort: w.port }, launchLease,
         ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running',
-          startedAt, spawnedAfter, processStartTime, summary: undefined, exitCode: undefined, finishedAt: undefined,
+          startedAt, spawnedAfter, processStartTime, resumeLogStart, exitCode: undefined, finishedAt: undefined,
           dismissedAt: undefined, stopReason: undefined }, id)) }
         catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))

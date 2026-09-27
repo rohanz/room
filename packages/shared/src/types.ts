@@ -157,6 +157,8 @@ export interface Worker {
   spawnedAfter?: string
   status: WorkerStatus
   summary?: string
+  /** Log byte offset when the current resumed run began; absent on fresh and legacy runs. */
+  resumeLogStart?: number
   exitCode?: number
   finishedAt?: number
   dismissedAt?: number

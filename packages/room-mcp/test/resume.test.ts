@@ -73,6 +73,64 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
 }
 
 describe('resumed worker boundaries', () => {
+  it('returns a clean Codex follow-up to done, reports it to the lead, and allows collection', async () => {
+    const t = setup()
+    t.seed('quiet', { host: 'codex', summary: 'initial work done' })
+    const workerDir = t.room.workers.get('quiet')!.dir
+    execFileSync('git', ['-C', t.dir, 'worktree', 'add', '-b', 'room/quiet', workerDir, 'HEAD'])
+    expect(await t.tools.call('room_send', { type: 'note', to: 'quiet', text: 'check cleanup' })).toContain('resumed quiet')
+    expect(t.room.workers.get('quiet')).toMatchObject({ status: 'running', resumeLogStart: 0, summary: 'initial work done' })
+    writeFileSync(join(t.dir, '.room', 'workers', 'quiet.log'), [
+      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Earlier answer' } }),
+      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Confirmed: nothing needs removing' } }),
+      JSON.stringify({ type: 'turn.completed' }),
+    ].join('\n'))
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.room.workers.get('quiet')).toMatchObject({ status: 'done', exitCode: 0, summary: 'initial work done (follow-up: Confirmed: nothing needs removing)' }))
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.type === 'done')).toMatchObject([{ from: 'rohanz+quiet', to: 'rohanz', tag: 'quiet', priority: 'notify', summary: 'initial work done (follow-up: Confirmed: nothing needs removing)' }]))
+    expect(t.room.messages().filter(m => m.priority === 'interrupt')).toEqual([])
+    const collected = await t.tools.call('room_collect', { tag: 'quiet' })
+    expect(collected).not.toContain('skipped quiet')
+    expect(collected).not.toContain('error:')
+  })
+
+  it('still fails a fresh worker that exits zero without room_done', async () => {
+    const t = setup()
+    expect(await t.tools.call('room_spawn', { tag: 'fresh', task: 'test', host: 'codex' })).toContain('spawned fresh')
+    expect(t.room.workers.get('fresh')?.resumeLogStart).toBeUndefined()
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.room.workers.get('fresh')?.status).toBe('failed'))
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(1))
+  })
+
+  it('fails a resumed nonzero exit with the death note', async () => {
+    const t = setup()
+    t.seed('broken', { host: 'codex', summary: 'initial work done' })
+    expect(await t.tools.call('room_send', { type: 'note', to: 'broken', text: 'check cleanup' })).toContain('resumed broken')
+    t.exits[0](1)
+    await vi.waitFor(() => expect(t.room.workers.get('broken')).toMatchObject({ status: 'failed', exitCode: 1 }))
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.priority === 'interrupt')).toMatchObject([{ to: 'rohanz', text: expect.stringContaining('worker broken died') }]))
+    expect(t.room.messages().filter(m => m.type === 'done')).toEqual([])
+  })
+
+  it('ignores an earlier run answer and uses the missing-report fallback', async () => {
+    const t = setup()
+    t.seed('silent', { host: 'codex', summary: 'initial work done' })
+    writeFileSync(join(t.dir, '.room', 'workers', 'silent.log'), JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Old answer' } }) + '\n')
+    expect(await t.tools.call('room_send', { type: 'note', to: 'silent', text: 'check again' })).toContain('resumed silent')
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.room.workers.get('silent')?.summary).toBe('initial work done (follow-up: finished without a report)'))
+  })
+
+  it('takes the final Claude result line and bounds it to 300 characters', async () => {
+    const t = setup()
+    t.seed('claude', { summary: 'initial work done' })
+    expect(await t.tools.call('room_send', { type: 'note', to: 'claude', text: 'check again' })).toContain('resumed claude')
+    writeFileSync(join(t.dir, '.room', 'workers', 'claude.log'), `intermediate\n${'x'.repeat(350)}\n`)
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.room.workers.get('claude')?.summary).toBe(`initial work done (follow-up: ${'x'.repeat(300)})`))
+  })
+
   it('records the newest bus message as the worker spawn marker', async () => {
     const t = setup()
     const before = t.room.post(t.session.me, { type: 'note', text: 'earlier work', priority: 'fyi' })
