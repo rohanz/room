@@ -510,3 +510,7 @@ the code pane re-runs the merge for the open file each time (542 ms for a 2,523-
 The trial. If Kieran and Hrishi each work on their own branch, gap 1 is confirmed as first. If
 they find notices noisy, gap 3 moves up. If nobody outside friends is asking, the enterprise
 list waits.
+
+## Known flaky tests (2026-09-27)
+
+- `graph-index.test.ts` "keeps a captured ready waiter pending through a base change and the queued ninth read" failed once in a full parallel run on 0.16.28. It passed 10 of 10 alone, so it is load-dependent. Make its waits condition-based when the graph index is next touched.

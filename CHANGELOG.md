@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.28
+
+- A Codex workspace binding whose initialization fails while a call is still validating no longer leaves an unhandled rejection, which exits the process, and no longer retries without bound. Each attempt records its failure, the call that started it gets "Room could not start for <dir>: <reason>; try again.", and the next call retries. Found by the final Astra pass on 0.16.27.
+
 ## 0.16.27
 
 Fixes from the Astra review of 0.16.25 and 0.16.26.

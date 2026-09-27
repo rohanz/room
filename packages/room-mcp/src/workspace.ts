@@ -60,6 +60,8 @@ async function sameWorkspace(a: string, b: string): Promise<boolean> {
 }
 
 const missingWorkspace = 'Room could not tell which folder this Codex session is in (no workspace in the call). Update Codex, or start it with ROOM_DIR=<repo>.'
+const startFailure = (attempt: { dir: string; failed?: unknown }): string =>
+  `Room could not start for ${attempt.dir}: ${attempt.failed instanceof Error ? attempt.failed.message : String(attempt.failed)}; try again.`
 const closingMessage = 'Room is shutting down; restart this session to use Room.'
 
 export function createWorkspaceBinding<T>({ deferred, fallbackDir, initialize, logFallback, logFailure, matches = sameWorkspace }: {
@@ -67,21 +69,25 @@ export function createWorkspaceBinding<T>({ deferred, fallbackDir, initialize, l
   logFallback: () => void; logFailure?: (error: unknown) => void
   matches?: (a: string, b: string) => Promise<boolean>
 }) {
-  let current: { dir: string; promise: Promise<T> } | undefined
+  type Attempt = { dir: string; promise: Promise<T>; failed?: unknown }
+  let current: Attempt | undefined
   let closing = false
   const abort = new AbortController()
-  const bind = (dir: string): { dir: string; promise: Promise<T> } => {
+  const bind = (dir: string): Attempt => {
     const attempt = Promise.resolve().then(() => {
       if (closing) throw new Error(closingMessage)
       return initialize(dir, abort.signal)
     })
     const tracked = attempt.catch(error => {
+      binding.failed = error
       if (current === binding) current = undefined
       // Non-deferred startup is fatal in index.ts; deferred attempts stay retryable.
       if (deferred && !closing) logFailure?.(error)
       throw error
     })
-    const binding = { dir, promise: tracked }
+    // Observed here so a failure during a caller's validation is never an unhandled rejection.
+    tracked.catch(() => {})
+    const binding: Attempt = { dir, promise: tracked }
     current = binding
     return binding
   }
@@ -98,9 +104,14 @@ export function createWorkspaceBinding<T>({ deferred, fallbackDir, initialize, l
       }
       const matchesBinding = !workspace || await matches(workspace, binding.dir)
       if (closing) return { error: closingMessage }
-      if (current !== binding) continue
+      if (current !== binding) {
+        // Revalidate only against a real replacement; this call's own failed attempt ends this call.
+        if (!current && 'failed' in binding) return { error: startFailure(binding) }
+        continue
+      }
       if (!matchesBinding) return { error: `This Codex session's workspace is ${workspace}, but Room is attached to ${binding.dir}; restart the session to switch.` }
-      const runtime = await binding.promise
+      let runtime: T
+      try { runtime = await binding.promise } catch { return { error: closing ? closingMessage : startFailure(binding) } }
       return closing ? { error: closingMessage } : { runtime }
     }
   }

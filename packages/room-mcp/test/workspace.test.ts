@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -186,8 +186,8 @@ it('retries after a rejected initialization and logs once per attempt', async ()
   const concurrent = binding.forCall(call(dir))
   await new Promise<void>(resolve => setImmediate(resolve))
   failed.resolve()
-  await expect(first).rejects.toThrow('failed')
-  await expect(concurrent).rejects.toThrow('failed')
+  expect((await first).error).toContain('failed')
+  expect((await concurrent).error).toContain('failed')
   expect(errors).toHaveLength(1)
   expect((await binding.forCall(call(dir))).runtime).toBe('ready')
   expect(starts).toBe(2)
@@ -216,7 +216,7 @@ it('does not dispatch into a replacement attempt after validation awaited the fa
   const validating = binding.forCall(call(first))
   await comparing.promise
   failed.resolve()
-  await expect(firstCall).rejects.toThrow('failed')
+  expect((await firstCall).error).toContain('failed')
   expect((await binding.forCall(call(second))).runtime).toBe(fs.realpathSync(second))
   releaseComparison.resolve()
   expect((await validating).error).toContain(`Room is attached to ${fs.realpathSync(second)}`)
@@ -267,4 +267,26 @@ it('distinguishes sibling worktrees and a nested repository using real Git roots
   expect((await binding.forCall(call(sibling))).error).toContain(`Room is attached to ${root}`)
   expect((await binding.forCall(call(nested))).error).toContain(`Room is attached to ${root}`)
   expect((await binding.forCall(call(root))).runtime).toBe(root)
+})
+
+it('an initialization that fails while the first call is validating returns an error once and retries on the next call', async () => {
+  const workspace = repo('fail')
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const initialize = vi.fn(async () => { throw new Error('bad config') })
+  const unhandled = vi.fn()
+  process.on('unhandledRejection', unhandled)
+  try {
+    const binding = createWorkspaceBinding({ deferred: true, fallbackDir: () => '/unused', initialize, logFallback: () => {},
+      matches: async () => { await gate; return true } })
+    const first = binding.forCall(call(workspace))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    release()
+    expect(await first).toEqual({ error: expect.stringContaining('bad config') })
+    expect(initialize).toHaveBeenCalledOnce()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(unhandled).not.toHaveBeenCalled()
+    expect(await binding.forCall(call(workspace))).toEqual({ error: expect.stringContaining('bad config') })
+    expect(initialize).toHaveBeenCalledTimes(2)
+  } finally { process.off('unhandledRejection', unhandled) }
 })
