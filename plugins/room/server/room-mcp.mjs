@@ -47698,6 +47698,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       const capNotice = requestedMs > WAIT_MAX ? "waited 100 s (the most per call); call again. " : "";
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`;
       const qRoom = questionId && rooms.holdingQuestion(questionId, s) || s;
+      for (const room of [s, ...rooms.all().filter((x) => x !== s)]) syncHookSeen(room);
       const received = (x, m) => {
         seen.add(m.id);
         x.room.markSeen(x.me.name, [m.id]);
@@ -49735,50 +49736,50 @@ async function sameWorkspace(a, b) {
 var missingWorkspace = "Room could not tell which folder this Codex session is in (no workspace in the call). Update Codex, or start it with ROOM_DIR=<repo>.";
 var closingMessage = "Room is shutting down; restart this session to use Room.";
 function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback, logFailure, matches = sameWorkspace }) {
-  let boundDir;
-  let pending;
+  let current;
   let closing = false;
   const abort2 = new AbortController();
   const bind = (dir) => {
-    boundDir = dir;
     const attempt = Promise.resolve().then(() => {
       if (closing) throw new Error(closingMessage);
       return initialize(dir, abort2.signal);
     });
     const tracked = attempt.catch((error2) => {
-      if (pending === tracked) {
-        pending = void 0;
-        boundDir = void 0;
-      }
+      if (current === binding) current = void 0;
       if (deferred && !closing) logFailure?.(error2);
       throw error2;
     });
-    pending = tracked;
-    return tracked;
+    const binding = { dir, promise: tracked };
+    current = binding;
+    return binding;
   };
   const forCall = async (params2) => {
     if (closing) return { error: closingMessage };
     const workspace = codexWorkspace(params2);
     if (deferred && !workspace) return { error: missingWorkspace };
-    if (pending && workspace && boundDir && !await matches(workspace, boundDir)) {
-      return { error: `This Codex session's workspace is ${workspace}, but Room is attached to ${boundDir}; restart the session to switch.` };
+    while (true) {
+      if (closing) return { error: closingMessage };
+      let binding = current;
+      if (!binding) {
+        if (!workspace) logFallback();
+        binding = bind(deferred ? workspace : fallbackDir());
+      }
+      const matchesBinding = !workspace || await matches(workspace, binding.dir);
+      if (closing) return { error: closingMessage };
+      if (current !== binding) continue;
+      if (!matchesBinding) return { error: `This Codex session's workspace is ${workspace}, but Room is attached to ${binding.dir}; restart the session to switch.` };
+      const runtime2 = await binding.promise;
+      return closing ? { error: closingMessage } : { runtime: runtime2 };
     }
-    if (closing) return { error: closingMessage };
-    if (!pending) {
-      if (!workspace) logFallback();
-      bind(deferred ? workspace : fallbackDir());
-    }
-    const runtime2 = await pending;
-    return closing ? { error: closingMessage } : { runtime: runtime2 };
   };
   return {
-    start: () => closing || deferred ? Promise.resolve(void 0) : pending ?? bind(fallbackDir()),
-    current: () => pending,
+    start: () => closing || deferred ? Promise.resolve(void 0) : (current ?? bind(fallbackDir())).promise,
+    current: () => current?.promise,
     /** Stop new work immediately; the caller shuts down any runtime that finishes starting. */
     close: () => {
       closing = true;
       abort2.abort();
-      return pending;
+      return current?.promise;
     },
     forCall,
     async run(params2, action) {
@@ -49793,7 +49794,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.26",
+  version: "0.16.27",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
