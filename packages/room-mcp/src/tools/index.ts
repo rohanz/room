@@ -1,4 +1,5 @@
 import { createHandlerState } from './state.js'
+import { baseRecovery } from '../auto-join.js'
 import { hookHealthNote } from '../hooks-bridge.js'
 import { hasCompany } from '../company.js'
 import { connectedBefore, trackConnection } from '../connection.js'
@@ -102,7 +103,7 @@ export function createTools(ctx: ToolCtx): Tools {
         if (e instanceof NeedFetch) return e.lead
           ? `error: ${e.person}'s base ${e.sha.slice(0, 10)} is ${e.lead}'s carried uncommitted work, which exists only on ${e.lead}'s machine; ${e.person}'s unchanged files cannot be read here, their changed files can`
           : `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry; if it is still missing, ${e.person} has not pushed it yet`
-        return `error: ${e instanceof Error ? e.message : String(e)}`
+        return `error: ${e instanceof Error ? e.message : String(e)}${baseRecovery(e)}`
       }
       })
     },

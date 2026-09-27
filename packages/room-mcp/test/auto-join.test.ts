@@ -171,6 +171,12 @@ describe('AutoJoin (the ensure step)', () => {
     expect(t.current()).not.toBeNull()
   })
 
+  it('includes the close-and-reopen path after a missing room base', async () => {
+    const t = setup(async () => { throw new RoomdError('room base abc is not in this clone (local HEAD def)', 2) }, { local: false })
+    await t.a.ensure()
+    expect(t.reports[0]).toContain('If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create).')
+  })
+
   it('retries transient failures with backoff, then reports once with the step that failed and no team advice', async () => {
     let calls = 0
     const t = setup(async () => { calls++; throw Object.assign(new RoomdError('could not sync with ws://127.0.0.1:1/x within 15000ms', 1), { phase: 'sync' }) }, { deadlineMs: 200, delaysMs: [20, 40] })

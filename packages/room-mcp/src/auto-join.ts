@@ -43,6 +43,10 @@ function phaseOf(e: unknown): string | undefined {
 }
 const causeOf = (e: unknown) => `${phaseOf(e) ? `(${phaseOf(e)}): ` : ''}${e instanceof Error ? e.message : String(e)}`
 
+export const baseRecovery = (e: unknown): string => e instanceof RoomdError && (/^room base .* is not in this clone/.test(e.message) || /^local HEAD .* has diverged from room base/.test(e.message))
+  ? ' If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create).'
+  : ''
+
 /** Failures a human must act on (open the repo, log in, fix the clone) are not retried. */
 function retryable(e: unknown): boolean {
   if (e instanceof NoRoom || e instanceof NotLoggedIn) return false
@@ -54,7 +58,7 @@ function joinFailureLine(e: unknown, local: boolean, attempts: number): string {
   if (e instanceof NotLoggedIn) return 'Room is not connected: not logged in; use room_login.'
   const phase = phaseOf(e)
   const head = `Room could not join${local ? ' the local room' : ''}${attempts > 1 ? ` after ${attempts} attempts` : ''}${phase ? ` (${phase})` : ''}: ${e instanceof Error ? e.message : String(e)}`
-  return local ? `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1000} s); room_join to retry now.` : `${head}; use room_join.`
+  return local ? `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1000} s); room_join to retry now.` : `${head}; use room_join.${baseRecovery(e)}`
 }
 
 export class AutoJoin {

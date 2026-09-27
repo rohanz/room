@@ -5,12 +5,12 @@ import { resolve } from 'node:path'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
 import { git } from '@room/roomd/git'
-import { DEFAULT_SERVER, NoRoom, NotLoggedIn, deriveRoomName, normalizeLocalRoomName, resolveServer, type JoinOptions, type Session } from '../session.js'
+import { DEFAULT_SERVER, NoRoom, NotLoggedIn, closeRoom, deriveRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, markWarned, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
-import { LOCAL, logout as doLogout, parseServer, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
+import { LOCAL, logout as doLogout, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
 import { handlers as shareHandlers, secondaryPublishingLine } from './share.js'
@@ -248,7 +248,26 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return `left ${s.roomName}; released ${released} claim(s)${stopped.length ? '; worker process checks: ' + stopped.join('; ') : ''}${forgot}`
     },
     async room_close(a) {
-      const s = S()
+      const s = ctx.getSession()
+      if (!s) {
+        const dir = ctx.cwd ?? process.cwd()
+        const config = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath } })
+        if (config.server === LOCAL) return 'error: not in a local room; nothing to close without joining'
+        if (a.confirm !== true) return 'error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user\'s explicit request'
+        const roomName = config.room ?? (await deriveRoomName(dir)).roomName
+        if (!roomName) return `error: ${dir} has no origin remote; room_join needs a room name`
+        const { server, token } = parseServer(config.server)
+        configureCredentials(config.credentialsPath)
+        let auth
+        try { auth = await resolveAuth(server, roomName, config.token ?? token) }
+        catch (e) {
+          if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_close confirm=true afterward.`
+          throw e
+        }
+        await closeRoom(server, roomName, { session: auth.session, token: auth.token })
+        const repo = roomName.slice(0, roomName.lastIndexOf('/'))
+        return `closed ${repo} for everyone without joining (the room could not be joined, so its history was not exported); room_create reopens it`
+      }
       if (s.local) {
         if (a.confirm !== true) return 'error: this is a local room (no server): room_close forgets its saved history (timeline, finished-worker records) on this machine; call with confirm=true only on the user\'s explicit request'
         if (runningWorkers(s).length) return 'error: dismiss running workers before closing the local room'

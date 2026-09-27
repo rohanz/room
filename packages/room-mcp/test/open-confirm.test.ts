@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createTools, DEFS } from '../src/tools.js'
+import { deriveRoomName } from '../src/session.js'
+import { RoomdError } from '@room/roomd'
 vi.mock('@room/roomd', async original => ({
   ...await original<typeof import('@room/roomd')>(),
   startRoomd: vi.fn(async () => { throw new Error('reached daemon') }),
@@ -44,4 +46,61 @@ describe('opening requires user consent', () => {
     expect(await tools.call('room_create', args)).toBe('error: reached daemon')
     expect(posts).toEqual([])
   })
+})
+
+describe('closing without a joined session', () => {
+  it('closes the derived team repo with the caller\'s auth after confirmation', async () => {
+    vi.stubEnv('ROOM_SERVER', 'ws://room.test:1234')
+    vi.stubEnv('ROOM_TOKEN', 'close-secret')
+    const roomName = (await deriveRoomName(process.cwd())).roomName!
+    const closes: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, opts?: RequestInit) => {
+      if (new URL(url).pathname === '/auth/config') return Response.json({ providers: [] })
+      if (new URL(url).pathname === '/rooms' && opts?.method === 'DELETE') {
+        closes.push(JSON.parse(String(opts.body)) as Record<string, unknown>)
+        return Response.json({ closed: [roomName] })
+      }
+      throw new Error(`unexpected ${url}`)
+    }))
+    const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {} })
+    expect(await tools.call('room_close', {})).toContain('confirm=true')
+    expect(closes).toEqual([])
+    expect(await tools.call('room_close', { confirm: true })).toContain(`closed ${roomName.slice(0, roomName.lastIndexOf('/'))} for everyone without joining`)
+    expect(closes).toEqual([{ room: roomName, token: 'close-secret' }])
+  })
+
+  it('reports nothing to close in an unjoined local room', async () => {
+    vi.stubEnv('ROOM_SERVER', 'local')
+    const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {} })
+    expect(await tools.call('room_close', { confirm: true })).toBe('error: not in a local room; nothing to close without joining')
+  })
+
+  it('gives login guidance before closing a team room', async () => {
+    vi.stubEnv('ROOM_SERVER', 'ws://room-login.test:1234')
+    vi.stubEnv('ROOM_ROOM', 'github.com/o/r/main')
+    vi.stubEnv('ROOM_TOKEN', '')
+    const close = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (new URL(url).pathname === '/auth/config') return Response.json({ github: 'device' })
+      close()
+      throw new Error(`unexpected ${url}`)
+    }))
+    const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {} })
+    expect(await tools.call('room_close', { confirm: true })).toContain('Call room_login server="ws://room-login.test:1234"')
+    expect(close).not.toHaveBeenCalled()
+  })
+})
+
+it.each([
+  'room base abc is not in this clone (local HEAD def)',
+  'local HEAD def has diverged from room base abc',
+])('explains recovery for join failure: %s', async message => {
+  const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {}, join: async () => { throw new RoomdError(message, 2) } })
+  const reply = await tools.call('room_join', { where: 'team', room: 'o/r/main' })
+  expect(reply).toContain('If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create).')
+})
+
+it('does not suggest closing for unrelated join failures', async () => {
+  const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {}, join: async () => { throw new RoomdError('sync timed out', 1) } })
+  expect(await tools.call('room_join', { where: 'team', room: 'o/r/main' })).toBe('error: sync timed out')
 })
