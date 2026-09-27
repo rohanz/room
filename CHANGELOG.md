@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.26
+
+- **A Codex worker no longer loses a message that arrives between its tool calls.** Waking a Codex session with `codex queue` marked the message as read. Codex injects a queued message only at its next turn boundary, and a headless `codex exec` worker may finish its task first. A broadcast interrupt sent while such a worker was busy was therefore marked read, never shown to it, and skipped by its next `room_wait`. It failed intermittently in live checks. A queued wake is now recorded only to avoid queueing the same message twice. The message stays unread until a tool reply, `room_wait` or the edit hook delivers it, so an agent may see it twice but never misses it.
+
 ## 0.16.25
 
 Fixes from the Astra review of 0.16.24.

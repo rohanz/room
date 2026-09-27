@@ -327,16 +327,21 @@ describe('hooks bridge + plugin hook scripts', () => {
     b.stop(); s.awareness.destroy()
   })
 
-  it('successful wake marks document receipts and prevents hook replay; failure stays unread', async () => {
+  it('a queued wake is not delivery: the message stays unread, is not queued twice, and failure stays unread', async () => {
     await runHook('session-start.mjs', { session_id: 'queue-first', cwd: dir })
     const s = session(new RoomDoc())
     let fail = false
-    const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false, retryDelaysMs: [], queue: async () => { if (fail) throw Error('down') } })
+    const queue = vi.fn(async () => { if (fail) throw Error('down') })
+    const b = new HooksBridge(s, { forMe: () => true, isSeen: () => false, retryDelaysMs: [], queue })
+    addPresence(s, 'Kieran')
     const msg = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'queue first?' })
     b.write()
     await b.maybeWake(msg)
-    expect(s.room.seen(s.me.name).has(msg.id)).toBe(true)
-    expect(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'git status' } })).toBe('')
+    // Codex injects a queued message only at its next turn boundary; a headless worker may finish first.
+    expect(s.room.seen(s.me.name).has(msg.id)).toBe(false)
+    await b.maybeWake(msg)
+    expect(queue).toHaveBeenCalledOnce()
+    expect(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'git status' } })).toContain('queue first?')
     fail = true
     const pending = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'retry later?' })
     await b.maybeWake(pending)

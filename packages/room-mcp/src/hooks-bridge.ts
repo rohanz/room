@@ -327,8 +327,10 @@ export class HooksBridge {
       try {
         await (this.o.queue ?? defaultQueue)(session.id, text)
         if (!active()) return
+        // A queued message reaches Codex at its next turn boundary, which a headless worker may never reach:
+        // record the wake so it is not queued again, and leave the message unread until a tool reply,
+        // room_wait or the edit hook delivers it.
         this.woken.add(m.id)
-        this.s.room.markSeen(this.s.me.name, [m.id])
         if (this.o.writeState !== false) this.write()
         this.o.log?.(`woke session ${session.id.slice(0, 8)} for ${m.type} ${m.id}${attempt ? ` (attempt ${attempt + 1})` : ''}`)
         return
