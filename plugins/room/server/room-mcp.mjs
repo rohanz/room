@@ -7200,12 +7200,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name2}"`);
       return f;
     };
-    function addFormats(ajv, list, fs31, exportName) {
+    function addFormats(ajv, list, fs32, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs31[f]);
+        ajv.addFormat(f, fs32[f]);
     }
     module2.exports = exports2 = formatsPlugin;
     Object.defineProperty(exports2, "__esModule", { value: true });
@@ -9253,14 +9253,14 @@ var init_function = __esm({
     "use strict";
     init_object();
     init_equality();
-    callAll = (fs31, args3, i2 = 0) => {
+    callAll = (fs32, args3, i2 = 0) => {
       try {
-        for (; i2 < fs31.length; i2++) {
-          fs31[i2](...args3);
+        for (; i2 < fs32.length; i2++) {
+          fs32[i2](...args3);
         }
       } finally {
-        if (i2 < fs31.length) {
-          callAll(fs31, args3, i2 + 1);
+        if (i2 < fs32.length) {
+          callAll(fs32, args3, i2 + 1);
         }
       }
     };
@@ -11355,15 +11355,15 @@ var init_yjs = __esm({
           sortAndMergeDeleteSet(ds);
           transaction.afterState = getStateVector(transaction.doc.store);
           doc.emit("beforeObserverCalls", [transaction, doc]);
-          const fs31 = [];
+          const fs32 = [];
           transaction.changed.forEach(
-            (subs, itemtype) => fs31.push(() => {
+            (subs, itemtype) => fs32.push(() => {
               if (itemtype._item === null || !itemtype._item.deleted) {
                 itemtype._callObserver(transaction, subs);
               }
             })
           );
-          fs31.push(() => {
+          fs32.push(() => {
             transaction.changedParentTypes.forEach((events, type) => {
               if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
                 events = events.filter(
@@ -11374,19 +11374,19 @@ var init_yjs = __esm({
                   event._path = null;
                 });
                 events.sort((event1, event2) => event1.path.length - event2.path.length);
-                fs31.push(() => {
+                fs32.push(() => {
                   callEventHandlerListeners(type._dEH, events, transaction);
                 });
               }
             });
-            fs31.push(() => doc.emit("afterTransaction", [transaction, doc]));
-            fs31.push(() => {
+            fs32.push(() => doc.emit("afterTransaction", [transaction, doc]));
+            fs32.push(() => {
               if (transaction._needFormattingCleanup) {
                 cleanupYTextAfterTransaction(transaction);
               }
             });
           });
-          callAll(fs31, []);
+          callAll(fs32, []);
         } finally {
           if (doc.gc) {
             tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -31321,8 +31321,8 @@ var require_tree_sitter = __commonJS({
                 } else {
                   const url = input;
                   if (typeof process !== "undefined" && process.versions && process.versions.node) {
-                    const fs31 = __require("fs");
-                    bytes = Promise.resolve(fs31.readFileSync(url));
+                    const fs32 = __require("fs");
+                    bytes = Promise.resolve(fs32.readFileSync(url));
                   } else {
                     bytes = fetch(url).then((response) => response.arrayBuffer().then((buffer) => {
                       if (response.ok) {
@@ -32933,7 +32933,7 @@ var init_claims2 = __esm({
 });
 
 // packages/room-mcp/src/index.ts
-import fs30 from "node:fs";
+import fs31 from "node:fs";
 import path28 from "node:path";
 
 // node_modules/zod/v4/core/util.js
@@ -44088,12 +44088,13 @@ function createShare() {
 // packages/room-mcp/src/tools/workers.ts
 init_src2();
 init_git();
-import fs25 from "node:fs";
+import fs26 from "node:fs";
 import { randomUUID as randomUUID3 } from "node:crypto";
 import os7 from "node:os";
 import path24 from "node:path";
 
 // packages/room-mcp/src/registry.ts
+import fs24 from "node:fs";
 import path22 from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -45616,24 +45617,57 @@ function workerOrigin(s) {
     isWorker: !!process.env.ROOM_TAG || !!s.room.workerOf(s.me.name) || !!s.me.owner && s.me.owner !== s.me.name
   };
 }
+function followUpAnswer(logFile, host, runStart) {
+  let fd;
+  try {
+    fd = fs24.openSync(logFile, "r");
+    const size2 = fs24.fstatSync(fd).size, start2 = Math.max(size2 >= runStart ? runStart : 0, size2 - 64 * 1024);
+    const buffer = Buffer.alloc(size2 - start2);
+    fs24.readSync(fd, buffer, 0, buffer.length, start2);
+    const lines = buffer.toString("utf8").split(/\r?\n|\r/);
+    for (let i2 = lines.length - 1; i2 >= 0; i2--) {
+      const line = lines[i2].trim();
+      if (!line) continue;
+      if (host === "claude") return line.slice(0, 300);
+      try {
+        const event = JSON.parse(line);
+        if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") {
+          const text = event.item.text.trim().replace(/\s+/g, " ");
+          if (text) return text.slice(0, 300);
+        }
+      } catch {
+      }
+    }
+  } catch {
+  } finally {
+    if (fd !== void 0) fs24.closeSync(fd);
+  }
+  return "finished without a report";
+}
 async function finishWorkerProcess(s, w, code, at = Date.now(), error2, unwitnessed = false) {
   const current = s.room.workers.get(w.tag);
   if (current !== w || w.exitCode !== void 0) return;
-  const done = w.status === "done";
+  const resumedDone = w.status === "running" && w.resumeLogStart !== void 0 && code === 0 && !unwitnessed && !error2 && !w.stopReason && w.dismissedAt === void 0;
+  const done = w.status === "done" || resumedDone;
   const exitCode = code ?? -1;
-  const tail = workerLogTail(path22.join(s.dir, ".room", "workers", `${w.tag}.log`));
+  const logFile = path22.join(s.dir, ".room", "workers", `${w.tag}.log`);
+  const tail = workerLogTail(logFile);
   const stopReason = w.stopReason ?? (unwitnessed ? persistedWorkerStopReason(s.dir, w.tag, w.id) : void 0);
+  const summary = resumedDone ? `${w.summary ? `${w.summary} ` : ""}(follow-up: ${followUpAnswer(logFile, w.host, w.resumeLogStart)})` : void 0;
   s.room.updateWorker(w.tag, {
     exitCode,
     finishedAt: w.finishedAt ?? at,
     ...stopReason ? { stopReason } : {},
-    ...w.status !== "running" ? {} : unwitnessed ? { status: stopReason ? "dismissed" : "failed", summary: `stopped while no session of yours was running; ${stopReason ?? "reason unknown"}; worktree: ${w.dir}; last lines of its log: ${tail || "(empty log)"}` } : stopReason ? { status: "dismissed" } : { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" }
+    ...w.status !== "running" ? {} : unwitnessed ? { status: stopReason ? "dismissed" : "failed", summary: `stopped while no session of yours was running; ${stopReason ?? "reason unknown"}; worktree: ${w.dir}; last lines of its log: ${tail || "(empty log)"}` } : stopReason ? { status: "dismissed" } : resumedDone ? { status: "done", summary } : { status: "failed", summary: w.summary ?? error2 ?? "process exited without room_done" }
   }, w.id);
-  if (!done) {
+  if (!done || resumedDone) {
     const { releaseClaimsOnDone: releaseClaimsOnDone2 } = await Promise.resolve().then(() => (init_claims2(), claims_exports));
     const current2 = s.room.workers.get(w.tag);
     if (!current2 || current2.id !== w.id || current2.gen !== w.gen || current2.startedAt !== w.startedAt) return;
     releaseClaimsOnDone2(s, void 0, w.name);
+  }
+  if (resumedDone) {
+    s.room.post({ name: w.name, kind: "agent" }, { type: "done", tag: w.tag, summary, changed: s.room.changedPaths(w.name), to: w.lead, priority: "notify" });
   }
   if (!unwitnessed && !w.stopReason && w.dismissedAt === void 0 && (exitCode !== 0 || !done)) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1e3));
@@ -46038,6 +46072,11 @@ var Rooms = class _Rooms {
       try {
         const { server, isWorker } = workerOrigin(s);
         const spawnedAfter = s.room.lastMessages(1)[0]?.id ?? "";
+        let resumeLogStart = 0;
+        try {
+          resumeLogStart = fs24.statSync(path22.join(s.dir, ".room", "workers", `${w.tag}.log`)).size;
+        } catch {
+        }
         let launched;
         try {
           launched = await launchWorkerProcess(
@@ -46074,7 +46113,7 @@ var Rooms = class _Rooms {
               startedAt,
               spawnedAfter,
               processStartTime,
-              summary: void 0,
+              resumeLogStart,
               exitCode: void 0,
               finishedAt: void 0,
               dismissedAt: void 0,
@@ -46131,7 +46170,7 @@ var Rooms = class _Rooms {
 
 // packages/room-mcp/src/prs.ts
 init_src();
-import fs24 from "node:fs";
+import fs25 from "node:fs";
 import path23 from "node:path";
 var PR_PREFIX = "pr#";
 var isPrName = (name2) => name2.startsWith(PR_PREFIX);
@@ -46207,8 +46246,8 @@ function exportRoomLedger(s, opts = {}) {
   const defaultPath = path23.join(s.dir, ".room", "ledger", `${s.roomName.replaceAll("/", "_")}-${timestamp}.md`);
   const outputPath = opts.path ? path23.resolve(s.dir, opts.path) : defaultPath;
   const markdown = renderPrNote(s.room, { roomName: s.roomName, now, history: true });
-  fs24.mkdirSync(path23.dirname(outputPath), { recursive: true });
-  fs24.writeFileSync(outputPath, markdown);
+  fs25.mkdirSync(path23.dirname(outputPath), { recursive: true });
+  fs25.writeFileSync(outputPath, markdown);
   return { path: outputPath, lines: markdown.trimEnd().split("\n").length };
 }
 function renderPrNote(room, opts) {
@@ -46293,7 +46332,7 @@ function missingBriefPaths(task, leadDir, workerDir) {
     const rel = match[0].replace(/^\.\//, "");
     if (rel.split("/").some((part) => part === ".." || part === ".")) continue;
     const source = path24.join(leadDir, rel), target = path24.join(workerDir, rel);
-    if (fs25.existsSync(source) && !fs25.existsSync(target)) paths.add(rel);
+    if (fs26.existsSync(source) && !fs26.existsSync(target)) paths.add(rel);
   }
   return [...paths].sort();
 }
@@ -46424,7 +46463,7 @@ function handlers3(state) {
         };
         if (typeof a.dir === "string" && a.dir) {
           dir = path24.resolve(a.dir);
-          if (!fs25.existsSync(dir)) return `error: ${dir} does not exist`;
+          if (!fs26.existsSync(dir)) return `error: ${dir} does not exist`;
           const inside = path24.relative(s.dir, dir);
           outside = inside.startsWith("..") || path24.isAbsolute(inside);
           if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`;
@@ -48321,14 +48360,14 @@ init_src();
 init_git();
 init_baseline();
 init_src2();
-import fs28 from "node:fs";
+import fs29 from "node:fs";
 import path27 from "node:path";
 
 // packages/room-mcp/src/tools/combined-tree.ts
 init_git();
 init_src2();
 init_merge();
-import fs26 from "node:fs";
+import fs27 from "node:fs";
 import path25 from "node:path";
 init_baseline();
 init_context();
@@ -48359,8 +48398,8 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     if (worker) previewDirs.add(worker.dir);
   }
   const roots = options.roots ?? new Map([...previewDirs].map((dir) => {
-    if (fs26.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
-    return [path25.resolve(dir), fs26.realpathSync(dir)];
+    if (fs27.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
+    return [path25.resolve(dir), fs27.realpathSync(dir)];
   }));
   const rootOf = (dir) => {
     const root = roots.get(path25.resolve(dir));
@@ -48381,7 +48420,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
       const result = containedRepoPath(root, path25.join(root, p), { leaf: "read-contained-link" });
       if (!result.ok) throw new Error("unsafe preview symlink: " + p);
       const file = result.path;
-      return fs26.readFileSync(file, options.encoding ?? "utf8");
+      return fs27.readFileSync(file, options.encoding ?? "utf8");
     } catch (e) {
       if (e.code === "ENOENT") return null;
       throw e;
@@ -48440,7 +48479,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
         } catch (e) {
           if (e.code !== "ENOENT") throw e;
           try {
-            if (fs26.lstatSync(path25.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
+            if (fs27.lstatSync(path25.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
           } catch {
           }
         }
@@ -48457,7 +48496,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     const dirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir) => !!dir)];
     if (dirs.some((dir) => {
       try {
-        return fs26.lstatSync(path25.join(dir, p)).isDirectory();
+        return fs27.lstatSync(path25.join(dir, p)).isDirectory();
       } catch {
         return false;
       }
@@ -48624,7 +48663,7 @@ init_company();
 init_baseline();
 init_src2();
 import { execFile as execFile5, spawn as spawn3 } from "node:child_process";
-import fs27 from "node:fs";
+import fs28 from "node:fs";
 import os8 from "node:os";
 import path26 from "node:path";
 import { stripVTControlCharacters as stripVTControlCharacters2 } from "node:util";
@@ -48662,7 +48701,7 @@ function testCommandFor(dir) {
   const files = {};
   for (const file of ["package.json", "pyproject.toml", "uv.lock", "Makefile"]) {
     try {
-      files[file] = fs27.readFileSync(path26.join(dir, file), "utf8");
+      files[file] = fs28.readFileSync(path26.join(dir, file), "utf8");
     } catch {
       files[file] = void 0;
     }
@@ -48675,15 +48714,15 @@ function ownUnpublishedCheckout(s, person) {
 }
 function ownDiskText(dir, rel) {
   if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error("unsafe room path: " + rel);
-  const root = fs27.realpathSync(dir);
+  const root = fs28.realpathSync(dir);
   const candidate = path26.resolve(root, rel);
   if (!isInsideRoot(root, candidate)) throw new Error("unsafe room path: " + rel);
   try {
     const result = containedRepoPath(root, candidate, { leaf: "read-contained-link" });
     if (!result.ok) throw new Error("unsafe room symlink: " + rel);
     const real = result.path;
-    if (!fs27.statSync(real).isFile()) throw new Error("not a file: " + rel);
-    return fs27.readFileSync(real, "utf8");
+    if (!fs28.statSync(real).isFile()) throw new Error("not a file: " + rel);
+    return fs28.readFileSync(real, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw e;
@@ -48825,7 +48864,7 @@ ${text}--- end ${p} ---`);
           for (const p of merged.keys()) {
             let leadMode = 420;
             try {
-              const stat4 = fs27.lstatSync(path26.join(caller.dir, p));
+              const stat4 = fs28.lstatSync(path26.join(caller.dir, p));
               if (stat4.isFile()) leadMode = stat4.mode & 511;
             } catch (e) {
               if (e.code !== "ENOENT") throw e;
@@ -48846,32 +48885,32 @@ ${text}--- end ${p} ---`);
 }
 function linkSharedDirs(cloneDir, scratchDir) {
   const venv = path26.join(cloneDir, ".venv");
-  if (fs27.existsSync(venv) && !fs27.existsSync(path26.join(scratchDir, ".venv"))) fs27.symlinkSync(venv, path26.join(scratchDir, ".venv"));
+  if (fs28.existsSync(venv) && !fs28.existsSync(path26.join(scratchDir, ".venv"))) fs28.symlinkSync(venv, path26.join(scratchDir, ".venv"));
   const candidates = ["node_modules"];
   for (const top of ["packages", "apps", "libs"]) {
     const d = path26.join(cloneDir, top);
-    if (!fs27.existsSync(d)) continue;
-    for (const e of fs27.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path26.join(top, e.name, "node_modules"));
+    if (!fs28.existsSync(d)) continue;
+    for (const e of fs28.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path26.join(top, e.name, "node_modules"));
   }
   for (const rel of candidates) {
     const src = path26.join(cloneDir, rel), dst = path26.join(scratchDir, rel);
-    if (!fs27.existsSync(src) || fs27.existsSync(dst)) continue;
+    if (!fs28.existsSync(src) || fs28.existsSync(dst)) continue;
     mirrorLinks(cloneDir, scratchDir, src, dst);
   }
 }
 function mirrorLinks(cloneDir, scratchDir, src, dst) {
   ensureMergedDirectory(scratchDir, path26.relative(scratchDir, dst));
-  for (const e of fs27.readdirSync(src, { withFileTypes: true })) {
+  for (const e of fs28.readdirSync(src, { withFileTypes: true })) {
     const from2 = path26.join(src, e.name), to2 = path26.join(dst, e.name);
     if (e.isSymbolicLink()) {
-      const target = path26.resolve(src, fs27.readlinkSync(from2));
+      const target = path26.resolve(src, fs28.readlinkSync(from2));
       const inside = path26.relative(cloneDir, target);
       const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path26.sep).includes("node_modules");
-      fs27.symlinkSync(isWorkspace ? path26.join(scratchDir, inside) : target, to2);
+      fs28.symlinkSync(isWorkspace ? path26.join(scratchDir, inside) : target, to2);
     } else if (e.isDirectory() && e.name.startsWith("@")) {
       mirrorLinks(cloneDir, scratchDir, from2, to2);
     } else {
-      fs27.symlinkSync(from2, to2);
+      fs28.symlinkSync(from2, to2);
     }
   }
 }
@@ -48885,12 +48924,12 @@ function ensureMergedDirectory(root, rel) {
     at = path26.join(at, part);
     let stat4;
     try {
-      stat4 = fs27.lstatSync(at);
+      stat4 = fs28.lstatSync(at);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
     if (stat4?.isSymbolicLink() || stat4 && !stat4.isDirectory()) throw new Error("unsafe merged ancestor: " + rel);
-    if (!stat4) fs27.mkdirSync(at);
+    if (!stat4) fs28.mkdirSync(at);
     if (!containedRepoPath(canonicalRoot, at, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged path escapes scratch tree: " + rel);
   }
   return at;
@@ -48916,7 +48955,7 @@ function mergedFileMode(rel, initialMode, participants) {
     try {
       const root = path26.resolve(participant.dir);
       if (!containedRepoPath(root, path26.join(root, rel), { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("unsafe worker mode path: " + rel);
-      stat4 = fs27.lstatSync(src);
+      stat4 = fs28.lstatSync(src);
     } catch (e) {
       if (e.code === "ENOENT") continue;
       throw e;
@@ -48940,22 +48979,22 @@ function materializeMergedFile(root, rel, bytes, mode2 = 420) {
   const file = path26.join(parent, parts2.at(-1));
   let stat4;
   try {
-    stat4 = fs27.lstatSync(file);
+    stat4 = fs28.lstatSync(file);
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
   }
-  if (stat4?.isSymbolicLink()) fs27.unlinkSync(file);
+  if (stat4?.isSymbolicLink()) fs28.unlinkSync(file);
   else if (stat4 && !stat4.isFile()) throw new Error("merged path is not a regular file: " + rel);
   if (bytes === null) {
-    if (stat4 && !stat4.isSymbolicLink()) fs27.rmSync(file);
+    if (stat4 && !stat4.isSymbolicLink()) fs28.rmSync(file);
     return;
   }
-  const fd = fs27.openSync(file, fs27.constants.O_WRONLY | fs27.constants.O_CREAT | fs27.constants.O_TRUNC | (fs27.constants.O_NOFOLLOW ?? 0), mode2);
+  const fd = fs28.openSync(file, fs28.constants.O_WRONLY | fs28.constants.O_CREAT | fs28.constants.O_TRUNC | (fs28.constants.O_NOFOLLOW ?? 0), mode2);
   try {
-    fs27.writeFileSync(fd, bytes);
-    fs27.fchmodSync(fd, mode2);
+    fs28.writeFileSync(fd, bytes);
+    fs28.fchmodSync(fd, mode2);
   } finally {
-    fs27.closeSync(fd);
+    fs28.closeSync(fd);
   }
 }
 function testVerdict(output, code) {
@@ -48968,12 +49007,12 @@ function testVerdict(output, code) {
   return { passed, text: [...summaries.slice(-5), verdict].join("\n") };
 }
 async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map()) {
-  const dir = fs27.realpathSync(fs27.mkdtempSync(path26.join(os8.tmpdir(), "room-merge-")));
+  const dir = fs28.realpathSync(fs28.mkdtempSync(path26.join(os8.tmpdir(), "room-merge-")));
   try {
     await materializeGitTree(s.dir, ancestor, dir);
     for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, "latin1"), modes.get(rel) ?? 420);
     linkSharedDirs(s.dir, dir);
-    const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs27.existsSync(candidate));
+    const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs28.existsSync(candidate));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ROOM_")));
     env.ROOM_MERGED_TREE = dir;
     const result = await new Promise((resolve5) => {
@@ -48990,7 +49029,7 @@ ${verdict.text}` };
   } catch (e) {
     return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` };
   } finally {
-    fs27.rmSync(dir, { recursive: true, force: true });
+    fs28.rmSync(dir, { recursive: true, force: true });
   }
 }
 var CLOSED_ARCHIVE_PIPE_ERRORS = /* @__PURE__ */ new Set(["EPIPE", "ENOTCONN", "ECONNRESET"]);
@@ -49099,8 +49138,8 @@ function safePath(root, rel) {
 function copyFiles(root, paths) {
   const files = /* @__PURE__ */ new Set();
   const visit = (rel) => {
-    const file = safePath(root, rel), stat4 = fs28.statSync(file);
-    if (stat4.isDirectory()) for (const name2 of fs28.readdirSync(file)) visit(rel + "/" + name2);
+    const file = safePath(root, rel), stat4 = fs29.statSync(file);
+    if (stat4.isDirectory()) for (const name2 of fs29.readdirSync(file)) visit(rel + "/" + name2);
     else if (stat4.isFile()) files.add(rel);
     else throw new Error("not a regular file: " + rel);
   };
@@ -49110,7 +49149,7 @@ function copyFiles(root, paths) {
 async function assertNoOperation(dir) {
   for (const name2 of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"]) {
     const file = (await git(dir, ["rev-parse", "--git-path", name2])).trim();
-    if (fs28.existsSync(path27.resolve(dir, file))) throw new Error("finish the existing Git operation in " + dir + " before collecting");
+    if (fs29.existsSync(path27.resolve(dir, file))) throw new Error("finish the existing Git operation in " + dir + " before collecting");
   }
 }
 function handlers9(state) {
@@ -49310,7 +49349,7 @@ repeat with force=true to delete them`;
     }
     const out2 = [];
     const selected = [];
-    const leadRoot = fs28.realpathSync(lead.dir);
+    const leadRoot = fs29.realpathSync(lead.dir);
     const workerRoots = /* @__PURE__ */ new Map();
     const lock = "collect:" + leadRoot;
     if (!rooms.reserve(lock)) return "error: another collection is in progress";
@@ -49349,7 +49388,7 @@ repeat with force=true to delete them`;
             out2.push(`${a.tag ? "nothing to collect" : "skipped " + w.tag}: worktree ${w.dir} is gone`);
             continue;
           }
-          const workerRoot = fs28.realpathSync(w.dir);
+          const workerRoot = fs29.realpathSync(w.dir);
           if (workerRoot === leadRoot) throw new Error("worker must have a separate worktree");
           await assertNoOperation(w.dir);
           if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error("worker is not a worktree of this repository");
@@ -49402,17 +49441,17 @@ repeat with force=true to delete them`;
         const tracked = new Set(split(await git(lead.dir, ["ls-files", "-z"])));
         for (const p of files) {
           const dst = safePath(leadRoot, p);
-          if (fs28.existsSync(dst) && !fs28.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
-          if (a.force !== true && (modified.has(p) || !tracked.has(p) && fs28.existsSync(dst))) {
-            if (!fs28.existsSync(dst) || !fs28.readFileSync(dst).equals(fs28.readFileSync(safePath(workerRoot, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
+          if (fs29.existsSync(dst) && !fs29.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
+          if (a.force !== true && (modified.has(p) || !tracked.has(p) && fs29.existsSync(dst))) {
+            if (!fs29.existsSync(dst) || !fs29.readFileSync(dst).equals(fs29.readFileSync(safePath(workerRoot, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
           }
         }
         releasePaths(files);
         for (const p of files) {
           const dst = safePath(leadRoot, p);
-          fs28.mkdirSync(path27.dirname(dst), { recursive: true });
-          fs28.copyFileSync(safePath(workerRoot, p), dst);
-          fs28.chmodSync(dst, fs28.statSync(safePath(workerRoot, p)).mode & 511);
+          fs29.mkdirSync(path27.dirname(dst), { recursive: true });
+          fs29.copyFileSync(safePath(workerRoot, p), dst);
+          fs29.chmodSync(dst, fs29.statSync(safePath(workerRoot, p)).mode & 511);
           out2.push("copied " + p);
         }
         if (!files.length) out2.push("nothing copied (empty directories)");
@@ -49447,9 +49486,9 @@ repeat with force=true to delete them`;
       }
       for (const [p, text] of result.merged) {
         const file = safePath(leadRoot, p);
-        const before = fs28.existsSync(file) ? fs28.readFileSync(file) : null;
+        const before = fs29.existsSync(file) ? fs29.readFileSync(file) : null;
         if ((before === null ? null : before.toString("latin1")) !== result.initial.get(p)) throw new Error(p + " changed during collection; nothing written, retry");
-        const oldMode = before !== null ? fs28.statSync(file).mode & 511 : 420;
+        const oldMode = before !== null ? fs29.statSync(file).mode & 511 : 420;
         const mode2 = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: workerRoots.get(w), baseModes: baseModes.get(w.name), ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) })));
         const after = text === null ? null : Buffer.from(text, "latin1");
         if (before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode2 === oldMode || before === null && after === null) continue;
@@ -49539,7 +49578,7 @@ repeat with force=true to delete them`;
     }
   };
   return { room_collect: async (a) => {
-    const key = fs28.realpathSync(state.S().dir);
+    const key = fs29.realpathSync(state.S().dir);
     const prior = collectQueues.get(key);
     let release;
     const tail = new Promise((resolve5) => {
@@ -49695,7 +49734,7 @@ init_wake_path();
 
 // packages/room-mcp/src/workspace.ts
 init_src2();
-import fs29 from "node:fs";
+import fs30 from "node:fs";
 import { execFileSync as execFileSync6 } from "node:child_process";
 function fallbackWorkspace(env, processDir) {
   const value2 = (key) => env[key]?.trim() || void 0;
@@ -49733,9 +49772,9 @@ function codexWorkspace(params2, rootOf = worktreeRoot) {
   const roots = /* @__PURE__ */ new Set();
   for (const key of Object.keys(workspaces)) {
     try {
-      const real = fs29.realpathSync(key);
+      const real = fs30.realpathSync(key);
       const root = rootOf(real);
-      if (root) roots.add(fs29.realpathSync(root));
+      if (root) roots.add(fs30.realpathSync(root));
     } catch {
     }
   }
@@ -49743,11 +49782,11 @@ function codexWorkspace(params2, rootOf = worktreeRoot) {
 }
 async function sameWorkspace(a, b) {
   try {
-    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map((dir) => fs29.realpathSync(dir));
+    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map((dir) => fs30.realpathSync(dir));
     if (rootA !== rootB) return false;
     const [gitA, gitB] = await Promise.allSettled([gitCommonDir(a), gitCommonDir(b)]);
     if (gitA.status === "rejected" || gitB.status === "rejected") return gitA.status === gitB.status;
-    return fs29.realpathSync(gitA.value) === fs29.realpathSync(gitB.value);
+    return fs30.realpathSync(gitA.value) === fs30.realpathSync(gitB.value);
   } catch {
     return false;
   }
@@ -49825,7 +49864,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.30",
+  version: "0.16.31",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
@@ -49862,10 +49901,10 @@ var ROOM_LOG_MAX_BYTES = 1024 * 1024;
 function appendRoomLog(file, line, maxBytes = ROOM_LOG_MAX_BYTES) {
   try {
     try {
-      if (fs30.statSync(file).size >= maxBytes) fs30.renameSync(file, `${file}.1`);
+      if (fs31.statSync(file).size >= maxBytes) fs31.renameSync(file, `${file}.1`);
     } catch {
     }
-    fs30.appendFileSync(file, `${line}
+    fs31.appendFileSync(file, `${line}
 `, { mode: 384 });
   } catch {
   }
@@ -49874,14 +49913,14 @@ var LOG_FILE = process.env.ROOM_LOG_FILE;
 var ROOM_LOG_FILE;
 var log = (s) => {
   try {
-    fs30.writeSync(2, `room-mcp: ${s}
+    fs31.writeSync(2, `room-mcp: ${s}
 `);
   } catch {
   }
   const at = (/* @__PURE__ */ new Date()).toISOString();
   if (LOG_FILE) {
     try {
-      fs30.appendFileSync(LOG_FILE, `${at} ${s}
+      fs31.appendFileSync(LOG_FILE, `${at} ${s}
 `);
     } catch {
     }
@@ -49891,7 +49930,7 @@ var log = (s) => {
 function createBundleUpdateNotice(file) {
   let startupMtime;
   try {
-    startupMtime = fs30.statSync(file).mtimeMs;
+    startupMtime = fs31.statSync(file).mtimeMs;
   } catch {
     return () => "";
   }
@@ -49899,7 +49938,7 @@ function createBundleUpdateNotice(file) {
   return () => {
     if (warned2) return "";
     try {
-      if (fs30.statSync(file).mtimeMs <= startupMtime) return "";
+      if (fs31.statSync(file).mtimeMs <= startupMtime) return "";
     } catch {
       return "";
     }
