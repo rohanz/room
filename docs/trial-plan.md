@@ -105,3 +105,12 @@ Everyone clones the fork, checks out `trial`, starts their agent, says "join the
 "take issue N". Commit and push to `trial` when a task is done; the second and third pushers pull
 first, which is where merge previews should earn their keep. Rohan keeps the browser view open and
 does not steer anyone with it.
+
+## First two-person run, 2026-09-27
+
+Rohan (Claude Code) and a second person (Codex, own GitHub login, own machine) worked on `rohanz/click-rehearsal` branch `pair`, issues #2 and #1, which overlap in `core.py`.
+- **Join and login:** both worked with no help.
+- **Coordination:** the Codex agent asked first which regions each would touch. Rohan's agent answered within 15 seconds and flagged one dependency. Both claimed exact, non-overlapping ranges.
+- **Combined checks:** both previewed the combined code with the full test suite: no conflicts, all passing. Both finished in about three minutes.
+- **Not done:** the simultaneous push and the answer-key check were left for another time.
+- **To ask:** the second person's clone shared an unrelated untracked `excalidraw.log` at full sharing. Did the join disclosure tell them?
