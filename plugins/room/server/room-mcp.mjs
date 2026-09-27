@@ -7357,7 +7357,7 @@ var init_messages = __esm({
     to = (m) => m.to ? ` \u2192 ${displayName({ name: m.to, kind: "agent" })}` : "";
     priority = (m) => `[${m.priority}] `;
     scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
-    BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.";
+    BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.";
     builtins = {
       claim: { priority: "fyi", audience: "claim-holders", inbox: false, wakes: "never", format: (m, context) => context?.claims && !context.claims.some((c) => c.id === m.claimId) ? `${priority(m)}earlier: ${who(m)} claimed ${m.path}:${m.from_line}-${m.to_line} (${new Date(m.at).toISOString().slice(11, 19)}) \u2014 ${m.intent}` : `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
       release: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
@@ -49825,7 +49825,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.29",
+  version: "0.16.30",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
