@@ -67,45 +67,48 @@ export function createWorkspaceBinding<T>({ deferred, fallbackDir, initialize, l
   logFallback: () => void; logFailure?: (error: unknown) => void
   matches?: (a: string, b: string) => Promise<boolean>
 }) {
-  let boundDir: string | undefined
-  let pending: Promise<T> | undefined
+  let current: { dir: string; promise: Promise<T> } | undefined
   let closing = false
   const abort = new AbortController()
-  const bind = (dir: string): Promise<T> => {
-    boundDir = dir
+  const bind = (dir: string): { dir: string; promise: Promise<T> } => {
     const attempt = Promise.resolve().then(() => {
       if (closing) throw new Error(closingMessage)
       return initialize(dir, abort.signal)
     })
     const tracked = attempt.catch(error => {
-      if (pending === tracked) { pending = undefined; boundDir = undefined }
+      if (current === binding) current = undefined
       // Non-deferred startup is fatal in index.ts; deferred attempts stay retryable.
       if (deferred && !closing) logFailure?.(error)
       throw error
     })
-    pending = tracked
-    return tracked
+    const binding = { dir, promise: tracked }
+    current = binding
+    return binding
   }
   const forCall = async (params: { _meta?: unknown }): Promise<{ runtime: T; error?: never } | { error: string; runtime?: never }> => {
     if (closing) return { error: closingMessage }
     const workspace = codexWorkspace(params)
     if (deferred && !workspace) return { error: missingWorkspace }
-    if (pending && workspace && boundDir && !(await matches(workspace, boundDir))) {
-      return { error: `This Codex session's workspace is ${workspace}, but Room is attached to ${boundDir}; restart the session to switch.` }
+    while (true) {
+      if (closing) return { error: closingMessage }
+      let binding = current
+      if (!binding) {
+        if (!workspace) logFallback()
+        binding = bind(deferred ? workspace! : fallbackDir())
+      }
+      const matchesBinding = !workspace || await matches(workspace, binding.dir)
+      if (closing) return { error: closingMessage }
+      if (current !== binding) continue
+      if (!matchesBinding) return { error: `This Codex session's workspace is ${workspace}, but Room is attached to ${binding.dir}; restart the session to switch.` }
+      const runtime = await binding.promise
+      return closing ? { error: closingMessage } : { runtime }
     }
-    if (closing) return { error: closingMessage }
-    if (!pending) {
-      if (!workspace) logFallback()
-      bind(deferred ? workspace! : fallbackDir())
-    }
-    const runtime = await pending!
-    return closing ? { error: closingMessage } : { runtime }
   }
   return {
-    start: () => closing || deferred ? Promise.resolve(undefined) : pending ?? bind(fallbackDir()),
-    current: () => pending,
+    start: () => closing || deferred ? Promise.resolve(undefined) : (current ?? bind(fallbackDir())).promise,
+    current: () => current?.promise,
     /** Stop new work immediately; the caller shuts down any runtime that finishes starting. */
-    close: () => { closing = true; abort.abort(); return pending },
+    close: () => { closing = true; abort.abort(); return current?.promise },
     forCall,
     async run<R>(params: { _meta?: unknown }, action: (runtime: T) => Promise<R>): Promise<{ value: R; error?: never } | { error: string; value?: never }> {
       const result = await forCall(params)

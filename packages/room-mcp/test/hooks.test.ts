@@ -11,6 +11,7 @@ import { consumeHookDisclosure, consumeHookNotice, createWriteIntentReader, find
 import type { Session } from '../src/session.js'
 import { hasCompany } from '../src/company.js'
 import { AGENT_INSTRUCTIONS } from '../src/prompt.js'
+import { createTools } from '../src/tools.js'
 import type { Worker } from '@room/shared'
 
 vi.mock('node:child_process', async importOriginal => {
@@ -18,7 +19,7 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFile: vi.fn(actual.execFile) }
 })
 
-afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks() })
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.clearAllMocks() })
 
 const HOOKS = resolve(__dirname, '../../../plugins/room/hooks')
 let dir: string
@@ -327,6 +328,48 @@ describe('hooks bridge + plugin hook scripts', () => {
     b.stop(); s.awareness.destroy()
   })
 
+  it('room_wait skips a message already displayed by the edit hook', async () => {
+    await runHook('session-start.mjs', { session_id: 'wait-hook-thread', cwd: dir })
+    const s = session(new RoomDoc())
+    const bridge = new HooksBridge(s, { forMe: m => m.to === s.me.name, isSeen: id => s.room.seen(s.me.name).has(id) })
+    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir,
+      join: async () => s, leave: async () => {} })
+    try {
+      addPresence(s, 'Kieran')
+      const msg = s.room.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'shown by hook?' })
+      bridge.write()
+      expect(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'git status' } })).toContain('shown by hook?')
+      const result = await tools.call('room_wait', { timeoutMs: 1 })
+      expect(result).not.toContain('shown by hook?')
+      expect(s.room.seen(s.me.name).has(msg.id)).toBe(true)
+    } finally { bridge.stop(); await tools.shutdown(); s.awareness.destroy(); s.room.doc.destroy() }
+  })
+
+  it('a queued Codex broadcast interrupt stays unread until the real room_wait receipts it', async () => {
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'queued-thread', at: Date.now(), cwd: dir, host: 'codex' }))
+    const s = session(new RoomDoc()), other = new RoomDoc()
+    other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(s.room.doc, u))
+    let queued!: () => void
+    const delivered = new Promise<void>(resolve => { queued = resolve })
+    const queue = vi.fn(async () => { queued() })
+    const bridge = new HooksBridge(s, { forMe: m => m.priority === 'interrupt',
+      isSeen: id => s.room.seen(s.me.name).has(id), queue })
+    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir,
+      join: async () => s, leave: async () => {} })
+    try {
+      bridge.start()
+      const msg = other.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'stop the batch', priority: 'interrupt' })
+      await delivered
+      expect(queue).toHaveBeenCalledOnce()
+      expect(queue.mock.calls[0][0]).toBe('queued-thread')
+      expect(s.room.seen(s.me.name).has(msg.id)).toBe(false)
+      expect(await tools.call('room_wait', { timeoutMs: 1 })).toContain('stop the batch')
+      expect(s.room.seen(s.me.name).has(msg.id)).toBe(true)
+      await bridge.maybeWake(msg)
+      expect(queue).toHaveBeenCalledOnce()
+    } finally { bridge.stop(); await tools.shutdown(); s.awareness.destroy(); s.room.doc.destroy(); other.doc.destroy() }
+  })
+
   it('a queued wake is not delivery: the message stays unread, is not queued twice, and failure stays unread', async () => {
     await runHook('session-start.mjs', { session_id: 'queue-first', cwd: dir })
     const s = session(new RoomDoc())
@@ -552,6 +595,7 @@ describe('hooks bridge + plugin hook scripts', () => {
   })
 
   it('a failed wake retries with backoff and marks the message only once it succeeds', async () => {
+    vi.useFakeTimers()
     writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'thread-2', at: Date.now(), cwd: dir, host: 'codex' }))
     const room = new RoomDoc()
     const s = session(room)
@@ -560,13 +604,15 @@ describe('hooks bridge + plugin hook scripts', () => {
     b.start()
     const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u))
     other.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
-    await new Promise(r => setTimeout(r, 60))
+    await vi.advanceTimersByTimeAsync(150)
     expect(calls).toBe(3)
     expect((b as unknown as { woken: Set<string> }).woken.size).toBe(1)
     b.stop()
+    vi.useRealTimers()
   })
 
   it('gives up after the retries are exhausted without marking the message', async () => {
+    vi.useFakeTimers()
     writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'thread-2', at: Date.now(), cwd: dir }))
     const room = new RoomDoc()
     const s = session(room)
@@ -576,14 +622,16 @@ describe('hooks bridge + plugin hook scripts', () => {
     b.start()
     const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u))
     other.post({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: '?' } as never)
-    await new Promise(r => setTimeout(r, 60))
+    await vi.advanceTimersByTimeAsync(150)
     expect(calls).toBe(3)
     expect((b as unknown as { woken: Set<string> }).woken.size).toBe(0)
     expect(logs.some(l => l.includes('after 3 attempts'))).toBe(true)
     b.stop()
+    vi.useRealTimers()
   })
 
   it('a stale or foreign session file is ignored; the wake stays pending until a fresh one appears', async () => {
+    vi.useFakeTimers()
     writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'old-thread', at: Date.now() - 60 * 60 * 1000, cwd: dir }))
     const room = new RoomDoc()
     const s = session(room)
@@ -592,16 +640,17 @@ describe('hooks bridge + plugin hook scripts', () => {
     b.start()
     const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u))
     other.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
-    await new Promise(r => setTimeout(r, 30))
+    await vi.advanceTimersByTimeAsync(30)
     expect(queued).toEqual([])
     // a file for another clone is foreign too
     writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'elsewhere', at: Date.now(), cwd: '/somewhere/else' }))
-    await new Promise(r => setTimeout(r, 30))
+    await vi.advanceTimersByTimeAsync(30)
     expect(queued).toEqual([])
     writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'thread-3', at: Date.now(), cwd: dir }))
-    await new Promise(r => setTimeout(r, 40))
+    await vi.advanceTimersByTimeAsync(10)
     expect(queued).toEqual(['thread-3'])
     b.stop()
+    vi.useRealTimers()
   })
 
   it('a Claude Code host is not queued through codex; the channel already delivered it', async () => {

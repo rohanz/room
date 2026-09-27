@@ -101,6 +101,18 @@ it('keeps startup binding for non-shared Codex, Claude and workers with ROOM_DIR
   }
 })
 
+it('rejects a mismatched call that beats non-deferred startup', async () => {
+  const first = repo('fallback')
+  const second = repo('caller')
+  let calls = 0
+  const binding = createWorkspaceBinding({ deferred: false, fallbackDir: () => first,
+    logFallback: () => {}, initialize: async dir => ({ dir, call: () => { calls++; return dir } }) })
+  const result = await binding.run(call(second), runtime => Promise.resolve(runtime.call()))
+  expect(result.error).toBe(`This Codex session's workspace is ${fs.realpathSync(second)}, but Room is attached to ${first}; restart the session to switch.`)
+  expect(calls).toBe(0)
+  expect((await binding.forCall(call(first))).runtime?.dir).toBe(first)
+})
+
 it('uses fallback without metadata for a non-deferred host', async () => {
   const fallback = repo('fallback')
   const other = repo('other')
@@ -181,6 +193,35 @@ it('retries after a rejected initialization and logs once per attempt', async ()
   expect(starts).toBe(2)
 })
 
+it('does not dispatch into a replacement attempt after validation awaited the failed one', async () => {
+  const first = repo('failed')
+  const second = repo('replacement')
+  const started = gate(), failed = gate(), comparing = gate(), releaseComparison = gate()
+  let firstComparisons = 0
+  const binding = createWorkspaceBinding({ deferred: true, fallbackDir: () => first, logFallback: () => {},
+    matches: async (workspace, bound) => {
+      if (workspace === fs.realpathSync(first) && bound === fs.realpathSync(first) && ++firstComparisons === 2) {
+        comparing.resolve()
+        await releaseComparison.promise
+      }
+      return workspace === bound
+    },
+    initialize: async dir => {
+      if (dir === fs.realpathSync(first)) { started.resolve(); await failed.promise; throw new Error('failed') }
+      return dir
+    },
+  })
+  const firstCall = binding.forCall(call(first))
+  await started.promise
+  const validating = binding.forCall(call(first))
+  await comparing.promise
+  failed.resolve()
+  await expect(firstCall).rejects.toThrow('failed')
+  expect((await binding.forCall(call(second))).runtime).toBe(fs.realpathSync(second))
+  releaseComparison.resolve()
+  expect((await validating).error).toContain(`Room is attached to ${fs.realpathSync(second)}`)
+})
+
 it('closes during initialization without joining or dispatching afterwards', async () => {
   const dir = repo('closing')
   const ready = gate()
@@ -208,4 +249,22 @@ it('a call from the worktree root matches a session bound in its subfolder', asy
   const result = await binding.forCall({ _meta: { 'x-codex-turn-metadata': { workspaces: { [root]: {} } } } })
   expect(result.error).toBeUndefined()
   expect(result.runtime).toBe(sub)
+})
+
+it('distinguishes sibling worktrees and a nested repository using real Git roots', async () => {
+  const root = repo('root')
+  const sibling = fs.mkdtempSync(path.join(os.tmpdir(), 'room-workspace-sibling-'))
+  fs.rmSync(sibling, { recursive: true })
+  dirs.push(sibling)
+  execFileSync('git', ['-C', root, 'worktree', 'add', '-q', '-b', 'sibling', sibling])
+  const nested = path.join(root, 'nested')
+  fs.mkdirSync(nested)
+  execFileSync('git', ['init', '-q', nested])
+  expect(codexWorkspace(call(sibling))).toBe(fs.realpathSync(sibling))
+  expect(codexWorkspace(call(nested))).toBe(fs.realpathSync(nested))
+  const binding = createWorkspaceBinding({ deferred: false, fallbackDir: () => root, logFallback: () => {}, initialize: async dir => dir })
+  await binding.start()
+  expect((await binding.forCall(call(sibling))).error).toContain(`Room is attached to ${root}`)
+  expect((await binding.forCall(call(nested))).error).toContain(`Room is attached to ${root}`)
+  expect((await binding.forCall(call(root))).runtime).toBe(root)
 })

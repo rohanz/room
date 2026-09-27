@@ -201,6 +201,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const capNotice = requestedMs > WAIT_MAX ? 'waited 100 s (the most per call); call again. ' : ''
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`
       const qRoom = (questionId && rooms.holdingQuestion(questionId, s)) || s
+      for (const room of [s, ...rooms.all().filter(x => x !== s)]) syncHookSeen(room)
       const received = (x: Session, m: Msg) => { seen.add(m.id); x.room.markSeen(x.me.name, [m.id]); state.scheduleInboxWrite() }
       if (questionId) for (const x of [qRoom, ...rooms.all().filter(x => x !== qRoom)]) {
         const an = x.room.messages().find(m => messageEndsWait(m, { questionId, me: x.me.name, answersOnly: true }))
