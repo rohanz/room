@@ -22,19 +22,33 @@ const call = (dir?: string) => dir ? { _meta: { 'x-codex-turn-metadata': { works
 
 it('defers for a shared or unknown Codex parent, but not Claude, workers or ordinary Codex', () => {
   const codex = { ROOM_HOST: 'codex', PWD: '/wrong/repo' }
-  expect(deferForSharedCodex(codex, () => 'codex app-server --listen unix:// --managed-daemon')).toBe(true)
-  expect(deferForSharedCodex(codex, () => { throw new Error('ps failed') })).toBe(true)
+  expect(deferForSharedCodex(codex, () => 'codex app-server --listen unix:// --managed-daemon', 'darwin')).toBe(true)
+  expect(deferForSharedCodex(codex, () => { throw new Error('ps failed') }, 'darwin')).toBe(true)
   expect(deferForSharedCodex(codex, () => 'codex', 'win32')).toBe(true)
-  expect(deferForSharedCodex(codex, () => 'codex exec')).toBe(false)
-  expect(deferForSharedCodex({ ...codex, ROOM_DIR: '/worker' }, () => 'codex app-server')).toBe(false)
-  expect(deferForSharedCodex({ ROOM_HOST: 'claude' }, () => 'codex app-server')).toBe(false)
+  expect(deferForSharedCodex(codex, () => 'codex exec', 'darwin')).toBe(false)
+  expect(deferForSharedCodex({ ...codex, ROOM_DIR: '/worker' }, () => 'codex app-server', 'darwin')).toBe(false)
+  expect(deferForSharedCodex({ ROOM_HOST: 'claude' }, () => 'codex app-server', 'darwin')).toBe(false)
 })
 
-it('selects the only metadata workspace, or the first Git worktree among several', () => {
+it('selects one real worktree, deduplicating aliases and nested paths', () => {
   const target = repo('target')
-  expect(codexWorkspace(call(target))).toBe(target)
-  expect(codexWorkspace({ _meta: { 'x-codex-turn-metadata': { workspaces: { '/missing/repo': {}, [target]: {} } } } })).toBe(target)
+  const nested = path.join(target, 'nested')
+  fs.mkdirSync(nested)
+  const alias = path.join(os.tmpdir(), `room-workspace-alias-${process.pid}-${Date.now()}`)
+  fs.symlinkSync(target, alias)
+  dirs.push(alias)
+  const realTarget = fs.realpathSync(target)
+  const rootOf = (dir: string) => dir === realTarget || dir === fs.realpathSync(nested) ? realTarget : undefined
+  expect(codexWorkspace(call(target), rootOf)).toBe(realTarget)
+  expect(codexWorkspace({ _meta: { 'x-codex-turn-metadata': { workspaces: { [alias]: {}, [nested]: {} } } } }, rootOf)).toBe(realTarget)
   expect(codexWorkspace(call())).toBeUndefined()
+})
+
+it('refuses multiple distinct valid worktrees', () => {
+  const first = repo('first')
+  const second = repo('second')
+  const params = { _meta: { 'x-codex-turn-metadata': { workspaces: { [first]: {}, [second]: {} } } } }
+  expect(codexWorkspace(params, dir => dir)).toBeUndefined()
 })
 
 it('preserves the directory fallback order when Codex sends no metadata', () => {
@@ -49,7 +63,7 @@ it('starts no join under shared hosting and first binds and joins the metadata r
   const target = repo('target')
   const joins: string[] = []
   const binding = createWorkspaceBinding({
-    deferred: deferForSharedCodex({ ROOM_HOST: 'codex', PWD: wrong }, () => 'codex app-server --managed-daemon'),
+    deferred: deferForSharedCodex({ ROOM_HOST: 'codex', PWD: wrong }, () => 'codex app-server --managed-daemon', 'darwin'),
     fallbackDir: () => wrong, logFallback: () => { throw new Error('unexpected fallback') },
     initialize: async dir => {
       const auto = new AutoJoin({ local: false, log: () => {}, report: () => {}, joined: () => joins.length > 0,
@@ -63,11 +77,11 @@ it('starts no join under shared hosting and first binds and joins the metadata r
   await binding.start()
   expect(joins).toEqual([])
   expect(binding.current()).toBeUndefined()
-  const { runtime, warning } = await binding.forCall(call(target))
+  const { runtime } = await binding.forCall(call(target))
+  if (!runtime) throw new Error('expected runtime')
   await runtime.auto.settle()
-  expect(runtime.dir).toBe(target)
+  expect(runtime.dir).toBe(fs.realpathSync(target))
   expect(joins).toEqual(['github.com/example/target/main'])
-  expect(warning).toBe('')
 })
 
 it('keeps startup binding for non-shared Codex, Claude and workers with ROOM_DIR', async () => {
@@ -75,26 +89,112 @@ it('keeps startup binding for non-shared Codex, Claude and workers with ROOM_DIR
     const dir = repo(host)
     const joins: string[] = []
     const binding = createWorkspaceBinding({
-      deferred: deferForSharedCodex({ ROOM_HOST: host === 'worker' ? 'codex' : host, ...(host === 'worker' ? { ROOM_DIR: dir } : {}) }, () => host === 'worker' ? 'codex app-server' : 'codex exec'),
+      deferred: deferForSharedCodex({ ROOM_HOST: host === 'worker' ? 'codex' : host, ...(host === 'worker' ? { ROOM_DIR: dir } : {}) }, () => host === 'worker' ? 'codex app-server' : 'codex exec', 'darwin'),
       fallbackDir: () => dir, logFallback: () => {},
       initialize: async target => { joins.push(target); return target },
     })
+    if (host === 'worker') await binding.forCall(call(dir)) // a call can beat non-deferred startup
+    await binding.start()
     await binding.start()
     expect(joins).toEqual([dir])
     expect((await binding.forCall(call(dir))).runtime).toBe(dir)
   }
 })
 
-it('falls back without metadata and warns on a later call from another workspace', async () => {
+it('uses fallback without metadata for a non-deferred host', async () => {
   const fallback = repo('fallback')
   const other = repo('other')
   const logs: string[] = []
-  const binding = createWorkspaceBinding({ deferred: true, fallbackDir: () => fallback,
+  const binding = createWorkspaceBinding({ deferred: false, fallbackDir: () => fallback,
     logFallback: () => logs.push('fallback'), initialize: async dir => dir })
-  await binding.start()
-  expect((await binding.forCall(call())).runtime).toBe(fallback)
+  expect((await binding.forCall({ _meta: { 'x-codex-turn-metadata': { workspaces: { [fallback]: {}, [other]: {} } } } })).runtime).toBe(fallback)
   expect(logs).toEqual(['fallback'])
-  const later = await binding.forCall(call(other))
-  expect(later.runtime).toBe(fallback)
-  expect(later.warning).toBe(`This Codex session's workspace is ${other}, but Room is attached to ${fallback}; restart the session to switch.\n`)
+  expect((await binding.forCall(call())).runtime).toBe(fallback)
+})
+
+it('refuses missing or ambiguous metadata in a deferred session, then accepts a valid call', async () => {
+  const first = repo('first')
+  const second = repo('second')
+  const started: string[] = []
+  const binding = createWorkspaceBinding({ deferred: true, fallbackDir: () => second,
+    logFallback: () => { throw new Error('unsafe fallback') }, initialize: async dir => { started.push(dir); return dir } })
+  const missing = await binding.forCall(call())
+  expect(missing.error).toBe('Room could not tell which folder this Codex session is in (no workspace in the call). Update Codex, or start it with ROOM_DIR=<repo>.')
+  expect(binding.current()).toBeUndefined()
+  const ambiguous = await binding.forCall({ _meta: { 'x-codex-turn-metadata': { workspaces: { [first]: {}, [second]: {} } } } })
+  expect(ambiguous.error).toBe(missing.error)
+  expect(binding.current()).toBeUndefined()
+  expect((await binding.forCall(call(first))).runtime).toBe(fs.realpathSync(first))
+  expect((await binding.forCall(call())).error).toBe(missing.error)
+  expect(started).toEqual([fs.realpathSync(first)])
+})
+
+it('rejects a mismatched call without invoking the runtime', async () => {
+  const first = repo('first')
+  const second = repo('second')
+  let calls = 0
+  const binding = createWorkspaceBinding({ deferred: true, fallbackDir: () => second,
+    logFallback: () => {}, initialize: async () => ({ call: async () => { calls++; return 'posted' } }) })
+  expect((await binding.run(call(first), runtime => runtime.call())).value).toBe('posted')
+  const result = await binding.run(call(second), runtime => runtime.call())
+  expect(result.error).toBe(`This Codex session's workspace is ${fs.realpathSync(second)}, but Room is attached to ${fs.realpathSync(first)}; restart the session to switch.`)
+  expect(calls).toBe(1)
+})
+
+function gate() {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+it('shares one initialization across concurrent first calls', async () => {
+  const dir = repo('shared')
+  const ready = gate()
+  let starts = 0
+  const binding = createWorkspaceBinding({ deferred: true, fallbackDir: () => dir,
+    logFallback: () => {}, initialize: async () => { starts++; await ready.promise; return 'ready' } })
+  const a = binding.forCall(call(dir))
+  const b = binding.forCall(call(dir))
+  await Promise.resolve()
+  expect(starts).toBe(1)
+  ready.resolve()
+  expect((await a).runtime).toBe('ready')
+  expect((await b).runtime).toBe('ready')
+})
+
+it('retries after a rejected initialization and logs once per attempt', async () => {
+  const dir = repo('retry')
+  const failed = gate()
+  const errors: unknown[] = []
+  let starts = 0
+  const binding = createWorkspaceBinding({ deferred: true, fallbackDir: () => dir, matches: async () => true,
+    logFallback: () => {}, logFailure: error => errors.push(error),
+    initialize: async () => { if (++starts === 1) { await failed.promise; throw new Error('failed') } return 'ready' } })
+  const first = binding.forCall(call(dir))
+  const concurrent = binding.forCall(call(dir))
+  await new Promise<void>(resolve => setImmediate(resolve))
+  failed.resolve()
+  await expect(first).rejects.toThrow('failed')
+  await expect(concurrent).rejects.toThrow('failed')
+  expect(errors).toHaveLength(1)
+  expect((await binding.forCall(call(dir))).runtime).toBe('ready')
+  expect(starts).toBe(2)
+})
+
+it('closes during initialization without joining or dispatching afterwards', async () => {
+  const dir = repo('closing')
+  const ready = gate()
+  let joins = 0
+  let calls = 0
+  let shutdowns = 0
+  const binding = createWorkspaceBinding({ deferred: true, fallbackDir: () => dir, logFallback: () => {},
+    initialize: async (_dir, signal) => { await ready.promise; if (!signal.aborted) joins++; return { call: async () => { calls++ }, shutdown: async () => { shutdowns++ } } } })
+  const request = binding.run(call(dir), runtime => runtime.call())
+  await Promise.resolve()
+  const stopping = binding.close()
+  ready.resolve()
+  await (await stopping)?.shutdown()
+  expect((await request).error).toContain('shutting down')
+  expect((await binding.run(call(dir), runtime => runtime.call())).error).toContain('shutting down')
+  expect([joins, calls, shutdowns]).toEqual([0, 0, 1])
 })
