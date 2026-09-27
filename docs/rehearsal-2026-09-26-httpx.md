@@ -127,3 +127,19 @@ A dress rehearsal of the frozen build.
 1. **Lockout after a force-push.** Fixed in 0.16.29.
 2. **Ana could not acknowledge a note.** Room accepts replies only to questions. That is low priority; a note back is the workaround.
 3. **The catch-up rule can be sidestepped.** Undoing a local commit to make `--ff-only` succeed follows the letter of the rule, not its intent. For after the trial: say in the skill that recommitting local work onto a moved branch also needs the human's yes.
+
+## Workers inside the team room, 0.16.30–0.16.31, 2026-09-27
+
+Ana and Ben (Claude Code) were in the httpx team room at full sharing, and Ben asked for Codex workers.
+
+1. **Round 1.** "Get a codex agent to add docstrings in `_urlparse.py` in the background."
+   - The worker ran in its own worktree, and its 7 docstrings were collected into Ben's tree, uncommitted.
+   - Ben's preview-with-tests failed only because his clone had no virtualenv. His agent said so and ran the tests another way.
+   - Ben waited rather than leaving it in the background, so there was no overlap to observe.
+2. **Round 2.** A worker for `_utils.py` ran in the background while Ana edited the same file.
+   - Ana saw the worker (`rohanz+utils-docstrings`) editing it through Ben's bridge, and previewed the combined changes: no conflicts.
+   - She disclosed that she had skipped a claim Room asked for, judging the one-line edit too small to matter.
+3. **Follow-up to a finished worker: fixed in 0.16.31.**
+   - Ben's message resumed the worker. It answered, exited 0 and did not call `room_done`.
+   - Room marked it failed, sent Ben a "worker died" interrupt, and refused to collect it. Ben's agent then applied the diff with plain git.
+   - Since 0.16.31, such a run returns to done with "(follow-up: …)" and collect works. Verified live: the worker answered "No. I only added docstrings to `subtotal` and `total`." and was collected.
