@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.30
+
+- **The catch-up rule covers a rejected push.** In the httpx rerun, an agent whose push was rejected undid its own commit, pulled with `--ff-only` and recommitted without asking. The rule it followed said to stop only when the pull refuses. The rule now says: if the pull refuses or your push is rejected, stop and tell your human, and do not undo, rebase or recommit your commits to get past it without their yes. It is the same text everywhere: the base-change notice, the MCP instructions, and the join and etiquette skills.
+
 ## 0.16.29
 
 Found in the httpx rerun.

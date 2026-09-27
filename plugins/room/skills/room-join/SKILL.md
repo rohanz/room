@@ -27,7 +27,7 @@ only when the user asks for a separate, named room; it becomes `local/<name>`.
 Re-joining the same room prints its current state and browser link. Moving rooms is refused
 while your workers are running; wait for them or use room_collect(discard=true) first. The join reply includes the new browser link.
 Live sharing does not apply other participants' edits; collection and explicit exports can write files.
-In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.
+In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.
 
 If it fails:
 - "Room was updated on disk; restart this session to pick up fixes": restart this session to load the

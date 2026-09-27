@@ -34,7 +34,7 @@ const to = (m: MsgBase) => m.to ? ` → ${displayName({ name: m.to, kind: 'agent
 const priority = (m: MsgBase) => `[${m.priority}] `
 const scopePaths = (paths: readonly string[]) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join('\u0000')
 
-export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, stop and tell your human; never merge another branch into this one.'
+export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.'
 
 const builtins = {
   claim: { priority: 'fyi', audience: 'claim-holders', inbox: false, wakes: 'never', format: (m, context) => context?.claims && !context.claims.some(c => c.id === m.claimId)

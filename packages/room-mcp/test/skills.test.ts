@@ -22,7 +22,8 @@ it('teaches the shared branch push and safe catch-up flow in both joining skills
     const skill = readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8')
     expect(skill).toContain('when your human asks you to push, push to the room branch; Room tells the others to catch up')
     expect(skill).toContain('git pull --ff-only --autostash')
-    expect(skill).toContain('If it refuses, stop and tell your human')
+    expect(skill).toContain('If it refuses, or your push is rejected, stop and tell your human')
+    expect(skill).toContain('do not undo, rebase or recommit your commits to get past it without their yes')
     expect(skill).toContain('never merge another branch into this one')
   }
 })
@@ -30,6 +31,7 @@ it('teaches the shared branch push and safe catch-up flow in both joining skills
 it('gives the agent the shared branch instruction through the MCP prompt', () => {
   expect(AGENT_INSTRUCTIONS()).toContain('when your human asks you to push, push to the room branch; Room tells the others to catch up')
   expect(AGENT_INSTRUCTIONS()).toContain('git pull --ff-only --autostash')
+  expect(AGENT_INSTRUCTIONS()).toContain('do not undo, rebase or recommit your commits to get past it without their yes')
 })
 
 it('lists TypeScript incremental state among regenerable worker output', () => {

@@ -574,7 +574,7 @@ describe('hooks bridge + plugin hook scripts', () => {
     expect(queued.length).toBe(3)
     expect(queued[2]).toContain('moved the base')
     expect(queued[2]).toContain('git pull --ff-only --autostash')
-    expect(queued[2]).toContain('If it refuses, stop and tell your human')
+    expect(queued[2]).toContain('If it refuses, or your push is rejected, stop and tell your human')
     expect(queued[2]).not.toContain('offer to commit and push')
     expect(queued[0]).toContain('thread-1: [room] [notify]')
     expect(queued[1]).toContain('stop!')

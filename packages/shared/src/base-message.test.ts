@@ -12,7 +12,7 @@ describe('base catch-up guidance', () => {
     })
     const text = formatMsg(message)
     expect(text).toContain('git pull --ff-only --autostash')
-    expect(text).toContain('If it refuses, stop and tell your human; never merge another branch into this one.')
+    expect(text).toContain('If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.')
     room.doc.destroy()
   })
 
