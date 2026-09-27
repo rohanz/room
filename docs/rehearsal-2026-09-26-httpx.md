@@ -87,3 +87,43 @@ Fixes 1 and 2 are below.
   first edit was dropped when the scope cleared. It also found that `room_share` could say "nothing is
   shared" while retained files were, and that the README was stale. 0.16.15 fixes all of them, with
   real-daemon tests.
+
+## Rerun at mixed sharing on 0.16.28–0.16.29, 2026-09-27
+
+A dress rehearsal of the frozen build.
+
+**Setup**
+- The same repository, reset to 88b5c0a with its issues reopened. Card A's example was clarified.
+- Three fresh clones, each at a different sharing level:
+  - Ana: Claude Code, full.
+  - Ben: Claude Code, declared.
+  - Cy: Codex, plans only.
+- Cy's Codex ran under the shared app-server daemon while the daemon's `PWD` pointed at an *older clone of the same repository*.
+
+**The force-push lockout (fixed in 0.16.29).** My reset left the team room recording c413a4d as its base, a commit no clone had any more.
+- All three agents refused to join, as designed, and explained why.
+- `room_close` worked only from inside a room, so nobody could recover without a server admin.
+- 0.16.29 lets `room_close confirm=true` close an unjoinable team room.
+- Ana, asked in plain words, closed and reopened it with two confirmation prompts.
+
+**Joining and binding.** Cy bound to the new clone: the old clone's log shows no join.
+
+**Working at mixed levels:**
+- All three finished in about five minutes.
+- Cy (plans only) previewed its change against Ana's (full), found six of its own tests contradicted Ana's fix, and rewrote them.
+- Ben (declared) said plainly that Cy's changes could not be included in his check, and which of his files stay shared.
+
+**Pushing at the same moment:**
+- Ben pushed first.
+- Cy was rejected, stopped and asked. On "yes" it rebased, reran the tests (261) and pushed.
+- Ana was rejected and did not ask. She undid her local commit, pulled with `--ff-only --autostash` and committed again. That is a rebase in effect, without a merge or a force-push, but it sidesteps "stop and tell your human".
+
+**Result:**
+- `rehearsal` = 7b7c5a1 (#2), 02c2c78 (#1), a4eb73d (#3).
+- A fresh clone passes 261 tests, and upstream's final test files pass 244 of 244.
+- All issues are closed.
+
+**Findings:**
+1. **Lockout after a force-push.** Fixed in 0.16.29.
+2. **Ana could not acknowledge a note.** Room accepts replies only to questions. That is low priority; a note back is the workaround.
+3. **The catch-up rule can be sidestepped.** Undoing a local commit to make `--ff-only` succeed follows the letter of the rule, not its intent. For after the trial: say in the skill that recommitting local work onto a moved branch also needs the human's yes.
