@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.29
+
+Found in the httpx rerun.
+
+- **A team room that nobody can join can be closed from outside it.** After a force-push reset the shared branch, the room's recorded base existed in no clone, so every join stopped, as designed: a diverged checkout must not merge. `room_close` worked only from inside a room, so the team was locked out until a server admin stepped in. Called unjoined with `confirm=true`, `room_close` now closes this clone's team room using the caller's login. It says the history could not be exported, and `room_create` reopens the room. The base-mismatch join error now says how to recover.
+
 ## 0.16.28
 
 - A Codex workspace binding whose initialization fails while a call is still validating no longer leaves an unhandled rejection, which exits the process, and no longer retries without bound. Each attempt records its failure, the call that started it gets "Room could not start for <dir>: <reason>; try again.", and the next call retries. Found by the final Astra pass on 0.16.27.

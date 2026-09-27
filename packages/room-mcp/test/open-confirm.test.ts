@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { createTools, DEFS } from '../src/tools.js'
 import { deriveRoomName } from '../src/session.js'
 import { RoomdError } from '@room/roomd'
@@ -52,7 +56,12 @@ describe('closing without a joined session', () => {
   it('closes the derived team repo with the caller\'s auth after confirmation', async () => {
     vi.stubEnv('ROOM_SERVER', 'ws://room.test:1234')
     vi.stubEnv('ROOM_TOKEN', 'close-secret')
-    const roomName = (await deriveRoomName(process.cwd())).roomName!
+    // A clone with a fixed non-GitHub origin: the result must not depend on the repository running the tests.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-close-'))
+    execFileSync('git', ['init', '-q', '-b', 'main', dir])
+    execFileSync('git', ['-C', dir, '-c', 'user.name=Room Test', '-c', 'user.email=room@example.com', 'commit', '-q', '--allow-empty', '-m', 'init'])
+    execFileSync('git', ['-C', dir, 'remote', 'add', 'origin', 'https://git.example.com/team/app.git'])
+    const roomName = (await deriveRoomName(dir)).roomName!
     const closes: Record<string, unknown>[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, opts?: RequestInit) => {
       if (new URL(url).pathname === '/auth/config') return Response.json({ providers: [] })
@@ -62,11 +71,12 @@ describe('closing without a joined session', () => {
       }
       throw new Error(`unexpected ${url}`)
     }))
-    const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {} })
+    const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {} })
     expect(await tools.call('room_close', {})).toContain('confirm=true')
     expect(closes).toEqual([])
     expect(await tools.call('room_close', { confirm: true })).toContain(`closed ${roomName.slice(0, roomName.lastIndexOf('/'))} for everyone without joining`)
     expect(closes).toEqual([{ room: roomName, token: 'close-secret' }])
+    fs.rmSync(dir, { recursive: true, force: true })
   })
 
   it('reports nothing to close in an unjoined local room', async () => {
