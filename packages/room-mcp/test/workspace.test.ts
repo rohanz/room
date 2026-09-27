@@ -198,3 +198,14 @@ it('closes during initialization without joining or dispatching afterwards', asy
   expect((await binding.run(call(dir), runtime => runtime.call())).error).toContain('shutting down')
   expect([joins, calls, shutdowns]).toEqual([0, 0, 1])
 })
+
+it('a call from the worktree root matches a session bound in its subfolder', async () => {
+  const root = repo('sub')
+  const sub = path.join(root, 'pkg')
+  fs.mkdirSync(sub)
+  const binding = createWorkspaceBinding({ deferred: false, fallbackDir: () => sub, initialize: async dir => dir, logFallback: () => {} })
+  await binding.start()
+  const result = await binding.forCall({ _meta: { 'x-codex-turn-metadata': { workspaces: { [root]: {} } } } })
+  expect(result.error).toBeUndefined()
+  expect(result.runtime).toBe(sub)
+})

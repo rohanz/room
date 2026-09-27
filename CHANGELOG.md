@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.25
+
+Fixes from the Astra review of 0.16.24.
+
+- A call from a different Codex workspace than the one Room is attached to returns an error and does nothing. It used to warn and then act in the wrong room.
+- A session under a shared Codex app-server never falls back to the inherited `PWD`. If a call has no workspace, or several distinct repositories, Room returns an actionable error and tries again on the next call.
+- A failed initialization can be retried. Closing stdin during startup stops initialization and dispatch, and anything that finishes starting afterwards is shut down.
+- Workspaces are compared by worktree root, so a session bound in a subfolder matches calls from its repository root.
+- Early failures reach `ROOM_LOG_FILE` again.
+
 ## 0.16.24
 
 Found in the click rehearsal on codex-cli 0.157.1.

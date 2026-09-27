@@ -48,11 +48,11 @@ export function codexWorkspace(params: { _meta?: unknown }, rootOf: (dir: string
   return roots.size === 1 ? roots.values().next().value : undefined
 }
 
-/** Both the physical folder and Git repository must match; sibling worktrees are distinct sessions. */
+/** Same worktree root and Git repository; a subfolder of the bound worktree matches, sibling worktrees do not. */
 async function sameWorkspace(a: string, b: string): Promise<boolean> {
   try {
-    const [realA, realB] = [fs.realpathSync(a), fs.realpathSync(b)]
-    if (realA !== realB) return false
+    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map(dir => fs.realpathSync(dir))
+    if (rootA !== rootB) return false
     const [gitA, gitB] = await Promise.allSettled([gitCommonDir(a), gitCommonDir(b)])
     if (gitA.status === 'rejected' || gitB.status === 'rejected') return gitA.status === gitB.status
     return fs.realpathSync(gitA.value) === fs.realpathSync(gitB.value)
