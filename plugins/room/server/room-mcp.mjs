@@ -47299,7 +47299,27 @@ function handlers5(state) {
       return `left ${s.roomName}; released ${released} claim(s)${stopped.length ? "; worker process checks: " + stopped.join("; ") : ""}${forgot}`;
     },
     async room_close(a) {
-      const s = S();
+      const s = ctx.getSession();
+      if (!s) {
+        const dir = ctx.cwd ?? process.cwd();
+        const config2 = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath } });
+        if (config2.server === LOCAL) return "error: not in a local room; nothing to close without joining";
+        if (a.confirm !== true) return "error: room_close removes every branch room of this repo and all shared uncommitted work for everyone; call with confirm=true only on the user's explicit request";
+        const roomName = config2.room ?? (await deriveRoomName(dir)).roomName;
+        if (!roomName) return `error: ${dir} has no origin remote; room_join needs a room name`;
+        const { server, token } = parseServer(config2.server);
+        configureCredentials(config2.credentialsPath);
+        let auth;
+        try {
+          auth = await resolveAuth(server, roomName, config2.token ?? token);
+        } catch (e) {
+          if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_close confirm=true afterward.`;
+          throw e;
+        }
+        await closeRoom(server, roomName, { session: auth.session, token: auth.token });
+        const repo2 = roomName.slice(0, roomName.lastIndexOf("/"));
+        return `closed ${repo2} for everyone without joining (the room could not be joined, so its history was not exported); room_create reopens it`;
+      }
       if (s.local) {
         if (a.confirm !== true) return "error: this is a local room (no server): room_close forgets its saved history (timeline, finished-worker records) on this machine; call with confirm=true only on the user's explicit request";
         if (runningWorkers(s).length) return "error: dismiss running workers before closing the local room";
@@ -48148,6 +48168,147 @@ function createHandlerState(ctx) {
   };
   return state;
 }
+
+// packages/room-mcp/src/auto-join.ts
+init_src2();
+var JOIN_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 2e4];
+var JOIN_DEADLINE_MS = 12e4;
+var JOIN_RETRY_AFTER_MS = 3e4;
+function phaseOf(e) {
+  const p = e?.phase;
+  return typeof p === "string" ? p : void 0;
+}
+var causeOf = (e) => `${phaseOf(e) ? `(${phaseOf(e)}): ` : ""}${e instanceof Error ? e.message : String(e)}`;
+var baseRecovery = (e) => e instanceof RoomdError && (/^room base .* is not in this clone/.test(e.message) || /^local HEAD .* has diverged from room base/.test(e.message)) ? " If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create)." : "";
+function retryable(e) {
+  if (e instanceof NoRoom || e instanceof NotLoggedIn) return false;
+  return !(e instanceof RoomdError) || e.code === 1;
+}
+function joinFailureLine(e, local, attempts) {
+  if (e instanceof NotLoggedIn) return "Room is not connected: not logged in; use room_login.";
+  const phase = phaseOf(e);
+  const head = `Room could not join${local ? " the local room" : ""}${attempts > 1 ? ` after ${attempts} attempts` : ""}${phase ? ` (${phase})` : ""}: ${e instanceof Error ? e.message : String(e)}`;
+  return local ? `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1e3} s); room_join to retry now.` : `${head}; use room_join.${baseRecovery(e)}`;
+}
+var AutoJoin = class {
+  constructor(o) {
+    this.o = o;
+    this.delays = o.delaysMs ?? JOIN_DELAYS_MS;
+    this.deadlineMs = o.deadlineMs ?? JOIN_DEADLINE_MS;
+    this.retryAfterMs = o.retryAfterMs ?? JOIN_RETRY_AFTER_MS;
+    this.now = o.now ?? Date.now;
+  }
+  o;
+  inflight = null;
+  cancelled = false;
+  wake = null;
+  endedAt = 0;
+  /** Why the last run failed, while no session is present; undefined after a join. */
+  failure;
+  permanent = false;
+  target;
+  delays;
+  deadlineMs;
+  retryAfterMs;
+  now;
+  /** Join unless joined, cancelled, or a failed run ended too recently; concurrent callers share one run. */
+  ensure() {
+    if (this.inflight) return this.inflight;
+    if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve();
+    if (this.failure && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve();
+    this.inflight = this.run().finally(() => {
+      this.inflight = null;
+      this.endedAt = this.now();
+    });
+    return this.inflight;
+  }
+  /** The run in progress, if any. */
+  settle() {
+    return this.inflight ?? Promise.resolve();
+  }
+  /** A human joined s: from now on s's room is the one meant, and a stopped automatic join resumes for it. */
+  retarget(s) {
+    this.target = s;
+    this.cancelled = false;
+    this.permanent = false;
+    this.failure = void 0;
+  }
+  /** Stop joining for good: a late session is left, a pending wait ends now. */
+  cancel() {
+    this.cancelled = true;
+    this.wake?.();
+  }
+  async run() {
+    const deadline = this.now() + this.deadlineMs;
+    let last2;
+    let attempts = 0;
+    for (; ; ) {
+      attempts++;
+      try {
+        const s = await this.bounded(this.o.attempt(this.target), deadline);
+        if (s === "gave-up") return;
+        if (!s) {
+          this.permanent = true;
+          return;
+        }
+        this.failure = void 0;
+        await this.o.adopt(s);
+        return;
+      } catch (e) {
+        last2 = e;
+        if (this.cancelled) return;
+        if (!retryable(e)) {
+          this.permanent = true;
+          break;
+        }
+        const wait = this.delays[Math.min(attempts - 1, this.delays.length - 1)];
+        if (this.now() + wait >= deadline) break;
+        this.o.log(`join attempt ${attempts} failed ${causeOf(e)}; retrying in ${Math.round(wait / 1e3)}s`);
+        await this.sleep(wait);
+        if (this.cancelled) return;
+      }
+    }
+    this.o.log(`join attempt ${attempts} failed ${causeOf(last2)}; giving up for now`);
+    const first = this.failure === void 0;
+    this.failure = joinFailureLine(last2, this.target ? !!this.target.local : this.o.local, attempts);
+    if (first) this.o.report(this.failure);
+  }
+  /** The attempt, unless the deadline or a cancel comes first; a session that arrives later is left. */
+  bounded(attempt, deadline) {
+    return new Promise((resolve5, reject) => {
+      let open3 = true;
+      const timer = setTimeout(() => finish(() => reject(new RoomdError(`did not finish within the ${Math.round(this.deadlineMs / 1e3)}s join deadline`, 1))), Math.max(0, deadline - this.now()));
+      const finish = (f) => {
+        if (!open3) return;
+        open3 = false;
+        clearTimeout(timer);
+        this.wake = null;
+        f();
+      };
+      this.wake = () => finish(() => resolve5("gave-up"));
+      attempt.then(
+        (s) => {
+          if (open3) finish(() => resolve5(this.cancelled && s ? (void this.o.discard(s), "gave-up") : s));
+          else if (s) void this.o.discard(s);
+        },
+        (e) => finish(() => reject(e))
+      );
+    });
+  }
+  sleep(ms) {
+    return new Promise((resolve5) => {
+      const timer = setTimeout(() => {
+        this.wake = null;
+        resolve5();
+      }, ms);
+      this.wake = () => {
+        clearTimeout(timer);
+        this.wake = null;
+        resolve5();
+      };
+    });
+  }
+};
 
 // packages/room-mcp/src/tools/index.ts
 init_hooks_bridge();
@@ -49470,7 +49631,7 @@ function createTools(ctx) {
           if (e instanceof NotJoined) return notJoined();
           if (e instanceof NotLoggedIn) return `error: ${e.message}`;
           if (e instanceof NeedFetch) return e.lead ? `error: ${e.person}'s base ${e.sha.slice(0, 10)} is ${e.lead}'s carried uncommitted work, which exists only on ${e.lead}'s machine; ${e.person}'s unchanged files cannot be read here, their changed files can` : `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry; if it is still missing, ${e.person} has not pushed it yet`;
-          return `error: ${e instanceof Error ? e.message : String(e)}`;
+          return `error: ${e instanceof Error ? e.message : String(e)}${baseRecovery(e)}`;
         }
       });
     }
@@ -49527,148 +49688,6 @@ ${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
 
 // packages/room-mcp/src/index.ts
 init_prompt();
-
-// packages/room-mcp/src/auto-join.ts
-init_src2();
-var JOIN_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 2e4];
-var JOIN_DEADLINE_MS = 12e4;
-var JOIN_RETRY_AFTER_MS = 3e4;
-function phaseOf(e) {
-  const p = e?.phase;
-  return typeof p === "string" ? p : void 0;
-}
-var causeOf = (e) => `${phaseOf(e) ? `(${phaseOf(e)}): ` : ""}${e instanceof Error ? e.message : String(e)}`;
-function retryable(e) {
-  if (e instanceof NoRoom || e instanceof NotLoggedIn) return false;
-  return !(e instanceof RoomdError) || e.code === 1;
-}
-function joinFailureLine(e, local, attempts) {
-  if (e instanceof NotLoggedIn) return "Room is not connected: not logged in; use room_login.";
-  const phase = phaseOf(e);
-  const head = `Room could not join${local ? " the local room" : ""}${attempts > 1 ? ` after ${attempts} attempts` : ""}${phase ? ` (${phase})` : ""}: ${e instanceof Error ? e.message : String(e)}`;
-  return local ? `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1e3} s); room_join to retry now.` : `${head}; use room_join.`;
-}
-var AutoJoin = class {
-  constructor(o) {
-    this.o = o;
-    this.delays = o.delaysMs ?? JOIN_DELAYS_MS;
-    this.deadlineMs = o.deadlineMs ?? JOIN_DEADLINE_MS;
-    this.retryAfterMs = o.retryAfterMs ?? JOIN_RETRY_AFTER_MS;
-    this.now = o.now ?? Date.now;
-  }
-  o;
-  inflight = null;
-  cancelled = false;
-  wake = null;
-  endedAt = 0;
-  /** Why the last run failed, while no session is present; undefined after a join. */
-  failure;
-  permanent = false;
-  target;
-  delays;
-  deadlineMs;
-  retryAfterMs;
-  now;
-  /** Join unless joined, cancelled, or a failed run ended too recently; concurrent callers share one run. */
-  ensure() {
-    if (this.inflight) return this.inflight;
-    if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve();
-    if (this.failure && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve();
-    this.inflight = this.run().finally(() => {
-      this.inflight = null;
-      this.endedAt = this.now();
-    });
-    return this.inflight;
-  }
-  /** The run in progress, if any. */
-  settle() {
-    return this.inflight ?? Promise.resolve();
-  }
-  /** A human joined s: from now on s's room is the one meant, and a stopped automatic join resumes for it. */
-  retarget(s) {
-    this.target = s;
-    this.cancelled = false;
-    this.permanent = false;
-    this.failure = void 0;
-  }
-  /** Stop joining for good: a late session is left, a pending wait ends now. */
-  cancel() {
-    this.cancelled = true;
-    this.wake?.();
-  }
-  async run() {
-    const deadline = this.now() + this.deadlineMs;
-    let last2;
-    let attempts = 0;
-    for (; ; ) {
-      attempts++;
-      try {
-        const s = await this.bounded(this.o.attempt(this.target), deadline);
-        if (s === "gave-up") return;
-        if (!s) {
-          this.permanent = true;
-          return;
-        }
-        this.failure = void 0;
-        await this.o.adopt(s);
-        return;
-      } catch (e) {
-        last2 = e;
-        if (this.cancelled) return;
-        if (!retryable(e)) {
-          this.permanent = true;
-          break;
-        }
-        const wait = this.delays[Math.min(attempts - 1, this.delays.length - 1)];
-        if (this.now() + wait >= deadline) break;
-        this.o.log(`join attempt ${attempts} failed ${causeOf(e)}; retrying in ${Math.round(wait / 1e3)}s`);
-        await this.sleep(wait);
-        if (this.cancelled) return;
-      }
-    }
-    this.o.log(`join attempt ${attempts} failed ${causeOf(last2)}; giving up for now`);
-    const first = this.failure === void 0;
-    this.failure = joinFailureLine(last2, this.target ? !!this.target.local : this.o.local, attempts);
-    if (first) this.o.report(this.failure);
-  }
-  /** The attempt, unless the deadline or a cancel comes first; a session that arrives later is left. */
-  bounded(attempt, deadline) {
-    return new Promise((resolve5, reject) => {
-      let open3 = true;
-      const timer = setTimeout(() => finish(() => reject(new RoomdError(`did not finish within the ${Math.round(this.deadlineMs / 1e3)}s join deadline`, 1))), Math.max(0, deadline - this.now()));
-      const finish = (f) => {
-        if (!open3) return;
-        open3 = false;
-        clearTimeout(timer);
-        this.wake = null;
-        f();
-      };
-      this.wake = () => finish(() => resolve5("gave-up"));
-      attempt.then(
-        (s) => {
-          if (open3) finish(() => resolve5(this.cancelled && s ? (void this.o.discard(s), "gave-up") : s));
-          else if (s) void this.o.discard(s);
-        },
-        (e) => finish(() => reject(e))
-      );
-    });
-  }
-  sleep(ms) {
-    return new Promise((resolve5) => {
-      const timer = setTimeout(() => {
-        this.wake = null;
-        resolve5();
-      }, ms);
-      this.wake = () => {
-        clearTimeout(timer);
-        this.wake = null;
-        resolve5();
-      };
-    });
-  }
-};
-
-// packages/room-mcp/src/index.ts
 init_src2();
 init_hooks_bridge();
 init_config();
@@ -49806,7 +49825,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.28",
+  version: "0.16.29",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
