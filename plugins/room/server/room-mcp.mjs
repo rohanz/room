@@ -49734,6 +49734,7 @@ async function sameWorkspace(a, b) {
   }
 }
 var missingWorkspace = "Room could not tell which folder this Codex session is in (no workspace in the call). Update Codex, or start it with ROOM_DIR=<repo>.";
+var startFailure = (attempt) => `Room could not start for ${attempt.dir}: ${attempt.failed instanceof Error ? attempt.failed.message : String(attempt.failed)}; try again.`;
 var closingMessage = "Room is shutting down; restart this session to use Room.";
 function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback, logFailure, matches = sameWorkspace }) {
   let current;
@@ -49745,9 +49746,12 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
       return initialize(dir, abort2.signal);
     });
     const tracked = attempt.catch((error2) => {
+      binding.failed = error2;
       if (current === binding) current = void 0;
       if (deferred && !closing) logFailure?.(error2);
       throw error2;
+    });
+    tracked.catch(() => {
     });
     const binding = { dir, promise: tracked };
     current = binding;
@@ -49766,9 +49770,17 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
       }
       const matchesBinding = !workspace || await matches(workspace, binding.dir);
       if (closing) return { error: closingMessage };
-      if (current !== binding) continue;
+      if (current !== binding) {
+        if (!current && "failed" in binding) return { error: startFailure(binding) };
+        continue;
+      }
       if (!matchesBinding) return { error: `This Codex session's workspace is ${workspace}, but Room is attached to ${binding.dir}; restart the session to switch.` };
-      const runtime2 = await binding.promise;
+      let runtime2;
+      try {
+        runtime2 = await binding.promise;
+      } catch {
+        return { error: closing ? closingMessage : startFailure(binding) };
+      }
       return closing ? { error: closingMessage } : { runtime: runtime2 };
     }
   };
@@ -49794,7 +49806,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.27",
+  version: "0.16.28",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
