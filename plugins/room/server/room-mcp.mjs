@@ -27031,7 +27031,6 @@ Call room_state, then react per the room-etiquette skill.`;
             await (this.o.queue ?? defaultQueue)(session.id, text);
             if (!active()) return;
             this.woken.add(m.id);
-            this.s.room.markSeen(this.s.me.name, [m.id]);
             if (this.o.writeState !== false) this.write();
             this.o.log?.(`woke session ${session.id.slice(0, 8)} for ${m.type} ${m.id}${attempt ? ` (attempt ${attempt + 1})` : ""}`);
             return;
@@ -49794,7 +49793,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.25",
+  version: "0.16.26",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
