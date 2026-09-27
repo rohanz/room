@@ -49697,27 +49697,35 @@ function deferForSharedCodex(env, readParent = parentCommand, platform = process
     return true;
   }
 }
-function codexWorkspace(params2, insideWorktree = (dir) => {
+var worktreeRoot = (dir) => {
   try {
-    return execFileSync6("git", ["-C", dir, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() === "true";
+    return execFileSync6("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
   } catch {
-    return false;
+    return void 0;
   }
-}) {
+};
+function codexWorkspace(params2, rootOf = worktreeRoot) {
   const meta2 = params2._meta;
   if (!meta2 || typeof meta2 !== "object") return void 0;
   const turn = meta2["x-codex-turn-metadata"];
   if (!turn || typeof turn !== "object") return void 0;
   const workspaces = turn.workspaces;
   if (!workspaces || typeof workspaces !== "object" || Array.isArray(workspaces)) return void 0;
-  const keys2 = Object.keys(workspaces);
-  if (keys2.length === 1) return keys2[0];
-  return keys2.find(insideWorktree);
+  const roots = /* @__PURE__ */ new Set();
+  for (const key of Object.keys(workspaces)) {
+    try {
+      const real = fs29.realpathSync(key);
+      const root = rootOf(real);
+      if (root) roots.add(fs29.realpathSync(root));
+    } catch {
+    }
+  }
+  return roots.size === 1 ? roots.values().next().value : void 0;
 }
 async function sameWorkspace(a, b) {
   try {
-    const [realA, realB] = [fs29.realpathSync(a), fs29.realpathSync(b)];
-    if (realA !== realB) return false;
+    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map((dir) => fs29.realpathSync(dir));
+    if (rootA !== rootB) return false;
     const [gitA, gitB] = await Promise.allSettled([gitCommonDir(a), gitCommonDir(b)]);
     if (gitA.status === "rejected" || gitB.status === "rejected") return gitA.status === gitB.status;
     return fs29.realpathSync(gitA.value) === fs29.realpathSync(gitB.value);
@@ -49725,29 +49733,60 @@ async function sameWorkspace(a, b) {
     return false;
   }
 }
-function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback, matches = sameWorkspace }) {
+var missingWorkspace = "Room could not tell which folder this Codex session is in (no workspace in the call). Update Codex, or start it with ROOM_DIR=<repo>.";
+var closingMessage = "Room is shutting down; restart this session to use Room.";
+function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback, logFailure, matches = sameWorkspace }) {
   let boundDir;
   let pending;
+  let closing = false;
+  const abort2 = new AbortController();
   const bind = (dir) => {
     boundDir = dir;
-    pending = initialize(dir);
-    return pending;
+    const attempt = Promise.resolve().then(() => {
+      if (closing) throw new Error(closingMessage);
+      return initialize(dir, abort2.signal);
+    });
+    const tracked = attempt.catch((error2) => {
+      if (pending === tracked) {
+        pending = void 0;
+        boundDir = void 0;
+      }
+      if (deferred && !closing) logFailure?.(error2);
+      throw error2;
+    });
+    pending = tracked;
+    return tracked;
+  };
+  const forCall = async (params2) => {
+    if (closing) return { error: closingMessage };
+    const workspace = codexWorkspace(params2);
+    if (deferred && !workspace) return { error: missingWorkspace };
+    if (pending && workspace && boundDir && !await matches(workspace, boundDir)) {
+      return { error: `This Codex session's workspace is ${workspace}, but Room is attached to ${boundDir}; restart the session to switch.` };
+    }
+    if (closing) return { error: closingMessage };
+    if (!pending) {
+      if (!workspace) logFallback();
+      bind(deferred ? workspace : fallbackDir());
+    }
+    const runtime2 = await pending;
+    return closing ? { error: closingMessage } : { runtime: runtime2 };
   };
   return {
-    start: () => deferred ? Promise.resolve(void 0) : bind(fallbackDir()),
+    start: () => closing || deferred ? Promise.resolve(void 0) : pending ?? bind(fallbackDir()),
     current: () => pending,
-    async forCall(params2) {
-      const workspace = codexWorkspace(params2);
-      let usedFallback = false;
-      if (!pending) {
-        usedFallback = deferred && !workspace;
-        bind(deferred && workspace ? workspace : fallbackDir());
-      }
-      const runtime2 = await pending;
-      if (usedFallback) logFallback();
-      const warning = workspace && boundDir && !await matches(workspace, boundDir) ? `This Codex session's workspace is ${workspace}, but Room is attached to ${boundDir}; restart the session to switch.
-` : "";
-      return { runtime: runtime2, warning };
+    /** Stop new work immediately; the caller shuts down any runtime that finishes starting. */
+    close: () => {
+      closing = true;
+      abort2.abort();
+      return pending;
+    },
+    forCall,
+    async run(params2, action) {
+      const result = await forCall(params2);
+      if (result.error) return { error: result.error };
+      if (closing) return { error: closingMessage };
+      return { value: await action(result.runtime) };
     }
   };
 }
@@ -49755,7 +49794,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.24",
+  version: "0.16.25",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
@@ -49800,7 +49839,7 @@ function appendRoomLog(file, line, maxBytes = ROOM_LOG_MAX_BYTES) {
   } catch {
   }
 }
-var LOG_FILE;
+var LOG_FILE = process.env.ROOM_LOG_FILE;
 var ROOM_LOG_FILE;
 var log = (s) => {
   try {
@@ -49838,6 +49877,7 @@ function createBundleUpdateNotice(file) {
   };
 }
 async function main() {
+  let closing = false;
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? "");
   const mcp = new Server(
     { name: "room", version: RELEASE_VERSION },
@@ -49846,13 +49886,16 @@ async function main() {
   const binding = createWorkspaceBinding({
     deferred: deferForSharedCodex(process.env),
     fallbackDir: () => fallbackWorkspace(process.env, process.cwd()),
-    logFallback: () => log("Codex call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback"),
-    initialize: async (dir) => {
+    logFallback: () => log("call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback"),
+    logFailure: (error2) => log(`workspace initialization failed: ${error2 instanceof Error ? error2.message : String(error2)}`),
+    initialize: async (dir, signal) => {
       let session = null;
       let startupNotice = "";
       const startup = await resolveConfig({ dir, env: process.env });
+      if (signal.aborted) throw new Error("Room is shutting down");
       LOG_FILE = startup.logFile;
       ROOM_LOG_FILE = await gitCommonDir(dir).then((common) => path28.join(common, ROOM_LOG), () => void 0);
+      if (signal.aborted) throw new Error("Room is shutting down");
       const tools = createTools({ getSession: () => session, setSession: (s) => {
         session = s;
         if (s) attachChannel(s);
@@ -49868,7 +49911,7 @@ async function main() {
         const n = tools.clearStale(s);
         if (n) log(`cleared ${n} stale claim(s) from an earlier session`);
       };
-      const call = async (req, signal) => {
+      const call = async (req, signal2) => {
         await autoJoin.settle();
         let disclosure = "";
         if (session) {
@@ -49881,7 +49924,7 @@ async function main() {
             }
           }
         }
-        const body2 = await tools.call(req.params.name, req.params.arguments ?? {}, signal);
+        const body2 = await tools.call(req.params.name, req.params.arguments ?? {}, signal2);
         const delivery = startupNotice ? consumeHookNotice(dir, startupNotice) : void 0;
         const notice = session || delivery === "hook" || delivery === "pending" ? "" : startupNotice;
         if (delivery !== "pending") startupNotice = "";
@@ -49946,7 +49989,7 @@ async function main() {
         }
       });
       tools.setAutoJoin(autoJoin);
-      void autoJoin.ensure();
+      if (!signal.aborted) void autoJoin.ensure();
       return { call, shutdown: async () => {
         autoJoin.cancel();
         await autoJoin.settle();
@@ -49956,20 +49999,15 @@ async function main() {
   });
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: DEFS }));
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-    const { runtime: runtime2, warning } = await binding.forCall(req.params);
-    const body2 = await runtime2.call(req, extra.signal);
-    return { content: [{ type: "text", text: warning + body2 }] };
+    const result = await binding.run(req.params, (runtime2) => runtime2.call(req, extra.signal));
+    return { content: [{ type: "text", text: result.error ?? result.value }], ...result.error ? { isError: true } : {} };
   });
-  const transport = new StdioServerTransport();
-  await mcp.connect(transport);
-  await binding.start();
-  let closing = false;
   const bye = async (reason) => {
     if (closing) return;
     closing = true;
     log(`stopping: ${reason}`);
     try {
-      await (await binding.current())?.shutdown();
+      await (await binding.close())?.shutdown();
     } catch {
     }
     process.exit(0);
@@ -49986,6 +50024,13 @@ async function main() {
   process.stdin.on("end", () => {
     void bye("stdin closed");
   });
+  const transport = new StdioServerTransport();
+  try {
+    await mcp.connect(transport);
+    await binding.start();
+  } catch (error2) {
+    if (!closing) throw error2;
+  }
 }
 var isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\]index\.ts|\.mjs)?$/.test(process.argv[1]);
 function installFailureHandlers(report, target = process) {
