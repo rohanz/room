@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.27
+
+Fixes from the Astra review of 0.16.25 and 0.16.26.
+
+- `room_wait` imports hook receipts before choosing unread messages, so a message the edit hook already showed is not returned again.
+- The Codex workspace binding checks each call against the same initialization attempt it awaits, as one attempt object. A call can no longer be dispatched to a runtime that replaced the one it was checked against. The first call is also checked when it creates the binding.
+- Tests cover a queued broadcast interrupt returned once by the real `room_wait`, sibling worktrees and nested repositories. Retry tests use gates instead of sleeps.
+
 ## 0.16.26
 
 - **A Codex worker no longer loses a message that arrives between its tool calls.** Waking a Codex session with `codex queue` marked the message as read. Codex injects a queued message only at its next turn boundary, and a headless `codex exec` worker may finish its task first. A broadcast interrupt sent while such a worker was busy was therefore marked read, never shown to it, and skipped by its next `room_wait`. It failed intermittently in live checks. A queued wake is now recorded only to avoid queueing the same message twice. The message stays unread until a tool reply, `room_wait` or the edit hook delivers it, so an agent may see it twice but never misses it.
