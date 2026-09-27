@@ -46,7 +46,7 @@ export function appendRoomLog(file: string, line: string, maxBytes = ROOM_LOG_MA
 }
 
 // ROOM_LOG_FILE: also append every log line to a file (workers spawned by room_spawn get one per tag).
-let LOG_FILE: string | undefined
+let LOG_FILE: string | undefined = process.env.ROOM_LOG_FILE
 let ROOM_LOG_FILE: string | undefined
 const log = (s: string) => {
   try { fs.writeSync(2, `room-mcp: ${s}\n`) } catch { /* stderr may already be closed */ }
@@ -71,6 +71,7 @@ export function createBundleUpdateNotice(file: string): () => string {
 }
 
 async function main() {
+  let closing = false
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? '')
   const mcp = new Server(
     { name: 'room', version: RELEASE_VERSION },
@@ -78,13 +79,16 @@ async function main() {
   )
   const binding = createWorkspaceBinding({
     deferred: deferForSharedCodex(process.env), fallbackDir: () => fallbackWorkspace(process.env, process.cwd()),
-    logFallback: () => log('Codex call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback'),
-    initialize: async (dir: string) => {
+    logFallback: () => log('call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback'),
+    logFailure: error => log(`workspace initialization failed: ${error instanceof Error ? error.message : String(error)}`),
+    initialize: async (dir: string, signal: AbortSignal) => {
       let session: Session | null = null
       let startupNotice = ''
       const startup = await resolveConfig({ dir, env: process.env })
+      if (signal.aborted) throw new Error('Room is shutting down')
       LOG_FILE = startup.logFile
       ROOM_LOG_FILE = await gitCommonDir(dir).then(common => path.join(common, ROOM_LOG), () => undefined)
+      if (signal.aborted) throw new Error('Room is shutting down')
       // attachChannel is also handed to the tools so the workers room (opened by room_spawn next to a team session) pushes its wake-ups too.
       const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir, config: startup, attachChannel: s => attachChannel(s) })
       const adopt = async (s: Session) => {
@@ -179,7 +183,7 @@ async function main() {
         },
       })
       tools.setAutoJoin(autoJoin)
-      void autoJoin.ensure()
+      if (!signal.aborted) void autoJoin.ensure()
 
       return { call, shutdown: async () => { autoJoin.cancel(); await autoJoin.settle(); await tools.shutdown() } }
     },
@@ -187,28 +191,29 @@ async function main() {
 
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: DEFS }))
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-    const { runtime, warning } = await binding.forCall(req.params)
-    const body = await runtime.call(req, extra.signal)
-    return { content: [{ type: 'text', text: warning + body }] }
+    const result = await binding.run(req.params, runtime => runtime.call(req, extra.signal))
+    return { content: [{ type: 'text' as const, text: result.error ?? result.value! }], ...(result.error ? { isError: true } : {}) }
   })
 
-  // The definitions are static; a shared Codex daemon needs no directory-bound state until a call.
-  const transport = new StdioServerTransport()
-  await mcp.connect(transport)
-  await binding.start()
-
-  let closing = false
   const bye = async (reason: string) => {
     if (closing) return
     closing = true
     log(`stopping: ${reason}`)
-    // A close/signal can race binding or auto-join.
-    try { await (await binding.current())?.shutdown() } catch { /* ignore */ }
+    try { await (await binding.close())?.shutdown() } catch { /* ignore */ }
     process.exit(0)
   }
   process.on('SIGINT', () => { void bye('SIGINT') }); process.on('SIGTERM', () => { void bye('SIGTERM') })
   mcp.onclose = () => { void bye('stdin/transport closed') }
   process.stdin.on('end', () => { void bye('stdin closed') })
+
+  // The definitions are static; a shared Codex daemon needs no directory-bound state until a call.
+  const transport = new StdioServerTransport()
+  try {
+    await mcp.connect(transport)
+    await binding.start()
+  } catch (error) {
+    if (!closing) throw error // non-deferred startup keeps its fatal exit policy
+  }
 }
 
 const isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\]index\.ts|\.mjs)?$/.test(process.argv[1])
