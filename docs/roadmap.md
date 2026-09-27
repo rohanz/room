@@ -514,3 +514,10 @@ list waits.
 ## Known flaky tests (2026-09-27)
 
 - `graph-index.test.ts` "keeps a captured ready waiter pending through a base change and the queued ninth read" failed once in a full parallel run on 0.16.28. It passed 10 of 10 alone, so it is load-dependent. Make its waits condition-based when the graph index is next touched.
+
+## Found 2026-09-27, after the trial
+
+- **Receipts are per participant, not per session.** A hook receipt written by one session can hide a message from another session with the same participant name in the same worktree. This belongs to the delivery-ledger redesign in docs/audit-2026-09-27-design.md.
+- **An agent cannot reply to a note, only to a question.** In the httpx rerun, an agent could not acknowledge a status note. Allow a reply to any addressed note, or say in the refusal to send a note back.
+- **Force-push recovery closes the room for everyone.** 0.16.29 lets `room_close` work unjoined, but a reset branch still needs close-and-reopen, and that drops the room's history. With repository-level rooms, re-base the room when its recorded base is gone from the remote (audit 2026-09-27, Fable 4).
+- **Duplicate delivery after a Codex queue wake.** Since 0.16.26 an agent can see a queued message twice. A registered prompt-submit hook could record receipts when Codex injects the message, but `hooks.json` is frozen, and changing it un-trusts the hooks for every Codex user.

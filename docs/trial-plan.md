@@ -55,10 +55,11 @@ Keep the room's exported ledger and each person's notes.
 
 ## Freeze
 
-Frozen at **0.16.24** on 2026-09-27, after three rehearsals:
+Frozen on 2026-09-27 (0.16.24, then the fixes a review and a mixed-sharing rerun found; see CHANGELOG through the latest 0.16.x), after these rehearsals:
 - [Werkzeug](rehearsal-2026-09-25.md);
 - [httpx at declared sharing](rehearsal-2026-09-26-httpx.md);
-- [click at full sharing](rehearsal-2026-09-27-click.md).
+- [click at full sharing](rehearsal-2026-09-27-click.md);
+- [httpx rerun at mixed sharing](rehearsal-2026-09-26-httpx.md#rerun-at-mixed-sharing-on-0162801629-2026-09-27): full, declared and plans only together.
 
 It is also frozen after the [design audit](audit-2026-09-27-design.md), whose post-trial work waits for after the trial. Nothing merges within 48 hours of the trial unless a rehearsal or live check blocks on it.
 
