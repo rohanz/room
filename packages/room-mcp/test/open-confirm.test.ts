@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createTools, DEFS } from '../src/tools.js'
 import { deriveRoomName } from '../src/session.js'
 vi.mock('@room/roomd', async original => ({
@@ -20,9 +21,10 @@ function server(open: boolean) {
     throw new Error(`unexpected ${path}`)
   }))
   vi.stubEnv('ROOM_TAG', 'test')
-  return { posts, tools: createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {} }) }
+  return { posts, tools: createTools({ cwd: repo, getSession: () => null, setSession: () => {} }) }
 }
 const args = { where: 'team', room: 'o/r/main', name: 'test' }
+const repo = fileURLToPath(new URL('../../..', import.meta.url))
 describe('opening requires user consent', () => {
   it('asks the Claude host to confirm create and close on every call', () => {
     for (const name of ['room_create', 'room_close']) {
@@ -55,6 +57,7 @@ describe('closing without a joined session', () => {
   it('closes the derived team repo with the caller\'s auth after confirmation', async () => {
     vi.stubEnv('ROOM_SERVER', 'ws://room.test:1234')
     vi.stubEnv('ROOM_TOKEN', 'close-secret')
+    vi.stubEnv('ROOM_ROOM', '')
     // A clone with a fixed non-GitHub origin: the result must not depend on the repository running the tests.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-close-'))
     execFileSync('git', ['init', '-q', '-b', 'main', dir])
@@ -80,7 +83,7 @@ describe('closing without a joined session', () => {
 
   it('reports nothing to close in an unjoined local room', async () => {
     vi.stubEnv('ROOM_SERVER', 'local')
-    const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {} })
+    const tools = createTools({ cwd: repo, getSession: () => null, setSession: () => {} })
     expect(await tools.call('room_close', { confirm: true })).toBe('error: not in a local room; nothing to close without joining')
   })
 
@@ -94,9 +97,8 @@ describe('closing without a joined session', () => {
       close()
       throw new Error(`unexpected ${url}`)
     }))
-    const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {} })
+    const tools = createTools({ cwd: repo, getSession: () => null, setSession: () => {} })
     expect(await tools.call('room_close', { confirm: true })).toContain('Call room_login server="ws://room-login.test:1234"')
     expect(close).not.toHaveBeenCalled()
   })
 })
-

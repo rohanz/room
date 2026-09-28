@@ -1,5 +1,7 @@
 import { expect, it } from 'vitest'
 import { RoomDoc } from './doc.js'
+import { manifestKey } from './manifest.js'
+import * as Y from 'yjs'
 import { containsPath, coordinationPaths, coversPath, nearPath } from './near.js'
 
 it('contains only explicit repo-relative root declarations', () => {
@@ -34,13 +36,17 @@ it('collects room proximity evidence in scope, claim, changed order and excludes
   const room = new RoomDoc()
   room.setScope({ by: 'Ada', byKind: 'agent', area: 'src', summary: 'edit', paths: ['src/'] })
   room.setScope({ by: 'Me', byKind: 'agent', area: 'own', summary: 'edit', paths: ['own/'] })
+  room.coordination.set('Ada', { paths: ['carried/'], workers: ['Ada+worker'], at: 1 })
   room.addClaim({ by: 'Ada', byKind: 'agent', path: 'src/file.ts', from: 1, to: 1, intent: 'edit' })
   room.addClaim({ by: 'Me', byKind: 'agent', path: 'own/file.ts', from: 1, to: 1, intent: 'edit' })
-  room.setOverlay('Ada', 'src/file.ts', 'content')
-  room.markDeleted('Ada', 'src/old.ts')
-  room.setOverlay('Me', 'own/file.ts', 'content')
+  room.manifestHead.set('Ada', { base: 'base', fence: 'ada-1', coverage: { kind: 'all' }, level: 'declared', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+  const facts = new Y.Map<any>()
+  room.manifest.set(manifestKey('Ada', 'ada-1'), facts)
+  facts.set('src/file.ts', { change: 'M', state: 'held', held: 'scope', at: 1, fence: 'ada-1' })
+  facts.set('src/old.ts', { change: 'D', state: 'shared', at: 1, fence: 'ada-1' })
   expect(coordinationPaths(room, 'Me')).toEqual([
     { by: 'Ada', path: 'src/', reason: 'scope' },
+    { by: 'Ada', path: 'carried/', reason: 'scope' },
     { by: 'Ada', path: 'src/file.ts', reason: 'claim' },
     { by: 'Ada', path: 'src/file.ts', reason: 'changed' },
     { by: 'Ada', path: 'src/old.ts', reason: 'changed' },

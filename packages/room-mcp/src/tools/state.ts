@@ -5,10 +5,9 @@ import { createPrs } from './prs.js'
 import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
-import { isAgentic, scopeCovers, type Presence } from '@room/shared'
-import { gitShow } from '@room/roomd/git'
-import { workerBaseline } from '@room/roomd/baseline'
-import type { ShareLevel, SharePresence } from '@room/roomd'
+import { participantsView, snapshot, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
+import { git, gitShow } from '@room/roomd/git'
+import type { SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
 import { ConflictWatcher } from '../conflicts.js'
@@ -18,7 +17,7 @@ import { authFor, closeRoom, joinSession, leaveSession, type Session } from '../
 import { decideShutdown, workerRealState } from '../worker-state.js'
 import { hasCompany } from '../company.js'
 import { repairRetired } from '../retire.js'
-import { diskWorker, workerText, NeedFetch, NotJoined, type HandlerState, type ToolCtx } from './context.js'
+import { trustedWorker, workerText, NotJoined, type HandlerState, type ToolCtx } from './context.js'
 
 export function createHandlerState(ctx: ToolCtx): HandlerState {
   const now = ctx.now ?? (() => Date.now())
@@ -80,7 +79,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const others = (s: Session): string[] => {
     const names = new Set<string>()
     for (const k of s.room.scopes.keys()) names.add(k)
-    for (const k of s.room.overlays.keys()) names.add(k)
+    for (const k of s.room.manifestHead.keys()) names.add(k)
     for (const p of presences(s)) names.add(p.user.name)
     names.delete(s.me.name)
     const retired = new Set(s.room.retiredWorkers().map(w => w.name))
@@ -88,19 +87,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   }
   const presences = (s: Session): SharePresence[] =>
     Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)
-  /** A person's sharing level as their presence announces it; absent presence or an older client means full. */
-  const shareOf = (s: Session, person: string): ShareLevel => {
-    if (person === s.me.name) return s.daemon.share ?? 'full'
-    const p = presences(s).find(x => x.user.name === person && isAgentic(x.user.kind)) ?? presences(s).find(x => x.user.name === person)
-    return p?.share ?? 'full'
-  }
-  /** Why a person's version of a path is not in the room, or undefined when it is (or could be). */
-  const withheld = (s: Session, person: string, p?: string): string | undefined => {
-    const level = shareOf(s, person)
-    if (level === 'intent') return `${person} shares intent only; ask them or wait for their push`
-    if (level === 'declared' && p !== undefined && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p)) return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`
-    return undefined
-  }
+  /** Display only; publication and reads use the manifest, never presence sharing. */
+  const shareOf = (s: Session, person: string) => s.room.manifestHead.get(person)?.level ?? 'intent'
   const setPresence = (s: Session, patch: Partial<Presence>) => {
     const cur = (s.awareness.getLocalState() ?? {}) as Partial<Presence>
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() })
@@ -109,34 +97,36 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   /** The commit a person's overlay is a delta from (their own HEAD), falling back to the room base. A carried worker in a
    *  team room publishes its lead's HEAD, because only the lead's machine has the carried commit; that machine (the lead
    *  and its workers) uses the carried commit itself. */
-  const baseFor = (s: Session, person: string) => {
-    const worker = diskWorker(s, person)
-    if (worker) return worker.base ?? base(s)
-    const record = s.room.workerOf(person)
-    if (workerBaseline(record)?.carriedCommit && (record!.lead === s.me.name || s.room.workerOf(s.me.name)?.lead === record!.lead)) return record!.base!
-    return s.room.baseOf(person) ?? base(s)
-  }
-  const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(diskWorker(s, person)?.dir ?? s.dir, baseFor(s, person), path)
-  /** A person's HEAD + their overlay; undefined if the file exists nowhere; null if they deleted it.
-   *  Throws NeedFetch when their HEAD is not in this clone. */
-  const liveText = async (s: Session, path: string, person: string): Promise<string | undefined | null> => {
-    const worker = diskWorker(s, person)
-    if (worker) return workerText(worker.dir, path)
-    if (s.room.deleted.get(person)?.has(path)) return null
-    const ov = s.room.text(path, person)
-    if (ov !== undefined) return ov
-    try { return await baseText(s, path, person) }
-    catch (e) {
-      const sha = baseFor(s, person), worker = s.room.workerOf(person), baseline = workerBaseline(worker)
-      throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker!.lead : undefined)
+  const baseFor = (s: Session, person: string) => s.room.manifestHead.get(person)?.base ?? s.room.baseOf(person) ?? base(s)
+  const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(s.dir, baseFor(s, person), path)
+  const readVersion: HandlerState['readVersion'] = async (s, path, person) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const view = participantsView(s.room, s.awareness, now())
+      const snap = snapshot(s.room, person, view)
+      const result = await versionOf(snap, path, {
+        gitAt: (sha, relpath) => gitShow(s.dir, sha, relpath),
+        known: hash => git(s.dir, ['cat-file', 'blob', hash]).catch(() => undefined),
+      })
+      if (!snap || snapshotStillCurrent(s.room, snap, participantsView(s.room, s.awareness, now()))) return result
     }
+    return { kind: 'unknown', why: 'updating', detail: `${person}'s changes moved during the read; re-run` }
+  }
+  const readText: HandlerState['readText'] = async (s, path, person) => {
+    if (person === s.me.name) return workerText(s.dir, path)
+    const worker = await trustedWorker(s, person)
+    if (worker) return workerText(worker.dir, path)
+    const version = await readVersion(s, path, person)
+    if (version.kind === 'text') return version.text
+    if (version.kind === 'deleted') return null
+    if (version.kind === 'base') return version.text
+    throw new Error(`${path}: ${person}'s version is ${version.kind}${'detail' in version ? ` (${version.detail})` : ''}`)
   }
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
   const areas = createAreas({ ctx, log, base, presences, others, shareOf, now, isMe })
-  const claims = createClaims({ conflictPairs, mine, log, ctx, liveText, baseFor })
+  const claims = createClaims({ conflictPairs, mine, log, ctx, readText, baseFor })
   const scheduleInboxWrite = () => primaryHooks?.scheduleWrite()
-  const inboxServices = createInbox({ seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded })
+  const inboxServices = createInbox({ seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded, readVersion })
   const prs = createPrs({ ctx, presences, log, now })
   const share = createShare()
   const join = createJoin({ ctx, log, doJoin, doLeave, seen, rooms, now, presences,
@@ -153,7 +143,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ...areas,
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, 
     hasCompany: company, others, presences,
-    shareOf, withheld, setPresence, base, baseFor, baseText, liveText, lines, 
+    shareOf, setPresence, base, baseFor, baseText, readVersion, readText, lines,
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite,
     upgraded, conflictPairs,

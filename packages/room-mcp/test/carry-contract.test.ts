@@ -1,3 +1,4 @@
+import { clearFixture, deleteFixture, publishFixture } from './fixtures/manifest.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -75,8 +76,8 @@ async function world(carried: 'tracked' | 'untracked' | false = 'tracked', graph
   })
   watcher.start()
   const publishLead = (text: string | null) => {
-    if (text === null) { fs.rmSync(path.join(repo, provider)); room.markDeleted(lead, provider) }
-    else { put(repo, provider, text); room.setOverlay(lead, provider, text) }
+    if (text === null) { fs.rmSync(path.join(repo, provider)); deleteFixture(room, lead, provider) }
+    else { put(repo, provider, text); publishFixture(room, lead, provider, text) }
     // Against the room base this remains only an add, even when the carried definition changes.
     room.graphs.set(lead, {
       version: 1, base: head, at: Date.now(), status: 'ready', truncated: false,
@@ -87,7 +88,7 @@ async function world(carried: 'tracked' | 'untracked' | false = 'tracked', graph
   const useIn = (file: string, text: string, claim = false) => {
     put(dir, file, text)
     if (claim) room.addClaim({ path: file, from: 1, to: 20, by: worker, byKind: 'agent', intent: 'use pricing' })
-    else room.setOverlay(worker, file, text)
+    else publishFixture(room, worker, file, text)
   }
   const notices = () => room.messages().filter((message): message is ContractMsg => message.type === 'contract')
   return { room, watcher, publishLead, useIn, notices, dir }
@@ -185,10 +186,10 @@ describe('carried definition contract notices', () => {
   it('reports a carried definition the lead reverts to HEAD', async () => {
     const t = await world()
     t.useIn(handler, 'from api.pricing import tier_rate\n\ndef price(tier):\n    return tier_rate(tier)\n')
-    t.room.setOverlay(lead, pricing, carriedText)
+    publishFixture(t.room, lead, pricing, carriedText)
     await t.watcher.flush()
     expect(t.notices()).toEqual([])
-    git(repo, 'checkout', '--', pricing); t.room.clearOverlay(lead, pricing)
+    git(repo, 'checkout', '--', pricing); clearFixture(t.room, lead, pricing)
     await t.watcher.flush()
     expect(t.notices().map(message => message.text)).toEqual([
       'rohanz changed the signature of tier_rate() in api/pricing.py (was `def tier_rate(tier):` now `def tier_rate():`); api/handler.py uses it',
@@ -211,7 +212,7 @@ describe('carried definition contract notices', () => {
     t.publishLead(changedText)
     await t.watcher.flush()
     const reads = baseReads
-    for (let i = 0; i < 20; i++) t.room.setOverlay('someone', 'docs.md', `edit ${i}\n`)
+    for (let i = 0; i < 20; i++) publishFixture(t.room, 'someone', 'docs.md', `edit ${i}\n`)
     await t.watcher.flush()
     expect(baseReads).toBe(reads)
     expect(t.notices()).toHaveLength(1)

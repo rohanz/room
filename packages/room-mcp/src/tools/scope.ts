@@ -2,16 +2,15 @@ import { sharingDescription } from '../config.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
-import { coordinationPaths } from '@room/shared'
+import { coordinationPaths, manifestChangers, manifestKey, manifestPaths } from '@room/shared'
 import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
-import { isOwnedWorkerWorktree } from '../worker-state.js'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
 import { isPrName } from '../prs.js'
-import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { trustedWorker, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 
 export const defs: ToolDef[] = [
@@ -23,11 +22,12 @@ export const defs: ToolDef[] = [
 
 /** A stopped worker may have lost its overlay while its worktree still holds edits. */
 async function workerChangedCount(s: Session, worker: import('@room/shared').Worker, processGone: boolean): Promise<number> {
-  const overlayCount = s.room.changedPaths(worker.name).length
-  if (!await isOwnedWorkerWorktree(s.dir, worker, s.me.name, [...s.room.workers.values(), ...s.room.retiredWorkers()])) return overlayCount
-  if (!processGone && worker.status === 'running' && s.room.overlays.has(worker.name)) return overlayCount
+  const overlayCount = manifestPaths(s.room, worker.name).length
+  const trusted = await trustedWorker(s, worker.name)
+  if (!trusted) return overlayCount
+  if (!processGone && trusted.status === 'running' && overlayCount > 0) return overlayCount
   try {
-    return (await workerChangedPaths(worker)).length
+    return (await workerChangedPaths(trusted)).length
   } catch (error) {
     if (error instanceof Error && error.message.includes('timed out')) throw new Error(`worker ${worker.tag} changed-file count unavailable: ${error.message}`)
     return overlayCount // A removed or inaccessible worktree is still shown from room state.
@@ -37,25 +37,29 @@ async function workerChangedCount(s: Session, worker: import('@room/shared').Wor
 const formatRoomMessage = (s: Session, m: Msg): string => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages(), claims: s.room.openClaims() })
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines, shareOf } = state
+  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, readText, lines, shareOf } = state
   const pathState: Handler = async a => {
       const s = S()
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
       const p = a.path
-      const t = await liveText(s, p, s.me.name)
+      const t = await readText(s, p, s.me.name)
       const n = t ? lines(t) : 1
       const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n)
       const out: string[] = []
       // Workers in the local workers room hold their own claims and scopes there: show both rooms.
       const inRooms = [s, ...rooms.all().filter(x => x !== s)]
       const tagged = (x: Session, line: string) => x === s ? line : `${line} (workers room)`
-      const who = new Set<string>()
+      const who = new Map<string, 'shared' | 'not shared'>()
       for (const x of inRooms) {
         for (const c of x.room.openClaims()) if (claimsOverlap(c, { path: p, ...r })) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`))
         for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
-        for (const n of x.room.whoChanged(p)) if (n !== s.me.name && !sameCheckoutSession(s, n)) who.add(n)
+        for (const n of manifestChangers(x.room, p)) if (n !== s.me.name && !sameCheckoutSession(s, n)) {
+          const fence = x.room.manifestHead.get(n)?.fence
+          const entry = fence ? x.room.manifest.get(manifestKey(n, fence))?.get(p) : undefined
+          who.set(n, entry?.state === 'shared' ? 'shared' : 'not shared')
+        }
       }
-      if (who.size) out.push(`uncommitted changes by: ${Array.from(who).sort().join(', ')}`)
+      if (who.size) out.push(`uncommitted changes by: ${[...who].sort(([a], [b]) => a.localeCompare(b)).map(([n, state]) => `${n} (${state})`).join(', ')}`)
       return out.length ? `${p}:${r.from}-${r.to}\n${out.join('\n')}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`
   }
   const handlers: Record<string, Handler> = {
@@ -66,7 +70,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string' && !!x) : []
       if (!area || !summary || !paths.length) return 'error: area, summary and paths are required'
       await loadAreas(s)
-      const areas = areasOf(s).areasOf([...paths, ...s.room.changedPaths(s.me.name)])
+      const areas = areasOf(s).areasOf([...paths, ...manifestPaths(s.room, s.me.name)])
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas })
       await s.policyStore.declare(paths)
       const posted = s.room.post<ScopeMsg>(s.me, { type: 'scope', area, summary, paths })
@@ -101,7 +105,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const mineA = myAreas(s)
       const all = a.all === true || !mineA.length
       const myClaims = s.room.openClaims().filter(c => c.by === s.me.name)
-      const myPaths = [...(s.room.scope(s.me.name)?.paths ?? []), ...s.room.changedPaths(s.me.name), ...myClaims.map(c => c.path)]
+      const myPaths = [...(s.room.scope(s.me.name)?.paths ?? []), ...manifestPaths(s.room, s.me.name), ...myClaims.map(c => c.path)]
       const overlapsMyPath = (p: string) => myPaths.some(q => scopeCovers({ paths: [q] }, p) || scopeCovers({ paths: [p] }, q))
       const pathInView = (p: string) => all || overlapsMyPath(p) || mineA.includes(areasOf(s).areaOf(p))
       const nearby = coordinationPaths(s.room, s.me.name)
@@ -113,7 +117,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const groups = splitParticipants({
         presences: ps, workers: [...s.room.workers.values()], retiredWorkers: s.room.retiredWorkers(),
-        scopes: [...s.room.scopes.entries()], overlayPeople: [...s.room.overlays.keys()],
+        scopes: [...s.room.scopes.entries()], overlayPeople: [...s.room.manifestHead.keys()],
         changesByPerson: new Map(), claims: s.room.openClaims(), now: now(),
       })
       const everyone = [...groups.active, ...groups.offlineTeammates].map(p => p.name).filter(n => !isPrName(n)).sort()
@@ -161,8 +165,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       let hiddenChanged = 0
       for (const person of [s.me.name, ...others(s).filter(n => !sameCheckoutSession(s, n))]) {
         const paths = person === s.me.name
-          ? [...new Set([s.me.name, ...presences(s).map(p => p.user.name).filter(n => sameCheckoutSession(s, n))].flatMap(n => s.room.changedPaths(n)))]
-          : s.room.changedPaths(person)
+          ? [...new Set([s.me.name, ...presences(s).map(p => p.user.name).filter(n => sameCheckoutSession(s, n))].flatMap(n => manifestPaths(s.room, n)))]
+          : manifestPaths(s.room, person)
         const ps2 = paths.filter(p => person === s.me.name || pathInView(p))
         hiddenChanged += paths.length - ps2.length
         if (ps2.length) changed.set(person, ps2)
@@ -220,7 +224,7 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'base' | 'p
   const areasOf = (s: Session): Areas => areaIndex.get(s) ?? Areas.topLevel()
   const areasFor = (s: Session, person: string): string[] => {
       const sc = s.room.scope(person)
-      const paths = [...(sc?.paths ?? []), ...s.room.changedPaths(person), ...(person === s.me.name ? presences(s).filter(p => sameCheckoutSession(s, p.user.name)).flatMap(p => s.room.changedPaths(p.user.name)) : [])]
+      const paths = [...(sc?.paths ?? []), ...manifestPaths(s.room, person), ...(person === s.me.name ? presences(s).filter(p => sameCheckoutSession(s, p.user.name)).flatMap(p => manifestPaths(s.room, p.user.name)) : [])]
       const stored = sc?.areas ?? presences(s).find(p => p.user.name === person)?.areas ?? []
       return Array.from(new Set([...stored, ...areasOf(s).areasOf(paths)])).sort()
     }
@@ -269,10 +273,12 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'base' | 'p
         scope: s.room.scope(name),
         presences: presences(s),
         changedPaths: name === s.me.name
-          ? [...new Set([name, ...presences(s).map(p => p.user.name).filter(n => sameCheckoutSession(s, n))].flatMap(n => s.room.changedPaths(n)))]
-          : s.room.changedPaths(name),
+          ? [...new Set([name, ...presences(s).map(p => p.user.name).filter(n => sameCheckoutSession(s, n))].flatMap(n => manifestPaths(s.room, n)))]
+          : manifestPaths(s.room, name),
         messages: s.room.messages().filter((m): m is NoteMsg => m.type === 'note'),
         share: shareOf(s, name),
+        heldCount: (() => { const head = s.room.manifestHead.get(name); return head ? [...s.room.manifest.get(`${name}\u0000${head.fence}`)?.values() ?? []].filter(entry => entry.fence === head.fence && entry.state === 'held').length : 0 })(),
+        excludedCount: s.room.manifestHead.get(name)?.excluded.length ?? 0,
       })
     }
   return { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine, ledgerLines, scopeLine, personLine }

@@ -7,24 +7,56 @@ import { gitMergeFile } from '../merge.js'
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { baselineText, checkoutText, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
-import { diskWorker, type HandlerState } from './context.js'
+import { participantsView, snapshot, snapshotStillCurrent, versionOf, type ParticipantSnapshot, type Version } from '@room/shared'
+import { trustedWorker, type HandlerState } from './context.js'
+
+export interface PreviewGap { person: string; path?: string; why: string }
+
+export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await buildCombinedTreeOnce(state, caller, participants, options)
+    if (result.current) return result
+  }
+  throw new Error('participants\' changes moved during the preview; re-run')
+}
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
-export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
-  const { rooms, liveText, baseFor, shareOf, withheld } = state
+async function buildCombinedTreeOnce(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
+  const { rooms, baseFor } = state
   const people = participants.map(p => p.person)
+  const snapshots = new Map<string, { session: Session; snap: ParticipantSnapshot | undefined }>()
+  if (!options.diskOnly) for (const { person, session } of participants) snapshots.set(person, {
+    session, snap: snapshot(session.room, person, session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []),
+  })
+  const gaps: PreviewGap[] = []
   // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
-  const previewWorkers = new WeakMap<Session, Map<string, ReturnType<typeof diskWorker>>>()
+  const previewWorkers = new WeakMap<Session, Map<string, Awaited<ReturnType<typeof trustedWorker>>>>()
   for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
     let byPerson = previewWorkers.get(s)
     if (!byPerson) { byPerson = new Map(); previewWorkers.set(s, byPerson) }
     if (byPerson.has(person)) continue
-    const w = s.local || options.diskWorkers?.has(person) ? s.room.workerOf(person) : undefined
-    const candidate = w?.lead === s.me.name ? w : diskWorker(s, person)
+    const candidate = (s.local || options.diskWorkers?.has(person)) ? await trustedWorker(s, person) : undefined
     const worker = candidate && decidePreview(await workerRealState(s.dir, candidate), true) === 'disk' ? candidate : undefined
     byPerson.set(person, worker)
   }
   const previewWorker = (s: Session, person: string) => previewWorkers.get(s)?.get(person)
+  const coverageLines: string[] = []
+  for (const [person, { session, snap }] of snapshots) {
+    if (previewWorker(session, person)) { coverageLines.push(`${person}: trusted local worktree`); continue }
+    if (!snap) { gaps.push({ person, why: 'no manifest record' }); coverageLines.push(`${person}: no manifest record`); continue }
+    const age = Math.max(0, Math.floor(((state.now?.() ?? Date.now()) - snap.head.scannedAt) / 1000))
+    coverageLines.push(`${person} (${snap.head.level}, scanned ${age}s ago, rev ${snap.head.rev}):`)
+    const shared = [...snap.entries].filter(([, entry]) => entry.state === 'shared').map(([path]) => path)
+    const held = [...snap.entries].filter(([, entry]) => entry.state === 'held').map(([path, entry]) => `${path} (${entry.held ?? 'not shared'})`)
+    coverageLines.push(`  shared: ${shared.length ? shared.join(', ') : 'none'}`)
+    coverageLines.push(`  changed, text not shared: ${held.length ? held.join(', ') : 'none'}`)
+    if (snap.head.excluded.length) coverageLines.push(`  ${snap.head.excluded.length} changed path(s) excluded by ${person}'s rules (names not shared)`)
+    if (snap.head.coverage.kind === 'none') coverageLines.push(`  coverage: ${snap.head.coverage.reason}`)
+    if (!snap.head.complete) coverageLines.push('  updating after a commit; re-run')
+    if (!snap.head.complete || !snap.fenceValid || snap.head.base !== snap.record?.git?.base) gaps.push({ person, why: 'manifest updating or holder changed' })
+    if (snap.head.coverage.kind === 'none') gaps.push({ person, why: `coverage ${snap.head.coverage.reason}` })
+    if (snap.head.excluded.length) gaps.push({ person, why: `${snap.head.excluded.length} changed path(s) excluded; names not shared` })
+  }
   const diskWorkers = new Map(participants.flatMap(({ session, person }) => {
     const worker = previewWorker(session, person)
     return worker ? [[person, worker] as const] : []
@@ -41,17 +73,32 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     return [path.resolve(dir), fs.realpathSync(dir)]
   }))
   const rootOf = (dir: string) => {
-    const root = roots.get(path.resolve(dir))
+    const canonical = fs.realpathSync(dir)
+    const root = roots.get(path.resolve(dir)) ?? [...roots.values()].find(value => value === canonical)
     if (!root) throw new Error('uncaptured preview root: ' + dir)
     return root
   }
   for (const dir of previewDirs) rootOf(dir)
+  const remoteVersions = new Map<string, Map<string, Version>>()
+  const remoteVersion = async (s: Session, person: string, p: string): Promise<Version> => {
+    let versions = remoteVersions.get(person)
+    if (!versions) { versions = new Map(); remoteVersions.set(person, versions) }
+    const cached = versions.get(p)
+    if (cached) return cached
+    const version = await versionOf(snapshots.get(person)?.snap, p, {
+      gitAt: (sha, relpath) => checkoutText(caller.dir, `${sha}:${relpath}`, relpath),
+      known: hash => git(caller.dir, ['cat-file', 'blob', hash]).catch(() => undefined),
+    })
+    versions.set(p, version)
+    return version
+  }
   const previewText = async (s: Session, p: string, person: string) => {
     const w = previewWorker(s, person)
     const dir = w?.dir ?? (person === caller.me.name && s === caller ? caller.dir : undefined)
-    if (!dir || (!options.diskOnly && !w && (s.room.text(p, person) !== undefined || s.room.deleted.get(person)?.has(p)))) {
-      const live = await liveText(s, p, person)
-      return options.encoding === 'latin1' && typeof live === 'string' ? Buffer.from(live, 'utf8').toString('latin1') : live
+    if (!dir) {
+      const version = await remoteVersion(s, person, p)
+      const text = version.kind === 'text' ? version.text : version.kind === 'base' ? version.text ?? null : version.kind === 'deleted' ? null : undefined
+      return options.encoding === 'latin1' && typeof text === 'string' ? Buffer.from(text, 'utf8').toString('latin1') : text
     }
     if (!validRepoPath(p, { ...DISK_READ_PATH, blank: 'allow' })) throw new Error('unsafe preview path: ' + p)
     const root = rootOf(dir)
@@ -91,7 +138,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     const ignored = dir ? (await gitWholeTree(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
     const visibleIgnored = ignored.filter(p => !/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/.test(p))
     if (visibleIgnored.length) ignoredNotes.push('NOT previewed (gitignored, ' + item.person + '): ' + visibleIgnored.join(', '))
-    if (!options.diskOnly) for (const p of item.session.room.changedPaths(item.person)) if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) add(p)
+    if (!options.diskOnly) for (const p of snapshots.get(item.person)?.snap?.entries.keys() ?? []) if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) add(p)
     if (dir) {
       for (const p of (await gitWholeTree(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) add(p)
       for (const p of (await gitWholeTree(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) add(p)
@@ -129,6 +176,18 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       ignoredNotes.push('NOT previewed (directory or nested repository): ' + p)
     }
   }
+  if (!options.diskOnly) for (const p of [...pathSet]) {
+    for (const { person, session } of participants) {
+      if (previewWorker(session, person)) continue
+      const version = await remoteVersion(session, person, p)
+      if (version.kind === 'text' || version.kind === 'base' || version.kind === 'deleted') continue
+      const why = version.kind === 'held'
+        ? version.entry.held === 'scope' ? `changed by ${person}, outside ${person}'s declared area` : `changed by ${person}, text not shared (${version.why})`
+        : version.kind === 'excluded' ? `changed by ${person}, excluded by their rules` : `${person}'s version unknown: ${version.detail}`
+      gaps.push({ person, path: p, why })
+      pathSet.delete(p)
+    }
+  }
   // A path only the caller changed cannot conflict and keeps the caller's text. Skipping it avoids reading
   // gigabytes of a lead's untracked art when only the participants' changes matter (collect, preview without a run).
   let callerOnly = 0
@@ -160,27 +219,19 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   const out: string[] = []
   const fallbacks = new Set<string>()
 
-  out.push(...ignoredNotes)
+  out.push(...coverageLines, ...ignoredNotes)
   let hardCount = 0
   let conflictCount = 0
   const resolvedText = new Map<string, string>()
   const conflictingPaths = new Map<string, string[]>()
   for (const [index, { person, session }] of participants.entries()) {
-    const declaredNote = shareOf(session, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
     const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], sameChange: string[] = [], resolvable: string[] = []
     const pair = pairs.get(person)
-    const leadBase = baseFor(session, person)
-    const leadUsesCarriedBase = !!pair && pair.worker === caller.me.name && person === callerWorker?.lead
-      && await descends(leadBase, pair.sha)
     for (const p of paths) {
       const mine = merged.get(p)
       const b = await baseAt(pair, p)
       const theirsRaw = await previewText(session, p, person)
-      // With no overlay, a shared path is known to equal HEAD; an unshared path is unknown.
-      const unsharedLead = leadUsesCarriedBase && session.room.text(p, person) === undefined
-        && !session.room.deleted.get(person)?.has(p) && !!withheld(session, person, p)
-      if (unsharedLead) out.push(`${person}'s current text of ${p} is not shared; assumed unchanged since your spawn`)
-      const mineT = mine ?? '', theirs = unsharedLead ? b : theirsRaw === undefined ? (leadUsesCarriedBase ? null : b) : theirsRaw
+      const mineT = mine ?? '', theirs = theirsRaw === undefined ? b : theirsRaw
       if (theirs === b) continue
       if (mine === theirs) {
         const prior = owners.get(p) ?? [caller.me.name]
@@ -257,7 +308,6 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       conflicts.push(`${p}${unresolved ? '' : ' (resolvable)'}\n${detail.join('\n')}`)
     }
     out.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(' + ')}${pair && pair.sha !== ancestor ? ` (against ${pair.worker}'s base ${pair.sha.slice(0, 10)})` : ''}`)
-    if (declaredNote) out.push(declaredNote)
     if (onlyOne.length) out.push(`only ${person} changed ${onlyOne.length === 1 ? 'this file' : 'these files'} since its start${pair?.carriedCommit ? ', which already includes your carried edits' : ''}: ${onlyOne.join(', ')}`)
     out.push(...sameChange)
     if (clean.length) out.push(`both changed, merge cleanly: ${clean.join(', ')}`)
@@ -267,7 +317,8 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   }
 
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
-  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots, diskWorkers }
+  const isCurrent = () => [...snapshots.values()].every(({ session, snap }) => !snap || snapshotStillCurrent(session.room, snap, session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []))
+  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {

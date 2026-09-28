@@ -1,5 +1,6 @@
 import type { RoomDoc } from './doc.js'
 import { isAgentic } from './identity.js'
+import { manifestPaths } from './manifest.js'
 
 /** File-level coordination evidence, excluding the current participant. */
 export interface NearPath { by: string; path: string; reason: 'scope' | 'claim' | 'changed' }
@@ -9,11 +10,13 @@ export function coordinationPaths(room: RoomDoc, excludingParticipant: string, o
   return [
     ...room.allScopes().filter(scope => scope.by !== excludingParticipant)
       .flatMap(scope => scope.paths.map(path => ({ by: scope.by, path, reason: 'scope' as const }))),
+    ...[...room.coordination].filter(([by]) => by !== excludingParticipant)
+      .flatMap(([by, record]) => record.paths.map(path => ({ by, path, reason: 'scope' as const }))),
     ...room.openClaims().filter(claim => claim.by !== excludingParticipant || (options.includeOwnNonAgentClaims && !isAgentic(claim.byKind)))
       .map(claim => ({ by: claim.by, path: claim.path, reason: 'claim' as const })),
-    ...[...new Set([...room.overlays.keys(), ...room.deleted.keys()])]
+    ...[...room.manifestHead.keys()]
       .filter(by => by !== excludingParticipant)
-      .flatMap(by => room.changedPaths(by).map(path => ({ by, path, reason: 'changed' as const }))),
+      .flatMap(by => manifestPaths(room, by).map(path => ({ by, path, reason: 'changed' as const }))),
   ]
 }
 

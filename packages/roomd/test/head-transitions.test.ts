@@ -1,3 +1,4 @@
+import { incarnationText } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -69,7 +70,7 @@ it('keeps the new baseline after publishing a dirty overlay', async () => {
   fs.writeFileSync(path.join(dir!, 'app.txt'), 'dirty after commit\n')
   await daemon!.reconcileGitChanges()
   expect(daemon!.roomDoc.baseOf('Alice')).toBe(newHead)
-  expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('dirty after commit\n')
+  expect(incarnationText(daemon!.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('dirty after commit\n')
   expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBe('added\nfirst\nclaimed\nlast\n')
 })
 
@@ -90,13 +91,13 @@ it('retries after publication and claim re-anchoring without losing the baseline
   await daemon!.reconcileGitChanges()
   expect(internal.appliedHead).not.toBe(newHead)
   expect(daemon!.roomDoc.baseOf('Alice')).toBe(newHead)
-  expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')).toBeUndefined()
+  expect(incarnationText(daemon!.roomDoc, 'Alice', 'app.txt')).toBeUndefined()
   expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBeUndefined()
   expect(notices).toBe(0)
   await daemon!.reconcileGitChanges()
   expect(internal.appliedHead).toBe(newHead)
   expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
-  expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toContain('dirty')
+  expect(incarnationText(daemon!.roomDoc, 'Alice', 'app.txt')?.toString()).toContain('dirty')
   expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBeDefined()
   expect(notices).toBe(1)
 })
@@ -118,6 +119,6 @@ it('retries when HEAD moves during publication', async () => {
   const finalHead = git(dir!, 'rev-parse', 'HEAD')
   expect(internal.appliedHead).toBe(finalHead)
   expect(daemon!.roomDoc.baseOf('Alice')).toBe(finalHead)
-  expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('dirty after next commit\n')
+  expect(incarnationText(daemon!.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('dirty after next commit\n')
   expect(daemon!.roomDoc.baseText('Alice', finalHead, 'app.txt')).toBe('dirty before next commit\n')
 })

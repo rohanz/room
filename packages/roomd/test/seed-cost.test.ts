@@ -1,3 +1,4 @@
+import { manifestText, manifestPaths } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -59,7 +60,7 @@ describe('overlay seed cost', () => {
     // Seed and the required post-watcher catch-up each batch all large paths once.
     expect(gitArgs.filter(args => args[0] === 'cat-file' && args.includes('--batch-check')).length).toBeLessThanOrEqual(3)
     expect(d.skipped().size).toHaveLength(30)
-    expect(d.roomDoc.changedPaths('T').sort()).toEqual(['small-0.txt', 'small-1.txt', 'small-2.txt'])
+    expect(manifestPaths(d.roomDoc, 'T').sort()).toEqual(['small-0.txt', 'small-1.txt', 'small-2.txt'])
   })
 
   it('detects a tracked oversized file with a different size without hashing', async () => {
@@ -111,16 +112,16 @@ describe('overlay seed cost', () => {
     spawned.length = 0
     const d = await startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/seed', name: 'T', providerFactory: (_s, _n, doc) => provider(doc), log: () => {}, basePollMs: 50, trackedRefreshMs: 60_000 })
     daemons.push(d)
-    expect(d.roomDoc.changedPaths('T').sort()).toEqual(['d1/f1.txt', 'd2/f2.txt', 'new.txt'])
-    expect(d.roomDoc.text('d1/f1.txt', 'T')).toBe('line 1\nchanged\n')
+    expect(manifestPaths(d.roomDoc, 'T').sort()).toEqual(['d1/f1.txt', 'd2/f2.txt', 'new.txt'])
+    expect(manifestText(d.roomDoc, 'd1/f1.txt', 'T')).toBe('line 1\nchanged\n')
     expect(spawned.length).toBeLessThan(30)
 
     spawned.length = 0
     sh(dir, 'add', 'd1/f1.txt'); sh(dir, 'commit', '-qm', 'commit one change')
     const head = sh(dir, 'rev-parse', 'HEAD')
-    while (d.base !== head || d.roomDoc.changedPaths('T').includes('d1/f1.txt')) await new Promise(r => setTimeout(r, 20))
+    while (d.base !== head || manifestPaths(d.roomDoc, 'T').includes('d1/f1.txt')) await new Promise(r => setTimeout(r, 20))
     await d.settle()
-    expect(d.roomDoc.changedPaths('T').sort()).toEqual(['d2/f2.txt', 'new.txt'])
+    expect(manifestPaths(d.roomDoc, 'T').sort()).toEqual(['d2/f2.txt', 'new.txt'])
     expect(spawned.filter(c => c !== 'rev-parse').length).toBeLessThan(25)
   }, 60_000)
 })

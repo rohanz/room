@@ -59,7 +59,8 @@ export class Publisher {
   /** Synchronous narrowing from the currently published snapshot; widening waits for readDisk. */
   applyInputs(next: PublicationInputs): void {
     const { host } = this
-    const current = host.roomDoc.manifest.get(manifestKey(host.name, host.fence))
+    const incarnation = manifestKey(host.name, host.fence)
+    const current = host.roomDoc.manifest.get(incarnation)
     const facts: ManifestFact[] = []
     let budget = 0
     if (next.policy.level !== 'intent' && next.policy.publisher) {
@@ -70,7 +71,7 @@ export class Publisher {
           continue
         }
         const permit = authorizesText(next.policy, path)
-        const text = permit && entry.change !== 'D' && entry.state === 'shared' ? host.roomDoc.overlayText(host.name, path)?.toString() : undefined
+        const text = permit && entry.change !== 'D' && entry.state === 'shared' ? host.roomDoc.overlayText(incarnation, path)?.toString() : undefined
         if (text !== undefined && budget + Buffer.byteLength(text) > next.rules.budget) {
           facts.push({ path, change: entry.change, excluded: true })
           this.excludedPaths.add(path)
@@ -86,10 +87,9 @@ export class Publisher {
       publishManifest({ room: host.roomDoc, name: host.name, fence: host.fence, base: next.head, level: next.policy.level,
         prefixes: next.policy.textPrefixes, complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
         ...(next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? 'another session' }) }, facts)
-      for (const path of host.roomDoc.changedPaths(host.name)) {
+      for (const path of host.roomDoc.changedPaths(incarnation)) {
         if (facts.some(f => f.path === path && f.text !== undefined || f.path === path && f.change === 'D' && !f.excluded)) continue
-        host.roomDoc.clearOverlay(host.name, path, host)
-        host.roomDoc.unmarkDeleted(host.name, path, host)
+        host.roomDoc.clearOverlay(incarnation, path, host)
       }
       host.roomDoc.reconcileBaseTexts(host.name, host)
     }, host)
@@ -151,23 +151,21 @@ export class Publisher {
     if (!this.valid(prepared)) { this.markDirty(); return false }
     const { host } = this
     const { desired, inputs } = prepared
+    const incarnation = manifestKey(host.name, host.fence)
     host.roomDoc.doc.transact(() => {
       publishManifest({ room: host.roomDoc, name: host.name, fence: host.fence, base: inputs.head, level: inputs.policy.level,
         prefixes: inputs.policy.textPrefixes, complete, ...(inputs.policy.publisher ? {} : { publisher: inputs.policy.publisherName ?? 'another session' }) }, prepared.facts)
-      const old = new Set(host.roomDoc.changedPaths(host.name))
+      const old = new Set(host.roomDoc.changedPaths(incarnation))
       for (const p of old) {
         if (desired.entries.get(p)?.state === 'shared') continue
-        host.roomDoc.clearOverlay(host.name, p, host)
-        host.roomDoc.unmarkDeleted(host.name, p, host)
+        host.roomDoc.clearOverlay(incarnation, p, host)
       }
       for (const [p, entry] of desired.entries) {
         if (entry.state !== 'shared') continue
         if (entry.change === 'D') {
-          host.roomDoc.markDeleted(host.name, p, host)
-          host.roomDoc.clearOverlay(host.name, p, host)
+          host.roomDoc.clearOverlay(incarnation, p, host)
         } else if (entry.text !== undefined) {
-          host.roomDoc.unmarkDeleted(host.name, p, host)
-          host.roomDoc.setOverlay(host.name, p, entry.text, host)
+          host.roomDoc.setOverlay(incarnation, p, entry.text, host)
         }
         const base = prepared.baseTexts.get(p)
         if (base !== undefined) host.roomDoc.setBaseText(host.name, host.shared || inputs.head, p, base, host)

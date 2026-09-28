@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { clearFixture, deleteFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, manifestKey } from '@room/shared'
 import { GraphIndex } from '../src/graph-index.js'
 import * as Y from 'yjs'
 
@@ -24,21 +25,56 @@ beforeAll(() => {
   git('add', '.'); git('commit', '-qm', 'init'); base = git('rev-parse', 'HEAD').trim()
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
+beforeEach(() => {
+  execFileSync('git', ['-C', dir, 'reset', '--hard', 'HEAD'], { stdio: 'pipe' })
+  execFileSync('git', ['-C', dir, 'clean', '-fd'], { stdio: 'pipe' })
+})
 
 describe('GraphIndex overlay events', () => {
+  it('marks held remote changes as contract coverage gaps', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    publishFixture(room, 'Kieran', 'hidden.py', 'def secret(x):\n    return x\n')
+    const head = room.manifestHead.get('Kieran')!
+    const key = manifestKey('Kieran', head.fence)
+    room.doc.transact(() => {
+      room.manifest.get(key)!.set('hidden.py', { change: 'A', state: 'held', held: 'scope', at: Date.now(), fence: head.fence })
+      room.clearOverlay(key, 'hidden.py')
+      room.manifestHead.set('Kieran', { ...head, rev: head.rev + 1, semRev: head.semRev + 1 })
+    })
+    const logs: string[] = []
+    const gi = new GraphIndex(room, 'Rohan', dir, line => logs.push(line), { random: () => 0, minPublishMs: 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      expect(gi.graph.has('hidden.py')).toBe(false)
+      expect(room.graphs.get('Rohan')?.status).toBe('error')
+      expect(logs.join('\n')).toContain('hidden.py changed by Kieran; contract not visible')
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it('continues past an unchanged participant to a later changed version', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    publishFixture(room, 'Ada', 'other.py', 'def other():\n    pass\n')
+    publishFixture(room, 'Kieran', 'utils.py', 'def replacement():\n    pass\n')
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      expect(gi.graph.definersOf('replacement')).toEqual(['utils.py'])
+      expect(gi.graph.definersOf('validate_token')).toEqual([])
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
   it('replacing one person map refreshes only its changed overlay, not 40 unrelated changed files', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base })
-    for (let i = 0; i < 40; i++) room.setOverlay('Rohan', `mod${i}.py`, `def f${i}():\n    return ${i}\n`)
-    room.setOverlay('Kieran', 'utils.py', 'def old_name():\n    pass\n')
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    for (let i = 0; i < 40; i++) publishFixture(room, 'Rohan', `mod${i}.py`, `def f${i}():\n    return ${i}\n`)
+    publishFixture(room, 'Kieran', 'utils.py', 'def old_name():\n    pass\n')
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     try {
       gi.start(); await gi.whenIdle()
       const refresh = vi.spyOn(gi, 'refresh')
-      const replacement = new Y.Map<Y.Text>()
-      const text = new Y.Text(); text.insert(0, 'def new_name():\n    pass\n')
-      replacement.set('utils.py', text)
-      room.overlays.set('Kieran', replacement)
+      publishFixture(room, 'Kieran', 'utils.py', 'def new_name():\n    pass\n')
       await gi.whenIdle()
       expect(refresh.mock.calls.map(call => call[0])).toEqual(['utils.py'])
       expect(gi.graph.definersOf('new_name')).toEqual(['utils.py'])
@@ -47,8 +83,8 @@ describe('GraphIndex overlay events', () => {
 
   it('initial refresh covers every changed source file', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base })
-    for (let i = 0; i < 16; i++) room.setOverlay('Rohan', `mod${i}.py`, `def f${i}():\n    pass\n`)
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    for (let i = 0; i < 16; i++) publishFixture(room, 'Rohan', `mod${i}.py`, `def f${i}():\n    pass\n`)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     try {
       const refresh = vi.spyOn(gi, 'refresh')
@@ -60,8 +96,8 @@ describe('GraphIndex overlay events', () => {
 
   it('limits initial refresh to eight active file reads', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base })
-    for (let i = 0; i < 16; i++) room.setOverlay('Rohan', `mod${i}.py`, `def f${i}():\n    pass\n`)
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    for (let i = 0; i < 16; i++) publishFixture(room, 'Rohan', `mod${i}.py`, `def f${i}():\n    pass\n`)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     const target = gi as unknown as { textFor(path: string): Promise<string | undefined> }
     const original = target.textFor.bind(gi)
@@ -86,7 +122,7 @@ describe('GraphIndex overlay events', () => {
 
   it('limits incremental refresh to eight active file reads', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base })
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     const target = gi as unknown as { textFor(path: string): Promise<string | undefined> }
@@ -102,7 +138,7 @@ describe('GraphIndex overlay events', () => {
     })
     try {
       room.doc.transact(() => {
-        for (let i = 0; i < 16; i++) room.setOverlay('Rohan', `mod${i}.py`, `def f${i}():\n    pass\n`)
+        for (let i = 0; i < 16; i++) publishFixture(room, 'Rohan', `mod${i}.py`, `def f${i}():\n    pass\n`)
       })
       await eventually(() => started >= 8)
       expect(peak).toBeLessThanOrEqual(8)
@@ -115,30 +151,30 @@ describe('GraphIndex overlay events', () => {
   // event re-parsed (and git-showed) every changed path of every participant.
   it('an edit refreshes only the path it touched, and a path leaving the changed set is refreshed', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base })
-    for (let i = 0; i < 40; i++) room.setOverlay('Rohan', `mod${i}.py`, `def f${i}():\n    return ${i}\n`)
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    for (let i = 0; i < 40; i++) publishFixture(room, 'Rohan', `mod${i}.py`, `def f${i}():\n    return ${i}\n`)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     expect(gi.graph.size).toBe(41)
     const refresh = vi.spyOn(gi, 'refresh')
 
-    room.setOverlay('Kieran', 'utils.py', 'def verify_token(t):\n    return t\n')
+    publishFixture(room, 'Kieran', 'utils.py', 'def verify_token(t):\n    return t\n')
     await gi.whenIdle()
     expect(refresh.mock.calls.map(c => c[0])).toEqual(['utils.py'])
 
     refresh.mockClear()
-    room.setOverlay('Rohan', 'mod3.py', 'def g3():\n    return 3\n')
+    publishFixture(room, 'Rohan', 'mod3.py', 'def g3():\n    return 3\n')
     await gi.whenIdle()
     expect(refresh.mock.calls.map(c => c[0])).toEqual(['mod3.py'])
 
     refresh.mockClear()
-    room.clearOverlay('Rohan', 'mod7.py')
+    clearFixture(room, 'Rohan', 'mod7.py')
     await gi.whenIdle()
     expect(refresh.mock.calls.map(c => c[0])).toEqual(['mod7.py'])
     expect(gi.graph.size).toBe(40) // mod7.py was only an overlay: gone, not stale
 
     refresh.mockClear()
-    room.markDeleted('Kieran', 'mod9.py')
+    deleteFixture(room, 'Kieran', 'mod9.py')
     await gi.whenIdle()
     expect(refresh.mock.calls.map(c => c[0])).toEqual(['mod9.py'])
     gi.stop(); room.doc.destroy()
@@ -146,14 +182,18 @@ describe('GraphIndex overlay events', () => {
 
   it('a participant dropping all their work still refreshes each of their paths', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base })
-    room.setOverlay('Kieran', 'utils.py', 'def verify_token(t):\n    return t\n')
-    room.setOverlay('Kieran', 'extra.py', 'def extra():\n    return 1\n')
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    publishFixture(room, 'Kieran', 'utils.py', 'def verify_token(t):\n    return t\n')
+    publishFixture(room, 'Kieran', 'extra.py', 'def extra():\n    return 1\n')
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     expect(gi.graph.usersOf('validate_token')).toEqual([])
     expect(gi.graph.size).toBe(2)
-    room.doc.transact(() => { room.overlays.delete('Kieran') })
+    room.doc.transact(() => {
+      const fence = room.manifestHead.get('Kieran')?.fence
+      if (fence) room.manifest.delete(`Kieran\u0000${fence}`)
+      room.manifestHead.delete('Kieran')
+    })
     await gi.whenIdle()
     expect(gi.graph.size).toBe(1)
     const text = await (gi as unknown as { textFor(p: string): Promise<string | undefined> }).textFor('utils.py')

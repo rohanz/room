@@ -1,3 +1,4 @@
+import { manifestText, manifestPaths } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { it, expect, vi, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs'
@@ -38,7 +39,7 @@ it('does not digest gitignored untracked files as repository changes', async () 
     for (let i = 0; i < 30; i++) fs.writeFileSync(path.join(dir, 'logs', `run-${i}.log`), `line ${i}\n`)
     await daemon.reconcileGitChanges()
     expect(daemon.roomDoc.manifestHead.get('Test')?.excluded).toEqual([])
-    expect(daemon.roomDoc.changedPaths('Test').filter(p => p.startsWith('logs/'))).toEqual([])
+    expect(manifestPaths(daemon.roomDoc, 'Test').filter(p => p.startsWith('logs/'))).toEqual([])
   } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -52,7 +53,7 @@ it('does not watch ignored build output such as test-results/, but still watches
     for (let i = 0; i < 10; i++) fs.writeFileSync(path.join(dir, 'test-results', 'trace', `page-${i}.jpeg`), `frame ${i}`)
     fs.writeFileSync(path.join(dir, 'out', 'tracked.js'), 'b\n')
     fs.writeFileSync(path.join(dir, 'app.py'), 'x = 2\n')
-    await until(() => daemon.roomDoc.text('app.py', 'Test') === 'x = 2\n' && daemon.roomDoc.text('out/tracked.js', 'Test') === 'b\n')
+    await until(() => manifestText(daemon.roomDoc, 'app.py', 'Test') === 'x = 2\n' && manifestText(daemon.roomDoc, 'out/tracked.js', 'Test') === 'b\n')
     await daemon.settle()
     expect(daemon.skipped().ignore.filter(p => p.startsWith('test-results'))).toEqual([])
     expect(logs.filter(line => line.includes('test-results'))).toEqual([])

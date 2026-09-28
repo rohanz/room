@@ -1,3 +1,4 @@
+import { clearFixture, deleteFixture, publishFixture } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
@@ -80,7 +81,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     expect(sc.paths).toEqual(['api/handlers.py', 'api/models.py'])
     expect(sc.area).toBe('orders')
     expect(sc.summary).toContain('lead of 1 worker: money')
-    t.local.b.setOverlay(worker.name, 'tests/test_money.py', 'x\n')
+    publishFixture(t.local.b, worker.name, 'tests/test_money.py', 'x\n')
     expect(t.team.b.scope('rohanz')!.paths).toContain('tests/test_money.py')
     // the team room hears the scope as a message from the lead, never from the worker
     const scopeMsgs = t.team.b.messages().filter(m => m.type === 'scope')
@@ -94,7 +95,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
     const scopeMessages = () => t.team.b.messages().filter(m => m.type === 'scope')
     expect(scopeMessages()).toHaveLength(1)
-    t.local.b.setOverlay(worker.name, 'tests/test_money.py', 'x\n')
+    publishFixture(t.local.b, worker.name, 'tests/test_money.py', 'x\n')
     expect(t.team.b.scope('rohanz')!.paths).toContain('tests/test_money.py')
     expect(scopeMessages()).toHaveLength(1)
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'billing', summary: 'cents complete', paths: ['api/models.py'] })
@@ -117,7 +118,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
 
   it("workers' claims are mirrored into the team room under the lead's name and removed with the original", () => {
     const t = setup()
-    t.local.b.setOverlay(worker.name, 'app.py', 'x = 2\n')
+    publishFixture(t.local.b, worker.name, 'app.py', 'x = 2\n')
     const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'bump x' })
     const mirrored = t.team.b.openClaims()
     expect(mirrored).toHaveLength(1)
@@ -170,14 +171,14 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
 
   it('keeps a moved worker mirror on the worker range when the lead edits its overlay', () => {
     const t = setup()
-    t.team.a.setOverlay(lead.name, 'app.py', 'lead one\nlead two\nlead three\n')
-    t.local.b.setOverlay(worker.name, 'app.py', 'worker one\nworker two\nworker three\n')
+    publishFixture(t.team.a, lead.name, 'app.py', 'lead one\nlead two\nlead three\n')
+    publishFixture(t.local.b, worker.name, 'app.py', 'worker one\nworker two\nworker three\n')
     const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'move' })
     const id = t.team.b.openClaims()[0].id
     t.local.b.moveClaim(c.id, 2, 2)
     expect(t.team.b.claims.get(id)).toMatchObject({ from: 2, to: 2, mirrorOf: 'money' })
     expect(t.team.b.openClaims()[0]).toMatchObject({ from: 2, to: 2 })
-    t.team.a.setOverlay(lead.name, 'app.py', 'inserted\nlead one\nlead two\nlead three\n')
+    publishFixture(t.team.a, lead.name, 'app.py', 'inserted\nlead one\nlead two\nlead three\n')
     expect(t.team.b.openClaims()[0]).toMatchObject({ from: 2, to: 2 })
     expect(t.team.b.claims.get(id)?.anchor).toBeUndefined()
   })
@@ -196,7 +197,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
 describe('Bridge hardening', () => {
   it('unmirroring a claim posts a release to the team, carrying unfulfilled plans', () => {
     const t = setup()
-    t.local.b.setOverlay(worker.name, 'app.py', 'x = 2\n')
+    publishFixture(t.local.b, worker.name, 'app.py', 'x = 2\n')
     const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'rename x', plans: [{ kind: 'rename', symbol: 'x', detail: 'y' }] })
     const teamId = t.team.b.openClaims()[0].id
     t.local.b.post<ReleaseMsg>(worker, { type: 'release', claimId: c.id, path: 'app.py', summary: 'gave up', unfulfilled: [{ kind: 'rename', symbol: 'x', detail: 'y' }] })
@@ -251,15 +252,15 @@ describe('Bridge review fixes', () => {
 
   it("a worker editing an already-shared file or deleting one refreshes the mirrored scope (fix 12)", () => {
     const t = setup()
-    t.local.b.setOverlay(worker.name, 'app.py', 'x = 2\n')
+    publishFixture(t.local.b, worker.name, 'app.py', 'x = 2\n')
     expect(t.team.b.scope('rohanz')!.paths).toEqual(['app.py'])
     // nested change to the same overlay text: still covered, no crash, scope unchanged
-    t.local.b.setOverlay(worker.name, 'app.py', 'x = 3\n')
+    publishFixture(t.local.b, worker.name, 'app.py', 'x = 3\n')
     expect(t.team.b.scope('rohanz')!.paths).toEqual(['app.py'])
     // a deletion is a change the team must see
-    t.local.b.markDeleted(worker.name, 'old.py')
+    deleteFixture(t.local.b, worker.name, 'old.py')
     expect(t.team.b.scope('rohanz')!.paths).toEqual(['app.py', 'old.py'])
-    t.local.b.unmarkDeleted(worker.name, 'old.py')
+    clearFixture(t.local.b, worker.name, 'old.py')
     expect(t.team.b.scope('rohanz')!.paths).toEqual(['app.py'])
   })
 })
@@ -287,7 +288,7 @@ describe("Bridge: sharing stays the lead's own (B1)", () => {
 describe('Bridge: mirrored claims survive the lead\'s own cleanup (B2)', () => {
   it('mirrors carry mirrorOf and are put back when someone other than the bridge removes them', () => {
     const t = setup()
-    t.local.b.setOverlay(worker.name, 'app.py', 'x = 2\n')
+    publishFixture(t.local.b, worker.name, 'app.py', 'x = 2\n')
     const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'bump x' })
     const first = t.team.b.openClaims()[0]
     expect(first).toMatchObject({ by: 'rohanz', mirrorOf: 'money', intent: '[money] bump x' })

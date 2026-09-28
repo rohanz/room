@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -6,11 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { handlers } from '../src/tools/collect.js'
 import { handlers as fileHandlers, linkSharedDirs, materializeMergedFile } from '../src/tools/files.js'
 import type { HandlerState } from '../src/tools/context.js'
+import type { Session } from '../src/session.js'
 import { signalWorker, pidAlive } from '../src/worker-process.js'
 import { RoomDoc, splitParticipants, workerLines } from '@room/shared'
 import * as Y from 'yjs'
 import { git as roomGit } from '@room/roomd/git'
-import { retainedDeclaredFile } from '@room/roomd'
 import { syncDocumentWorkers } from './registry-fixture.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 
@@ -89,7 +90,7 @@ describe('room_collect', () => {
   })
   function seedPresence(t: ReturnType<typeof setup>) {
     const name = t.w.name
-    t.s.room.setOverlay(name, 'new.txt', 'worker change')
+    publishFixture(t.s.room, name, 'new.txt', 'worker change')
     t.s.room.setScope({ by: name, byKind: 'agent', area: 'test', summary: 'editing', paths: ['new.txt'] })
     t.s.room.addClaim({ by: name, byKind: 'agent', path: 'new.txt', from: 1, to: 1, intent: 'editing' })
   }
@@ -120,12 +121,9 @@ describe('room_collect', () => {
     t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
-    const retained = retainedDeclaredFile(worker, t.s.roomName, t.w.name, 'ws://127.0.0.1:1')
-    fs.writeFileSync(retained, JSON.stringify({ server: 'ws://127.0.0.1:1', room: t.s.roomName, participant: t.w.name, paths: ['new.txt'] }))
     seedPresence(t)
     expect(await t.call({ tag: 'test' })).toContain(`kept artifact.bin at ${path.join(worker, 'artifact.bin')}`)
     expect(fs.existsSync(worker)).toBe(true)
-    expect(fs.existsSync(retained)).toBe(false)
     expectRetired(t)
     expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
     expect(workerLines([], { retiredWorkers: t.s.room.retiredWorkers() }).join('\n')).toContain('kept: uncopied ignored artifacts')
@@ -843,6 +841,12 @@ describe('room_collect', () => {
 
 })
 
+async function previewSetup() {
+  const t = setup()
+  await syncDocumentWorkers(t.s as Session)
+  return t
+}
+
 describe('worker preview', () => {
   it('does not link dependencies through an archived symlink ancestor', () => {
     const scratch = path.join(root, 'scratch'), outside = path.join(root, 'outside')
@@ -874,7 +878,7 @@ describe('worker preview', () => {
     put(lead, 'config.txt', 'safe lead version\n')
     put(worker, 'config.txt', 'safe lead version\n')
     put(worker, 'file.txt', 'worker edit\n')
-    const t = setup()
+    const t = await previewSetup()
     Object.assign(t.state, {
       rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
       others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
@@ -885,7 +889,7 @@ describe('worker preview', () => {
   })
 
   it('runs against the same binary bytes and executable mode that collect applies', async () => {
-    const t = setup()
+    const t = await previewSetup()
     fs.writeFileSync(path.join(worker, 'fixture.bin'), Buffer.from([0, 255, 1]))
     put(worker, 'run.sh', '#!/bin/sh\necho run\n')
     fs.chmodSync(path.join(worker, 'run.sh'), 0o755)
@@ -898,7 +902,7 @@ describe('worker preview', () => {
     expect(result).toContain('tests: PASSED (exit 0)')
   })
   it('previews the lead\'s own local intent-only worker from its worktree', async () => {
-    const t = setup()
+    const t = await previewSetup()
     put(worker, 'own-output.txt', 'worker output')
     Object.assign(t.state, {
       rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
@@ -910,7 +914,7 @@ describe('worker preview', () => {
     expect(result).toContain('own-output.txt (lead+test only)')
   })
   it('withholds the lead\'s own intent-only worker once its worktree vanished', async () => {
-    const t = setup()
+    const t = await previewSetup()
     fs.rmSync(worker, { recursive: true, force: true })
     Object.assign(t.state, {
       rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
@@ -918,12 +922,15 @@ describe('worker preview', () => {
       withheld: () => 'lead+test shares intent only; ask them or wait for their push',
       baseFor: () => base, shareOf: () => 'intent', liveText: async () => undefined,
     })
-    expect(await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })).toBe("lead+test's worktree no longer exists; lead+test shares intent only; ask them or wait for their push")
+    const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
+    expect(result).toContain("lead+test's worktree no longer exists")
+    expect(result).toContain('PARTIAL preview')
+    expect(result).toContain('no manifest record')
   })
   it('previews a vanished local worker from its shared overlay instead of its checkout', async () => {
-    const t = setup()
+    const t = await previewSetup()
     put(worker, 'disk-only.txt', 'never shared')
-    t.s.room.setOverlay('lead+test', 'shared.txt', 'shared change\n')
+    publishFixture(t.s.room, 'lead+test', 'shared.txt', 'shared change\n')
     fs.rmSync(worker, { recursive: true, force: true })
     Object.assign(t.state, {
       rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
@@ -937,7 +944,7 @@ describe('worker preview', () => {
     expect(result).not.toContain('disk-only.txt')
   })
   it('collects Unicode UTF-8 bytes unchanged from a worker worktree', async () => {
-    const t = setup()
+    const t = await previewSetup()
     const value = Buffer.from('em dash —, CJK 漢, emoji 😀\n', 'utf8')
     fs.writeFileSync(path.join(worker, 'unicode.txt'), value)
     expect(await t.call({ tag: 'test' })).toContain('Changes from test: unicode.txt')
@@ -949,7 +956,7 @@ describe('worker preview', () => {
     put(worker, '.gitignore', 'artifact.bin\ndata/\n')
     fs.symlinkSync(path.join(lead, 'data'), path.join(worker, 'data'))
     put(worker, 'new.txt', 'output')
-    const t = setup()
+    const t = await previewSetup()
     if (recorded) t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, link: ['data'] })
     const ws = { ...t.s, dir: worker, me: { name: 'lead+test', kind: 'agent' } }
     Object.assign(t.state, {
@@ -968,7 +975,7 @@ describe('worker preview', () => {
   })
   it('previews a worker against its carried-in commit, not the lead\'s HEAD', async () => {
     const head = commitLines()
-    const t = setup()
+    const t = await previewSetup()
     put(lead, 'app.py', LINES.replace('two', 'W')); put(lead, 'notes.txt', 'draft\n')
     carry(t, worker, 'test', { 'app.py': LINES.replace('two', 'W'), 'notes.txt': 'draft\n' })
     put(lead, 'app.py', LINES.replace('two', 'W2')); put(lead, 'notes.txt', 'draft 2\n')
@@ -988,7 +995,7 @@ describe('worker preview', () => {
   it('discovers untracked worker paths and explicitly excludes ignored output', async () => {
     put(worker, 'new.txt', 'new\n'); put(worker, 'empty.txt', ''); put(worker, 'artifact.bin', 'artifact')
     const nested = path.join(lead, 'nested'); fs.mkdirSync(nested); git(nested, 'init', '-q')
-    const t = setup()
+    const t = await previewSetup()
     Object.assign(t.state, {
       rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
       others: () => ['lead+test'], presences: () => [], withheld: () => undefined,

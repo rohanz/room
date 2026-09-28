@@ -16,7 +16,7 @@ export const defs: ToolDef[] = [
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, liveText, lines, isMe, mine, planChanged, setPresence, describeUsers, loadAreas, ownerHints, areasOf, upgrade } = state
+  const { S, readText, lines, isMe, mine, planChanged, setPresence, describeUsers, loadAreas, ownerHints, areasOf, upgrade } = state
   const handlers: Record<string, Handler> = {
     async room_claim(a) {
       const s = S()
@@ -37,7 +37,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const hits = [...scopeHits, ...claimHits]
         if (hits.length) return `cannot claim ${p}: it would cover another participant's declared work (${hits.join('; ')}). Claim narrower files instead.`
       }
-      const t = directory ? undefined : await liveText(s, p, s.me.name)
+      const t = directory ? undefined : await readText(s, p, s.me.name)
       const isNew = t === undefined || t === null
       const n = isNew ? 1 : lines(t)
       let range: { from: number; to: number }
@@ -162,8 +162,8 @@ function parsePlans(v: unknown): Plan[] | string {
 }
 
 
-export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' | 'log' | 'ctx' | 'liveText' | 'baseFor'>): Pick<HandlerState, 'observeClaims' | 'planChanged' | 'startConflictWatcher'> {
-  const { conflictPairs, mine, log, ctx, liveText, baseFor } = deps
+export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' | 'log' | 'ctx' | 'readText' | 'baseFor'>): Pick<HandlerState, 'observeClaims' | 'planChanged' | 'startConflictWatcher'> {
+  const { conflictPairs, mine, log, ctx, readText, baseFor } = deps
   const observeClaims = (s: Session) => {
       s.room.claims.observe((ev, tr) => {
         if (tr.local) return
@@ -194,7 +194,7 @@ export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' |
         const mine = s.awareness.getLocalState()?.watchedDirectory
         return !!mine && states.some(state => state?.user?.name === person && state.watchedDirectory === mine)
       },
-      liveText: (p, person) => liveText(s, p, person),
+      liveText: (p, person) => readText(s, p, person),
       baseText: (sha, p) => gitShow(s.dir, sha, p),
       baseFor: person => baseFor(s, person),
       mergeBase: async (a, b) => (await git(s.dir, ['merge-base', a, b])).trim(),

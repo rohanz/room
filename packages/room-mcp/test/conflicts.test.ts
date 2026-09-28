@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, shouldWakeOnMsg } from '@room/shared'
+import { RoomDoc, manifestPaths, shouldWakeOnMsg } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools, type Tools } from '../src/tools.js'
 import { changedRanges, ConflictWatcher, type ConflictDeps } from '../src/conflicts.js'
@@ -43,6 +44,7 @@ function addPresence(target: Awareness, name: string): Awareness {
 function setup(opts: { now?: () => number; joined?: boolean; session?: Partial<Session> } = {}) {
   const { a, b } = pair()
   a.setMeta({ repo: 'r', branch: 'main', base })
+  setFixtureLocalRoot(a, 'Rohan', dir)
   let session: Session | null = opts.joined === false ? null : fakeSession(a, opts.session)
   const closed: string[] = []
   const tools = createTools({
@@ -68,6 +70,7 @@ afterAll(async () => {
   for (const tools of activeTools) await tools.shutdown()
   rmSync(dir, { recursive: true, force: true })
 })
+beforeEach(() => { writeFileSync(join(dir, 'app.py'), COMMITTED) })
 
 describe('changedRanges', () => {
   it('reports live line ranges that differ from the base', () => {
@@ -111,19 +114,19 @@ describe('automatic conflict notices', () => {
     const paths = ['a.txt', 'b.txt', 'c.txt', 'd.txt']
     for (const path of paths) {
       room.addClaim({ path, from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'implement' })
-      if (!local) room.setOverlay('Kieran', path, `worker ${path}\n`)
+      if (!local) publishFixture(room, 'Kieran', path, `worker ${path}\n`)
     }
     const watcher = watcherFor(room, { liveText: async (p, person) => person === 'Kieran' ? `worker ${p}\n` : room.text(p, person) })
-    for (const path of paths) room.setOverlay(me.name, path, `worker ${path}\n`)
+    for (const path of paths) publishFixture(room, me.name, path, `worker ${path}\n`)
     await watcher.flush()
     expect(room.messages().filter(m => m.type === 'conflict')).toEqual([])
     expect(room.messages().filter(m => m.type === 'note')).toMatchObject([{ priority: 'fyi', text: 'Rohan integrated 4 files of Kieran' }])
-    room.setOverlay(me.name, paths[0], 'temporary\n')
-    room.setOverlay(me.name, paths[0], `worker ${paths[0]}\n`)
+    publishFixture(room, me.name, paths[0], 'temporary\n')
+    publishFixture(room, me.name, paths[0], `worker ${paths[0]}\n`)
     await watcher.flush()
     expect(room.messages().filter(m => m.type === 'note')).toHaveLength(1)
     // An actual divergence still alarms after an earlier integration.
-    room.setOverlay(me.name, paths[0], 'independent edit\n')
+    publishFixture(room, me.name, paths[0], 'independent edit\n')
     await watcher.flush()
     expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
     watcher.stop()
@@ -134,13 +137,13 @@ describe('automatic conflict notices', () => {
     let now = 1000, intended = false
     room.addClaim({ path: 'a.txt', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'implement' })
     const watcher = watcherFor(room, { writeIntent: () => intended, now: () => now })
-    for (const text of ['external 1\n', 'external 2\n']) { room.setOverlay(me.name, 'a.txt', text); await watcher.flush() }
+    for (const text of ['external 1\n', 'external 2\n']) { publishFixture(room, me.name, 'a.txt', text); await watcher.flush() }
     expect(room.messages()).toMatchObject([{ type: 'note', priority: 'fyi' }])
     now += 600_000
-    room.setOverlay(me.name, 'a.txt', 'external 3\n'); await watcher.flush()
+    publishFixture(room, me.name, 'a.txt', 'external 3\n'); await watcher.flush()
     expect(room.messages()).toHaveLength(2)
     intended = true
-    room.setOverlay(me.name, 'a.txt', 'mine\n'); await watcher.flush()
+    publishFixture(room, me.name, 'a.txt', 'mine\n'); await watcher.flush()
     expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
     watcher.stop()
   })
@@ -149,9 +152,9 @@ describe('automatic conflict notices', () => {
     for (const colocated of [false, true]) {
       const room = new RoomDoc()
       room.addClaim({ path: 'a.txt', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'implement' })
-      room.setOverlay('Kieran', 'a.txt', 'theirs\n')
+      publishFixture(room, 'Kieran', 'a.txt', 'theirs\n')
       const watcher = watcherFor(room, { coLocated: () => colocated, writeIntent: () => undefined })
-      room.setOverlay(me.name, 'a.txt', 'mine\n'); await watcher.flush()
+      publishFixture(room, me.name, 'a.txt', 'mine\n'); await watcher.flush()
       expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
       expect(room.messages().filter(m => m.type === 'merge-conflict')).toHaveLength(colocated ? 0 : 1)
       watcher.stop()
@@ -162,18 +165,18 @@ describe('automatic conflict notices', () => {
     const room = new RoomDoc()
     room.addClaim({ path: 'src/', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'implement' })
     const watcher = watcherFor(room)
-    room.setOverlay(me.name, 'src/a.txt', 'mine\n'); await watcher.flush()
+    publishFixture(room, me.name, 'src/a.txt', 'mine\n'); await watcher.flush()
     expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
     room.addClaim({ path: 'src/owned/', from: 1, to: 1, by: me.name, byKind: 'agent', intent: 'mine' })
-    room.setOverlay(me.name, 'src/owned/b.txt', 'mine\n'); await watcher.flush()
-    room.setOverlay(me.name, 'src-other/c.txt', 'mine\n'); await watcher.flush()
+    publishFixture(room, me.name, 'src/owned/b.txt', 'mine\n'); await watcher.flush()
+    publishFixture(room, me.name, 'src-other/c.txt', 'mine\n'); await watcher.flush()
     expect(room.messages().filter(m => m.type === 'conflict')).toHaveLength(2)
     watcher.stop()
   })
 
   it('notifies once when a foreign observed contract change reaches my referenced work', async () => {
     const room = new RoomDoc()
-    room.setOverlay('Rohan', 'api/handlers.py', 'from api.pricing import total\n')
+    publishFixture(room, 'Rohan', 'api/handlers.py', 'from api.pricing import total\n')
     const watcher = new ConflictWatcher({
       room, me, debounceMs: 0,
       liveText: async (p, person) => room.text(p, person),
@@ -203,9 +206,9 @@ describe('automatic conflict notices', () => {
   it('my edit inside a teammate\'s claim raises one interrupt to me and a notify to them, once', async () => {
     const t = setup()
     t.other.addClaim({ path: 'app.py', from: 4, to: 5, by: 'Kieran', byKind: 'agent', intent: 'rewrite b' })
-    t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
+    publishFixture(t.room, 'Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
     await t.tools.flushConflicts()
-    t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 222'))
+    publishFixture(t.room, 'Rohan', 'app.py', COMMITTED.replace('return 2', 'return 222'))
     await t.tools.flushConflicts()
     const msgs = t.room.messages().filter(m => m.type === 'conflict')
     expect(msgs).toHaveLength(2)
@@ -221,7 +224,7 @@ describe('automatic conflict notices', () => {
     t.other.addClaim({ path: 'app.py', from: 1, to: 2, by: 'Kieran', byKind: 'agent', intent: 'validate' })
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'app', summary: 'near app', paths: ['app.py'] })
     await t.tools.call('room_claim', { path: 'app.py', from: 4, to: 5, intent: 'b' })
-    t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
+    publishFixture(t.room, 'Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
     await t.tools.flushConflicts()
     expect(t.room.messages().filter(m => m.type === 'conflict')).toHaveLength(0)
   })
@@ -229,20 +232,20 @@ describe('automatic conflict notices', () => {
   it('both changing the same lines posts a notify when the preview conflicts and an fyi when it clears', async () => {
     const t = setup()
     const peer = addPresence(t.session!.awareness, 'Kieran')
-    t.room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
+    publishFixture(t.room, 'Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
     await t.tools.flushConflicts()
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 33'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return 2', 'return 33'))
     await t.tools.flushConflicts()
     const notes = () => t.room.messages().filter(m => (m.type === 'note' || m.type === 'merge-conflict') && m.from === 'room')
     expect(notes()).toHaveLength(1)
     expect(shouldWakeOnMsg(me, notes()[0])).toMatchObject({ wake: true, mustAnswer: true })
     expect(notes()[0].type === 'merge-conflict' && notes()[0].text).toContain("your app.py and Kieran's now conflict around line 5; room_preview_merge(Kieran)")
     // a further change while still conflicting says nothing new
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 34'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return 2', 'return 34'))
     await t.tools.flushConflicts()
     expect(notes()).toHaveLength(1)
     // Kieran moves to a different line: clean again
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     await t.tools.flushConflicts()
     expect(notes()).toHaveLength(2)
     expect(notes()[1].priority).toBe('fyi')
@@ -252,8 +255,8 @@ describe('automatic conflict notices', () => {
 
   it('does not preview an offline participant until they are present', async () => {
     const room = new RoomDoc()
-    room.setOverlay('Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
-    room.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 33'))
+    publishFixture(room, 'Rohan', 'app.py', COMMITTED.replace('return 2', 'return 22'))
+    publishFixture(room, 'Kieran', 'app.py', COMMITTED.replace('return 2', 'return 33'))
     let present = false
     let mergeReads = 0
     const watcher = new ConflictWatcher({
@@ -264,12 +267,12 @@ describe('automatic conflict notices', () => {
       mergeBase: async () => base,
     })
     watcher.start()
-    room.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 34'))
+    publishFixture(room, 'Kieran', 'app.py', COMMITTED.replace('return 2', 'return 34'))
     await watcher.flush()
     expect(mergeReads).toBe(0)
     expect(room.messages()).toEqual([])
     present = true
-    room.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 35'))
+    publishFixture(room, 'Kieran', 'app.py', COMMITTED.replace('return 2', 'return 35'))
     await watcher.flush()
     expect(mergeReads).toBe(1)
     expect(room.messages().some(m => m.type === 'merge-conflict' && m.text.includes('now conflict'))).toBe(true)
@@ -281,8 +284,8 @@ describe('automatic conflict notices', () => {
     let clock = 0, mergeReads = 0
     const paths = Array.from({ length: 6 }, (_, i) => `f${i}.txt`)
     for (const p of paths) {
-      room.setOverlay('Rohan', p, 'mine\n')
-      room.setOverlay('Kieran', p, 'theirs\n')
+      publishFixture(room, 'Rohan', p, 'mine\n')
+      publishFixture(room, 'Kieran', p, 'theirs\n')
     }
     const watcher = new ConflictWatcher({
       room, me, debounceMs: 0, mergeBudget: 4, mergeWindowMs: 10_000, now: () => clock,
@@ -293,15 +296,15 @@ describe('automatic conflict notices', () => {
     })
     watcher.start()
     // Re-touch all pairs; the queue holds one entry per person/path and only four may start.
-    for (const p of paths) room.setOverlay('Kieran', p, `theirs ${p}\n`)
+    for (const p of paths) publishFixture(room, 'Kieran', p, `theirs ${p}\n`)
     await watcher.flush()
     expect(mergeReads).toBe(4)
     clock = 10_001
     await watcher.flush()
     expect(mergeReads).toBe(6)
     // Multiple changes coalesce; returning to the last merged text skips the merge by hash.
-    room.setOverlay('Kieran', paths[0], 'temporary\n')
-    room.setOverlay('Kieran', paths[0], `theirs ${paths[0]}\n`)
+    publishFixture(room, 'Kieran', paths[0], 'temporary\n')
+    publishFixture(room, 'Kieran', paths[0], `theirs ${paths[0]}\n`)
     clock = 20_002
     await watcher.flush()
     expect(mergeReads).toBe(6)
@@ -388,19 +391,20 @@ describe('room lifecycle', () => {
     expect(await t.tools.call('room_leave', {})).toContain('left')
   })
 
-  it('join evicts overlays of absent people older than 7 days, keeps recent and present ones', async () => {
+  it('join preserves stale manifests so absent participants remain visible', async () => {
     const DAY = 86_400_000
     let clock = 1_000_000_000_000
     const t = setup({ joined: false, now: () => clock })
-    t.other.setOverlay('Kieran', 'app.py', 'old\n')
-    t.other.setOverlay('Hrishi', 'app.py', 'recent\n')
-    // timestamps are wall-clock; age them explicitly
-    t.other.overlayAt.set('Kieran', clock - 9 * DAY)
-    t.other.overlayAt.set('Hrishi', clock - 2 * DAY)
+    publishFixture(t.other, 'Kieran', 'app.py', 'old\n')
+    publishFixture(t.other, 'Hrishi', 'app.py', 'recent\n')
+    for (const [person, age] of [['Kieran', 9], ['Hrishi', 2]] as const) {
+      const head = t.other.manifestHead.get(person)!
+      t.other.manifestHead.set(person, { ...head, scannedAt: clock - age * DAY })
+    }
     await t.tools.call('room_join', {})
-    expect(t.room.changedPaths('Kieran')).toEqual([])
-    expect(t.room.changedPaths('Hrishi')).toEqual(['app.py'])
+    expect(manifestPaths(t.room, 'Kieran')).toEqual(['app.py'])
+    expect(manifestPaths(t.room, 'Hrishi')).toEqual(['app.py'])
     const note = t.room.messages().find(m => m.type === 'note' && m.text.includes('evicted'))
-    expect(note && note.type === 'note' && note.text).toContain('evicted stale uncommitted work of Kieran (1 file; last seen 9 days ago)')
+    expect(note).toBeUndefined()
   })
 })

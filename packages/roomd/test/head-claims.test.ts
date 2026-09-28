@@ -8,6 +8,7 @@ import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, type Roomd } from '../src/index.js'
 import { claimDigest } from '../src/reanchor.js'
+import { pollHead } from './poll-head.js'
 
 const git = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
 let root: string | undefined
@@ -57,7 +58,7 @@ it('revalidates only its own claims when HEAD moves, retaining a moved block and
   fs.writeFileSync(file, 'added\n'.repeat(5) + before)
   git(root, 'add', '-A')
   git(root, 'commit', '-qm', 'move block')
-  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await pollHead(daemon)
   expect(doc.claims.get(own.id)).toMatchObject({ from: 7, to: 8 })
   expect(doc.claims.get(other.id)).toEqual(other)
   expect(doc.claims.get(mirror.id)).toEqual(mirror)
@@ -66,7 +67,7 @@ it('revalidates only its own claims when HEAD moves, retaining a moved block and
   git(root, 'add', '-A')
   git(root, 'commit', '-qm', 'delete block')
   const commit = git(root, 'rev-parse', '--short=10', 'HEAD')
-  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await pollHead(daemon)
   expect(doc.claims.get(own.id)).toBeUndefined()
   expect(doc.claims.get(other.id)).toEqual(other)
   expect(doc.claims.get(mirror.id)).toEqual(mirror)
@@ -97,7 +98,7 @@ it('keeps the claim-time digest when a later overlay has unrelated lines at an u
   expect(doc.claimRange(claim)).toEqual({ from: 10, to: 12 })
   fs.writeFileSync(file, after)
   git(root, 'add', '-A'); git(root, 'commit', '-qm', 'insert above claim')
-  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await pollHead(daemon)
   expect(doc.claims.get(claim.id)).toMatchObject({ from: 15, to: 17, claimedHash: digest })
 })
 
@@ -125,7 +126,7 @@ for (const addedAbove of [0, 5]) {
     git(root, 'add', '-A')
     git(root, 'commit', '-qm', 'edit claimed block')
 
-    await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+    await pollHead(daemon)
 
     expect(doc.claims.get(claim.id)).toBeUndefined()
     expect(doc.messages().filter(m => m.type === 'note' && m.to === 'Alice')).toHaveLength(1)

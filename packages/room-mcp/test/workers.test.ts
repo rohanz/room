@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import { claudeWakeUnavailable } from '../src/prompt.js'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
@@ -771,7 +772,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
   it("a worker's room_done reaches its lead as an addressed done message that wakes it, and marks the worker done", async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
-    t.b.setOverlay('rohanz+money', 'app.py', 'x = 100\n')
+    publishFixture(t.b, 'rohanz+money', 'app.py', 'x = 100\n')
     const out = await t.workerTools.call('room_done', { summary: 'Money type in cents, 7 tests pass' })
     expect(out).toContain('Your lead rohanz has been told (worker money)')
     const done = t.a.messages().find(m => m.type === 'done') as Msg & { type: 'done' }
@@ -1226,8 +1227,8 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(team.a.workers.get('team-money')?.task).toBe('team side')
     expect(local.a.workers.get('money')?.task).toBe('local side')
     // the local worker edits in the workers room; the team-room lead reads and diffs its version
-    local.b.setOverlay('rohanz+money', 'app.py', 'x = 100\n')
-    local.b.setOverlay('rohanz+tiers', 'tiers.py', 'tier = "gold"\n')
+    publishFixture(local.b, 'rohanz+money', 'app.py', 'x = 100\n')
+    publishFixture(local.b, 'rohanz+tiers', 'tiers.py', 'tier = "gold"\n')
     const read = await leadTools.call('room_read', { path: 'app.py', person: 'rohanz+money' })
     expect(read).toContain('x = 100')
     expect(read).toContain('as rohanz+money sees it')
@@ -1527,7 +1528,7 @@ describe('retirement integration', () => {
   it('archives a done worker only after its dismissed process exits, preserving its summary and files', async () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'archive me' })
-    t.a.setOverlay('rohanz+money', 'app.py', 'x = 2\n')
+    publishFixture(t.a, 'rohanz+money', 'app.py', 'x = 2\n')
     t.a.updateWorker('money', { status: 'done', summary: 'implemented money', finishedAt: Date.now() })
     const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
     await new Promise(resolve => setTimeout(resolve, 1))

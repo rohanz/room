@@ -1,3 +1,4 @@
+import { incarnationText } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
@@ -10,6 +11,7 @@ import { participantRecord, type Msg, type ParticipantGit, type PushedMsg } from
 import { claimDigest } from '../src/reanchor.js'
 import { markManifestIncomplete } from '../src/manifest-publish.js'
 import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
+import { pollHead } from './poll-head.js'
 
 vi.setConfig({ testTimeout: 30_000 })
 beforeAll(() => { vi.stubEnv('CHOKIDAR_USEPOLLING', '1') })
@@ -87,7 +89,7 @@ async function world(options: { local?: boolean } = {}) {
   }
   return { root, origin, dir, base, room, server, start, other }
 }
-const poll = (daemon: Roomd) => (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+const poll = pollHead
 const git = (daemon: Roomd, name = daemon.name): ParticipantGit | undefined => participantRecord(daemon.roomDoc, name)?.git
 const status = (daemon: Roomd) => (daemon.provider.awareness.getLocalState() as { status: string }).status
 const pushed = (daemon: Roomd) => daemon.roomDoc.messages().filter((m: Msg): m is PushedMsg => m.type === 'pushed')
@@ -143,7 +145,7 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     await poll(daemon)
     expect(reads).toBe(2) // prepared, found stale, prepared again
     expect(git(daemon)).toMatchObject({ head: local, ahead: 1 })
-    expect(daemon.roomDoc.overlayText(daemon.name, 'wip.txt')?.toString()).toBe('second\n')
+    expect(incarnationText(daemon.roomDoc, daemon.name, 'wip.txt')?.toString()).toBe('second\n')
   })
 
   it('announces each push of its own commits once, including a partial push while HEAD is further ahead', async () => {

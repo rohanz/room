@@ -53,6 +53,18 @@ export type Version =
 
 export function manifestKey(name: string, fence: string): string { return `${name}\u0000${fence}` }
 
+/** Enumerate facts from the current writer incarnation, never stale overlay keys. */
+export function manifestPaths(room: RoomDoc, name: string): string[] {
+  const fence = room.manifestHead.get(name)?.fence
+  if (!fence) return []
+  return [...room.manifest.get(manifestKey(name, fence))?.entries() ?? []]
+    .filter(([, entry]) => entry.fence === fence).map(([path]) => path).sort()
+}
+
+export function manifestChangers(room: RoomDoc, path: string): string[] {
+  return [...room.manifestHead.keys()].filter(name => manifestPaths(room, name).includes(path)).sort()
+}
+
 /** Path digests contain no path bytes and use the room's decoded 32-byte salt. */
 export function digestPath(roomSalt: string, path: string): string {
   if (!/^[a-f0-9]{64}$/i.test(roomSalt)) throw new Error('invalid roomSalt')
@@ -79,8 +91,7 @@ export function snapshot(room: RoomDoc, name: string, view: readonly Participant
     if (entry.fence === head.fence) entries.set(path, { ...entry })
   }
   const texts = new Map<string, string>()
-  // Step 1 keeps text in the legacy participant-keyed overlay until readers cut over.
-  const overlay = room.overlays.get(name)
+  const overlay = room.overlays.get(manifestKey(name, head.fence))
   for (const [path, text] of overlay?.entries() ?? []) texts.set(path, text.toString())
   return { name, head: { ...head, excluded: [...head.excluded] }, record, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record, view) }
 }

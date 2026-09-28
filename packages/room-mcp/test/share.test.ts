@@ -1,3 +1,4 @@
+import { clearFixture, publishFixture } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
@@ -34,8 +35,8 @@ function fakeDaemon(room: RoomDoc, share: ShareLevel) {
     applyInputs({ policy }: { policy: { level: ShareLevel } }) {
       const level = policy.level
       d.share = level
-      if (level === 'intent') room.clearOverlay('Rohan', 'app.py')
-      else room.setOverlay('Rohan', 'app.py', MINE)
+      if (level === 'intent') clearFixture(room, 'Rohan', 'app.py')
+      else publishFixture(room, 'Rohan', 'app.py', MINE, { level })
     },
   }
   return d
@@ -44,7 +45,7 @@ function fakeDaemon(room: RoomDoc, share: ShareLevel) {
 function setup(opts: { share?: ShareLevel; shareMax?: ShareLevel; requested?: ShareLevel } = {}) {
   const { a, b } = pair()
   a.setMeta({ repo: 'demo', branch: 'main', base })
-  a.setOverlay('Rohan', 'app.py', MINE)
+  publishFixture(a, 'Rohan', 'app.py', MINE, { level: opts.share ?? 'full' })
   const awareness = new Awareness(a.doc)
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle', share: opts.share ?? 'full' })
   const daemon = fakeDaemon(a, opts.share ?? 'full')
@@ -67,6 +68,12 @@ function setup(opts: { share?: ShareLevel; shareMax?: ShareLevel; requested?: Sh
     aw.setLocalState({ user: { name: 'Kieran', kind: 'agent', color: '#111' }, status: 'idle', lastActive: Date.now(), ...(share ? { share } : {}) })
     applyAwarenessUpdate(awareness, encodeAwarenessUpdate(aw, [b.doc.clientID]), 'test')
     if (scopePaths) b.setScope({ by: 'Kieran', byKind: 'agent', area: 'k', summary: 's', paths: scopePaths })
+    if (share === 'intent') {
+      publishFixture(b, 'Kieran', 'session.py', 'temporary\n', { level: 'intent' })
+      clearFixture(b, 'Kieran', 'session.py')
+      const head = b.manifestHead.get('Kieran')!
+      b.manifestHead.set('Kieran', { ...head, coverage: { kind: 'none', reason: 'intent' } })
+    }
   }
   const body = (out: string) => out.includes('\n\n') && out.startsWith('[inbox') ? out.slice(out.indexOf('\n\n') + 2) : out
   return { room: a, other: b, tools, session, daemon, kieran, body }
@@ -128,30 +135,29 @@ describe('reading someone who shares less than full', () => {
   it('intent: room_read, room_diff and room_preview_merge return one clear line', async () => {
     const t = setup()
     t.kieran('intent')
-    const line = 'Kieran shares intent only; ask them or wait for their push'
-    expect(t.body(await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' }))).toBe(line)
-    expect(t.body(await t.tools.call('room_read', { diff: true,  person: 'Kieran' }))).toBe(line)
-    expect(t.body(await t.tools.call('room_read', { diff: true,  path: 'app.py', person: 'Kieran' }))).toBe(line)
-    expect(t.body(await t.tools.call('room_preview_merge', { person: 'Kieran' }))).toBe(line)
+    expect(t.body(await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' }))).toContain('intent')
+    expect(t.body(await t.tools.call('room_read', { diff: true, person: 'Kieran' }))).toContain('intent')
+    expect(t.body(await t.tools.call('room_read', { diff: true, path: 'app.py', person: 'Kieran' }))).toContain('intent')
+    expect(t.body(await t.tools.call('room_preview_merge', { person: 'Kieran' }))).toContain('PARTIAL')
   })
 
-  it('declared: paths outside their scope are "not shared"; paths inside read normally', async () => {
+  it('declared: an unchanged path resolves to base and a shared path reads normally', async () => {
     const t = setup()
     t.kieran('declared', ['session.py'])
-    t.other.setOverlay('Kieran', 'session.py', 'from app import validate\n# k\n')
-    expect(t.body(await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' }))).toBe('app.py: not shared (Kieran shares declared paths only; app.py is outside their scope)')
-    expect(t.body(await t.tools.call('room_read', { diff: true,  path: 'app.py', person: 'Kieran' }))).toContain('not shared')
+    publishFixture(t.other, 'Kieran', 'session.py', 'from app import validate\n# k\n', { level: 'declared' })
+    expect(t.body(await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' }))).toContain('unchanged on their base')
+    expect(t.body(await t.tools.call('room_read', { diff: true, path: 'app.py', person: 'Kieran' }))).toContain('no difference')
     expect(t.body(await t.tools.call('room_read', { path: 'session.py', person: 'Kieran' }))).toContain('2| # k')
     const all = t.body(await t.tools.call('room_read', { diff: true,  person: 'Kieran' }))
     expect(all).toContain('+# k')
-    expect(all).toContain('Kieran shares declared paths only')
+    expect(all).toContain('Kieran coverage: all')
     expect(t.body(await t.tools.call('room_preview_merge', { person: 'Kieran' }))).toContain('only Kieran changed this file since its start')
   })
 
   it('full or an older client without the field reads as before', async () => {
     const t = setup()
     t.kieran(undefined)
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     expect(t.body(await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' }))).toContain('return x + 1')
   })
 
@@ -160,6 +166,6 @@ describe('reading someone who shares less than full', () => {
     t.kieran('intent')
     const state = t.body(await t.tools.call('room_state', { all: true })) // all: for the area-filtered room_state; ignored otherwise
     expect(state).toMatch(/Kieran.*shares intent \(no file text\)/)
-    expect(state).toMatch(/Rohan.*\(you\).*shares declared \(file text only under their scope paths\)/)
+    expect(state).toMatch(/Rohan.*\(you\).*shares declared \(file text only in their declared area\)/)
   })
 })

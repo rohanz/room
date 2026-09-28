@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 /**
  * The session registry: which of a process's rooms holds a participant, a question or a worker;
  * attachments start on add and stop on remove; worker ids stay distinct across a reused tag.
@@ -115,14 +116,14 @@ describe('Rooms: who lives where', () => {
   it('holding: presence or work wins over a worker record, and the caller\'s own name stays put', () => {
     const x = twoRooms()
     // a worker present only in the local room
-    x.local.b.setOverlay('rohanz+money', 'app.py', 'x = 2\n')
+    publishFixture(x.local.b, 'rohanz+money', 'app.py', 'x = 2\n')
     expect(x.rooms.holding('rohanz+money', x.t)).toBe(x.l)
     expect(x.rooms.holding('rohanz', x.t)).toBe(x.t)
     // the same tag recorded in both rooms but active in the team room: the team room wins
     x.team.a.setWorker({ id: 'rohanz/tiers#1', tag: 'tiers', name: 'rohanz+tiers', host: 'claude', task: 't', dir, branch: 'room/tiers', pid: 1, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 })
     x.local.a.setWorker({ id: 'rohanz/tiers#1', tag: 'tiers', name: 'rohanz+tiers', host: 'claude', task: 'l', dir, branch: 'room/tiers', pid: 2, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 })
     expect(x.rooms.holding('rohanz+tiers', x.t)).toBe(x.t) // record in the caller's room, nobody active anywhere
-    x.local.b.setOverlay('rohanz+tiers', 'app.py', 'y = 1\n')
+    publishFixture(x.local.b, 'rohanz+tiers', 'app.py', 'y = 1\n')
     expect(x.rooms.holding('rohanz+tiers', x.t)).toBe(x.l) // now active in the local room
     expect(x.rooms.holding('nobody', x.t)).toBe(x.t)
   })

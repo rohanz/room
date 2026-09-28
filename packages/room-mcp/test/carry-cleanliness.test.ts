@@ -1,3 +1,4 @@
+import { clearFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { patchPublisher } from './registry-fixture.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -218,6 +219,8 @@ describe('carry and discard safety', () => {
     run(branchDir, 'add', '-A'); run(branchDir, 'commit', '-qm', 'odd path')
     const b = run(branchDir, 'rev-parse', 'HEAD')
     const room = new RoomDoc(); room.setMeta({ base: a })
+    publishFixture(room, 'peer', odd, 'participant\n', { base: b })
+    clearFixture(room, 'peer', odd)
     const caller = { me: { name: 'lead' }, dir: root, room, local: false } as Session
     const participant = { me: { name: 'peer' }, dir: branchDir, room, local: false } as Session
     const state = { rooms: { holding: () => participant }, liveText: async () => undefined,
@@ -233,7 +236,8 @@ describe('carry and discard safety', () => {
     room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', host: 'codex', task: 't', dir: root,
       branch: 'room/w', base, pid: 1, startedAt: 1, status: 'running', lead: 'lead',
       carriedUntracked: [{ path: 'api.py', sha: '1'.repeat(40) }] } as Worker)
-    room.setOverlay('lead+w', 'api.py', 'def rate(x, year):\n    return x\n')
+    setFixtureLocalRoot(room, 'lead+w', root)
+    publishFixture(room, 'lead+w', 'api.py', 'def rate(x, year):\n    return x\n')
     const logs: string[] = []
     const graph = new GraphIndex(room, 'lead+w', root, line => logs.push(line), { random: () => 0, minPublishMs: 0 })
     try {

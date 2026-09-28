@@ -1,3 +1,4 @@
+import { incarnationText } from './manifest-assert.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -8,6 +9,7 @@ import type { WebsocketProvider } from 'y-websocket'
 import { digestPath, manifestKey, participantRecord } from '@room/shared'
 import { startRoomd, type Roomd } from '../src/index.js'
 import { policyFromLevel } from '../src/policy.js'
+import { pollHead } from './poll-head.js'
 
 vi.setConfig({ testTimeout: 30000 })
 const roots: string[] = []
@@ -44,7 +46,7 @@ it('withdraws a path synchronously when policy narrows during an awaited base re
   expect(entries().size).toBe(0)
   release(); await work
   expect(entries().size).toBe(0)
-  expect(daemon.roomDoc.overlayText('Ben', 'x')).toBeUndefined()
+  expect(incarnationText(daemon.roomDoc, 'Ben', 'x')).toBeUndefined()
 })
 
 it('turns a changed ignored path into a digest even when the rule changes during a base read', async () => {
@@ -75,7 +77,7 @@ it('commits a moved HEAD and its completed manifest in one Y transaction', async
   })
   fs.writeFileSync(path.join(dir, 'x'), 'committed')
   sh(dir, 'add', '-A'); sh(dir, 'commit', '-qm', 'move')
-  await (daemon as any).pollHead()
+  await pollHead(daemon)
   expect(observed.length).toBeGreaterThan(0)
   expect(observed.every(s => s.base === s.manifest)).toBe(true)
 })

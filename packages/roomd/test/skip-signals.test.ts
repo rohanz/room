@@ -1,3 +1,4 @@
+import { manifestText, incarnationText } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { it, expect } from 'vitest'
 import fs from 'node:fs'
@@ -39,10 +40,10 @@ it('reports only changed size skips and clears skip reasons and stale overlays o
     await write('large.txt', 'a'.repeat(100))
     expect(daemon.skipped().size).toEqual([])
     await write('small.txt', 'shared')
-    expect(daemon.roomDoc.text('small.txt', 'Test')).toBe('shared')
+    expect(manifestText(daemon.roomDoc, 'small.txt', 'Test')).toBe('shared')
     await write('small.txt', 'c'.repeat(30))
     expect(daemon.skipped().budget).toEqual(['small.txt'])
-    expect(daemon.roomDoc.overlayText('Test', 'small.txt')).toBeUndefined()
+    expect(incarnationText(daemon.roomDoc, 'Test', 'small.txt')).toBeUndefined()
     await write('small.txt', 'c'.repeat(100))
     expect(daemon.skipped().budget).toEqual([])
     expect(daemon.skipped().size).toEqual(['small.txt'])

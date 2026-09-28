@@ -1,3 +1,4 @@
+import { clearFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import net from 'node:net'
@@ -50,7 +51,8 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
 function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig } = {}) {
   const { a, b } = pair()
   a.setMeta({ repo: 'demo', branch: 'main', base })
-  a.setOverlay('Rohan', 'app.py', MINE)
+  setFixtureLocalRoot(a, 'Rohan', dir)
+  publishFixture(a, 'Rohan', 'app.py', MINE)
   let session: Session | null = opts.joined === false ? null : fakeSession(a, opts.synced, opts.wsconnected)
   const joined: string[] = []
   const created: boolean[] = []
@@ -215,13 +217,13 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 describe('session gating', () => {
   it('summarizes six or more changed paths but preserves short lists and path lookup', async () => {
     const t = setup()
-    for (let i = 0; i < 6; i++) t.room.setOverlay('Kieran', `art/main-street/scene-${i}.md`, 'changed')
-    t.room.setOverlay('Kieran', 'README.md', 'changed')
+    for (let i = 0; i < 6; i++) publishFixture(t.room, 'Kieran', `art/main-street/scene-${i}.md`, 'changed')
+    publishFixture(t.room, 'Kieran', 'README.md', 'changed')
     try {
       const compact = await t.tools.call('room_state', { all: true })
       expect(compact).toContain('  - Kieran: 7 files, mostly art/main-street/ (6): README.md, scene-0.md, scene-1.md ...')
       expect(await t.tools.call('room_state', { path: 'README.md' })).toContain('uncommitted changes by: Kieran')
-      for (let i = 1; i < 6; i++) t.room.clearOverlay('Kieran', `art/main-street/scene-${i}.md`)
+      for (let i = 1; i < 6; i++) clearFixture(t.room, 'Kieran', `art/main-street/scene-${i}.md`)
       const short = await t.tools.call('room_state', { all: true })
       expect(short).toContain('  - Kieran: README.md, art/main-street/scene-0.md')
       expect(short).not.toContain('Kieran: 2 files')
@@ -249,11 +251,11 @@ describe('session gating', () => {
     t.room.setWorker(worker)
     t.room.setWorker({ ...worker, name: 'Rohan+old', tag: 'old', status: 'done' })
     t.room.retireParticipant('Rohan+old', { name: 'Rohan+old', tag: 'old', lead: 'Rohan', host: 'codex', model: 'actual-model', task: 'old task', summary: 'archived summary', files: ['app.py'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' })
-    t.room.setOverlay('Teammate', 'app.py', 'offline work')
+    publishFixture(t.room, 'Teammate', 'app.py', 'offline work')
     const peer = addPresence(t.session!.awareness, 'Rohan+old')
     try {
       const compact = await t.tools.call('room_state', {})
-      expect(compact).toContain('participants (2 active, 1 offline teammate):')
+      expect(compact).toContain('participants overlapping your work (1 active, 1 offline teammate):')
       expect(compact).toContain('failed (codex, failed')
       expect(compact).not.toContain('finished:')
       expect(compact).not.toContain('Rohan+old ·')
@@ -336,7 +338,7 @@ describe('session gating', () => {
     const peer = addPresence(s.awareness, 'Rohan+old')
     peer.setLocalStateField('watchedDirectory', 'same-checkout')
     applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
-    t.other.setOverlay('Rohan+old', 'app.py', MINE)
+    publishFixture(t.other, 'Rohan+old', 'app.py', MINE)
     t.other.setScope({ by: 'Rohan+old', byKind: 'agent', area: 'api', summary: 'old session', paths: ['app.py'] })
     t.other.addClaim({ by: 'Rohan+old', byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'old session edit' })
     const fresh = createTools({ getSession: () => null, setSession: () => {}, cwd: dir, join: async () => s, leave: async () => {} })
@@ -366,7 +368,7 @@ describe('session gating', () => {
 
   it('keeps the join reply quiet when only a foreign overlay is present', async () => {
     const t = setup({ joined: false })
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     const out = await t.tools.call('room_join', {})
     expect(out).toContain('alone here; the room stays quiet until someone joins')
     expect(out).not.toContain('next: room_scope')
@@ -403,7 +405,7 @@ describe('session gating', () => {
 
   it('reports the exact command only when the last clean combined preview tests passed', async () => {
     const t = setup()
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     const passing = "printf '=== 1 passed in 0.1s ===\\n'"
     expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: passing })).toContain('tests: PASSED')
     const out = await t.tools.call('room_done', { summary: 'implementation done; local tests are failing on teammate files' })
@@ -411,7 +413,7 @@ describe('session gating', () => {
     expect(out).not.toContain('caused by')
 
     const failed = setup()
-    failed.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(failed.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     expect(await failed.tools.call('room_preview_merge', { person: 'Kieran', run: 'false' })).toContain('exit 1')
     expect(await failed.tools.call('room_done', { summary: 'local tests failing' })).not.toContain('combined preview passed')
   })
@@ -466,8 +468,8 @@ describe('one login, two agents', () => {
     a.setMeta({ repo: 'demo', branch: 'main', base })
     const me1: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
     const me2: Identity = { name: 'rohanz+codex', kind: 'agent', owner: 'rohanz', label: 'codex' }
-    a.setOverlay('rohanz', 'app.py', MINE)
-    b.setOverlay('rohanz+codex', 'session.py', 'from app import validate\n# codex\n')
+    publishFixture(a, 'rohanz', 'app.py', MINE)
+    publishFixture(b, 'rohanz+codex', 'session.py', 'from app import validate\n# codex\n')
     const mk = (room: RoomDoc, id: Identity, awareness: Awareness) => {
       awareness.setLocalState({ user: { ...id, color: '#000' }, status: 'idle', lastActive: Date.now() })
       const graph = new GraphIndex(room, id.name, dir); graph.start()
@@ -507,8 +509,8 @@ describe('reading', () => {
     const peer = addPresence(s.awareness, 'Rohan+old')
     peer.setLocalStateField('watchedDirectory', 'same-checkout')
     applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
-    t.room.clearOverlay('Rohan', 'app.py')
-    t.other.setOverlay('Rohan+old', 'app.py', MINE.replace('return 22', 'return 99'))
+    clearFixture(t.room, 'Rohan', 'app.py')
+    publishFixture(t.other, 'Rohan+old', 'app.py', MINE.replace('return 22', 'return 99'))
     t.other.setScope({ by: 'Rohan+old', byKind: 'agent', area: 'api', summary: 'old session', paths: ['app.py'] })
     t.other.addClaim({ by: 'Rohan+old', byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'old session edit' })
     const scope = await t.tools.call('room_scope', { area: 'api', summary: 'new session', paths: ['app.py'] })
@@ -535,9 +537,9 @@ describe('reading', () => {
     expect(mine).toContain('5|     return 22')
     expect(mine).toContain('uncommitted edits')
     const untouched = await t.tools.call('room_read', { path: 'session.py' })
-    expect(untouched).toContain('unchanged on their HEAD')
+    expect(untouched).toContain('unchanged on their base')
     expect(untouched).toContain('1| from app import validate')
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     const theirs = await t.tools.call('room_read', { path: 'app.py', person: 'Kieran' })
     expect(theirs).toContain('return x + 1')
     expect(await t.tools.call('room_read', { path: 'app.py' })).toContain('also changed (uncommitted) by: Kieran')
@@ -562,8 +564,8 @@ describe('reading', () => {
       s.awareness.setLocalStateField('publishUnder', 'Rohan+old')
       publisher.setLocalStateField('watchedDirectory', 'same-checkout')
       applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(publisher, [publisher.clientID]), 'test')
-      t.room.clearOverlay('Rohan', 'app.py')
-      t.other.setOverlay('Rohan+old', 'app.py', edited)
+      clearFixture(t.room, 'Rohan', 'app.py')
+      publishFixture(t.other, 'Rohan+old', 'app.py', edited)
       writeFileSync(join(dir, 'app.py'), edited)
 
       for (const args of [{ path: 'app.py' }, { path: 'app.py', person: 'Rohan' }]) {
@@ -1002,8 +1004,8 @@ describe('preview merge', () => {
   it('preserves live Unicode UTF-8 bytes with and without a run command', async () => {
     const t = setup()
     const value = 'em dash —, CJK 漢, emoji 😀\n'
-    t.room.setOverlay('Rohan', 'unicode-mine.txt', value)
-    t.other.setOverlay('Kieran', 'unicode.txt', value)
+    publishFixture(t.room, 'Rohan', 'unicode-mine.txt', value)
+    publishFixture(t.other, 'Kieran', 'unicode.txt', value)
     const textOnly = await t.tools.call('room_preview_merge', { person: 'Kieran' })
     expect(textOnly).toContain('unicode.txt (Kieran only)')
     expect(textOnly).toContain('final combined tree:')
@@ -1016,17 +1018,17 @@ describe('preview merge', () => {
 
   it('defaults to present participants, reports offline overlays, and supports both opt-ins', async () => {
     const t = setup()
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
-    t.other.setOverlay('Ada', 'session.py', 'from app import validate\n# offline Ada\n')
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Ada', 'session.py', 'from app import validate\n# offline Ada\n')
     const nobody = await t.tools.call('room_preview_merge', {})
     expect(nobody).toContain('no present participants to merge')
-    expect(nobody).toContain('skipped 2 offline participants with overlays: Ada, Kieran')
+    expect(nobody).toContain('skipped 2 offline participants with manifest facts: Ada, Kieran')
     const kieran = addPresence(t.session!.awareness, 'Kieran')
     try {
       const current = await t.tools.call('room_preview_merge', {})
       expect(current).toContain("with Kieran's")
       expect(current).not.toContain("Ada's in order")
-      expect(current).toContain('skipped 1 offline participant with overlays: Ada')
+      expect(current).toContain('skipped 1 offline participant with manifest facts: Ada')
       expect(current).toContain('people: ["Ada"] or includeOffline: true')
       expect(current).toContain('merge algorithm: git')
       expect(await t.tools.call('room_preview_merge', { person: 'Ada', run: 'cat session.py' })).toContain('# offline Ada')
@@ -1040,8 +1042,8 @@ describe('preview merge', () => {
 
   it('merges multiple people in order into one combined scratch tree', async () => {
     const t = setup()
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
-    t.other.setOverlay('Ada', 'session.py', 'from app import validate\n# Ada was here\n')
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Ada', 'session.py', 'from app import validate\n# Ada was here\n')
     const out = await t.tools.call('room_preview_merge', { people: ['Kieran', 'Ada'], run: 'cat app.py session.py' })
     expect(out).toContain('step 1: merge Kieran')
     expect(out).toContain('step 2: merge Ada')
@@ -1054,9 +1056,9 @@ describe('preview merge', () => {
 
   it('names the two people whose overlapping changes conflict', async () => {
     const t = setup()
-    t.room.setOverlay('Rohan', 'app.py', COMMITTED)
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
-    t.other.setOverlay('Ada', 'app.py', COMMITTED.replace('return 2', 'return 4'))
+    publishFixture(t.room, 'Rohan', 'app.py', COMMITTED)
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
+    publishFixture(t.other, 'Ada', 'app.py', COMMITTED.replace('return 2', 'return 4'))
     const out = await t.tools.call('room_preview_merge', { people: ['Kieran', 'Ada'] })
     expect(out).toContain('step 2: merge Ada')
     expect(out).toContain('conflict between Kieran and Ada')
@@ -1064,9 +1066,9 @@ describe('preview merge', () => {
 
   it('reports clean merges and conflicts against base', async () => {
     const t = setup()
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     expect(await t.tools.call('room_preview_merge', { person: 'Kieran' })).toContain('both changed, merge cleanly: app.py')
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
     const out = await t.tools.call('room_preview_merge', { person: 'Kieran' })
     expect(out).toContain('CONFLICTS:')
     expect(out).toContain('app.py')
@@ -1077,8 +1079,8 @@ describe('preview merge', () => {
     // Kieran changes the return line; Rohan (me) inserts before it and copies Kieran's new return line.
     const kieran = COMMITTED.replace('    return 2\n', '    return result\n')
     const mine = COMMITTED.replace('    return 2\n', '    audit()\n    return result\n')
-    t.room.setOverlay('Rohan', 'app.py', mine)
-    t.other.setOverlay('Kieran', 'app.py', kieran)
+    publishFixture(t.room, 'Rohan', 'app.py', mine)
+    publishFixture(t.other, 'Kieran', 'app.py', kieran)
     const out = await t.tools.call('room_preview_merge', { person: 'Kieran' })
     expect(out).toContain('app.py (resolvable)')
     expect(out).toContain("your version contains Kieran's change in order")
@@ -1088,7 +1090,7 @@ describe('preview merge', () => {
     expect(res).toContain('    audit()\n    return result')
     expect(res).toContain('exit 0')
     // A genuine disagreement stays a conflict.
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('    return 2\n', '    return other\n'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('    return 2\n', '    return other\n'))
     const hard = await t.tools.call('room_preview_merge', { person: 'Kieran', resolve: true })
     expect(hard).toContain('needs a human')
     expect(hard).not.toContain('--- resolved')
@@ -1096,21 +1098,21 @@ describe('preview merge', () => {
 
   it('run= executes a command in the merged tree and never touches the clone', async () => {
     const t = setup()
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     const out = await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'cat app.py && ls' })
     expect(out).toContain('exit 0')
     expect(out).toContain('return x + 1') // Kieran's change
     expect(out).toContain('return 22')    // mine
     expect(out).toContain('session.py')   // rest of the base tree is there
     const { readFileSync } = await import('node:fs')
-    expect(readFileSync(`${dir}/app.py`, 'utf8')).toBe(COMMITTED) // clone untouched
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
+    expect(readFileSync(`${dir}/app.py`, 'utf8')).toBe(MINE) // clone untouched
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return 2', 'return 3'))
     expect(await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'true' })).toContain('need a human first')
   })
 
   it('does not certify a zero-exit failure summary and uses the same result for room_done', async () => {
     const t = setup()
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     const out = await t.tools.call('room_preview_merge', { person: 'Kieran', run: "printf '=== 1 failed, 2 passed in 0.1s ===\\n'" })
     expect(out).toContain('=== 1 failed, 2 passed in 0.1s ===')
     expect(out).toContain('tests: FAILED (exit 0)')
@@ -1122,7 +1124,7 @@ describe('preview merge', () => {
     vi.stubEnv('ROOM_PREVIEW_SECRET', 'must-not-leak')
     try {
       const t = setup()
-      t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+      publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
       const out = await t.tools.call('room_preview_merge', {
         person: 'Kieran',
         run: 'test -z "$ROOM_PREVIEW_SECRET" && test -n "$ROOM_MERGED_TREE" && echo environment-clean',
@@ -1136,7 +1138,7 @@ describe('preview merge', () => {
 
   it('propagates a failing pipeline stage when bash is available', async () => {
     const t = setup()
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     const out = await t.tools.call('room_preview_merge', { person: 'Kieran', run: 'false | cat' })
     expect(out).toContain('exit 1')
     expect(out).toContain('tests: FAILED (exit 1)')
@@ -1162,7 +1164,7 @@ describe('merge preview scratch tree', () => {
    it('claims a whole directory without a range and refuses one that covers another claim', async () => {
      const t = setup()
      try {
-       t.other.setOverlay('Nearby', 'src/a.ts', 'export const a = 1\n')
+       publishFixture(t.other, 'Nearby', 'src/a.ts', 'export const a = 1\n')
        const out = await t.tools.call('room_claim', { path: 'src/', intent: 'own source' })
        expect(out).toContain('claimed')
        expect(out).not.toContain('error:')
@@ -1223,7 +1225,7 @@ it.each(['scope', 'claim', 'changed'] as const)('requires a claim for nearby %s 
   try {
     if (reason === 'scope') t.other.setScope({ by: 'Ada', byKind: 'agent', area: 'api', summary: 'edit', paths: ['src/'] })
     if (reason === 'claim') t.other.addClaim({ by: 'Ada', byKind: 'agent', path: 'src/file.ts', from: 1, to: 1, intent: 'edit' })
-    if (reason === 'changed') t.other.setOverlay('Ada', 'src/file.ts', 'changed')
+    if (reason === 'changed') publishFixture(t.other, 'Ada', 'src/file.ts', 'changed')
     expect(await t.tools.call('room_claim', { path: 'src/file.ts', intent: 'edit', from: 1, to: 1 })).toContain('claimed')
   } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
 })
@@ -1236,7 +1238,7 @@ it('does not treat changed paths from another session in this checkout as claim 
   old.setLocalStateField('watchedDirectory', 'same-checkout')
   applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(old, [old.clientID]), 'test')
   try {
-    t.other.setOverlay('Rohan+old', 'src/file.ts', 'changed')
+    publishFixture(t.other, 'Rohan+old', 'src/file.ts', 'changed')
     expect(await t.tools.call('room_claim', { path: 'src/file.ts', intent: 'edit', from: 1, to: 1 })).toBe('src/file.ts: no claim needed; nobody else is near this path')
   } finally { old.destroy(); await t.tools.shutdown(); s.awareness.destroy() }
 })
@@ -1262,7 +1264,7 @@ it('scoped room_state shows a participant whose changed path alone overlaps my w
   const ada = addPresence(t.session!.awareness, 'Ada')
   try {
     await t.tools.call('room_scope', { area: 'src', summary: 'edit', paths: ['src/'] })
-    t.other.setOverlay('Ada', 'src/file.ts', 'changed')
+    publishFixture(t.other, 'Ada', 'src/file.ts', 'changed')
     const out = await t.tools.call('room_state', {})
     expect(out.slice(out.indexOf('participants overlapping your work'), out.indexOf('open claims'))).toContain("  - Ada's agent:")
     expect(out).toContain('  - Ada: src/file.ts')
@@ -1316,7 +1318,7 @@ it('omits caches and Room files from preview omissions but keeps requested-artif
     for (const name of ignored) { mkdirSync(join(dir, name), { recursive: true }); writeFileSync(join(dir, name, 'cache'), 'cached') }
     writeFileSync(join(dir, '.room.json'), '{}')
     writeFileSync(join(dir, 'artifact.bin'), 'artifact')
-    t.other.setOverlay('Kieran', 'app.py', COMMITTED)
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED)
     const result = await t.tools.call('room_preview_merge', { person: 'Kieran' })
     expect(result).toContain('NOT previewed (gitignored, Rohan): artifact.bin')
     for (const name of [...ignored, '.room.json']) expect(result).not.toContain(name)

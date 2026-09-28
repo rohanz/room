@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 /**
  * A lead's tools with a bridged workers room: room_done keeps the mirrors of running workers (B2),
  * and a worker exiting without room_done still wakes the lead's host (B3).
@@ -86,7 +87,7 @@ describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
     await t.leadTools.call('room_scope', { area: 'api', summary: 'auth', paths: ['api/auth.py'] })
     const own = t.team.a.addClaim({ path: 'api/auth.py', from: 1, to: 1, by: lead.name, byKind: 'agent', intent: 'mine' })
-    t.local.b.setOverlay(workerId.name, 'app.py', 'x = 2\n')
+    publishFixture(t.local.b, workerId.name, 'app.py', 'x = 2\n')
     t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: workerId.name, byKind: 'agent', intent: 'bump' })
     expect(t.team.b.openClaims().map(c => c.intent).sort()).toEqual(['[money] bump', 'mine'])
     const out = await t.leadTools.call('room_done', { summary: 'auth landed' })

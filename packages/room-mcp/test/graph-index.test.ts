@@ -1,3 +1,4 @@
+import { clearFixture, deleteFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
@@ -30,7 +31,7 @@ describe('GraphIndex', () => {
     const room = new RoomDoc(); room.setMeta({ base })
     let edits = 0
     const read = vi.fn(async (_dir: string, _sha: string, path: string): Promise<string | undefined> => {
-      if (path === 'utils.py') room.setOverlay('Rohan', path, `def changing_${++edits}(): pass\n`)
+      if (path === 'utils.py') publishFixture(room, 'Rohan', path, `def changing_${++edits}(): pass\n`)
       return path === 'utils.py' ? 'def original(): pass\n' : undefined
     })
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0, read })
@@ -111,24 +112,25 @@ describe('GraphIndex', () => {
   })
 
   it('lets a ninth path finish while eight edited paths are superseded', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
     const first: (() => void)[] = [], later: (() => void)[] = []
     let firstReads = 0
-    const read = vi.fn(async (_dir: string, _sha: string, path: string): Promise<string | undefined> => {
-      if (path === 'waiting.py') return undefined
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
+    const target = gi as unknown as { textFor(path: string): Promise<string | undefined> }
+    const original = target.textFor.bind(gi)
+    vi.spyOn(target, 'textFor').mockImplementation(async path => {
       if (path.startsWith('hot-')) {
         const batch = firstReads++ < 8 ? first : later
         await new Promise<void>(resolve => batch.push(resolve))
       }
-      return undefined
+      return original(path)
     })
-    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0, read })
     try {
       gi.start(); await gi.ready
-      for (let i = 0; i < 8; i++) room.setOverlay('Rohan', `hot-${i}.py`, `def old_${i}(): pass\n`)
+      for (let i = 0; i < 8; i++) publishFixture(room, 'Rohan', `hot-${i}.py`, `def old_${i}(): pass\n`)
       await eventually(() => first.length === 8)
-      room.setOverlay('Rohan', 'waiting.py', 'def waiting(): pass\n')
-      for (let i = 0; i < 8; i++) room.setOverlay('Rohan', `hot-${i}.py`, `def new_${i}(): pass\n`)
+      publishFixture(room, 'Rohan', 'waiting.py', 'def waiting(): pass\n')
+      for (let i = 0; i < 8; i++) publishFixture(room, 'Rohan', `hot-${i}.py`, `def new_${i}(): pass\n`)
       first.splice(0).forEach(release => release())
       await eventually(() => gi.graph.has('waiting.py'))
       later.splice(0).forEach(release => release())
@@ -146,10 +148,10 @@ describe('GraphIndex', () => {
     gi.start(); await gi.ready
     expect(gi.graph.size).toBe(2)
     expect(gi.graph.usersOf('validate_token')).toEqual(['session.py'])
-    room.setOverlay('Kieran', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return verify_token(t)\n')
+    publishFixture(room, 'Kieran', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return verify_token(t)\n')
     await gi.whenIdle()
     expect(gi.graph.usersOf('validate_token')).toEqual(['session.py']) // import still references it (ast ImportFrom)
-    room.setOverlay('Kieran', 'session.py', 'def login(t):\n    return verify_token(t)\n')
+    publishFixture(room, 'Kieran', 'session.py', 'def login(t):\n    return verify_token(t)\n')
     await gi.whenIdle()
     expect(gi.graph.usersOf('validate_token')).toEqual([])
     expect(gi.graph.usersOf('verify_token')).toEqual(['session.py'])
@@ -158,12 +160,12 @@ describe('GraphIndex', () => {
 
   it('publishes provider-to-consumer edges and restores reverted overlays', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base })
-    room.setOverlay('Rohan', 'session.py', 'def login(t):\n    return verify_token(t)\n')
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    publishFixture(room, 'Rohan', 'session.py', 'def login(t):\n    return verify_token(t)\n')
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     expect(room.graphs.get('Rohan')?.edges).toEqual([])
-    room.clearOverlay('Rohan', 'session.py')
+    clearFixture(room, 'Rohan', 'session.py')
     await gi.whenIdle()
     expect(gi.graph.usersOf('validate_token')).toEqual(['session.py'])
     await eventually(() => room.graphs.get('Rohan')?.edges.length === 1)
@@ -174,15 +176,15 @@ describe('GraphIndex', () => {
   })
 
   it('indexes the latest rapid edit and removes deleted definitions', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
-    room.setOverlay('Rohan', 'session.py', 'def login(t):\n    return first_token(t)\n')
-    room.setOverlay('Rohan', 'session.py', 'def login(t):\n    return last_token(t)\n')
+    publishFixture(room, 'Rohan', 'session.py', 'def login(t):\n    return first_token(t)\n')
+    publishFixture(room, 'Rohan', 'session.py', 'def login(t):\n    return last_token(t)\n')
     await gi.whenIdle()
     expect(gi.graph.usersOf('last_token')).toEqual(['session.py'])
     expect(gi.graph.usersOf('first_token')).toEqual([])
-    room.markDeleted('Rohan', 'utils.py')
+    deleteFixture(room, 'Rohan', 'utils.py')
     await gi.whenIdle()
     expect(gi.graph.definersOf('validate_token')).toEqual([])
     gi.stop(); room.doc.destroy()
@@ -204,13 +206,13 @@ describe('GraphIndex', () => {
   })
 
   it('publishes observed contract changes from only its own overlay', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
-    room.setOverlay('Kieran', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
+    publishFixture(room, 'Kieran', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
     await gi.whenIdle()
     expect(room.graphs.get('Rohan')?.observed).toEqual([])
-    room.setOverlay('Rohan', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
+    publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
     await gi.whenIdle()
     await eventually(() => room.graphs.get('Rohan')?.observed?.length === 1)
     expect(room.graphs.get('Rohan')?.observed).toEqual([{
@@ -222,8 +224,8 @@ describe('GraphIndex', () => {
   })
 
   it('caps observed contract changes in a snapshot', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
-    room.setOverlay('Rohan', 'generated.py', Array.from({ length: 205 }, (_, i) => `def added_${i}():\n    pass\n`).join('\n'))
+    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    publishFixture(room, 'Rohan', 'generated.py', Array.from({ length: 205 }, (_, i) => `def added_${i}():\n    pass\n`).join('\n'))
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     await eventually(() => room.graphs.get('Rohan')?.observed?.length === 200)
@@ -241,14 +243,14 @@ describe('GraphIndex', () => {
     git(repo, 'worktree', 'add', '-q', '-b', 'room/w', wdir, head)
     writeFileSync(join(wdir, 'api.py'), 'def rate(x, year):\n    return x\n'); git(wdir, 'commit', '-qam', 'carried')
     const carried = git(wdir, 'rev-parse', 'HEAD')
-    const room = new RoomDoc(); room.setMeta({ base: head })
+    const room = new RoomDoc(); room.setMeta({ base: head }); setFixtureLocalRoot(room, 'lead+w', wdir)
     room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', host: 'codex', task: 't', dir: wdir, branch: 'room/w', base: carried, carriedBase: carried, pid: 1, startedAt: 1, status: 'running', lead: 'lead' } as Worker)
-    room.setOverlay('lead+w', 'api.py', 'def rate(x, year):\n    return x * 2\n')
+    publishFixture(room, 'lead+w', 'api.py', 'def rate(x, year):\n    return x * 2\n')
     const gi = new GraphIndex(room, 'lead+w', wdir, undefined, { random: () => 0, minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     await eventually(() => room.graphs.get('lead+w')?.status === 'ready')
     expect(room.graphs.get('lead+w')?.observed).toEqual([])
-    room.setOverlay('lead+w', 'api.py', 'def rate(x, year, region):\n    return x * 2\n')
+    publishFixture(room, 'lead+w', 'api.py', 'def rate(x, year, region):\n    return x * 2\n')
     await gi.whenIdle()
     await eventually(() => room.graphs.get('lead+w')?.observed?.length === 1)
     expect(room.graphs.get('lead+w')?.observed?.[0].detail).toBe('was `def rate(x, year):` now `def rate(x, year, region):`')
@@ -271,8 +273,8 @@ describe('GraphIndex snapshot discipline', () => {
     git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
     for (let i = 0; i < total; i++) writeFileSync(join(repo, `file${i}.py`), '')
     git('add', '.'); git('commit', '-qm', 'fixture'); largeBase = git('rev-parse', 'HEAD')
-  })
-  afterAll(() => rmSync(repo, { recursive: true, force: true }))
+  }, 30_000)
+  afterAll(() => rmSync(repo, { recursive: true, force: true }), 30_000)
 
   it('yields during indexing before starting edge publication', async () => {
     const room = new RoomDoc(); room.setMeta({ base: largeBase })
@@ -292,7 +294,7 @@ describe('GraphIndex snapshot discipline', () => {
   }, 30_000)
 
   it('yields during edge publication before publishing ready', async () => {
-    const room = new RoomDoc(); room.setMeta({ base: largeBase })
+    const room = new RoomDoc(); room.setMeta({ base: largeBase }); setFixtureLocalRoot(room, 'Rohan', repo)
     const gi = new GraphIndex(room, 'Rohan', repo, undefined, { random: () => 0, minPublishMs: 0, read: readLarge })
     try {
       gi.start(); await gi.ready
@@ -307,7 +309,7 @@ describe('GraphIndex snapshot discipline', () => {
         if (snapshot.status === 'ready') probeAtReady = probe
         return originalPublish(name, snapshot)
       })
-      room.setOverlay('Rohan', 'file4.py', 'def changed(): pass\n')
+      publishFixture(room, 'Rohan', 'file4.py', 'def changed(): pass\n')
       await eventually(() => probeAtReady !== undefined)
       expect(room.graphs.get('Rohan')?.status).toBe('ready')
       expect(probeAtReady).toBe(true)
@@ -330,18 +332,18 @@ describe('GraphIndex snapshot discipline', () => {
 
   it('does not rewrite an identical snapshot and waits out the publish window', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base })
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 400 })
     gi.start(); await gi.ready
     await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
     expect(room.graphs.get('Rohan')!.edges.length).toBe(1)
     let writes = 0
     room.graphs.observe(() => { writes++ })
-    room.setOverlay('Rohan', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return validate_token(t)  # same edge\n')
+    publishFixture(room, 'Rohan', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return validate_token(t)  # same edge\n')
     await gi.whenIdle()
     expect(writes).toBe(0) // identical snapshot: nothing written
     const firstAt = room.graphs.get('Rohan')!.at
-    room.setOverlay('Rohan', 'session.py', 'def login(t):\n    return t\n')
+    publishFixture(room, 'Rohan', 'session.py', 'def login(t):\n    return t\n')
     for (let i = 0; i < 60 && writes === 0; i++) await new Promise(r => setTimeout(r, 50)) // changed: written once the window has passed
     expect(writes).toBe(1)
     expect(room.graphs.get('Rohan')!.at - firstAt).toBeGreaterThanOrEqual(400)
@@ -378,14 +380,14 @@ describe('shared graph startup', () => {
   })
 
   it('builds locally despite a present peer snapshot and computes its own contract changes', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'New', dir)
     room.graphs.set('Peer', {
       version: 1, base, at: Date.now(), status: 'ready', truncated: false,
       paths: ['utils.py', 'session.py'],
       edges: [{ source: 'utils.py', target: 'session.py', symbols: ['validate_token'] }],
       observed: [{ path: 'utils.py', symbol: 'other', kind: 'add', detail: 'peer only' }],
     })
-    room.setOverlay('New', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
+    publishFixture(room, 'New', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
     const logs: string[] = []
     const gi = new GraphIndex(room, 'New', dir, s => logs.push(s), { random: () => 0, minPublishMs: 0 })
     try {
@@ -394,7 +396,7 @@ describe('shared graph startup', () => {
       expect(gi.graph.usersOf('validate_token')).toEqual(['session.py'])
       expect(room.graphs.get('New')?.edges).toEqual(room.graphs.get('Peer')?.edges)
       expect(room.graphs.get('New')?.observed?.map(c => c.symbol)).toEqual(['validate_token'])
-      room.clearOverlay('New', 'utils.py')
+      clearFixture(room, 'New', 'utils.py')
       await gi.whenIdle()
       await eventually(() => room.graphs.get('New')?.observed?.length === 0)
     } finally { gi.stop(); room.doc.destroy() }
@@ -415,7 +417,7 @@ describe('shared graph startup', () => {
       gi.start(); await gi.whenIdle()
       expect(gi.graph.dependenciesOf('use-a.py')).toEqual([])
       expect(gi.graph.dependenciesOf('use-b.py')).toEqual([])
-      room.setOverlay('Other', 'use-a.py', 'class Local:\n    pass\n')
+      publishFixture(room, 'Other', 'use-a.py', 'class Local:\n    pass\n')
       await gi.whenIdle()
       expect(gi.graph.dependenciesOf('use-a.py')).toEqual([])
       expect(gi.graph.dependenciesOf('use-b.py')).toEqual([])

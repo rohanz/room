@@ -1,3 +1,4 @@
+import { deleteFixture, publishFixture } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { execFileSync, execFile } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
@@ -107,13 +108,13 @@ describe('hasCompany', () => {
 
   it('does not count a foreign overlay alone', () => {
     const s = session(new RoomDoc())
-    s.room.setOverlay('Kieran', 'app.py', 'x = 2\n')
+    publishFixture(s.room, 'Kieran', 'app.py', 'x = 2\n')
     expect(hasCompany(s)).toEqual({ company: false, others: [] })
   })
 
   it('does not count a foreign deleted mark alone', () => {
     const s = session(new RoomDoc())
-    s.room.markDeleted('Kieran', 'app.py')
+    deleteFixture(s.room, 'Kieran', 'app.py')
     expect(hasCompany(s)).toEqual({ company: false, others: [] })
   })
 
@@ -279,7 +280,7 @@ describe('shell edit hooks', () => {
 describe('hooks bridge + plugin hook scripts', () => {
   it('skips a daemon-receipted base in the hook snapshot and Codex queue', async () => {
     const room = new RoomDoc(), s = session(room)
-    room.setOverlay(s.me.name, 'app.py', 'x = 2\n')
+    publishFixture(room, s.me.name, 'app.py', 'x = 2\n')
     const msg = room.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'integrated', prev: 'old', commits: 1, paths: ['app.py'], summary: 'already pulled' })
     room.markSeen(s.me.name, [msg.id])
     writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'seen-thread', at: Date.now(), cwd: dir }))
@@ -569,7 +570,7 @@ describe('hooks bridge + plugin hook scripts', () => {
     other.post(k, { type: 'base', base: 'b'.repeat(40), prev: 'a'.repeat(40), commits: 1, paths: ['app.py'], summary: 'x' } as never)
     await new Promise(r => setTimeout(r, 50))
     expect(queued.length).toBe(2)
-    room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+    publishFixture(room, 'Rohan', 'app.py', 'x = 2\n')
     other.post(k, { type: 'base', base: 'c'.repeat(40), prev: 'b'.repeat(40), commits: 1, paths: ['app.py'], summary: 'y' } as never)
     await new Promise(r => setTimeout(r, 50))
     expect(queued.length).toBe(3)
@@ -1040,7 +1041,7 @@ it('warns Claude once after its own tree changed without a PreToolUse receipt', 
   const now = Date.now()
   writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-edit', at: now }))
   expect(hookHealthNote(s, true, now, 'room_join')).toBe('') // nothing up front: see the coverage test
-  s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+  publishFixture(s.room, 'Rohan', 'app.py', 'x = 2\n')
   hookHealthNote(s, true, now + 1, 'room_state')
   const note = hookHealthNote(s, true, now + 60_000, 'room_state')
   expect(note).toContain("plugin's hooks may not be running")
@@ -1056,7 +1057,7 @@ it('does not warn Claude when a PreToolUse receipt follows its edit', () => {
   const now = Date.now()
   writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-receipt', at: now }))
   hookHealthNote(s, true, now, 'room_join')
-  s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+  publishFixture(s.room, 'Rohan', 'app.py', 'x = 2\n')
   writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'claude-receipt', event: 'PreToolUse', at: now + 1 }))
   expect(hookHealthNote(s, true, now + 60_000, 'room_state')).toBe('')
   s.awareness.destroy()
@@ -1066,13 +1067,13 @@ it('ignores an edit and receipt from before this Claude session started', () => 
   vi.stubEnv('ROOM_HOST', 'claude')
   const s = session(new RoomDoc())
   const now = Date.now()
-  s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+  publishFixture(s.room, 'Rohan', 'app.py', 'x = 2\n')
   s.room.overlayAt.set('Rohan', now - 60_000)
   writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-current', at: now }))
   writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'claude-current', event: 'PreToolUse', at: now - 60_000 }))
   expect(hookHealthNote(s, true, now, 'room_join')).toBe('')
   expect(hookHealthNote(s, true, now + 60_000, 'room_state')).toBe('')
-  s.room.setOverlay('Rohan', 'app.py', 'x = 3\n')
+  publishFixture(s.room, 'Rohan', 'app.py', 'x = 3\n')
   expect(hookHealthNote(s, true, now + 61_000, 'room_state')).toContain('before-edit hook')
   s.awareness.destroy()
 })
@@ -1087,7 +1088,7 @@ it('company includes who and their scope; nearby claims are needed only for over
   const peer = addPresence(s, 'Ada')
   const human = addPresence(s, 'Cy', 'human', 'idle')
   s.room.setScope({ by: 'Ada', byKind: 'agent', area: 'orders', summary: 'pricing', paths: ['api/'], at: Date.now() })
-  s.room.setOverlay('Bea', 'other.py', 'changed')
+  publishFixture(s.room, 'Bea', 'other.py', 'changed')
   const b = new HooksBridge(s, { forMe: () => false, isSeen: () => false })
   writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'near', at: Date.now(), cwd: dir }))
   b.write()

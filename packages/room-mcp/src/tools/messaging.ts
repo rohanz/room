@@ -1,4 +1,4 @@
-import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
+import { formatMsg, formatPlans, manifestChangers, manifestPaths, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
 import type { Session } from '../session.js'
 import { syncHookSeen } from '../hooks-bridge.js'
 import { isPrName } from '../prs.js'
@@ -41,7 +41,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const offline = (s: Session) => !!s.closed || !s.provider.synced || (s.provider as { wsconnected?: boolean }).wsconnected === false
   const unavailableQuestions = new Map<string, string>()
   const knownNames = (s: Session): Set<string> => new Set([
-    s.me.name, ...presences(s).map(p => p.user.name), ...s.room.colors.keys(), ...s.room.scopes.keys(), ...s.room.overlays.keys(), ...s.room.deleted.keys(),
+    s.me.name, ...presences(s).map(p => p.user.name), ...s.room.colors.keys(), ...s.room.scopes.keys(), ...s.room.manifestHead.keys(),
     ...s.room.openClaims().map(c => c.by), ...Array.from(s.room.workers.values(), w => w.name),
     ...s.room.retiredWorkers().map(w => w.name), ...s.room.messages().map(m => m.from),
   ].filter(n => !isPrName(n)))
@@ -303,8 +303,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 'scheduleInboxWrite' | 'mine' | 'msgInMyAreas' | 'others' | 'upgraded'>): Pick<HandlerState, 'forMe' | 'inbox' | 'describeUsers' | 'waitingOn' | 'upgrade'> {
-  const { seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas, others, upgraded } = deps
+export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 'scheduleInboxWrite' | 'mine' | 'msgInMyAreas' | 'others' | 'upgraded' | 'readVersion'>): Pick<HandlerState, 'forMe' | 'inbox' | 'describeUsers' | 'waitingOn' | 'upgrade'> {
+  const { seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas, others, upgraded, readVersion } = deps
   const forMe = (s: Session, m: Msg) => messageForMe(s.me, m, { claims: mine(s), inMyAreas: x => msgInMyAreas(s, x) })
   const inbox = (s: Session): string => {
       const fresh: Msg[] = []
@@ -349,9 +349,9 @@ export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 
             if (f) { hit = `${f} uses ${sym}`; break }
           }
         } else {
-          for (const f of s.room.changedPaths(person)) {
-            const t = s.room.text(f, person) ?? ''
-            const sym = symbols.find(x => t.includes(x))
+          for (const f of manifestPaths(s.room, person)) {
+            const version = await readVersion(s, f, person)
+            const sym = version.kind === 'text' ? symbols.find(x => version.text.includes(x)) : undefined
             if (sym) { hit = `${f} uses ${sym}`; break }
           }
         }
@@ -361,13 +361,13 @@ export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 
     }
   const ownsFile = (s: Session, person: string, f: string): boolean => {
       const sc = s.room.scope(person)
-      return (!!sc && scopeCovers(sc, f)) || s.room.changedPaths(person).includes(f) || s.room.openClaims().some(c => c.by === person && c.path === f)
+      return (!!sc && scopeCovers(sc, f)) || manifestPaths(s.room, person).includes(f) || s.room.openClaims().some(c => c.by === person && c.path === f)
     }
   const owners = (s: Session, f: string): string[] => {
       const out = new Set<string>()
       for (const sc of s.room.allScopes()) if (!isPrName(sc.by) && scopeCovers(sc, f)) out.add(sc.by)
       for (const c of s.room.claimsFor(f)) out.add(c.by)
-      for (const p of s.room.whoChanged(f)) out.add(p)
+      for (const p of manifestChangers(s.room, f)) out.add(p)
       return Array.from(out).sort()
     }
   const describeUsers = (s: Session, files: string[]): string => files.map(f => {
@@ -381,7 +381,7 @@ export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 
       await s.graph.ready
       const g = s.graph.graph
       const sc = s.room.scope(s.me.name)
-      const myFiles = new Set(s.room.changedPaths(s.me.name))
+      const myFiles = new Set(manifestPaths(s.room, s.me.name))
       if (sc) for (const f of allIndexed(s)) if (scopeCovers(sc, f)) myFiles.add(f)
       const needed = new Map<string, string[]>()
       for (const f of myFiles) for (const d of g.dependenciesOf(f)) { const arr = needed.get(d.symbol) ?? []; arr.push(f); needed.set(d.symbol, arr) }
@@ -399,7 +399,7 @@ export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 
       const set = new Set<string>()
       for (const sc of s.room.allScopes()) for (const p of sc.paths) set.add(p)
       // The graph does not expose its file list; approximate via scope paths + changed paths + graph users/definers reached through them.
-      for (const person of [s.me.name, ...others(s)]) for (const p of s.room.changedPaths(person)) set.add(p)
+      for (const person of [s.me.name, ...others(s)]) for (const p of manifestPaths(s.room, person)) set.add(p)
       return Array.from(set).filter(p => s.graph!.graph.has(p))
     }
   const upgrade = async (s: Session, m: Msg, paths: string[], symbols: string[]): Promise<string[]> => {
