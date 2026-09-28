@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
+import { ROOM_DOC_MAX_BYTES } from '@room/shared'
 import { loadMemory, memoryFile, RoomMemory, saveMemory, MAX_MEMORY_BYTES } from '../src/memory.js'
 
 let dir: string
@@ -78,13 +79,35 @@ it.each(['write', 'rename'])('preserves the old file and removes temporary files
   expect(fs.readFileSync(memoryFile(dir, room))).toEqual(original)
   expect(fs.readdirSync(path.join(dir, 'room-local'))).toEqual([path.basename(memoryFile(dir, room))])
 })
-it('skips snapshots larger than 5MB and keeps the last good file', () => {
+it('saves the smallest snapshot when protected data alone exceeds 5MB, keeping mail owed since, and warns once a minute', () => {
+  const memory = open()
+  memory.doc.getMap('meta').set('large', 'x'.repeat(MAX_MEMORY_BYTES))
+  memory.doc.getArray('bus').push([{ id: 'b0', text: 'broadcast' }])
+  expect(saveMemory(dir, room, memory.doc, log)).toBe(true)
+  memory.doc.getMap('mail').set('q1', { id: 'q1', type: 'question', to: 'pat', text: 'owed since the last save' })
+  expect(saveMemory(dir, room, memory.doc, log)).toBe(true)
+  expect(fs.statSync(memoryFile(dir, room)).size).toBeGreaterThan(MAX_MEMORY_BYTES)
+  const restored = load()
+  expect(restored.getMap('mail').toJSON()).toEqual({ q1: { id: 'q1', type: 'question', to: 'pat', text: 'owed since the last save' } })
+  expect((restored.getMap('meta').get('large') as string).length).toBe(MAX_MEMORY_BYTES)
+  expect(restored.getArray('bus').length).toBe(0)
+  const warnings = log.mock.calls.filter(([line]) => /saved anyway/.test(line))
+  expect(warnings).toEqual([[expect.stringMatching(/^local room memory: .*: snapshot is 5\.0 MB after dropping everything droppable \(largest roots: meta 5\.0 MB\b.*\); saved anyway; target 5 MB$/)]])
+})
+it('skips snapshots over the 64MB ceiling and keeps the last good file', () => {
   const memory = open(); memory.flush()
   const original = fs.readFileSync(memoryFile(dir, room))
-  memory.doc.getMap('meta').set('large', 'x'.repeat(MAX_MEMORY_BYTES))
+  memory.doc.getMap('meta').set('large', 'x'.repeat(ROOM_DOC_MAX_BYTES))
   expect(saveMemory(dir, room, memory.doc, log)).toBe(false)
   expect(fs.readFileSync(memoryFile(dir, room))).toEqual(original)
-  expect(log).toHaveBeenCalledWith(expect.stringContaining('exceeds 5 MB'))
+  expect(log).toHaveBeenCalledWith(expect.stringMatching(/skipping .*: snapshot is 64\.0 MB, over the 64 MB ceiling; keeping the last good file$/))
+})
+it('quarantines files over the 64MB ceiling on load', () => {
+  const memory = open(); memory.flush()
+  fs.truncateSync(memoryFile(dir, room), ROOM_DOC_MAX_BYTES + 1)
+  expect(load().share.size).toBe(0)
+  expect(fs.readdirSync(path.join(dir, 'room-local'))).toEqual([expect.stringMatching(/\.ydoc\.corrupt-\d+$/)])
+  expect(log).toHaveBeenCalledWith(expect.stringContaining('exceeds 64 MB'))
 })
 it('still saves when sibling roots push the snapshot past 5MB, shedding archive and broadcasts but not mail', () => {
   const memory = open()

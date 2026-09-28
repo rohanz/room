@@ -1,8 +1,12 @@
 import * as Y from 'yjs'
 import { RECEIPTS_BYTES } from './delivery.js'
 
-/** The relay's snapshot limit; `memorySnapshot` sheds data to stay under it. */
+/** The snapshot target: `memorySnapshot` sheds droppable data to stay under it. */
 export const MAX_MEMORY_BYTES = 5 * 1024 * 1024
+/** The local relay's hard ceiling for a snapshot file, on save and on load. Paired with the team server's
+ * default document cap (ROOM_DOC_MAX_MB, server/src/index.ts), which repeats the number because the
+ * server image ships without @room/shared. */
+export const ROOM_DOC_MAX_BYTES = 64 * 1024 * 1024
 
 /** Memory is kept; live state is rebuilt by whoever is present. Unknown types are
  * deliberately excluded, including claims, file text, graphs and overlay timestamps. */
@@ -38,7 +42,9 @@ function validReceipt(value: unknown): boolean {
  * Copy values into fresh CRDT types: no live text or deleted CRDT history on disk. Receipts keep, in order:
  * those for mail and outcomes, those for addressed bus messages, then broadcasts newest first within
  * RECEIPTS_BYTES. Over `maxBytes` it drops archive entries oldest first, then broadcast receipts, then the
- * oldest bus broadcasts; never mail, outcomes or addressed receipts, and logs what it dropped.
+ * oldest bus broadcasts; never mail, outcomes, addressed receipts or other roots, and logs what it dropped.
+ * When those protected roots alone exceed `maxBytes`, it returns the smallest achievable snapshot, which
+ * is over `maxBytes`, and says "still over"; the caller decides what to do with it.
  */
 export function memorySnapshot(doc: Y.Doc, { maxBytes = MAX_MEMORY_BYTES, log }: { maxBytes?: number; log?: (line: string) => void } = {}): Uint8Array {
   const arrays = new Map<string, unknown[]>(), maps = new Map<string, [string, unknown][]>()

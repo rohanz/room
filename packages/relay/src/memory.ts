@@ -2,10 +2,28 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
-import { MAX_MEMORY_BYTES, memoryTypes, memorySnapshot } from '@room/shared'
+import { MAX_MEMORY_BYTES, ROOM_DOC_MAX_BYTES, memoryTypes, memorySnapshot } from '@room/shared'
 
 export { MAX_MEMORY_BYTES }
 const stderr = (line: string): void => { process.stderr.write(`${line}\n`) }
+const mb = (bytes: number): string => (bytes / 1048576).toFixed(1)
+const WARN_EVERY_MS = 60_000
+const warnedAt = new Map<string, number>()
+/** Saves run every 2–10 s under activity; repeat a standing warning at most once a minute per room. */
+function warnLimited(key: string, line: () => string, log: (line: string) => void): void {
+  const now = Date.now()
+  if (now - (warnedAt.get(key) ?? -Infinity) < WARN_EVERY_MS) return
+  warnedAt.set(key, now); log(line())
+}
+function largestRoots(update: Uint8Array): string {
+  const doc = new Y.Doc()
+  try {
+    Y.applyUpdate(doc, update)
+    return [...memoryTypes(doc)]
+      .map(([name, kind]) => [name, JSON.stringify(kind === 'array' ? doc.getArray(name).toJSON() : doc.getMap(name).toJSON()).length] as const)
+      .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name, size]) => `${name} ${mb(size)} MB`).join(', ')
+  } finally { doc.destroy() }
+}
 export function memoryFile(commonDir: string, room: string): string {
   return path.join(commonDir, 'room-local', `${encodeURIComponent(room)}.ydoc`)
 }
@@ -14,7 +32,7 @@ export function memoryFile(commonDir: string, room: string): string {
 export function loadMemory(commonDir: string, room: string, log = stderr): Y.Doc {
   const doc = new Y.Doc(), file = memoryFile(commonDir, room)
   try {
-    if (fs.statSync(file).size > MAX_MEMORY_BYTES) throw new Error('snapshot exceeds 5 MB')
+    if (fs.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MB`)
     Y.applyUpdate(doc, fs.readFileSync(file))
     return doc
   } catch (e) {
@@ -27,14 +45,21 @@ export function loadMemory(commonDir: string, room: string, log = stderr): Y.Doc
   }
 }
 
-/** Atomic replacement keeps the previous good snapshot on any write/rename failure. */
+/** Atomic replacement keeps the previous good snapshot on any write/rename failure. Over the 5 MB target
+ * after shedding, the smallest achievable snapshot is still saved, so owed mail survives a restart; only
+ * one over the 64 MB ceiling (a document the team server would refuse too) is skipped. */
 export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = stderr): boolean {
   const file = memoryFile(commonDir, room)
   const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`
   try {
-    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: line => log(`local room memory: ${room}: ${line}`) })
-    // Only roots outside the ledger's budget can still be over: sheddable data is already gone.
-    if (update.byteLength > MAX_MEMORY_BYTES) { log(`local room memory: skipping ${room}: snapshot exceeds 5 MB`); return false }
+    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: line => warnLimited(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log) })
+    if (update.byteLength > ROOM_DOC_MAX_BYTES) {
+      warnLimited(`${file}\0over`, () => `local room memory: skipping ${room}: snapshot is ${mb(update.byteLength)} MB, over the ${ROOM_DOC_MAX_BYTES / 1048576} MB ceiling; keeping the last good file`, log)
+      return false
+    }
+    if (update.byteLength > MAX_MEMORY_BYTES) {
+      warnLimited(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log)
+    }
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     fs.chmodSync(path.dirname(file), 0o700)
     fs.writeFileSync(temp, update, { mode: 0o600, flag: 'wx' })

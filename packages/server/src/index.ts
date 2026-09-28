@@ -310,7 +310,8 @@ const server = http.createServer((req, res) => {
 /** A room's document may not grow past this (ROOM_DOC_MAX_MB, default 64): a client that floods the doc
  *  would otherwise make the room impossible to load. Measured per room at most every 30 s, and again
  *  after 200 write messages or 8 MB received, whichever comes first: a time-only cache would let an
- *  unbounded amount through between two measurements. */
+ *  unbounded amount through between two measurements. The default 64 pairs with ROOM_DOC_MAX_BYTES in
+ *  shared/src/memory.ts (the local relay's snapshot ceiling); the server image ships without @room/shared. */
 const DOC_MAX_BYTES = Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
 const docMeters = new Map<string, DocSizeMeter>()
 const capLogged = new Map<string, number>()
