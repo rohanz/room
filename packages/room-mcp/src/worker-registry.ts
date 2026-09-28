@@ -15,7 +15,7 @@ import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { realStateInput, type LocalWorker } from './worker-status.js'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
-import { pidAlive, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
+import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 
 export interface LegacySource {
   key: string; tag: string; dir: string; branch: string; host: 'claude' | 'codex'
@@ -806,32 +806,39 @@ export class WorkerRegistry {
       await this.markDiscardStep(id, 'children')
       record = this.read(id)!
     }
+    // The launch PID names the host. Admission's process chain is MCP first, host
+    // second; selecting its first live entry can stop only the MCP and lose edits.
+    const run = record.runs.at(-1)!
+    const launch = run.launch
+    const report = this.reports(id).find(value => value.run === run.n && value.nonce === run.nonce)
+    const chain = report?.chain ?? []
+    const reportedHost = launch?.outcome === 'launched' ? chain.find(value => value.pid === launch.pid) : undefined
+    if (launch?.outcome === 'launched' && launch.process && reportedHost
+      && (launch.process.startTime !== reportedHost.startTime || launch.process.executable !== reportedHost.executable)) return
+    const host = launch?.outcome === 'launched' ? launch.process ?? reportedHost : undefined
+    const identities = [host, ...chain.filter(value => value.pid !== host?.pid)]
+      .filter((value): value is NonNullable<typeof value> => !!value)
+    if (!record.discard!.steps.stop) await this.beginStop(id, 'discarded')
+    // A PID-only launch without a matching admitted host has no verified signal
+    // authority. Keep the directory even if another chain member has exited.
+    if (launch?.outcome === 'launched' && !host && !this.exits(id).some(value => value.run === run.n)
+      && pidAlive(launch.pid)) return
+    for (const identity of identities) {
+      const alive = this.alive(identity)
+      if (alive === 'unknown') return
+      if (alive !== 'alive') continue
+      if (!record.capabilities.signal || record.discard!.steps.stop) return
+      const signalOwn = { ...own, pid: identity.pid, processStartTime: identity.startTime }
+      const stopped = await stopWorkerWithEscalation({
+        terminate: () => signalWorker(identity.pid, 'SIGTERM', record!.dir, undefined, signalOwn, probeProcess),
+        exited: () => this.alive(identity) === 'dead',
+        force: () => signalWorker(identity.pid, 'SIGKILL', record!.dir, undefined, signalOwn, probeProcess),
+      })
+      if (!stopped) return
+    }
+    if (identities.some(value => this.alive(value) !== 'dead')) return
+    if (owned && !await quiesceWorktreeProcesses(record.dir)) return
     if (!record.discard!.steps.stop) {
-      await this.beginStop(id, 'discarded')
-      const run = record.runs.at(-1)!
-      const launch = run.launch
-      const report = this.reports(id).find(value => value.run === run.n && value.nonce === run.nonce)
-      // Display status is `collecting` during a discard and deliberately strips
-      // pid from realStateInput. Stop authority instead comes from durable launch
-      // or admitted-run evidence for this exact run.
-      const identities = [launch?.outcome === 'launched' ? launch.process : undefined,
-        ...(report?.chain ?? [])].filter((value): value is NonNullable<typeof value> => !!value)
-      const live = identities.find(value => this.alive(value) === 'alive')
-      if (live) {
-        if (!record.capabilities.signal) return
-        const signalOwn = { ...own, pid: live.pid, processStartTime: live.startTime }
-        const workerDir = record.dir
-        const stopped = await stopWorkerWithEscalation({
-          terminate: () => signalWorker(live.pid, 'SIGTERM', workerDir, undefined, signalOwn, probeProcess),
-          exited: () => this.alive(live) === 'dead',
-          force: () => signalWorker(live.pid, 'SIGKILL', workerDir, undefined, signalOwn, probeProcess),
-        })
-        if (!stopped) return
-      } else if (identities.some(value => this.alive(value) === 'unknown')
-        || (launch?.outcome === 'launched' && !identities.length
-          && !this.exits(id).some(value => value.run === run.n) && pidAlive(launch.pid))) {
-        return
-      }
       await this.markDiscardStep(id, 'stop')
       record = this.read(id)!
     }

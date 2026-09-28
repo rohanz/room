@@ -128,6 +128,61 @@ describe('reviewed worker write failures', () => {
     expect(store.read('w_05')?.discard?.steps.stop).toBe(true)
   })
 
+  it('stops the admitted host and MCP before publishing a discard patch (N2)', async () => {
+    const { root, dir, git, record } = fixture()
+    git('worktree', 'add', '-qb', 'room/tests', dir)
+    fs.writeFileSync(path.join(dir, 'base.txt'), 'worker edit\n')
+    const mcp = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dir, stdio: 'ignore' })
+    const host = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dir, stdio: 'ignore' })
+    children.push(mcp, host)
+    const identity = (child: ChildProcess) => ({ pid: child.pid!, startTime: `born-${child.pid}`, executable: process.execPath })
+    const chain = [identity(mcp), identity(host)] // admission order: MCP first, host second
+    const alive = new Set(chain.map(p => p.pid))
+    for (const child of [mcp, host]) child.once('exit', () => alive.delete(child.pid!))
+    const signals: number[] = []
+    signal.handler = (pid) => {
+      signals.push(pid)
+      const child = pid === host.pid ? host : pid === mcp.pid ? mcp : undefined
+      return child?.kill('SIGTERM') ?? false
+    }
+    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+      liveness: p => alive.has(p.pid) ? 'alive' : 'dead' })
+    await store.writeIntent(record('w_chain'))
+    await store.update('w_chain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
+      runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: host.pid! } }], seq: old.seq + 1 }))
+    await store.writeReport('w_chain', { run: 1, nonce: 'nonce', chain, joinedAt: 2 })
+    await store.beginDiscard('w_chain', true, [])
+    const original = store.recordDiscardPatch.bind(store)
+    let aliveAtPatch = true
+    vi.spyOn(store, 'recordDiscardPatch').mockImplementation(async (id, bytes) => {
+      aliveAtPatch = alive.has(host.pid!) || alive.has(mcp.pid!)
+      return original(id, bytes)
+    })
+    await store.replayDiscard('w_chain')
+    expect(signals[0]).toBe(host.pid)
+    expect(signals).toContain(mcp.pid)
+    expect(aliveAtPatch).toBe(false)
+    expect(store.read('w_chain')?.discard?.steps.stop).toBe(true)
+  })
+
+  it('keeps the worktree and stop step pending when the admitted host cannot be verified (N2)', async () => {
+    const { root, dir, git, record } = fixture()
+    git('worktree', 'add', '-qb', 'room/tests', dir)
+    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+      liveness: p => p.pid === 4243 ? 'unknown' : 'dead' })
+    await store.writeIntent(record('w_uncertain'))
+    await store.update('w_uncertain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
+      runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 4243 } }], seq: old.seq + 1 }))
+    await store.writeReport('w_uncertain', { run: 1, nonce: 'nonce', chain: [
+      { pid: 4242, startTime: 'mcp', executable: process.execPath },
+      { pid: 4243, startTime: 'host', executable: process.execPath },
+    ], joinedAt: 2 })
+    await store.beginDiscard('w_uncertain', true, [])
+    await store.replayDiscard('w_uncertain')
+    expect(store.read('w_uncertain')?.discard?.steps.stop).not.toBe(true)
+    expect(fs.existsSync(dir)).toBe(true)
+  })
+
   it('cleans a scratch patch left by a killed writer before discard replay', async () => {
     const { root, dir, git, record } = fixture()
     git('worktree', 'add', '-qb', 'room/tests', dir)

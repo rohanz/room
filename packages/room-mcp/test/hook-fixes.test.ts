@@ -39,10 +39,10 @@ afterEach(() => { vi.unstubAllEnvs() })
 const sdir = () => sessionDirectory(join(dir, '.git'), SID)
 const readSession = (name: string) => JSON.parse(readFileSync(join(sdir(), name), 'utf8'))
 const writeSession = (name: string, value: object) => writeFileSync(join(sdir(), name), JSON.stringify(value))
-function runHook(script: string, input: object): Promise<string> {
+function runHook(script: string, input: object, cwd = dir): Promise<string> {
   return new Promise((res, rej) => {
     const p = execFile('node', [join(HOOKS, script)], { cwd: HOOKS }, (err, out) => err ? rej(err) : res(out))
-    p.stdin!.end(JSON.stringify({ session_id: SID, cwd: dir, ...input }))
+    p.stdin!.end(JSON.stringify({ session_id: SID, cwd, ...input }))
   })
 }
 const context = (out: string) => out ? JSON.parse(out).hookSpecificOutput.additionalContext as string : ''
@@ -113,6 +113,28 @@ describe('F-M2: hook output stays under the 10,000-character additionalContext c
       expect(mcp.tools.ledger.candidates(mcp.s)).toHaveLength(40 - shown)
     } finally { await mcp.close() }
   })
+})
+
+it('shows claim warnings omitted by truncation on the next edit (N3)', async () => {
+  const probeDir = mkdtempSync(join(tmpdir(), 'room-hook-claims-'))
+  try {
+    execFileSync('git', ['init', '-q', probeDir])
+    writeFileSync(join(probeDir, 'app.py'), 'x = 1\n')
+    const sessionDir = sessionDirectory(join(probeDir, '.git'), SID)
+    mkdirSync(sessionDir, { recursive: true })
+    const claims = Array.from({ length: 60 }, (_, i) => ({ id: `c_${i}`, path: 'app.py', from: i + 1, to: i + 1,
+      by: `Peer${i}`, intent: `review ${'x'.repeat(200)}` }))
+    writeFileSync(join(sessionDir, 'state.json'), JSON.stringify({ at: Date.now(), company: true, others: ['Quinn'], claims, ownClaims: [], near: [] }))
+    const first = context(await runHook('before-edit.mjs', editApp, probeDir))
+    expect(first.length).toBeLessThanOrEqual(10_000)
+    expect(first).toContain("Peer0's agent holds app.py:1-1")
+    expect(first).not.toContain("Peer59's agent holds app.py:60-60")
+    const told = readFileSync(join(sessionDir, 'hook.json'), 'utf8')
+    expect(told).toContain('c_0')
+    expect(told).not.toContain('c_59')
+    const second = context(await runHook('before-edit.mjs', editApp, probeDir))
+    expect(second).toContain("Peer59's agent holds app.py:60-60")
+  } finally { rmSync(probeDir, { recursive: true, force: true }) }
 })
 
 describe('F-M3: a hook fired inside a subagent does not take the main session\'s inbox', () => {

@@ -3,7 +3,7 @@ import { Bridge } from '../bridge.js'
 import { pidPresent, pidIsOurWorker, probeProcess, signalWorker, terminateWorktreeProcesses } from '../worker-process.js'
 import { WORKER_EFFORTS } from '../worker-config.js'
 import { prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
-import { decideStop, workerRealState } from '../worker-state.js'
+import { decideStop, isOwnedWorkerWorktree, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { publisherLine, retainedList } from './share.js'
 import fs from 'node:fs'
@@ -158,9 +158,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const dir = suppliedDir ?? path.join(s.dir, '.room', 'workers', tag)
       if (suppliedDir && !fs.existsSync(dir)) return `error: ${dir} does not exist`
       const relative = path.relative(s.dir, dir)
-      const outside = relative.startsWith('..') || path.isAbsolute(relative)
+      const outside = relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
       if (outside) return `error: ${dir} is outside this repo; a worker's directory must be in this repo`
+      if (suppliedDir) {
+        const canonical = path.relative(fs.realpathSync(s.dir), fs.realpathSync(dir))
+        if (canonical === '..' || canonical.startsWith(`..${path.sep}`) || path.isAbsolute(canonical)) {
+          return `error: ${dir} resolves outside this repo; a worker's directory must be in this repo`
+        }
+      }
       const branch = suppliedDir ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '?')).trim() : `room/${tag}`
+      if (suppliedDir && !await isOwnedWorkerWorktree(s.dir,
+        { name, tag, lead: s.me.name, dir, branch }, s.me.name)) {
+        return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
+      }
       const hostSessionId = host === 'claude' ? randomUUID() : undefined
       const usedPorts = registry.list().flatMap(record => typeof record.port === 'number' ? [record.port] : [])
       const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: !suppliedDir && !fs.existsSync(dir) }
