@@ -266,4 +266,63 @@ describe('the hub remembers ended holders', () => {
     b.tick()
     expect(first.doc.participants.get('ada\u0000holder')).toMatchObject({ epoch: e2, ended: 'released' })
   })
+
+  /** A hub that granted ada an epoch and stopped: the successor inherits it, seeded from `first.doc` or not. */
+  async function predecessor() {
+    const first = host()
+    const a = await startHub(first)
+    const conn = {}
+    a.handle(conn, hello, local)
+    first.clock.advance(SETTLE_MS)
+    const epoch = acquire(a, conn, 's1')
+    a.stop()
+    return { first, epoch, live: first.doc.participants.get('ada\u0000holder') as Record<string, unknown> }
+  }
+
+  for (const adoption of ['seed', 'renew'] as const) {
+    for (const when of ['inside', 'just after'] as const) {
+      for (const how of ['released', 'expired'] as const) {
+        it(`a late ${how} record ends an epoch adopted by ${adoption}, ${when} the settle window`, async () => {
+          const { first, epoch, live } = await predecessor()
+          // Seeded, the successor adopts the un-ended holder at start; unseeded, it adopts the holder's renew.
+          const second = host({ store: first.store, doc: adoption === 'seed' ? first.doc : new RoomDoc() })
+          const b = await startHub(second)
+          const pushes: Push[] = []
+          b.onPush((_c, p) => pushes.push(p))
+          const conn = {}
+          b.handle(conn, hello, local)
+          const renew = () => b.handle(conn, { v: 1, id: 'n', op: 'renew', name: 'ada', epoch }, local)
+          expect(renew()).toMatchObject({ ok: true })
+          if (when === 'just after') { second.clock.advance(SETTLE_MS); b.tick() }
+          staleSync(second.doc, { ...live, ended: how })
+          expect(renew()).toMatchObject({ ok: false, reason: 'stale' })
+          const post = { v: 1, id: 'p', op: 'post', lease: { name: 'ada', epoch }, msg: { id: 'm1', type: 'note', from: 'ada', text: 'x' } }
+          expect(b.handle(conn, post, local)).toMatchObject({ ok: false, reason: 'stale' })
+          expect(pushes).toEqual([{ v: 1, push: 'lease-lost', name: 'ada', epoch, reason: 'expired' }])
+          second.clock.advance(SETTLE_MS)
+          b.tick()
+          expect(second.doc.participants.get('ada\u0000holder')).toEqual({ ...live, ended: how })
+          expect(renew()).toMatchObject({ ok: false, reason: 'stale' })
+        })
+      }
+    }
+  }
+
+  it("a released renew adoption whose holder syncs after the settle window gets its ended record in the same pass", async () => {
+    const { first, epoch, live } = await predecessor()
+    const second = host({ store: first.store, doc: new RoomDoc() })
+    const b = await startHub(second)
+    const conn = {}
+    b.handle(conn, hello, local)
+    const renew = () => b.handle(conn, { v: 1, id: 'n', op: 'renew', name: 'ada', epoch }, local)
+    expect(renew()).toMatchObject({ ok: true })
+    expect(b.handle(conn, { v: 1, id: 'r', op: 'release', name: 'ada', epoch }, local)).toMatchObject({ ok: true })
+    second.clock.advance(SETTLE_MS)
+    b.tick()
+    staleSync(second.doc, live)
+    b.tick()
+    b.tick()
+    expect(second.doc.participants.get('ada\u0000holder')).toEqual({ ...live, ended: 'released' })
+    expect(renew()).toMatchObject({ ok: false, reason: 'stale' })
+  })
 })

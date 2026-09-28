@@ -250,15 +250,33 @@ describe('HubClient', () => {
   })
 
   it('bounds repeated starting replies by request timeout plus settle time', async () => {
-    const { client, transport } = fixture()
+    const { client, transport, advance } = fixture()
     transport.answer = req => req.op === 'hello'
       ? { ok: false, reason: 'starting', text: 'starting', retryMs: 1_000 }
       : undefined
     const result = expect(client.hello()).rejects.toMatchObject({ reason: 'starting' })
-    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_LOCAL_MS + SETTLE_MS)
+    // The budget reads the injected clocks; the timers only wake the retries.
+    for (let t = 0; t < REQUEST_TIMEOUT_LOCAL_MS + SETTLE_MS; t += 1_000) {
+      advance(1_000)
+      await vi.advanceTimersByTimeAsync(1_000)
+    }
     await result
-    expect(transport.sent.filter(r => r.op === 'hello').length).toBeLessThanOrEqual(11)
+    expect(transport.sent.filter(r => r.op === 'hello')).toHaveLength((REQUEST_TIMEOUT_LOCAL_MS + SETTLE_MS) / 1_000)
     expect(client.paused()).toBe(PAUSED)
+    client.close()
+  })
+
+  it('a wall clock jump alone exhausts the starting retry budget', async () => {
+    const { client, transport, jumpWall } = fixture()
+    let hellos = 0
+    transport.answer = req => req.op === 'hello' && ++hellos === 1
+      ? { ok: false, reason: 'starting', text: 'starting', retryMs: 1_000 }
+      : { ok: true, proto: 1, incarnation: 1, ttlMs: LEASE_TTL_MS, renewMs: LEASE_RENEW_MS, authority: true }
+    const result = expect(client.hello()).rejects.toMatchObject({ reason: 'starting' })
+    jumpWall(60_000)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await result
+    expect(hellos).toBe(1)
     client.close()
   })
 

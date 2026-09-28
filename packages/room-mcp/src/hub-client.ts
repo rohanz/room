@@ -244,9 +244,9 @@ export class HubClient {
 
   private async request(body: RequestBody, onSend?: () => void): Promise<Extract<Reply, { ok: true }>> {
     this.assertOpen()
-    const startedMono = this.mono(), startedWall = Date.now()
+    const startedMono = this.mono(), startedWall = this.wall()
     const startingBudget = this.timeoutMs + SETTLE_MS
-    const elapsed = () => Math.max(this.mono() - startedMono, Date.now() - startedWall)
+    const elapsed = () => Math.max(this.mono() - startedMono, this.wall() - startedWall)
     for (;;) {
       const t = await this.requestOnce(body, onSend)
       this.assertOpen()

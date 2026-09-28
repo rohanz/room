@@ -115,6 +115,14 @@ function knownOf(record: HubHolder): Known {
   return { epoch, at, holder, ...(ended ? { ended } : {}) }
 }
 
+/** Fill in what a lease adopted from a renew lacked (its holder and grant time) from its epoch's record. */
+function hydrate(known: Known, record: HubHolder): void {
+  if (known.holder || record.epoch !== known.epoch) return
+  const { at, holder } = knownOf(record)
+  known.at = at
+  known.holder = holder
+}
+
 const higher = (a: number | undefined, b: number | undefined) => a === undefined ? b : b === undefined ? a : Math.max(a, b)
 
 /**
@@ -238,12 +246,18 @@ class RoomHub implements Hub {
     this.tenure.present(this.doc, name, HUB_ORIGIN)
   }
 
-  /** The name's live lease; one past its TTL, or whose process is gone, ends here. */
+  /**
+   * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
+   * an earlier incarnation whose own record now says it ended (that hub's release or expiry, synced late).
+   */
   private live(name: string): Lease | undefined {
     const lease = this.leases.get(name)
     if (!lease) return undefined
-    if (this.host.mono() - lease.renewed < LEASE_TTL_MS && !(lease.holder && this.host.holderDead?.(lease.holder))) return lease
-    this.end(name, lease, 'expired')
+    const record = incarnationOf(lease.epoch) < this.incarnation ? this.record(name) : undefined
+    const ended = record?.epoch === lease.epoch ? record.ended : undefined
+    const expired = this.host.mono() - lease.renewed >= LEASE_TTL_MS || !!(lease.holder && this.host.holderDead?.(lease.holder))
+    if (!ended && !expired) return lease
+    this.end(name, lease, ended ?? 'expired')
     this.notify(name, lease, 'expired')
     return undefined
   }
@@ -251,8 +265,8 @@ class RoomHub implements Hub {
   private end(name: string, lease: Lease, how: End): void {
     this.leases.delete(name)
     const current = this.record(name)
-    const holder = lease.holder ?? (current?.epoch === lease.epoch ? knownOf(current).holder : undefined)
-    const ended: Known = { epoch: lease.epoch, at: lease.at, ...(holder ? { holder } : {}), ended: how }
+    if (current) hydrate(lease, current)
+    const ended: Known = { epoch: lease.epoch, at: lease.at, ...(lease.holder ? { holder: lease.holder } : {}), ended: how }
     this.records.set(name, ended)
     const record = this.recordOf(ended)
     if (record) this.doc.doc.transact(() => { this.doc.participants.set(holderKey(name), record) }, HUB_ORIGIN)
@@ -276,7 +290,8 @@ class RoomHub implements Hub {
       const known = this.records.get(name)
       const lease = this.leases.get(name)
       if (known && record.epoch <= known.epoch) {
-        if (lease?.epoch === record.epoch && !record.ended) lease.holder ??= knownOf(record).holder
+        // A terminal record for a live lease's epoch ends it at its next `live` check.
+        if (lease) hydrate(lease, record)
         continue
       }
       // A live lease below an earlier incarnation's record is itself inherited, and that grant superseded it.
@@ -469,9 +484,9 @@ class RoomHub implements Hub {
           this.records.set(name, known)
         }
         if (!known) continue
+        if (current) hydrate(known, current)
         const want = this.recordOf(known)
         if (want) { if (!sameRecord(current, want)) doc.participants.set(holderKey(name), want) }
-        else if (current?.epoch === known.epoch && !current.ended) known.holder = knownOf(current).holder
         else if (current && !current.ended) doc.participants.set(holderKey(name), { ...current, ended: 'expired' })
       }
       const meta = doc.metaMap
