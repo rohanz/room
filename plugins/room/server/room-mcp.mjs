@@ -17738,9 +17738,13 @@ import { existsSync } from "node:fs";
 function missingGitCwd(dir, error2) {
   return error2.code === "ENOENT" && !existsSync(dir) ? new Error(`worktree ${dir} no longer exists`) : void 0;
 }
-function timeoutMs(configured) {
+function overrideMs(configured) {
+  if (configured !== void 0 && Number.isFinite(configured) && configured > 0) return configured;
   const fromEnv = Number(process.env.ROOM_GIT_TIMEOUT_MS);
-  return Number.isFinite(configured) && configured > 0 ? configured : Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_GIT_TIMEOUT_MS;
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : void 0;
+}
+function wholeTreeTimeoutMs(pathCount = UNKNOWN_WHOLE_TREE_PATHS, configured) {
+  return overrideMs(configured) ?? Math.min(WHOLE_TREE_TIMEOUT_CAP_MS, DEFAULT_GIT_TIMEOUT_MS + Math.max(0, pathCount) * WHOLE_TREE_PER_PATH_MS);
 }
 function git(dir, args3, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
@@ -17813,7 +17817,7 @@ async function gitShowMany(dir, base, relpaths, configuredTimeoutMs) {
     else batch.push(p);
   }
   if (!batch.length) return out2;
-  const timeout = timeoutMs(configuredTimeoutMs);
+  const timeout = wholeTreeTimeoutMs(batch.length, configuredTimeoutMs);
   const raw = await new Promise((resolve5, reject) => {
     const child = spawn("git", ["cat-file", "--batch"], { cwd: dir, stdio: ["pipe", "pipe", "pipe"] });
     const chunks = [];
@@ -17859,7 +17863,7 @@ async function gitBlobInfoMany(dir, base, relpaths, configuredTimeoutMs) {
   const paths = Array.from(relpaths);
   const out2 = /* @__PURE__ */ new Map();
   if (!paths.length) return out2;
-  const timeout = timeoutMs(configuredTimeoutMs);
+  const timeout = wholeTreeTimeoutMs(paths.length, configuredTimeoutMs);
   const raw = await new Promise((resolve5, reject) => {
     const child = spawn("git", ["cat-file", "--batch-check", "-Z"], { cwd: dir, stdio: ["pipe", "pipe", "pipe"] });
     const chunks = [];
@@ -17893,11 +17897,11 @@ async function gitBlobInfoMany(dir, base, relpaths, configuredTimeoutMs) {
   return out2;
 }
 async function gitChanged(dir) {
-  const out2 = await git(dir, ["--no-optional-locks", "status", "--porcelain", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"]);
+  const out2 = await gitWholeTree(dir, ["--no-optional-locks", "status", "--porcelain", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"]);
   return out2.split("\0").filter(Boolean).map((entry) => entry.slice(3));
 }
 async function gitTracked(dir) {
-  const out2 = await git(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
+  const out2 = await gitWholeTree(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
   return new Set(out2.split("\0").filter(Boolean));
 }
 async function gitIgnored(dir, rel, configuredTimeoutMs) {
@@ -17947,15 +17951,21 @@ async function gitRoomRemoteBranchExists(dir, branch) {
     return false;
   }
 }
-var DEFAULT_GIT_TIMEOUT_MS, gitHead, gitBranch, gitCountBetween, gitPathsBetween, gitSubject;
+var DEFAULT_GIT_TIMEOUT_MS, UNKNOWN_WHOLE_TREE_PATHS, WHOLE_TREE_PER_PATH_MS, WHOLE_TREE_TIMEOUT_CAP_MS, timeoutMs, gitWholeTree, isGitTimeout, gitHead, gitBranch, gitCountBetween, gitPathsBetween, gitSubject;
 var init_git = __esm({
   "packages/roomd/src/git.ts"() {
     "use strict";
     DEFAULT_GIT_TIMEOUT_MS = 3e4;
+    UNKNOWN_WHOLE_TREE_PATHS = 1e4;
+    WHOLE_TREE_PER_PATH_MS = 15;
+    WHOLE_TREE_TIMEOUT_CAP_MS = 3e5;
+    timeoutMs = (configured) => overrideMs(configured) ?? DEFAULT_GIT_TIMEOUT_MS;
+    gitWholeTree = (dir, args3, pathCount, configuredTimeoutMs) => git(dir, args3, wholeTreeTimeoutMs(pathCount, configuredTimeoutMs));
+    isGitTimeout = (error2) => error2 instanceof Error && /^git .*timed out after \d+ms/.test(error2.message);
     gitHead = (dir) => git(dir, ["rev-parse", "HEAD"]).then((s) => s.trim());
     gitBranch = (dir) => git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).then((s) => s.trim());
     gitCountBetween = (dir, from2, to2) => git(dir, ["rev-list", "--count", `${from2}..${to2}`]).then((s) => Number(s.trim()) || 0);
-    gitPathsBetween = (dir, from2, to2) => git(dir, ["diff", "--name-only", "-z", from2, to2]).then((s) => s.split("\0").filter(Boolean));
+    gitPathsBetween = (dir, from2, to2) => gitWholeTree(dir, ["diff", "--name-only", "-z", from2, to2]).then((s) => s.split("\0").filter(Boolean));
     gitSubject = (dir, rev) => git(dir, ["log", "-1", "--format=%s", rev]).then((s) => s.trim());
   }
 });
@@ -17964,14 +17974,11 @@ var init_git = __esm({
 import { execFile as execFile2, execFileSync } from "node:child_process";
 import fs3 from "node:fs";
 import nodePath2 from "node:path";
-function deadlineMs() {
-  const configured = Number(process.env.ROOM_GIT_TIMEOUT_MS);
-  return Number.isFinite(configured) && configured > 0 ? configured : 3e4;
-}
 function boundedGitSync(dir, args3, options = {}) {
-  const timeout = deadlineMs();
+  const { wholeTreePaths, ...execOptions } = options;
+  const timeout = wholeTreePaths === void 0 ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths);
   try {
-    return execFileSync("git", args3, { cwd: dir, encoding: "buffer", stdio: ["pipe", "pipe", "pipe"], timeout, maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024, ...options });
+    return execFileSync("git", args3, { cwd: dir, encoding: "buffer", stdio: ["pipe", "pipe", "pipe"], timeout, maxBuffer: execOptions.maxBuffer ?? 64 * 1024 * 1024, ...execOptions });
   } catch (error2) {
     const stopped = error2;
     const missing = missingGitCwd(dir, stopped);
@@ -17993,7 +18000,7 @@ function workerBaseline(worker) {
 async function carriedPaths(baseline) {
   let tracked = Promise.resolve([]);
   if (baseline.carriedCommit) {
-    tracked = committedPaths.get(baseline.sha) ?? run2(baseline.dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", baseline.sha]).then((out2) => out2.toString().split("\0").filter(Boolean));
+    tracked = committedPaths.get(baseline.sha) ?? run2(baseline.dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", baseline.sha], UNKNOWN_WHOLE_TREE_PATHS).then((out2) => out2.toString().split("\0").filter(Boolean));
     if (!committedPaths.has(baseline.sha)) {
       committedPaths.set(baseline.sha, tracked);
       void tracked.catch(() => {
@@ -18010,8 +18017,8 @@ async function pairBaseline(me, other, ancestor, descends) {
   }
   return void 0;
 }
-function run2(dir, args3) {
-  const timeout = deadlineMs();
+function run2(dir, args3, wholeTreePaths) {
+  const timeout = wholeTreePaths === void 0 ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths);
   return new Promise((resolve5, reject) => {
     execFile2("git", args3, { cwd: dir, encoding: "buffer", maxBuffer: 64 * 1024 * 1024, timeout }, (error2, stdout, stderr2) => {
       if (error2) {
@@ -18080,8 +18087,8 @@ async function workerChangedPaths(worker) {
   const baseline = workerBaseline(worker);
   const base = baseline?.sha ?? "HEAD";
   const exclusions = [".room", ...worker.link ?? []].map((p) => `:(exclude,literal)${p}`);
-  const tracked = (await run2(worker.dir, ["diff", "--name-only", "-z", base, "--", ".", ...exclusions])).toString().split("\0").filter(Boolean);
-  const untracked = (await run2(worker.dir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...exclusions])).toString().split("\0").filter(Boolean);
+  const tracked = (await run2(worker.dir, ["diff", "--name-only", "-z", base, "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
+  const untracked = (await run2(worker.dir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
   return [.../* @__PURE__ */ new Set([...tracked, ...untracked, ...baseline?.untracked.keys() ?? []])].filter((p) => !baseline || !carriedUnchanged(baseline, p)).sort();
 }
 var carriesWork, committedPaths, MAX_COMMITTED_PATHS, MissingBaseBlob;
@@ -43494,14 +43501,14 @@ function retainUntrackedTree(dir, tag, paths) {
   if (!paths.length) return void 0;
   const scratch = fs13.mkdtempSync(path10.join(os3.tmpdir(), "room-carry-index-"));
   const env = { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") };
-  const run3 = (args3) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args3], { env }).toString().trim();
+  const run3 = (args3, wholeTreePaths) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args3], { env, wholeTreePaths }).toString().trim();
   try {
     for (const entry of paths) {
       const stat4 = fs13.lstatSync(path10.join(dir, entry.path));
       const mode2 = stat4.isSymbolicLink() ? "120000" : stat4.mode & 73 ? "100755" : "100644";
       run3(["update-index", "--add", "--cacheinfo", `${mode2},${entry.sha},${entry.path}`]);
     }
-    const tree = run3(["write-tree"]);
+    const tree = run3(["write-tree"], paths.length);
     run3(["update-ref", carriedUntrackedRef(tag), tree]);
     return tree;
   } finally {
@@ -43813,13 +43820,13 @@ async function saveDiscardPatch(leadDir, w) {
   }
   const scratch = fs13.mkdtempSync(path10.join(os3.tmpdir(), "room-discard-"));
   try {
-    const run3 = (args3) => boundedGitSync(w.dir, args3, { env: { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") } });
+    const run3 = (args3, wholeTreePaths) => boundedGitSync(w.dir, args3, { env: { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") }, wholeTreePaths });
     const base = w.base ?? (await git(leadDir, ["merge-base", "HEAD", w.branch])).trim();
-    run3(["read-tree", "HEAD"]);
+    run3(["read-tree", "HEAD"], UNKNOWN_WHOLE_TREE_PATHS);
     const unchanged = carriedUnchangedPaths(workerBaseline(w));
     const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map((p) => ":(exclude,literal)" + p)];
-    run3(["add", "-A", "--", ".", ...exclusions]);
-    const patch = run3(patchArgs(base, exclusions, true));
+    run3(["add", "-A", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS);
+    const patch = run3(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS);
     if (!patch.length) return void 0;
     const verifyDir = path10.join(scratch, "verify");
     const verifyPatch = path10.join(scratch, "verify.patch");
@@ -47591,7 +47598,7 @@ var defs7 = [
       message: str("alias for text"),
       paths: strs("paths touched (changed)"),
       symbols: strs("changed symbols"),
-      inReplyTo: str("question id (answer)"),
+      inReplyTo: str("question id (answer) or addressed note id (note reply)"),
       priority: { type: "string", enum: ["fyi", "notify", "interrupt"], description: "urgency override" }
     }, required: ["type"] }
   },
@@ -47656,7 +47663,9 @@ function handlers7(state) {
       const lead = S();
       let byQuestion = typeof a.inReplyTo === "string" && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : void 0;
       let question = byQuestion?.room.messages().find((m) => m.id === a.inReplyTo && m.type === "question");
-      const requestedTo = typeof a.to === "string" && a.to ? a.to : a.type === "answer" ? question?.from : void 0;
+      const repliedNote = a.type === "note" || a.type === "answer" ? byQuestion?.room.messages().find((m) => m.id === a.inReplyTo && m.type === "note") : void 0;
+      const sendType = repliedNote ? "note" : a.type;
+      const requestedTo = typeof a.to === "string" && a.to ? a.to : sendType === "answer" ? question?.from : repliedNote?.from;
       const wsr = rooms.workers();
       const workerMatches = requestedTo ? rooms.all().flatMap((room) => myWorkers(room).filter((w) => w.tag === requestedTo).map((worker) => ({ room, worker }))) : [];
       const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap((room) => room.room.retiredWorkers().filter((w) => w.tag === requestedTo && w.lead === room.me.name).map((worker) => ({ room, worker }))) : [];
@@ -47674,7 +47683,7 @@ function handlers7(state) {
       };
       const ambiguousAnswer = (candidates, from2) => candidates.length ? `error: answer requires inReplyTo; unanswered questions:
 ${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPreview(question2.text)}`).join("\n")}` : `error: answer requires inReplyTo; no unanswered question${from2 ? ` from ${from2}` : ""} addressed to you`;
-      if (a.type === "answer") {
+      if (sendType === "answer") {
         const open3 = unansweredQuestions();
         const candidates = to2 ? open3.filter(({ question: question2 }) => question2.from === to2) : open3;
         if (a.inReplyTo) {
@@ -47701,12 +47710,14 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
         const valid = [...new Set(rooms.all().flatMap((room) => [...knownNames(room)]))].sort();
         return `error: nobody called ${to2} is or was in this room; participants: ${valid.join(", ")}`;
       }
+      if (sendType === "note" && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`;
+      if (repliedNote && a.to && a.to !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`;
       if (to2 && !s.room.workerOf(to2) && s.room.retiredWorkers().some((w) => w.name === to2)) return `error: ${to2} was collected or discarded and cannot be resumed`;
       const pr = typeof a.priority === "string" && ["fyi", "notify", "interrupt"].includes(a.priority) ? a.priority : void 0;
       const withPr = (o) => pr ? { ...o, priority: pr } : o;
       if (a.type === "changed" && (!Array.isArray(a.paths) || !a.paths.some((x) => typeof x === "string"))) return "error: changed requires paths";
       if (a.type === "question" && !to2) return "error: question requires to (whose agent)";
-      if (a.type === "answer" && !question?.from && !to2) return "error: answer requires to (could not infer from inReplyTo)";
+      if (sendType === "answer" && !question?.from && !to2) return "error: answer requires to (could not infer from inReplyTo)";
       if (!["changed", "question", "answer", "note"].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`;
       let msg;
       const notes = [];
@@ -47721,7 +47732,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       }
       let paths = [], symbols = [];
       s.room.doc.transact(() => {
-        switch (a.type) {
+        switch (sendType) {
           case "changed": {
             paths = Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
             symbols = Array.isArray(a.symbols) ? a.symbols.filter((x) => typeof x === "string") : [];
@@ -47736,7 +47747,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
             break;
           }
           case "note":
-            msg = s.room.post(s.me, withPr({ type: "note", text, ...to2 ? { to: to2 } : {} }));
+            msg = s.room.post(s.me, withPr({ type: "note", text, ...to2 ? { to: to2 } : {}, ...repliedNote ? { inReplyTo: repliedNote.id } : {} }));
             break;
         }
         if (deliveredInPrompt) s.room.markSeen(to2, [msg.id]);
@@ -48433,11 +48444,15 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     if (item.base === ancestor) continue;
     try {
       ancestor = (await git(caller.dir, ["merge-base", ancestor, item.base])).trim();
-    } catch {
+    } catch (error2) {
+      if (isGitTimeout(error2)) throw error2;
       throw new Error(`${item.person}'s HEAD ${item.base.slice(0, 10)} is not in this clone; git fetch, then retry`);
     }
   }
-  const descends = (from2, sha) => git(caller.dir, ["merge-base", "--is-ancestor", from2, sha]).then(() => true, () => false);
+  const descends = (from2, sha) => git(caller.dir, ["merge-base", "--is-ancestor", from2, sha]).then(() => true, (error2) => {
+    if (isGitTimeout(error2)) throw error2;
+    return false;
+  });
   const callerWorker = caller.room.workerOf(caller.me.name);
   const callerBaseline = await pairBaseline(callerWorker, void 0, ancestor, descends);
   const pairs = /* @__PURE__ */ new Map();
@@ -48453,18 +48468,18 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     };
     const worker = previewWorker(item.session, item.person);
     const dir = worker?.dir ?? (item.person === caller.me.name ? caller.dir : void 0);
-    const ignored = dir ? (await git(dir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])).split("\0").filter(Boolean) : [];
+    const ignored = dir ? (await gitWholeTree(dir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])).split("\0").filter(Boolean) : [];
     const visibleIgnored = ignored.filter((p) => !/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/.test(p));
     if (visibleIgnored.length) ignoredNotes.push("NOT previewed (gitignored, " + item.person + "): " + visibleIgnored.join(", "));
     if (!options.diskOnly) {
       for (const p of item.session.room.changedPaths(item.person)) if (!ignored.some((i2) => p === i2 || i2.endsWith("/") && p.startsWith(i2))) add2(p);
     }
     if (dir) {
-      for (const p of (await git(dir, ["diff", "--name-only", "-z", ancestor, "--"])).split("\0").filter(Boolean)) add2(p);
-      for (const p of (await git(dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)) add2(p);
+      for (const p of (await gitWholeTree(dir, ["diff", "--name-only", "-z", ancestor, "--"])).split("\0").filter(Boolean)) add2(p);
+      for (const p of (await gitWholeTree(dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)) add2(p);
     }
     for (const base of /* @__PURE__ */ new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? callerBaseline?.sha ?? ancestor])) {
-      if (base !== ancestor) for (const p of (await git(caller.dir, ["diff", "--name-only", "-z", ancestor, base])).split("\0").filter(Boolean)) add2(p);
+      if (base !== ancestor) for (const p of (await gitWholeTree(caller.dir, ["diff", "--name-only", "-z", ancestor, base])).split("\0").filter(Boolean)) add2(p);
     }
   }
   for (const p of pathSet) {
@@ -48548,11 +48563,14 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     const declaredNote = shareOf(session, person) === "declared" ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : "";
     const clean = [], conflicts = [], onlyOne = [], sameChange = [], resolvable = [];
     const pair = pairs.get(person);
+    const leadBase = baseFor(session, person);
+    const leadUsesCarriedBase = !!pair && pair.worker === caller.me.name && person === callerWorker?.lead && await descends(leadBase, pair.sha);
     for (const p of paths) {
       const mine = merged.get(p);
-      const theirsRaw = await previewText(session, p, person);
       const b = await baseAt(pair, p);
-      const mineT = mine ?? "", theirs = theirsRaw === void 0 ? b : theirsRaw;
+      const theirsRaw = await previewText(session, p, person);
+      const unchangedLead = leadUsesCarriedBase && theirsRaw === await textAt(leadBase, p);
+      const mineT = mine ?? "", theirs = unchangedLead || theirsRaw === void 0 ? b : theirsRaw;
       if (theirs === b) continue;
       if (mine === theirs) {
         const prior2 = owners.get(p) ?? [caller.me.name];
@@ -48749,8 +48767,8 @@ ${text}` : text;
     if (typeof a.path === "string" && a.path) return label(await one(a.path) || `${a.path}: no difference between base and ${person}'s version`);
     const parts2 = [];
     const paths = worker || ownDisk ? new Set([
-      ...(await git(worker?.dir ?? s.dir, ["diff", "--name-only", "-z", baseFor(s, person), "--"])).split("\0"),
-      ...(await git(worker?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
+      ...(await gitWholeTree(worker?.dir ?? s.dir, ["diff", "--name-only", "-z", baseFor(s, person), "--"])).split("\0"),
+      ...(await gitWholeTree(worker?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
     ].filter(Boolean)) : s.room.changedPaths(person);
     for (const p of paths) {
       const d = await one(p);
@@ -48840,46 +48858,53 @@ ${text}` : text;
       }
       const run3 = typeof a.run === "string" && a.run.trim() ? a.run.trim() : "";
       const noTestsNote = run3 ? "" : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`;
-      const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...run3 ? { encoding: "latin1" } : { skipCallerOnly: true } });
-      const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out: out2 } = result;
-      if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, "no mergeable changes", ...result.ignoredNotes].join("\n");
-      if (!paths.length && !result.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(", ")}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join("\n");
-      out2.unshift(...missingNotes);
-      if (skippedNote) out2.push(skippedNote);
-      for (const [p, text] of resolvedText) out2.push(`--- resolved ${p} (write this to your clone) ---
+      try {
+        const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...run3 ? { encoding: "latin1" } : { skipCallerOnly: true } });
+        const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out: out2 } = result;
+        if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, "no mergeable changes", ...result.ignoredNotes].join("\n");
+        if (!paths.length && !result.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(", ")}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join("\n");
+        out2.unshift(...missingNotes);
+        if (skippedNote) out2.push(skippedNote);
+        for (const [p, text] of resolvedText) out2.push(`--- resolved ${p} (write this to your clone) ---
 ${text}--- end ${p} ---`);
-      out2.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ""} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(", ")}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ""}`);
-      if (noTestsNote) out2.push(noTestsNote);
-      let ranOk = !run3;
-      if (run3) {
-        if (hardCount) out2.push(`not running "${run3}": ${hardCount} conflict(s) need a human first`);
-        else {
-          const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
-            const w = result.diskWorkers.get(person);
-            if (!w) return void 0;
-            const dir = result.roots.get(path26.resolve(w.dir));
-            if (!dir) throw new Error("uncaptured preview root: " + w.dir);
-            return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) };
-          }))).filter((x) => !!x);
-          const modes = /* @__PURE__ */ new Map();
-          for (const p of merged.keys()) {
-            let leadMode = 420;
-            try {
-              const stat4 = fs28.lstatSync(path26.join(caller.dir, p));
-              if (stat4.isFile()) leadMode = stat4.mode & 511;
-            } catch (e) {
-              if (e.code !== "ENOENT") throw e;
+        out2.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ""} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(", ")}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ""}`);
+        if (noTestsNote) out2.push(noTestsNote);
+        let ranOk = !run3;
+        if (run3) {
+          if (hardCount) out2.push(`not running "${run3}": ${hardCount} conflict(s) need a human first`);
+          else {
+            const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
+              const w = result.diskWorkers.get(person);
+              if (!w) return void 0;
+              const dir = result.roots.get(path26.resolve(w.dir));
+              if (!dir) throw new Error("uncaptured preview root: " + w.dir);
+              return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) };
+            }))).filter((x) => !!x);
+            const modes = /* @__PURE__ */ new Map();
+            for (const p of merged.keys()) {
+              let leadMode = 420;
+              try {
+                const stat4 = fs28.lstatSync(path26.join(caller.dir, p));
+                if (stat4.isFile()) leadMode = stat4.mode & 511;
+              } catch (e) {
+                if (e.code !== "ENOENT") throw e;
+              }
+              modes.set(p, mergedFileMode(p, leadMode, modeParticipants));
             }
-            modes.set(p, mergedFileMode(p, leadMode, modeParticipants));
+            const verdict = await runInMergedTree(caller, ancestor, merged, run3, modes);
+            out2.push(verdict.text);
+            ranOk = verdict.passed;
           }
-          const verdict = await runInMergedTree(caller, ancestor, merged, run3, modes);
-          out2.push(verdict.text);
-          ranOk = verdict.passed;
         }
+        caller.lastPreview = { clean: hardCount === 0, ...run3 ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run3 } : {} };
+        if (!hardCount && ranOk) caller.room.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run3 ? `; "${run3}" passed` : ""}`, priority: "fyi" });
+        return out2.join("\n");
+      } catch (error2) {
+        const message = error2 instanceof Error ? error2.message : String(error2);
+        if (!isGitTimeout(error2)) throw error2;
+        caller.lastPreview = { clean: false };
+        return `preview failed: ${message.replace(/ failed: timed out/, " timed out")}; combined code was NOT checked`;
       }
-      caller.lastPreview = { clean: hardCount === 0, ...run3 ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run3 } : {} };
-      if (!hardCount && ranOk) caller.room.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run3 ? `; "${run3}" passed` : ""}`, priority: "fyi" });
-      return out2.join("\n");
     }
   };
   return handlers10;
@@ -48936,7 +48961,7 @@ function ensureMergedDirectory(root, rel) {
   return at;
 }
 async function gitTreeModes(dir, ref) {
-  const entries = (await git(dir, ["ls-tree", "-rz", ref])).split("\0").filter(Boolean);
+  const entries = (await gitWholeTree(dir, ["ls-tree", "-rz", ref])).split("\0").filter(Boolean);
   return new Map(entries.map((entry) => {
     const tab = entry.indexOf("	");
     const meta2 = entry.slice(0, tab), rel = entry.slice(tab + 1);
@@ -49028,6 +49053,7 @@ async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */
 ${tail}
 ${verdict.text}` };
   } catch (e) {
+    if (isGitTimeout(e)) throw e;
     return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` };
   } finally {
     fs28.rmSync(dir, { recursive: true, force: true });
@@ -49062,7 +49088,8 @@ async function materializeGitTree(cloneDir, ref, destination) {
       if (archiveCode === 0 && extractCode === 0) resolve5();
       else reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? "signal"}${archiveError.trim() ? `: ${archiveError.trim()}` : ""}; tar ${extractCode ?? "signal"}${extractError.trim() ? `: ${extractError.trim()}` : ""})`));
     };
-    const timer = setTimeout(() => fail(new Error("git archive/tar extraction timed out after 60000ms")), 6e4);
+    const timeout = wholeTreeTimeoutMs();
+    const timer = setTimeout(() => fail(new Error(`git archive/tar extraction timed out after ${timeout}ms`)), timeout);
     timer.unref?.();
     archive.stderr.setEncoding("utf8");
     archive.stderr.on("data", (chunk) => {
@@ -49394,7 +49421,7 @@ repeat with force=true to delete them`;
           await assertNoOperation(w.dir);
           if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error("worker is not a worktree of this repository");
           if (w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) throw new Error("worker must be on branch room/" + w.tag);
-          await git(w.dir, ["ls-files", "-z"]);
+          await gitWholeTree(w.dir, ["ls-files", "-z"]);
           const cleanupErrors = [];
           const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses);
           if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
@@ -49438,8 +49465,8 @@ repeat with force=true to delete them`;
         if (!Array.isArray(a.paths) || !a.paths.length || a.paths.some((p) => typeof p !== "string")) return "error: copy requires non-empty paths";
         const workerRoot = workerRoots.get(w);
         const files = copyFiles(workerRoot, a.paths);
-        const modified = new Set(split(await git(lead.dir, ["diff", "--name-only", "-z", "HEAD", "--"])));
-        const tracked = new Set(split(await git(lead.dir, ["ls-files", "-z"])));
+        const modified = new Set(split(await gitWholeTree(lead.dir, ["diff", "--name-only", "-z", "HEAD", "--"])));
+        const tracked = new Set(split(await gitWholeTree(lead.dir, ["ls-files", "-z"])));
         for (const p of files) {
           const dst = safePath(leadRoot, p);
           if (fs29.existsSync(dst) && !fs29.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
@@ -49865,7 +49892,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.32",
+  version: "0.16.33",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
