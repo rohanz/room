@@ -113,7 +113,7 @@ export class Runner {
 
   private onMsg(m: Msg) {
     if (m.type === 'claim') this.seenClaimIds.add(m.claimId)
-    const ownWorkers = new Set(Array.from(this.room.workers.values()).filter(w => w.lead === this.me.name).map(w => w.name))
+    const ownWorkers = new Set(Array.from(this.room.workerViews.values()).filter(w => w.lead === this.me.name).map(w => w.name))
     const d = shouldWakeOnMsg(this.me, m, this.room.openClaims(), false, ownWorkers)
     this.log(`bus ${m.type} from ${m.from}/${m.fromKind}: ${d.wake ? 'wake' : 'skip'} (${d.reason})`)
     if (d.wake) {

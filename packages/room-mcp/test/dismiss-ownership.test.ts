@@ -3,11 +3,12 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RoomDoc, type Worker } from '@room/shared'
+import { RoomDoc } from '@room/shared'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { createWorkerRuntime } from '../src/tools/workers.js'
-import { syncDocumentWorkers } from './registry-fixture.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
+import { fixtureId, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
@@ -21,7 +22,7 @@ vi.mock('../src/worker-process.js', async importOriginal => ({
 }))
 
 const roots: string[] = []
-afterEach(() => { terminate.mockReset(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { terminate.mockReset(); for (const root of roots.splice(0)) { await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }) } })
 
 function fixture(ownedWorktree: boolean | 'noncanonical' | 'nested') {
   const leadDir = mkdtempSync(join(tmpdir(), 'room-dismiss-'))
@@ -39,19 +40,21 @@ function fixture(ownedWorktree: boolean | 'noncanonical' | 'nested') {
   if (ownedWorktree === 'nested') execFileSync('git', ['-C', parentDir, 'worktree', 'add', '-qb', 'room/test', dir], { stdio: 'pipe' })
   else if (ownedWorktree) git('worktree', 'add', '-qb', 'room/test', dir)
   const room = new RoomDoc()
-  if (ownedWorktree === 'nested') room.workers.set('parent', { id: 'parent-id', tag: 'parent', name: 'lead+parent', lead: 'lead', host: 'codex', task: 'parent', dir: parentDir, branch: 'room/parent', pid: -1, startedAt: Date.now(), status: 'done' } as Worker)
-  const w = { id: 'worker-id', tag: 'test', name: 'lead+test', lead: ownedWorktree === 'nested' ? 'lead+parent' : 'lead', host: 'codex', task: 'test', dir, branch: 'room/test', pid: 987654, startedAt: Date.now(), status: 'running' } as Worker
-  room.workers.set(w.tag, w)
-  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: leadDir, roomName: 'local/test/main', room, me: { name: 'lead', kind: 'agent' } } as Session
+  // The workers the lead's registry will hold; tests adjust them before `dismiss` registers them.
+  const workers: FixtureWorker[] = []
+  if (ownedWorktree === 'nested') workers.push({ id: 'parent-id', tag: 'parent', name: 'lead+parent', lead: 'lead', host: 'codex', task: 'parent', dir: parentDir, branch: 'room/parent', pid: 0, startedAt: Date.now(), status: 'done' })
+  const w: FixtureWorker = { id: 'worker-id', tag: 'test', name: 'lead+test', lead: ownedWorktree === 'nested' ? 'lead+parent' : 'lead', host: 'codex', task: 'test', dir, branch: 'room/test', pid: 987654, startedAt: Date.now(), status: 'running' }
+  workers.push(w)
+  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: leadDir, roomName: 'local/test/main', room, me: { name: 'lead', kind: 'agent' }, daemon: {} } as Session
   const kill = vi.fn(() => true)
   const state = { ctx: {}, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
   state.dismissWorker = createWorkerRuntime(state).dismissWorker
-  return { state, s, w, kill, room, dir, parentDir }
+  return { state, s, w, workers, kill, room, dir, parentDir }
 }
 
 async function dismiss(t: ReturnType<typeof fixture>): Promise<string> {
-  await syncDocumentWorkers(t.s)
-  return t.state.dismissWorker(t.s, t.room.workers.get('test')!, 'stop')
+  await registerWorkers(t.s, t.workers)
+  return t.state.dismissWorker(t.s, workerByTag(t.s.dir, 'test')!, 'stop')
 }
 
 describe('dismissWorker ownership', () => {
@@ -102,7 +105,7 @@ describe('dismissWorker ownership', () => {
 
   it('does not enumerate a grand-worker when its recorded parent fails ownership checks', async () => {
     const t = fixture('nested')
-    t.room.workers.set('parent', { ...t.room.workers.get('parent')!, dir: t.s.dir })
+    t.workers[0].dir = t.s.dir
     terminate.mockResolvedValue([])
     await dismiss(t)
     expect(terminate).not.toHaveBeenCalled()
@@ -113,8 +116,8 @@ describe('dismissWorker ownership', () => {
   it('verifies an archived parent worktree before enumerating its grand-worker', async () => {
     const t = fixture('nested')
     t.s.dir = t.parentDir; t.s.me.name = 'lead+parent'
-    const parent = t.room.workers.get('parent')!
-    t.room.retireParticipant(parent.name, { name: parent.name, tag: parent.tag, lead: parent.lead, host: parent.host, task: parent.task, summary: 'done', files: [], fileCount: 0, startedAt: parent.startedAt, finishedAt: parent.startedAt + 1, retiredAt: parent.startedAt + 2, outcome: 'dismissed' }, ignore)
+    const parent = t.workers.shift()!
+    t.room.retireWorker(fixtureId(parent), { id: fixtureId(parent), name: parent.name, tag: parent.tag, lead: parent.lead, host: parent.host, task: parent.task, summary: 'done', files: [], fileCount: 0, startedAt: parent.startedAt, finishedAt: parent.startedAt + 1, retiredAt: parent.startedAt + 2, outcome: 'dismissed' }, ignore)
     terminate.mockResolvedValue([])
     await dismiss(t)
     expect(terminate).toHaveBeenCalledWith(t.dir, expect.objectContaining({ protectedPids: [t.w.pid] }))

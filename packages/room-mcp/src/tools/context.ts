@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Worker } from '@room/shared'
+import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope } from '@room/shared'
+import { localWorkers } from '../worker-registry.js'
+import type { LocalWorker } from '../worker-status.js'
 import { DISK_READ_PATH, containedRepoPath, isInsideRoot, validRepoPath, type ShareLevel, type SharePresence } from '@room/roomd'
 import type { Bridge } from '../bridge.js'
 import type { ConflictWatcher } from '../conflicts.js'
@@ -80,13 +82,13 @@ export interface HandlerState {
   S: () => Session
   isMe: (s: Session, p: { name: string; kind: string }) => boolean
   mine: (s: Session) => Claim[]
-  myWorkers: (s: Session) => Worker[]
-  workerAlive: (s: Session, w: Worker) => boolean
+  myWorkers: (s: Session) => LocalWorker[]
+  workerAlive: (s: Session, w: LocalWorker) => boolean
   ensureWorkersRoom: (lead: Session) => Promise<Session>
   closeWorkersRoom: () => Promise<void>
-  runningWorkers: (s: Session) => { s: Session; w: Worker }[]
+  runningWorkers: (s: Session) => { s: Session; w: LocalWorker }[]
   hasCompany: (s: Session) => CompanyState
-  dismissWorker: (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason'], cancelled?: AbortSignal) => string | Promise<string>
+  dismissWorker: (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal) => string | Promise<string>
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]
   shareOf: (s: Session, person: string) => ShareLevel
@@ -166,10 +168,10 @@ export class NotJoined extends Error {}
 export class NeedFetch extends Error { constructor(public person: string, public sha: string, public detail: string, public lead?: string) { super(detail) } }
 
 /** Only disconnected local workers may expose their worktree to the lead. */
-export function diskWorker(s: Session, person: string): Worker | undefined {
+export function diskWorker(s: Session, person: string): LocalWorker | undefined {
   if (!s.local || s.room.overlays.get(person)?.size) return undefined
   if ([...s.awareness.getStates().values()].some(p => p.user?.name === person)) return undefined
-  const worker = s.room.workerOf(person)
+  const worker = localWorkers(s.dir, record => record.name === person)[0]
   return worker?.dir && fs.existsSync(worker.dir) ? worker : undefined
 }
 export const WORKTREE_NOTE = "(read from the worker's worktree on disk; the worker is not connected)"

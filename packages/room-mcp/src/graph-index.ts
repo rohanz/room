@@ -8,6 +8,7 @@ import { git, gitShow } from '@room/roomd/git'
 import { parseFile, ensureLanguages } from './parse/engine.js'
 import { specForPath } from './parse/index.js'
 import { readBaseline, workerBaseline, type BaselineRead } from '@room/roomd/baseline'
+import { carriedFrom } from './worker-registry.js'
 
 const isSourcePath = (path: string): boolean => specForPath(path) !== undefined
 const MAX_FILES = 3000
@@ -263,7 +264,7 @@ export class GraphIndex {
       const mine = this.room.text(path, this.me)
       const mineDeleted = this.room.deleted.get(this.me)?.has(path) ?? false
       // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
-      const own = workerBaseline(this.room.workerOf(this.me))
+      const own = carriedFrom(this.dir, this.me)?.baseline
       const read = (sha: string, file: string) => (this.opts.read ?? gitShow)(this.dir, sha, file)
       const baseRead: BaselineRead | undefined = mine !== undefined || mineDeleted
         ? own ? await readBaseline(own, path, read) : await read(this.base, path).then(

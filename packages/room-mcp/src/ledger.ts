@@ -10,6 +10,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { messageForMe, owed, participantRecord, type MessageRouteContext, type Msg, type Via } from '@room/shared'
 import { writeAtomic } from './leases.js'
 import type { Session } from './session.js'
+import { workerCarried } from './worker-registry.js'
 
 /** A reply batch is held until its transport write settles; a hook batch until the hook confirms. */
 export const REPLY_LEASE_MS = 60_000
@@ -244,12 +245,12 @@ export class Ledger {
 
 /**
  * The broadcasts a session had observed when it first bound. A spawned worker takes its lead's bus at
- * spawn (`spawnedAfter`), so the lead's later briefing is above its frontier; everyone else takes the bus now.
+ * spawn (its registry run's `busFrontier`), so the lead's later briefing is above its frontier; everyone else takes the bus now.
  */
 function seedFrontier(s: Session): Set<string> {
   const bus = s.room.messages()
-  const worker = s.room.workerOf(s.me.name)
-  const spawnedAfter = worker?.status === 'running' ? worker.spawnedAfter : undefined
+  const worker = workerCarried(s.dir)
+  const spawnedAfter = worker?.name === s.me.name ? worker.runs.at(-1)?.busFrontier.at(-1) ?? '' : undefined
   // An empty bus at spawn leaves nothing below the frontier; a marker trimmed away since falls back to now.
   const at = spawnedAfter === undefined ? bus.length - 1 : spawnedAfter === '' ? -1 : bus.findIndex(m => m.id === spawnedAfter)
   return new Set(bus.slice(0, spawnedAfter && at < 0 ? bus.length : at + 1).filter(m => !m.to).map(m => m.id))

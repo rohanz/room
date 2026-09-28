@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
-import type { Identity } from '@room/shared'
+import type { Identity, WorkerView } from '@room/shared'
 import { Rooms } from '../src/registry.js'
 import { WorkerRegistry } from '../src/worker-registry.js'
 import { statusOf, type WorkerRecord } from '../src/worker-status.js'
@@ -21,7 +21,8 @@ import { hubSeam } from './fixtures/hub.js'
 import { hubAppend } from '@room/shared/testing'
 
 /** No release notices to send here. */
-const ignore = () => {}
+/** A participant with a published manifest: work in that room. */
+const published = (room: RoomDoc, name: string) => room.manifestHead.set(name, { base: 'b', fence: 'f', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
 
 let dir: string, base: string
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
@@ -59,8 +60,7 @@ function registry() {
   const rooms = new Rooms({
     primary: () => primary, setPrimary: s => { primary = s },
     listCwdProcesses: () => [],
-    observeClaims: s => events.push(`observe ${s.roomName}`),
-    attach: (s, role) => { events.push(`attach ${role} ${s.roomName}`); return { stop: () => events.push(`stop ${role} ${s.roomName}`), flush: async () => { events.push(`flush ${s.roomName}`) } } },
+    attach: (s, role) => { events.push(`attach ${role} ${s.roomName}`); return { stop: () => events.push(`stop ${role} ${s.roomName}`), flush: async () => { events.push(`flush ${s.roomName}`) }, project: async () => { events.push(`project ${s.roomName}`) } } },
   })
   return { rooms, events, primary: () => primary }
 }
@@ -72,7 +72,7 @@ describe('Rooms: sessions and attachments', () => {
     r.rooms.add(team, 'primary')
     r.rooms.add(team, 'primary') // idempotent
     expect(r.primary()).toBe(team)
-    expect(r.events).toEqual(['observe github.com/rohanz/x/main', 'attach primary github.com/rohanz/x/main'])
+    expect(r.events).toEqual(['attach primary github.com/rohanz/x/main'])
     const local = fakeSession(pair().a, lead)
     r.rooms.add(local, 'workers', team)
     expect(r.rooms.workers()).toBe(local)
@@ -83,10 +83,10 @@ describe('Rooms: sessions and attachments', () => {
     expect(r.rooms.workers()).toBeNull()
     r.rooms.remove(team)
     expect(r.primary()).toBeNull()
-    expect(r.events.slice(2)).toEqual(['observe local/x/main', 'attach workers local/x/main', 'stop workers local/x/main', 'stop primary github.com/rohanz/x/main'])
+    expect(r.events.slice(1)).toEqual(['attach workers local/x/main', 'stop workers local/x/main', 'stop primary github.com/rohanz/x/main'])
   })
 
-  it('a second session in the same role replaces the first, whose attachments stop; track observes claims only', () => {
+  it('a second session in the same role replaces the first, whose attachments stop; track attaches nothing', () => {
     const r = registry()
     const first = fakeSession(pair().a, lead, 'github.com/rohanz/x/main'), second = fakeSession(pair().a, lead, 'github.com/rohanz/x/feature')
     r.rooms.add(first, 'primary'); r.rooms.add(second, 'primary')
@@ -94,7 +94,7 @@ describe('Rooms: sessions and attachments', () => {
     expect(r.events).toContain('stop primary github.com/rohanz/x/main')
     const tracked = fakeSession(pair().a, lead, 'local/other/main')
     r.rooms.track(tracked); r.rooms.track(tracked)
-    expect(r.events.filter(e => e === 'observe local/other/main')).toHaveLength(1)
+    expect(r.rooms.tracking(tracked)).toBe(true)
     expect(r.events.some(e => e.startsWith('attach') && e.endsWith('local/other/main'))).toBe(false)
   })
 
@@ -104,6 +104,8 @@ describe('Rooms: sessions and attachments', () => {
     r.rooms.add(team, 'primary'); r.rooms.add(local, 'workers', team)
     await r.rooms.flush()
     expect(r.events.filter(e => e.startsWith('flush'))).toEqual(['flush github.com/rohanz/x/main', 'flush local/x/main'])
+    await r.rooms.project()
+    expect(r.events.filter(e => e.startsWith('project'))).toEqual(['project github.com/rohanz/x/main', 'project local/x/main'])
   })
 })
 
@@ -120,14 +122,15 @@ describe('Rooms: who lives where', () => {
   it('holding: presence or work wins over a worker record, and the caller\'s own name stays put', () => {
     const x = twoRooms()
     // a worker present only in the local room
-    x.local.b.setOverlay('rohanz+money', 'app.py', 'x = 2\n')
+    published(x.local.b, 'rohanz+money')
     expect(x.rooms.holding('rohanz+money', x.t)).toBe(x.l)
     expect(x.rooms.holding('rohanz', x.t)).toBe(x.t)
     // the same tag recorded in both rooms but active in the team room: the team room wins
-    x.team.a.setWorker({ id: 'rohanz/tiers#1', tag: 'tiers', name: 'rohanz+tiers', host: 'claude', task: 't', dir, branch: 'room/tiers', pid: 1, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 }, ignore)
-    x.local.a.setWorker({ id: 'rohanz/tiers#1', tag: 'tiers', name: 'rohanz+tiers', host: 'claude', task: 'l', dir, branch: 'room/tiers', pid: 2, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 }, ignore)
-    expect(x.rooms.holding('rohanz+tiers', x.t)).toBe(x.t) // record in the caller's room, nobody active anywhere
-    x.local.b.setOverlay('rohanz+tiers', 'app.py', 'y = 1\n')
+    const view = (fence: string): WorkerView => ({ id: 'w_tiers', tag: 'tiers', name: 'rohanz+tiers', lead: 'rohanz', mode: 'here', host: 'claude', task: 't', branch: 'room/tiers', status: 'running', run: 1, startedAt: 1, fence })
+    x.team.a.workerViews.set('w_tiers', view('t'))
+    x.local.a.workerViews.set('w_tiers', view('l'))
+    expect(x.rooms.holding('rohanz+tiers', x.t)).toBe(x.t) // a view in the caller's room, nobody active anywhere
+    published(x.local.b, 'rohanz+tiers')
     expect(x.rooms.holding('rohanz+tiers', x.t)).toBe(x.l) // now active in the local room
     expect(x.rooms.holding('nobody', x.t)).toBe(x.t)
   })

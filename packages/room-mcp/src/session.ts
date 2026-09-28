@@ -29,7 +29,7 @@ import { acquireOwnedFile } from './owned-file.js'
 import { probeProcess, type ProcessProbe } from './worker-process.js'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
-import { admitWorkerEnvironment } from './worker-registry.js'
+import { admitWorkerEnvironment, workerCarried } from './worker-registry.js'
 import { HubClient, hubTransport } from './hub-client.js'
 import { createPost, greet, type Post } from './post.js'
 
@@ -543,7 +543,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   const binding = createSessionBinding(options.dir)
   // The daemon's automatic posts go through this connection's hub, which exists once the daemon's provider does.
   let seam: Pick<Session, 'hub' | 'post'> | undefined
-  try { daemon = await startRoomd({ ...daemonOptions, name, label, policy: policyStore.policy,
+  try { daemon = await startRoomd({ ...daemonOptions, name, label, policy: policyStore.policy, carried: workerCarried(options.dir),
     post: (from, body, opts) => { if (seam) void seam.post(from, body, opts); else options.log?.(`not posted before the hub connection: ${body.type}`) },
     onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
     host: resolveSessionHost(), ...resolveSessionRuntime(binding.dir()) }) }
@@ -559,8 +559,6 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     const current = daemon.provider.awareness.getLocalState()
     const runtime = resolveSessionRuntime(binding.dir())
     if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(), ...runtime })
-    const worker = daemon.roomDoc.workerOf(name)
-    if (worker && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID) && runtime.model && worker.model !== runtime.model) daemon.roomDoc.updateWorker(worker.tag, { model: runtime.model }, worker.id)
   }
   let published = ''
   let lastActivity = Date.now() // do not replay activity left by an earlier session

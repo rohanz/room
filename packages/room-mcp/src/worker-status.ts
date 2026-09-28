@@ -1,9 +1,7 @@
 /** Durable facts, not the room document, determine a local worker's lifecycle. */
-import type { ShareLevel, Worker } from '@room/shared'
+import type { RetiredWorker, ShareLevel, WorkerStatus, WorkerStopReason, WorkerView } from '@room/shared'
 import type { InstanceToken, Liveness, ProcessIdentity } from './leases.js'
 
-export type WorkerStatus2 = 'starting' | 'running' | 'unknown' | 'ambiguous' | 'done' | 'failed' | 'stopped' | 'imported' | 'collecting' | 'retired' | 'abandoned'
-export type StopReason = 'lead-session-ended' | 'discarded' | 'message-delivered-cancelled' | 'message-delivered-failed'
 export interface Run {
   n: number; mode: 'fresh' | 'resume'; intentAt: number; nonce: string; busFrontier: string[]; promptMsgIds: string[]
   launcher: InstanceToken; logStart: number
@@ -36,12 +34,16 @@ export interface WorkerRecord {
   skippedCarry?: { path: string; reason: string }[]; port?: number; hostSessionId?: string
   capabilities: { resume: boolean; signal: boolean; collect: 'delta' | 'copy' | 'none' }
   phase: 'intent' | 'preparing' | 'prepared' | 'active' | 'collecting' | 'discarding' | 'retiring' | 'retired' | 'abandoned'
-  runs: Run[]; stop?: { reason: StopReason; at: number; run: number }
+  runs: Run[]; stop?: { reason: WorkerStopReason; at: number; run: number }
   discard?: DiscardPlan; interrupted?: { op: 'collect' | 'discard'; at: number; detail: string }
   cleanup?: Record<string, 'pending' | 'done'>; keptWorktree?: string
+  /** A `local` worker's team room, where the lead's bridge projects it (registry §13). */
+  projectedInto?: string
+  /** The archive entry each room's projector appends when it retires the worker (§12), written with `retiring`. */
+  archive?: RetiredWorker
   legacy?: { id: string; source: string; said?: string; unowned?: boolean }; createdAt: number; seq: number
 }
-export interface WorkerStatusResult { status: WorkerStatus2; run?: Run; note?: string; exitCode?: number; finishedAt?: number; summary?: string }
+export interface WorkerStatusResult { status: WorkerStatus; run?: Run; note?: string; exitCode?: number; finishedAt?: number; summary?: string }
 export type LivenessProbe = (identity: ProcessIdentity) => Liveness
 export const IDLE_CLAIM_RELEASE_MS = 8 * 60 * 60 * 1000
 /** Only the session's own monotonic clock is comparable with its activity marker. */
@@ -50,7 +52,7 @@ export function idleClaimsDue(input: { host: 'shared-app-server' | 'interactive'
     && Number.isFinite(input.lastActivityMs) && Number.isFinite(input.nowMs)
     && input.nowMs - input.lastActivityMs >= IDLE_CLAIM_RELEASE_MS
 }
-const result = (status: WorkerStatus2, run?: Run, note?: string, extra: Partial<WorkerStatusResult> = {}): WorkerStatusResult => ({ status, run, ...(note ? { note } : {}), ...extra })
+const result = (status: WorkerStatus, run?: Run, note?: string, extra: Partial<WorkerStatusResult> = {}): WorkerStatusResult => ({ status, run, ...(note ? { note } : {}), ...extra })
 
 /** First matching row of registry §6. Inputs may be missing/corrupt; this function remains total. */
 export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, reports: RunReport[] = [], exits: ExitObservation[] = [], liveness: LivenessProbe, nowMs = Date.now()): WorkerStatusResult {
@@ -77,8 +79,10 @@ export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, report
   const live = launch.process ? liveness(launch.process) : undefined
   const waitingForJoin = !report && nowMs - current.intentAt >= 60_000
     ? `has not joined the room: its host's Room plugin may be older than 0.17 (host ${record.host})` : note
-  if (launch.process && live === 'alive') return result('running', current, record.stop?.run === current.n ? 'stopping' : waitingForJoin)
-  if (!exit && liveness(current.launcher) === 'alive') return result('running', current, record.stop?.run === current.n ? 'stopping' : waitingForJoin)
+  // A run that reported while its host still lives is running, and its report's summary is already known.
+  const reported = report?.done ? { summary: report.done.summary } : {}
+  if (launch.process && live === 'alive') return result('running', current, record.stop?.run === current.n ? 'stopping' : waitingForJoin, reported)
+  if (!exit && liveness(current.launcher) === 'alive') return result('running', current, record.stop?.run === current.n ? 'stopping' : waitingForJoin, reported)
   if (launch.process && live === 'unknown' && !exit) return result('unknown', current, `cannot verify pid ${launch.pid}`)
   if (report?.done) return result('done', current, exit?.code && exit.code !== 0 ? `exited ${exit.code} after reporting` : note,
     { summary: report.done.summary, finishedAt: report.done.at, ...(exit?.code != null ? { exitCode: exit.code } : {}) })
@@ -92,9 +96,24 @@ export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, report
   return result('running', current, 'exit being recorded')
 }
 
-/** Supplies the old lifecycle decision helpers without granting unproven signal/resume capabilities. */
-export function realStateInput(record: WorkerRecord, status: WorkerStatusResult): Worker {
-  const map: Record<WorkerStatus2, Worker['status']> = {
+/**
+ * The decision input of the lifecycle helpers (worker-state, worker-git, collect). Only `realStateInput`
+ * builds it, from the local registry record; nothing in the room document yields one (registry §1).
+ */
+export interface LocalWorker {
+  id: string; tag: string; name: string; lead: string; host: 'claude' | 'codex'; model?: string; effort?: string
+  hostSessionId?: string; budget: WorkerRecord['budget']; port?: number; share: ShareLevel; link?: string[]
+  task: string; dir: string; branch: string; base?: string; carriedBase?: string; carriedUntracked?: WorkerRecord['carriedUntracked']
+  /** Zero unless the signal capability names a launched process. */
+  pid: number; processStartTime?: string; startedAt: number
+  status: 'running' | 'done' | 'failed' | 'dismissed'
+  summary?: string; exitCode?: number; finishedAt?: number
+  stopReason?: Exclude<WorkerStopReason, 'discarded'>
+}
+
+/** Supplies the lifecycle decision helpers without granting unproven signal/resume capabilities. */
+export function realStateInput(record: WorkerRecord, status: WorkerStatusResult): LocalWorker {
+  const map: Record<WorkerStatus, LocalWorker['status']> = {
     starting: 'running', running: 'running', unknown: 'running', ambiguous: 'running', done: 'done', failed: 'failed',
     stopped: 'dismissed', imported: 'dismissed', collecting: 'dismissed', retired: 'dismissed', abandoned: 'dismissed',
   }
@@ -108,7 +127,21 @@ export function realStateInput(record: WorkerRecord, status: WorkerStatusResult)
     pid: signal ? launch.pid : 0, processStartTime: signal ? launch.process!.startTime : undefined,
     hostSessionId: record.capabilities.resume ? record.hostSessionId : undefined,
     status: map[status.status], summary: status.summary ?? record.legacy?.said, exitCode: status.exitCode,
-    finishedAt: status.finishedAt, dismissedAt: status.status === 'stopped' || status.status === 'imported' ? record.stop?.at ?? record.createdAt : undefined,
+    finishedAt: status.finishedAt,
     stopReason: record.stop?.reason === 'discarded' ? undefined : record.stop?.reason,
+  }
+}
+
+/** The room's view of one worker (registry §14), fenced by the writing lead session. */
+export function workerView(record: WorkerRecord, status: WorkerStatusResult, fence: string): WorkerView {
+  return {
+    id: record.id, tag: record.tag, name: record.name, lead: record.lead.participant, mode: record.mode, host: record.host,
+    ...(record.model ? { model: record.model } : {}), ...(record.effort ? { effort: record.effort } : {}),
+    task: record.task.slice(0, 200), branch: record.branch, status: status.status,
+    ...(status.summary ?? record.legacy?.said ? { summary: status.summary ?? record.legacy?.said } : {}),
+    ...(status.note ? { note: status.note } : {}), run: status.run?.n ?? record.runs.at(-1)?.n ?? 0, startedAt: record.createdAt,
+    ...(status.finishedAt !== undefined ? { finishedAt: status.finishedAt } : {}),
+    ...(status.exitCode !== undefined ? { exitCode: status.exitCode } : {}),
+    ...(record.stop ? { stopReason: record.stop.reason } : {}), fence,
   }
 }

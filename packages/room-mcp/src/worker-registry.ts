@@ -7,11 +7,13 @@ import { performance } from 'node:perf_hooks'
 import * as Y from 'yjs'
 import { completionMessage, participantRecord, RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
 import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
+import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/baseline'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
 import { probeProcess } from './worker-process.js'
 import { idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
+import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
-import { realStateInput } from './worker-status.js'
+import { realStateInput, type LocalWorker } from './worker-status.js'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
 import { signalWorker } from './worker-process.js'
 
@@ -105,6 +107,48 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
     hostSessionId: env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID }) }
   catch { throw new Error('this worker run was collected, discarded or superseded') }
 }
+/**
+ * This clone's current worker under a participant name, as a carried-baseline source with its lead: a local
+ * fact from the registry (registry §14), for merge bases and carried-work checks, never from the room.
+ */
+export function localWorkerBaseline(dir: string, participant: string): (BaselineSource & { lead: string }) | undefined {
+  let record: WorkerRecord | undefined
+  try { record = registrySnapshotForDir(dir).list().find(r => r.name === participant && !['retired', 'abandoned'].includes(r.phase)) } catch { return undefined }
+  return record && { name: record.name, dir: record.dir, base: record.base, carriedBase: record.carriedBase,
+    carriedUntracked: record.carriedUntracked, link: record.link, lead: record.lead.participant }
+}
+
+/** A lead's workers that are not retiring, by name: the wake path's own-worker set (registry §14). No process probes. */
+export function ownWorkerNames(dir: string, lead: string): Set<string> {
+  try {
+    return new Set(registrySnapshotForDir(dir).list()
+      .filter(r => r.lead.participant === lead && !['retiring', 'retired', 'abandoned'].includes(r.phase)).map(r => r.name))
+  } catch { return new Set() }
+}
+
+/** This clone's workers that are not retiring, as the lifecycle helpers' input (registry §1: local facts only). */
+export function localWorkers(dir: string, keep: (record: WorkerRecord) => boolean = () => true): LocalWorker[] {
+  const registry = registrySnapshotForDir(dir)
+  return registry.list().flatMap(record => {
+    if (['retiring', 'retired', 'abandoned'].includes(record.phase) || !keep(record)) return []
+    const status = registry.status(record.id)
+    return status ? [realStateInput(record, status)] : []
+  })
+}
+
+/** A participant's carried baseline and its lead, when it is one of this clone's workers (ConflictSet's `carriedFrom`). */
+export function carriedFrom(dir: string, participant: string): { baseline: Baseline; lead: string } | undefined {
+  const source = localWorkerBaseline(dir, participant)
+  const baseline = workerBaseline(source)
+  return source && baseline ? { baseline, lead: source.lead } : undefined
+}
+
+/** A worker daemon's carried baseline, read from its lead's registry record (F2): the room never supplies it. */
+export function workerCarried(dir: string, env: NodeJS.ProcessEnv = process.env): WorkerRecord | undefined {
+  const id = env.ROOM_WORKER_ID
+  if (!id || !safeId(id)) return undefined
+  try { return registrySnapshotForDir(dir).read(id) } catch { return undefined }
+}
 const missing = (file: string): boolean => !fs.existsSync(file)
 const safeId = (value: string): boolean => /^w_[A-Za-z0-9_-]{1,64}$/.test(value)
 const safeTag = (value: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) && value !== '..'
@@ -189,6 +233,8 @@ function legacySession(dir: string, oldId: string | undefined, host: LegacySourc
 }
 
 class LegacySnapshotUnavailable extends Error {}
+/** The display fields of a 0.16 snapshot's tag-keyed `workers` entry. */
+interface LegacyWorkerEntry { id?: string; dir?: string; host: 'claude' | 'codex'; model?: string; task?: string; summary?: string }
 /** The old CRDT is display evidence only: it never supplies pid, session, base or capability. */
 function legacyDisplay(commonDir: string): Map<string, Pick<LegacySource, 'oldId' | 'host' | 'model' | 'task' | 'said' | 'keptWorktree'>> {
   const found = new Map<string, Pick<LegacySource, 'oldId' | 'host' | 'model' | 'task' | 'said' | 'keptWorktree'>>()
@@ -199,7 +245,7 @@ function legacyDisplay(commonDir: string): Map<string, Pick<LegacySource, 'oldId
       if (fs.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MiB`)
       Y.applyUpdate(doc, fs.readFileSync(file))
       const room = new RoomDoc(doc)
-      for (const worker of room.workers.values()) {
+      for (const worker of doc.getMap<LegacyWorkerEntry>('workers').values()) {
         if (!worker.dir || !worker.id) continue
         found.set(canonical(worker.dir), { oldId: worker.id, host: worker.host, model: worker.model,
           task: worker.task, said: worker.summary })
@@ -620,9 +666,55 @@ export class WorkerRegistry {
   async beginCollect(id: string): Promise<WorkerRecord> {
     return this.update(id, old => ({ ...old, phase: 'collecting', interrupted: undefined, seq: old.seq + 1 }))
   }
-  async finishCollect(id: string, success: boolean, keptWorktree?: string): Promise<WorkerRecord> {
-    return this.update(id, old => ({ ...old, phase: success ? 'retiring' : 'active',
-      ...(success ? { cleanup: { [old.room]: 'pending' as const }, keptWorktree } : {}), seq: old.seq + 1 }))
+  /** A collection that did not finish returns the worker to `active`; a finished one retires it (beginRetirement). */
+  async abortCollect(id: string): Promise<WorkerRecord> {
+    return this.update(id, old => ({ ...old, phase: 'active', seq: old.seq + 1 }))
+  }
+
+  /**
+   * Retirement step 1 (§12): `retiring`, with cleanup pending in every room the worker joined or was projected
+   * into, and the archive entry each room's projector appends. From here no projector writes the worker.
+   */
+  async beginRetirement(id: string, archive: RetiredWorker, extra: Pick<WorkerRecord, 'keptWorktree'> = {}): Promise<WorkerRecord> {
+    return this.update(id, old => ({ ...old, ...extra, phase: 'retiring', archive: { ...archive, id },
+      cleanup: Object.fromEntries([old.room, ...(old.projectedInto ? [old.projectedInto] : [])].map(room => [room, 'pending' as const])),
+      seq: old.seq + 1 }))
+  }
+
+  /** An archive entry from local facts, for retirements whose caller has nothing more specific. */
+  archiveOf(record: WorkerRecord, facts: Partial<RetiredWorker> & Pick<RetiredWorker, 'summary'>): RetiredWorker {
+    const status = this.status(record.id), at = this.now()
+    return { id: record.id, name: record.name, tag: record.tag, lead: record.lead.participant, host: record.host,
+      ...(record.model ? { model: record.model } : {}), task: record.task, files: [], fileCount: 0,
+      startedAt: record.createdAt, finishedAt: status?.finishedAt ?? at, retiredAt: at, outcome: 'dismissed',
+      ...(record.stop && record.stop.reason !== 'discarded' ? { stopReason: record.stop.reason } : {}), ...facts }
+  }
+
+  /** Retirement step 4: a room's projector finished its cleanup; the last room makes the record `retired`. */
+  async finishCleanup(id: string, roomKey: string): Promise<WorkerRecord | undefined> {
+    const current = this.read(id)
+    if (current?.phase !== 'retiring' || current.cleanup?.[roomKey] !== 'pending') return current
+    return this.update(id, old => {
+      const cleanup = { ...old.cleanup, [roomKey]: 'done' as const }
+      return { ...old, cleanup, ...(Object.values(cleanup).every(state => state === 'done') ? { phase: 'retired' as const } : {}), seq: old.seq + 1 }
+    })
+  }
+
+  /**
+   * The level-triggered input of the lead-side writers in one room (registry §13): `write` holds this lead's
+   * workers that join the room or are projected into it and are not retiring; `retire` holds retiring ones
+   * whose cleanup in this room is still pending.
+   */
+  projectable(lead: string, roomKey: string): { write: { record: WorkerRecord; status: WorkerStatusResult }[]; retire: WorkerRecord[] } {
+    const write: { record: WorkerRecord; status: WorkerStatusResult }[] = [], retire: WorkerRecord[] = []
+    for (const record of this.list()) {
+      if (record.lead.participant !== lead || (record.room !== roomKey && record.projectedInto !== roomKey)) continue
+      if (record.phase === 'retiring') { if (record.cleanup?.[roomKey] === 'pending') retire.push(record); continue }
+      if (record.phase === 'retired' || record.phase === 'abandoned') continue
+      const status = this.status(record.id)
+      if (status) write.push({ record, status })
+    }
+    return { write, retire }
   }
 
   async beginDiscard(id: string, force: boolean, children: string[]): Promise<WorkerRecord> {
@@ -737,7 +829,7 @@ export class WorkerRegistry {
       await this.markDiscardStep(id, 'cleanup')
     }
     await this.markDiscardStep(id, 'prune')
-    await this.update(id, old => ({ ...old, phase: 'retiring', cleanup: { [old.room]: 'pending' }, seq: old.seq + 1 }))
+    await this.beginRetirement(id, this.archiveOf(this.read(id)!, { summary: 'discarded', disposition: 'discarded' }))
   }
 
   /** Admission is evidence of launch only when a run writer proves the matching nonce. */

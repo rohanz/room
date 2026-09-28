@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Claim, Presence, Scope, Worker } from './types.js'
+import type { Claim, Presence, Scope, WorkerView } from './types.js'
 import { lineDetail, areaMembershipSummary, claimLine, deriveParticipants, otherAreasLine, participantClaimLine, personLine, presentPeople, summarizeFiles, workerLine } from './views.js'
 
 describe('file summaries', () => {
@@ -63,8 +63,8 @@ describe('shared room views', () => {
   })
 
   it('formats worker details without process inspection', () => {
-    const worker: Worker = { tag: 'views', name: 'Rohan+views', host: 'codex', task: 'share browser formatting', dir: '/tmp/views', branch: 'room/views', pid: 1, startedAt: 0, status: 'running', lead: 'Rohan' }
-    expect(workerLine({ worker, processGone: true, changedCount: 2, now: 60_000 })).toEqual([
+    const worker: WorkerView = { id: 'w_1', mode: 'local' as const, run: 1, fence: 's', tag: 'views', name: 'Rohan+views', host: 'codex', task: 'share browser formatting', branch: 'room/views', startedAt: 0, status: 'running', lead: 'Rohan' }
+    expect(workerLine({ worker, dir: '/tmp/views', processGone: true, changedCount: 2, now: 60_000 })).toEqual([
       '  - views (codex, stopped while no session of yours was running; reason unknown, 1m): share browser formatting',
       '      2 changed files · branch room/views · worktree /tmp/views',
     ])
@@ -89,7 +89,7 @@ it('uses the same reported runtime line online and for recorded offline workers'
   expect(participantIdentityLine([{ ...p, host: 'codex', model: 'gpt-6-astra', effort: 'medium' }], p.user.name)).toBe('rohanz+codex · agent of rohanz · codex · gpt-6-astra · medium')
   expect(participantIdentityLine([], 'unknown')).toBe('unknown')
   expect(participantIdentityLine([], 'Ada', undefined, 'agent')).toBe("Ada's agent")
-  const worker = { name: p.user.name, tag: 'codex', host: 'codex' as const, model: 'gpt-6-astra', effort: 'medium', task: 'test', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'done' as const, lead: 'rohanz' }
+  const worker = { id: 'w_1', mode: 'local' as const, run: 1, fence: 's', name: p.user.name, tag: 'codex', host: 'codex' as const, model: 'gpt-6-astra', effort: 'medium', task: 'test', branch: 'main', startedAt: 1, status: 'done' as const, lead: 'rohanz' }
   const input = { presences: [], workers: [worker], scopes: [], overlayPeople: [], changesByPerson: new Map(), claims: [] }
   expect(deriveParticipants(input)[0]).toMatchObject({ online: false, identity: 'agent of rohanz · codex · gpt-6-astra · medium' })
   expect(participantIdentityLine([{ ...p, model: 'actual' }], p.user.name, worker)).toContain('actual · medium')
@@ -97,7 +97,7 @@ it('uses the same reported runtime line online and for recorded offline workers'
 
 it('splits active workers, offline teammates and retired history with shared lead counts', async () => {
   const { splitParticipants } = await import('./views.js')
-  const worker: Worker = { name: 'lead+run', tag: 'run', lead: 'lead', host: 'codex', task: 'task', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'running' }
+  const worker: WorkerView = { id: 'w_1', mode: 'local' as const, run: 1, fence: 's', name: 'lead+run', tag: 'run', lead: 'lead', host: 'codex', task: 'task', branch: 'main', startedAt: 1, status: 'running' }
   const retired = { name: 'lead+old', tag: 'old', lead: 'lead', host: 'codex' as const, task: 'task', summary: 'shipped', files: ['a.ts'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' as const }
   const input = {
     presences: [{ user: { name: 'lead', kind: 'agent' as const, color: '#000' } }, { user: { name: retired.name, kind: 'agent' as const, color: '#000' } }],
@@ -116,7 +116,7 @@ it('splits active workers, offline teammates and retired history with shared lea
 
 it('nests a worker lead under its human group once', async () => {
   const { splitParticipants } = await import('./views.js')
-  const worker = (name: string, lead: string): Worker => ({ name, tag: name.split('+')[1], lead, host: 'codex', task: 'task', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'running' })
+  const worker = (name: string, lead: string): WorkerView => ({ id: 'w_1', mode: 'local' as const, run: 1, fence: 's', name, tag: name.split('+')[1], lead, host: 'codex', task: 'task', branch: 'main', startedAt: 1, status: 'running' })
   const groups = splitParticipants({
     presences: [{ user: { name: 'rohanz', kind: 'agent', color: '#000' } }],
     workers: [worker('rohanz+lead', 'rohanz'), worker('rohanz+cat', 'rohanz+lead')],
@@ -129,27 +129,27 @@ it('nests a worker lead under its human group once', async () => {
 
 it('shows current running, done, and failed workers by default and labels retired history precisely', async () => {
   const { workerLines } = await import('./views.js')
-  const worker: Worker = { name: 'lead+run', tag: 'run', lead: 'lead', host: 'codex', task: 'task', dir: '/', branch: 'main', pid: 1, startedAt: 1, status: 'running' }
+  const worker: WorkerView = { id: 'w_1', mode: 'local' as const, run: 1, fence: 's', name: 'lead+run', tag: 'run', lead: 'lead', host: 'codex', task: 'task', branch: 'main', startedAt: 1, status: 'running' }
   const retired = { name: 'lead+old', tag: 'old', lead: 'lead', host: 'codex' as const, model: 'actual-model', task: 'task', summary: 'shipped', files: ['a.ts'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' as const, disposition: 'collected' as const }
   const history = [retired, { ...retired, name: 'lead+discarded', tag: 'discarded', disposition: 'discarded' as const }, { ...retired, name: 'lead+stopped', tag: 'stopped', disposition: 'stopped' as const, stopReason: 'lead-session-ended' as const }, { ...retired, name: 'lead+kept', tag: 'kept', keptWorktree: '/tmp/kept', keptReason: 'uncopied ignored artifacts' }]
   const inputs = [
     ...(['running', 'failed', 'done'] as const).map(status => ({ worker: { ...worker, tag: status, status }, changedCount: 0, now: 10 })),
-    { worker: { ...worker, tag: 'discarded-live', status: 'dismissed' as const, dismissedAt: 5 }, changedCount: 0, now: 10 },
-    { worker: { ...worker, tag: 'stopped-live', status: 'dismissed' as const, stopReason: 'lead-session-ended' as const }, changedCount: 0, now: 10 },
+    { worker: { ...worker, tag: 'discarded-live', status: 'stopped' as const, stopReason: 'discarded' as const }, changedCount: 0, now: 10 },
+    { worker: { ...worker, tag: 'stopped-live', status: 'stopped' as const, stopReason: 'lead-session-ended' as const }, changedCount: 0, now: 10 },
   ]
   const compact = workerLines(inputs, { retiredWorkers: history }).join('\n')
   expect(compact).toContain('running (codex, running')
   expect(compact).toContain('failed (codex, failed')
   expect(compact).toContain('done (codex, done')
   expect(compact).toContain('workers (6):')
-  expect(compact).toContain('discarded-live (codex, discard pending (dismissed)')
+  expect(compact).toContain('discarded-live (codex, discard pending (stopped)')
   expect(compact).toContain('kept (collected, actual-model, kept: uncopied ignored artifacts)')
   expect(compact).toContain('stopped-live (codex, stopped when your last session ended; its partial work is in its worktree')
   expect(compact).toContain('  retired: 3 (all=true lists them)')
   expect(compact).not.toContain('old (collected')
   const expanded = workerLines(inputs, { all: true, retiredWorkers: history }).join('\n')
   expect(expanded).toContain('workers (9):')
-  expect(expanded).toContain('discarded-live (codex, discard pending (dismissed)')
+  expect(expanded).toContain('discarded-live (codex, discard pending (stopped)')
   expect(expanded).toContain('stopped-live (codex, stopped when your last session ended; its partial work is in its worktree')
   expect(expanded).toContain('old (collected, actual-model): shipped · 60 files')
   expect(expanded).toContain('discarded (discarded, actual-model)')
@@ -168,13 +168,13 @@ it('uses consistent activity wording at the action and worker thresholds', async
   expect(activityLabel(500_000, 240_000)).toBe('working')
   expect(activityLabel(0, 300_000, { running: true })).toBe('running')
   expect(activityLabel(0, 360_000, { running: true })).toBe('running · quiet 6m')
-  const worker: Worker = { tag: 'test', name: 'Ada+test', lead: 'Ada', host: 'codex', dir: '/tmp/test', branch: 'test', task: 'test', pid: 1, startedAt: 0, status: 'running' }
+  const worker: WorkerView = { id: 'w_1', mode: 'local' as const, run: 1, fence: 's', tag: 'test', name: 'Ada+test', lead: 'Ada', host: 'codex', branch: 'test', task: 'test', startedAt: 0, status: 'running' }
   expect(workerLine({ worker, changedCount: 0, now: 360_000 })[0]).toContain('running · quiet 6m')
   expect(workerLine({ worker, changedCount: 0, now: 360_000, lastActive: 350_000 })[0]).not.toContain('quiet')
   expect(workerLine({ worker, changedCount: 0, now: 360_000, processGone: true })[0]).toContain('stopped while no session of yours was running; reason unknown')
 })
 
- it.each(['done', 'failed', 'dismissed'] as const)('uses completion time for %s worker activity', async status => {
+ it.each(['done', 'failed', 'stopped'] as const)('uses completion time for %s worker activity', async status => {
   const { activityLabel } = await import('./views.js')
   expect(activityLabel(359_000, 360_000, { worker: { status, finishedAt: 0 } })).toBe('finished 6m ago')
   expect(activityLabel(359_000, 360_000, { worker: { status } })).toBe('finished 1s ago')

@@ -30,7 +30,7 @@ import chokidar, { type FSWatcher } from 'chokidar'
 import { RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
-import { carriesWork, workerBaseline, type Baseline } from './baseline.js'
+import { carriesWork, workerBaseline, type Baseline, type BaselineSource } from './baseline.js'
 import { git, gitBranch, gitHead, gitIgnored, gitOrigin, gitShowMany, gitTracked } from './git.js'
 import { pushedFacts, pushedRange, readBaseRefs, refsKey, resolveBase, roomRemote, type BaseInputs, type ResolvedBase } from './base.js'
 export { comparePair, ensureCommit, readBaseRefs, resolveBase, roomRemote, type BaseInputs, type BaseRefs, type ResolvedBase } from './base.js'
@@ -107,6 +107,8 @@ export interface RoomdOptions {
   session?: string
   /** The bound host session (registry §17): published in presence and fences this daemon's records. */
   sessionId?: string
+  /** A worker daemon's carried baseline, from its lead's registry record (registry N2, F2); never from the room. */
+  carried?: BaselineSource
   /** Local relay key (room-local.json): sent as ?key= so only sessions that can read the clone's git dir connect. */
   localKey?: string
   log?: (line: string) => void
@@ -171,6 +173,8 @@ export interface Roomd {
   readonly anchor: { base: string; anchored: boolean }
   readonly share: ShareLevel
   readonly inputs: PublicationInputs
+  /** This daemon's writer incarnation: its session id until names are hub leases (hub §4.1). */
+  readonly fence: string
   readonly publishUnder?: string
   /** Atomically narrow old publication under a new input snapshot, then queue a full scan. */
   applyInputs(next: PublicationInputs): void
@@ -269,6 +273,7 @@ class Daemon implements Roomd {
   private readonly kind: Kind
   private readonly owner: string
   private readonly label?: string
+  private readonly carriedFrom?: BaselineSource
   readonly log: (line: string) => void
   private readonly debounceMs: number
   private readonly trackedRefreshMs: number
@@ -330,6 +335,7 @@ class Daemon implements Roomd {
     this.kind = options.kind ?? 'human'
     this.owner = options.owner ?? options.name
     this.label = options.label
+    this.carriedFrom = options.carried
     this.roomUrl = options.room
     this.localRoom = !!options.localKey
     this.sessionId = options.sessionId
@@ -793,13 +799,13 @@ class Daemon implements Roomd {
   /** The lead's work carried into this worker, while HEAD is still the worker's recorded base (baseline.ts). */
   carried(): Baseline | undefined {
     if (!this.isWorkerWorktree()) return undefined
-    const baseline = workerBaseline(this.roomDoc.workerOf(this.name))
+    const baseline = workerBaseline(this.carriedFrom)
     return baseline?.sha === this.base && carriesWork(baseline) ? baseline : undefined
   }
 
   /** A local-room worker's base is the commit its lead carried it from (registry pins it). */
   private localCarriedBase(): string | undefined {
-    return this.isWorkerWorktree() ? workerBaseline(this.roomDoc.workerOf(this.name))?.sha : undefined
+    return this.isWorkerWorktree() ? workerBaseline(this.carriedFrom)?.sha : undefined
   }
 
   private async refreshShared(): Promise<void> {

@@ -7,18 +7,20 @@ import { join } from 'node:path'
 import { allocateWorkerPort, workerEnv, workerProcessEnv, workerPrompt } from '../src/worker-config.js'
 import { cleanupWorker } from '../src/worker-git.js'
 import { signalWorker, terminateWorktreeProcesses } from '../src/worker-process.js'
-import { Rooms } from '../src/registry.js'
-import { RoomDoc, type RetiredWorker } from '@room/shared'
+import { RoomDoc } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { handlers as joinHandlers } from '../src/tools/join.js'
 import { createWorkerRuntime } from '../src/tools/workers.js'
 import { type HandlerState } from '../src/tools/context.js'
-import { syncDocumentWorkers } from './registry-fixture.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
+import type { LocalWorker } from '../src/worker-status.js'
+import { finishWorker, registerWorkers, workerByTag } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
-/** No release notices to send here. */
-const ignore = () => {}
+/** A finished worker as the lifecycle helpers see it. */
+const done = (tag: string, dir: string): LocalWorker => ({ id: `w_${tag}`, tag, name: `lead+${tag}`, lead: 'lead', host: 'codex', task: 'task', dir, branch: `room/${tag}`,
+  pid: 0, startedAt: 1, status: 'done', exitCode: 0, budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full' })
 
 describe('worker lifecycle cleanup', () => {
   it('signals only processes whose resolved cwd is inside the worktree, then escalates survivors', async () => {
@@ -82,7 +84,7 @@ describe('worker lifecycle cleanup', () => {
       git('worktree', 'add', '-qb', 'room/a', dir)
       const names: string[] = []
       const signal = vi.fn()
-      expect(await cleanupWorker(root, { tag: 'a', name: 'lead+a', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/a', pid: -1, startedAt: 1, status: 'done', exitCode: 0 }, true, false, names, {
+      expect(await cleanupWorker(root, done('a', dir), true, false, names, {
         list: () => [{ pid: 12345, cwd: dir, command: 'astro dev' }], signal, probe: () => ({}), sleep: async () => {},
       })).toBe(true)
       expect(names).toEqual(['astro dev (pid 12345)'])
@@ -90,7 +92,7 @@ describe('worker lifecycle cleanup', () => {
       const explicit = join(root, 'existing-checkout')
       git('worktree', 'add', '-qb', 'room/explicit', explicit)
       signal.mockClear()
-      expect(await cleanupWorker(root, { tag: 'explicit', name: 'lead+explicit', lead: 'lead', host: 'codex', task: 'task', dir: explicit, branch: 'room/explicit', pid: -1, startedAt: 1, status: 'done', exitCode: 0 }, true, false, [], {
+      expect(await cleanupWorker(root, done('explicit', explicit), true, false, [], {
         list: () => [{ pid: 12345, cwd: explicit, command: 'editor' }], signal, sleep: async () => {},
       }, 'lead')).toBe(false)
       expect(signal).not.toHaveBeenCalled()
@@ -115,18 +117,16 @@ describe('worker lifecycle cleanup', () => {
       for (let i = 0; i < 100 && !existsSync(ready); i++) await new Promise(resolve => setTimeout(resolve, 10))
       expect(existsSync(ready)).toBe(true)
       const room = new RoomDoc()
-      const worker = { tag: 'a', name: 'lead+a', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/a', id: 'id', pid: 999999, startedAt: Date.now(), status: 'running' } as const
-      room.workers.set('a', worker as never)
-      const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: root, roomName: 'local/repo/main', me: { name: 'lead', kind: 'agent' } } as Session
-      await syncDocumentWorkers(s)
+      const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: root, roomName: 'local/repo/main', me: { name: 'lead', kind: 'agent' }, daemon: {} } as Session
+      await registerWorkers(s, [{ tag: 'a', name: 'lead+a', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/a', id: 'id', pid: 999999, startedAt: Date.now(), status: 'running' }])
       const kill = vi.fn(() => { child.kill('SIGTERM'); return true })
       const state = { ctx: { listCwdProcesses: () => [{ pid: child.pid!, cwd: dir, command: 'node' }] }, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
       const { dismissWorker } = createWorkerRuntime(state)
-      const reply = await dismissWorker(s, room.workers.get('a')!, 'stop')
+      const reply = await dismissWorker(s, workerByTag(root, 'a')!, 'stop')
       expect(reply).toMatch(new RegExp(`stopped processes: [^\\n]+ \\(pid ${child.pid}\\)`))
       expect(kill).toHaveBeenCalledOnce()
       room.doc.destroy()
-    } finally { child.kill('SIGKILL'); rmSync(root, { recursive: true, force: true }); rmSync(ready, { force: true }) }
+    } finally { child.kill('SIGKILL'); await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }); rmSync(ready, { force: true }) }
   })
 
   it('allocates a distinct port from the bounded worker range', () => {
@@ -138,23 +138,6 @@ describe('worker lifecycle cleanup', () => {
     const prompt = workerPrompt('lead', 'a', 'task', { threads: 1, memGb: 1, nice: 10, port: 4402 })
     expect(prompt).toContain('Your dev-server port is 4402')
     expect(prompt).toContain('Report progress in room_done; send notes only when the lead must know before you finish.')
-  })
-
-  it('sweeps an archived worker record left by an older collection', async () => {
-    const room = new RoomDoc()
-    const record: RetiredWorker = { name: 'lead+old', tag: 'old', lead: 'lead', host: 'codex', task: 'task', summary: '', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' }
-    room.retireParticipant(record.name, record, ignore)
-    room.workers.set(record.tag, { tag: record.tag, name: record.name, lead: record.lead, host: record.host, task: record.task, dir: '/missing', branch: 'room/old', pid: -1, startedAt: record.startedAt, status: 'done' })
-    room.setOverlay(record.name, 'old.ts', 'ghost')
-    const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: '/missing', me: { name: 'lead' }, roomName: 'local/repo/main' } as Session
-    let current: Session | null = s
-    const rooms = new Rooms({ primary: () => current, setPrimary: next => { current = next }, observeClaims() {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
-    rooms.track(s)
-    await rooms.retireWorkers(s)
-    expect(room.workers.has(record.tag)).toBe(false)
-    expect(room.changedPaths(record.name)).toEqual([])
-    rooms.remove(s)
-    room.doc.destroy()
   })
 
   it('room_leave waits for cwd cleanup and names stopped processes', async () => {
@@ -174,21 +157,23 @@ describe('worker lifecycle cleanup', () => {
   })
 
   it('shutdown times out a stalled dismissal without changing the worker record', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'room-stalled-'))
+    execFileSync('git', ['-C', root, 'init', '-q', '-b', 'main'], { stdio: 'pipe' })
     const room = new RoomDoc()
-    const worker = { id: 'stalled-id', tag: 'stalled', name: 'lead+stalled', lead: 'lead', host: 'codex' as const,
-      task: 'x', dir: '/missing', branch: 'room/stalled', pid: process.pid, processStartTime: 'test:start', startedAt: 1, status: 'running' as const }
-    room.setWorker(worker, ignore)
-    const before = { ...room.workers.get(worker.tag)! }
-    const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: '/missing', me: { name: 'lead', kind: 'agent' }, roomName: 'local/repo/main' } as Session
+    const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: root, me: { name: 'lead', kind: 'agent' }, roomName: 'local/repo/main', daemon: {} } as Session
+    await registerWorkers(s, [{ id: 'stalled-id', tag: 'stalled', name: 'lead+stalled', lead: 'lead', host: 'codex',
+      task: 'x', dir: join(root, '.room', 'workers', 'stalled'), branch: 'room/stalled', pid: process.pid, processStartTime: 'test:start', startedAt: 1, status: 'running' }])
+    const worker = workerByTag(root, 'stalled')!
+    const before = { ...worker }
     const log = vi.fn()
-    const state = createHandlerState({ getSession: () => s, setSession: () => {}, cwd: '/missing', leave: async () => {},
+    const state = createHandlerState({ getSession: () => s, setSession: () => {}, cwd: root, leave: async () => {},
       probe: () => ({ startTime: 'test:start', executable: 'codex' }), log })
     let release!: () => void
     const stalled = new Promise<void>(resolve => { release = resolve })
     state.runningWorkers = () => [{ s, w: worker }]
-    state.dismissWorker = async (_s, w, _why, _reason, cancelled) => {
+    state.dismissWorker = async (_s, w, _why, reason, cancelled) => {
       await stalled
-      if (!cancelled?.aborted) room.updateWorker(w.tag, { status: 'dismissed', stopReason: 'lead-session-ended' }, w.id)
+      if (!cancelled?.aborted) await finishWorker(s, w.tag, { status: 'dismissed', stopReason: reason })
       return 'late dismissal'
     }
     state.closeWorkersRoom = async () => {}
@@ -197,8 +182,9 @@ describe('worker lifecycle cleanup', () => {
       await state.shutdown()
       release()
       await stalled
-      expect(room.workers.get(worker.tag)).toEqual(before)
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(workerByTag(root, 'stalled')).toEqual(before)
       expect(log).toHaveBeenCalledWith('shutdown dismissal timed out for stalled; worker record kept for restart')
-    } finally { release(); room.doc.destroy() }
+    } finally { release(); room.doc.destroy(); await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }) }
   })
 })

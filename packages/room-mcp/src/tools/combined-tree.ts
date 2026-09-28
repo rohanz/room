@@ -8,6 +8,7 @@ import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { baselineText, checkoutText, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
 import { diskWorker, type HandlerState } from './context.js'
+import { carriedFrom, localWorkerBaseline, localWorkers } from '../worker-registry.js'
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
 export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
@@ -19,7 +20,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     let byPerson = previewWorkers.get(s)
     if (!byPerson) { byPerson = new Map(); previewWorkers.set(s, byPerson) }
     if (byPerson.has(person)) continue
-    const w = s.local || options.diskWorkers?.has(person) ? s.room.workerOf(person) : undefined
+    const w = s.local || options.diskWorkers?.has(person) ? localWorkers(s.dir, record => record.name === person)[0] : undefined
     const candidate = w?.lead === s.me.name ? w : diskWorker(s, person)
     const worker = candidate && decidePreview(await workerRealState(s.dir, candidate), true) === 'disk' ? candidate : undefined
     byPerson.set(person, worker)
@@ -75,10 +76,10 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   // A worker's own changes are its tree against its baseline (baseline.ts), whichever side calls:
   // a shared merge-base would count the lead's carried work as the worker's.
   const descends = (from: string, sha: string) => git(caller.dir, ['merge-base', '--is-ancestor', from, sha]).then(() => true, error => { if (isGitTimeout(error)) throw error; return false })
-  const callerWorker = caller.room.workerOf(caller.me.name)
+  const callerCarried = carriedFrom(caller.dir, caller.me.name), callerWorker = callerCarried?.baseline
   const callerBaseline = await pairBaseline(callerWorker, undefined, ancestor, descends)
   const pairs = new Map<string, Baseline | undefined>()
-  for (const { person, session } of participants) pairs.set(person, await pairBaseline(callerWorker, session.room.workerOf(person), ancestor, descends))
+  for (const { person, session } of participants) pairs.set(person, await pairBaseline(callerWorker, carriedFrom(session.dir, person)?.baseline, ancestor, descends))
   const deltaBases = new Map([...pairs].map(([person, pair]) => [person, pair?.sha ?? ancestor]))
   const pathSet = new Set<string>()
   /** Paths a participant may have changed; the rest only the caller changed. */
@@ -107,7 +108,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
       const worker = previewWorker(session, person)
       const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined)
-      let reason = workerOwnedPaths(session.room.workerOf(person)).includes(p) ? 'linked input' : undefined
+      let reason = workerOwnedPaths(localWorkerBaseline(session.dir, person)).includes(p) ? 'linked input' : undefined
       if (!reason && dir) {
         const root = rootOf(dir)
         try {
@@ -170,7 +171,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], sameChange: string[] = [], resolvable: string[] = []
     const pair = pairs.get(person)
     const leadBase = baseFor(session, person)
-    const leadUsesCarriedBase = !!pair && pair.worker === caller.me.name && person === callerWorker?.lead
+    const leadUsesCarriedBase = !!pair && pair.worker === caller.me.name && person === callerCarried?.lead
       && await descends(leadBase, pair.sha)
     for (const p of paths) {
       const mine = merged.get(p)

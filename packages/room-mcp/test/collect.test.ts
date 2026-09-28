@@ -11,8 +11,10 @@ import { RoomDoc, splitParticipants, workerLines } from '@room/shared'
 import * as Y from 'yjs'
 import { git as roomGit } from '@room/roomd/git'
 import { PolicyStore, sharingFile } from '../src/policy-store.js'
-import { syncDocumentWorkers } from './registry-fixture.js'
-import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { finishWorker, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
+import { closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
+import { projectWorkers } from '../src/worker-projector.js'
+import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
@@ -33,18 +35,28 @@ beforeEach(() => {
 })
 afterEach(async () => { await closeRegistryForDir(lead); fs.rmSync(root, { recursive: true, force: true }) })
 
-function setup(status = 'done') {
-  const w = { tag: 'test', name: 'lead+test', lead: 'lead', dir: worker, branch: 'room/test', status, summary: 'finished\nextra', base, host: 'codex', task: 'task', startedAt: 1 }
+/** Every lead's projector in the session's room, as each lead session would run it. */
+async function projectAll(s: Session): Promise<void> {
+  const registry = await registryForDir(s.dir)
+  for (const lead of new Set(registry.list().filter(r => r.room === s.roomName).map(r => r.lead.participant))) await projectWorkers(s, registry, lead, 'joined')
+}
+
+function setup(status: FixtureWorker['status'] = 'done') {
+  const w: FixtureWorker = { tag: 'test', name: 'lead+test', lead: 'lead', dir: worker, branch: 'room/test', status, summary: 'finished\nextra', base, host: 'codex', task: 'task', startedAt: 1, pid: 0 }
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ base, branch: 'main', repo: 'test' })
-  room.workers.set('test', w as never)
-  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, roomName: 'local/test', roomUrl: 'ws://127.0.0.1:1/local%2Ftest', me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } }
-  const retireWorkers = vi.fn(async () => {})
-  const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers }, workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
+  // Workers described before the first call; `sync` writes them to the registry once, as spawn would have.
+  const pending = new Map<string, FixtureWorker>([['test', w]])
+  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, roomName: 'local/test', roomUrl: 'ws://127.0.0.1:1/local%2Ftest', me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() }, daemon: { fence: 'test' } } as unknown as Session
+  const autoRetire = vi.fn(async () => {})
+  const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire, project: () => projectAll(s), hasHandle: () => false, tracking: () => true }, workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
+  const sync = async () => { if (pending.size) { await registerWorkers(s, [...pending.values()]); pending.clear() } }
+  const set = (tag: string, value: FixtureWorker) => { pending.set(tag, value) }
+  const get = (tag: string): FixtureWorker => { const found = pending.get(tag); if (!found) throw new Error(`worker ${tag} is already registered`); return found }
   return { call: async (args: Record<string, unknown>) => {
-    await syncDocumentWorkers(s as never)
+    await sync()
     return handlers(state).room_collect(args)
-  }, retireWorkers, state, s, w }
+  }, sync, set, get, pending, autoRetire, state, s, w }
 }
 
 const LINES = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\n'
@@ -61,7 +73,7 @@ function carry(t: ReturnType<typeof setup>, dir: string, tag: string, files: Rec
   git(dir, 'add', '-A'); git(dir, '-c', 'user.name=Room', '-c', 'user.email=room@localhost', 'commit', '-qm', 'room: carried-in uncommitted work from lead')
   const commit = git(dir, 'rev-parse', 'HEAD')
   git(dir, 'update-ref', `refs/room/carry/${tag}`, commit)
-  t.s.room.workers.set(tag, { ...t.s.room.workers.get(tag)!, base: commit, carriedBase: commit })
+  t.set(tag, { ...t.get(tag), base: commit, carriedBase: commit })
 }
 
 async function startWorktreeProcess() {
@@ -73,17 +85,17 @@ async function startWorktreeProcess() {
 }
 
 describe('room_collect', () => {
-  it.each(['done', 'dismissed', 'running'])('keeps a %s worker when its live pid cannot be verified', async status => {
+  it.each(['done', 'dismissed', 'running'] as const)('keeps a %s worker when its live pid cannot be verified', async status => {
     const t = setup(status)
     const current = { ...t.w, id: 'worker-id', pid: process.pid, startedAt: Date.now(), exitCode: status === 'running' ? undefined : 0 }
-    t.s.room.workers.set('test', current as never)
+    t.set('test', current)
     t.state.ctx = { listCwdProcesses: () => [], probe: () => ({}) } as never
     t.state.dismissWorker = vi.fn(async () => 'signalled')
     put(worker, 'new.txt', 'worker change')
     for (const args of [{ tag: 'test' }, { tag: 'test', discard: true }]) {
       const reply = await t.call(args)
       expect(reply).toContain(`could not verify test's process (pid ${process.pid}); left running, not stopped`)
-      expect(t.s.room.workers.get('test')).toMatchObject({ tag: 'test', status, pid: process.pid })
+      expect(workerByTag(lead, 'test')).toMatchObject({ tag: 'test', status, pid: process.pid })
       expect(fs.existsSync(worker)).toBe(true)
     }
     expect(t.state.dismissWorker).not.toHaveBeenCalled()
@@ -102,8 +114,9 @@ describe('room_collect', () => {
     expect(room.overlays.has(name)).toBe(false)
     expect(room.scopes.has(name)).toBe(false)
     expect(room.openClaims().filter(c => c.by === name)).toEqual([])
-    expect(room.workers.has(t.w.tag)).toBe(false)
-    const groups = splitParticipants({ presences: [], workers: [...room.workers.values()], retiredWorkers: room.retiredWorkers(), scopes: [...room.scopes.entries()], overlayPeople: [...room.overlays.keys()], changesByPerson: new Map(), claims: room.openClaims(), now: Date.now() })
+    expect(workerByTag(lead, t.w.tag)).toBeUndefined()
+    expect(room.workerViewOf(name)).toBeUndefined()
+    const groups = splitParticipants({ presences: [], workers: [...room.workerViews.values()], retiredWorkers: room.retiredWorkers(), scopes: [...room.scopes.entries()], overlayPeople: [...room.overlays.keys()], changesByPerson: new Map(), claims: room.openClaims(), now: Date.now() })
     expect([...groups.active, ...groups.offlineTeammates].map(p => p.name)).not.toContain(name)
   }
 
@@ -112,14 +125,14 @@ describe('room_collect', () => {
     git(lead, 'branch', '-D', 'room/test')
     worker = path.join(lead, '.room', 'workers', name)
     git(lead, 'worktree', 'add', '-qb', `room/${name}`, worker)
-    t.s.room.workers.delete(t.w.tag)
+    t.pending.delete(t.w.tag)
     Object.assign(t.w, { tag: `${name}-2`, name: `lead+${name}-2`, dir: worker, branch: `room/${name}` })
-    t.s.room.workers.set(t.w.tag, t.w as never)
+    t.set(t.w.tag, t.w)
   }
 
   it('retires collected worker with ignored output and shows only its kept worktree', async () => {
     const t = setup()
-    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
     // The worker's declared grant ended while new.txt was shared, so its policy retains that path.
@@ -143,7 +156,7 @@ describe('room_collect', () => {
   })
   it('refuses to stop a worker in an unmanaged existing directory', async () => {
     const t = setup('running')
-    t.s.room.workers.set('test', { ...t.w, dir: lead, branch: 'main', model: 'worker-model' } as never)
+    t.set('test', { ...t.w, dir: lead, branch: 'main', model: 'worker-model' })
     let alive = true
     const stopped = vi.fn(async () => { alive = false; return 'pid signalled' })
     t.state.workerAlive = () => alive
@@ -156,7 +169,7 @@ describe('room_collect', () => {
   })
   it('keeps a finished worker when process ownership becomes unknown during discard', async () => {
     const t = setup()
-    t.s.room.workers.set('test', { ...t.w, pid: 4242, processStartTime: 'fixed-start' } as never)
+    t.set('test', { ...t.w, pid: 4242, processStartTime: 'fixed-start' })
     let readable = true
     t.state.ctx = { listCwdProcesses: () => [], probe: () => readable ? { startTime: 'fixed-start', executable: 'codex' } : {} } as never
     t.state.dismissWorker = vi.fn(async () => {
@@ -166,13 +179,13 @@ describe('room_collect', () => {
     const reply = await t.call({ tag: 'test', discard: true })
     expect(reply).toContain("could not verify test's process")
     expect(reply).toContain('left running, not stopped')
-    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeDefined()
     expect(t.s.room.retiredWorkers()).toHaveLength(0)
     expect(fs.existsSync(worker)).toBe(true)
   })
   it('stops worktree processes even when ignored output keeps the collected worktree', async () => {
     const t = setup()
-    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
     const child = await startWorktreeProcess()
@@ -188,7 +201,7 @@ describe('room_collect', () => {
   it('cleans regenerable ignored output while retaining other ignored artifacts', async () => {
     fs.appendFileSync(path.join(lead, '.git/info/exclude'), 'dist/\n.astro/\ntest-results/\n.venv/\n')
     const t = setup()
-    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
     for (const p of ['dist/app.js', '.astro/cache.json', 'test-results/trace.zip']) put(worker, p, 'regenerable')
     const reply = await t.call({ tag: 'test' })
@@ -200,7 +213,7 @@ describe('room_collect', () => {
 
     const other = path.join(lead, '.room', 'workers', 'other')
     git(lead, 'worktree', 'add', '-qb', 'room/other', other)
-    t.s.room.workers.set('other', { ...t.w, tag: 'other', name: 'lead+other', dir: other, branch: 'room/other', exitCode: 0 } as never)
+    t.set('other', { ...t.w, tag: 'other', name: 'lead+other', dir: other, branch: 'room/other', exitCode: 0 })
     put(other, '.venv/lib.py', 'unrecoverable')
     const kept = await t.call({ tag: 'other' })
     expect(kept).toContain('kept .venv/')
@@ -209,7 +222,7 @@ describe('room_collect', () => {
 
   it('names a worktree server before the worker host exits during collect', async () => {
     const t = setup()
-    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'file.txt', 'worker edit\n')
     const child = await startWorktreeProcess()
     let live = true
@@ -237,11 +250,11 @@ describe('room_collect', () => {
 
   it('discards ignored output from a retired collected worker with force', async () => {
     const t = setup()
-    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt')
-    expect(t.s.room.workers.has('test')).toBe(false)
+    expect(workerByTag(lead, 'test')).toBeUndefined()
     expect(await t.call({ tag: 'test', discard: true })).toContain('discard refused; ignored artifacts')
     expect(fs.existsSync(worker)).toBe(true)
     expect(await t.call({ tag: 'test', discard: true, force: true })).toContain('discarded test')
@@ -251,7 +264,7 @@ describe('room_collect', () => {
   })
   it('refuses to forget a kept worktree that is no longer an owned Room worktree', async () => {
     const t = setup()
-    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt')
@@ -282,11 +295,11 @@ describe('room_collect', () => {
     expectRetired(t)
   })
 
-  function second(t: ReturnType<typeof setup>, status = 'done') {
+  function second(t: ReturnType<typeof setup>, status: FixtureWorker['status'] = 'done') {
     const dir = path.join(lead, '.room', 'workers', 'second')
     git(lead, 'worktree', 'add', '-qb', 'room/second', dir)
-    t.s.room.workers.set('second', { ...t.w, tag: 'second', name: 'lead+second', dir, branch: 'room/second', status, exitCode: 0, finishedAt: 1 } as never)
-    t.s.room.workers.set('test', { ...t.w, exitCode: 0, finishedAt: 2 } as never)
+    t.set('second', { ...t.w, tag: 'second', name: 'lead+second', dir, branch: 'room/second', status, exitCode: 0, finishedAt: 1 })
+    t.set('test', { ...t.w, exitCode: 0, finishedAt: 2 })
     return dir
   }
   it('collects all finished workers in finish order, unstaged, cleans both and leaves history unchanged', async () => {
@@ -301,7 +314,7 @@ describe('room_collect', () => {
     for (const dir of [worker, other]) expect(fs.existsSync(dir)).toBe(false)
     for (const tag of ['test', 'second']) expect(git(lead, 'branch', '--list', 'room/' + tag)).toBe('')
     expect(release).toHaveBeenCalledTimes(2)
-    expect(t.s.room.workers.size).toBe(0)
+    expect(localWorkers(lead)).toEqual([]); expect(t.s.room.workerViews.size).toBe(0)
   })
   it('skips a vanished worktree with its reason and still collects the other worker', async () => {
     const t = setup(), other = second(t)
@@ -311,7 +324,7 @@ describe('room_collect', () => {
     expect(result).toContain('skipped test: no local worker capability (worktree missing or unmanaged)')
     expect(result).toContain('Changes from second: survived.txt')
     expect(fs.readFileSync(path.join(lead, 'survived.txt'), 'utf8')).toBe('kept')
-    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeDefined()
   })
   it.each([false, true])('discards a vanished worktree with merged commits (pruned first: %s)', async pruned => {
     const t = setup()
@@ -328,7 +341,7 @@ describe('room_collect', () => {
     expect(reply).toContain('no local worker capability (worktree missing or unmanaged)')
     expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
     expect(git(lead, 'rev-parse', 'room/og-cards')).toBe(otherBranch)
-    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeDefined()
   })
   it('removes both worker logs when discarding an already vanished worktree', async () => {
     const t = setup()
@@ -350,7 +363,7 @@ describe('room_collect', () => {
     const reply = await t.call({ tag: 'test', discard: true })
     expect(reply).toContain('no local worker capability')
     expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
-    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeDefined()
   })
   it('keeps a user commit at the worker base after the lead resets behind it', async () => {
     const t = setup()
@@ -358,7 +371,7 @@ describe('room_collect', () => {
     git(lead, 'add', 'user.txt'); git(lead, 'commit', '-qm', 'user commit')
     const userCommit = git(lead, 'rev-parse', 'HEAD')
     git(worker, 'merge', '--ff-only', userCommit)
-    t.s.room.workers.set('test', { ...t.w, base: userCommit } as never)
+    t.set('test', { ...t.w, base: userCommit })
     git(lead, 'reset', '--hard', 'HEAD^')
     fs.rmSync(worker, { recursive: true, force: true })
     const reply = await t.call({ tag: 'test', discard: true })
@@ -374,7 +387,7 @@ describe('room_collect', () => {
     expect(reply).toContain('no local worker capability')
     expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
     expect(fs.readFileSync(path.join(lead, 'carried.txt'), 'utf8')).toBe('lead edit')
-    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeDefined()
   })
   it('keeps a vanished worker branch with a commit after the carried base', async () => {
     const t = setup()
@@ -387,7 +400,7 @@ describe('room_collect', () => {
     const reply = await t.call({ tag: 'test', discard: true })
     expect(reply).toContain('no local worker capability')
     expect(git(lead, 'rev-parse', 'room/test')).toBe(workerCommit)
-    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeDefined()
   })
   it('discards a legacy replacement record when its worktree and branch are already absent', async () => {
     const t = setup()
@@ -398,7 +411,7 @@ describe('room_collect', () => {
     git(lead, 'branch', '-D', 'room/og-sections')
     const reply = await t.call({ tag: 'og-sections-2', discard: true })
     expect(reply).toContain('no local worker capability')
-    expect(t.s.room.workers.has(t.w.tag)).toBe(true)
+    expect(workerByTag(lead, t.w.tag)).toBeDefined()
   })
   it('keeps commits on a legacy replacement branch after its worktree vanishes', async () => {
     const t = setup()
@@ -412,7 +425,7 @@ describe('room_collect', () => {
     const reply = await t.call({ tag: 'e2e-static-2', discard: true })
     expect(reply).toContain('no local worker capability')
     expect(git(lead, 'rev-parse', 'room/e2e-static')).toBe(branchCommit)
-    expect(t.s.room.workers.has(t.w.tag)).toBe(true)
+    expect(workerByTag(lead, t.w.tag)).toBeDefined()
   })
   it('explains that plain collect cannot collect a vanished worktree and leaves its record', async () => {
     const t = setup()
@@ -421,7 +434,7 @@ describe('room_collect', () => {
     const branchHead = git(lead, 'rev-parse', 'room/test')
     fs.rmSync(worker, { recursive: true, force: true })
     expect(await t.call({ tag: 'test' })).toContain('no local worker capability')
-    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeDefined()
     expect(git(lead, 'rev-parse', 'room/test')).toBe(branchHead)
   })
   it('names a missing cwd in the shared git helper error', async () => {
@@ -443,7 +456,7 @@ describe('room_collect', () => {
   })
   it('reports Directory not empty during cleanup and retains the worktree for recovery', async () => {
     const t = setup()
-    t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker edit')
     const bin = path.join(root, 'bin'); fs.mkdirSync(bin)
     const marker = path.join(root, 'remove-failed')
@@ -486,7 +499,7 @@ describe('room_collect', () => {
   })
   it('skips running and failed workers even with force', async () => {
     const t = setup('running'), other = second(t, 'failed')
-    t.s.room.workers.set('test', { ...t.w, status: 'running' } as never)
+    t.set('test', { ...t.w, status: 'running' })
     put(worker, 'running.txt', 'no'); put(other, 'failed.txt', 'no')
     const result = await t.call({ force: true })
     expect(result).toContain('skipped test: running'); expect(result).toContain('skipped second: failed')
@@ -509,12 +522,12 @@ describe('room_collect', () => {
   })
   it('breaks equal finish times by tag and leaves unrelated workers untouched', async () => {
     const t = setup(), other = second(t)
-    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, finishedAt: 1 })
-    t.s.room.workers.set('foreign', { ...t.w, tag: 'foreign', lead: 'someone-else' } as never)
+    t.set('test', { ...t.get('test'), finishedAt: 1 })
+    t.set('foreign', { ...t.w, tag: 'foreign', lead: 'someone-else' })
     put(worker, 'a.txt', 'a'); put(other, 'b.txt', 'b')
     expect(await t.call({})).toContain('Changes from second, test:')
-    expect(t.s.room.workers.has('foreign')).toBe(true)
-    expect(t.retireWorkers).not.toHaveBeenCalled()
+    expect(workerByTag(lead, 'foreign')).toBeDefined()
+    expect(t.autoRetire).not.toHaveBeenCalled()
   })
   it('preserves deletion versus an empty-file edit as a conflict', async () => {
     const t = setup(), other = second(t)
@@ -542,7 +555,7 @@ describe('room_collect', () => {
     expect(git(lead, 'status', '--porcelain')).toContain('?? new.txt')
   })
   it('applies binary output, executable bits and deletions, excluding linked inputs', async () => {
-    const t = setup(); t.s.room.workers.set('test', { ...t.w, link: ['data'] } as never)
+    const t = setup(); t.set('test', { ...t.w, link: ['data'] })
     put(lead, 'data/input', 'private'); fs.symlinkSync(path.join(lead, 'data'), path.join(worker, 'data'))
     fs.unlinkSync(path.join(worker, 'file.txt')); fs.writeFileSync(path.join(worker, 'binary'), Buffer.from([0, 255, 128, 1]))
     put(worker, 'run.sh', '#!/bin/sh\n'); fs.chmodSync(path.join(worker, 'run.sh'), 0o755)
@@ -553,7 +566,7 @@ describe('room_collect', () => {
     expect(fs.readFileSync(path.join(lead, 'data/input'), 'utf8')).toBe('private')
   })
   it('skips failed workers without touching their output', async () => {
-    const t = setup('failed'); t.s.room.workers.set('test', { ...t.w, exitCode: 1 } as never)
+    const t = setup('failed'); t.set('test', { ...t.w, exitCode: 1 })
     put(worker, 'new.txt', 'new'); expect(await t.call({ tag: 'test' })).toContain('skipped test: failed')
     expect(await t.call({ tag: 'test' })).toContain('exit code 1')
     expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
@@ -570,9 +583,9 @@ describe('room_collect', () => {
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
     await new Promise<void>(resolve => child.once('spawn', resolve))
     t.state.workerAlive = () => pidAlive(child.pid!)
-    t.state.dismissWorker = () => {
+    t.state.dismissWorker = async () => {
       signalWorker(child.pid!)
-      t.s.room.workers.set('test', { ...t.w, status: 'dismissed' } as never)
+      await finishWorker(t.s, 'test', { status: 'dismissed' })
       return 'signalled'
     }
     try {
@@ -583,7 +596,7 @@ describe('room_collect', () => {
       expect(fs.existsSync(worker)).toBe(false)
       expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
       expect(fs.existsSync(path.join(lead, '.room/workers'))).toBe(false)
-      expect(t.s.room.workers.size).toBe(0); expect(release).toHaveBeenCalled()
+      expect(localWorkers(lead)).toEqual([]); expect(t.s.room.workerViews.size).toBe(0); expect(release).toHaveBeenCalled()
       const patchDir = path.join(lead, '.git/room/registry/patches')
       const patches = fs.readdirSync(patchDir)
       expect(patches).toEqual(['w_test.patch'])
@@ -605,7 +618,7 @@ describe('room_collect', () => {
     expect(result).toContain(`retained worktree: ${worker}`)
     expect(result).not.toContain('node_modules')
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('generated model')
-    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeDefined()
   })
   it('discards regenerable ignored directories without force or an alarming deleted list', async () => {
     const t = setup('failed')
@@ -649,7 +662,7 @@ describe('room_collect', () => {
     expect(git(lead, 'write-tree')).toBe(before); expect(git(worker, 'rev-parse', 'HEAD')).toBe(base)
   })
   it('cleans successful fully applied workers and their logs', async () => {
-    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'new'); put(lead, '.room/workers/test.log', 'log'); put(lead, '.room/workers/test.mcp.log', 'log')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
     expect(fs.existsSync(worker)).toBe(false); expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
@@ -657,7 +670,7 @@ describe('room_collect', () => {
     expect(t.s.room.retiredWorkers()[0].disposition).toBe('collected')
   })
   it('applies ordinary changes but retains uncopied ignored artifacts and their worktree', async () => {
-    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'new'); put(worker, 'artifact.bin', 'diagnostic output')
     const result = await t.call({ tag: 'test' })
     expect(result).toContain('Changes from test: new.txt')
@@ -666,14 +679,14 @@ describe('room_collect', () => {
     expect(result).not.toContain('cleaned up test')
     expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('new')
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('diagnostic output')
-    expect(t.s.room.workers.has('test')).toBe(false)
+    expect(workerByTag(lead, 'test')).toBeUndefined()
     expect(t.s.room.retiredWorkers()[0].summary).toBe(`kept for ignored output at ${worker}`)
     expect(fs.existsSync(worker)).toBe(true)
   })
 
   it('merges a worker against its carried-in commit: the lead\'s later edits to carried lines survive and only the worker\'s lines land', async () => {
     commitLines()
-    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
     put(lead, 'app.py', LINES.replace('two', 'W')); put(lead, 'notes.txt', 'draft\n')
     carry(t, worker, 'test', { 'app.py': LINES.replace('two', 'W'), 'notes.txt': 'draft\n' })
     put(lead, 'app.py', LINES.replace('two', 'W2')); put(lead, 'notes.txt', 'draft 2\n')
@@ -700,12 +713,12 @@ describe('room_collect', () => {
   it('does not treat unchanged CRLF carried files as worker edits', async () => {
     commitLines()
     git(lead, 'config', 'core.autocrlf', 'true')
-    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
     const crlf = (value: string) => value.replace(/\n/g, '\r\n')
     put(lead, 'app.py', crlf(LINES.replace('two', 'W')))
     put(worker, 'app.py', crlf(LINES.replace('two', 'W')))
     git(worker, 'add', 'app.py'); git(worker, 'commit', '-qm', 'room: carried-in uncommitted work from lead')
-    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, base: git(worker, 'rev-parse', 'HEAD') })
+    t.set('test', { ...t.get('test'), base: git(worker, 'rev-parse', 'HEAD') })
     put(lead, 'app.py', crlf(LINES.replace('two', 'W2')))
     put(worker, 'new.txt', 'worker output\n')
     const result = await t.call({ tag: 'test' })
@@ -713,11 +726,11 @@ describe('room_collect', () => {
     expect(fs.readFileSync(path.join(lead, 'app.py'), 'utf8')).toBe(crlf(LINES.replace('two', 'W2')))
   })
   it('does not collect unchanged carried untracked files over later lead edits', async () => {
-    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
     put(lead, 'notes.txt', 'lead draft\n')
     put(worker, 'notes.txt', 'lead draft\n')
     const sha = git(worker, 'hash-object', '-w', 'notes.txt')
-    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, carriedUntracked: [{ path: 'notes.txt', sha }] })
+    t.set('test', { ...t.get('test'), carriedUntracked: [{ path: 'notes.txt', sha }] })
     put(lead, 'notes.txt', 'lead revised draft\n')
     put(worker, 'new.txt', 'worker output\n')
     const result = await t.call({ tag: 'test' })
@@ -725,22 +738,22 @@ describe('room_collect', () => {
     expect(fs.readFileSync(path.join(lead, 'notes.txt'), 'utf8')).toBe('lead revised draft\n')
   })
   it('preserves a later lead mode change on an unchanged carried untracked file', async () => {
-    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
     put(lead, 'run.sh', '#!/bin/sh\necho lead\n')
     put(worker, 'run.sh', '#!/bin/sh\necho lead\n')
     const sha = git(worker, 'hash-object', '-w', 'run.sh')
-    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, carriedUntracked: [{ path: 'run.sh', sha }] })
+    t.set('test', { ...t.get('test'), carriedUntracked: [{ path: 'run.sh', sha }] })
     fs.chmodSync(path.join(lead, 'run.sh'), 0o755)
     put(worker, 'new.txt', 'worker output\n')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt.')
     expect(fs.statSync(path.join(lead, 'run.sh')).mode & 0o777).toBe(0o755)
   })
   it('merges a changed carried untracked file against the lead copy', async () => {
-    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
     put(lead, 'notes.txt', LINES)
     put(worker, 'notes.txt', LINES)
     const sha = git(worker, 'hash-object', '-w', 'notes.txt')
-    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, carriedUntracked: [{ path: 'notes.txt', sha }] })
+    t.set('test', { ...t.get('test'), carriedUntracked: [{ path: 'notes.txt', sha }] })
     put(lead, 'notes.txt', LINES.replace('two', 'LEAD'))
     put(worker, 'notes.txt', LINES.replace('six', 'WORKER'))
     const result = await t.call({ tag: 'test' })
@@ -748,10 +761,10 @@ describe('room_collect', () => {
     expect(fs.readFileSync(path.join(lead, 'notes.txt'), 'utf8')).toBe(LINES.replace('two', 'LEAD').replace('six', 'WORKER'))
   })
   it('refuses a changed carried untracked file when its private base blob is missing', async () => {
-    const t = setup(); t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
     put(lead, 'notes.txt', 'lead revised\n')
     put(worker, 'notes.txt', 'worker revised\n')
-    t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, carriedUntracked: [{ path: 'notes.txt', sha: 'f'.repeat(40) }] })
+    t.set('test', { ...t.get('test'), carriedUntracked: [{ path: 'notes.txt', sha: 'f'.repeat(40) }] })
     const result = await t.call({ tag: 'test' })
     expect(result).toMatch(/Nothing written;.*missing private base blob: notes\.txt/i)
     expect(fs.readFileSync(path.join(lead, 'notes.txt'), 'utf8')).toBe('lead revised\n')
@@ -809,7 +822,7 @@ describe('room_collect', () => {
     t.state.workerAlive = () => alive
     release.mockImplementationOnce(() => { alive = true })
     expect(await t.call({ tag: 'test' })).toContain('kept test: clean exit not confirmed')
-    expect(t.s.room.workers.has('test')).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeDefined()
     expect(t.s.room.scopes.has(t.w.name)).toBe(true)
     expect(t.s.room.overlays.has(t.w.name)).toBe(true)
     expect(t.s.room.retiredWorkers()).toEqual([])
@@ -887,6 +900,7 @@ describe('worker preview', () => {
       others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
       baseFor: () => head, shareOf: () => 'full', liveText: async () => undefined,
     })
+    await t.sync()
     await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat config.txt && echo "1 passed"' })
     expect(fs.readFileSync(external, 'utf8')).toBe('outside stays intact\n')
   })
@@ -901,6 +915,7 @@ describe('worker preview', () => {
       others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
       baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,
     })
+    await t.sync()
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'test "$(od -An -tu1 fixture.bin | tr -s " " | xargs)" = "0 255 1" && test -x run.sh && echo "1 passed"' })
     expect(result).toContain('tests: PASSED (exit 0)')
   })
@@ -913,6 +928,7 @@ describe('worker preview', () => {
       withheld: () => 'lead+test shares intent only; ask them or wait for their push',
       baseFor: () => base, shareOf: () => 'intent', liveText: async () => undefined,
     })
+    await t.sync()
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
     expect(result).toContain('own-output.txt (lead+test only)')
   })
@@ -925,6 +941,7 @@ describe('worker preview', () => {
       withheld: () => 'lead+test shares intent only; ask them or wait for their push',
       baseFor: () => base, shareOf: () => 'intent', liveText: async () => undefined,
     })
+    await t.sync()
     expect(await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })).toBe("lead+test's worktree no longer exists; lead+test shares intent only; ask them or wait for their push")
   })
   it('previews a vanished local worker from its shared overlay instead of its checkout', async () => {
@@ -938,6 +955,7 @@ describe('worker preview', () => {
       baseFor: () => base, shareOf: () => 'full',
       liveText: async (_s: unknown, p: string) => p === 'shared.txt' ? 'shared change\n' : undefined,
     })
+    await t.sync()
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
     expect(result).toContain("lead+test's worktree no longer exists; previewing its shared overlay instead")
     expect(result).toContain('shared.txt')
@@ -957,7 +975,7 @@ describe('worker preview', () => {
     fs.symlinkSync(path.join(lead, 'data'), path.join(worker, 'data'))
     put(worker, 'new.txt', 'output')
     const t = setup()
-    if (recorded) t.s.room.workers.set('test', { ...t.s.room.workers.get('test')!, link: ['data'] })
+    if (recorded) t.set('test', { ...t.get('test'), link: ['data'] })
     const ws = { ...t.s, dir: worker, me: { name: 'lead+test', kind: 'agent' } }
     Object.assign(t.state, {
       rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
@@ -965,10 +983,12 @@ describe('worker preview', () => {
       baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,
     })
     const reason = recorded ? 'linked input' : 'symlink leaving the worktree'
+    await t.sync()
     const leadResult = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
     expect(leadResult).toContain(`NOT previewed (${reason}, lead+test): data`)
     expect(leadResult).toContain('new.txt (lead+test only)')
     t.state.S = () => ws as unknown as ReturnType<HandlerState['S']>
+    await t.sync()
     const workerResult = await fileHandlers(t.state).room_preview_merge({ person: 'lead' })
     expect(workerResult).toContain(`NOT previewed (${reason}, lead+test): data`)
     expect(workerResult).toContain('no conflicts')
@@ -983,9 +1003,10 @@ describe('worker preview', () => {
     Object.assign(t.state, {
       rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
       others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
-      baseFor: (_s: unknown, person: string) => person === 'lead' ? head : t.s.room.workers.get('test')!.base, shareOf: () => 'full',
+      baseFor: (_s: unknown, person: string) => person === 'lead' ? head : workerByTag(lead, 'test')!.base, shareOf: () => 'full',
       liveText: async () => undefined,
     })
+    await t.sync()
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat app.py notes.txt' })
     expect(result).toContain('both changed, merge cleanly: app.py')
     expect(result).not.toContain('notes.txt (lead+test')
@@ -1005,6 +1026,7 @@ describe('worker preview', () => {
         catch { return undefined }
       },
     })
+    await t.sync()
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat new.txt' })
     expect(result).toContain('new.txt (lead+test only)')
     expect(result).toContain('NOT previewed (gitignored, lead+test): artifact.bin')

@@ -105,7 +105,7 @@ describe('expiry authority (reporooms S5): observation epochs on the leader\'s o
     room.participants.set('legacy\0git', { branch: 'main', head: 'h', base: 'h', anchored: true, rev: 1, fence: '' })
     withRecord(room, 'lead+w', holder('w-s', 'w1'))
     withRecord(room, 'lead+x')
-    room.setWorker({ id: 'lead/x#1', tag: 'x', name: 'lead+x', host: 'codex', task: 't', dir: '/tmp/x', branch: 'room/x', pid: 1, startedAt: 1, status: 'running', lead: 'lead' }, ignore)
+    room.workerViews.set('w_x', { id: 'w_x', tag: 'x', name: 'lead+x', lead: 'lead', mode: 'here', host: 'codex', task: 't', branch: 'room/x', status: 'running', run: 1, startedAt: 1, fence: 'lead-s' })
     const c = clock(0)
     const tenure = new ExpiryTenure('ep_a', c.now)
     const view = [absent('legacy'), absent('lead+w'), absent('lead+x')]

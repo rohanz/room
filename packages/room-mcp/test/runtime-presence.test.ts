@@ -42,10 +42,8 @@ it('publishes runtime.json after the hook rewrites it, clears a missing model, a
   const { daemon } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room' }, 'worker')
   try {
     expect(daemon.provider.awareness.getLocalState()).toMatchObject({ model: 'gpt-6-astra' })
-    daemon.roomDoc.setWorker({ id: 'w1', tag: 'worker', name: 'Ada+worker', host: 'codex', task: '', dir, branch: 'main', pid: 1, lead: 'Ada', status: 'running', startedAt: 1 }, () => {})
     write('runtime.json', { model: 'actual-model', at: 200 })
     await expect.poll(() => daemon.provider.awareness.getLocalState()?.model).toBe('actual-model')
-    expect(daemon.roomDoc.workerOf('Ada+worker')?.model).toBe('actual-model')
     write('session.json', { session_id: 'worker-thread', host: 'codex', worker_id: 'w1', at: 300, chain: [], hostPid: 1 })
     await expect.poll(() => daemon.provider.awareness.getLocalState()?.model).toBeUndefined()
     expect(daemon.provider.awareness.getLocalState()?.effort).toBeUndefined()
@@ -79,7 +77,6 @@ it('touches for new hook activity of the bound session only', async () => {
 it('publishes a model the hook found in the Claude transcript on the next room tool call', async () => {
   const { dir, write } = boundWorker('claude')
   const { daemon, me, refreshRuntime } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room' }, 'worker')
-  daemon.roomDoc.setWorker({ id: 'w1', tag: 'worker', name: 'Ada+worker', host: 'claude', task: '', dir, branch: 'main', pid: 1, lead: 'Ada', status: 'running', startedAt: 1 }, () => {})
   const session = {
     room: daemon.roomDoc, provider: { ...daemon.provider, synced: true }, awareness: daemon.provider.awareness, daemon, me, ...hubSeam(daemon.roomDoc),
     dir, roomUrl: 'ws://unused/room', roomName: 'room', browserUrl: '', shareMax: 'full', shareRequested: 'full', pinnedRoom: true, refreshRuntime,
@@ -89,7 +86,6 @@ it('publishes a model the hook found in the Claude transcript on the next room t
     write('runtime.json', { model: 'claude-first', at: 200 })
     await tools.call('room_state', {})
     expect(daemon.provider.awareness.getLocalState()?.model).toBe('claude-first')
-    expect(daemon.roomDoc.workerOf('Ada+worker')?.model).toBe('claude-first')
     write('runtime.json', { model: 'claude-second', at: 300 })
     await tools.call('room_state', {})
     expect(daemon.provider.awareness.getLocalState()?.model).toBe('claude-second')

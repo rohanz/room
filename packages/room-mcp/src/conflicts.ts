@@ -15,7 +15,7 @@ import type { Post } from './post.js'
 import { gitMergeFile } from './merge.js'
 import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
-import { baselineText, readBaseline, carriedPaths, carriesWork, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
+import { baselineText, readBaseline, carriedPaths, carriesWork, pairBaseline, type Baseline } from '@room/roomd/baseline'
 
 const ROOM: Identity = { name: 'room', kind: 'agent' }
 
@@ -46,6 +46,8 @@ export interface ConflictDeps {
   coLocated?: (person: string) => boolean
   /** This session's symbol graph: other definers narrow a carried definition's consumers by import. */
   graph?: () => SymbolGraph | undefined
+  /** A participant's carried baseline and lead, when it is one of this clone's workers (the local registry). */
+  carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined
 }
 
 export interface Range { from: number; to: number }
@@ -75,7 +77,7 @@ export async function mergePath(d: ConflictDeps, person: string, path: string): 
   let m: string | undefined | null, t: string | undefined | null
   try { m = await d.liveText(path, d.me.name); t = await d.liveText(path, person) } catch { return { status: 'unknown', lines: [] } }
   const descends = async (from: string, sha: string) => (await d.mergeBase(from, sha).catch(() => '')) === from
-  const pair = await pairBaseline(d.room.workerOf(d.me.name), d.room.workerOf(person), ancestor, descends)
+  const pair = await pairBaseline(d.carriedFrom?.(d.me.name)?.baseline, d.carriedFrom?.(person)?.baseline, ancestor, descends)
   let b: string
   try { b = (pair ? await baselineText(pair, path, d.baseText) : await d.baseText(ancestor, path)) ?? '' } catch { return { status: 'unknown', lines: [] } }
   const mineT = m === null ? '' : m ?? b, theirs = t === null ? '' : t ?? b
@@ -200,20 +202,14 @@ export class ConflictWatcher {
 
   private checkAllObserved(): void {
     for (const person of this.d.room.graphs.keys()) if (person !== this.d.me.name) this.queueObserved(person)
-    const worker = this.workerRecord()
-    if (worker?.lead && !this.d.room.graphs.has(worker.lead)) this.queueObserved(worker.lead)
+    const lead = this.d.carriedFrom?.(this.d.me.name)?.lead
+    if (lead && !this.d.room.graphs.has(lead)) this.queueObserved(lead)
   }
 
-  private workerRecord() {
-    return [...this.d.room.workers.values()].find(worker => worker.name === this.d.me.name &&
-      (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID))
-  }
-
-  /** My worker record when `person` is my lead and spawn carried their uncommitted work into my base. */
+  /** My carried baseline when `person` is my lead and spawn carried their uncommitted work into my base. */
   private carriedWorkerFor(person: string) {
-    const worker = this.workerRecord()
-    const baseline = workerBaseline(worker)
-    return worker?.lead === person && carriesWork(baseline) ? baseline : undefined
+    const mine = this.d.carriedFrom?.(this.d.me.name)
+    return mine?.lead === person && carriesWork(mine.baseline) ? mine.baseline : undefined
   }
 
   /** Debounced per person, like merge checks: a burst of overlay events becomes one check. */

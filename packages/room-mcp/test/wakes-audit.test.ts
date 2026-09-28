@@ -1,22 +1,33 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc, type Worker } from '@room/shared'
+import { RoomDoc } from '@room/shared'
 import { Rooms } from '../src/registry.js'
 import { Ledger } from '../src/ledger.js'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
+import type { LocalWorker } from '../src/worker-status.js'
 import { createInbox, handlers } from '../src/tools/messaging.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
 
-/** No release notices to send here. */
-const ignore = () => {}
+/** The lead's worker `money`, as its registry lists it. */
+const money = (status: LocalWorker['status'], exitCode?: number): LocalWorker => ({ id: 'w_money', tag: 'money', name: 'lead+money', lead: 'lead',
+  host: 'codex', task: 't', dir: '/tmp/money', branch: 'room/money', pid: 1, startedAt: 1, status, ...(exitCode !== undefined ? { exitCode } : {}),
+  budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full' })
 
 const cleanups: (() => void)[] = []
 afterEach(() => { cleanups.splice(0).forEach(f => f()); vi.useRealTimers() })
 
 function fixture() {
   const sessions: Session[] = []
+  /** Each session's own workers (its registry), with the view its projector writes. */
+  const own = new Map<Session, LocalWorker[]>()
+  const addWorker = (s: Session, w: LocalWorker) => {
+    own.set(s, [...own.get(s) ?? [], w])
+    s.room.workerViews.set(w.id, { id: w.id, tag: w.tag, name: w.name, lead: w.lead, mode: 'local', host: w.host, task: w.task,
+      branch: w.branch, status: w.status === 'dismissed' ? 'stopped' : w.status, run: 1, startedAt: w.startedAt, fence: 'test',
+      ...(w.exitCode !== undefined ? { exitCode: w.exitCode } : {}) })
+  }
   const makeSession = (roomName: string) => {
     const room = new RoomDoc(), awareness = new Awareness(room.doc)
     awareness.setLocalState({ user: { name: 'lead', kind: 'agent' } })
@@ -26,16 +37,16 @@ function fixture() {
     return s
   }
   const main = makeSession('main')
-  const rooms = new Rooms({ primary: () => main, setPrimary() {}, observeClaims() {}, attach: () => ({ stop() {} }) })
+  const rooms = new Rooms({ primary: () => main, setPrimary() {}, attach: () => ({ stop() {} }) })
   const state = {
-    S: () => main, rooms, now: () => Date.now(), myWorkers: (s: Session) => Array.from(s.room.workers.values()),
+    S: () => main, rooms, now: () => Date.now(), myWorkers: (s: Session) => own.get(s) ?? [],
     workerAlive: () => true, presences: (s: Session) => Array.from(s.awareness.getStates().values()),
     upgrade: async () => [], setPresence: vi.fn(), forMe: (s: Session, m: { to?: string }) => m.to === s.me.name,
     ledger: new Ledger({ sessionId: () => 'test-session', route: () => ({}) }), scheduleInboxWrite: vi.fn(), mine: () => [], msgInMyAreas: () => false,
     others: () => [], upgraded: new Set<string>(), log: vi.fn(),
   } as unknown as HandlerState
   cleanups.push(() => sessions.forEach(s => { rooms.remove(s); s.awareness.destroy(); s.room.doc.destroy() }))
-  return { main, rooms, makeSession, state, tools: handlers(state) }
+  return { main, rooms, makeSession, addWorker, state, tools: handlers(state) }
 }
 
 it('accepts message as an alias for room_send text', async () => {
@@ -55,10 +66,9 @@ it('infers the asker for an explicit inReplyTo when to is omitted', async () => 
 })
 
 it('refuses an explicit inReplyTo when the question is already answered, without resuming or posting', async () => {
-  const { main, rooms, tools } = fixture()
-  const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
-    branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
-  main.room.setWorker(worker, ignore)
+  const { main, rooms, addWorker, tools } = fixture()
+  const worker = money('done', 0)
+  addWorker(main, worker)
   const answered = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Already handled?' })
   hubAppend(main.room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: answered.id, text: 'Yes' })
   const open = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
@@ -71,10 +81,9 @@ it('refuses an explicit inReplyTo when the question is already answered, without
 })
 
 it('refuses an explicit inReplyTo addressed to someone else, without resuming or posting', async () => {
-  const { main, rooms, tools } = fixture()
-  const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
-    branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
-  main.room.setWorker(worker, ignore)
+  const { main, rooms, addWorker, tools } = fixture()
+  const worker = money('done', 0)
+  addWorker(main, worker)
   const wrong = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'someone-else', text: 'Private question?' })
   const open = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
   const resume = vi.spyOn(rooms, 'resumeWorker')
@@ -150,10 +159,9 @@ it('lists multiple unanswered questions with previews when inReplyTo is omitted'
 })
 
 it.each(['answered', 'new question'] as const)('posts an inferred answer after worker resume when %s arrives', async change => {
-  const { main, rooms, tools } = fixture()
-  const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
-    branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
-  main.room.setWorker(worker, ignore)
+  const { main, rooms, addWorker, tools } = fixture()
+  const worker = money('done', 0)
+  addWorker(main, worker)
   const question = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
   const resume = vi.spyOn(rooms, 'resumeWorker').mockImplementation(async (_session, _worker, prompt) => {
     expect(prompt).toBe('price_cents')
@@ -189,11 +197,10 @@ it('caps oversized waits at 100 seconds and says to call again', async () => {
 })
 
 it('surfaces an addressed worker question before a routine note while waiting', async () => {
-  const { main, rooms, makeSession, tools } = fixture()
+  const { main, rooms, makeSession, addWorker, tools } = fixture()
   const workers = makeSession('workers'); rooms.add(workers, 'workers')
-  const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
-    branch: 'room/money', pid: 1, startedAt: 1, status: 'running' }
-  workers.room.setWorker(worker, ignore)
+  const worker = money('running')
+  addWorker(workers, worker)
   hubAppend(main.room, { name: 'Ada', kind: 'agent' }, { type: 'note', to: 'lead', text: 'routine' })
   hubAppend(workers.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })
   const result = await tools.room_wait({ timeoutMs: 10 })

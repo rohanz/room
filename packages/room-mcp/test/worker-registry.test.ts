@@ -11,8 +11,6 @@ import { idleClaimsDue, type WorkerRecord } from '../src/worker-status.js'
 import { RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
 import { memoryFile, saveMemory } from '../../relay/src/memory.js'
 
-/** No release notices to send here. */
-const ignore = () => {}
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -331,8 +329,9 @@ describe('WorkerRegistry durable store', () => {
     const commonDir = path.resolve(dir, git('rev-parse', '--git-common-dir'))
     const oldId = 'lead/tests#1'
     const old = new RoomDoc()
-    old.setWorker({ id: oldId, tag: 'tests', name: 'lead+tests', lead: 'lead', host: 'claude', task: 'old task',
-      dir: workerDir, branch: 'room/tests', pid: 1, startedAt: 1, status: 'done', summary: 'old summary' }, ignore)
+    // A 0.16 snapshot's tag-keyed `workers` map, which the migration still reads.
+    old.doc.getMap('workers').set('tests', { id: oldId, tag: 'tests', name: 'lead+tests', lead: 'lead', host: 'claude', task: 'old task',
+      dir: workerDir, branch: 'room/tests', pid: 1, startedAt: 1, status: 'done', summary: 'old summary' })
     const snapshotDir = path.join(commonDir, 'room-local')
     fs.mkdirSync(snapshotDir, { recursive: true })
     fs.writeFileSync(path.join(snapshotDir, `${encodeURIComponent('local/repo/main')}.ydoc`), Y.encodeStateAsUpdate(old.doc))

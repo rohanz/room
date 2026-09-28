@@ -19,7 +19,7 @@ import { Ledger } from '../ledger.js'
 import { createRelevance } from '../relevance.js'
 import { decideShutdown, workerRealState } from '../worker-state.js'
 import { hasCompany } from '../company.js'
-import { repairRetired } from '../retire.js'
+import { localWorkerBaseline } from '../worker-registry.js'
 import { diskWorker, workerText, NeedFetch, NotJoined, type HandlerState, type ToolCtx } from './context.js'
 
 export function createHandlerState(ctx: ToolCtx): HandlerState {
@@ -67,17 +67,14 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
         if (bridge) { bridge.stop(); if (roomBridge === bridge) roomBridge = null }
       },
       flush: () => watcher?.flush() ?? Promise.resolve(),
+      project: () => bridge?.sync() ?? Promise.resolve(),
     }
   }
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => claims.observeClaims(s), attach, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), attach, log, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
 
   const S = (): Session => {
     const s = ctx.getSession()
     if (!s) throw new NotJoined()
-    for (const roomSession of new Set([s, ...rooms.all()])) {
-      const present = new Set(Array.from(roomSession.awareness?.getStates().values() ?? []).flatMap(p => p.user?.name ? [p.user.name] : []))
-      repairRetired(roomSession, present)
-    }
     return s
   }
   const isMe = (s: Session, p: { name: string; kind: string }) => p.name === s.me.name && p.kind === s.me.kind
@@ -90,7 +87,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     for (const p of presences(s)) names.add(p.user.name)
     names.delete(s.me.name)
     const retired = new Set(s.room.retiredWorkers().map(w => w.name))
-    return Array.from(names).filter(n => !isPrName(n) && (!retired.has(n) || s.room.workerOf(n))).sort() // PR mirrors and retired workers are not routed to
+    return Array.from(names).filter(n => !isPrName(n) && (!retired.has(n) || s.room.workerViewOf(n))).sort() // PR mirrors and retired workers are not routed to
   }
   const presences = (s: Session): SharePresence[] =>
     Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)
@@ -118,8 +115,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const baseFor = (s: Session, person: string) => {
     const worker = diskWorker(s, person)
     if (worker) return worker.base ?? base(s)
-    const record = s.room.workerOf(person)
-    if (workerBaseline(record)?.carriedCommit && (record!.lead === s.me.name || s.room.workerOf(s.me.name)?.lead === record!.lead)) return record!.base!
+    const record = localWorkerBaseline(s.dir, person)
+    if (workerBaseline(record)?.carriedCommit && (record!.lead === s.me.name || localWorkerBaseline(s.dir, s.me.name)?.lead === record!.lead)) return record!.base!
     return s.room.baseOf(person) ?? base(s)
   }
   const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(diskWorker(s, person)?.dir ?? s.dir, baseFor(s, person), path)
@@ -133,7 +130,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     if (ov !== undefined) return ov
     try { return await baseText(s, path, person) }
     catch (e) {
-      const sha = baseFor(s, person), worker = s.room.workerOf(person), baseline = workerBaseline(worker)
+      const sha = baseFor(s, person), worker = localWorkerBaseline(s.dir, person), baseline = workerBaseline(worker)
       throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker!.lead : undefined)
     }
   }

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Worker } from '@room/shared'
+import type { LocalWorker } from '../src/worker-status.js'
 import { decideCollect, decideDiscard, decideLeave, decidePreview, decideRetire, decideShutdown, decideStop, processExited, workerRealState, type WorkerRealState } from '../src/worker-state.js'
 
-const worker: Worker = { id: 'lead/w#1', name: 'lead+w', lead: 'lead', tag: 'w', host: 'codex', task: 'task', dir: '/missing/.room/workers/w', branch: 'room/w', pid: 123, startedAt: 1, status: 'done', exitCode: 0, hostSessionId: 'session' }
+const worker: LocalWorker = { id: 'w_w', budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full', name: 'lead+w', lead: 'lead', tag: 'w', host: 'codex', task: 'task', dir: '/missing/.room/workers/w', branch: 'room/w', pid: 123, startedAt: 1, status: 'done', exitCode: 0, hostSessionId: 'session' }
 const base: WorkerRealState = { worktree: 'present', owned: true, branch: 'present', ahead: 0, process: 'not-ours', hostSession: true, finished: true, status: 'done', exitCode: 0, dismissed: false, clean: true, merged: false, uncommitted: 0 }
 
 describe('workerRealState probes', () => {

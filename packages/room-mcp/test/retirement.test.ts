@@ -1,11 +1,11 @@
-import { patchPublisher } from './registry-fixture.js'
-import { syncDocumentWorkers } from './registry-fixture.js'
+import { finishWorker, fixtureId, patchPublisher, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RoomDoc, type Worker } from '@room/shared'
+import { RoomDoc } from '@room/shared'
+import { closeRegistryForDir, localWorkers } from '../src/worker-registry.js'
 import { prepareWorktree, saveDiscardPatch } from '../src/worker-git.js'
 import { worktreeGitDirFromDotGit } from '@room/roomd'
 import { PolicyStore, sharingFile } from '../src/policy-store.js'
@@ -17,17 +17,17 @@ import type { HandlerState } from '../src/tools/context.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
-/** No release notices to send here. */
-const ignore = () => {}
-
 const facts: WorkerRealState = { worktree: 'present', process: 'not-ours', hostSession: false, finished: true, status: 'done', dismissed: false, merged: false, clean: false, ahead: 1 }
-const workerGitFacts = async (dir: string, w: Worker) => {
+// Seeding a registry worker takes seconds (lease guards and process probes).
+vi.setConfig({ testTimeout: 60_000 })
+
+const workerGitFacts = async (dir: string, w: FixtureWorker) => {
   const state = await workerRealState(dir, w, { git: true, leadName: w.lead })
   return { merged: state.merged ?? false, clean: state.clean ?? false, ahead: state.ahead, ...(state.uncommitted !== undefined ? { uncommitted: state.uncommitted } : {}) }
 }
-const worker = (dir: string): Worker => ({ id: 'lead/w#1', name: 'lead+w', tag: 'w', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/w', pid: -1, startedAt: 1, status: 'done', summary: 'done', exitCode: 0 })
+const worker = (dir: string): FixtureWorker => ({ id: 'lead/w#1', name: 'lead+w', tag: 'w', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/w', pid: -1, startedAt: 1, status: 'done', summary: 'done', exitCode: 0 })
 const dirs: string[] = []
-afterEach(() => { vi.useRealTimers(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
+afterEach(async () => { vi.useRealTimers(); for (const dir of dirs.splice(0)) { await closeRegistryForDir(dir); rmSync(dir, { recursive: true, force: true }) } })
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'room-retirement-')); dirs.push(dir)
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString().trim()
@@ -36,12 +36,17 @@ function repo() {
   return { dir, git }
 }
 function registry(dir: string) {
+  // Local state is already migrated: worktrees these tests create are registered by the fixture, not imported.
+  mkdirSync(join(dir, '.git', 'room', 'registry'), { recursive: true })
+  writeFileSync(join(dir, '.git', 'room', 'registry', 'migration.json'), JSON.stringify({ v: 1, sources: {}, done: true }))
   const room = new RoomDoc()
-  const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir, me: { name: 'lead' }, roomName: 'local/repo/main', roomUrl: 'ws://team/local%2Frepo%2Fmain' } as Session
+  const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir, me: { name: 'lead' }, roomName: 'local/repo/main', roomUrl: 'ws://team/local%2Frepo%2Fmain',
+    daemon: { fence: 'lead-session' } } as unknown as Session
   let primary: Session | null = s
-  const rooms = new Rooms({ primary: () => primary, setPrimary: p => { primary = p }, observeClaims() {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
+  const rooms = new Rooms({ primary: () => primary, setPrimary: p => { primary = p }, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
   rooms.track(s)
-  return { room, s, rooms, close: () => { rooms.remove(s); room.doc.destroy() } }
+  const has = (tag: string) => !!workerByTag(dir, tag)
+  return { room, s, rooms, has, close: () => { rooms.remove(s); room.doc.destroy() } }
 }
 
 describe('decideRetire', () => {
@@ -84,12 +89,12 @@ describe('git facts and lead evaluation', () => {
     writeFileSync(join(w.dir, 'worker.txt'), 'work')
     execFileSync('git', ['-C', w.dir, 'add', 'worker.txt'])
     execFileSync('git', ['-C', w.dir, 'commit', '-qm', 'worker'])
-    r.room.setWorker(w, ignore)
+    await registerWorkers(r.s, [w])
     r.room.setOverlay(w.name, 'worker.txt', 'work')
     r.room.addClaim({ by: w.name, byKind: 'agent', path: 'worker.txt', from: 1, to: 1, intent: 'work' })
     rmSync(w.dir, { recursive: true, force: true })
-    await r.rooms.retireWorkers()
-    expect(r.room.workers.has(w.tag)).toBe(false)
+    await r.rooms.autoRetire()
+    expect(r.has(w.tag)).toBe(false)
     expect(r.room.overlays.has(w.name)).toBe(false)
     expect(r.room.openClaims().filter(c => c.by === w.name)).toEqual([])
     expect(git('branch', '--list', 'room/w')).toContain('room/w')
@@ -100,10 +105,10 @@ describe('git facts and lead evaluation', () => {
     const { dir, git } = repo(), r = registry(dir)
     const prepared = await prepareWorktree(dir, 'w', 'lead')
     const w = { ...worker(prepared.dir), hostSessionId: 'host-session' }
-    r.room.setWorker(w, ignore)
+    await registerWorkers(r.s, [w])
     rmSync(w.dir, { recursive: true, force: true })
-    await r.rooms.retireWorkers()
-    expect(r.room.workers.get('w')).toBeDefined()
+    await r.rooms.autoRetire()
+    expect(r.has('w')).toBe(true)
     expect(git('branch', '--list', 'room/w')).toContain('room/w')
     r.close()
   })
@@ -113,14 +118,14 @@ describe('git facts and lead evaluation', () => {
     const prepared = await prepareWorktree(dir, 'w', 'lead')
     const w = { ...worker(prepared.dir), base: prepared.base }
     writeFileSync(join(w.dir, 'artifact.bin'), 'worker artifact')
-    r.room.setWorker(w, ignore)
-    await r.rooms.retireWorkers()
+    await registerWorkers(r.s, [w])
+    await r.rooms.autoRetire()
     expect(existsSync(join(w.dir, 'artifact.bin'))).toBe(true)
-    expect(r.room.workers.get('w')).toBeDefined()
+    expect(r.has('w')).toBe(true)
     expect(r.room.retiredWorkers()).toEqual([])
-    r.room.updateWorker('w', { status: 'dismissed', dismissedAt: 2 })
-    await r.rooms.retireWorkers()
-    expect(r.room.workers.get('w')).toBeDefined()
+    await finishWorker(r.s, 'w', { status: 'dismissed' })
+    await r.rooms.autoRetire()
+    expect(r.has('w')).toBe(true)
     expect(r.room.retiredWorkers()).toEqual([])
     r.close()
   })
@@ -128,9 +133,9 @@ describe('git facts and lead evaluation', () => {
   it('retains the record when automatic worktree cleanup cannot safely complete', async () => {
     const { dir } = repo(), r = registry(dir)
     const w = { ...worker(dir), branch: 'main' }
-    r.room.setWorker(w, ignore)
-    await r.rooms.retireWorkers()
-    expect(r.room.workers.get('w')).toBeDefined()
+    await registerWorkers(r.s, [w])
+    await r.rooms.autoRetire()
+    expect(r.has('w')).toBe(true)
     expect(r.room.retiredWorkers()).toEqual([])
     r.close()
   })
@@ -142,8 +147,8 @@ describe('git facts and lead evaluation', () => {
     expect(prepared.carried?.commit).toBe(prepared.base)
     const w = { ...worker(prepared.dir), base: prepared.base }
     expect(await workerGitFacts(dir, w)).toEqual({ merged: false, clean: true, ahead: 0, uncommitted: 0 })
-    r.room.setWorker(w, ignore)
-    await r.rooms.retireWorkers()
+    await registerWorkers(r.s, [w])
+    await r.rooms.autoRetire()
     expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'clean' }])
     expect(existsSync(prepared.dir)).toBe(false)
     expect(git('rev-parse', 'HEAD')).not.toBe(prepared.base)
@@ -185,8 +190,7 @@ describe('git facts and lead evaluation', () => {
     writeFileSync(join(dir, 'a'), 'lead WIP')
     const prepared = await prepareWorktree(dir, 'w', 'lead')
     const w = { ...worker(prepared.dir), base: prepared.base }
-    r.room.setWorker(w, ignore)
-    await syncDocumentWorkers(r.s)
+    await registerWorkers(r.s, [w])
     let alive = true
     const state = {
       S: () => r.s, rooms: r.rooms, now: Date.now, workerAlive: () => alive,
@@ -212,10 +216,10 @@ describe('git facts and lead evaluation', () => {
     execFileSync('git', ['-C', w.dir, 'commit', '-qam', 'output'])
     git('merge', '--ff-only', w.branch)
     expect(execFileSync('git', ['-C', w.dir, 'status', '--porcelain']).toString()).toBe('?? data\n')
-    r.room.setWorker(w, ignore)
+    await registerWorkers(r.s, [w])
     r.room.setOverlay(w.name, 'a', 'worker output')
-    await r.rooms.retireWorkers()
-    expect(r.room.workers.has(w.tag)).toBe(false)
+    await r.rooms.autoRetire()
+    expect(r.has(w.tag)).toBe(false)
     expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'merged' }])
     expect(r.room.changedPaths(w.name)).toEqual([])
     r.close()
@@ -238,34 +242,34 @@ describe('git facts and lead evaluation', () => {
     const { dir, git } = repo(), r = registry(dir), work = join(dir, '.room', 'workers', 'w')
     git('worktree', 'add', '-qb', 'room/w', work)
     const w = worker(work)
-    r.room.setWorker(w, ignore)
+    await registerWorkers(r.s, [w])
     r.room.setOverlay(w.name, 'a', 'published')
     const proc = { pid: 1, onExit() {}, kill: () => true }
-    r.rooms.setHandle(r.s, w.id!, proc)
-    await r.rooms.retireWorkers(); expect(r.room.workers.has(w.tag)).toBe(true)
-    r.rooms.dropHandle(r.s, w.id, proc)
-    await r.rooms.retireWorkers()
-    expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'clean', files: ['a'], summary: 'done' }])
-    r.room.setWorker({ ...w, startedAt: 2, status: 'failed' }, ignore)
-    await r.rooms.retireWorkers(); expect(r.room.workers.has(w.tag)).toBe(true)
-    r.room.updateWorker(w.tag, { dismissedAt: 3 })
-    await r.rooms.retireWorkers(); expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('dismissed')
-    r.room.setWorker({ ...w, lead: 'someone else' }, ignore)
-    await r.rooms.retireWorkers(); expect(r.room.workers.has(w.tag)).toBe(true)
+    r.rooms.setHandle(r.s, fixtureId(w), proc)
+    await r.rooms.autoRetire(); expect(r.has(w.tag)).toBe(true)
+    r.rooms.dropHandle(r.s, fixtureId(w), proc)
+    await r.rooms.autoRetire()
+    expect(r.room.retiredWorkers()).toMatchObject([{ id: fixtureId(w), outcome: 'clean', files: ['a'], summary: 'done' }])
+    await registerWorkers(r.s, [{ ...w, id: 'w_second', startedAt: 2, status: 'failed' }])
+    await r.rooms.autoRetire(); expect(r.has(w.tag)).toBe(true)
+    await finishWorker(r.s, w.tag, { status: 'dismissed' })
+    await r.rooms.autoRetire(); expect(r.room.retiredWorkers().at(-1)).toMatchObject({ id: 'w_second', outcome: 'dismissed' })
+    await registerWorkers(r.s, [{ ...w, id: 'w_third', lead: 'someone else' }])
+    await r.rooms.autoRetire(); expect(r.has(w.tag)).toBe(true)
     r.close()
   })
 
   it('evaluates on the slow timer and cancels it when the session leaves', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const { dir } = repo(), r = registry(dir), missing = join(dir, '.room', 'workers', 'w')
-    r.room.setWorker({ ...worker(missing), status: 'failed', dismissedAt: 2 }, ignore)
+    await registerWorkers(r.s, [{ ...worker(missing), status: 'dismissed' }])
     await vi.advanceTimersByTimeAsync(60_000)
-    await r.rooms.retireWorkers()
+    await r.rooms.autoRetire()
     expect(r.room.retiredWorkers()).toHaveLength(1)
     r.rooms.remove(r.s)
-    r.room.setWorker({ ...worker(missing), startedAt: 2, dismissedAt: 3 }, ignore)
+    await registerWorkers(r.s, [{ ...worker(missing), id: 'w_later', startedAt: 2, status: 'dismissed' }])
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(r.room.workers.size).toBe(1)
+    expect(localWorkers(dir)).toHaveLength(1)
     r.room.doc.destroy()
   })
 })
@@ -274,24 +278,24 @@ it('keeps uncommitted work visible until the lead commits and merges it; merged 
   const { dir, git } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w')
   const w = { ...worker(prepared.dir), base: prepared.base }
-  r.room.setWorker(w, ignore)
+  await registerWorkers(r.s, [w])
   writeFileSync(join(w.dir, 'a'), 'worker edit')
   writeFileSync(join(w.dir, 'new\nfile'), 'untracked')
   r.room.setOverlay(w.name, 'a', 'worker edit')
-  await r.rooms.retireWorkers()
-  expect(r.room.workers.has(w.tag)).toBe(true)
+  await r.rooms.autoRetire()
+  expect(r.has(w.tag)).toBe(true)
   expect(r.room.changedPaths(w.name)).toEqual(['a'])
   expect(await workerGitFacts(dir, w)).toMatchObject({ ahead: 0, clean: false, uncommitted: 2 })
   execFileSync('git', ['-C', w.dir, 'add', '.'])
   execFileSync('git', ['-C', w.dir, 'commit', '-qm', 'lead commits worker work'])
-  await r.rooms.retireWorkers()
-  expect(r.room.workers.has(w.tag)).toBe(true)
+  await r.rooms.autoRetire()
+  expect(r.has(w.tag)).toBe(true)
   git('merge', '--ff-only', w.branch)
   writeFileSync(join(w.dir, 'a'), 'dirty after merge')
-  await r.rooms.retireWorkers()
-  expect(r.room.workers.has(w.tag)).toBe(true)
+  await r.rooms.autoRetire()
+  expect(r.has(w.tag)).toBe(true)
   execFileSync('git', ['-C', w.dir, 'restore', 'a'])
-  await r.rooms.retireWorkers()
+  await r.rooms.autoRetire()
   expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'merged' }])
   expect(r.room.changedPaths(w.name)).toEqual([])
   r.close()
@@ -301,24 +305,24 @@ it('retires clean zero-commit and legacy workers as clean, and archives dismisse
   const { dir } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w')
   const w = { ...worker(prepared.dir), base: prepared.base }
-  r.room.setWorker(w, ignore)
-  await r.rooms.retireWorkers()
+  await registerWorkers(r.s, [w])
+  await r.rooms.autoRetire()
   expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'clean' }])
   // a clean retirement removes the worktree and its branch; the next worker of that tag starts fresh
   expect(existsSync(w.dir)).toBe(false)
   await prepareWorktree(dir, 'w')
-  const legacy = { ...w, base: undefined, startedAt: 2 }
+  const legacy = { ...w, id: 'w_legacy', base: undefined, startedAt: 2 }
   writeFileSync(join(w.dir, 'a'), 'two')
   execFileSync('git', ['-C', w.dir, 'commit', '-qam', 'change'])
   execFileSync('git', ['-C', dir, 'merge', '--ff-only', w.branch])
-  r.room.setWorker(legacy, ignore)
-  await r.rooms.retireWorkers()
+  await registerWorkers(r.s, [legacy])
+  await r.rooms.autoRetire()
   expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('clean')
   await prepareWorktree(dir, 'w')
   writeFileSync(join(w.dir, 'a'), 'three')
   writeFileSync(join(w.dir, 'new'), 'untracked')
-  r.room.setWorker({ ...w, startedAt: 3, dismissedAt: 4 }, ignore)
-  await r.rooms.retireWorkers()
+  await registerWorkers(r.s, [{ ...w, id: 'w_dismissed', startedAt: 3, status: 'dismissed' }])
+  await r.rooms.autoRetire()
   expect(r.room.retiredWorkers().at(-1)).toMatchObject({ outcome: 'dismissed', uncommitted: 2 })
   r.close()
 })
@@ -326,14 +330,14 @@ it('retires clean zero-commit and legacy workers as clean, and archives dismisse
 it('clears a dismissed dirty worker sharing record while keeping another room', async () => {
   const { dir } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w', 'lead')
-  const w = { ...worker(prepared.dir), base: prepared.base, status: 'dismissed' as const, dismissedAt: 2 }
+  const w = { ...worker(prepared.dir), base: prepared.base, status: 'dismissed' as const }
   writeFileSync(join(w.dir, 'a'), 'dirty work')
   await PolicyStore.open({ dir: w.dir, room: r.s.roomName, participant: w.name, requested: 'declared' })
   await PolicyStore.open({ dir: w.dir, room: 'repo/main', participant: w.name, requested: 'declared' })
   const sharing = await sharingFile(w.dir, r.s.roomName, w.name)
   const other = await sharingFile(w.dir, 'repo/main', w.name)
-  r.room.setWorker(w, ignore)
-  await r.rooms.retireWorkers()
+  await registerWorkers(r.s, [w])
+  await r.rooms.autoRetire()
   expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('dismissed')
   expect(existsSync(w.dir)).toBe(true)
   expect(existsSync(sharing)).toBe(false)
@@ -344,12 +348,12 @@ it('clears a dismissed dirty worker sharing record while keeping another room', 
 it('removes a matching legacy grant during retirement so it cannot migrate on a later join', async () => {
   const { dir } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w', 'lead')
-  const w = { ...worker(prepared.dir), base: prepared.base, status: 'dismissed' as const, dismissedAt: 2 }
+  const w = { ...worker(prepared.dir), base: prepared.base, status: 'dismissed' as const }
   writeFileSync(join(w.dir, 'a'), 'dirty work')
   const legacy = join(worktreeGitDirFromDotGit(w.dir), 'room-retained-declared.json')
   writeFileSync(legacy, JSON.stringify({ server: 'ws://team', room: r.s.roomName, participant: w.name, paths: ['a'] }))
-  r.room.setWorker(w, ignore)
-  await r.rooms.retireWorkers()
+  await registerWorkers(r.s, [w])
+  await r.rooms.autoRetire()
   expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('dismissed')
   expect(existsSync(w.dir)).toBe(true)
   expect(existsSync(legacy)).toBe(false)
@@ -358,35 +362,16 @@ it('removes a matching legacy grant during retirement so it cannot migrate on a 
   r.close()
 })
 
-it('clears a sharing record when repairing a legacy archived worker', async () => {
-  const { dir } = repo(), r = registry(dir)
-  const prepared = await prepareWorktree(dir, 'w', 'lead')
-  const w = { ...worker(prepared.dir), base: prepared.base }
-  await PolicyStore.open({ dir: w.dir, room: r.s.roomName, participant: w.name, requested: 'declared' })
-  const sharing = await sharingFile(w.dir, r.s.roomName, w.name)
-  const record = { name: w.name, tag: w.tag, lead: w.lead, host: w.host, task: w.task,
-    summary: 'archived', files: [], fileCount: 0, startedAt: w.startedAt,
-    finishedAt: 2, retiredAt: 3, outcome: 'dismissed' as const }
-  r.room.retireParticipant(w.name, record, ignore)
-  r.room.setWorker(w, ignore)
-  r.room.setOverlay(w.name, 'a', 'ghost')
-  await r.rooms.retireWorkers()
-  expect(r.room.workers.has(w.tag)).toBe(false)
-  expect(r.room.changedPaths(w.name)).toEqual([])
-  expect(existsSync(sharing)).toBe(false)
-  r.close()
-})
-
 it('retains workers when the worktree, branch, fork commit or lead git state is unknown', async () => {
-  const { dir } = repo(), r = registry(dir)
-  const prepared = await prepareWorktree(dir, 'w')
-  const w = { ...worker(prepared.dir), base: prepared.base }
   for (const patch of [{ dir: '/missing' }, { branch: 'missing' }, { base: 'missing' }]) {
-    r.room.setWorker({ ...w, ...patch }, ignore)
-    await r.rooms.retireWorkers()
-    expect(r.room.workers.has(w.tag)).toBe(true)
+    const { dir } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w')
+    const w = { ...worker(prepared.dir), base: prepared.base }
+    await registerWorkers(r.s, [{ ...w, ...patch }])
+    await r.rooms.autoRetire()
+    expect(r.has(w.tag)).toBe(true)
+    expect(r.room.retiredWorkers()).toEqual([])
+    expect((await workerGitFacts('/missing', w)).ahead).toBeUndefined()
+    r.close()
   }
-  expect((await workerGitFacts('/missing', w)).ahead).toBeUndefined()
-  expect(r.room.retiredWorkers()).toEqual([])
-  r.close()
 })

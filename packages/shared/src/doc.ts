@@ -17,7 +17,7 @@ import type {
   Priority,
   Receipt,
   Scope,
-  Worker,
+  WorkerView,
   RetiredWorker,
   ReleaseMsg,
 } from './types.js'
@@ -165,45 +165,17 @@ export class RoomDoc {
   get scopes(): Y.Map<Scope> { return this.doc.getMap<Scope>('scopes') }
   get claims(): Y.Map<Claim> { return this.doc.getMap<Claim>('claims') }
   get bus(): Y.Array<Msg> { return this.doc.getArray<Msg>('bus') }
-  /** Workers dispatched into this room by leads (room_spawn), keyed by tag. */
-  get workers(): Y.Map<Worker> { return this.doc.getMap<Worker>('workers') }
-  /** A replaced generation's claims are released; only the hub appends to the bus, so `post` sends their notices. */
-  setWorker(w: Worker, post: ReleasePoster): void {
-    this.doc.transact(() => {
-      const prior = this.workers.get(w.tag)
-      if (prior && (prior.id !== w.id || prior.startedAt !== w.startedAt)) this.clearWorkerCoordination(prior.name, 'worker stopped', post)
-      this.workers.set(w.tag, w)
-    })
+  /** Leads' workers as the room shows them, keyed by worker ID (registry §14). Display only; written by each lead's projector. */
+  get workerViews(): Y.Map<WorkerView> { return this.doc.getMap<WorkerView>('workerViews') }
+  /** The newest view under a participant name, for display and remote classification. */
+  workerViewOf(name: string): WorkerView | undefined {
+    let found: WorkerView | undefined
+    for (const view of this.workerViews.values()) if (view.name === name && (!found || view.startedAt > found.startedAt)) found = view
+    return found
   }
-  /** Patch the record under `tag`; with `id`, only if that is still the record's identity (an older spawn must not touch a newer one). */
-  updateWorker(tag: string, patch: Partial<Worker>, id?: string): Worker | undefined {
-    const w = this.workers.get(tag)
-    if (!w || (id !== undefined && w.id !== id)) return undefined
-    const next = { ...w, ...patch }
-    this.workers.set(tag, next)
-    return next
-  }
-  workerOf(name: string): Worker | undefined { for (const w of this.workers.values()) if (w.name === name) return w; return undefined }
-  workerById(id: string): Worker | undefined { for (const w of this.workers.values()) if (w.id === id) return w; return undefined }
   retiredWorkers(): RetiredWorker[] { return this.doc.getArray<RetiredWorker>('retiredWorkers').toArray() }
 
-  /** Identify older archives that left live records behind. The caller performs retirement and checkout cleanup. */
-  legacyRetirements(present: ReadonlySet<string> = new Set()): { worker: Worker; record: RetiredWorker }[] {
-    const repairs: { worker: Worker; record: RetiredWorker }[] = []
-    for (const retired of this.retiredWorkers()) {
-      if (present.has(retired.name)) continue
-      const currentWorkers = [...this.workers.values()].filter(w => w.name === retired.name)
-      // A name can later belong to a standalone participant. Only the matching live
-      // worker record proves that coordination under it belongs to this retirement.
-      if (currentWorkers.length !== 1) continue
-      const current = currentWorkers[0]
-      if (current.startedAt !== retired.startedAt || current.lead !== retired.lead || current.tag !== retired.tag) continue
-      repairs.push({ worker: current, record: retired })
-    }
-    return repairs
-  }
-
-  /** Remove coordination from a worker that can no longer act, including records from older releases; `post` sends the release notices. */
+  /** Remove coordination from a participant that can no longer act; `post` sends the release notices. */
   clearWorkerCoordination(name: string, reason: string, post: ReleasePoster): void {
     this.doc.transact(() => {
       for (const claim of this.claims.values()) if (claim.by === name) {
@@ -216,22 +188,41 @@ export class RoomDoc {
     })
   }
 
-  /** Atomically replace live worker state with a bounded archive entry; `post` sends the release notices. */
-  retireParticipant(name: string, record: RetiredWorker, post: ReleasePoster): void {
-    if (record.name !== name) throw new Error('retirement name does not match record')
-    const current = this.workerOf(name)
-    if (current && (current.startedAt !== record.startedAt || current.lead !== record.lead)) return
+  /**
+   * Whether the live state under `name` is worker `id`'s: its holder names `id`, a team projection's
+   * `projectedFrom` does, or, with neither, no other worker's view holds the name. A newer worker or a
+   * standalone participant under the same name never is.
+   */
+  workerOwnsName(id: string, name: string): boolean {
+    const record = participantRecord(this, name)
+    return record?.holder ? record.holder.workerId === id
+      : record?.proj ? record.proj.projectedFrom === id
+      : ![...this.workerViews.values()].some(view => view.name === name && view.id !== id)
+  }
+
+  /**
+   * Retirement keyed by worker ID (registry §12), one compare-and-delete transaction run by the projector of
+   * this room. The live state under the worker's name (claims, scope, manifest and text, graph, colour,
+   * receipts, participant keys) goes only while `workerOwnsName`. The view goes and the archive gains one entry per ID.
+   */
+  retireWorker(id: string, archived: RetiredWorker & { id: string }, post: ReleasePoster): void {
+    if (archived.id !== id) throw new Error('retirement id does not match record')
+    const name = archived.name
     this.doc.transact(() => {
+      if (this.workerOwnsName(id, name)) {
+        this.clearWorkerCoordination(name, 'retired', post)
+        this.manifestHead.delete(name)
+        for (const key of [...this.manifest.keys()]) if (key.startsWith(`${name}\u0000`)) this.manifest.delete(key)
+        for (const key of [...this.overlays.keys()]) if (key.startsWith(`${name}\u0000`)) this.overlays.delete(key)
+        for (const key of [...this.participants.keys()]) if (key.startsWith(`${name}\u0000`)) this.participants.delete(key)
+        this.colors.delete(name)
+        this.bases.delete(name)
+        this.seen(name).clear()
+      }
+      this.workerViews.delete(id)
       const archive = this.doc.getArray<RetiredWorker>('retiredWorkers')
-      this.clearWorkerCoordination(name, 'retired', post)
-      const archived = archive.toArray().some(r => r.name === name && r.startedAt === record.startedAt && r.lead === record.lead)
-      this.colors.delete(name)
-      this.bases.delete(name)
-      this.seen(name).clear()
-      const worker = this.workers.get(record.tag)
-      if (worker?.name === name && worker.startedAt === record.startedAt) this.workers.delete(record.tag)
-      if (!archived) {
-        archive.push([compactRetiredWorker(record)])
+      if (!archive.toArray().some(r => r.id === id)) {
+        archive.push([compactRetiredWorker(archived)])
         if (archive.length > MAX_RETIRED_WORKERS) archive.delete(0, archive.length - MAX_RETIRED_WORKERS)
       }
     })

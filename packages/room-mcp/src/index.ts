@@ -21,6 +21,7 @@ import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
 import { createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
+import { ownWorkerNames } from './worker-registry.js'
 
 /** Plugin release, also advertised in the MCP handshake. Package versions are private. */
 export const RELEASE_VERSION = pluginManifest.version
@@ -126,7 +127,7 @@ async function main() {
             // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
             if ((m.from === s.me.name && m.fromKind !== 'human') || s.room.seen(s.me.name).has(m.id)) continue
             router.push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0,
-              new Set(Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name).map(w => w.name))))
+              ownWorkerNames(s.dir, s.me.name)))
           }
         })
         log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)

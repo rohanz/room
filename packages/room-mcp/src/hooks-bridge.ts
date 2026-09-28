@@ -16,6 +16,7 @@ import { claudeWakeUnavailable } from './prompt.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
 import { resolveSessionHost } from './config.js'
 import { writeAtomic } from './leases.js'
+import { ownWorkerNames } from './worker-registry.js'
 
 type Bound = { id: string; host: 'claude' | 'codex' }
 
@@ -151,7 +152,7 @@ export class HooksBridge {
     if (this.isSeen(m.id)) return
     if (!this.o.forMe(m)) return
     const myClaims = this.s.room.openClaims().filter(c => c.by === this.s.me.name)
-    const ownWorkers = new Set(Array.from(this.s.room.workers.values()).filter(w => w.lead === this.s.me.name).map(w => w.name))
+    const ownWorkers = ownWorkerNames(this.s.dir, this.s.me.name)
     const wake = shouldWakeOnMsg(this.s.me, m, myClaims, this.s.room.changedPaths(this.s.me.name).length > 0, ownWorkers).wake
     if (!wake || this.woken.has(m.id) || this.pending.has(m.id) || this.delivering.has(m.id)) return
     const session = this.o.session()

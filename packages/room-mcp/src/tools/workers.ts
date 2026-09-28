@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { completionMessage, type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
+import { completionMessage, type DoneMsg, type NoteMsg } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerOrigin } from '../registry.js'
@@ -22,10 +22,9 @@ import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
 import { releaseWorkerProcessPort } from '../port-reservations.js'
-import { registryForDir, registrySnapshotForDir, type WorkerRegistry } from '../worker-registry.js'
-import { realStateInput, type WorkerRecord } from '../worker-status.js'
+import { localWorkers, registryForDir, registrySnapshotForDir, type WorkerRegistry } from '../worker-registry.js'
+import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-status.js'
 import { postWorkerMessage } from '../post.js'
-import { mirrorRegistryWorkerRecord } from '../worker-mirror.js'
 
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
   const paths = new Set<string>()
@@ -158,7 +157,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const usedPorts = registry.list().flatMap(record => typeof record.port === 'number' ? [record.port] : [])
       const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: !suppliedDir && !fs.existsSync(dir) }
       const record: WorkerRecord = {
-        v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName,
+        v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
         lead: { participant: s.me.name, room: s.roomName, instance: registry.instance },
         host, model, effort, budget: { threads, memGb, nice: 10 }, share: effectiveShare, task,
         dir, outside, branch, prep, hostSessionId,
@@ -207,7 +206,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               budget: { ...old.budget, nice: result.nice }, link,
               runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: result.proc.pid,
                 ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime, executable: (ctx.probe ?? probeProcess)(result.proc.pid)?.executable ?? '' } } : {}) } }], seq: old.seq + 1 }))
-            mirrorRegistryWorkerRecord(s, registry, id)
           }, async code => {
             await registry.writeExit(id, { run: 1, code, witnessed: true, at: now() })
             rooms.dropHandle(s, id)
@@ -270,7 +268,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function registryRunningWorkers(s: Session, rooms: import('../registry.js').Rooms): { s: Session; w: Worker }[] {
+export function registryRunningWorkers(s: Session, rooms: import('../registry.js').Rooms): { s: Session; w: LocalWorker }[] {
   const registry = registrySnapshotForDir(s.dir)
   return registry.list().flatMap(record => {
     const status = registry.status(record.id)
@@ -284,8 +282,8 @@ export function registryRunningWorkers(s: Session, rooms: import('../registry.js
 
 export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | 'doJoin' | 'doLeave' | 'log' | 'cleanupMine' | 'now'>): Pick<HandlerState, 'myWorkers' | 'workerAlive' | 'ensureWorkersRoom' | 'closeWorkersRoom' | 'runningWorkers' | 'dismissWorker' | 'startWorkersBridge'> {
   const { ctx, rooms, doJoin, doLeave, log, cleanupMine, now } = deps
-  const myWorkers = (s: Session): Worker[] => Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name)
-  const workerAlive = (s: Session, w: Worker): boolean => rooms.hasHandle(s, w) || pidIsOurWorker(w.pid, w, ctx.probe)
+  const myWorkers = (s: Session): LocalWorker[] => localWorkers(s.dir, record => record.lead.participant === s.me.name && record.room === s.roomName)
+  const workerAlive = (s: Session, w: LocalWorker): boolean => rooms.hasHandle(s, w) || pidIsOurWorker(w.pid, w, ctx.probe)
   const ensureWorkersRoom = async (lead: Session): Promise<Session> => {
       if (lead.local) return lead
       const have = rooms.workers()
@@ -302,8 +300,8 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
       await doLeave(ws)
     }
-  const runningWorkers = (s: Session): { s: Session; w: Worker }[] => registryRunningWorkers(s, rooms)
-  const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason'], cancelled?: AbortSignal): Promise<string> => {
+  const runningWorkers = (s: Session): { s: Session; w: LocalWorker }[] => registryRunningWorkers(s, rooms)
+  const dismissWorker = async (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal): Promise<string> => {
       const registry = await registryForDir(s.dir)
       const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
       if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; not signalled`
@@ -329,7 +327,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       // The host's exit can also take down its dev-server children. Name and stop
       // those while they are still visible, but leave the host pid for its own handle.
       const protectedPids = w.pid ? [w.pid] : []
-      const ownedWorktree = decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...s.room.workers.values()] })).cwd
+      const ownedWorktree = decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...localWorkers(s.dir)] })).cwd
       const stopped: string[] = []
       let cleanupError: string | undefined
       const stopCwdProcesses = async () => {

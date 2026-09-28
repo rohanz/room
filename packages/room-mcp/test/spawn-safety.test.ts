@@ -9,6 +9,9 @@ import { createTools } from '../src/tools.js'
 import { GraphIndex } from '../src/graph-index.js'
 import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
+import { finishWorker, workerByTag } from './registry-fixture.js'
+import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { projectWorkers } from '../src/worker-projector.js'
 
 let root: string, repo: string, head: string
 const shutdowns: (() => Promise<void>)[] = []
@@ -24,6 +27,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
   for (const stop of shutdowns.splice(0)) await stop().catch(() => {})
+  await closeRegistryForDir(repo)
   fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -42,7 +46,7 @@ function tool(roomName = 'local/a/main', spawner: (spec: { env: Record<string, s
   } as Session
   const tools = createTools({ getSession: () => session, setSession: value => { session = value }, cwd: repo, probe: () => undefined, listCwdProcesses: () => [], spawner })
   shutdowns.push(async () => { await tools.shutdown(); graph.stop(); room.doc.destroy() })
-  return { room, call: (args: Record<string, unknown>) => tools.call('room_spawn', { tag: 'w', task: 'test task', ...args }) as Promise<string> }
+  return { room, session: () => session!, call: (args: Record<string, unknown>) => tools.call('room_spawn', { tag: 'w', task: 'test task', ...args }) as Promise<string> }
 }
 
 it('validates untracked link inputs before carrying and leaves them as links', async () => {
@@ -52,7 +56,7 @@ it('validates untracked link inputs before carrying and leaves them as links', a
   const t = tool()
   const reply = await t.call({})
   expect(reply).toContain('spawned w:')
-  const worker = t.room.workers.get('w')!
+  const worker = workerByTag(repo, 'w')!
   expect(fs.lstatSync(path.join(worker.dir, 'data')).isSymbolicLink()).toBe(true)
   expect(worker.link).toEqual(['data'])
 })
@@ -71,7 +75,8 @@ it('removes a newly carried worktree and branch when the process cannot start', 
   expect(await t.call({})).toContain('simulated start failure')
   expect(fs.existsSync(path.join(repo, '.room', 'workers', 'w'))).toBe(false)
   expect(git('branch', '--list', 'room/w')).toBe('')
-  expect(t.room.workers.has('w')).toBe(false)
+  expect(workerByTag(repo, 'w')).toBeUndefined()
+  expect(t.room.workerViews.size).toBe(0)
 })
 
 it('reports the number of files actually carried from an untracked directory', async () => {
@@ -100,7 +105,7 @@ it('refuses a second room that targets an occupied worktree tag', async () => {
   expect(await first.call({})).toContain('spawned w:')
   const second = tool('local/b/main')
   expect(await second.call({})).toMatch(/error:.*(?:owned|occupied|in use|another room)/i)
-  expect(second.room.workers.has('w')).toBe(false)
+  expect(second.room.workerViews.size).toBe(0)
 })
 
 it('keeps the tag reserved while an ignored output worktree is retained', async () => {
@@ -108,19 +113,23 @@ it('keeps the tag reserved while an ignored output worktree is retained', async 
   fs.writeFileSync(path.join(repo, 'untracked.txt'), 'untracked WIP\n')
   const t = tool('local/a/main')
   expect(await t.call({})).toContain('spawned w:')
-  const first = t.room.workers.get('w')!
+  const first = workerByTag(repo, 'w')!
   expect(first.carriedUntracked?.map(f => f.path)).toContain('untracked.txt')
   fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), 'ignored-output.txt\n')
   fs.writeFileSync(path.join(first.dir, 'ignored-output.txt'), 'retained worker output')
-  t.room.updateWorker('w', { status: 'done', finishedAt: Date.now() })
-  t.room.retireParticipant(first.name, {
+  await finishWorker(t.session(), 'w', { status: 'done', finishedAt: Date.now() })
+  const registry = await registryForDir(repo)
+  await registry.beginRetirement(first.id, {
     name: first.name, tag: first.tag, lead: first.lead, host: first.host, task: first.task,
     summary: 'kept output', files: [], fileCount: 0, startedAt: first.startedAt,
-    finishedAt: Date.now(), retiredAt: Date.now(), outcome: 'dismissed',
-  })
-  expect(t.room.workers.has('w')).toBe(false)
+    finishedAt: Date.now(), retiredAt: Date.now(), outcome: 'dismissed', keptWorktree: first.dir,
+  }, { keptWorktree: first.dir })
+  await projectWorkers(t.session(), registry, first.lead, 'joined')
+  expect(workerByTag(repo, 'w')).toBeUndefined()
+  expect(t.room.workerViewOf(first.name)).toBeUndefined()
   expect(await t.call({})).toContain('tag in use: w')
-  expect(t.room.workers.has('w')).toBe(false)
+  expect(workerByTag(repo, 'w')).toBeUndefined()
+  expect(t.room.workerViewOf(first.name)).toBeUndefined()
   expect(fs.readFileSync(path.join(first.dir, 'ignored-output.txt'), 'utf8')).toBe('retained worker output')
   const otherRoom = tool('local/b/main')
   expect(await otherRoom.call({})).toContain('tag in use: w')

@@ -8,7 +8,9 @@ import { prepareWorktree, saveDiscardPatch, cleanupWorker } from '../src/worker-
 import { seedRegistryWorker } from './registry-fixture.js'
 import { defaultSpawner } from '../src/worker-process.js'
 import { workerRealState } from '../src/worker-state.js'
-import { RoomDoc, type Worker } from '@room/shared'
+import { RoomDoc } from '@room/shared'
+import type { LocalWorker } from '../src/worker-status.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
 import { carriedContentHash, carriedPaths, carriedUnchanged, checkoutText, workerBaseline, workerChangedPaths } from '@room/roomd/baseline'
 import { gitPathsBetween } from '@room/roomd/git'
 import { readRoomFile } from '@room/roomd'
@@ -18,9 +20,6 @@ import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
-
-/** No release notices to send here. */
-const ignore = () => {}
 
 let root: string
 let originalPath: string | undefined
@@ -63,7 +62,7 @@ describe('carry and discard safety', () => {
     run(prepared.dir, 'config', 'diff.srcPrefix', 'before/')
     run(prepared.dir, 'config', 'diff.dstPrefix', 'after/')
     run(prepared.dir, 'config', 'diff.external', '/bin/false')
-    const patch = await saveDiscardPatch(root, { tag: 'hostile', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as Worker, patchPublisher(root, 'hostile'))
+    const patch = await saveDiscardPatch(root, { tag: 'hostile', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as LocalWorker, patchPublisher(root, 'hostile'))
     expect(patch).toBeTruthy()
     const body = fs.readFileSync(patch!, 'utf8')
     expect(body).toContain('diff --git a/base.txt b/base.txt')
@@ -79,7 +78,7 @@ describe('carry and discard safety', () => {
     const fakeDir = path.join(root, 'reject-apply'); fs.mkdirSync(fakeDir)
     fs.writeFileSync(path.join(fakeDir, 'git'), '#!/bin/sh\nif [ "$1" = "apply" ]; then exit 1; fi\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    await expect(saveDiscardPatch(root, { tag: 'unverified', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as Worker, patchPublisher(root, 'unverified'))).rejects.toThrow()
+    await expect(saveDiscardPatch(root, { tag: 'unverified', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as LocalWorker, patchPublisher(root, 'unverified'))).rejects.toThrow()
     expect(fs.readFileSync(path.join(prepared.dir, 'base.txt'), 'utf8')).toBe('worker edit\n')
     expect(fs.existsSync(path.join(prepared.dir, '.git'))).toBe(true)
   })
@@ -88,7 +87,7 @@ describe('carry and discard safety', () => {
     const prepared = await prepareWorktree(root, 'rollback', 'lead')
     fs.writeFileSync(path.join(prepared.dir, 'base.txt'), 'worker edit\n')
     const worker = { tag: 'rollback', dir: prepared.dir, base: prepared.base, branch: prepared.branch,
-      status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as Worker
+      status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as LocalWorker
     const patch = await saveDiscardPatch(root, worker, patchPublisher(root, worker.tag))
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-failing-git-'))
     fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/rollback "*) echo "late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
@@ -125,7 +124,7 @@ describe('carry and discard safety', () => {
     fs.writeFileSync(path.join(root, 'lead.txt'), 'lead input\n')
     const prepared = await prepareWorktree(root, 'owned', 'lead')
     const worker = { name: 'lead+owned', tag: 'owned', dir: prepared.dir, branch: prepared.branch, base: prepared.base,
-      carriedUntracked: prepared.carriedUntracked, carriedBase: prepared.carriedBase } as Worker
+      carriedUntracked: prepared.carriedUntracked, carriedBase: prepared.carriedBase } as LocalWorker
     expect(await workerChangedPaths(worker)).toEqual([])
     fs.unlinkSync(path.join(prepared.dir, 'lead.txt'))
     expect(await workerChangedPaths(worker)).toEqual(['lead.txt'])
@@ -142,7 +141,7 @@ describe('carry and discard safety', () => {
     fs.writeFileSync(path.join(root, 'lead.txt'), 'lead input\n')
     const prepared = await prepareWorktree(root, 'timeout', 'lead')
     const worker = { name: 'lead+timeout', tag: 'timeout', dir: prepared.dir, branch: prepared.branch, base: prepared.base,
-      carriedUntracked: prepared.carriedUntracked } as Worker
+      carriedUntracked: prepared.carriedUntracked } as LocalWorker
     const fakeDir = path.join(root, 'fakebin'); fs.mkdirSync(fakeDir)
     const realGit = run(root, '--exec-path').replace(/\/libexec\/git-core$/, '/bin/git')
     const gitPath = fs.existsSync('/usr/bin/git') ? '/usr/bin/git' : realGit
@@ -237,9 +236,9 @@ describe('carry and discard safety', () => {
   it('reports degraded contract coverage when a carried baseline blob is unavailable', async () => {
     const base = run(root, 'rev-parse', 'HEAD')
     const room = new RoomDoc(); room.setMeta({ base })
-    room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', host: 'codex', task: 't', dir: root,
-      branch: 'room/w', base, pid: 1, startedAt: 1, status: 'running', lead: 'lead',
-      carriedUntracked: [{ path: 'api.py', sha: '1'.repeat(40) }] } as Worker, ignore)
+    // The carried baseline is the lead registry's local fact.
+    await seedRegistryWorker(root, 'w', { name: 'lead+w', dir: root, branch: 'room/w', base,
+      carriedUntracked: [{ path: 'api.py', sha: '1'.repeat(40) }] })
     room.setOverlay('lead+w', 'api.py', 'def rate(x, year):\n    return x\n')
     const logs: string[] = []
     const graph = new GraphIndex(room, 'lead+w', root, line => logs.push(line), { random: () => 0, minPublishMs: 0 })
@@ -248,13 +247,13 @@ describe('carry and discard safety', () => {
       await vi.waitFor(() => expect(room.graphs.get('lead+w')?.status).toBe('error'))
       expect(room.graphs.get('lead+w')?.observed).toEqual([])
       expect(logs.join('\n')).toContain('coverage degraded')
-    } finally { graph.stop(); room.doc.destroy() }
+    } finally { graph.stop(); room.doc.destroy(); await closeRegistryForDir(root) }
   })
 
   it('retries a transient committed-path lookup failure', async () => {
     fs.writeFileSync(path.join(root, 'base.txt'), 'lead change\n')
     const prepared = await prepareWorktree(root, 'retry-cache', 'lead')
-    const worker = { name: 'lead+retry-cache', dir: prepared.dir, base: prepared.base, carriedBase: prepared.carriedBase } as Worker
+    const worker = { name: 'lead+retry-cache', dir: prepared.dir, base: prepared.base, carriedBase: prepared.carriedBase } as LocalWorker
     const baseline = workerBaseline(worker)!
     const fakeDir = path.join(root, 'fail-once'); fs.mkdirSync(fakeDir)
     const marker = path.join(fakeDir, 'failed')

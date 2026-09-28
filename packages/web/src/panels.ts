@@ -150,7 +150,7 @@ export function participantInput(conn: Conn): ParticipantInput {
   for (const name of names) changes.set(name, conn.room.changedPaths(name))
   return {
     presences: presences(conn.provider, conn.room),
-    workers: [...conn.room.workers.values()],
+    workers: [...conn.room.workerViews.values()],
     scopes: Array.from(conn.room.scopes.entries()),
     overlayPeople: Array.from(conn.room.overlays.keys()),
     changesByPerson: changes,
@@ -331,7 +331,7 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
   const render = () => {
     const groups = participantGroups(conn)
     const cards = groupedPeople(groups, participant => {
-      const worker = [...conn.room.workers.values()].find(w => w.name === participant.name)
+      const worker = conn.room.workerViewOf(participant.name)
       const state = worker?.status === 'failed' ? 'failed' : deriveStatePill(participant)
       const short = shortPill(state)
       const card = h('div', {

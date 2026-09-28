@@ -1,4 +1,4 @@
-import { formatMsg, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
+import { formatMsg, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
 import type { Batch } from '../ledger.js'
 import type { PostResult } from '../post.js'
@@ -43,18 +43,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const unavailableQuestions = new Map<string, string>()
   const knownNames = (s: Session): Set<string> => new Set([
     s.me.name, ...presences(s).map(p => p.user.name), ...s.room.colors.keys(), ...s.room.scopes.keys(), ...s.room.overlays.keys(), ...s.room.deleted.keys(),
-    ...s.room.openClaims().map(c => c.by), ...Array.from(s.room.workers.values(), w => w.name),
+    ...s.room.openClaims().map(c => c.by), ...Array.from(s.room.workerViews.values(), w => w.name),
     ...s.room.retiredWorkers().map(w => w.name), ...s.room.messages().map(m => m.from),
   ].filter(n => !isPrName(n)))
   const recipientNotice = (s: Session, name: string): { text: string; terminal: boolean } | undefined => {
     const present = presences(s).some(p => p.user.name === name)
-    const worker = s.room.workerOf(name)
+    // My own worker from my registry; anyone else's from its lead's view (registry §14).
+    const own = myWorkers(s).find(w => w.name === name)
+    const view = own ? undefined : s.room.workerViewOf(name)
+    const worker = own ?? view
     // A live generation supersedes any archive under the same participant name.
     const retired = !worker && s.room.retiredWorkers().filter(w => w.name === name).sort((a, b) => b.retiredAt - a.retiredAt)[0]
-    const exited = worker && (worker.exitCode !== undefined || (s.local ? !workerAlive(s, worker) : worker.status !== 'running' && !present))
+    const exited = own ? own.exitCode !== undefined || (s.local ? !workerAlive(s, own) : own.status !== 'running' && !present)
+      : view ? view.exitCode !== undefined || (!workerLive(view.status) && !present) : false
     // Headless workers never read another message after reporting a terminal status.
-    const terminalStatuses = { running: false, done: true, failed: true, dismissed: true } satisfies Record<WorkerStatus, boolean>
-    const terminal = worker && terminalStatuses[worker.status]
+    const terminal = own ? own.status !== 'running' : view ? !workerLive(view.status) : false
     if (retired || exited || terminal) {
       const record = retired || worker!
       const finished = record.finishedAt
@@ -150,7 +153,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (sendType === 'note' && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`
       if (repliedNote && a.to && to !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`
-      if (to && !s.room.workerOf(to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed`
+      if (to && !s.room.workerViewOf(to) && !myWorkers(s).some(w => w.name === to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
       if (a.type === 'changed' && (!Array.isArray(a.paths) || !a.paths.some((x: unknown) => typeof x === 'string'))) return 'error: changed requires paths'
@@ -159,7 +162,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!['changed', 'question', 'answer', 'note'].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       const notes: string[] = []
       if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`)
-      const addressedWorker = to && s.room.workerOf(to)
+      const addressedWorker = to ? myWorkers(s).find(w => w.name === to) : undefined
       let deliveredInPrompt = false
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
         const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)

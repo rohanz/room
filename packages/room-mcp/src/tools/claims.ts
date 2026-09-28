@@ -7,6 +7,7 @@ import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
 import { coordinationPaths, coversPath, nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { carriedFrom } from '../worker-registry.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_claim', annotations: RW, description: 'Claim only where another participant is near. Use a directory ending /, symbol, or lines. Declare public API plans.',
@@ -197,6 +198,7 @@ export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' |
       baseFor: person => baseFor(s, person),
       mergeBase: async (a, b) => (await git(s.dir, ['merge-base', a, b])).trim(),
       graph: () => s.graph?.graph,
+      carriedFrom: person => carriedFrom(s.dir, person),
       isPresent: person => Array.from(s.awareness.getStates().values()).some(state => state?.user?.name === person),
     })
     watcher.start()

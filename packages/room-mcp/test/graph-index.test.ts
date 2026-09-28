@@ -3,8 +3,10 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RoomDoc, type Worker } from '@room/shared'
+import { RoomDoc } from '@room/shared'
 import { GraphIndex } from '../src/graph-index.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
+import { seedRegistryWorker } from './registry-fixture.js'
 
 let dir: string, base: string
 async function eventually(check: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -242,7 +244,8 @@ describe('GraphIndex', () => {
     writeFileSync(join(wdir, 'api.py'), 'def rate(x, year):\n    return x\n'); git(wdir, 'commit', '-qam', 'carried')
     const carried = git(wdir, 'rev-parse', 'HEAD')
     const room = new RoomDoc(); room.setMeta({ base: head })
-    room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', host: 'codex', task: 't', dir: wdir, branch: 'room/w', base: carried, carriedBase: carried, pid: 1, startedAt: 1, status: 'running', lead: 'lead' } as Worker)
+    // The carried baseline is a local fact of the lead's registry, which the worktree shares.
+    await seedRegistryWorker(repo, 'w', { name: 'lead+w', dir: wdir, branch: 'room/w', base: carried, carriedBase: carried })
     room.setOverlay('lead+w', 'api.py', 'def rate(x, year):\n    return x * 2\n')
     const gi = new GraphIndex(room, 'lead+w', wdir, undefined, { random: () => 0, minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
@@ -252,7 +255,7 @@ describe('GraphIndex', () => {
     await gi.whenIdle()
     await eventually(() => room.graphs.get('lead+w')?.observed?.length === 1)
     expect(room.graphs.get('lead+w')?.observed?.[0].detail).toBe('was `def rate(x, year):` now `def rate(x, year, region):`')
-    gi.stop(); room.doc.destroy(); rmSync(repo, { recursive: true, force: true })
+    gi.stop(); room.doc.destroy(); await closeRegistryForDir(repo); rmSync(repo, { recursive: true, force: true })
   })
 })
 

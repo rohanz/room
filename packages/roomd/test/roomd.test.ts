@@ -663,16 +663,16 @@ describe('roomd v2 push-only overlays', () => {
     const carried = sh(workerDir, ['rev-parse', 'HEAD'])
     await fsp.writeFile(path.join(workerDir, 'notes.txt'), 'lead notes\n')
     const blob = execFileSync('git', ['hash-object', '-w', 'notes.txt'], { cwd: workerDir, encoding: 'utf8' }).trim()
-    const record = { id: 'Alice/w#1', tag: 'w', name: 'Alice+w', host: 'codex' as const, task: 't', dir: workerDir, branch: 'room/w', base: carried, carriedBase: carried, carriedUntracked: [{ path: 'notes.txt', sha: blob }], pid: 1, startedAt: Date.now(), status: 'running' as const, lead: 'Alice' }
+    // The lead's registry record, as the worker's daemon receives it (never from the room).
+    const record = { name: 'Alice+w', dir: workerDir, base: carried, carriedBase: carried, carriedUntracked: [{ path: 'notes.txt', sha: blob }] }
     return { source, leadHead, workerDir, carried, record }
   }
 
   it('a worker never publishes the lead\'s carried files as its own changes; an edited carried untracked file diffs against its carried text', async () => {
     const { source, workerDir, carried, record } = await carriedWorker()
     const roomUrl = room()
-    const lead = await start({ room: roomUrl, dir: source, name: 'Alice', localKey: 'k' })
-    lead.roomDoc.setWorker(record)
-    const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', localKey: 'k' })
+    await start({ room: roomUrl, dir: source, name: 'Alice', localKey: 'k' })
+    const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', localKey: 'k', carried: record })
     expect(worker.roomDoc.baseOf('Alice+w')).toBe(carried)
     expect(worker.roomDoc.changedPaths('Alice+w')).toEqual([])
     await fsp.writeFile(path.join(workerDir, 'notes.txt'), 'lead notes\nworker line\n')
@@ -683,9 +683,8 @@ describe('roomd v2 push-only overlays', () => {
   it('in a team room a carried worker publishes against the lead\'s base, which teammates have, without the carried files', async () => {
     const { source, leadHead, workerDir, record } = await carriedWorker()
     const roomUrl = room()
-    const lead = await start({ room: roomUrl, dir: source, name: 'Alice' })
-    lead.roomDoc.setWorker(record)
-    const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w' })
+    await start({ room: roomUrl, dir: source, name: 'Alice' })
+    const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', carried: record })
     expect(worker.roomDoc.baseOf('Alice+w')).toBe(leadHead)
     expect(worker.roomDoc.changedPaths('Alice+w')).toEqual([])
     // A worker edit on top of a carried file: the full text, with the base text a teammate's clone has.

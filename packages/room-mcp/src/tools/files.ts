@@ -5,7 +5,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import { describeClaim, withLineNumbers, type NoteMsg, type Worker } from '@room/shared'
+import { describeClaim, withLineNumbers, type NoteMsg } from '@room/shared'
+import { localWorkers } from '../worker-registry.js'
+import type { LocalWorker } from '../worker-status.js'
 import type { Session } from '../session.js'
 import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
@@ -151,7 +153,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.includeOffline !== undefined && typeof a.includeOffline !== 'boolean') return 'error: includeOffline must be a boolean'
       const explicit = Array.isArray(a.people) || !!alias
       const allSessions = rooms.all()
-      const fullName = (name: string) => allSessions.flatMap(s => [...s.room.workers.values()]).find(w => w.tag === name && w.lead === caller.me.name)?.name ?? name
+      const fullName = (name: string) => allSessions.flatMap(s => localWorkers(s.dir)).find(w => w.tag === name && w.lead === caller.me.name)?.name ?? name
       const presentSession = (person: string) => allSessions.find(s => presences(s).some(p => p.user.name === person))
       const present = Array.from(new Set(allSessions.flatMap(s => presences(s).map(p => p.user.name)))).filter(p => p !== caller.me.name)
       const available = Array.from(new Set(allSessions.flatMap(s => others(s)))).filter(p => p !== caller.me.name)
@@ -168,7 +170,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const missingNotes: string[] = []
       for (const { person, session } of participants) {
         const held = withheld(session, person)
-        const ownLocalWorker = session.local && session.room.workerOf(person)
+        const ownLocalWorker = session.local && localWorkers(session.dir, record => record.name === person)[0]
         const facts = ownLocalWorker && await workerRealState(session.dir, ownLocalWorker)
         const preview = facts && decidePreview(facts, ownLocalWorker.lead === caller.me.name)
         const missing = !!ownLocalWorker && facts?.worktree === 'vanished' && ownLocalWorker.lead === caller.me.name
@@ -288,7 +290,7 @@ export async function gitTreeModes(dir: string, ref: string): Promise<Map<string
   return new Map(entries.map(entry => { const tab = entry.indexOf('\t'); const meta = entry.slice(0, tab), rel = entry.slice(tab + 1); return [rel, parseInt(meta.split(' ')[0], 8) & 0o777] }))
 }
 
-export function addCarriedUntrackedModes(modes: Map<string, number>, worker: Worker): Map<string, number> {
+export function addCarriedUntrackedModes(modes: Map<string, number>, worker: Pick<LocalWorker, 'carriedUntracked'>): Map<string, number> {
   for (const entry of worker.carriedUntracked ?? []) if (entry.mode !== undefined) modes.set(entry.path, entry.mode)
   return modes
 }

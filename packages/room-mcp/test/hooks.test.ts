@@ -15,7 +15,9 @@ import { AGENT_INSTRUCTIONS } from '../src/prompt.js'
 import { createTools, type Tools } from '../src/tools.js'
 import { startArbitration, type Arbitration } from '../src/arbitration.js'
 import type { SessionBinding } from '../src/binding.js'
-import type { Worker } from '@room/shared'
+import type { LocalWorker } from '../src/worker-status.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
+import { registerWorkers } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.clearAllMocks() })
@@ -132,7 +134,7 @@ describe('hasCompany', () => {
 
   it('counts a running worker', () => {
     const s = session(new RoomDoc())
-    const worker = { name: 'Rohan+tests', status: 'running' } as Worker
+    const worker = { name: 'Rohan+tests', status: 'running' } as LocalWorker
     expect(hasCompany(s, [worker])).toMatchObject({ company: true, others: ['Rohan+tests'] })
   })
 
@@ -922,8 +924,8 @@ describe('wakes (content, never receipts; the WakeReconciler replaces this in le
 
   it('Codex hook wakes for own worker questions and failures, but not progress notes', async () => {
     const s = session(new RoomDoc())
-    s.room.setWorker({ tag: 'money', name: 'Rohan+money', lead: 'Rohan', host: 'codex', task: 'fix',
-      dir: join(dir, '.room', 'workers', 'money'), branch: 'room/money', pid: 1, startedAt: 1, status: 'running' })
+    await registerWorkers(s, [{ tag: 'money', name: 'Rohan+money', lead: 'Rohan', host: 'codex', task: 'fix',
+      dir: join(dir, '.room', 'workers', 'money'), branch: 'room/money', pid: 0, startedAt: 1, status: 'running' }])
     const queue = vi.fn(async () => {})
     const b = bridge(s, { forMe: m => m.to === s.me.name, queue })
     const from = { name: 'Rohan+money', kind: 'agent' } as const
@@ -933,7 +935,7 @@ describe('wakes (content, never receipts; the WakeReconciler replaces this in le
     expect(queue).toHaveBeenCalledTimes(1)
     await b.maybeWake(hubAppend(s.room, from, { type: 'note', priority: 'interrupt', to: 'Rohan', text: 'failed' }))
     expect(queue).toHaveBeenCalledTimes(2)
-    b.stop(); s.awareness.destroy(); s.room.doc.destroy()
+    b.stop(); s.awareness.destroy(); s.room.doc.destroy(); await closeRegistryForDir(dir)
   })
 })
 

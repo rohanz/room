@@ -2,7 +2,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { isRegenerableBuildPath, type Worker } from '@room/shared'
+import { isRegenerableBuildPath } from '@room/shared'
+import type { LocalWorker } from './worker-status.js'
 import { LINK_INPUT_PATH, RECORDED_PATH, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
@@ -13,7 +14,7 @@ import type { PrepJournal, PrepStep } from './worker-status.js'
 const WORKERS_DIR = path.join('.room', 'workers')
 
 /** Inputs Room installed itself, rather than worker output. */
-export function workerOwnedPaths(w?: Pick<Worker, 'link'>) {
+export function workerOwnedPaths(w?: { link?: readonly string[] }) {
   const paths = w?.link ?? []
   return {
     includes: (p: string) => paths.some(l => p === l || p.startsWith(l + '/')),
@@ -22,7 +23,7 @@ export function workerOwnedPaths(w?: Pick<Worker, 'link'>) {
 }
 
 /** Ignored output that a discard patch cannot recover. */
-export async function ignoredWorkerArtifacts(w: Worker): Promise<string[]> {
+export async function ignoredWorkerArtifacts(w: LocalWorker): Promise<string[]> {
   const raw = await git(w.dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', '--', '.', ...workerOwnedPaths(w).exclusions])
   return raw.split('\0').filter(Boolean)
     .filter(p => p !== '.room' && p !== '.room/' && !p.startsWith('.room/'))
@@ -31,7 +32,7 @@ export async function ignoredWorkerArtifacts(w: Worker): Promise<string[]> {
 }
 
 /** Prune a vanished Room checkout, preserving any branch commits absent from the lead HEAD. */
-export async function pruneMissingWorkerWorktree(leadDir: string, w: Worker, manageBranch = true): Promise<string | undefined> {
+export async function pruneMissingWorkerWorktree(leadDir: string, w: LocalWorker, manageBranch = true): Promise<string | undefined> {
   if (!roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) {
     throw new Error(`worker ${w.dir} is not an owned Room worktree`)
   }
@@ -294,7 +295,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
 }
 
 /** Remove only owned Room worktrees; failures require explicit discard. */
-export async function cleanupWorker(leadDir: string, w: Worker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
+export async function cleanupWorker(leadDir: string, w: LocalWorker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
   if (!discarded && (w.status === 'failed' || w.exitCode !== 0)) return false
   if (decideDiscard(await workerRealState(leadDir, w, { ownership: true, leadName, workers })) !== 'cleanup') return false
   const nested = (await git(leadDir, ['worktree', 'list', '--porcelain'])).split('\n')
@@ -341,7 +342,7 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
 }
 
 /** Remove a worker's local logs after either checkout cleanup or vanished-checkout pruning. */
-export function cleanupWorkerLogs(leadDir: string, w: Pick<Worker, 'dir' | 'tag'>): void {
+export function cleanupWorkerLogs(leadDir: string, w: Pick<LocalWorker, 'dir' | 'tag'>): void {
   const parent = path.basename(path.dirname(w.dir)) === 'workers' && path.basename(path.dirname(path.dirname(w.dir))) === '.room'
     ? path.resolve(w.dir, '../../..') : leadDir
   for (const suffix of ['.log', '.mcp.log']) {
@@ -353,7 +354,7 @@ export function cleanupWorkerLogs(leadDir: string, w: Pick<Worker, 'dir' | 'tag'
 }
 
 /** One binary-capable snapshot against the fork, without modifying the worker's index. */
-export async function saveDiscardPatch(leadDir: string, w: Worker,
+export async function saveDiscardPatch(leadDir: string, w: LocalWorker,
   publish: (bytes: Buffer) => Promise<string>): Promise<string | undefined> {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-discard-'))
   try {
