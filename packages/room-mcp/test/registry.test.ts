@@ -2,17 +2,19 @@
  * The session registry: which of a process's rooms holds a participant, a question or a worker;
  * attachments start on add and stop on remove; worker ids stay distinct across a reused tag.
  */
-import { describe, it, expect, beforeAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
-import { Rooms, workerId, workerIdBase, finishWorkerProcess } from '../src/registry.js'
-import { createTools } from '../src/tools.js'
+import { Rooms } from '../src/registry.js'
+import { WorkerRegistry } from '../src/worker-registry.js'
+import { statusOf, type WorkerRecord } from '../src/worker-status.js'
+import { completionMessage } from '@room/shared'
 import type { Session } from '../src/session.js'
 
 let dir: string, base: string
@@ -124,161 +126,106 @@ describe('Rooms: who lives where', () => {
     expect(x.rooms.holding('nobody', x.t)).toBe(x.t)
   })
 
-  it('holdingQuestion finds the room whose bus carries the id; holdingWorker prefers the caller\'s room', () => {
+  it('holdingQuestion finds the room whose bus carries the id', () => {
     const x = twoRooms()
     const q = x.local.b.post(worker, { type: 'question', to: 'rohanz', text: 'which base?' })
     expect(x.rooms.holdingQuestion(q.id, x.t)).toBe(x.l)
     expect(x.rooms.holdingQuestion('m_missing', x.t)).toBeUndefined()
-    x.local.a.setWorker({ id: 'rohanz/money#1', tag: 'money', name: 'rohanz+money', host: 'claude', task: 'm', dir, branch: 'room/money', pid: 3, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 })
-    expect(x.rooms.holdingWorker('money', x.t)).toBe(x.l)
-    x.team.a.setWorker({ id: 'rohanz/money#1', tag: 'money', name: 'rohanz+money', host: 'claude', task: 'm', dir, branch: 'room/money', pid: 4, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 })
-    expect(x.rooms.holdingWorker('money', x.t)).toBe(x.t)
-    expect(x.rooms.holdingWorker('none', x.t)).toBe(x.t)
   })
 })
 
-describe('worker identity', () => {
-  it('ids are per spawn; handles are per room; reservations are per room, lead and tag', () => {
-    expect(workerId('rohanz', 'money', 1)).toBe('rohanz/money#1')
-    expect(workerId('rohanz', 'money', 2)).not.toBe(workerId('rohanz', 'money', 1))
-    expect(workerIdBase('local/x/main', 'rohanz', 'money')).toBe('local/x/main|rohanz/money')
-    const r = registry()
-    const t = fakeSession(pair().a, lead, 'github.com/rohanz/x/main'), l = fakeSession(pair().a, lead)
-    const procT = { pid: 1, onExit() {}, kill: () => true }, procL = { pid: 2, onExit() {}, kill: () => true }
-    r.rooms.setHandle(t, 'rohanz/money#1', procT); r.rooms.setHandle(l, 'rohanz/money#1', procL)
-    expect(r.rooms.handle(t, 'rohanz/money#1')).toBe(procT)
-    expect(r.rooms.handle(l, 'rohanz/money#1')).toBe(procL)
-    r.rooms.dropHandle(t, 'rohanz/money#1', procL) // not the handle held there: kept
-    expect(r.rooms.handle(t, 'rohanz/money#1')).toBe(procT)
-    r.rooms.dropHandle(t, 'rohanz/money#1', procT)
-    expect(r.rooms.handle(t, 'rohanz/money#1')).toBeUndefined()
-    expect(r.rooms.reserve('local/x/main|rohanz/money')).toBe(true)
-    expect(r.rooms.reserve('local/x/main|rohanz/money')).toBe(false)
-    r.rooms.unreserve('local/x/main|rohanz/money')
-    expect(r.rooms.reserve('local/x/main|rohanz/money')).toBe(true)
-    r.rooms.add(l, 'workers', t)
-    r.rooms.remove(l) // handles of a removed session go with it
-    expect(r.rooms.handle(l, 'rohanz/money#1')).toBeUndefined()
+const roots: string[] = []
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+const token = { pid: 100, startTime: 'born', executable: 'node', sessionId: 'lead', nonce: 'lead' }
+function record(root: string, id: string, tag = 'money'): WorkerRecord {
+  return {
+    v: 1, id, tag, name: `rohanz+${tag}`, mode: 'local', room: 'local/x/main',
+    lead: { participant: 'rohanz', room: 'local/x/main', instance: token }, host: 'codex',
+    budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full', task: 'test',
+    dir: join(root, '.room', 'workers', tag), outside: false, branch: `room/${tag}`,
+    prep: { step: 'prepared' }, capabilities: { resume: false, signal: false, collect: 'delta' }, phase: 'active',
+    runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: id, busFrontier: [], promptMsgIds: [],
+      launcher: token, logStart: 0, launch: { outcome: 'launched', pid: 101 } }],
+    createdAt: 1, seq: 1,
+  }
+}
+function storeRoot(): string { const root = mkdtempSync(join(tmpdir(), 'room-registry-status-')); roots.push(root); return root }
+
+describe('worker identity and durable exits', () => {
+  it('keeps process handles keyed by worker id and room', () => {
+    const r = registry(), t = fakeSession(pair().a, lead), l = fakeSession(pair().a, lead)
+    const first = { pid: 1, onExit() {}, kill: () => true }
+    const later = { pid: 2, onExit() {}, kill: () => true }
+    r.rooms.setHandle(t, 'w_first', first); r.rooms.setHandle(l, 'w_later', later)
+    expect(r.rooms.handle(t, 'w_first')).toBe(first)
+    expect(r.rooms.handle(l, 'w_later')).toBe(later)
+    r.rooms.dropHandle(t, 'w_first', later)
+    expect(r.rooms.handle(t, 'w_first')).toBe(first)
+    r.rooms.dropHandle(t, 'w_first', first)
+    expect(r.rooms.handle(t, 'w_first')).toBeUndefined()
   })
 
-  it('a reused tag gets a new id, and the old process\'s exit no longer touches the new record', async () => {
-    const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
-    let ls: Session | null = fakeSession(a, lead)
-    const exits: ((code: number | null) => void)[] = []
-    let n = 0
-    const tools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined, listCwdProcesses: () => [],
-      spawner: () => ({ pid: 100 + ++n, started: Promise.resolve(), onExit: cb => { exits.push(cb) }, kill: () => true }),
-      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
-    })
-    await tools.call('room_spawn', { tag: 'money', task: 'first' })
-    const first = a.workers.get('money')!
-    expect(first.id).toBe('rohanz/money#1')
-    await tools.call('room_collect', { tag: 'money', discard: true })
-    expect(await tools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('process is still alive')
-    exits[0](0)
-    await vi.waitFor(() => expect(a.workers.has('money')).toBe(false))
-    await tools.call('room_spawn', { tag: 'money', task: 'second' })
-    const second = a.workers.get('money')!
-    expect(second.id).not.toBe(first.id)
-    expect(a.workerById('rohanz/money#1')).toBeUndefined()
-    exits[0](0) // the first process finally exits: its record is gone, so nothing changes
-    expect(a.workers.get('money')).toMatchObject({ id: second.id, status: 'running', task: 'second' })
-    exits[1](0)
-    expect(a.workers.get('money')).toMatchObject({ id: second.id, status: 'failed' })
-  })
-})
-
-describe('worker process exits', () => {
-  it('records a worker found dead after lead restart as an unknown unwitnessed exit, releases claims, and sends no false death alarm', async () => {
-    const r = registry(), s = fakeSession(pair().a, lead)
-    r.rooms.add(s, 'primary')
-    const w = { id: 'dead#1', tag: 'dead', name: 'rohanz+dead', host: 'codex' as const, task: 'test', dir, branch: 'room/dead', pid: -1, startedAt: Date.now() - 100_000, status: 'running' as const, lead: 'rohanz' }
-    s.room.setWorker(w)
-    s.room.setScope({ by: w.name, byKind: 'agent', area: 'dead', summary: 'test', paths: ['app.py'] })
-    s.room.addClaim({ path: 'app.py', from: 1, to: 1, by: w.name, byKind: 'agent', intent: 'work', plans: [{ kind: 'add', symbol: 'newFunction' }] })
-    s.room.addClaim({ path: 'other.py', from: 1, to: 1, by: lead.name, byKind: 'agent', intent: 'lead work' })
-    await r.rooms.retireWorkers(s)
-    await r.rooms.retireWorkers(s)
-    expect(s.room.workers.get('dead')).toMatchObject({ status: 'failed', exitCode: -1 })
-    expect(s.room.workers.get('dead')?.summary).toContain('stopped while no session of yours was running; reason unknown')
-    expect(s.room.workers.get('dead')?.summary).toContain(`worktree: ${dir}`)
-    expect(s.room.workers.get('dead')?.summary).toContain('last lines of its log:')
-    expect(s.room.openClaims().map(c => c.by)).toEqual([lead.name])
-    expect(s.room.scope(w.name)).toBeUndefined()
-    expect(s.room.messages().filter(m => m.priority === 'interrupt')).toEqual([])
-    expect(s.room.messages().filter(m => m.type === 'done')).toEqual([])
-    r.rooms.remove(s)
+  it('reuses a tag only after retirement, with a fresh id; an old exit does not alter the new run', async () => {
+    const root = storeRoot(), store = await WorkerRegistry.open(root, { migrate: false, watch: false,
+      identity: token, liveness: () => 'alive' })
+    const first = record(root, 'w_first'), next = record(root, 'w_next')
+    await store.writeIntent({ ...first, phase: 'intent', runs: [{ ...first.runs[0], launch: undefined }] })
+    await store.update(first.id, old => ({ ...old, phase: 'retired', cleanup: { [old.room]: 'done' }, seq: old.seq + 1 }))
+    await store.writeIntent({ ...next, phase: 'intent', runs: [{ ...next.runs[0], launch: undefined }] })
+    await store.update(next.id, old => ({ ...old, phase: 'active', runs: next.runs, seq: old.seq + 1 }))
+    await store.writeExit(first.id, { run: 1, code: 1, at: 10, witnessed: true })
+    expect(store.read(next.id)?.id).toBe('w_next')
+    expect(store.status(next.id)?.status).toBe('running')
+    store.close()
   })
 
-  it('an exit no lead witnessed keeps its cause unknown, without a death report', async () => {
-    const s = fakeSession(pair().a, lead)
-    s.room.setWorker({ tag: 'orphan', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/orphan', pid: -1, startedAt: 1, status: 'running', lead: lead.name })
-    await finishWorkerProcess(s, s.room.workers.get('orphan')!, null, 5, undefined, true)
-    expect(s.room.workers.get('orphan')).toMatchObject({ status: 'failed', exitCode: -1 })
-    expect(s.room.workers.get('orphan')?.summary).toContain('reason unknown')
-    expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(0)
+  it('records an unwitnessed exit with unknown cause and no death interrupt', async () => {
+    const root = storeRoot(), store = await WorkerRegistry.open(root, { migrate: false, watch: false,
+      identity: token, liveness: () => 'dead' })
+    const w = record(root, 'w_dead')
+    await store.writeIntent({ ...w, phase: 'intent', runs: [{ ...w.runs[0], launch: undefined }] })
+    await store.update(w.id, old => ({ ...old, phase: 'active', runs: w.runs, seq: old.seq + 1 }))
+    await store.writeExit(w.id, { run: 1, code: null, at: 10, witnessed: false })
+    expect(store.status(w.id)).toMatchObject({ status: 'failed', note: 'stopped while no session of yours was running' })
+    expect(await store.postObservedFailure(w.id, 1, () => { throw new Error('false alarm') })).toBe(false)
+    store.close()
   })
 
-  it('keeps a record while a recycled pid is live, then records failure after it is gone', async () => {
-    const r = registry(), s = fakeSession(pair().a, lead)
-    r.rooms.add(s, 'primary')
-    s.room.setWorker({ tag: 'reused', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/reused', pid: process.pid, startedAt: 1, status: 'running', lead: lead.name })
-    await r.rooms.retireWorkers(s)
-    expect(s.room.workers.get('reused')?.status).toBe('running')
-    s.room.updateWorker('reused', { pid: -1 })
-    await r.rooms.retireWorkers(s)
-    expect(s.room.workers.get('reused')).toMatchObject({ status: 'failed', exitCode: -1 })
-    expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(0)
-    r.rooms.remove(s)
+  it('keeps an identity-matched live process running; marks its witnessed exit failed after death', () => {
+    const root = storeRoot(), w = record(root, 'w_pid')
+    w.runs[0].launch = { outcome: 'launched', pid: 101,
+      process: { pid: 101, startTime: 'born', executable: 'codex' } }
+    const exit = [{ run: 1, code: 1, at: 10, witnessed: true }]
+    expect(statusOf(w, w.runs, [], exit, () => 'alive').status).toBe('running')
+    expect(statusOf(w, w.runs, [], exit, () => 'dead')).toMatchObject({ status: 'failed', exitCode: 1 })
   })
 
-  it.each(['done', 'dismissed'] as const)('does not retire a %s record with an unverifiable live pid', async status => {
-    const r = registry(), s = fakeSession(pair().a, lead)
-    r.rooms.add(s, 'primary')
-    s.room.setWorker({ tag: 'unverified', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/unverified', pid: process.pid, startedAt: 1, status, lead: lead.name, exitCode: 0 })
-    await r.rooms.retireWorkers(s)
-    expect(s.room.workers.get('unverified')?.status).toBe(status)
-    expect(s.room.retiredWorkers()).toHaveLength(0)
-    r.rooms.remove(s)
+  it.each(['lead-session-ended', 'discarded'] as const)('an intentional %s stop has no death message', reason => {
+    const root = storeRoot(), w = record(root, 'w_stopped')
+    w.stop = { reason, at: 2, run: 1 }
+    const status = statusOf(w, w.runs, [], [{ run: 1, code: null, at: 3, witnessed: true }], () => 'dead')
+    expect(status.status).toBe('stopped')
+    expect(completionMessage(w, w.runs[0], status)).toBeUndefined()
   })
 
-  it.each([true, false])('intentional stop produces no death interrupt (session ended=%s)', async ended => {
-    const s = fakeSession(pair().a, lead)
-    s.room.setWorker({ tag: 'stopped', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/stopped', pid: -1, startedAt: 1, status: 'dismissed', lead: lead.name, dismissedAt: 2, ...(ended ? { stopReason: 'lead-session-ended' as const } : {}) })
-    await finishWorkerProcess(s, s.room.workers.get('stopped')!, null)
-    expect(s.room.workers.get('stopped')?.exitCode).toBe(-1)
-    expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(0)
+  it.each([0, 1, null] as const)('a witnessed exit %s without room_done produces a failure interrupt', code => {
+    const root = storeRoot(), w = record(root, 'w_exit')
+    const status = statusOf(w, w.runs, [], [{ run: 1, code, at: 10, witnessed: true }], () => 'dead')
+    expect(status.status).toBe('failed')
+    const message = completionMessage(w, w.runs[0], status)
+    expect(message?.id).toBe('wk:w_exit:1')
+    expect(message?.body.type).toBe('note')
+    expect(message?.body.priority).toBe('interrupt')
   })
 
-  it.each([
-    ['running', 0, 120_000, true], ['done', 1, 120_000, true],
-    ['done', 0, 56_000, false], ['done', 0, 90_000, false],
-    ['running', 1, 5_000, true], ['running', 0, 5_000, true], ['done', 1, 720_000, true],
-  ] as const)('status %s exit %i after %i ms: interrupt=%s', async (status, code, elapsed, warn) => {
-    const s = fakeSession(pair().a, lead)
-    s.room.setWorker({ id: 'exit#1', tag: 'exit', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/exit', pid: -1, startedAt: 1000, status, lead: lead.name, ...(status === 'done' ? { summary: 'finished' } : {}) })
-    await finishWorkerProcess(s, s.room.workers.get('exit')!, code, 1000 + elapsed)
-    // Process error + exit callbacks and repeated discovery must not duplicate the report.
-    await finishWorkerProcess(s, s.room.workers.get('exit')!, code, 1000 + elapsed)
-    expect(s.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(warn ? 1 : 0)
-    if (warn) {
-      const text = (s.room.messages().find(m => m.priority === 'interrupt') as { text: string }).text
-      expect(text).toContain('last lines of its log:')
-      expect(text).toContain(elapsed < 90_000 ? `${Math.floor(elapsed / 1000)} s after start` : `after ${Math.floor(elapsed / 60_000)}m`)
-    }
-    expect(s.room.workers.get('exit')).toMatchObject({ status: status === 'done' ? 'done' : 'failed', exitCode: code })
-    if (status === 'done') expect(s.room.workers.get('exit')?.summary).toBe('finished')
+  it('keeps a reported completion and its host session for explicit collection', () => {
+    const root = storeRoot(), w = record(root, 'w_retained', 'review')
+    w.hostSessionId = '550e8400-e29b-41d4-a716-446655440000'
+    w.capabilities.resume = true
+    const report = [{ run: 1, nonce: w.runs[0].nonce, chain: [], joinedAt: 2,
+      done: { at: 3, summary: 'finished', changed: ['app.py'] } }]
+    const status = statusOf(w, w.runs, report, [{ run: 1, code: 0, at: 4, witnessed: true }], () => 'dead')
+    expect(status).toMatchObject({ status: 'done', summary: 'finished' })
+    expect(w.hostSessionId).toBe('550e8400-e29b-41d4-a716-446655440000')
   })
-})
-
-it('retains a completed worker with a resumable host session and existing checkout until collection', async () => {
-  const r = registry(), s = fakeSession(pair().a, lead)
-  r.rooms.add(s, 'primary')
-  s.room.setWorker({ id: 'rohanz/review#1', tag: 'review', name: 'rohanz+review', host: 'claude', hostSessionId: '550e8400-e29b-41d4-a716-446655440000', budget: { threads: 2, memGb: 4, nice: 10 }, task: 'review', dir, branch: 'main', pid: -1, startedAt: 1, status: 'done', lead: lead.name, exitCode: 0, summary: 'done' })
-  await r.rooms.retireWorkers(s)
-  expect(s.room.workers.get('review')).toMatchObject({ status: 'done', hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })
-  expect(s.room.retiredWorkers()).toEqual([])
-  r.rooms.remove(s)
 })

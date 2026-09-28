@@ -29,7 +29,7 @@ export interface ResolvedConfig {
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareWarning?: string
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
-  claudeChannel: string; workerId?: string; gen?: string
+  claudeChannel: string; workerId?: string
 }
 
 const value = (v: unknown): string | undefined => typeof v === 'string' && v.trim() ? v.trim() : undefined
@@ -101,7 +101,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   return {
     // Empty explicitly disables development channels; do not discard it with value().
     claudeChannel: (args.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
-    workerId: value(e.ROOM_WORKER_ID), gen: value(e.ROOM_GEN),
+    workerId: value(e.ROOM_WORKER_ID),
     roomUrl, dir: path.resolve(dir), server: resolveServer(where), where, whereRule, whereEnv,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
     tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareWarning: sharing.warning, credentialsPath,

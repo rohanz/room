@@ -2,9 +2,9 @@
  * A lead's tools with a bridged workers room: room_done keeps the mirrors of running workers (B2),
  * and a worker exiting without room_done still wakes the lead's host (B3).
  */
-import { describe, it, expect, beforeAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -15,6 +15,8 @@ import { createTools } from '../src/tools.js'
 import { shouldWake } from '../src/wake.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
+import { prepareWorktree } from '../src/worker-git.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
 
 let dir: string
 let base: string
@@ -48,6 +50,13 @@ beforeAll(() => {
   git('add', '.'); git('commit', '-qm', 'init')
   base = git('rev-parse', 'HEAD').trim()
 })
+afterEach(async () => {
+  await closeRegistryForDir(dir)
+  const worker = join(dir, '.room', 'workers', 'money')
+  if (existsSync(worker)) execFileSync('git', ['-C', dir, 'worktree', 'remove', '--force', worker], { stdio: 'pipe' })
+  rmSync(join(dir, '.git', 'room', 'registry'), { recursive: true, force: true })
+  try { execFileSync('git', ['-C', dir, 'branch', '-D', 'room/money'], { stdio: 'pipe' }) } catch { /* no branch */ }
+})
 
 /** A lead in a team room with a local workers room; the spawned process's exit is under test control. */
 function setupBridged(queue?: (id: string, text: string) => Promise<void>) {
@@ -63,7 +72,7 @@ function setupBridged(queue?: (id: string, text: string) => Promise<void>) {
     join: async () => fakeSession(local.a, lead),
     leave: async () => {},
     spawner: () => ({ pid: 99, started: Promise.resolve(), onExit: cb => { exits.push(cb) }, kill: () => {} }),
-    worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+    worktree: async (repo, tag) => prepareWorktree(repo, tag, 'rohanz'),
   })
   let ws: Session | null = fakeSession(local.b, workerId)
   const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })

@@ -1,3 +1,5 @@
+import { patchPublisher } from './registry-fixture.js'
+import { registryForDir } from '../src/worker-registry.js'
 // Acceptance test for carrying the lead's uncommitted work into a new worker worktree, end to end through
 // createTools with real git repositories and the real prepareWorktree; only the process spawner is stubbed.
 // The worker is simulated by editing its worktree and calling room_done through a worker session.
@@ -112,7 +114,13 @@ function world() {
     // Pinned: the worker's clone is on room/<tag>, and its room must not follow that branch.
     let ws: Session | null = { ...fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir), pinnedRoom: true } as Session
     const tools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: w.dir })
-    expect(await tools.call('room_done', { summary: `${tag} finished` })).toContain('Your lead rohanz has been told')
+    const registry = await registryForDir(repo)
+    const record = registry.list().find(record => record.tag === tag)!
+    const run = record.runs.at(-1)!
+    await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
+    process.env.ROOM_WORKER_ID = record.id
+    try { expect(await tools.call('room_done', { summary: `${tag} finished` })).toContain('marked done') }
+    finally { delete process.env.ROOM_WORKER_ID }
     await tools.shutdown(); ws?.graph?.stop()
     exits.get(tag)!(0)
     await vi.waitFor(() => expect(a.workers.get(tag)).toMatchObject({ status: 'done', exitCode: 0 }))
@@ -163,16 +171,16 @@ const CARRIED_LINE = /carried your uncommitted work into its worktree: (\d+) tra
 
 describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () => {
   it('refuses to reuse a stale worker directory switched to another branch', async () => {
-    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', [], 'room-A/rohanz')
+    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', [])
     git(prepared.dir, 'switch', '-qc', 'unrelated')
-    await expect(prepareWorktree(repo, 'replacement', 'rohanz', [], 'room-A/rohanz')).rejects.toThrow(/branch.*unrelated/)
+    await expect(prepareWorktree(repo, 'replacement', 'rohanz', [])).rejects.toThrow(/unmanaged/)
   })
   it('refuses a replacement repository at a former worker path', async () => {
-    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', [], 'room-A/rohanz')
+    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', [])
     git(repo, 'worktree', 'remove', '--force', prepared.dir)
     fs.mkdirSync(prepared.dir, { recursive: true })
     git(prepared.dir, 'init', '-q', '-b', 'room/replacement')
-    await expect(prepareWorktree(repo, 'replacement', 'rohanz', [], 'room-A/rohanz')).rejects.toThrow(/not a worktree of this repository/)
+    await expect(prepareWorktree(repo, 'replacement', 'rohanz', [])).rejects.toThrow(/unmanaged/)
   })
   it('can spawn from HEAD without carrying tracked or untracked lead changes', async () => {
     put(repo, 'shared.txt', lines([2, 'lead edit']))
@@ -196,14 +204,14 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(reply).toContain('build/og-grid-spec.md')
     expect(reply).toContain('not in this worktree')
   })
-  it('removes the private carry ref and owner record after normal worker cleanup', async () => {
+  it('removes the private carry refs after normal worker cleanup without a carry owner record', async () => {
     put(repo, 'shared.txt', lines([2, 'W']))
     put(repo, 'untracked.txt', 'private WIP\n')
-    const prepared = await prepareWorktree(repo, 'retired', 'rohanz', [], 'room-A/retired')
+    const prepared = await prepareWorktree(repo, 'retired', 'rohanz', [])
     expect(git(repo, 'rev-parse', 'refs/room/carry/retired')).toBe(prepared.base)
     expect(git(repo, 'ls-tree', '-r', '--name-only', 'refs/room/carry-untracked/retired')).toBe('untracked.txt')
     const record = path.join(repo, '.git', 'room-carry', 'retired.json')
-    expect(fs.existsSync(record)).toBe(true)
+    expect(fs.existsSync(record)).toBe(false)
     const w = { tag: 'retired', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0 } as Parameters<typeof cleanupWorker>[1]
     expect(await cleanupWorker(repo, w, true, false, [], { list: () => [] })).toBe(true)
     expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry/retired')).toThrow()
@@ -214,15 +222,13 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     put(repo, 'shared.txt', lines([2, 'W']))
     put(repo, 'untracked.txt', 'private WIP\n')
     const prepared = await prepareWorktree(repo, 'cleanup-fails', 'rohanz')
-    const record = path.join(repo, '.git', 'room-carry', 'cleanup-fails.json')
-    const realRm = fs.promises.rm.bind(fs.promises)
-    let failed = false
-    vi.spyOn(fs.promises, 'rm').mockImplementation((target, options) => {
-      if (!failed && String(target) === record) { failed = true; throw new Error('forced late cleanup failure') }
-      return realRm(target, options)
-    })
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-failing-git-'))
+    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/cleanup-fails "*) echo "forced late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+    const originalPath = process.env.PATH
+    process.env.PATH = bin + path.delimiter + originalPath
     const w = { tag: 'cleanup-fails', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof cleanupWorker>[1]
-    await expect(cleanupWorker(repo, w, true, false, [], { list: () => [] })).rejects.toThrow(/cleanup/)
+    try { await expect(cleanupWorker(repo, w, true, false, [], { list: () => [] })).rejects.toThrow(/cleanup/) }
+    finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
     expect(fs.existsSync(prepared.dir)).toBe(true)
     expect(git(repo, 'rev-parse', `refs/heads/${prepared.branch}`)).toBeTruthy()
     expect(git(repo, 'rev-parse', 'refs/room/carry-untracked/cleanup-fails')).toBeTruthy()
@@ -233,7 +239,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const prepared = await prepareWorktree(repo, 'patch', 'rohanz')
     put(prepared.dir, 'keep.txt', 'worker edit\n')
     const w = { tag: 'patch', branch: prepared.branch, dir: prepared.dir, base: prepared.base, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof saveDiscardPatch>[1]
-    const patch = await saveDiscardPatch(repo, w)
+    const patch = await saveDiscardPatch(repo, w, patchPublisher(repo, w.tag))
     expect(patch).toBeTruthy()
     expect(fs.readFileSync(patch!, 'utf8')).toContain('diff --git a/keep.txt b/keep.txt')
     expect(fs.readFileSync(patch!, 'utf8')).not.toContain('notes.txt')
@@ -250,7 +256,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     let timerFired = false
     const timer = setTimeout(() => { timerFired = true }, 20)
     try {
-      expect(await saveDiscardPatch(repo, w)).toBeTruthy()
+      expect(await saveDiscardPatch(repo, w, patchPublisher(repo, w.tag))).toBeTruthy()
       expect(timerFired).toBe(true)
     } finally {
       clearTimeout(timer)
@@ -394,14 +400,12 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     process.env.TZ = 'Pacific/Honolulu'
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-09-25T01:00:00.000Z'))
-    const date = new Date()
-    const localDay = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
     let reply: string
     try { reply = await t.call('room_collect', { tag: 'drop', discard: true }) }
     finally { vi.useRealTimers(); if (oldTz === undefined) delete process.env.TZ; else process.env.TZ = oldTz }
     const patch = /recovery patch: (\S+)/.exec(reply)?.[1]
     expect(patch, reply).toBeTruthy()
-    expect(path.basename(patch!)).toContain(`drop-${localDay}-`)
+    expect(path.basename(patch!)).toBe(`${w.id}.patch`)
     const text = fs.readFileSync(patch!, 'utf8')
     expect([...text.matchAll(/^diff --git a\/(\S+) /gm)].map(m => m[1]).sort()).toEqual(['keep.txt', 'mine.txt'])
     // It applies on the carried commit and restores exactly the worker's output there.

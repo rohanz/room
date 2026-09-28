@@ -8,6 +8,8 @@ import { handlers as fileHandlers } from '../src/tools/files.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { RoomDoc } from '@room/shared'
 import * as Y from 'yjs'
+import type { Session } from '../src/session.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
 
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: vi.fn() }))
 let root: string, lead: string, worker: string, base: string
@@ -29,7 +31,7 @@ function setup() {
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ base, branch: 'main', repo: 'test' })
   room.workers.set('test', w as never)
-  const s = { dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } }
+  const s = { dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', room, awareness: { getStates: () => new Map() } }
   const state = {
     S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers: vi.fn(async () => {}) }, workerAlive: () => false,
     others: () => ['lead+test'], presences: () => [], withheld: () => undefined, baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,
@@ -87,8 +89,14 @@ it('runs a team preview from a shared worker overlay even when its local directo
 
 it('room_collect does not read files only the lead changed and leaves them untouched', async () => {
   const art = leadArt()
+  fs.appendFileSync(path.join(lead, '.git', 'info', 'exclude'), '.room/\n')
+  const canonical = path.join(lead, '.room', 'workers', 'test')
+  fs.mkdirSync(path.dirname(canonical), { recursive: true })
+  git(lead, 'worktree', 'move', worker, canonical)
+  worker = canonical
   put(worker, 'new.txt', 'worker change\n')
   const t = setup()
+  await syncDocumentWorkers(t.state.S() as Session)
   const reader = vi.spyOn(fs, 'readFileSync')
   const result = await handlers(t.state).room_collect({ tag: 'test' })
   expect(result).toContain('Changes from test: new.txt')

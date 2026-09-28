@@ -13,6 +13,7 @@ import type { Session } from '../src/session.js'
 import { handlers as joinHandlers } from '../src/tools/join.js'
 import { createWorkerRuntime } from '../src/tools/workers.js'
 import { type HandlerState } from '../src/tools/context.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
 
 describe('worker lifecycle cleanup', () => {
   it('signals only processes whose resolved cwd is inside the worktree, then escalates survivors', async () => {
@@ -111,11 +112,12 @@ describe('worker lifecycle cleanup', () => {
       const room = new RoomDoc()
       const worker = { tag: 'a', name: 'lead+a', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/a', id: 'id', pid: 999999, startedAt: Date.now(), status: 'running' } as const
       room.workers.set('a', worker as never)
-      const s = { room, dir: root, me: { name: 'lead', kind: 'agent' } } as Session
+      const s = { room, dir: root, roomName: 'local/repo/main', me: { name: 'lead', kind: 'agent' } } as Session
+      await syncDocumentWorkers(s)
       const kill = vi.fn(() => { child.kill('SIGTERM'); return true })
       const state = { ctx: { listCwdProcesses: () => [{ pid: child.pid!, cwd: dir, command: 'node' }] }, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
       const { dismissWorker } = createWorkerRuntime(state)
-      const reply = await dismissWorker(s, worker as never, 'stop')
+      const reply = await dismissWorker(s, room.workers.get('a')!, 'stop')
       expect(reply).toMatch(new RegExp(`stopped processes: [^\\n]+ \\(pid ${child.pid}\\)`))
       expect(kill).toHaveBeenCalledOnce()
       room.doc.destroy()

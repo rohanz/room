@@ -9,6 +9,8 @@ import { RoomDoc } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { getCredential } from '../src/credentials.js'
 import { DEFAULT_SERVER, NotLoggedIn, type JoinOptions, type Session } from '../src/session.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
 
 let dir: string
 const dispose: (() => void | Promise<void>)[] = []
@@ -25,6 +27,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const fn of dispose.splice(0).reverse()) await fn()
+  await closeRegistryForDir(dir)
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
   rmSync(dir, { recursive: true, force: true })
@@ -89,6 +92,7 @@ it('says once and stays when an automatic branch move would strand a running wor
   execFileSync('git', ['-C', dir, 'switch', '-qc', 'feature/x'])
   const current = session('github.com/a/b/main', { share: 'intent' })
   current.room.setWorker({ tag: 'w', name: 'Ada+privacy+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: process.pid, startedAt: Date.now(), status: 'running', lead: current.me.name })
+  await syncDocumentWorkers(current)
   const t = branchTools(current)
   const first = await t.tools.call('room_state', {})
   const second = await t.tools.call('room_state', {})

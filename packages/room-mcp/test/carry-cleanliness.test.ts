@@ -1,9 +1,11 @@
+import { patchPublisher } from './registry-fixture.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { prepareWorktree, saveDiscardPatch, persistWorkerStopReason, persistedWorkerStopReason, clearWorkerStopState, cleanupWorker } from '../src/worker-git.js'
+import { prepareWorktree, saveDiscardPatch, cleanupWorker } from '../src/worker-git.js'
+import { seedRegistryWorker } from './registry-fixture.js'
 import { defaultSpawner } from '../src/worker-process.js'
 import { workerRealState } from '../src/worker-state.js'
 import { RoomDoc, type Worker } from '@room/shared'
@@ -56,7 +58,7 @@ describe('carry and discard safety', () => {
     run(prepared.dir, 'config', 'diff.srcPrefix', 'before/')
     run(prepared.dir, 'config', 'diff.dstPrefix', 'after/')
     run(prepared.dir, 'config', 'diff.external', '/bin/false')
-    const patch = await saveDiscardPatch(root, { tag: 'hostile', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as Worker)
+    const patch = await saveDiscardPatch(root, { tag: 'hostile', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as Worker, patchPublisher(root, 'hostile'))
     expect(patch).toBeTruthy()
     const body = fs.readFileSync(patch!, 'utf8')
     expect(body).toContain('diff --git a/base.txt b/base.txt')
@@ -72,7 +74,7 @@ describe('carry and discard safety', () => {
     const fakeDir = path.join(root, 'reject-apply'); fs.mkdirSync(fakeDir)
     fs.writeFileSync(path.join(fakeDir, 'git'), '#!/bin/sh\nif [ "$1" = "apply" ]; then exit 1; fi\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    await expect(saveDiscardPatch(root, { tag: 'unverified', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as Worker)).rejects.toThrow()
+    await expect(saveDiscardPatch(root, { tag: 'unverified', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as Worker, patchPublisher(root, 'unverified'))).rejects.toThrow()
     expect(fs.readFileSync(path.join(prepared.dir, 'base.txt'), 'utf8')).toBe('worker edit\n')
     expect(fs.existsSync(path.join(prepared.dir, '.git'))).toBe(true)
   })
@@ -82,33 +84,34 @@ describe('carry and discard safety', () => {
     fs.writeFileSync(path.join(prepared.dir, 'base.txt'), 'worker edit\n')
     const worker = { tag: 'rollback', dir: prepared.dir, base: prepared.base, branch: prepared.branch,
       status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as Worker
-    const patch = await saveDiscardPatch(root, worker)
-    const record = path.join(root, '.git', 'room-carry', 'rollback.json')
-    const realRm = fs.promises.rm.bind(fs.promises)
-    vi.spyOn(fs.promises, 'rm').mockImplementation((target, options) => {
-      if (String(target) === record) throw new Error('late cleanup failure')
-      return realRm(target, options)
-    })
-    await expect(cleanupWorker(root, worker, true, true, [], { list: () => [] })).rejects.toThrow(/reconstructed base.*actual worker edits are in/)
+    const patch = await saveDiscardPatch(root, worker, patchPublisher(root, worker.tag))
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-failing-git-'))
+    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/rollback "*) echo "late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+    process.env.PATH = bin + path.delimiter + originalPath
+    try { await expect(cleanupWorker(root, worker, true, true, [], { list: () => [] })).rejects.toThrow(/cleanup failed:.*late cleanup failure/) }
+    finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
     expect(fs.existsSync(path.join(prepared.dir, '.git'))).toBe(true)
     expect(fs.readFileSync(patch!, 'utf8')).toContain('worker edit')
   })
 
-  it('clears the persisted stop reason after a successful resume', () => {
-    persistWorkerStopReason(root, 'later', 'lead-session-ended', 'worker#1')
-    expect(persistedWorkerStopReason(root, 'later', 'worker#1')).toBe('lead-session-ended')
-    expect(persistedWorkerStopReason(root, 'later', 'worker#2')).toBeUndefined()
-    clearWorkerStopState(root, 'later', 'worker#2')
-    expect(persistedWorkerStopReason(root, 'later', 'worker#1')).toBe('lead-session-ended')
-    clearWorkerStopState(root, 'later', 'worker#1')
-    expect(persistedWorkerStopReason(root, 'later')).toBeUndefined()
+  it('scopes a persisted stop to its run after resume', async () => {
+    const { registry, record } = await seedRegistryWorker(root, 'later', {
+      hostSessionId: 'session-1', capabilities: { resume: true, signal: false, collect: 'delta' },
+    })
+    await registry.beginStop(record.id, 'lead-session-ended')
+    expect(registry.read(record.id)?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
+    const resumed = await registry.resume(record.id, 2, { nonce: 'resume-2', logStart: 0 })
+    expect(resumed.runs.at(-1)?.n).toBe(2)
+    expect(registry.status(record.id)?.status).toBe('starting')
+    await registry.finishOperation(record.id)
   })
 
-  it('honours and clears a stop reason recorded without a worker id', () => {
-    persistWorkerStopReason(root, 'legacy', 'lead-session-ended')
-    expect(persistedWorkerStopReason(root, 'legacy', 'worker#1')).toBe('lead-session-ended')
-    clearWorkerStopState(root, 'legacy', 'worker#1')
-    expect(persistedWorkerStopReason(root, 'legacy')).toBeUndefined()
+  it('never lets one worker id inherit another worker stop', async () => {
+    const first = await seedRegistryWorker(root, 'legacy')
+    const second = await seedRegistryWorker(root, 'other')
+    await first.registry.beginStop(first.record.id, 'lead-session-ended')
+    expect(first.registry.read(first.record.id)?.stop?.reason).toBe('lead-session-ended')
+    expect(second.registry.read(second.record.id)?.stop).toBeUndefined()
   })
 
   it('counts worker edits against its recorded base and excludes unchanged carried files', async () => {
@@ -254,7 +257,7 @@ describe('carry and discard safety', () => {
     await expect(carriedPaths(baseline)).resolves.toContain('base.txt')
   })
 
-  it('does not let a Codex log write error escape the stdout callback', async () => {
+  it('streams Codex stdout to its log without a session-id callback', async () => {
     const realWrite = fs.writeSync.bind(fs)
     vi.spyOn(fs, 'writeSync').mockImplementation((...args: Parameters<typeof fs.writeSync>) => {
       if (typeof args[1] !== 'string' && Buffer.isBuffer(args[1])) throw new Error('disk full')
@@ -263,10 +266,9 @@ describe('carry and discard safety', () => {
     const id = '12345678-1234-1234-1234-123456789abc'
     const proc = defaultSpawner({ cmd: process.execPath, args: ['-e', `process.stdout.write(JSON.stringify({type:'thread.started',thread_id:'${id}'})+'\\n')`],
       cwd: root, env: {}, logFile: path.join(root, 'worker.log'), captureCodexSession: true })
-    const found = await new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('session ID lost after log write error')), 2000)
-      proc.onSessionId?.(value => { clearTimeout(timer); resolve(value) })
-    })
-    expect(found).toBe(id)
+    expect('onSessionId' in proc).toBe(false)
+    const code = await new Promise<number | null>(resolve => proc.onExit(resolve))
+    expect(code).toBe(0)
+    expect(fs.readFileSync(path.join(root, 'worker.log'), 'utf8')).toContain(id)
   })
 })

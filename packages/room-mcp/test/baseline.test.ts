@@ -1,3 +1,4 @@
+import { patchPublisher } from './registry-fixture.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -142,7 +143,7 @@ describe('a carried worker\'s own changes', () => {
     expect([...unchanged]).toEqual(['notes.txt'])
     const participant = { dir: wdir, baseModes: addCarriedUntrackedModes(new Map(), w), unchangedCarried: unchanged, carriedPaths: new Set(['run.sh', 'notes.txt']) }
     expect(mergedFileMode('run.sh', 0o644, [participant])).toBe(0o755)
-    const patch = fs.readFileSync((await saveDiscardPatch(lead, w))!, 'utf8')
+    const patch = fs.readFileSync((await saveDiscardPatch(lead, w, patchPublisher(lead, w.tag)))!, 'utf8')
     expect(patch).toContain('diff --git a/run.sh b/run.sh\nnew file mode 100755')
     expect(patch).not.toContain('notes.txt')
   })

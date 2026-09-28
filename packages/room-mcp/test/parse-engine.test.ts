@@ -5,7 +5,7 @@ import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { ensureLanguages, languageLoadAttemptsForTest, parseFile } from '../src/parse/engine.js'
 import { languageSpecs } from '../src/parse/index.js'
@@ -14,6 +14,7 @@ import { observedContractChanges, SymbolGraph, type FileSymbols } from '@room/sh
 const execFile = promisify(execFileCallback)
 const require = createRequire(import.meta.url)
 const temporary: string[] = []
+const engineFile = fileURLToPath(new URL('../src/parse/engine.ts', import.meta.url))
 
 afterAll(async () => {
   await Promise.all(temporary.map(path => rm(path, { recursive: true, force: true })))
@@ -117,7 +118,7 @@ describe('tree-sitter parser engine', () => {
     temporary.push(dir)
     await copyFile(require.resolve('web-tree-sitter/tree-sitter.wasm'), join(dir, 'tree-sitter.wasm'))
     await writeFile(join(dir, 'tree-sitter-rust.wasm'), 'not wasm')
-    const engine = pathToFileURL(resolve('packages/room-mcp/src/parse/engine.ts')).href
+    const engine = pathToFileURL(engineFile).href
     const program = `
       const warnings = [];
       console.warn = (...args) => warnings.push(args.join(' '));
@@ -143,7 +144,7 @@ describe('tree-sitter parser engine', () => {
     await copyFile(require.resolve('web-tree-sitter/tree-sitter.wasm'), join(grammarDir, 'tree-sitter.wasm'))
     await copyFile(require.resolve('tree-sitter-wasms/out/tree-sitter-rust.wasm'), join(grammarDir, 'tree-sitter-rust.wasm'))
     const entry = join(dir, 'entry.ts')
-    const engine = resolve('packages/room-mcp/src/parse/engine.ts')
+    const engine = engineFile
     await writeFile(entry, `
       import { ensureLanguages, parseFile } from ${JSON.stringify(engine)};
       await ensureLanguages(['smoke.rs']);

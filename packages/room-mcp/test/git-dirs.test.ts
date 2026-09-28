@@ -5,7 +5,9 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it } from 'vitest'
 import { sessionMetadataPath } from '../src/config.js'
 import { writePendingHookContext } from '../src/hooks-bridge.js'
-import { clearWorkerStopState, persistedWorkerStopReason, persistWorkerStopReason, prepareWorktree } from '../src/worker-git.js'
+import { prepareWorktree } from '../src/worker-git.js'
+import { registryForDir } from '../src/worker-registry.js'
+import { seedRegistryWorker } from './registry-fixture.js'
 
 const roots: string[] = []
 const run = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
@@ -46,27 +48,17 @@ it('does not write hook state into a checkout when a gitfile has an empty gitdir
   expect(fs.existsSync(path.join(dir, 'room-state.json'))).toBe(false)
 })
 
-it('carry stop state lives in the common gitdir across worktrees and preserves generation guards', () => {
+it('worker stop state lives in the common gitdir across worktrees and is keyed by worker id', async () => {
   const { root, worker } = repo()
-  const file = path.join(root, '.git', 'room-carry', 'one.json')
-  persistWorkerStopReason(worker, 'one', 'lead-session-ended', 'generation-1')
-  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ stopReason: 'lead-session-ended', stopWorkerId: 'generation-1' })
-  expect(persistedWorkerStopReason(root, 'one', 'generation-2')).toBeUndefined()
-  expect(persistedWorkerStopReason(root, 'one', 'generation-1')).toBe('lead-session-ended')
-  clearWorkerStopState(root, 'one', 'generation-2')
-  expect(persistedWorkerStopReason(worker, 'one', 'generation-1')).toBe('lead-session-ended')
-  clearWorkerStopState(worker, 'one', 'generation-1')
-  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({})
-  expect(persistedWorkerStopReason(root, 'absent')).toBeUndefined()
-  clearWorkerStopState(root, 'absent')
+  const { registry, record } = await seedRegistryWorker(root, 'one')
+  await registry.beginStop(record.id, 'lead-session-ended')
+  expect((await registryForDir(worker)).read(record.id)?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
+  expect((await registryForDir(worker)).read('w_absent')).toBeUndefined()
 })
 
-it('async carry record reuse reads the common-dir record and rejects a mismatched owner', async () => {
+it('a prepared worker worktree cannot be silently reused by a later launch', async () => {
   const { root } = repo()
-  const prepared = await prepareWorktree(root, 'two', 'lead', undefined, 'owner-1')
-  const file = path.join(root, '.git', 'room-carry', 'two.json')
-  expect(JSON.parse(fs.readFileSync(file, 'utf8')).ownerId).toBe('owner-1')
-  expect((await prepareWorktree(root, 'two', 'lead', undefined, 'owner-1')).created).toBe(false)
-  await expect(prepareWorktree(root, 'two', 'lead', undefined, 'owner-2')).rejects.toThrow('owned by another room or worker')
+  const prepared = await prepareWorktree(root, 'two', 'lead')
+  await expect(prepareWorktree(root, 'two', 'lead')).rejects.toThrow(/unmanaged/)
   expect(prepared.dir).toBe(path.join(root, '.room', 'workers', 'two'))
 })

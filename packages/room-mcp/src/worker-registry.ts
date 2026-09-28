@@ -5,11 +5,15 @@ import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import * as Y from 'yjs'
-import { participantRecord, RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
+import { completionMessage, participantRecord, RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
+import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
+import { probeProcess } from './worker-process.js'
 import { idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { realStateInput } from './worker-status.js'
+import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
+import { signalWorker } from './worker-process.js'
 
 export interface LegacySource {
   key: string; tag: string; dir: string; branch: string; host: 'claude' | 'codex'
@@ -45,6 +49,62 @@ function base32(value: bigint, length: number): string {
 }
 const id = (): string => `w_${base32(BigInt(Date.now()), 10)}${base32(BigInt(`0x${randomBytes(10).toString('hex')}`), 16)}`
 const synthetic = (): InstanceToken => ({ pid: process.pid, startTime: '', executable: '', sessionId: `mcp:${process.pid}`, nonce: randomBytes(16).toString('hex') })
+const registries = new Map<string, Promise<WorkerRegistry>>()
+const MAX_PROCESS_REGISTRIES = 24
+/** Synchronous durable snapshot for existing synchronous tool readers during rollout. */
+export function registrySnapshotForDir(dir: string): WorkerRegistry {
+  return WorkerRegistry.snapshot(commonGitDirFromDotGit(dir))
+}
+export async function closeRegistryForDir(dir: string): Promise<void> {
+  const common = commonGitDirFromDotGit(dir)
+  const pending = registries.get(common)
+  registries.delete(common)
+  ;(await pending?.catch(() => undefined))?.close()
+}
+/** One token and watcher per common dir for this MCP process. */
+export async function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
+  const common = await gitCommonDir(dir)
+  let pending = registries.get(common)
+  if (!pending) {
+    if (registries.size >= MAX_PROCESS_REGISTRIES) {
+      const oldest = registries.keys().next().value as string | undefined
+      if (oldest) {
+        const previous = registries.get(oldest)
+        registries.delete(oldest)
+        void previous?.then(registry => registry.close()).catch(() => {})
+      }
+    }
+    const processInfo = probeProcess(process.pid)
+    const identity: InstanceToken = { pid: process.pid, startTime: processInfo?.startTime ?? '',
+      executable: processInfo?.executable ?? '', sessionId: sessionId ?? `mcp:${process.pid}:${processInfo?.startTime ?? 'unknown'}`,
+      nonce: randomBytes(16).toString('hex') }
+    pending = WorkerRegistry.open(common, { identity, watch: !process.env.VITEST })
+    registries.set(common, pending)
+    void pending.catch(() => { if (registries.get(common) === pending) registries.delete(common) })
+  } else {
+    // Move this checkout to the end of the bounded cache.
+    registries.delete(common)
+    registries.set(common, pending)
+  }
+  return pending
+}
+
+/** Called before roomd publishes a worker's identity or files. */
+export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const id = env.ROOM_WORKER_ID
+  if (!id) return
+  const run = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE
+  if (!Number.isSafeInteger(run) || run < 1 || !nonce) throw new Error('this worker run was collected, discarded or superseded')
+  const registry = await registryForDir(dir, env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID)
+  if (env.ROOM_REGISTRY && path.resolve(env.ROOM_REGISTRY) !== registry.root) throw new Error('this worker run was collected, discarded or superseded')
+  const processInfo = probeProcess(process.pid)
+  const parentInfo = probeProcess(process.ppid)
+  const chain = [{ pid: process.pid, startTime: processInfo?.startTime ?? '', executable: processInfo?.executable ?? '' },
+    ...(parentInfo ? [{ pid: process.ppid, startTime: parentInfo.startTime ?? '', executable: parentInfo.executable ?? '' }] : [])]
+  try { await registry.admit({ id, run, nonce, dir, chain,
+    hostSessionId: env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID }) }
+  catch { throw new Error('this worker run was collected, discarded or superseded') }
+}
 const missing = (file: string): boolean => !fs.existsSync(file)
 const safeId = (value: string): boolean => /^w_[A-Za-z0-9_-]{1,64}$/.test(value)
 const safeTag = (value: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) && value !== '..'
@@ -194,6 +254,7 @@ export class WorkerRegistry {
   private readonly listeners = new Set<() => void>()
   private observed = new Map<string, string>()
   private readonly watchers: fs.FSWatcher[] = []
+  private readonly heldOperations = new Map<string, string>()
   private timer?: ReturnType<typeof setInterval>
   private watchQueued = false
   private constructor(readonly commonDir: string, private readonly options: RegistryOptions) {
@@ -210,6 +271,7 @@ export class WorkerRegistry {
     if (options.watch !== false) registry.watch()
     return registry
   }
+  static snapshot(commonDir: string): WorkerRegistry { return new WorkerRegistry(commonDir, { migrate: false, watch: false }) }
   close(): void { clearInterval(this.timer); this.timer = undefined; for (const watcher of this.watchers.splice(0)) watcher.close() }
   private watch(): void {
     for (const dir of [this.root, path.join(this.root, 'runs')]) {
@@ -244,6 +306,8 @@ export class WorkerRegistry {
   private reportFile(id: string, n: number): string { return path.join(this.runDir(id, n), `${n}.report.json`) }
   private exitFile(id: string, n: number): string { return path.join(this.runDir(id, n), `${n}.exit.json`) }
   private writerFile(id: string, n: number): string { return path.join(this.runDir(id, n), `${n}.writer`) }
+  get instance(): InstanceToken { return this.identity }
+  newId(): string { return id() }
   private quarantine(file: string, why: unknown): void {
     const dir = path.join(this.root, 'quarantine')
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -340,11 +404,15 @@ export class WorkerRegistry {
     if (!status) return undefined
     const workers = this.list().flatMap(record => {
       const state = this.status(record.id)
-      return state ? [realStateInput(record, state)] : []
+      if (!state) return []
+      const worker = realStateInput(record, state)
+      try { return [{ ...worker, dir: fs.realpathSync(worker.dir) }] } catch { return [worker] }
     })
     let leadDir: string
     try { leadDir = fs.realpathSync(lead.dir) } catch { return undefined }
-    if (!await isOwnedWorkerWorktree(leadDir, realStateInput(candidate, status), lead.participant, workers)) return undefined
+    let workerDir: string
+    try { workerDir = fs.realpathSync(candidate.dir) } catch { return undefined }
+    if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(candidate, status), dir: workerDir }, lead.participant, workers)) return undefined
     return { record: candidate, status }
   }
   private async adoptLegacy(record: WorkerRecord, lead: { participant: string; room: string; dir: string }): Promise<WorkerRecord | undefined> {
@@ -411,6 +479,7 @@ export class WorkerRegistry {
         break
       } catch (error) { await pauseForGuard(deadline, error) }
     }
+    this.heldOperations.set(record.id, 'spawn')
     this.changed()
   }
 
@@ -431,7 +500,243 @@ export class WorkerRegistry {
     this.changed()
     return value
   }
-  finishOperation(id: string): Promise<boolean> { return leaseRetry(() => compareAndRelease(this.opFile(id), this.identity)) }
+  async finishOperation(id: string): Promise<boolean> {
+    const released = await leaseRetry(() => compareAndRelease(this.opFile(id), this.identity))
+    if (released) this.heldOperations.delete(id)
+    return released
+  }
+
+  async beginOperation(id: string, op: 'resume' | 'stop' | 'collect' | 'discard'): Promise<boolean> {
+    const file = this.opFile(id)
+    if (createExclusive(file, { op, holder: this.identity, at: this.now() })) { this.heldOperations.set(id, op); return true }
+    const existing = this.readFact(file, (value): value is { op: string; holder: InstanceToken; at: number } =>
+      object(value) && typeof value.op === 'string' && tokenShape(value.holder) && typeof value.at === 'number')
+    if (existing?.holder.nonce === this.identity.nonce) {
+      if (existing.op === 'discard' && op === 'stop' && this.heldOperations.get(id) === 'discard') return false
+      throw new Error(`worker operation lease held by another call: ${id}`)
+    }
+    if (existing && this.alive(existing.holder) === 'dead') {
+      await leaseRetry(() => recover(file, () => true))
+      if (createExclusive(file, { op, holder: this.identity, at: this.now() })) { this.heldOperations.set(id, op); return true }
+    }
+    throw new Error(`worker operation lease held by another instance: ${id}`)
+  }
+
+  async withCollectLease<T>(worktree: string, work: () => Promise<T>): Promise<T> {
+    const canonical = fs.realpathSync(worktree)
+    const key = createHash('sha256').update(canonical).digest('hex')
+    const file = path.join(this.root, 'collect', `${key}.json`)
+    const deadline = performance.now() + GUARD_WAIT_MS
+    for (;;) {
+      if (createExclusive(file, { holder: this.identity, worktree: canonical, at: this.now() })) break
+      if (await leaseRetry(() => recover(file, () => true), deadline)) continue
+      if (performance.now() >= deadline) throw new Error('another collection is in progress')
+      await new Promise<void>(resolve => setTimeout(resolve, GUARD_POLL_MS))
+    }
+    try { return await work() }
+    finally { await leaseRetry(() => compareAndRelease(file, this.identity)) }
+  }
+
+  /** Append the next run while the same capacity guard used by fresh spawn is held. */
+  async resume(id: string, capacity: number, input: { nonce: string; busFrontier?: string[]; promptMsgIds?: string[]; logStart: number }): Promise<WorkerRecord> {
+    await this.beginOperation(id, 'resume')
+    try {
+      const next = await guarded(path.join(this.root, 'capacity'), () => {
+        const old = this.read(id)
+        if (!old || !old.capabilities.resume || !old.hostSessionId) throw new Error('worker has no resumable host session')
+        const status = this.status(id)?.status
+        if (!status || !['done', 'failed', 'ambiguous', 'imported', 'stopped'].includes(status)) throw new Error(`worker is ${status ?? 'missing'}; cannot resume`)
+        if (status === 'stopped' && !['lead-session-ended', 'message-delivered-cancelled', 'message-delivered-failed'].includes(old.stop?.reason ?? '')) throw new Error('discarded worker cannot resume')
+        if (this.occupancy() >= capacity) throw new Error('worker capacity reached')
+        const run = { n: old.runs.at(-1)!.n + 1, mode: 'resume' as const, intentAt: this.now(),
+          nonce: input.nonce, busFrontier: input.busFrontier ?? [], promptMsgIds: input.promptMsgIds ?? [],
+          launcher: this.identity, logStart: input.logStart }
+        const record: WorkerRecord = { ...old, phase: 'prepared', stop: undefined, runs: [...old.runs, run], seq: old.seq + 1 }
+        writeAtomic(this.workerFile(id), record)
+        return record
+      })
+      this.changed()
+      return next
+    } catch (error) { await this.finishOperation(id); throw error }
+  }
+
+  /** The child proves the launch nonce and its checkout before it receives report authority. */
+  async admit(input: { id: string; run: number; nonce: string; dir: string;
+    chain: RunReport['chain']; hostSessionId?: string }): Promise<RunReport> {
+    const record = this.read(input.id)
+    const run = record?.runs.at(-1)
+    let actual: string, expected: string
+    try { actual = fs.realpathSync(input.dir); expected = fs.realpathSync(record?.dir ?? '') }
+    catch { throw new Error('worker run not admitted: checkout missing') }
+    if (!run || run.n !== input.run || run.nonce !== input.nonce || actual !== expected
+      || !['prepared', 'active'].includes(record!.phase)) throw new Error('worker run not admitted')
+    const report: RunReport = { run: run.n, nonce: run.nonce, chain: input.chain,
+      joinedAt: this.now(), ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}) }
+    await this.writeReport(input.id, report)
+    if (input.hostSessionId && !record!.hostSessionId && !fs.existsSync(this.opFile(input.id))) await this.update(input.id, old => ({ ...old,
+      hostSessionId: old.hostSessionId ?? input.hostSessionId, seq: old.seq + 1 }))
+    return this.reports(input.id).find(value => value.run === run.n)!
+  }
+
+  async reportDone(id: string, n: number, summary: string, changed: string[]): Promise<RunReport> {
+    const record = this.read(id), run = record?.runs.at(-1)
+    const prior = this.reports(id).find(report => report.run === n)
+    if (!run || run.n !== n || !prior) throw new Error('worker run not admitted')
+    await this.writeReport(id, { ...prior, done: { at: this.now(), summary, changed } })
+    return this.reports(id).find(report => report.run === n)!
+  }
+
+  /** The post callback must use the deterministic id with RoomDoc.post. */
+  async postCompletion(id: string, n: number, post: (id: string, record: WorkerRecord, report: RunReport) => void): Promise<boolean> {
+    const record = this.read(id), run = record?.runs.find(value => value.n === n)
+    const report = this.reports(id).find(value => value.run === n)
+    if (!record || !run || !report?.done) throw new Error('worker completion not reported')
+    if (report.posted || run.posted) return false
+    const messageId = `wk:${id}:${n}`
+    post(messageId, record, report)
+    await this.writeReport(id, { ...report, posted: messageId })
+    return true
+  }
+
+  async postObservedFailure(id: string, n: number, post: (message: NonNullable<ReturnType<typeof completionMessage>>) => void): Promise<boolean> {
+    const record = this.read(id), run = record?.runs.find(value => value.n === n)
+    const exit = this.exits(id).find(value => value.run === n)
+    const report = this.reports(id).find(value => value.run === n)
+    const status = this.status(id)
+    if (!record || !run || !exit?.witnessed || run.posted || report?.posted || status?.status !== 'failed') return false
+    const message = completionMessage(record, run, status, report)
+    if (!message || message.body.type !== 'note') return false
+    post(message)
+    await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))
+    return true
+  }
+
+  async beginStop(id: string, reason: NonNullable<WorkerRecord['stop']>['reason']): Promise<WorkerRecord> {
+    return this.update(id, old => ({ ...old, stop: { reason, at: this.now(), run: old.runs.at(-1)!.n }, seq: old.seq + 1 }))
+  }
+
+  async beginCollect(id: string): Promise<WorkerRecord> {
+    return this.update(id, old => ({ ...old, phase: 'collecting', interrupted: undefined, seq: old.seq + 1 }))
+  }
+  async finishCollect(id: string, success: boolean, keptWorktree?: string): Promise<WorkerRecord> {
+    return this.update(id, old => ({ ...old, phase: success ? 'retiring' : 'active',
+      ...(success ? { cleanup: { [old.room]: 'pending' as const }, keptWorktree } : {}), seq: old.seq + 1 }))
+  }
+
+  async beginDiscard(id: string, force: boolean, children: string[]): Promise<WorkerRecord> {
+    return this.update(id, old => ({ ...old, phase: 'discarding',
+      discard: { force, children, steps: {} }, interrupted: undefined, seq: old.seq + 1 }))
+  }
+  async markDiscardStep(id: string, step: keyof NonNullable<WorkerRecord['discard']>['steps']): Promise<WorkerRecord> {
+    return this.update(id, old => {
+      if (!old.discard) throw new Error('discard plan missing')
+      return { ...old, discard: { ...old.discard, steps: { ...old.discard.steps, [step]: true } }, seq: old.seq + 1 }
+    })
+  }
+  async interruptDiscard(id: string, detail: string): Promise<WorkerRecord> {
+    return this.update(id, old => ({ ...old, phase: 'active',
+      interrupted: { op: 'discard', at: this.now(), detail }, seq: old.seq + 1 }))
+  }
+
+  /** Store the hash before linking a stable patch; replay validates the published bytes. */
+  async recordDiscardPatch(id: string, bytes: Buffer): Promise<string> {
+    const file = path.join(this.root, 'patches', `${id}.patch`)
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    const record = this.read(id)
+    if (!record?.discard || record.phase !== 'discarding') throw new Error('discard plan missing')
+    if (record.discard.patch && record.discard.patch.path !== file) throw new Error('discard patch path changed')
+    if (record.discard.patch && record.discard.patch.sha256 !== sha256) throw new Error('discard patch changed after identity was recorded')
+    if (!record.discard.patch) await this.update(id, old => ({ ...old,
+      discard: { ...old.discard!, patch: { path: file, sha256 } }, seq: old.seq + 1 }))
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    let existing: fs.Stats | undefined
+    try { existing = fs.lstatSync(file) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    if (existing) {
+      if (existing.isFile() && createHash('sha256').update(fs.readFileSync(file)).digest('hex') === sha256) return file
+      this.quarantine(file, 'discard patch hash mismatch')
+    }
+    const scratch = path.join(this.root, 'patches', `${id}.${randomBytes(8).toString('hex')}.tmp`)
+    try {
+      const fd = fs.openSync(scratch, 'wx', 0o600)
+      try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+      fs.linkSync(scratch, file)
+      const dir = fs.openSync(path.dirname(file), 'r')
+      try { fs.fsyncSync(dir) } finally { fs.closeSync(dir) }
+      return file
+    } finally { fs.rmSync(scratch, { force: true }) }
+  }
+
+  /** Replay only durable discard steps. A missing capability leaves the plan for a later retry. */
+  async replayDiscard(id: string): Promise<void> {
+    let record = this.read(id)
+    if (record?.phase !== 'discarding' || !record.discard) return
+    const leadDir = path.dirname(path.dirname(path.dirname(record.dir)))
+    const status = this.status(id)
+    if (!status) return
+    const own = realStateInput(record, status)
+    const workers = this.list().flatMap(value => {
+      const current = this.status(value.id)
+      return current ? [realStateInput(value, current)] : []
+    })
+    const owned = await isOwnedWorkerWorktree(leadDir, own, record.lead.participant, workers)
+    if (!owned && fs.existsSync(record.dir)) throw new Error(`discard replay lost ownership of ${record.dir}`)
+    if (!record.discard.steps.children) {
+      for (const childId of record.discard.children) {
+        const child = this.read(childId)
+        if (!child || ['retiring', 'retired'].includes(child.phase)) continue
+        if (child.phase !== 'discarding') await this.beginDiscard(childId, true, [])
+        await this.replayDiscard(childId)
+        if (!['retiring', 'retired'].includes(this.read(childId)?.phase ?? '')) return
+      }
+      await this.markDiscardStep(id, 'children')
+      record = this.read(id)!
+    }
+    if (!record.discard!.steps.stop) {
+      await this.beginStop(id, 'discarded')
+      const launch = record.runs.at(-1)?.launch
+      if (launch?.outcome === 'launched' && launch.process && this.alive(launch.process) !== 'dead') {
+        if (this.alive(launch.process) !== 'alive' || !signalWorker(launch.pid, 'SIGTERM', record.dir, undefined, own, probeProcess)) return
+        if (this.alive(launch.process) !== 'dead') return
+      }
+      await this.markDiscardStep(id, 'stop')
+      record = this.read(id)!
+    }
+    if (!record.discard!.steps.patch) {
+      if (owned) {
+        const ignored = await ignoredWorkerArtifacts(own)
+        if (ignored.length && !record.discard!.force) {
+          await this.interruptDiscard(id, `ignored artifacts appeared: ${ignored.join(', ')}`)
+          return
+        }
+        await saveDiscardPatch(leadDir, own, bytes => this.recordDiscardPatch(id, bytes))
+      }
+      await this.markDiscardStep(id, 'patch')
+      record = this.read(id)!
+    }
+    const published = record.discard!.patch
+    if (published) {
+      const expected = path.join(this.root, 'patches', `${id}.patch`)
+      if (published.path !== expected) throw new Error(`discard patch path changed for ${id}`)
+      const valid = fs.existsSync(expected) && fs.lstatSync(expected).isFile()
+        && createHash('sha256').update(fs.readFileSync(expected)).digest('hex') === published.sha256
+      if (!valid) {
+        if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`)
+        await saveDiscardPatch(leadDir, own, bytes => this.recordDiscardPatch(id, bytes))
+      }
+    }
+    if (!record.discard!.steps.cleanup) {
+      if (owned) {
+        if (!await cleanupWorker(leadDir, own, true, true, [], {}, record.lead.participant, workers)) return
+      } else {
+        await pruneMissingWorkerWorktree(leadDir, own)
+        cleanupWorkerLogs(leadDir, own)
+      }
+      await this.markDiscardStep(id, 'cleanup')
+    }
+    await this.markDiscardStep(id, 'prune')
+    await this.update(id, old => ({ ...old, phase: 'retiring', cleanup: { [old.room]: 'pending' }, seq: old.seq + 1 }))
+  }
 
   /** Admission is evidence of launch only when a run writer proves the matching nonce. */
   async writeReport(id: string, report: RunReport): Promise<void> {
@@ -499,8 +804,13 @@ export class WorkerRegistry {
         }
       }
     }
-    const carry = path.join(this.commonDir, 'room-carry', `${record.tag}.json`)
-    if (readJson<{ ownerId?: string }>(carry)?.ownerId === record.id) fs.rmSync(carry, { force: true })
+  }
+
+  async abandonPreparation(id: string): Promise<void> {
+    const record = this.read(id)
+    if (!record || record.runs.at(-1)?.launch) return
+    if (record.phase === 'preparing' || record.phase === 'prepared') this.rollbackPreparation(record)
+    await this.update(id, old => ({ ...old, phase: 'abandoned', seq: old.seq + 1 }))
   }
 
   async reconcile(): Promise<void> {
@@ -512,10 +822,20 @@ export class WorkerRegistry {
       const op = this.readFact(this.opFile(record.id), (value): value is { holder: InstanceToken } => object(value) && tokenShape(value.holder))
       if (hadOp && !op) continue
       if (op && this.alive(op.holder) === 'dead') await leaseRetry(() => recover(this.opFile(record.id), () => true))
+      const report = this.reports(record.id).find(value => value.run === run.n && value.nonce === run.nonce)
+      if (report?.hostSessionId && !record.hostSessionId && !fs.existsSync(this.opFile(record.id))) {
+        await this.update(record.id, old => ({ ...old, hostSessionId: old.hostSessionId ?? report.hostSessionId, seq: old.seq + 1 }))
+      }
       if (record.phase === 'collecting' && (!op || this.alive(op.holder) === 'dead')) {
         await this.update(record.id, old => ({ ...old, phase: 'active',
           interrupted: old.interrupted ?? { op: 'collect', at: this.now(), detail: 'collection stopped; partial apply may remain' },
           seq: old.seq + 1 }))
+        continue
+      }
+      if (record.phase === 'discarding' && (!op || this.alive(op.holder) === 'dead')) {
+        try { await this.beginOperation(record.id, 'discard'); await this.replayDiscard(record.id) }
+        catch (error) { process.stderr.write(`[room] discard replay ${record.id}: ${error}\n`) }
+        finally { await this.finishOperation(record.id).catch(() => {}) }
         continue
       }
       if (record.phase === 'preparing' && this.alive(run.launcher) === 'dead') {
@@ -548,6 +868,12 @@ export class WorkerRegistry {
         && this.alive(run.launcher) === 'dead' && run.launch.process && this.alive(run.launch.process) === 'dead') {
         await this.writeExit(record.id, { run: run.n, code: null, at: this.now(), witnessed: false })
       }
+    }
+    for (const file of files(path.join(this.root, 'patches'), '.patch')) {
+      const workerId = path.basename(file, '.patch')
+      const owner = this.read(workerId)
+      if (owner && owner.phase !== 'retired') continue
+      if (this.now() - fs.statSync(file).mtimeMs >= 7 * 24 * 60 * 60 * 1000) fs.rmSync(file, { force: true })
     }
     const next = new Map<string, string>()
     for (const record of this.list()) next.set(record.id, JSON.stringify([record, this.reports(record.id), this.exits(record.id)]))

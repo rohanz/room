@@ -1,8 +1,8 @@
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidPresent, pidIsOurWorker, signalWorker, terminateWorktreeProcesses } from '../worker-process.js'
+import { pidPresent, pidIsOurWorker, probeProcess, signalWorker, terminateWorktreeProcesses } from '../worker-process.js'
 import { WORKER_EFFORTS } from '../worker-config.js'
-import { prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree } from '../worker-git.js'
+import { prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
 import { decideStop, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { retainedList, secondaryPublishingLine } from './share.js'
@@ -10,18 +10,39 @@ import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
+import { completionMessage, type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
-import { toolCallAborted, workerId, workerIdBase, workerOrigin } from '../registry.js'
+import { toolCallAborted, workerOrigin } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
 import { workerBudget, hostWorkerEffort, validTag, type WorkerHost } from '../worker-config.js'
-import { prepareWorktree, uncommittedCount, persistWorkerStopReason, type PreparedWorktree } from '../worker-git.js'
-import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from '../worker-launch.js'
+import { prepareWorktree, uncommittedCount, type PreparedWorktree } from '../worker-git.js'
+import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
 import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
 import { releaseWorkerProcessPort } from '../port-reservations.js'
+import { registryForDir, registrySnapshotForDir, type WorkerRegistry } from '../worker-registry.js'
+import { realStateInput, type WorkerRecord } from '../worker-status.js'
+
+/** Transition only: wave 3 `project` deletes this legacy tag-keyed document mirror. */
+export function mirrorRegistryWorkerRecord(s: Session, registry: WorkerRegistry, id: string): void {
+  const record = registry.read(id), status = registry.status(id)
+  if (!record || !status) return
+  const legacy = realStateInput(record, status)
+  if (!legacy.summary) legacy.summary = registry.reports(id).filter(report => report.done).at(-1)?.done?.summary
+  legacy.spawnedAfter = status.run?.busFrontier.at(-1)
+  const launch = status.run?.launch
+  if (launch?.outcome === 'launched') {
+    legacy.pid = launch.pid
+    legacy.processStartTime = launch.process?.startTime
+  }
+  const current = s.room.workers.get(record.tag)
+  if (current?.id === id) s.room.updateWorker(record.tag, legacy, id)
+  else if (current && current.name === record.name && current.startedAt === record.createdAt
+    && (!current.id || !current.id.startsWith('w_'))) s.room.updateWorker(record.tag, legacy)
+  else if (!current) s.room.setWorker(legacy)
+}
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
   const paths = new Set<string>()
   for (const match of task.matchAll(/(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
@@ -49,24 +70,39 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const summary = String(a.summary ?? '').trim()
       if (!summary) return 'error: summary is required'
       const sc = s.room.scope(s.me.name)
-      // Claims mirroring a worker that is still running are the worker's, not this task's: they stay until it finishes.
+      const myId = ctx.config?.workerId ?? process.env.ROOM_WORKER_ID
+      const registry = myId ? await registryForDir(s.dir) : undefined
+      const ownRecord = myId ? registry?.read(myId) : undefined
+      const ownRun = ownRecord?.runs.at(-1)
+      // Claims mirroring a worker that is still running are the worker's, not this task's.
       const live = new Set(runningWorkers(s).map(x => x.w.tag))
       const kept = mine(s).filter(c => c.mirrorOf && live.has(c.mirrorOf)).length
-      const released = releaseClaimsOnDone(s, c => !!c.mirrorOf && live.has(c.mirrorOf))
-      const asWorker = s.room.workerOf(s.me.name)
-      // A worker finishes only the record of its own spawn (ROOM_WORKER_ID; older leads passed ROOM_GEN): a stale
-      // process of a reused tag must not mark the lead's current worker done. Its report still reaches the lead.
-      const myId = ctx.config?.workerId, gen = ctx.config?.gen
-      const stale = !!asWorker && (myId ? asWorker.id !== undefined && asWorker.id !== myId : !!gen && asWorker.gen !== undefined && String(asWorker.gen) !== gen)
-      if (asWorker) {
-        if (!stale) s.room.updateWorker(asWorker.tag, { status: 'done', summary, finishedAt: now() }, asWorker.id)
-        s.room.post<DoneMsg>(s.me, { type: 'done', tag: asWorker.tag, summary: stale ? `${summary} (from an earlier generation of ${asWorker.tag}; the current worker's record was left alone)` : summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: 'notify' })
+      let released = 0
+      const release = () => { released = releaseClaimsOnDone(s, c => !!c.mirrorOf && live.has(c.mirrorOf)) }
+      if (myId) {
+        if (!ownRecord || !ownRun) return 'error: this worker run was collected, discarded or superseded'
+        if (process.env.ROOM_WORKER_RUN && Number(process.env.ROOM_WORKER_RUN) !== ownRun.n
+          || process.env.ROOM_LAUNCH_NONCE && process.env.ROOM_LAUNCH_NONCE !== ownRun.nonce) {
+          return 'error: this worker run was collected, discarded or superseded'
+        }
+        const changed = s.room.changedPaths(s.me.name)
+        try {
+          await registry!.reportDone(myId, ownRun.n, summary, changed)
+          release()
+          await registry!.postCompletion(myId, ownRun.n, (id, record, report) => {
+            const message = completionMessage(record, ownRun, registry!.status(myId)!, report)
+            if (!message || message.id !== id || message.body.type !== 'done') throw new Error('worker completion message unavailable')
+            s.room.post<DoneMsg>(s.me, message.body, undefined, { id })
+          })
+          mirrorRegistryWorkerRecord(s, registry!, myId)
+        } catch (error) { return `error: could not record worker report: ${error instanceof Error ? error.message : String(error)}` }
       } else {
+        release()
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
       }
       setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
       s.daemon.touch()
-      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : 'You remain in the room.'}`]
+      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${ownRecord ? `Your lead ${ownRecord.lead.participant} has been told (worker ${ownRecord.tag}); your work is on branch ${ownRecord.branch} in ${ownRecord.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : 'You remain in the room.'}`]
       const secondary = secondaryPublishingLine(s)
       if (secondary) out.push(secondary)
       else {
@@ -106,121 +142,113 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const host: WorkerHost = (a.host ?? process.env.ROOM_HOST ?? process.env.ROOM_WORKER_HOST) === 'codex' ? 'codex' : 'claude'
       const effort = hostWorkerEffort(host, requestedEffort)
       const model = typeof a.model === 'string' && a.model.trim() ? a.model.trim() : undefined
-      const idBase = workerIdBase(s.roomName, s.me.name, tag)
-      const existing = s.room.workers.get(tag)
-      if (existing && existing.lead !== s.me.name && existing.status === 'running') return `error: tag ${tag} is in use by ${existing.lead}'s worker in this room; ${workerAlive(s, existing) ? 'pick another tag' : 'its process is gone; its ancestor can use room_collect tag=' + tag + ' discard=true to free the tag'}`
-      if (existing && (existing.status === 'running' || workerAlive(s, existing))) return `error: worker ${tag} is ${existing.status === 'running' ? 'already running' : `${existing.status} but its process is still alive`} (pid ${existing.pid}); room_collect discard=true for it first or pick another tag`
-      if (existing) return `error: worker ${tag} is ${existing.status} and still holds its room state; room_collect discard=true for it before reusing the tag`
-      const retired = s.room.retiredWorkers().filter(w => w.tag === tag && w.lead === s.me.name)
-      const gen = Math.max(0, ...retired.map(w => w.retiredAt)) + 1
-      const id = workerId(s.me.name, tag, gen)
       const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers: ctx.maxWorkers } })
       const max = config.maxWorkers
       const share = typeof a.share === 'string' && a.share ? parseShare(a.share) : undefined
       if (typeof a.share === 'string' && a.share && !share) return 'error: share must be intent, declared or full'
-      // The tag is reserved from here until the process record exists (or this call fails): the worktree
-      // preparation below awaits git, and a second room_spawn for the same tag must not slip in meanwhile.
-      if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
-      const starting = runningWorkers(lead).length
-      const launchLease = reserveWorkerLaunch(rooms, max, starting)
-      if (!launchLease) {
-        rooms.unreserve(idBase)
-        return `error: ${rooms.launchUsage(starting)} workers already running or starting (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`
+      const registry = await registryForDir(s.dir)
+      const id = registry.newId(), nonce = randomUUID()
+      const owner = s.me.owner ?? s.me.name, name = `${owner}+${tag}`
+      const { server, isWorker } = workerOrigin(s)
+      const count = registry.occupancy()
+      const cores = Math.max(1, os.availableParallelism?.() ?? os.cpus().length)
+      const budget = workerBudget({ cores, memBytes: os.totalmem(), maxWorkers: max, running: count })
+      const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS), inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB)
+      const divisor = isWorker ? Math.max(2, max) : 1
+      const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads
+      const threads = typeof a.threads === 'number' ? Math.min(a.threads, threadShare) : threadShare
+      const memGb = Number.isFinite(inheritedMem) && inheritedMem >= 1 ? Math.max(1, Math.floor(inheritedMem / divisor)) : budget.memGb
+      const effectiveShare = share ?? s.daemon.share ?? 'full'
+      let linkPaths: string[]
+      try { linkPaths = resolveWorkerLinks(lead.dir, a.link) }
+      catch (e) { return `error: could not link inputs: ${e instanceof Error ? e.message : String(e)}` }
+      const suppliedDir = typeof a.dir === 'string' && a.dir ? path.resolve(a.dir) : undefined
+      const dir = suppliedDir ?? path.join(s.dir, '.room', 'workers', tag)
+      if (suppliedDir && !fs.existsSync(dir)) return `error: ${dir} does not exist`
+      const relative = path.relative(s.dir, dir)
+      const outside = relative.startsWith('..') || path.isAbsolute(relative)
+      if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
+      const branch = suppliedDir ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '?')).trim() : `room/${tag}`
+      const hostSessionId = host === 'claude' ? randomUUID() : undefined
+      const usedPorts = registry.list().flatMap(record => typeof record.port === 'number' ? [record.port] : [])
+      const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: !suppliedDir && !fs.existsSync(dir) }
+      const record: WorkerRecord = {
+        v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName,
+        lead: { participant: s.me.name, room: s.roomName, instance: registry.instance },
+        host, model, effort, budget: { threads, memGb, nice: 10 }, share: effectiveShare, task,
+        dir, outside, branch, prep, hostSessionId,
+        capabilities: { resume: true, signal: true, collect: outside ? 'none' : 'delta' }, phase: 'intent',
+        runs: [{ n: 1, mode: 'fresh', intentAt: now(), nonce, busFrontier: s.room.messages().map(message => message.id), promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
+        createdAt: now(), seq: 1,
       }
+      try { await registry.writeIntent(record, max) }
+      catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
       try {
-        let dir: string, branch: string, base: string | undefined, created = false, outside = false
+        let base: string | undefined, created = false
         let carried: PreparedWorktree['carried'], carryFailed = false, carryError: string | undefined
         let carriedBase: string | undefined, carriedUntracked: PreparedWorktree['carriedUntracked'], skippedCarry: PreparedWorktree['skippedCarry']
         let prepared: PreparedWorktree | undefined
-        let linkPaths: string[]
-        try { linkPaths = resolveWorkerLinks(lead.dir, a.link) }
-        catch (e) { return `error: could not link inputs: ${e instanceof Error ? e.message : String(e)}` }
-        const abortPrepared = async (message: string): Promise<string> => {
-          if (!prepared?.created) return message
-          try { await cleanupPreparedWorktree(s.dir, prepared); return message }
-          catch (e) { return `${message}; could not remove prepared worktree ${prepared.dir}: ${e instanceof Error ? e.message : String(e)}` }
-        }
-        if (typeof a.dir === 'string' && a.dir) {
-          dir = path.resolve(a.dir)
-          if (!fs.existsSync(dir)) return `error: ${dir} does not exist`
-          const inside = path.relative(s.dir, dir)
-          outside = inside.startsWith('..') || path.isAbsolute(inside)
-          if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
-          try { branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { branch = '?' }
-        } else {
+        if (!suppliedDir) {
+          await registry.update(id, old => ({ ...old, phase: 'preparing', seq: old.seq + 1 }))
           try {
-            prepared = await (ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, linkPaths, `${s.roomName}|${s.me.name}`, 0, a.carry !== false))
-            dir = prepared.dir; branch = prepared.branch; base = prepared.base; created = prepared.created
+            prepared = await (ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, linkPaths,
+              async (step, facts) => { await registry.update(id, old => ({ ...old,
+                prep: { ...old.prep, ...facts, step }, seq: old.seq + 1 })) }, 0, a.carry !== false))
+            base = prepared.base; created = prepared.created
             carried = prepared.carried; carryFailed = prepared.carryFailed ?? false; carryError = prepared.carryError
             carriedBase = prepared.carriedBase; carriedUntracked = prepared.carriedUntracked; skippedCarry = prepared.skippedCarry
           }
-          catch (e) { return `error: could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}` }
+          catch (e) { throw new Error(`could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}`) }
         }
-        if (toolCallAborted()) return abortPrepared('error: tool call cancelled')
-        const owner = s.me.owner ?? s.me.name
-        const name = `${owner}+${tag}`
-        // The worker's room variables are set here in full; defaultSpawner strips the lead's own ROOM_* first
-        // (ROOM_URL/ROOM_NAME/ROOM_DIR from a runner would otherwise send it into the lead's room as the lead).
-        // The server URL is passed without its query: a shared token travels only as ROOM_TOKEN.
-        const { server, isWorker } = workerOrigin(s)
-        const count = runningWorkers(lead).length
-        const cores = Math.max(1, os.availableParallelism?.() ?? os.cpus().length)
-        const memBytes = os.totalmem()
-        const budget = workerBudget({ cores, memBytes, maxWorkers: max, running: count })
-        const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS)
-        const inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB)
-        const divisor = isWorker ? Math.max(2, max) : 1
-        const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads
-        const threads = typeof a.threads === 'number' ? Math.min(a.threads, threadShare) : threadShare
-        const memGb = Number.isFinite(inheritedMem) && inheritedMem >= 1 ? Math.max(1, Math.floor(inheritedMem / divisor)) : budget.memGb
-        const effectiveShare = share ?? s.daemon.share ?? 'full'
-        const usedPorts = runningWorkers(lead).flatMap(({ w }) => {
-          const port = (w as Worker & { port?: number }).port
-          return typeof port === 'number' ? [port] : []
-        })
+        await registry.update(id, old => ({ ...old, phase: 'prepared', prep: { ...old.prep, step: 'prepared', created,
+          branchCreated: prepared?.branchCreated, branchExisted: old.prep.branchExisted ?? (prepared?.branchCreated ? false : undefined) },
+          base, carriedBase, carriedUntracked, skippedCarry, seq: old.seq + 1 }))
+        if (toolCallAborted()) throw new Error('tool call cancelled')
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
-        catch (e) { return abortPrepared(`error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
-        const hostSessionId = host === 'claude' ? randomUUID() : undefined
-        const spawnedAfter = s.room.lastMessages(1)[0]?.id ?? ''
+        catch (e) { throw new Error(`could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
         let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
         try {
-          launched = await launchWorkerProcess({ rooms, session: s, id, tag, dir, lead: s.me.name, owner,
-            host, model, effort, share: effectiveShare, gen, budget: { threads, memGb }, server,
+          launched = await launchWorkerProcess({ session: s, id, tag, dir, lead: s.me.name, owner,
+            host, model, effort, share: effectiveShare, run: 1, nonce, registry: registry.root, budget: { threads, memGb }, server,
             isWorker, token: s.local ? undefined : s.token, claudeChannel: config.claudeChannel,
             usedPorts, spawner: ctx.spawner, probe: ctx.probe, log: state.log, at: now },
-          { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, sessionId: hostSessionId }, launchLease,
-          ({ proc, port, nice, startedAt, processStartTime }) => {
-            const w: Worker = { id, tag, name, host, ...(model ? { model } : {}), ...(effort ? { effort } : {}),
-              ...(hostSessionId ? { hostSessionId } : {}), budget: { threads, memGb, nice }, port,
-              share: effectiveShare, ...(link.length ? { link } : {}), task, dir, branch,
-              ...(base ? { base } : {}), ...(carriedBase ? { carriedBase } : {}),
-              ...(carriedUntracked?.length ? { carriedUntracked } : {}), pid: proc.pid,
-              startedAt, spawnedAfter, ...(processStartTime ? { processStartTime } : {}), status: 'running', lead: s.me.name, gen }
-            s.room.setWorker(w)
-            return true
-          }, (sessionId, proc) => {
-            const current = s.room.workerById(id)
-            if (current && current.pid === proc.pid && !current.hostSessionId) s.room.updateWorker(tag, { hostSessionId: sessionId }, id)
+          { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, sessionId: hostSessionId },
+          { setHandle: (workerId, proc) => rooms.setHandle(s, workerId, proc),
+            watch: (_workerId, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
+          async pid => { await registry.update(id, old => ({ ...old, runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid } }], seq: old.seq + 1 })) },
+          async result => {
+            await registry.update(id, old => ({ ...old, phase: 'active', port: result.port,
+              budget: { ...old.budget, nice: result.nice }, link,
+              runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: result.proc.pid,
+                ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime, executable: (ctx.probe ?? probeProcess)(result.proc.pid)?.executable ?? '' } } : {}) } }], seq: old.seq + 1 }))
+            mirrorRegistryWorkerRecord(s, registry, id)
+          }, async code => {
+            await registry.writeExit(id, { run: 1, code, witnessed: true, at: now() })
+            rooms.dropHandle(s, id)
+            mirrorRegistryWorkerRecord(s, registry, id)
+            await registry.postObservedFailure(id, 1, message => {
+              if (message.body.type === 'note') s.room.post<NoteMsg>({ name: record.name, kind: 'agent', owner: record.lead.participant, label: record.tag }, message.body, undefined, { id: message.id })
+            })
           })
         } catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
           if (error.delivered) {
-            if (!error.stopped) return `error: stop unconfirmed for ${tag} (pid ${error.pid}); it may still be running in ${dir}. Worker record and worktree kept; use room_collect discard=true when it is safe to remove.`
             const reason = error.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
-            const stoppedAt = now()
-            const stopped = s.room.updateWorker(tag, { status: 'dismissed', dismissedAt: stoppedAt, finishedAt: stoppedAt,
-              stopReason: reason, ...(error.pid ? { pid: error.pid } : {}) }, id)
-            if (stopped) {
-              try { persistWorkerStopReason(s.dir, tag, reason, id) }
-              catch (persistError) { state.log(`worker spawn: could not persist stop reason for ${tag}: ${persistError}`) }
-            }
+            await registry.beginStop(id, reason)
+            mirrorRegistryWorkerRecord(s, registry, id)
+            if (!error.stopped) return `error: stop unconfirmed for ${tag} (pid ${error.pid}); it may still be running in ${dir}. Worker record and worktree kept; use room_collect discard=true when it is safe to remove.`
             return `error: stopped after start: ${error.phase === 'cancelled' ? 'cancelled' : error.message}; worker record and worktree kept in ${dir}. Use room_collect to collect or discard it.`
           }
           const prefix = error.phase === 'port' ? 'could not allocate a worker port: '
             : error.phase === 'budget' || error.phase === 'cancelled' ? ''
             : `could not start ${host}: `
-          return abortPrepared(`error: ${prefix}${error.message}`)
+          if (!registry.read(id)?.runs[0].launch) {
+            await registry.abandonPreparation(id)
+            return `error: ${prefix}${error.message}`
+          }
+          await registry.update(id, old => ({ ...old, phase: 'active', seq: old.seq + 1 }))
+          return `error: ${prefix}${error.message}`
         }
         const { proc, port, env, nice, logFile } = launched
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
@@ -250,16 +278,28 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
         return out.join('\n')
-      } finally {
-        launchLease.release()
-        rooms.unreserve(idBase)
-      }
+      } catch (error) {
+        await registry.abandonPreparation(id).catch(cleanup => { state.log(`worker preparation cleanup: ${cleanup}`) })
+        return `error: ${error instanceof Error ? error.message : String(error)}`
+      } finally { await registry.finishOperation(id) }
     },
 
   }
   return handlers
 }
 
+
+export function registryRunningWorkers(s: Session, rooms: import('../registry.js').Rooms): { s: Session; w: Worker }[] {
+  const registry = registrySnapshotForDir(s.dir)
+  return registry.list().flatMap(record => {
+    const status = registry.status(record.id)
+    if (!status || record.lead.participant !== s.me.name) return []
+    const room = rooms.all().find(candidate => candidate.roomName === record.room) ?? s
+    const liveHandle = rooms.hasHandle(room, realStateInput(record, status))
+    if (!['starting', 'running', 'unknown', 'ambiguous'].includes(status.status) && !liveHandle) return []
+    return [{ s: room, w: realStateInput(record, status) }]
+  })
+}
 
 export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | 'doJoin' | 'doLeave' | 'seen' | 'log' | 'cleanupMine' | 'now'>): Pick<HandlerState, 'myWorkers' | 'workerAlive' | 'ensureWorkersRoom' | 'closeWorkersRoom' | 'runningWorkers' | 'dismissWorker' | 'startWorkersBridge'> {
   const { ctx, rooms, doJoin, doLeave, seen, log, cleanupMine, now } = deps
@@ -282,8 +322,19 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
       await doLeave(ws)
     }
-  const runningWorkers = (s: Session): { s: Session; w: Worker }[] => rooms.occupiedWorkers(s)
+  const runningWorkers = (s: Session): { s: Session; w: Worker }[] => registryRunningWorkers(s, rooms)
   const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason'], cancelled?: AbortSignal): Promise<string> => {
+      const registry = await registryForDir(s.dir)
+      const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
+      if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; not signalled`
+      let acquired: boolean
+      try { acquired = await registry.beginOperation(w.id!, 'stop') }
+      catch { return `error: ${w.tag} is already being handled; not signalled` }
+      try {
+      const alreadyStopping = !!trusted.record.stop
+      const reason = stopReason ?? (why === 'discarded by the lead' ? 'discarded' : 'lead-session-ended')
+      await registry.beginStop(w.id!, reason)
+      w = realStateInput(trusted.record, trusted.status)
       const proc = rooms.handle(s, w.id)
       if (!proc) {
         const processState = await workerRealState(s.dir, w, { process: true, probe: ctx.probe })
@@ -308,7 +359,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       }
       const cleanupText = () => (stopped.length ? `; stopped processes: ${stopped.join(', ')}` : '') + (cleanupError ? `; ${cleanupError}` : '')
       await stopCwdProcesses()
-      if (proc && w.dismissedAt !== undefined) {
+      if (proc && alreadyStopping && why !== 'discarded by the lead') {
         return `pid ${w.pid} already signalled; waiting for exit${cleanupText()}`
       }
       let how: string, signalled: boolean
@@ -327,20 +378,13 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
         : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
       await stopCwdProcesses()
       if (proc && !pidPresent(w.pid, ctx.probe)) releaseWorkerProcessPort(proc)
-      // Shutdown may have reached its deadline during cwd cleanup. Commit the stop only
-      // after every awaited step succeeds, so a later continuation cannot rewrite the record.
+      // The stop fact was committed before any signal.
       if (cancelled?.aborted) return how + cleanupText()
       if (stopReason && cleanupError) throw new Error(cleanupError)
       if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
-      // Keep an owned handle until exit confirms the process can no longer publish live state.
-      if (signalled) {
-        if (stopReason) {
-          try { persistWorkerStopReason(s.dir, w.tag, stopReason, w.id) }
-          catch (e) { throw new Error(`could not persist stop reason for ${w.tag}: ${e instanceof Error ? e.message : String(e)}`) }
-        }
-        s.room.updateWorker(w.tag, { ...(w.status === 'running' ? { status: 'dismissed' as const } : {}), dismissedAt: now(), ...(stopReason ? { stopReason } : {}) }, w.id)
-      }
+      mirrorRegistryWorkerRecord(s, registry, w.id!)
       return how + cleanupText()
+      } finally { if (acquired) await registry.finishOperation(w.id!) }
     }
 
   const startWorkersBridge = (lead: import('../session.js').Session, s: import('../session.js').Session): Bridge => {

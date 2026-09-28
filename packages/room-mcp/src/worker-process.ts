@@ -12,7 +12,6 @@ export interface SpawnSpec {
   cwd: string
   env: Record<string, string>
   logFile: string
-  captureCodexSession?: boolean
 }
 export interface SpawnedProcess {
   /** -1 when the process could not be started (see onError). */
@@ -22,8 +21,6 @@ export interface SpawnedProcess {
   onExit(cb: (code: number | null) => void): void
   /** Fires when the process could not be started at all (e.g. the binary is missing). */
   onError?(cb: (err: Error) => void): void
-  /** Codex emits thread.started on JSONL stdout. */
-  onSessionId?(cb: (id: string) => void): void
   /** SIGTERM the worker; true when a signal was actually delivered (false: no pid, or the process is gone). */
   kill(): boolean
   /** SIGKILL the same child after SIGTERM's grace period. */
@@ -31,13 +28,6 @@ export interface SpawnedProcess {
 }
 /** Injectable for tests: how a worker process is started. */
 export type Spawner = (spec: SpawnSpec) => SpawnedProcess
-
-export function codexSessionId(line: string): string | undefined {
-  try {
-    const event = JSON.parse(line) as { type?: string; thread_id?: unknown }
-    return event.type === 'thread.started' && typeof event.thread_id === 'string' && /^[0-9a-f-]{36}$/i.test(event.thread_id) ? event.thread_id : undefined
-  } catch { return undefined }
-}
 
 /** Read a bounded suffix even for multi-GB logs, then take five non-empty, ANSI-free lines. */
 export function workerLogTail(logFile: string): string {
@@ -74,7 +64,7 @@ export const defaultSpawner: Spawner = spec => {
   fs.mkdirSync(path.dirname(spec.logFile), { recursive: true })
   const fd = fs.openSync(spec.logFile, 'a')
   let child: ReturnType<typeof spawn>
-  try { child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ['ignore', spec.captureCodexSession ? 'pipe' : fd, fd] }) }
+  try { child = spawn(spec.cmd, spec.args, { cwd: spec.cwd, env: workerEnv(process.env, spec.env), detached: true, stdio: ['ignore', fd, fd] }) }
   catch (error) { fs.closeSync(fd); throw error }
   const closeLog = () => { try { fs.closeSync(fd) } catch { /* closed */ } }
   child.once('close', closeLog)
@@ -93,29 +83,12 @@ export const defaultSpawner: Spawner = spec => {
     child.once('spawn', onSpawn)
     child.once('error', onError)
   })
-  let sessionId: string | undefined
-  let sessionIdCallback: ((id: string) => void) | undefined
-  if (spec.captureCodexSession && child.stdout) {
-    let pending = ''
-    child.stdout.on('data', (chunk: Buffer) => {
-      try { fs.writeSync(fd, chunk) }
-      catch (error) { try { fs.writeSync(2, `room worker: could not write Codex log: ${error instanceof Error ? error.message : String(error)}\n`) } catch { /* event callback must not throw */ } }
-      pending += chunk.toString('utf8')
-      const lines = pending.split('\n')
-      pending = lines.pop()!.slice(-64 * 1024)
-      for (const line of lines) {
-        const id = codexSessionId(line)
-        if (id && !sessionId) { sessionId = id; sessionIdCallback?.(id) }
-      }
-    })
-  }
   child.unref()
   return {
     pid: child.pid ?? -1,
     started,
     onExit: cb => { child.once('close', cb) },
     onError: cb => { child.once('error', cb) },
-    onSessionId: cb => { sessionIdCallback = cb; if (sessionId) cb(sessionId) },
     kill: () => { try { return child.kill('SIGTERM') } catch { return false } },
     killForce: () => { try { return child.kill('SIGKILL') } catch { return false } },
   }
