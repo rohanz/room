@@ -37,6 +37,11 @@ export function authorizesText(policy: SharingPolicy, relpath: string): boolean 
   return policy.publisher && (policy.level === 'full' || (policy.level === 'declared' && policy.textPrefixes.some(prefix => containsPath(prefix, relpath))))
 }
 
+/** Private environment files remain excluded even when deliberately tracked. */
+export function defaultExcludedPath(relpath: string): boolean {
+  return relpath.split('/').some(part => part === '.env' || part.startsWith('.env.') && part !== '.env.example')
+}
+
 export function rulesFromText(text: string, sizeCap: number, budget: number): ExclusionRules {
   return Object.freeze({ roomIgnore: parseRoomIgnore(text), sizeCap, budget, id: createHash('sha256').update(JSON.stringify([text, sizeCap, budget])).digest('hex') })
 }
@@ -80,11 +85,11 @@ export function plan(inputs: PublicationInputs, disk: readonly DiskFact[], salt:
   let used = 0
   for (const fact of [...disk].sort((a, b) => a.path.localeCompare(b.path))) {
     const p = normalizeCoordinationPath(fact.path)
-    if (fact.kind === 'error') { unsettled.push(p); continue }
     const changed = fact.changed ?? (fact.kind === 'absent' ? !!fact.baseHash : fact.kind === 'unsafe' || fact.hash !== fact.baseHash)
-    if (!changed) continue
     const hide = (reason: 'ignore' | 'size' | 'budget' | 'unsafe') => { excludedPaths.push(p); excludedReasons.set(p, reason); excluded.push(createHash('sha256').update(Buffer.from(salt, 'hex')).update(p, 'utf8').digest('hex')) }
-    if (fact.excluded || fact.ignored || inputs.rules.roomIgnore.ignores(p)) { hide('ignore'); continue }
+    if (fact.excluded || fact.ignored || defaultExcludedPath(p) || inputs.rules.roomIgnore.ignores(p)) { if (changed) hide('ignore'); continue }
+    if (fact.kind === 'error') { unsettled.push(p); continue }
+    if (!changed) continue
     if (fact.kind === 'absent') {
       const entry: PlannedEntry = { change: 'D', state: 'shared' }
       if (authorizesText(policy, p) && fact.baseHash) entry.baseHash = fact.baseHash

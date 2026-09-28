@@ -1,5 +1,6 @@
 import type { ShareLevel } from '@room/roomd'
 import { policyFromLevel, type SharingPolicy } from '@room/roomd/policy'
+import { containsPath } from '@room/shared'
 import type { PolicyStore } from '../src/policy-store.js'
 
 /** Synchronous test fixture for legacy fake Sessions; production uses the durable PolicyStore. */
@@ -23,8 +24,9 @@ export function testPolicyStore(level: ShareLevel = 'full', onChange?: (policy: 
     get disclosed() { return disclosed },
     get retained() { return retained },
     async setRequested(next: ShareLevel) {
+      if (requested === next) return policy
       requested = next
-      if (next !== 'declared') active = ending = retained = []
+      if (next !== 'declared') ending = retained = []
       return rebuild()
     },
     async declare(paths: readonly string[]) {
@@ -33,14 +35,19 @@ export function testPolicyStore(level: ShareLevel = 'full', onChange?: (policy: 
       return rebuild()
     },
     async settle(input: SharingPolicy, entries: ReadonlyMap<string, { state: string; change: string }>, unsettled: readonly string[]) {
-      if (policy !== input || unsettled.length) return policy
-      for (const p of ending) for (const [path, entry] of entries) if ((path === p || path.startsWith(p)) && (entry.state === 'shared' || entry.change === 'D')) retained.push(path)
-      ending = []
-      retained = [...new Set(retained)].filter(p => entries.has(p))
+      if (policy !== input) return policy
+      const pending = ending.filter(prefix => unsettled.some(p => containsPath(prefix, p)))
+      const nextRetained = new Set(retained.filter(p => entries.has(p) || unsettled.includes(p)))
+      for (const prefix of ending) {
+        if (pending.includes(prefix)) continue
+        for (const [path, entry] of entries) if (containsPath(prefix, path) && (entry.state === 'shared' || entry.change === 'D')) nextRetained.add(path)
+      }
+      ending = pending
+      retained = [...nextRetained].sort()
       return rebuild()
     },
-    setCeiling(next: ShareLevel) { ceiling = next; return rebuild() },
-    setPublisher(next: boolean, name?: string) { publisher = next; publisherName = name; return rebuild() },
+    setCeiling(next: ShareLevel) { if (ceiling === next) return policy; ceiling = next; return rebuild() },
+    setPublisher(next: boolean, name?: string) { if (publisher === next && publisherName === name) return policy; publisher = next; publisherName = name; return rebuild() },
     async markDisclosed(next: ShareLevel, version: number) { disclosed = { level: next, version }; return policy },
   } as unknown as PolicyStore
 }
