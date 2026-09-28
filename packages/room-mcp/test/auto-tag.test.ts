@@ -27,7 +27,7 @@ const cleanup: (() => void)[] = []
 afterEach(() => { cleanup.splice(0).reverse().forEach(fn => fn()); vi.unstubAllEnvs() })
 
 /** Same update-exchange hub as the other suites, with real awareness and delayed first sync. */
-function hub(names: string[], ownName = 'name', stale = new Set<string>(), work = new Set<string>(), observe?: (awareness: Awareness) => void) {
+function hub(names: string[], ownName = 'name', stale = new Set<string>(), work = new Set<string>(), observe?: (awareness: Awareness) => void, omitAwareness = false) {
   const peers = names.map(name => {
     const doc = new Y.Doc(), awareness = new Awareness(doc)
     awareness.setLocalState({ user: { name, kind: 'agent' }, lastActive: Date.now() - 5 * 60_000 })
@@ -42,8 +42,10 @@ function hub(names: string[], ownName = 'name', stale = new Set<string>(), work 
     queueMicrotask(() => {
       for (const peer of peers) {
         Y.applyUpdate(doc, Y.encodeStateAsUpdate(peer.doc))
-        applyAwarenessUpdate(awareness, encodeAwarenessUpdate(peer.awareness, [peer.awareness.clientID]), null)
-        if (stale.has(peer.awareness.getLocalState()!.user.name)) awareness.meta.get(peer.awareness.clientID)!.lastUpdated = Date.now() - 30_001
+        if (!omitAwareness) {
+          applyAwarenessUpdate(awareness, encodeAwarenessUpdate(peer.awareness, [peer.awareness.clientID]), null)
+          if (stale.has(peer.awareness.getLocalState()!.user.name)) awareness.meta.get(peer.awareness.clientID)!.lastUpdated = Date.now() - 30_001
+        }
       }
       observe?.(awareness)
       provider.synced = true
@@ -61,10 +63,10 @@ function repo() {
   vi.stubEnv('ROOM_WORKER_HOST', '')
   return dir
 }
-async function start(names: string[], tag?: string, stale: string[] = [], work: string[] = [], dir = repo()) {
+async function start(names: string[], tag?: string, stale: string[] = [], work: string[] = [], dir = repo(), room = 'ws://test/room', localKey?: string, omitAwareness = false) {
   const log = vi.fn()
   const config = await resolveConfig({ dir, env: tag ? { ROOM_TAG: tag } : {} })
-  const result = await startAutoTaggedRoomd({ dir, room: 'ws://test/room', name: tag ? `name+${tag}` : 'name', label: config.tag, owner: 'name', kind: 'agent', providerFactory: hub(names, 'name', new Set(stale), new Set(work)), log }, config.tag)
+  const result = await startAutoTaggedRoomd({ dir, room, localKey, name: tag ? `name+${tag}` : 'name', label: config.tag, owner: 'name', kind: 'agent', providerFactory: hub(names, 'name', new Set(stale), new Set(work), undefined, omitAwareness), log }, config.tag)
   cleanup.push(() => { void result.daemon.stop() })
   return { ...result, log, dir }
 }
@@ -120,6 +122,21 @@ describe('automatic session tags', () => {
     expect(new Set(joined.map(s => s.me.name)).size).toBe(6)
     const tags = (await readChoice(dir))?.tags
     expect(Object.keys(tags ?? {})).toHaveLength(6)
+  })
+  it('keeps a team name unique across separate clones when presence has not arrived', async () => {
+    const firstDir = repo(), secondDir = repo()
+    const firstLocal = await start([], undefined, [], [], firstDir, 'ws://local/local-room', 'key')
+    const secondLocal = await start([], undefined, [], [], secondDir, 'ws://local/local-room', 'key')
+    await firstLocal.daemon.stop()
+    await secondLocal.daemon.stop()
+    expect((await readChoice(firstDir))?.tags?.[await worktreePath(firstDir)]).toBe('')
+    expect((await readChoice(secondDir))?.tags?.[await worktreePath(secondDir)]).toBe('')
+    const first = await start([], undefined, [], [], firstDir)
+    // The second probe has synced the first daemon's work but has not received its awareness.
+    const second = await start(['name'], undefined, [], ['name'], secondDir, 'ws://test/room', undefined, true)
+    expect(first.me.name).toBe('name')
+    expect(second.me.name).toBe('name+claude')
+    expect((await readChoice(secondDir))?.tags?.[await worktreePath(secondDir)]).toBe('claude')
   })
   it('preserves explicit ROOM_TAG even on collision', async () => {
     const s = await start(['name', 'name+custom'], 'custom')

@@ -6,6 +6,7 @@ import { trackConnection } from './connection.js'
  */
 import { existsSync, mkdirSync, readFileSync, watchFile, unwatchFile, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { WebsocketProvider } from 'y-websocket'
 import WebSocket from 'ws'
@@ -307,9 +308,9 @@ export function encodeRoom(roomName: string): string { return encodeURIComponent
 export function decodeRoom(encoded: string): string { try { return decodeURIComponent(encoded) } catch { return encoded } }
 
 /** Hold an automatic name from before the presence probe until the daemon stops.
- * Linked worktrees share this git common dir, so O_EXCL chooses exactly one winner. */
-async function reserveAutoName(dir: string, room: string, name: string, worktree: string): Promise<{ release?: () => void; sameWorktree: boolean }> {
-  const folder = join(await gitCommonDir(dir), 'room-name-locks')
+ * Team rooms use a machine-wide lock across independent clones; local rooms use their git common dir. */
+async function reserveAutoName(dir: string, room: string, name: string, worktree: string, local: boolean): Promise<{ release?: () => void; sameWorktree: boolean }> {
+  const folder = local ? join(await gitCommonDir(dir), 'room-name-locks') : join(tmpdir(), `room-name-locks-${process.getuid?.() ?? 'user'}`)
   mkdirSync(folder, { recursive: true, mode: 0o700 })
   const file = join(folder, createHash('sha256').update(`${room}\0${name}`).digest('hex'))
   const release = acquireOwnedFile(file, { pid: process.pid, worktree })
@@ -363,7 +364,7 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
       for (let candidate = rememberedTag === undefined ? 0 : -1; ; candidate++) {
         const tag = candidate === -1 ? rememberedTag! : candidate === 0 ? '' : candidate === 1 ? host : `${host}-${candidate}`
         const candidateName = tag ? `${options.name}+${tag}` : options.name
-        const { release, sameWorktree } = await reserveAutoName(options.dir, options.room, candidateName, worktree)
+        const { release, sameWorktree } = await reserveAutoName(options.dir, options.room, candidateName, worktree, !!options.localKey)
         if (!release) { reserved.add(candidateName); if (candidateName === (rememberedName ?? options.name)) ownPreviousLock = sameWorktree; continue }
         if (names.has(candidateName) || (tag !== rememberedTag && holdsWork(candidateName))) { release(); continue }
         releaseName = release
