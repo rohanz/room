@@ -2999,7 +2999,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve5.call(this, root, ref);
+      let _sch = resolve4.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3026,7 +3026,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve5(root, ref) {
+    function resolve4(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3856,7 +3856,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve5(baseURI, relativeURI, options) {
+    function resolve4(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -4224,7 +4224,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize: normalize2,
-      resolve: resolve5,
+      resolve: resolve4,
       resolveComponent,
       equal,
       serialize,
@@ -7200,12 +7200,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name2}"`);
       return f;
     };
-    function addFormats(ajv, list, fs32, exportName) {
+    function addFormats(ajv, list, fs33, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs32[f]);
+        ajv.addFormat(f, fs33[f]);
     }
     module2.exports = exports2 = formatsPlugin;
     Object.defineProperty(exports2, "__esModule", { value: true });
@@ -9253,14 +9253,14 @@ var init_function = __esm({
     "use strict";
     init_object();
     init_equality();
-    callAll = (fs32, args3, i2 = 0) => {
+    callAll = (fs33, args3, i2 = 0) => {
       try {
-        for (; i2 < fs32.length; i2++) {
-          fs32[i2](...args3);
+        for (; i2 < fs33.length; i2++) {
+          fs33[i2](...args3);
         }
       } finally {
-        if (i2 < fs32.length) {
-          callAll(fs32, args3, i2 + 1);
+        if (i2 < fs33.length) {
+          callAll(fs33, args3, i2 + 1);
         }
       }
     };
@@ -9885,17 +9885,17 @@ var init_yjs = __esm({
         this.isLoaded = false;
         this.isSynced = false;
         this.isDestroyed = false;
-        this.whenLoaded = create4((resolve5) => {
+        this.whenLoaded = create4((resolve4) => {
           this.on("load", () => {
             this.isLoaded = true;
-            resolve5(this);
+            resolve4(this);
           });
         });
-        const provideSyncedPromise = () => create4((resolve5) => {
+        const provideSyncedPromise = () => create4((resolve4) => {
           const eventHandler = (isSynced) => {
             if (isSynced === void 0 || isSynced === true) {
               this.off("sync", eventHandler);
-              resolve5();
+              resolve4();
             }
           };
           this.on("sync", eventHandler);
@@ -11355,15 +11355,15 @@ var init_yjs = __esm({
           sortAndMergeDeleteSet(ds);
           transaction.afterState = getStateVector(transaction.doc.store);
           doc.emit("beforeObserverCalls", [transaction, doc]);
-          const fs32 = [];
+          const fs33 = [];
           transaction.changed.forEach(
-            (subs, itemtype) => fs32.push(() => {
+            (subs, itemtype) => fs33.push(() => {
               if (itemtype._item === null || !itemtype._item.deleted) {
                 itemtype._callObserver(transaction, subs);
               }
             })
           );
-          fs32.push(() => {
+          fs33.push(() => {
             transaction.changedParentTypes.forEach((events, type) => {
               if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
                 events = events.filter(
@@ -11374,19 +11374,19 @@ var init_yjs = __esm({
                   event._path = null;
                 });
                 events.sort((event1, event2) => event1.path.length - event2.path.length);
-                fs32.push(() => {
+                fs33.push(() => {
                   callEventHandlerListeners(type._dEH, events, transaction);
                 });
               }
             });
-            fs32.push(() => doc.emit("afterTransaction", [transaction, doc]));
-            fs32.push(() => {
+            fs33.push(() => doc.emit("afterTransaction", [transaction, doc]));
+            fs33.push(() => {
               if (transaction._needFormattingCleanup) {
                 cleanupYTextAfterTransaction(transaction);
               }
             });
           });
-          callAll(fs32, []);
+          callAll(fs33, []);
         } finally {
           if (doc.gc) {
             tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -17748,7 +17748,7 @@ function wholeTreeTimeoutMs(pathCount = UNKNOWN_WHOLE_TREE_PATHS, configured) {
 }
 function git(dir, args3, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve4, reject) => {
     execFile("git", args3, { cwd: dir, maxBuffer: 64 * 1024 * 1024, timeout }, (err2, stdout, stderr2) => {
       if (err2) {
         const stopped = err2;
@@ -17759,7 +17759,7 @@ function git(dir, args3, configuredTimeoutMs) {
         }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr2 || err2.message).trim();
         reject(new Error(`git ${args3.join(" ")} failed: ${detail}`));
-      } else resolve5(stdout);
+      } else resolve4(stdout);
     });
   });
 }
@@ -17818,7 +17818,7 @@ async function gitShowMany(dir, base, relpaths, configuredTimeoutMs) {
   }
   if (!batch.length) return out2;
   const timeout = wholeTreeTimeoutMs(batch.length, configuredTimeoutMs);
-  const raw = await new Promise((resolve5, reject) => {
+  const raw = await new Promise((resolve4, reject) => {
     const child = spawn("git", ["cat-file", "--batch"], { cwd: dir, stdio: ["pipe", "pipe", "pipe"] });
     const chunks = [];
     let stderr2 = "";
@@ -17836,7 +17836,7 @@ async function gitShowMany(dir, base, relpaths, configuredTimeoutMs) {
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      code === 0 ? resolve5(Buffer.concat(chunks)) : reject(new Error(`git cat-file --batch failed: ${stderr2.trim() || `exit ${code}`}`));
+      code === 0 ? resolve4(Buffer.concat(chunks)) : reject(new Error(`git cat-file --batch failed: ${stderr2.trim() || `exit ${code}`}`));
     });
     child.stdin.on("error", () => {
     });
@@ -17864,7 +17864,7 @@ async function gitBlobInfoMany(dir, base, relpaths, configuredTimeoutMs) {
   const out2 = /* @__PURE__ */ new Map();
   if (!paths.length) return out2;
   const timeout = wholeTreeTimeoutMs(paths.length, configuredTimeoutMs);
-  const raw = await new Promise((resolve5, reject) => {
+  const raw = await new Promise((resolve4, reject) => {
     const child = spawn("git", ["cat-file", "--batch-check", "-Z"], { cwd: dir, stdio: ["pipe", "pipe", "pipe"] });
     const chunks = [];
     let stderr2 = "";
@@ -17882,7 +17882,7 @@ async function gitBlobInfoMany(dir, base, relpaths, configuredTimeoutMs) {
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      code === 0 ? resolve5(Buffer.concat(chunks).toString()) : reject(new Error(`git cat-file --batch-check failed: ${stderr2.trim() || `exit ${code}`}`));
+      code === 0 ? resolve4(Buffer.concat(chunks).toString()) : reject(new Error(`git cat-file --batch-check failed: ${stderr2.trim() || `exit ${code}`}`));
     });
     child.stdin.on("error", () => {
     });
@@ -17906,11 +17906,11 @@ async function gitTracked(dir) {
 }
 async function gitIgnored(dir, rel, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve4, reject) => {
     execFile("git", ["check-ignore", "-q", "--", rel], { cwd: dir, timeout }, (err2) => {
       const stopped = err2;
       if (stopped?.killed || stopped?.signal) reject(new Error(`git check-ignore timed out after ${timeout}ms`));
-      else resolve5(!err2 || Number(stopped?.code) !== 1);
+      else resolve4(!err2 || Number(stopped?.code) !== 1);
     });
   });
 }
@@ -18019,7 +18019,7 @@ async function pairBaseline(me, other, ancestor, descends) {
 }
 function boundedGit(dir, args3, wholeTreePaths, env) {
   const timeout = wholeTreePaths === void 0 ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve4, reject) => {
     execFile2("git", args3, { cwd: dir, env, encoding: "buffer", maxBuffer: 64 * 1024 * 1024, timeout }, (error2, stdout, stderr2) => {
       if (error2) {
         const stopped = error2;
@@ -18030,7 +18030,7 @@ function boundedGit(dir, args3, wholeTreePaths, env) {
         }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr2).trim() || error2.message;
         reject(Object.assign(new Error(`git ${args3.join(" ")} failed: ${detail}`), { stderr: String(stderr2) }));
-      } else resolve5(stdout);
+      } else resolve4(stdout);
     });
   });
 }
@@ -18333,9 +18333,9 @@ var init_disk_batch = __esm({
   "packages/roomd/src/disk-batch.ts"() {
     "use strict";
     DiskBatch = class {
-      constructor(run2, debounceMs = 300, now = Date.now, hotThrottleMs = 3e4, onError = () => {
+      constructor(run3, debounceMs = 300, now = Date.now, hotThrottleMs = 3e4, onError = () => {
       }) {
-        this.run = run2;
+        this.run = run3;
         this.debounceMs = debounceMs;
         this.now = now;
         this.hotThrottleMs = hotThrottleMs;
@@ -24199,7 +24199,7 @@ var init_handler = __esm({
             this._addToNodeFs(path29, initialAdd, wh, depth + 1);
           }
         }).on(EV.ERROR, this._boundHandleError);
-        return new Promise((resolve5, reject) => {
+        return new Promise((resolve4, reject) => {
           if (!stream)
             return reject();
           stream.once(STR_END, () => {
@@ -24208,7 +24208,7 @@ var init_handler = __esm({
               return;
             }
             const wasThrottled = throttler ? throttler.clear() : false;
-            resolve5(void 0);
+            resolve4(void 0);
             previous.getChildren().filter((item) => {
               return item !== directory && !current.has(item);
             }).forEach((item) => {
@@ -25313,15 +25313,15 @@ var init_src2 = __esm({
         this.localRoom = !!options.localKey;
         this.log = options.log ?? ((line) => process.stderr.write(`[roomd] ${line}
 `));
-        this.remoteRepairSchedule = options.remoteRepairSchedule ?? ((run2) => {
+        this.remoteRepairSchedule = options.remoteRepairSchedule ?? ((run3) => {
           const timer = setTimeout(() => {
-            void run2();
+            void run3();
           }, 40);
           timer.unref?.();
           return () => clearTimeout(timer);
         });
-        this.retrySchedule = options.retrySchedule ?? ((run2, delay) => {
-          const timer = setTimeout(run2, delay);
+        this.retrySchedule = options.retrySchedule ?? ((run3, delay) => {
+          const timer = setTimeout(run3, delay);
           timer.unref?.();
           return () => clearTimeout(timer);
         });
@@ -25345,8 +25345,8 @@ var init_src2 = __esm({
         this.trackedRefreshMs = options.trackedRefreshMs ?? 1e4;
         this.basePollMs = options.basePollMs ?? 3e3;
         this.reconcileIntervalMs = options.reconcileIntervalMs ?? 6e4;
-        this.periodicReconcileSchedule = options.periodicReconcileSchedule ?? ((run2, intervalMs) => {
-          const timer = setInterval(run2, intervalMs);
+        this.periodicReconcileSchedule = options.periodicReconcileSchedule ?? ((run3, intervalMs) => {
+          const timer = setInterval(run3, intervalMs);
           timer.unref?.();
           return () => clearInterval(timer);
         });
@@ -25538,7 +25538,7 @@ var init_src2 = __esm({
         const socket = this.provider.ws;
         if (socket) {
           const deadline = Date.now() + 1e3;
-          while (socket.bufferedAmount > 0 && Date.now() < deadline) await new Promise((resolve5) => setTimeout(resolve5, 5));
+          while (socket.bufferedAmount > 0 && Date.now() < deadline) await new Promise((resolve4) => setTimeout(resolve4, 5));
         }
         this.provider.destroy();
         this.roomDoc.doc.destroy();
@@ -25623,7 +25623,7 @@ var init_src2 = __esm({
       }
       waitForSync() {
         if (this.provider.synced) return Promise.resolve();
-        return new Promise((resolve5, reject) => {
+        return new Promise((resolve4, reject) => {
           const timer = setTimeout(() => {
             this.provider.off("sync", onSync);
             reject(new RoomdError(`could not sync with ${this.roomUrl} within ${this.connectTimeoutMs}ms`, 1));
@@ -25632,7 +25632,7 @@ var init_src2 = __esm({
             if (!synced) return;
             clearTimeout(timer);
             this.provider.off("sync", onSync);
-            resolve5();
+            resolve4();
           };
           this.provider.on("sync", onSync);
         });
@@ -26007,7 +26007,7 @@ var init_src2 = __esm({
           this.scheduleDisk(relpath, event === "add");
         });
         watcher.on("error", (error2) => this.log(`watcher error: ${errMsg2(error2)}`));
-        await new Promise((resolve5, reject) => {
+        await new Promise((resolve4, reject) => {
           const fatal = (error2) => {
             const e = error2;
             if (e?.path === this.dir || e?.code === "EMFILE" || e?.code === "ENOSPC") {
@@ -26017,7 +26017,7 @@ var init_src2 = __esm({
           };
           const ready = () => {
             watcher.off("error", fatal);
-            resolve5();
+            resolve4();
           };
           watcher.on("error", fatal);
           watcher.once("ready", ready);
@@ -26045,7 +26045,7 @@ var init_src2 = __esm({
       /** Does not synthesize events: callers must first observe the change they are waiting for. */
       async settle() {
         while (this.batch.size || this.diskWork.size) {
-          await Promise.all([...this.diskWork, new Promise((resolve5) => setTimeout(resolve5, this.debounceMs))]);
+          await Promise.all([...this.diskWork, new Promise((resolve4) => setTimeout(resolve4, this.debounceMs))]);
         }
       }
       scheduleDisk(relpath, isNew) {
@@ -26135,10 +26135,10 @@ function normaliseWhere(where) {
   if (["team", "hosted", "web", "shared"].includes(w)) return "team";
   return w;
 }
-function resolveServer(raw) {
+function resolveServer(raw, teamServer = DEFAULT_SERVER) {
   const w = normaliseWhere(raw);
   if (!w || w === LOCAL) return LOCAL;
-  return w === "team" ? DEFAULT_SERVER : w;
+  return w === "team" ? teamServer : w;
 }
 function sharingDescription(level) {
   return level === "full" ? "the full text of files you change" : level === "declared" ? "files in your declared area and changed files declared earlier" : "only your plans, no file text";
@@ -26176,6 +26176,15 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
   const urlServer = url ? `${url.protocol}//${url.host}${url.search}` : void 0;
   const envWhere = envServer ?? (!argUrl ? urlServer : void 0);
   const rememberedChoice = await readRememberedChoice(dir);
+  const serverOnly = (w) => w && w !== LOCAL && w !== "team" ? w : void 0;
+  const envUrl = value(e.ROOM_URL);
+  let envUrlServer;
+  try {
+    const u = envUrl ? new URL(envUrl) : void 0;
+    envUrlServer = u && ["ws:", "wss:"].includes(u.protocol) ? `${u.protocol}//${u.host}${u.search}` : void 0;
+  } catch {
+  }
+  const teamServer = serverOnly(envServer) ?? envUrlServer ?? serverOnly(normaliseWhere(rememberedChoice.where)) ?? DEFAULT_SERVER;
   const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(rememberedChoice.where) : void 0;
   const where = argWhere ?? (argUrl ? urlServer : void 0) ?? envWhere ?? remembered ?? LOCAL;
   const whereRule = argWhere || argUrl ? "argument" : envWhere ? "env" : remembered ? "remembered" : "default";
@@ -26192,13 +26201,15 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
     gen: value(e.ROOM_GEN),
     roomUrl,
     dir: path6.resolve(dir),
-    server: resolveServer(where),
+    server: resolveServer(where, teamServer),
+    teamServer,
     where,
     whereRule,
     whereEnv,
     name: value(args3.name) ?? value(e.ROOM_NAME),
     owner: value(args3.owner) ?? value(e.ROOM_OWNER),
-    tag: value(args3.tag) ?? value(e.ROOM_TAG),
+    // An explicit empty tag (a rejoin of an untagged session) means no label, not "choose one automatically".
+    tag: typeof args3.tag === "string" ? args3.tag.trim() : value(e.ROOM_TAG),
     kind,
     share: sharing.level,
     shareWarning: sharing.warning,
@@ -26356,7 +26367,7 @@ function claudeWakeAvailable(o) {
   return selected === "channels" ? channel : socket || channel;
 }
 function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIMEOUT_MS) {
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve4, reject) => {
     const socket = net.createConnection(socketPath);
     let settled = false;
     let flushed = false;
@@ -26365,7 +26376,7 @@ function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIM
       settled = true;
       socket.destroy();
       if (error2) reject(error2);
-      else resolve5();
+      else resolve4();
     };
     socket.setTimeout(timeoutMs2, () => finish(new Error("Claude inbox socket timed out")));
     socket.once("error", finish);
@@ -26743,8 +26754,8 @@ function sameDir(a, b) {
   return norm(a) === norm(b);
 }
 function defaultQueue(threadId, text) {
-  return new Promise((resolve5, reject) => {
-    execFile3("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err2, _out, stderr2) => err2 ? reject(new Error(String(stderr2 || err2.message).trim())) : resolve5());
+  return new Promise((resolve4, reject) => {
+    execFile3("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err2, _out, stderr2) => err2 ? reject(new Error(String(stderr2 || err2.message).trim())) : resolve4());
   });
 }
 function findThreadForDir(dir, since) {
@@ -27792,14 +27803,14 @@ async function gitMergeFile(base, ours, theirs, labels) {
     fs15.writeFileSync(oursPath, ours);
     fs15.writeFileSync(basePath, base);
     fs15.writeFileSync(theirsPath, theirs);
-    const result = await new Promise((resolve5) => {
+    const result = await new Promise((resolve4) => {
       execFile4(
         "git",
         ["merge-file", "-p", "--diff3", "-L", labels.ours, "-L", labels.base, "-L", labels.theirs, oursPath, basePath, theirsPath],
         { maxBuffer: 16 * 1024 * 1024, timeout: 1e4 },
         (error2, stdout) => {
           const raw = error2 && error2.code;
-          resolve5({
+          resolve4({
             code: typeof raw === "number" ? raw : error2 ? -1 : 0,
             stdout,
             unavailable: raw === "ENOENT",
@@ -28821,10 +28832,10 @@ var require_tree_sitter = __commonJS({
               };
               readAsync = (filename, binary2 = true) => {
                 filename = isFileURI(filename) ? new URL(filename) : nodePath.normalize(filename);
-                return new Promise((resolve5, reject) => {
+                return new Promise((resolve4, reject) => {
                   fs.readFile(filename, binary2 ? void 0 : "utf8", (err2, data) => {
                     if (err2) reject(err2);
-                    else resolve5(binary2 ? data.buffer : data);
+                    else resolve4(binary2 ? data.buffer : data);
                   });
                 });
               };
@@ -28865,13 +28876,13 @@ var require_tree_sitter = __commonJS({
                 }
                 readAsync = (url) => {
                   if (isFileURI(url)) {
-                    return new Promise((reject, resolve5) => {
+                    return new Promise((reject, resolve4) => {
                       var xhr = new XMLHttpRequest();
                       xhr.open("GET", url, true);
                       xhr.responseType = "arraybuffer";
                       xhr.onload = () => {
                         if (xhr.status == 200 || xhr.status == 0 && xhr.response) {
-                          resolve5(xhr.response);
+                          resolve4(xhr.response);
                         }
                         reject(xhr.status);
                       };
@@ -29831,8 +29842,8 @@ var require_tree_sitter = __commonJS({
                 }
                 var libFile = locateFile(libName2);
                 if (flags2.loadAsync) {
-                  return new Promise(function(resolve5, reject) {
-                    asyncLoad(libFile, resolve5, reject);
+                  return new Promise(function(resolve4, reject) {
+                    asyncLoad(libFile, resolve4, reject);
                   });
                 }
                 if (!readBinary) {
@@ -31328,8 +31339,8 @@ var require_tree_sitter = __commonJS({
                 } else {
                   const url = input;
                   if (typeof process !== "undefined" && process.versions && process.versions.node) {
-                    const fs32 = __require("fs");
-                    bytes = Promise.resolve(fs32.readFileSync(url));
+                    const fs33 = __require("fs");
+                    bytes = Promise.resolve(fs33.readFileSync(url));
                   } else {
                     bytes = fetch(url).then((response) => response.arrayBuffer().then((buffer) => {
                       if (response.ok) {
@@ -31913,7 +31924,7 @@ var init_graph_index = __esm({
     MIN_PUBLISH_MS = 2e4;
     YIELD_EVERY = 100;
     YIELD_AFTER_MS = 50;
-    yieldToEventLoop = () => new Promise((resolve5) => setImmediate(resolve5));
+    yieldToEventLoop = () => new Promise((resolve4) => setImmediate(resolve4));
     GraphIndex = class {
       constructor(room, me, dir, log2 = () => {
       }, opts = {}) {
@@ -32014,9 +32025,9 @@ var init_graph_index = __esm({
         this.unobserve = [];
       }
       async initialBuild() {
-        await new Promise((resolve5) => {
-          this.endJitter = resolve5;
-          this.jitterTimer = setTimeout(resolve5, Math.floor((this.opts.random ?? Math.random)() * 4001));
+        await new Promise((resolve4) => {
+          this.endJitter = resolve4;
+          this.jitterTimer = setTimeout(resolve4, Math.floor((this.opts.random ?? Math.random)() * 4001));
         });
         this.initialStarted = true;
         if (!this.stopped) await this.rebuild();
@@ -32102,22 +32113,22 @@ var init_graph_index = __esm({
         if (inflight) {
           if (inflight.generation !== this.generation) {
             inflight.resolve();
-            inflight.promise = new Promise((resolve6) => {
-              inflight.resolve = resolve6;
+            inflight.promise = new Promise((resolve5) => {
+              inflight.resolve = resolve5;
             });
             inflight.generation = this.generation;
           }
           return inflight.promise;
         }
-        let resolve5;
+        let resolve4;
         const promise = new Promise((r) => {
-          resolve5 = r;
+          resolve4 = r;
         });
         let resolveIdle;
         const idle = new Promise((r) => {
           resolveIdle = r;
         });
-        this.pending.set(path29, { generation: this.generation, promise, resolve: resolve5, idle, resolveIdle });
+        this.pending.set(path29, { generation: this.generation, promise, resolve: resolve4, idle, resolveIdle });
         this.refreshQueue.push(path29);
         this.drainRefreshQueue();
         return promise;
@@ -32999,7 +33010,7 @@ var init_claims2 = __esm({
 });
 
 // packages/room-mcp/src/index.ts
-import fs31 from "node:fs";
+import fs32 from "node:fs";
 import path28 from "node:path";
 
 // node_modules/zod/v4/core/util.js
@@ -41293,7 +41304,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
+        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -41310,7 +41321,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -41388,7 +41399,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve5(parseResult.data);
+            resolve4(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -41649,12 +41660,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve5, interval);
+      const timeoutId = setTimeout(resolve4, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -42530,12 +42541,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve5) => {
+    return new Promise((resolve4) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve5();
+        resolve4();
       } else {
-        this._stdout.once("drain", resolve5);
+        this._stdout.once("drain", resolve4);
       }
     });
   }
@@ -43027,12 +43038,12 @@ var defaultSpawner = (spec16) => {
   };
   child.once("close", closeLog);
   child.once("error", closeLog);
-  const started = new Promise((resolve5, reject) => {
+  const started = new Promise((resolve4, reject) => {
     const done = (error2) => {
       child.off("spawn", onSpawn);
       child.off("error", onError);
       if (error2) reject(error2);
-      else resolve5();
+      else resolve4();
     };
     const onSpawn = () => done();
     const onError = (error2) => done(error2);
@@ -43097,7 +43108,7 @@ var defaultSpawner = (spec16) => {
 };
 async function stopWorkerWithEscalation(options) {
   if (!await options.terminate()) return false;
-  const sleep2 = options.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
+  const sleep2 = options.sleep ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)));
   const now = options.now ?? Date.now;
   const wait = async () => {
     const deadline = now() + 5e3;
@@ -43235,7 +43246,7 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   const root = fs11.existsSync(dir) ? fs11.realpathSync(dir) : path8.resolve(dir);
   const protectedPids = /* @__PURE__ */ new Set([process.pid, process.ppid, ...options.protectedPids ?? []]);
   const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig));
-  const sleep2 = options.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
+  const sleep2 = options.sleep ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)));
   const resolved = (cwd) => {
     try {
       return fs11.realpathSync(cwd);
@@ -43560,15 +43571,15 @@ function retainUntrackedTree(dir, tag, paths) {
   if (!paths.length) return void 0;
   const scratch = fs13.mkdtempSync(path10.join(os3.tmpdir(), "room-carry-index-"));
   const env = { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") };
-  const run2 = (args3, wholeTreePaths) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args3], { env, wholeTreePaths }).toString().trim();
+  const run3 = (args3, wholeTreePaths) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args3], { env, wholeTreePaths }).toString().trim();
   try {
     for (const entry of paths) {
       const stat4 = fs13.lstatSync(path10.join(dir, entry.path));
       const mode2 = stat4.isSymbolicLink() ? "120000" : stat4.mode & 73 ? "100755" : "100644";
-      run2(["update-index", "--add", "--cacheinfo", `${mode2},${entry.sha},${entry.path}`]);
+      run3(["update-index", "--add", "--cacheinfo", `${mode2},${entry.sha},${entry.path}`]);
     }
-    const tree = run2(["write-tree"], paths.length);
-    run2(["update-ref", carriedUntrackedRef(tag), tree]);
+    const tree = run3(["write-tree"], paths.length);
+    run3(["update-ref", carriedUntrackedRef(tag), tree]);
     return tree;
   } finally {
     fs13.rmSync(scratch, { recursive: true, force: true });
@@ -43879,13 +43890,13 @@ async function saveDiscardPatch(leadDir, w) {
   }
   const scratch = fs13.mkdtempSync(path10.join(os3.tmpdir(), "room-discard-"));
   try {
-    const run2 = (args3, wholeTreePaths) => boundedGit(w.dir, args3, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") });
+    const run3 = (args3, wholeTreePaths) => boundedGit(w.dir, args3, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") });
     const base = w.base ?? (await git(leadDir, ["merge-base", "HEAD", w.branch])).trim();
-    await run2(["read-tree", "HEAD"], UNKNOWN_WHOLE_TREE_PATHS);
+    await run3(["read-tree", "HEAD"], UNKNOWN_WHOLE_TREE_PATHS);
     const unchanged = carriedUnchangedPaths(workerBaseline(w));
     const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map((p) => ":(exclude,literal)" + p)];
-    await run2(["add", "-A", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS);
-    const patch = await run2(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS);
+    await run3(["add", "-A", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS);
+    const patch = await run3(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS);
     if (!patch.length) return void 0;
     const verifyDir = path10.join(scratch, "verify");
     const verifyPatch = path10.join(scratch, "verify.patch");
@@ -44040,7 +44051,7 @@ async function rememberTag(dir, tag) {
     release = acquireOwnedFile(lock, { pid: process.pid });
     if (release) break;
     if (Date.now() >= deadline) throw new Error("timed out waiting to remember Room name");
-    await new Promise((resolve5) => setTimeout(resolve5, 10));
+    await new Promise((resolve4) => setTimeout(resolve4, 10));
   }
   try {
     const prev = await readChoice(dir);
@@ -44479,7 +44490,7 @@ async function probeRelay(port, commonDir, key, timeoutMs2 = 800) {
   return h.clone === cloneId(commonDir) && h.key === true ? "ours" : "foreign";
 }
 function health(port, key, timeoutMs2) {
-  return new Promise((resolve5) => {
+  return new Promise((resolve4) => {
     const req = http.get({ host: "127.0.0.1", port, path: "/health", timeout: timeoutMs2, ...key ? { headers: { authorization: `Bearer ${key}` } } : {} }, (res) => {
       let body2 = "";
       res.on("data", (c) => {
@@ -44487,17 +44498,17 @@ function health(port, key, timeoutMs2) {
       });
       res.on("end", () => {
         try {
-          resolve5(res.statusCode === 200 ? JSON.parse(body2) : void 0);
+          resolve4(res.statusCode === 200 ? JSON.parse(body2) : void 0);
         } catch {
-          resolve5(void 0);
+          resolve4(void 0);
         }
       });
     });
     req.on("timeout", () => {
       req.destroy();
-      resolve5(void 0);
+      resolve4(void 0);
     });
-    req.on("error", () => resolve5(void 0));
+    req.on("error", () => resolve4(void 0));
   });
 }
 var MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
@@ -44519,7 +44530,7 @@ function isLoopback(addr2) {
   return !!addr2 && LOOPBACK.has(addr2);
 }
 function startRelay(port, opts = {}) {
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve4, reject) => {
     const staticDir = opts.staticDir ? path16.resolve(opts.staticDir) : findWebDist();
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://x");
@@ -44608,7 +44619,7 @@ Connection: close\r
       const addr2 = server.address();
       const bound = typeof addr2 === "object" && addr2 ? addr2.port : port;
       for (const signal of signals) process.on(signal, onSignal);
-      resolve5({
+      resolve4({
         port: bound,
         close
       });
@@ -44936,13 +44947,30 @@ async function logout(server) {
 }
 function findRoomFile(start2) {
   let d = resolve3(start2);
+  const own2 = (dir) => {
+    try {
+      return worktreeGitDirSync(dir);
+    } catch {
+      return void 0;
+    }
+  };
+  const gitDir = own2(d);
+  if (!gitDir) return void 0;
   for (; ; ) {
     const room = readRoomFile(d);
     if (room?.room) return { ...room, room: room.room, _from: d };
     const up = dirname4(d);
-    if (up === d) return void 0;
+    if (up === d || own2(up) !== gitDir) return void 0;
     d = up;
   }
+}
+async function startupJoinOptions(root, server, room) {
+  if (server === LOCAL) return { dir: root, room, server: LOCAL };
+  if (room) return { dir: root, room, server };
+  if ((await deriveRoomName(root).catch(() => ({ roomName: void 0 }))).roomName) return { dir: root, server };
+  const prior = findRoomFile(root);
+  if (prior) return { dir: root, name: prior.name, room: decodeRoom(new URL(prior.room).pathname.replace(/^\/+/, "")), server };
+  return void 0;
 }
 async function deriveRoomName(dir) {
   const [repo, branch] = await Promise.all([gitOrigin(dir), gitBranch(dir)]);
@@ -45092,12 +45120,12 @@ async function startAutoTaggedRoomd(options, explicitTag, shareCeiling) {
       params: { ...options.token ? { token: options.token } : {}, ...options.session ? { session: options.session } : {}, ...options.localKey ? { key: options.localKey } : {} }
     });
     try {
-      if (!provider.synced) await inPhase("sync", () => new Promise((resolve5, reject) => {
+      if (!provider.synced) await inPhase("sync", () => new Promise((resolve4, reject) => {
         const onSync = (synced) => {
           if (synced) {
             clearTimeout(timer);
             provider.off("sync", onSync);
-            resolve5();
+            resolve4();
           }
         };
         const timer = setTimeout(() => {
@@ -45237,7 +45265,7 @@ async function joinSession(opts) {
   const { login: _login, ...creds } = auth;
   let pre = await preflight(server, roomName, creds);
   if (opts.create && pre?.missing) {
-    if (opts.confirm !== true) throw new RoomdError("room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed", 2);
+    if (opts.confirm !== true) throw new RoomdError(CREATE_NEEDS_CONFIRM, 2);
     const err2 = await createRoom(server, roomName, { ...creds, by: name2 });
     if (err2) throw new RoomdError(`${server} would not open ${roomName}: ${err2}`, 2);
     pre = await preflight(server, roomName, creds);
@@ -45369,6 +45397,21 @@ function watchClosed(s, log2) {
 var httpOf = (server) => server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
 function removeStaleCredential(server, reason) {
   if (/expired or unknown/.test(reason)) removeCredential(server);
+}
+var CREATE_NEEDS_CONFIRM = "room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed";
+async function checkTeamAdmission(rawServer, roomName, opts = {}) {
+  if (opts.credentialsPath) configureCredentials(opts.credentialsPath);
+  const parsed = parseServer(rawServer);
+  const { login: _login, ...creds } = await resolveAuth(parsed.server, roomName, opts.token ?? parsed.token);
+  const pre = await preflight(parsed.server, roomName, creds);
+  if (!pre) return;
+  if (pre.missing) {
+    if (!opts.create) throw new NoRoom(roomName, pre.reason, parsed.server);
+    if (opts.confirm !== true) throw new RoomdError(CREATE_NEEDS_CONFIRM, 2);
+    return;
+  }
+  if (pre.loginNeeded) throw new NotLoggedIn(parsed.server);
+  throw new RoomdError(`${parsed.server} refused ${roomName}: ${pre.reason}`, 2);
 }
 async function preflight(server, roomName, auth) {
   try {
@@ -45666,8 +45709,8 @@ function repairRetired(s, present) {
 
 // packages/room-mcp/src/registry.ts
 var toolSignal = new AsyncLocalStorage();
-function withToolSignal(signal, run2) {
-  return signal ? toolSignal.run(signal, run2) : run2();
+function withToolSignal(signal, run3) {
+  return signal ? toolSignal.run(signal, run3) : run3();
 }
 function toolCallAborted() {
   return toolSignal.getStore()?.aborted === true;
@@ -45848,10 +45891,10 @@ var Rooms = class _Rooms {
         await this.retireWorkers(s);
         continue;
       }
-      const run2 = this.evaluateRetirement(s);
-      this.retiring.set(s, run2);
+      const run3 = this.evaluateRetirement(s);
+      this.retiring.set(s, run3);
       try {
-        await run2;
+        await run3;
       } finally {
         this.retiring.delete(s);
       }
@@ -45999,6 +46042,10 @@ var Rooms = class _Rooms {
   launchUsage(running) {
     return running + this.launching;
   }
+  /** Worker starts still preparing (worktree or launch), not yet in any room's worker records. */
+  launchingWorkers() {
+    return this.launching + this.reserving.size;
+  }
   occupiedWorkers(s) {
     const sessions = [s, ...this.all().filter((x) => x !== s)];
     const occupied = [];
@@ -46036,7 +46083,7 @@ var Rooms = class _Rooms {
       if (state.process === "not-ours") return "exited";
       if (state.process === "unknown") return "unknown";
       const key = _Rooms.hkey(s, w.id);
-      await new Promise((resolve5) => {
+      await new Promise((resolve4) => {
         let settled = false;
         const done = () => {
           if (settled) return;
@@ -46046,7 +46093,7 @@ var Rooms = class _Rooms {
           const waiters = this.exitWaiters.get(key);
           waiters?.delete(done);
           if (!waiters?.size) this.exitWaiters.delete(key);
-          resolve5();
+          resolve4();
         };
         const waiting = this.exitWaiters.get(key) ?? /* @__PURE__ */ new Set();
         waiting.add(done);
@@ -46501,6 +46548,7 @@ function handlers3(state) {
       const max2 = config2.maxWorkers;
       const share = typeof a.share === "string" && a.share ? parseShare(a.share) : void 0;
       if (typeof a.share === "string" && a.share && !share) return "error: share must be intent, declared or full";
+      if (!rooms.all().includes(lead) || !rooms.all().includes(s)) return "error: the room changed while this worker was being prepared; nothing was started. Call room_spawn again.";
       if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`;
       const starting = runningWorkers(lead).length;
       const launchLease = reserveWorkerLaunch(rooms, max2, starting);
@@ -46725,12 +46773,12 @@ function createWorkerRuntime(deps) {
   const closeWorkersRoom = async () => {
     const ws = rooms.workers();
     if (!ws) return;
-    rooms.remove(ws);
     try {
       cleanupMine(ws, "lead left");
     } catch {
     }
     await doLeave(ws);
+    rooms.remove(ws);
   };
   const runningWorkers = (s) => rooms.occupiedWorkers(s);
   const dismissWorker = async (s, w, why, stopReason, cancelled) => {
@@ -46804,7 +46852,6 @@ function createWorkerRuntime(deps) {
 init_claims2();
 init_prompt();
 init_src();
-import { resolve as resolve4 } from "node:path";
 
 // packages/room-mcp/src/tools/scope.ts
 init_config();
@@ -47132,10 +47179,220 @@ function compactState(lines, summarizedClaims) {
 
 // packages/room-mcp/src/tools/join.ts
 init_git();
+init_src2();
 init_src();
 init_company();
 init_context();
 init_config();
+
+// packages/room-mcp/src/repository.ts
+init_src2();
+init_git();
+import { execFile as execFile5 } from "node:child_process";
+import fs27 from "node:fs";
+var NotARepository = class extends RoomdError {
+  constructor(dir, message) {
+    super(message, 2);
+    this.dir = dir;
+    this.name = "NotARepository";
+  }
+  dir;
+};
+var notRepository = (dir) => `Room works inside a git repository, and ${dir} isn't one. Run \`git init\` and make a first commit, or open the project's repository folder, then say 'join the room' again.`;
+var noWorkTree = (dir, bare) => `Room works in a repository's working tree (the folder with your files), and ${dir} is ${bare ? "a bare repository" : "inside a repository's .git folder"}, which has none. Open the checkout folder, then say 'join the room' again.`;
+var noCommit = (root) => `Room needs a first commit: ${root} is a git repository with no commits yet. Make a first commit (git add -A && git commit -m "first commit"), then say 'join the room' again.`;
+var run2 = (dir, args3) => new Promise((resolve4) => {
+  execFile5("git", args3, { cwd: dir, timeout: timeoutMs() }, (err2, stdout, stderr2) => {
+    const e = err2;
+    resolve4({ status: !e ? 0 : e.killed ? "timeout" : e.code ?? null, stdout: String(stdout), stderr: String(stderr2) });
+  });
+});
+async function repositoryRoot(dir, git3 = run2) {
+  const where = await git3(dir, ["rev-parse", "--is-bare-repository", "--is-inside-work-tree"]);
+  if (where.status !== 0) return where.status === 128 && /not a git repository/i.test(where.stderr) ? { problem: notRepository(dir) } : { root: dir };
+  const [bare, inside] = where.stdout.trim().split("\n");
+  if (inside !== "true") return { problem: noWorkTree(dir, bare === "true") };
+  const top = await git3(dir, ["rev-parse", "--show-toplevel"]);
+  if (top.status !== 0) return { root: dir };
+  let root = top.stdout.trim() || dir;
+  try {
+    if (fs27.realpathSync(dir) === fs27.realpathSync(root)) root = dir;
+  } catch {
+  }
+  const head = await git3(root, ["symbolic-ref", "-q", "HEAD"]);
+  const ref = head.stdout.trim();
+  if (head.status === 0 && ref && (await git3(root, ["show-ref", "--verify", "--quiet", ref])).status === 1) return { problem: noCommit(root) };
+  return { root };
+}
+async function repositoryProblem(dir) {
+  return (await repositoryRoot(dir)).problem;
+}
+async function joinableRoot(dir) {
+  const r = await repositoryRoot(dir);
+  if (r.problem !== void 0) throw new NotARepository(dir, r.problem);
+  return r.root;
+}
+function sameFolder(a, b) {
+  try {
+    return fs27.realpathSync(a) === fs27.realpathSync(b);
+  } catch {
+    return a === b;
+  }
+}
+
+// packages/room-mcp/src/auto-join.ts
+init_src2();
+var JOIN_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 2e4];
+var JOIN_DEADLINE_MS = 12e4;
+var JOIN_RETRY_AFTER_MS = 3e4;
+function phaseOf(e) {
+  const p = e?.phase;
+  return typeof p === "string" ? p : void 0;
+}
+var causeOf = (e) => `${phaseOf(e) ? `(${phaseOf(e)}): ` : ""}${e instanceof Error ? e.message : String(e)}`;
+var baseRecovery = (e) => e instanceof RoomdError && (/^room base .* is not in this clone/.test(e.message) || /^local HEAD .* has diverged from room base/.test(e.message)) ? " If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create)." : "";
+function retryable(e) {
+  if (e instanceof NoRoom || e instanceof NotLoggedIn) return false;
+  return !(e instanceof RoomdError) || e.code === 1;
+}
+function joinFailureLine(e, local, attempts) {
+  if (e instanceof NotLoggedIn) return "Room is not connected: not logged in; use room_login.";
+  const phase = phaseOf(e);
+  const head = `Room could not join${local ? " the local room" : ""}${attempts > 1 ? ` after ${attempts} attempts` : ""}${phase ? ` (${phase})` : ""}: ${e instanceof Error ? e.message : String(e)}`;
+  return local ? `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1e3} s); room_join to retry now.` : `${head}; use room_join.${baseRecovery(e)}`;
+}
+var AutoJoin = class {
+  constructor(o) {
+    this.o = o;
+    this.delays = o.delaysMs ?? JOIN_DELAYS_MS;
+    this.deadlineMs = o.deadlineMs ?? JOIN_DEADLINE_MS;
+    this.retryAfterMs = o.retryAfterMs ?? JOIN_RETRY_AFTER_MS;
+    this.now = o.now ?? Date.now;
+  }
+  o;
+  inflight = null;
+  cancelled = false;
+  wake = null;
+  endedAt = 0;
+  /** Why the last run failed, while no session is present; undefined after a join. */
+  failure;
+  permanent = false;
+  /** The last run found no repository: the human fixes that, so the next call checks again at once. */
+  recheck = false;
+  target;
+  delays;
+  deadlineMs;
+  retryAfterMs;
+  now;
+  /** Join unless joined, cancelled, or a failed run ended too recently; concurrent callers share one run. */
+  ensure() {
+    if (this.inflight) return this.inflight;
+    if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve();
+    if (this.failure && !this.recheck && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve();
+    this.inflight = this.run().finally(() => {
+      this.inflight = null;
+      this.endedAt = this.now();
+    });
+    return this.inflight;
+  }
+  /** The run in progress, if any. */
+  settle() {
+    return this.inflight ?? Promise.resolve();
+  }
+  /** A human joined s: from now on s's room is the one meant, and a stopped automatic join resumes for it. */
+  retarget(s) {
+    this.target = s;
+    this.cancelled = false;
+    this.permanent = false;
+    this.recheck = false;
+    this.failure = void 0;
+  }
+  /** Stop joining for good: a late session is left, a pending wait ends now. */
+  cancel() {
+    this.cancelled = true;
+    this.wake?.();
+  }
+  async run() {
+    const deadline = this.now() + this.deadlineMs;
+    let last2;
+    let attempts = 0;
+    const hadNoRepository = this.recheck;
+    this.recheck = false;
+    for (; ; ) {
+      attempts++;
+      try {
+        const s = await this.bounded(this.o.attempt(this.target), deadline);
+        if (s === "gave-up") return;
+        if (!s) {
+          this.permanent = true;
+          return;
+        }
+        this.failure = void 0;
+        await this.o.adopt(s);
+        return;
+      } catch (e) {
+        last2 = e;
+        if (this.cancelled) return;
+        if (e instanceof NotARepository) {
+          if (this.failure !== e.message) this.o.log(`not joining: ${e.message}`);
+          this.failure = e.message;
+          this.recheck = true;
+          return;
+        }
+        if (!retryable(e)) {
+          this.permanent = true;
+          break;
+        }
+        const wait = this.delays[Math.min(attempts - 1, this.delays.length - 1)];
+        if (this.now() + wait >= deadline) break;
+        this.o.log(`join attempt ${attempts} failed ${causeOf(e)}; retrying in ${Math.round(wait / 1e3)}s`);
+        await this.sleep(wait);
+        if (this.cancelled) return;
+      }
+    }
+    this.o.log(`join attempt ${attempts} failed ${causeOf(last2)}; giving up for now`);
+    const first = this.failure === void 0 || hadNoRepository;
+    this.failure = joinFailureLine(last2, this.target ? !!this.target.local : this.o.local, attempts);
+    if (first) this.o.report(this.failure);
+  }
+  /** The attempt, unless the deadline or a cancel comes first; a session that arrives later is left. */
+  bounded(attempt, deadline) {
+    return new Promise((resolve4, reject) => {
+      let open3 = true;
+      const timer = setTimeout(() => finish(() => reject(new RoomdError(`did not finish within the ${Math.round(this.deadlineMs / 1e3)}s join deadline`, 1))), Math.max(0, deadline - this.now()));
+      const finish = (f) => {
+        if (!open3) return;
+        open3 = false;
+        clearTimeout(timer);
+        this.wake = null;
+        f();
+      };
+      this.wake = () => finish(() => resolve4("gave-up"));
+      attempt.then(
+        (s) => {
+          if (open3) finish(() => resolve4(this.cancelled && s ? (void this.o.discard(s), "gave-up") : s));
+          else if (s) void this.o.discard(s);
+        },
+        (e) => finish(() => reject(e))
+      );
+    });
+  }
+  sleep(ms) {
+    return new Promise((resolve4) => {
+      const timer = setTimeout(() => {
+        this.wake = null;
+        resolve4();
+      }, ms);
+      this.wake = () => {
+        clearTimeout(timer);
+        this.wake = null;
+        resolve4();
+      };
+    });
+  }
+};
+
+// packages/room-mcp/src/tools/join.ts
 var defs5 = [
   {
     name: "room_login",
@@ -47238,9 +47495,9 @@ function markHistorySeenOnJoin(s, seen) {
 function handlers5(state) {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log: log2, evictStale, loadAreas, shareLine, hasCompany: hasCompany2, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
   async function configureLogin(a) {
-    const config2 = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
+    const config2 = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
     configureCredentials(config2.credentialsPath);
-    ctx.config = { ...config2, ...ctx.config, credentialsPath: config2.credentialsPath };
+    ctx.config = { ...config2, ...ctx.config, credentialsPath: config2.credentialsPath, teamServer: config2.teamServer };
   }
   const handlers10 = {
     async room_login(a) {
@@ -47289,31 +47546,83 @@ function handlers5(state) {
       if (cur && a.create !== true && a.where === void 0 && a.server === void 0 && a.room === void 0 && a.dir === void 0) {
         return currentReply();
       }
-      const dir = typeof a.dir === "string" && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd();
+      const dir = await joinableRoot(typeof a.dir === "string" && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd());
       const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
       const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule };
       const requestedRoom = typeof a.room === "string" ? a.room : resolved.room;
       const targetRoom = choice.server === LOCAL ? requestedRoom !== void 0 ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir) : resolved.room ?? (await deriveRoomName(dir)).roomName;
-      if (cur) {
-        const sameServer = choice.server === LOCAL ? !!cur.local : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf("/"))).server;
-        if (sameServer && targetRoom === cur.roomName && resolve4(dir) === cur.dir) {
-          return currentReply();
-        }
-        const running = runningWorkers(cur);
-        if (running.length) return `error: ${running.length} worker(s) are running in ${cur.roomName}; they would be left behind. Wait for them, room_collect(discard=true) them, or stay in this room.`;
-      }
+      const stay = cur ? cur.local ? ` You're still in this machine's local room (${cur.roomName}), which works for agents on this computer.` : ` You're still in ${cur.roomName}.` : "";
+      if (!targetRoom) return `Team rooms need a shared server and a git origin remote to name the room, and ${dir} has no origin.${stay || ` The local room needs neither: room_join(where="local").`} To use a team room, add an origin (git remote add origin <url>) and say 'join the room' again, or name a room: room_join(where="team", room="<name>").`;
+      const inTarget = async (x) => {
+        if (x.roomName !== targetRoom) return false;
+        if (choice.server !== LOCAL) return !x.local && parseServer(choice.server).server === parseServer(x.roomUrl.slice(0, x.roomUrl.lastIndexOf("/"))).server;
+        if (!x.local) return false;
+        const [a2, b] = await Promise.allSettled([realGitCommonDir(dir), realGitCommonDir(x.dir)]);
+        return a2.status === "fulfilled" && b.status === "fulfilled" && a2.value === b.value;
+      };
+      if (cur && await inTarget(cur) && sameFolder(dir, cur.dir)) return currentReply();
       if (typeof a.name === "string" && a.name.trim() && choice.server !== LOCAL) {
         const server = parseServer(choice.server).server;
         const cfg = await serverAuthConfig(server);
         const login = cfg.mode === "device" ? getCredential(server)?.login : void 0;
         if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`;
       }
+      const message = (e) => e instanceof Error ? e.message : String(e);
+      const refused = (e, where) => {
+        if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.${where}`;
+        if (e instanceof NoRoom) {
+          const repo = e.roomName.startsWith("github.com/") ? e.roomName.split("/").slice(1, 3).join("/") : e.roomName.slice(0, e.roomName.lastIndexOf("/"));
+          return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.${where}`;
+        }
+        const why = `error: ${message(e)}${baseRecovery(e)}`;
+        return where ? `${why}${/[.!?]$/.test(why) ? "" : "."}${where}` : why;
+      };
+      const withWorkers = () => {
+        if (!cur) return void 0;
+        const leads = new Set(rooms.all().map((x) => x.me.name).concat(cur.me.name));
+        const mine = [...new Map(rooms.all().concat(cur).flatMap((x) => [...x.room.workers.values()]).filter((w) => leads.has(w.lead)).map((w) => [w.tag, w])).values()];
+        const starting = rooms.launchingWorkers();
+        if (!mine.length && !starting) return void 0;
+        return `You have ${mine.length + starting} worker(s)${mine.length ? ` (${mine.map((w) => w.tag).join(", ")})` : ""}${starting ? `${mine.length ? ", and one starting" : " starting"}` : ""}. Collect or discard them first (room_collect, or room_collect discard=true), then move rooms.${stay}`;
+      };
+      const refusal = withWorkers();
+      if (refusal) return refusal;
+      if (choice.server !== LOCAL) {
+        try {
+          await (ctx.admit ?? checkTeamAdmission)(choice.server, targetRoom, { token: resolved.token, credentialsPath: resolved.credentialsPath, create: a.create === true, confirm: a.confirm === true });
+        } catch (e) {
+          return refused(e, stay);
+        }
+      }
+      if (toolCallAborted()) return "error: tool call cancelled";
+      const late = withWorkers();
+      if (late) return late;
+      const rollBack = async (reason) => {
+        try {
+          const back = await doJoin({ ...rejoinOptions(cur, resolved.credentialsPath), tag: cur.me.label ?? "" });
+          if (!cur.pinnedRoom) delete back.pinnedRoom;
+          markHistorySeenOnJoin(back, seen);
+          rooms.add(back, "primary");
+          return `couldn't join ${targetRoom} (${reason}); back in ${back.roomName}.`;
+        } catch (e) {
+          return `couldn't join ${targetRoom} (${reason}), and rejoining ${cur.roomName} failed too (${message(e)}); this session is in no room. Say 'join the room' to try again.`;
+        }
+      };
       if (cur) {
-        await closeWorkersRoom();
+        try {
+          await closeWorkersRoom();
+        } catch (e) {
+          return `error: closing the workers room failed (${message(e)}); Room did not move.${stay}`;
+        }
         cleanupMine(cur, "moved to another room");
         rooms.remove(cur);
-        await doLeave(cur);
+        try {
+          await doLeave(cur);
+        } catch (e) {
+          rooms.add(cur, "primary");
+          return `error: leaving ${cur.roomName} failed (${message(e)}); Room did not move.${stay}`;
+        }
       }
       let s;
       try {
@@ -47328,14 +47637,23 @@ function handlers5(state) {
           share: resolved.share
         });
       } catch (e) {
-        if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.`;
-        if (!(e instanceof NoRoom)) throw e;
-        const repo = e.roomName.startsWith("github.com/") ? e.roomName.split("/").slice(1, 3).join("/") : e.roomName.slice(0, e.roomName.lastIndexOf("/"));
-        return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`;
+        if (!cur) return refused(e, "");
+        return rollBack(message(e));
       }
+      if (toolCallAborted() && cur) {
+        try {
+          await doLeave(s);
+        } catch (e) {
+          markHistorySeenOnJoin(s, seen);
+          rooms.add(s, "primary");
+          return `cancelled, but couldn't leave ${s.roomName} (${message(e)}); you're in ${s.roomName}.`;
+        }
+        return rollBack("the request was cancelled");
+      }
+      const remembered = choice.server === LOCAL ? choice.where : parseServer(choice.server).server;
       if (choice.rule === "argument" || choice.rule !== "env" && choice.server === LOCAL && typeof a.room === "string") {
         try {
-          await writeChoice(dir, choice.where, s.me.name, s.shareRequested, choice.server === LOCAL && typeof a.room === "string" ? s.roomName : void 0);
+          await writeChoice(dir, remembered, s.me.name, s.shareRequested, choice.server === LOCAL && typeof a.room === "string" ? s.roomName : void 0);
         } catch {
         }
       }
@@ -47520,7 +47838,7 @@ function createJoin(deps) {
   };
   const cleanupMine = (s, _why, keep) => releaseClaimsOnDone(s, keep);
   const serverOf = (a) => {
-    const r = resolveServer(typeof a.server === "string" && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER);
+    const r = resolveServer(typeof a.server === "string" && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER, ctx.config?.teamServer);
     return r === LOCAL ? LOCAL : parseServer(r).server;
   };
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`;
@@ -47880,7 +48198,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
         waiting.set(x, ends);
       }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
-      const result = await new Promise((resolve5) => {
+      const result = await new Promise((resolve4) => {
         let finished = false;
         let timer;
         const finish = (r) => {
@@ -47894,7 +48212,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
           signal?.removeEventListener("abort", onAbort);
           for (const [x, ends] of waiting) pendingWaits.get(x)?.delete(ends);
           setPresence(s, { status: "idle" });
-          resolve5(r);
+          resolve4(r);
         };
         const onAbort = () => finish("error: tool call cancelled");
         const onRecipient = () => {
@@ -48244,8 +48562,8 @@ function createHandlerState(ctx) {
       });
       if (stops.length) {
         let timer;
-        const completed = await Promise.race([Promise.all(stops).then(() => true), new Promise((resolve5) => {
-          timer = setTimeout(() => resolve5(false), 1800);
+        const completed = await Promise.race([Promise.all(stops).then(() => true), new Promise((resolve4) => {
+          timer = setTimeout(() => resolve4(false), 1800);
           timer.unref();
         })]);
         if (timer) clearTimeout(timer);
@@ -48279,147 +48597,6 @@ function createHandlerState(ctx) {
   return state;
 }
 
-// packages/room-mcp/src/auto-join.ts
-init_src2();
-var JOIN_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 2e4];
-var JOIN_DEADLINE_MS = 12e4;
-var JOIN_RETRY_AFTER_MS = 3e4;
-function phaseOf(e) {
-  const p = e?.phase;
-  return typeof p === "string" ? p : void 0;
-}
-var causeOf = (e) => `${phaseOf(e) ? `(${phaseOf(e)}): ` : ""}${e instanceof Error ? e.message : String(e)}`;
-var baseRecovery = (e) => e instanceof RoomdError && (/^room base .* is not in this clone/.test(e.message) || /^local HEAD .* has diverged from room base/.test(e.message)) ? " If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create)." : "";
-function retryable(e) {
-  if (e instanceof NoRoom || e instanceof NotLoggedIn) return false;
-  return !(e instanceof RoomdError) || e.code === 1;
-}
-function joinFailureLine(e, local, attempts) {
-  if (e instanceof NotLoggedIn) return "Room is not connected: not logged in; use room_login.";
-  const phase = phaseOf(e);
-  const head = `Room could not join${local ? " the local room" : ""}${attempts > 1 ? ` after ${attempts} attempts` : ""}${phase ? ` (${phase})` : ""}: ${e instanceof Error ? e.message : String(e)}`;
-  return local ? `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1e3} s); room_join to retry now.` : `${head}; use room_join.${baseRecovery(e)}`;
-}
-var AutoJoin = class {
-  constructor(o) {
-    this.o = o;
-    this.delays = o.delaysMs ?? JOIN_DELAYS_MS;
-    this.deadlineMs = o.deadlineMs ?? JOIN_DEADLINE_MS;
-    this.retryAfterMs = o.retryAfterMs ?? JOIN_RETRY_AFTER_MS;
-    this.now = o.now ?? Date.now;
-  }
-  o;
-  inflight = null;
-  cancelled = false;
-  wake = null;
-  endedAt = 0;
-  /** Why the last run failed, while no session is present; undefined after a join. */
-  failure;
-  permanent = false;
-  target;
-  delays;
-  deadlineMs;
-  retryAfterMs;
-  now;
-  /** Join unless joined, cancelled, or a failed run ended too recently; concurrent callers share one run. */
-  ensure() {
-    if (this.inflight) return this.inflight;
-    if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve();
-    if (this.failure && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve();
-    this.inflight = this.run().finally(() => {
-      this.inflight = null;
-      this.endedAt = this.now();
-    });
-    return this.inflight;
-  }
-  /** The run in progress, if any. */
-  settle() {
-    return this.inflight ?? Promise.resolve();
-  }
-  /** A human joined s: from now on s's room is the one meant, and a stopped automatic join resumes for it. */
-  retarget(s) {
-    this.target = s;
-    this.cancelled = false;
-    this.permanent = false;
-    this.failure = void 0;
-  }
-  /** Stop joining for good: a late session is left, a pending wait ends now. */
-  cancel() {
-    this.cancelled = true;
-    this.wake?.();
-  }
-  async run() {
-    const deadline = this.now() + this.deadlineMs;
-    let last2;
-    let attempts = 0;
-    for (; ; ) {
-      attempts++;
-      try {
-        const s = await this.bounded(this.o.attempt(this.target), deadline);
-        if (s === "gave-up") return;
-        if (!s) {
-          this.permanent = true;
-          return;
-        }
-        this.failure = void 0;
-        await this.o.adopt(s);
-        return;
-      } catch (e) {
-        last2 = e;
-        if (this.cancelled) return;
-        if (!retryable(e)) {
-          this.permanent = true;
-          break;
-        }
-        const wait = this.delays[Math.min(attempts - 1, this.delays.length - 1)];
-        if (this.now() + wait >= deadline) break;
-        this.o.log(`join attempt ${attempts} failed ${causeOf(e)}; retrying in ${Math.round(wait / 1e3)}s`);
-        await this.sleep(wait);
-        if (this.cancelled) return;
-      }
-    }
-    this.o.log(`join attempt ${attempts} failed ${causeOf(last2)}; giving up for now`);
-    const first = this.failure === void 0;
-    this.failure = joinFailureLine(last2, this.target ? !!this.target.local : this.o.local, attempts);
-    if (first) this.o.report(this.failure);
-  }
-  /** The attempt, unless the deadline or a cancel comes first; a session that arrives later is left. */
-  bounded(attempt, deadline) {
-    return new Promise((resolve5, reject) => {
-      let open3 = true;
-      const timer = setTimeout(() => finish(() => reject(new RoomdError(`did not finish within the ${Math.round(this.deadlineMs / 1e3)}s join deadline`, 1))), Math.max(0, deadline - this.now()));
-      const finish = (f) => {
-        if (!open3) return;
-        open3 = false;
-        clearTimeout(timer);
-        this.wake = null;
-        f();
-      };
-      this.wake = () => finish(() => resolve5("gave-up"));
-      attempt.then(
-        (s) => {
-          if (open3) finish(() => resolve5(this.cancelled && s ? (void this.o.discard(s), "gave-up") : s));
-          else if (s) void this.o.discard(s);
-        },
-        (e) => finish(() => reject(e))
-      );
-    });
-  }
-  sleep(ms) {
-    return new Promise((resolve5) => {
-      const timer = setTimeout(() => {
-        this.wake = null;
-        resolve5();
-      }, ms);
-      this.wake = () => {
-        clearTimeout(timer);
-        this.wake = null;
-        resolve5();
-      };
-    });
-  }
-};
-
 // packages/room-mcp/src/tools/index.ts
 init_hooks_bridge();
 init_company();
@@ -48431,14 +48608,14 @@ init_src();
 init_git();
 init_baseline();
 init_src2();
-import fs29 from "node:fs";
+import fs30 from "node:fs";
 import path27 from "node:path";
 
 // packages/room-mcp/src/tools/combined-tree.ts
 init_git();
 init_src2();
 init_merge();
-import fs27 from "node:fs";
+import fs28 from "node:fs";
 import path25 from "node:path";
 init_baseline();
 init_context();
@@ -48469,8 +48646,8 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     if (worker) previewDirs.add(worker.dir);
   }
   const roots = options.roots ?? new Map([...previewDirs].map((dir) => {
-    if (fs27.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
-    return [path25.resolve(dir), fs27.realpathSync(dir)];
+    if (fs28.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
+    return [path25.resolve(dir), fs28.realpathSync(dir)];
   }));
   const rootOf = (dir) => {
     const root = roots.get(path25.resolve(dir));
@@ -48491,7 +48668,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
       const result = containedRepoPath(root, path25.join(root, p), { leaf: "read-contained-link" });
       if (!result.ok) throw new Error("unsafe preview symlink: " + p);
       const file = result.path;
-      return fs27.readFileSync(file, options.encoding ?? "utf8");
+      return fs28.readFileSync(file, options.encoding ?? "utf8");
     } catch (e) {
       if (e.code === "ENOENT") return null;
       throw e;
@@ -48554,7 +48731,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
         } catch (e) {
           if (e.code !== "ENOENT") throw e;
           try {
-            if (fs27.lstatSync(path25.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
+            if (fs28.lstatSync(path25.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
           } catch {
           }
         }
@@ -48571,7 +48748,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     const dirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir) => !!dir)];
     if (dirs.some((dir) => {
       try {
-        return fs27.lstatSync(path25.join(dir, p)).isDirectory();
+        return fs28.lstatSync(path25.join(dir, p)).isDirectory();
       } catch {
         return false;
       }
@@ -48741,8 +48918,8 @@ init_src();
 init_company();
 init_baseline();
 init_src2();
-import { execFile as execFile5, spawn as spawn3 } from "node:child_process";
-import fs28 from "node:fs";
+import { execFile as execFile6, spawn as spawn3 } from "node:child_process";
+import fs29 from "node:fs";
 import os8 from "node:os";
 import path26 from "node:path";
 import { stripVTControlCharacters as stripVTControlCharacters2 } from "node:util";
@@ -48780,7 +48957,7 @@ function testCommandFor(dir) {
   const files = {};
   for (const file of ["package.json", "pyproject.toml", "uv.lock", "Makefile"]) {
     try {
-      files[file] = fs28.readFileSync(path26.join(dir, file), "utf8");
+      files[file] = fs29.readFileSync(path26.join(dir, file), "utf8");
     } catch {
       files[file] = void 0;
     }
@@ -48793,15 +48970,15 @@ function ownUnpublishedCheckout(s, person) {
 }
 function ownDiskText(dir, rel) {
   if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error("unsafe room path: " + rel);
-  const root = fs28.realpathSync(dir);
+  const root = fs29.realpathSync(dir);
   const candidate = path26.resolve(root, rel);
   if (!isInsideRoot(root, candidate)) throw new Error("unsafe room path: " + rel);
   try {
     const result = containedRepoPath(root, candidate, { leaf: "read-contained-link" });
     if (!result.ok) throw new Error("unsafe room symlink: " + rel);
     const real = result.path;
-    if (!fs28.statSync(real).isFile()) throw new Error("not a file: " + rel);
-    return fs28.readFileSync(real, "utf8");
+    if (!fs29.statSync(real).isFile()) throw new Error("not a file: " + rel);
+    return fs29.readFileSync(real, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw e;
@@ -48916,10 +49093,10 @@ ${text}` : text;
           return missing ? `${person}'s worktree no longer exists; ${held}` : held;
         }
       }
-      const run2 = typeof a.run === "string" && a.run.trim() ? a.run.trim() : "";
-      const noTestsNote = run2 ? "" : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`;
+      const run3 = typeof a.run === "string" && a.run.trim() ? a.run.trim() : "";
+      const noTestsNote = run3 ? "" : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`;
       try {
-        const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...run2 ? { encoding: "latin1" } : { skipCallerOnly: true } });
+        const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...run3 ? { encoding: "latin1" } : { skipCallerOnly: true } });
         const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out: out2 } = result;
         if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, "no mergeable changes", ...result.ignoredNotes].join("\n");
         if (!paths.length && !result.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(", ")}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join("\n");
@@ -48929,9 +49106,9 @@ ${text}` : text;
 ${text}--- end ${p} ---`);
         out2.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ""} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(", ")}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ""}`);
         if (noTestsNote) out2.push(noTestsNote);
-        let ranOk = !run2;
-        if (run2) {
-          if (hardCount) out2.push(`not running "${run2}": ${hardCount} conflict(s) need a human first`);
+        let ranOk = !run3;
+        if (run3) {
+          if (hardCount) out2.push(`not running "${run3}": ${hardCount} conflict(s) need a human first`);
           else {
             const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
               const w = result.diskWorkers.get(person);
@@ -48944,20 +49121,20 @@ ${text}--- end ${p} ---`);
             for (const p of merged.keys()) {
               let leadMode = 420;
               try {
-                const stat4 = fs28.lstatSync(path26.join(caller.dir, p));
+                const stat4 = fs29.lstatSync(path26.join(caller.dir, p));
                 if (stat4.isFile()) leadMode = stat4.mode & 511;
               } catch (e) {
                 if (e.code !== "ENOENT") throw e;
               }
               modes.set(p, mergedFileMode(p, leadMode, modeParticipants));
             }
-            const verdict = await runInMergedTree(caller, ancestor, merged, run2, modes);
+            const verdict = await runInMergedTree(caller, ancestor, merged, run3, modes);
             out2.push(verdict.text);
             ranOk = verdict.passed;
           }
         }
-        caller.lastPreview = { clean: hardCount === 0, ...run2 ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run2 } : {} };
-        if (!hardCount && ranOk) caller.room.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run2 ? `; "${run2}" passed` : ""}`, priority: "fyi" });
+        caller.lastPreview = { clean: hardCount === 0, ...run3 ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run3 } : {} };
+        if (!hardCount && ranOk) caller.room.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run3 ? `; "${run3}" passed` : ""}`, priority: "fyi" });
         return out2.join("\n");
       } catch (error2) {
         const message = error2 instanceof Error ? error2.message : String(error2);
@@ -48971,32 +49148,32 @@ ${text}--- end ${p} ---`);
 }
 function linkSharedDirs(cloneDir, scratchDir) {
   const venv = path26.join(cloneDir, ".venv");
-  if (fs28.existsSync(venv) && !fs28.existsSync(path26.join(scratchDir, ".venv"))) fs28.symlinkSync(venv, path26.join(scratchDir, ".venv"));
+  if (fs29.existsSync(venv) && !fs29.existsSync(path26.join(scratchDir, ".venv"))) fs29.symlinkSync(venv, path26.join(scratchDir, ".venv"));
   const candidates = ["node_modules"];
   for (const top of ["packages", "apps", "libs"]) {
     const d = path26.join(cloneDir, top);
-    if (!fs28.existsSync(d)) continue;
-    for (const e of fs28.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path26.join(top, e.name, "node_modules"));
+    if (!fs29.existsSync(d)) continue;
+    for (const e of fs29.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path26.join(top, e.name, "node_modules"));
   }
   for (const rel of candidates) {
     const src = path26.join(cloneDir, rel), dst = path26.join(scratchDir, rel);
-    if (!fs28.existsSync(src) || fs28.existsSync(dst)) continue;
+    if (!fs29.existsSync(src) || fs29.existsSync(dst)) continue;
     mirrorLinks(cloneDir, scratchDir, src, dst);
   }
 }
 function mirrorLinks(cloneDir, scratchDir, src, dst) {
   ensureMergedDirectory(scratchDir, path26.relative(scratchDir, dst));
-  for (const e of fs28.readdirSync(src, { withFileTypes: true })) {
+  for (const e of fs29.readdirSync(src, { withFileTypes: true })) {
     const from2 = path26.join(src, e.name), to2 = path26.join(dst, e.name);
     if (e.isSymbolicLink()) {
-      const target = path26.resolve(src, fs28.readlinkSync(from2));
+      const target = path26.resolve(src, fs29.readlinkSync(from2));
       const inside = path26.relative(cloneDir, target);
       const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path26.sep).includes("node_modules");
-      fs28.symlinkSync(isWorkspace ? path26.join(scratchDir, inside) : target, to2);
+      fs29.symlinkSync(isWorkspace ? path26.join(scratchDir, inside) : target, to2);
     } else if (e.isDirectory() && e.name.startsWith("@")) {
       mirrorLinks(cloneDir, scratchDir, from2, to2);
     } else {
-      fs28.symlinkSync(from2, to2);
+      fs29.symlinkSync(from2, to2);
     }
   }
 }
@@ -49010,12 +49187,12 @@ function ensureMergedDirectory(root, rel) {
     at = path26.join(at, part);
     let stat4;
     try {
-      stat4 = fs28.lstatSync(at);
+      stat4 = fs29.lstatSync(at);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
     if (stat4?.isSymbolicLink() || stat4 && !stat4.isDirectory()) throw new Error("unsafe merged ancestor: " + rel);
-    if (!stat4) fs28.mkdirSync(at);
+    if (!stat4) fs29.mkdirSync(at);
     if (!containedRepoPath(canonicalRoot, at, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged path escapes scratch tree: " + rel);
   }
   return at;
@@ -49041,7 +49218,7 @@ function mergedFileMode(rel, initialMode, participants) {
     try {
       const root = path26.resolve(participant.dir);
       if (!containedRepoPath(root, path26.join(root, rel), { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("unsafe worker mode path: " + rel);
-      stat4 = fs28.lstatSync(src);
+      stat4 = fs29.lstatSync(src);
     } catch (e) {
       if (e.code === "ENOENT") continue;
       throw e;
@@ -49065,22 +49242,22 @@ function materializeMergedFile(root, rel, bytes, mode2 = 420) {
   const file = path26.join(parent, parts2.at(-1));
   let stat4;
   try {
-    stat4 = fs28.lstatSync(file);
+    stat4 = fs29.lstatSync(file);
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
   }
-  if (stat4?.isSymbolicLink()) fs28.unlinkSync(file);
+  if (stat4?.isSymbolicLink()) fs29.unlinkSync(file);
   else if (stat4 && !stat4.isFile()) throw new Error("merged path is not a regular file: " + rel);
   if (bytes === null) {
-    if (stat4 && !stat4.isSymbolicLink()) fs28.rmSync(file);
+    if (stat4 && !stat4.isSymbolicLink()) fs29.rmSync(file);
     return;
   }
-  const fd = fs28.openSync(file, fs28.constants.O_WRONLY | fs28.constants.O_CREAT | fs28.constants.O_TRUNC | (fs28.constants.O_NOFOLLOW ?? 0), mode2);
+  const fd = fs29.openSync(file, fs29.constants.O_WRONLY | fs29.constants.O_CREAT | fs29.constants.O_TRUNC | (fs29.constants.O_NOFOLLOW ?? 0), mode2);
   try {
-    fs28.writeFileSync(fd, bytes);
-    fs28.fchmodSync(fd, mode2);
+    fs29.writeFileSync(fd, bytes);
+    fs29.fchmodSync(fd, mode2);
   } finally {
-    fs28.closeSync(fd);
+    fs29.closeSync(fd);
   }
 }
 function testVerdict(output, code) {
@@ -49093,18 +49270,18 @@ function testVerdict(output, code) {
   return { passed, text: [...summaries.slice(-5), verdict].join("\n") };
 }
 async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map()) {
-  const dir = fs28.realpathSync(fs28.mkdtempSync(path26.join(os8.tmpdir(), "room-merge-")));
+  const dir = fs29.realpathSync(fs29.mkdtempSync(path26.join(os8.tmpdir(), "room-merge-")));
   try {
     await materializeGitTree(s.dir, ancestor, dir);
     for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, "latin1"), modes.get(rel) ?? 420);
     linkSharedDirs(s.dir, dir);
-    const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs28.existsSync(candidate));
+    const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs29.existsSync(candidate));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ROOM_")));
     env.ROOM_MERGED_TREE = dir;
-    const result = await new Promise((resolve5) => {
-      execFile5(bash ?? "sh", bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
+    const result = await new Promise((resolve4) => {
+      execFile6(bash ?? "sh", bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
         const raw = err2 ? err2.code : 0;
-        resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
+        resolve4({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
       });
     });
     const tail = stripVTControlCharacters2(result.out).trim().split("\n").slice(-25).join("\n");
@@ -49116,14 +49293,14 @@ ${verdict.text}` };
     if (isGitTimeout(e)) throw e;
     return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` };
   } finally {
-    fs28.rmSync(dir, { recursive: true, force: true });
+    fs29.rmSync(dir, { recursive: true, force: true });
   }
 }
 var CLOSED_ARCHIVE_PIPE_ERRORS = /* @__PURE__ */ new Set(["EPIPE", "ENOTCONN", "ECONNRESET"]);
 async function materializeGitTree(cloneDir, ref, destination) {
   if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`);
   await git(cloneDir, ["cat-file", "-e", `${ref}^{commit}`]);
-  await new Promise((resolve5, reject) => {
+  await new Promise((resolve4, reject) => {
     const archive = spawn3("git", ["-C", cloneDir, "archive", "--format=tar", ref], { stdio: ["ignore", "pipe", "pipe"] });
     const extract = spawn3("tar", ["-x", "-C", destination], { stdio: ["pipe", "ignore", "pipe"] });
     let archiveError = "", extractError = "", archiveCode, extractCode;
@@ -49145,7 +49322,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
       if (archiveCode === void 0 || extractCode === void 0) return;
       settled = true;
       clearTimeout(timer);
-      if (archiveCode === 0 && extractCode === 0) resolve5();
+      if (archiveCode === 0 && extractCode === 0) resolve4();
       else reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? "signal"}${archiveError.trim() ? `: ${archiveError.trim()}` : ""}; tar ${extractCode ?? "signal"}${extractError.trim() ? `: ${extractError.trim()}` : ""})`));
     };
     const timeout = wholeTreeTimeoutMs();
@@ -49226,8 +49403,8 @@ function safePath(root, rel) {
 function copyFiles(root, paths) {
   const files = /* @__PURE__ */ new Set();
   const visit = (rel) => {
-    const file = safePath(root, rel), stat4 = fs29.statSync(file);
-    if (stat4.isDirectory()) for (const name2 of fs29.readdirSync(file)) visit(rel + "/" + name2);
+    const file = safePath(root, rel), stat4 = fs30.statSync(file);
+    if (stat4.isDirectory()) for (const name2 of fs30.readdirSync(file)) visit(rel + "/" + name2);
     else if (stat4.isFile()) files.add(rel);
     else throw new Error("not a regular file: " + rel);
   };
@@ -49237,7 +49414,7 @@ function copyFiles(root, paths) {
 async function assertNoOperation(dir) {
   for (const name2 of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"]) {
     const file = (await git(dir, ["rev-parse", "--git-path", name2])).trim();
-    if (fs29.existsSync(path27.resolve(dir, file))) throw new Error("finish the existing Git operation in " + dir + " before collecting");
+    if (fs30.existsSync(path27.resolve(dir, file))) throw new Error("finish the existing Git operation in " + dir + " before collecting");
   }
 }
 function handlers9(state) {
@@ -49437,7 +49614,7 @@ repeat with force=true to delete them`;
     }
     const out2 = [];
     const selected = [];
-    const leadRoot = fs29.realpathSync(lead.dir);
+    const leadRoot = fs30.realpathSync(lead.dir);
     const workerRoots = /* @__PURE__ */ new Map();
     const lock = "collect:" + leadRoot;
     if (!rooms.reserve(lock)) return "error: another collection is in progress";
@@ -49476,7 +49653,7 @@ repeat with force=true to delete them`;
             out2.push(`${a.tag ? "nothing to collect" : "skipped " + w.tag}: worktree ${w.dir} is gone`);
             continue;
           }
-          const workerRoot = fs29.realpathSync(w.dir);
+          const workerRoot = fs30.realpathSync(w.dir);
           if (workerRoot === leadRoot) throw new Error("worker must have a separate worktree");
           await assertNoOperation(w.dir);
           if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error("worker is not a worktree of this repository");
@@ -49487,7 +49664,7 @@ repeat with force=true to delete them`;
           if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
           out2.push(...cleanupErrors.map((error2) => `${w.tag}: ${error2}`));
           const now = state.now ?? Date.now;
-          const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
+          const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)));
           const deadline = now() + 15e3;
           while (state.workerAlive(s, w) && now() < deadline) await sleep2(Math.min(250, deadline - now()));
           if (state.workerAlive(s, w)) {
@@ -49529,17 +49706,17 @@ repeat with force=true to delete them`;
         const tracked = new Set(split(await gitWholeTree(lead.dir, ["ls-files", "-z"])));
         for (const p of files) {
           const dst = safePath(leadRoot, p);
-          if (fs29.existsSync(dst) && !fs29.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
-          if (a.force !== true && (modified.has(p) || !tracked.has(p) && fs29.existsSync(dst))) {
-            if (!fs29.existsSync(dst) || !fs29.readFileSync(dst).equals(fs29.readFileSync(safePath(workerRoot, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
+          if (fs30.existsSync(dst) && !fs30.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
+          if (a.force !== true && (modified.has(p) || !tracked.has(p) && fs30.existsSync(dst))) {
+            if (!fs30.existsSync(dst) || !fs30.readFileSync(dst).equals(fs30.readFileSync(safePath(workerRoot, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
           }
         }
         releasePaths(files);
         for (const p of files) {
           const dst = safePath(leadRoot, p);
-          fs29.mkdirSync(path27.dirname(dst), { recursive: true });
-          fs29.copyFileSync(safePath(workerRoot, p), dst);
-          fs29.chmodSync(dst, fs29.statSync(safePath(workerRoot, p)).mode & 511);
+          fs30.mkdirSync(path27.dirname(dst), { recursive: true });
+          fs30.copyFileSync(safePath(workerRoot, p), dst);
+          fs30.chmodSync(dst, fs30.statSync(safePath(workerRoot, p)).mode & 511);
           out2.push("copied " + p);
         }
         if (!files.length) out2.push("nothing copied (empty directories)");
@@ -49574,9 +49751,9 @@ repeat with force=true to delete them`;
       }
       for (const [p, text] of result.merged) {
         const file = safePath(leadRoot, p);
-        const before = fs29.existsSync(file) ? fs29.readFileSync(file) : null;
+        const before = fs30.existsSync(file) ? fs30.readFileSync(file) : null;
         if ((before === null ? null : before.toString("latin1")) !== result.initial.get(p)) throw new Error(p + " changed during collection; nothing written, retry");
-        const oldMode = before !== null ? fs29.statSync(file).mode & 511 : 420;
+        const oldMode = before !== null ? fs30.statSync(file).mode & 511 : 420;
         const mode2 = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: workerRoots.get(w), baseModes: baseModes.get(w.name), ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) })));
         const after = text === null ? null : Buffer.from(text, "latin1");
         if (before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode2 === oldMode || before === null && after === null) continue;
@@ -49666,11 +49843,11 @@ repeat with force=true to delete them`;
     }
   };
   return { room_collect: async (a) => {
-    const key = fs29.realpathSync(state.S().dir);
+    const key = fs30.realpathSync(state.S().dir);
     const prior = collectQueues.get(key);
     let release;
-    const tail = new Promise((resolve5) => {
-      release = resolve5;
+    const tail = new Promise((resolve4) => {
+      release = resolve4;
     });
     const entry = { tail, tag: typeof a.tag === "string" ? a.tag : "collect-all" };
     collectQueues.set(key, entry);
@@ -49689,6 +49866,7 @@ ${result}` : result;
 // packages/room-mcp/src/tools/index.ts
 init_src();
 var CHOOSES_ROOM = /* @__PURE__ */ new Set(["room_join", "room_create", "room_leave", "room_close"]);
+var WORKER_OPS = /* @__PURE__ */ new Set(["room_spawn", "room_send", "room_collect"]);
 var ALL_DEFS = [...defs5, ...defs4, ...defs8, ...defs, ...defs7, ...defs3, ...defs9, ...defs6, ...defs2];
 var DEF_ORDER = ["room_login", "room_create", "room_join", "room_leave", "room_close", "room_export", "room_scope", "room_state", "room_read", "room_claim", "room_release", "room_send", "room_wait", "room_done", "room_pr_note", "room_impact", "room_preview_merge", "room_share", "room_spawn", "room_collect"];
 var DEFS = DEF_ORDER.map((name2) => ALL_DEFS.find((d) => d.name === name2));
@@ -49697,6 +49875,20 @@ function createTools(ctx) {
   const initial = ctx.getSession();
   if (initial) trackConnection(initial, state.now);
   let autoJoin;
+  let moves = Promise.resolve();
+  let pendingMoves = 0;
+  const workerOps = /* @__PURE__ */ new Set();
+  const untilAborted = (signal) => {
+    let onAbort;
+    const aborted2 = new Promise((r) => {
+      onAbort = () => r(true);
+      if (signal?.aborted) r(true);
+      else signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    return { aborted: aborted2, done: () => {
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    } };
+  };
   const notJoined = () => autoJoin?.failure ? `error: not in a room. ${autoJoin.failure}` : ctx.config?.server === LOCAL ? "error: not in the local room; room_join to join it." : "error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.";
   const handlers10 = Object.assign({}, handlers5(state), handlers4(state), handlers8(state), handlers(state), handlers7(state), handlers3(state), handlers9(state), handlers6(state), handlers2(state));
   return {
@@ -49711,56 +49903,100 @@ function createTools(ctx) {
     shutdown: state.shutdown,
     flushConflicts: state.flushConflicts,
     async call(name2, args3, signal) {
-      return withToolSignal(signal, async () => {
-        if (toolCallAborted()) return "error: tool call cancelled";
-        const h = handlers10[name2];
-        if (!h) return `error: unknown tool ${name2}`;
-        if (autoJoin && CHOOSES_ROOM.has(name2)) {
-          await autoJoin.settle();
-          autoJoin.cancel();
-        } else if (autoJoin) await autoJoin.ensure();
-        if (toolCallAborted()) return "error: tool call cancelled";
-        const current = ctx.getSession();
-        current?.daemon.touch();
-        const closed = current?.closed;
-        const offlineTool = name2 === "room_state" || name2 === "room_send" || name2 === "room_wait" || name2 === "room_collect";
-        if (closed && name2 !== "room_leave" && !offlineTool) {
-          const rn = current.roomName;
-          return `error: the room for ${rn.slice(0, rn.lastIndexOf("/"))} was closed (${closed.reason}); room_leave, then room_create to reopen`;
+      let release;
+      if (CHOOSES_ROOM.has(name2)) {
+        pendingMoves++;
+        const previous = moves;
+        const mine = new Promise((r) => {
+          release = () => {
+            pendingMoves--;
+            r();
+          };
+        });
+        moves = previous.then(() => mine);
+        const wait = untilAborted(signal);
+        const cancelled = await Promise.race([previous.then(async () => {
+          while (workerOps.size) await Promise.all([...workerOps]);
+        }).then(() => false), wait.aborted]);
+        wait.done();
+        if (cancelled) {
+          release();
+          return "error: tool call cancelled";
         }
-        const moved = await state.followBranch();
-        if (toolCallAborted()) return "error: tool call cancelled";
-        const s = ctx.getSession();
-        s?.refreshRuntime?.();
-        if (s && !s.provider.synced && name2 !== "room_leave" && !(offlineTool && (s.closed || connectedBefore(s)))) return "error: room not synced yet, retry";
-        if (s) {
-          trackConnection(s, state.now);
-          state.rooms.track(s);
+      } else if (WORKER_OPS.has(name2)) {
+        const wait = untilAborted(signal);
+        while (pendingMoves) {
+          if (await Promise.race([moves.then(() => false), wait.aborted])) {
+            wait.done();
+            return "error: tool call cancelled";
+          }
         }
-        try {
-          const body2 = await h(name2 === "room_wait" ? { ...args3 ?? {}, [WAIT_SIGNAL]: signal } : args3 ?? {});
-          if (toolCallAborted() && name2 !== "room_send" && name2 !== "room_spawn") return "error: tool call cancelled";
-          if (name2 === "room_preview_merge" || name2.startsWith("room_pr_")) await state.rooms.retireWorkers();
-          const s2 = ctx.getSession();
-          if (s2 && s2 !== s) s2.refreshRuntime?.();
-          if (s2 && autoJoin && (name2 === "room_join" || name2 === "room_create")) autoJoin.retarget(s2);
-          const prefix = moved ? `${moved}
+        wait.done();
+        const done = new Promise((r) => {
+          release = r;
+        });
+        workerOps.add(done);
+        void done.then(() => workerOps.delete(done));
+      }
+      try {
+        return await withToolSignal(signal, async () => {
+          if (toolCallAborted()) return "error: tool call cancelled";
+          const h = handlers10[name2];
+          if (!h) return `error: unknown tool ${name2}`;
+          const joinDir = CHOOSES_ROOM.has(name2) && typeof args3?.dir === "string" && args3.dir ? args3.dir : void 0;
+          if (name2 !== "room_login" && (joinDir || !ctx.getSession())) {
+            const problem = await repositoryProblem(joinDir ?? ctx.cwd ?? process.cwd());
+            if (problem) return problem;
+          }
+          if (autoJoin && CHOOSES_ROOM.has(name2)) {
+            await autoJoin.settle();
+            autoJoin.cancel();
+          } else if (autoJoin) await autoJoin.ensure();
+          if (toolCallAborted()) return "error: tool call cancelled";
+          const current = ctx.getSession();
+          current?.daemon.touch();
+          const closed = current?.closed;
+          const offlineTool = name2 === "room_state" || name2 === "room_send" || name2 === "room_wait" || name2 === "room_collect";
+          if (closed && name2 !== "room_leave" && !offlineTool) {
+            const rn = current.roomName;
+            return `error: the room for ${rn.slice(0, rn.lastIndexOf("/"))} was closed (${closed.reason}); room_leave, then room_create to reopen`;
+          }
+          const moved = await state.followBranch();
+          if (toolCallAborted()) return "error: tool call cancelled";
+          const s = ctx.getSession();
+          s?.refreshRuntime?.();
+          if (s && !s.provider.synced && name2 !== "room_leave" && !(offlineTool && (s.closed || connectedBefore(s)))) return "error: room not synced yet, retry";
+          if (s) {
+            trackConnection(s, state.now);
+            state.rooms.track(s);
+          }
+          try {
+            const body2 = await h(name2 === "room_wait" ? { ...args3 ?? {}, [WAIT_SIGNAL]: signal } : args3 ?? {});
+            if (toolCallAborted() && name2 !== "room_send" && name2 !== "room_spawn") return "error: tool call cancelled";
+            if (name2 === "room_preview_merge" || name2.startsWith("room_pr_")) await state.rooms.retireWorkers();
+            const s2 = ctx.getSession();
+            if (s2 && s2 !== s) s2.refreshRuntime?.();
+            if (s2 && autoJoin && (name2 === "room_join" || name2 === "room_create")) autoJoin.retarget(s2);
+            const prefix = moved ? `${moved}
 
 ` : "";
-          const unread = s2 && name2 !== "room_join" && name2 !== "room_create" ? state.inbox(s2) : "";
-          const sharing = s2 ? await teamSharingNote(s2) : "";
-          const health2 = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name2, !s2.local) : "";
-          const autoTag = s2?.autoTagNote;
-          if (s2) delete s2.autoTagNote;
-          return prefix + (sharing ? sharing + "\n\n" : "") + (health2 ? health2 + "\n\n" : "") + (autoTag ? autoTag + "\n\n" : "") + (unread ? unread + body2 : body2);
-        } catch (e) {
-          if (toolCallAborted()) return "error: tool call cancelled";
-          if (e instanceof NotJoined) return notJoined();
-          if (e instanceof NotLoggedIn) return `error: ${e.message}`;
-          if (e instanceof NeedFetch) return e.lead ? `error: ${e.person}'s base ${e.sha.slice(0, 10)} is ${e.lead}'s carried uncommitted work, which exists only on ${e.lead}'s machine; ${e.person}'s unchanged files cannot be read here, their changed files can` : `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry; if it is still missing, ${e.person} has not pushed it yet`;
-          return `error: ${e instanceof Error ? e.message : String(e)}${baseRecovery(e)}`;
-        }
-      });
+            const unread = s2 && name2 !== "room_join" && name2 !== "room_create" ? state.inbox(s2) : "";
+            const sharing = s2 ? await teamSharingNote(s2) : "";
+            const health2 = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name2, !s2.local) : "";
+            const autoTag = s2?.autoTagNote;
+            if (s2) delete s2.autoTagNote;
+            return prefix + (sharing ? sharing + "\n\n" : "") + (health2 ? health2 + "\n\n" : "") + (autoTag ? autoTag + "\n\n" : "") + (unread ? unread + body2 : body2);
+          } catch (e) {
+            if (toolCallAborted()) return "error: tool call cancelled";
+            if (e instanceof NotJoined) return notJoined();
+            if (e instanceof NotLoggedIn) return `error: ${e.message}`;
+            if (e instanceof NeedFetch) return e.lead ? `error: ${e.person}'s base ${e.sha.slice(0, 10)} is ${e.lead}'s carried uncommitted work, which exists only on ${e.lead}'s machine; ${e.person}'s unchanged files cannot be read here, their changed files can` : `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry; if it is still missing, ${e.person} has not pushed it yet`;
+            return `error: ${e instanceof Error ? e.message : String(e)}${baseRecovery(e)}`;
+          }
+        });
+      } finally {
+        release?.();
+      }
     }
   };
 }
@@ -49822,11 +50058,22 @@ init_wake_path();
 
 // packages/room-mcp/src/workspace.ts
 init_src2();
-import fs30 from "node:fs";
+import fs31 from "node:fs";
 import { execFileSync as execFileSync6 } from "node:child_process";
+var samePlace = (a, b) => {
+  try {
+    return fs31.realpathSync(a) === fs31.realpathSync(b);
+  } catch {
+    return false;
+  }
+};
 function fallbackWorkspace(env, processDir) {
   const value2 = (key) => env[key]?.trim() || void 0;
-  return value2("ROOM_DIR") ?? value2("PWD") ?? value2("INIT_CWD") ?? processDir;
+  const explicit = value2("ROOM_DIR");
+  if (explicit) return explicit;
+  if (env.ROOM_HOST === "codex") return value2("PWD") ?? value2("INIT_CWD") ?? processDir;
+  const pwd = value2("PWD");
+  return pwd && samePlace(pwd, processDir) ? pwd : processDir;
 }
 var parentCommand = () => execFileSync6("ps", ["-o", "command=", "-p", String(process.ppid)], {
   encoding: "utf8",
@@ -49858,23 +50105,26 @@ function codexWorkspace(params2, rootOf = worktreeRoot) {
   const workspaces = turn.workspaces;
   if (!workspaces || typeof workspaces !== "object" || Array.isArray(workspaces)) return void 0;
   const roots = /* @__PURE__ */ new Set();
+  const plain = /* @__PURE__ */ new Set();
   for (const key of Object.keys(workspaces)) {
     try {
-      const real = fs30.realpathSync(key);
+      const real = fs31.realpathSync(key);
       const root = rootOf(real);
-      if (root) roots.add(fs30.realpathSync(root));
+      if (root) roots.add(fs31.realpathSync(root));
+      else if (fs31.statSync(real).isDirectory()) plain.add(real);
     } catch {
     }
   }
-  return roots.size === 1 ? roots.values().next().value : void 0;
+  const only = roots.size ? roots : plain;
+  return only.size === 1 ? only.values().next().value : void 0;
 }
 async function sameWorkspace(a, b) {
   try {
-    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map((dir) => fs30.realpathSync(dir));
+    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map((dir) => fs31.realpathSync(dir));
     if (rootA !== rootB) return false;
     const [gitA, gitB] = await Promise.allSettled([gitCommonDir(a), gitCommonDir(b)]);
     if (gitA.status === "rejected" || gitB.status === "rejected") return gitA.status === gitB.status;
-    return fs30.realpathSync(gitA.value) === fs30.realpathSync(gitB.value);
+    return fs31.realpathSync(gitA.value) === fs31.realpathSync(gitB.value);
   } catch {
     return false;
   }
@@ -49952,7 +50202,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.34",
+  version: "0.16.35",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
@@ -49989,10 +50239,10 @@ var ROOM_LOG_MAX_BYTES = 1024 * 1024;
 function appendRoomLog(file, line, maxBytes = ROOM_LOG_MAX_BYTES) {
   try {
     try {
-      if (fs31.statSync(file).size >= maxBytes) fs31.renameSync(file, `${file}.1`);
+      if (fs32.statSync(file).size >= maxBytes) fs32.renameSync(file, `${file}.1`);
     } catch {
     }
-    fs31.appendFileSync(file, `${line}
+    fs32.appendFileSync(file, `${line}
 `, { mode: 384 });
   } catch {
   }
@@ -50001,14 +50251,14 @@ var LOG_FILE = process.env.ROOM_LOG_FILE;
 var ROOM_LOG_FILE;
 var log = (s) => {
   try {
-    fs31.writeSync(2, `room-mcp: ${s}
+    fs32.writeSync(2, `room-mcp: ${s}
 `);
   } catch {
   }
   const at = (/* @__PURE__ */ new Date()).toISOString();
   if (LOG_FILE) {
     try {
-      fs31.appendFileSync(LOG_FILE, `${at} ${s}
+      fs32.appendFileSync(LOG_FILE, `${at} ${s}
 `);
     } catch {
     }
@@ -50018,7 +50268,7 @@ var log = (s) => {
 function createBundleUpdateNotice(file) {
   let startupMtime;
   try {
-    startupMtime = fs31.statSync(file).mtimeMs;
+    startupMtime = fs32.statSync(file).mtimeMs;
   } catch {
     return () => "";
   }
@@ -50026,7 +50276,7 @@ function createBundleUpdateNotice(file) {
   return () => {
     if (warned2) return "";
     try {
-      if (fs31.statSync(file).mtimeMs <= startupMtime) return "";
+      if (fs32.statSync(file).mtimeMs <= startupMtime) return "";
     } catch {
       return "";
     }
@@ -50110,7 +50360,6 @@ async function main() {
         });
         log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
       };
-      const prior = findRoomFile(dir);
       const chosen = startup.server;
       log(`room: ${startup.where.replace(/\?.*$/, "")} (${startup.whereRule === "env" ? startup.whereEnv ?? "ROOM_SERVER" : startup.whereRule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
       const autoJoin = new AutoJoin({
@@ -50123,14 +50372,8 @@ async function main() {
             if (!target.pinnedRoom) delete s.pinnedRoom;
             return s;
           }
-          if (chosen === LOCAL) return joinSession({ dir, room: startup.room, server: LOCAL, log });
-          if (startup.room) return joinSession({ dir, room: startup.room, server: chosen, log });
-          const derived = await deriveRoomName(dir).catch(() => ({ roomName: void 0 }));
-          if (derived.roomName) return joinSession({ dir, server: chosen, log });
-          if (prior) {
-            const u = new URL(prior.room);
-            return joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, "")), server: chosen, log });
-          }
+          const options = await startupJoinOptions(await joinableRoot(dir), chosen, startup.room);
+          if (options) return joinSession({ ...options, log });
           log(`ready; ${dir} has no git origin \u2014 call room_join with a room name`);
           return void 0;
         },
