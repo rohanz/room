@@ -155,8 +155,9 @@ it.each(['answered', 'new question'] as const)('posts an inferred answer after w
     branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
   main.room.setWorker(worker, ignore)
   const question = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
-  const resume = vi.spyOn(rooms, 'resumeWorker').mockImplementation(async (_session, _worker, prompt) => {
+  const resume = vi.spyOn(rooms, 'resumeWorker').mockImplementation(async (_session, _worker, prompt, _spawner, _channel, _max, _log, _at, _wait, beforeLaunch) => {
     expect(prompt).toBe('price_cents')
+    expect(await beforeLaunch?.()).toBeUndefined()
     if (change === 'answered') hubAppend(main.room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: question.id, text: 'Already answered' })
     else hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Another field?' })
     return 'resumed money'
