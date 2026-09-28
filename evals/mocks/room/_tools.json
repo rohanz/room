@@ -435,7 +435,7 @@
           },
           "inReplyTo": {
             "type": "string",
-            "description": "question id (answer)"
+            "description": "question id (answer) or addressed note id (note reply)"
           },
           "priority": {
             "type": "string",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { pidIsOurWorker } from '../src/worker-process.js'
-import { RoomDoc, workerLine, type Worker } from '@room/shared'
+import { RoomDoc, messageForMe, workerLine, type Worker } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import * as Y from 'yjs'
@@ -39,6 +39,33 @@ describe('worker to worker answers', () => {
       const answered = await tb.call('room_send', { type: 'answer', inReplyTo: questionId, text: 'price_cents' }) as string
       expect(answered).toContain('price_cents')
       expect(await ta.call('room_wait', { questionId, timeoutMs: 10 })).toContain('answered:')
+    } finally { await ta.shutdown(); await tb.shutdown() }
+  })
+})
+
+describe('replies to addressed notes', () => {
+  it('delivers a threaded note to its author without answering an open question', async () => {
+    const room = new RoomDoc(new Y.Doc())
+    const mk = (name: string): Session => {
+      const me = { name, kind: 'agent' as const, owner: 'rohanz' }
+      const awareness = new Awareness(room.doc)
+      awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
+      return { me, room, awareness, dir: process.cwd(), roomName: 'local/x/main', roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', browserUrl: 'http://x', provider: { synced: true, awareness }, daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full' } as unknown as Session
+    }
+    const a = mk('rohanz+a'), b = mk('rohanz+b')
+    const ta = createTools({ getSession: () => a, setSession: () => {}, cwd: process.cwd() })
+    const tb = createTools({ getSession: () => b, setSession: () => {}, cwd: process.cwd() })
+    try {
+      const note = room.post(a.me, { type: 'note', to: b.me.name, text: 'Please inspect this.' })
+      const question = room.post(a.me, { type: 'question', to: b.me.name, text: 'Ready?' })
+      const sent = await tb.call('room_send', { type: 'answer', inReplyTo: note.id, text: 'I saw it.' }) as string
+      expect(sent).toContain('I saw it.')
+      const reply = room.messages().find(m => m.type === 'note' && m.inReplyTo === note.id)
+      expect(reply).toMatchObject({ type: 'note', to: a.me.name, from: b.me.name, inReplyTo: note.id })
+      expect(reply && messageForMe(a.me, reply)).toBe(true)
+      expect(room.messages().some(m => m.type === 'answer' && m.inReplyTo === question.id)).toBe(false)
+      expect(await tb.call('room_send', { type: 'answer', inReplyTo: question.id, text: 'Yes' })).toContain('Yes')
+      expect(await ta.call('room_wait', { questionId: question.id, timeoutMs: 10 })).toContain('answered:')
     } finally { await ta.shutdown(); await tb.shutdown() }
   })
 })

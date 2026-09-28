@@ -94,7 +94,7 @@ export interface ConflictMsg extends MsgBase { type: 'conflict'; claimId: string
 /** An observed foreign contract edit that a file in the recipient's work references. */
 export interface MergeConflictMsg extends MsgBase { type: 'merge-conflict'; path: string; text: string }
 export interface ContractMsg extends MsgBase { type: 'contract'; path: string; symbol: string; text: string }
-export interface NoteMsg extends MsgBase { type: 'note'; text: string }
+export interface NoteMsg extends MsgBase { type: 'note'; text: string; inReplyTo?: string }
 export interface ScopeMsg extends MsgBase { type: 'scope'; area: string; summary: string; paths: string[] }
 /** The room's base commit moved forward (someone committed/pulled a descendant). */
 export interface BaseMsg extends MsgBase { type: 'base'; base: string; prev: string; commits: number; paths: string[]; summary: string }

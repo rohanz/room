@@ -29,7 +29,7 @@ export const defs: ToolDef[] = [
       message: str('alias for text'),
       paths: strs('paths touched (changed)'),
       symbols: strs('changed symbols'),
-      inReplyTo: str('question id (answer)'),
+      inReplyTo: str('question id (answer) or addressed note id (note reply)'),
       priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'urgency override' },
     }, required: ['type'] } },
   { name: 'room_wait', annotations: RO, description: 'Wait for an answer, claim release, worker completion or interrupt; returns the event or timeout. Loop short waits until the answer or completion arrives.',
@@ -85,8 +85,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const lead = S()
       let byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
       let question = byQuestion?.room.messages().find(m => m.id === a.inReplyTo && m.type === 'question')
+      const repliedNote = (a.type === 'note' || a.type === 'answer') ? byQuestion?.room.messages().find(m => m.id === a.inReplyTo && m.type === 'note') : undefined
+      const sendType = repliedNote ? 'note' : a.type
       // An explicit recipient must match the asker; without one, infer it from the question.
-      const requestedTo = typeof a.to === 'string' && a.to ? a.to : a.type === 'answer' ? question?.from : undefined
+      const requestedTo = typeof a.to === 'string' && a.to ? a.to : sendType === 'answer' ? question?.from : repliedNote?.from
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
       const wsr = rooms.workers()
       const workerMatches = requestedTo ? rooms.all().flatMap(room => myWorkers(room)
@@ -112,7 +114,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ambiguousAnswer = (candidates: ReturnType<typeof unansweredQuestions>, from?: string) => candidates.length
         ? `error: answer requires inReplyTo; unanswered questions:\n${candidates.map(({ question }) => `${question.id}: ${questionPreview(question.text)}`).join('\n')}`
         : `error: answer requires inReplyTo; no unanswered question${from ? ` from ${from}` : ''} addressed to you`
-      if (a.type === 'answer') {
+      if (sendType === 'answer') {
         const open = unansweredQuestions()
         const candidates = to ? open.filter(({ question }) => question.from === to) : open
         if (a.inReplyTo) {
@@ -142,12 +144,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const valid = [...new Set(rooms.all().flatMap(room => [...knownNames(room)]))].sort()
         return `error: nobody called ${to} is or was in this room; participants: ${valid.join(', ')}`
       }
+      if (sendType === 'note' && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`
+      if (repliedNote && a.to && a.to !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`
       if (to && !s.room.workerOf(to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
       if (a.type === 'changed' && (!Array.isArray(a.paths) || !a.paths.some((x: unknown) => typeof x === 'string'))) return 'error: changed requires paths'
       if (a.type === 'question' && !to) return 'error: question requires to (whose agent)'
-      if (a.type === 'answer' && !question?.from && !to) return 'error: answer requires to (could not infer from inReplyTo)'
+      if (sendType === 'answer' && !question?.from && !to) return 'error: answer requires to (could not infer from inReplyTo)'
       if (!['changed', 'question', 'answer', 'note'].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       let msg!: Msg
       const notes: string[] = []
@@ -164,7 +168,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // Publish the timeline entry and its prompt-delivery receipt together. Bus
       // observers must never see a resumed follow-up as unread by the worker.
       s.room.doc.transact(() => {
-        switch (a.type) {
+        switch (sendType) {
           case 'changed': {
             paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
             symbols = Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
@@ -179,7 +183,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             break
           }
           case 'note':
-            msg = s.room.post<NoteMsg>(s.me, withPr({ type: 'note', text, ...(to ? { to } : {}) }))
+            msg = s.room.post<NoteMsg>(s.me, withPr({ type: 'note', text, ...(to ? { to } : {}), ...(repliedNote ? { inReplyTo: repliedNote.id } : {}) }))
             break
         }
         if (deliveredInPrompt) s.room.markSeen(to!, [msg.id])
