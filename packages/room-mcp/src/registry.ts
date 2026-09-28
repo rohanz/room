@@ -277,7 +277,7 @@ export class Rooms {
   async resumeWorker(s: Session, w: Worker, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000): Promise<string | DeliveredResume> {
     if (toolCallAborted()) return 'error: tool call cancelled'
     const registry = await registryForDir(s.dir)
-    const known = registry.list().find(record => record.tag === w.tag && record.lead.participant === s.me.name)
+    const known = registry.reserved(w.tag)
     if (known && ['retiring', 'retired'].includes(known.phase)) return `error: ${w.tag} was collected or discarded; it cannot resume`
     if (known && !fs.existsSync(known.dir)) return `error: cannot resume ${w.tag}: its worktree no longer exists`
     const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
@@ -331,7 +331,13 @@ export class Rooms {
       const launchError = error instanceof WorkerLaunchError ? error : new WorkerLaunchError('start', String(error))
       if (!launchError.delivered) await registry.update(record.id, old => ({ ...old, phase: 'active',
         runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: launchError.message } }], seq: old.seq + 1 }))
-      else await registry.beginStop(record.id, launchError.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed')
+      else {
+        if (!registry.read(record.id)?.runs.at(-1)?.launch) await registry.update(record.id, old => ({ ...old,
+          phase: 'active', runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'ambiguous', at: at() } }],
+          seq: old.seq + 1 })).catch(writeError => log(`worker resume outcome: ${writeError}`))
+        await registry.beginStop(record.id, launchError.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed')
+          .catch(writeError => log(`worker resume stop record: ${writeError}`))
+      }
       return launchError.delivered
         ? { delivered: true, reply: launchError.stopped ? `stopped after receiving your message: ${launchError.message}` : `could not stop ${record.tag}; left running` }
         : `error: could not resume ${record.tag}: ${launchError.message}`

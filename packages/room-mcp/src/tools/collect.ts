@@ -73,17 +73,17 @@ async function assertNoOperation(dir: string): Promise<void> {
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const missingCapability = (s: Session, w: Worker): string => {
-    const records = registrySnapshotForDir(s.dir).list()
-    const record = records.find(candidate => candidate.tag === w.tag)
+    const registry = registrySnapshotForDir(s.dir)
+    const record = registry.reserved(w.tag)
     if (record && record.lead.participant !== s.me.name) {
-      const parent = records.find(candidate => candidate.name === record.lead.participant)
+      const parent = registry.reservedByTagOrName(record.lead.participant)
       return `${w.tag} belongs to ${record.lead.participant}; collect it through that lead (resume it if needed), or room_collect tag=${parent?.tag ?? 'PARENT'} discard=true force=true to save recovery patches`
     }
     return `${w.tag}: no local worker capability (worktree missing or unmanaged)`
   }
   const holdingWorker = (tag: string, from: Session): Session => {
-    const records = registrySnapshotForDir(from.dir).list().filter(record => record.tag === tag)
-    return state.rooms.all().find(room => records.some(record => record.room === room.roomName)) ?? from
+    const record = registrySnapshotForDir(from.dir).reserved(tag)
+    return state.rooms.all().find(room => record?.room === room.roomName) ?? from
   }
   const unverifiedLive = async (s: Session, w: Worker): Promise<string | undefined> => {
     if (!pidPresent(w.pid, state.ctx?.probe)) return undefined
@@ -198,7 +198,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const childLead = { ...s, dir: w.dir, me: { ...s.me, name: w.name } } as Session
           const result = await roomCollect({ tag: child.tag, discard: true, force: true }, new Set([...discarding, w.name]), childLead)
           childResults.push(result)
-          if (!result.startsWith('discarded ') && !result.startsWith('stopped ')) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
+          if (!result.startsWith('discarded ') && !result.startsWith('stopped ')) {
+            await registry.interruptDiscard(lock, `could not dispose of nested worker ${child.tag}: ${result}`)
+            return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
+          }
         }
         await registry.markDiscardStep(lock, 'children')
         // A headless host can take its child server down as it exits. Record and stop
@@ -209,7 +212,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses)
         if (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe)) {
           const how = await state.dismissWorker(s, w, 'discarded by the lead')
-          if (s.room.workers.get(w.tag)?.status === 'running' && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) return 'could not discard ' + w.tag + ': ' + how + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
+          if (s.room.workers.get(w.tag)?.status === 'running' && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) {
+            await registry.interruptDiscard(lock, `could not discard ${w.tag}: ${how}`)
+            return 'could not discard ' + w.tag + ': ' + how + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
+          }
           if (how.includes('cwd process cleanup failed:')) cleanupErrors.push(how)
           const stopped = await stopWorkerWithEscalation({
             terminate: () => true, exited: () => !state.workerAlive(s, w),
@@ -221,7 +227,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         await registry.markDiscardStep(lock, 'stop')
         const unsafeAfterDismissal = await unverifiedLive(s, w)
-        if (unsafeAfterDismissal) return unsafeAfterDismissal
+        if (unsafeAfterDismissal) {
+          await registry.interruptDiscard(lock, unsafeAfterDismissal)
+          return unsafeAfterDismissal
+        }
         terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses))
         const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) })
         const missing = decideDiscard(afterStop) === 'prune'
