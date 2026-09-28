@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import * as Y from 'yjs'
@@ -23,6 +24,20 @@ const intent = (): WorkerRecord => ({
   createdAt: 1, seq: 1,
 })
 function common(): string { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-registry-')); dirs.push(dir); return dir }
+async function holdGuard(file: string, ms = 700): Promise<ReturnType<typeof spawn>> {
+  const source = `import { withGuard } from ${JSON.stringify(new URL('../src/leases.ts', import.meta.url).href)};
+    withGuard(process.argv[1], () => { process.stdout.write('inside\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.argv[2])) })`
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source, file, String(ms)],
+    { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] })
+  let output = '', error = ''
+  child.stdout.on('data', chunk => { output += chunk.toString() })
+  child.stderr.on('data', chunk => { error += chunk.toString() })
+  const start = Date.now()
+  while (!output.includes('inside') && child.exitCode === null && Date.now() - start < 5_000) await new Promise(resolve => setTimeout(resolve, 10))
+  expect(output, error).toContain('inside')
+  return child
+}
+const childExit = async (child: ReturnType<typeof spawn>): Promise<number | null> => child.exitCode ?? (await once(child, 'exit'))[0] as number | null
 
 describe('WorkerRegistry durable store', () => {
   it('reopens a written intent and reconciles a dead launcher to ambiguous without relaunch', () => {
@@ -185,6 +200,71 @@ describe('WorkerRegistry durable store', () => {
     expect(secondOutput).toContain('done')
     expect(openRegistry(dir).list()).toEqual([])
   }, 15_000)
+
+  it('waits for a live migration guard before recovering a dead migration lock', async () => {
+    const dir = common(), lock = path.join(dir, 'room', 'registry', 'migration.lock')
+    fs.mkdirSync(path.dirname(lock), { recursive: true })
+    fs.writeFileSync(lock, JSON.stringify({ ...token, pid: -1 }))
+    const child = await holdGuard(lock)
+    const store = openRegistry(dir, { sources: () => [] })
+    expect(store.list()).toEqual([])
+    expect(await childExit(child)).toBe(0)
+  }, 15_000)
+
+  it('waits for a live guard while releasing the migration lock', async () => {
+    const dir = common(), lock = path.join(dir, 'room', 'registry', 'migration.lock')
+    const marker = path.join(dir, 'guard-held')
+    const source = `import fs from 'node:fs'; import { withGuard } from ${JSON.stringify(new URL('../src/leases.ts', import.meta.url).href)};
+      withGuard(process.argv[1], () => { fs.writeFileSync(process.argv[2], 'held'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700) })`
+    let child: ReturnType<typeof spawn> | undefined
+    let openError: unknown
+    try {
+      openRegistry(dir, { sources: () => {
+        child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source, lock, marker],
+          { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] })
+        const deadline = Date.now() + 5_000
+        while (!fs.existsSync(marker) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+        expect(fs.existsSync(marker)).toBe(true)
+        return []
+      } })
+    } catch (error) { openError = error }
+    if (child) expect(await childExit(child)).toBe(0)
+    if (openError) throw openError
+    expect(fs.existsSync(lock)).toBe(false)
+  }, 15_000)
+
+  it('waits through live guards for intent, update, and idle-claim release', async () => {
+    const dir = common(), store = openRegistry(dir, { migrate: false, identity: token, liveness: () => 'alive' })
+    const capacity = await holdGuard(path.join(dir, 'room', 'registry', 'capacity'))
+    store.writeIntent(intent())
+    expect(await childExit(capacity)).toBe(0)
+    const operation = await holdGuard(path.join(dir, 'room', 'registry', 'workers', 'w_01.op'))
+    expect(store.update('w_01', record => ({ ...record, seq: record.seq + 1 })).seq).toBe(2)
+    expect(await childExit(operation)).toBe(0)
+    const doc = new RoomDoc()
+    doc.claims.set('c', { id: 'c', path: 'src/api.ts', from: 1, to: 2, by: 'lead', byKind: 'agent', intent: 'edit', at: 1 })
+    const key = createHash('sha256').update('local/repo\0session\0epoch').digest('hex')
+    const journal = path.join(dir, 'room', 'sessions', 'session', 'idle-claims', `${key}.json`)
+    const idle = await holdGuard(journal)
+    const notices: string[] = []
+    expect(store.reconcileIdleClaims({ roomKey: 'local/repo', sessionId: 'session', participant: 'lead', idleEpoch: 'epoch',
+      host: 'shared-app-server', lastActivityMs: 0, monotonicMs: () => 8 * 3600_000, doc,
+      ownsParticipant: () => true, postNotice: (_id, text) => { notices.push(text) } })).toBe(true)
+    expect(await childExit(idle)).toBe(0)
+    expect(notices).toHaveLength(1)
+    doc.doc.destroy()
+  }, 15_000)
+
+  it('does not replay an entered idle-release callback that throws a guard-busy error', () => {
+    const store = openRegistry(common(), { migrate: false }), doc = new RoomDoc()
+    doc.claims.set('c', { id: 'c', path: 'src/api.ts', from: 1, to: 2, by: 'lead', byKind: 'agent', intent: 'edit', at: 1 })
+    let posts = 0
+    expect(() => store.reconcileIdleClaims({ roomKey: 'local/repo', sessionId: 'session', participant: 'lead', idleEpoch: 'epoch',
+      host: 'shared-app-server', lastActivityMs: 0, monotonicMs: () => 8 * 3600_000, doc,
+      ownsParticipant: () => true, postNotice: () => { posts++; throw new Error('lease guard busy: injected callback') } })).toThrow('injected callback')
+    expect(posts).toBe(1)
+    doc.doc.destroy()
+  })
 
   it('discovers an owned legacy Git worktree as imported and copy-only', async () => {
     const dir = common()

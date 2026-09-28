@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { performance } from 'node:perf_hooks'
 import * as Y from 'yjs'
 import { participantRecord, RoomDoc } from '@room/shared'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
@@ -47,6 +48,30 @@ const synthetic = (): InstanceToken => ({ pid: process.pid, startTime: '', execu
 const missing = (file: string): boolean => !fs.existsSync(file)
 const safeId = (value: string): boolean => /^w_[A-Za-z0-9_-]{1,64}$/.test(value)
 const safeTag = (value: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) && value !== '..'
+const GUARD_WAIT_MS = 30_000
+const GUARD_POLL_MS = 25
+const guardBusy = (error: unknown): boolean => error instanceof Error && error.message.startsWith('lease guard busy: ')
+const pauseForGuard = (deadline: number, error: unknown): void => {
+  if (!guardBusy(error)) throw error
+  const remaining = deadline - performance.now()
+  if (remaining <= 0) throw new Error(`registry guard wait exceeded ${GUARD_WAIT_MS} ms: ${(error as Error).message}`)
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(GUARD_POLL_MS, remaining))
+}
+/** Retry acquisition only; a callback that entered its guard is never replayed. */
+function guarded<T>(file: string, fn: () => T, deadline = performance.now() + GUARD_WAIT_MS): T {
+  for (;;) {
+    let entered = false
+    try { return withGuard<T>(file, (() => { entered = true; return fn() }) as () => T extends PromiseLike<unknown> ? never : T) }
+    catch (error) { if (entered) throw error; pauseForGuard(deadline, error) }
+  }
+}
+/** The lease primitives each acquire their own guard before touching their file. */
+function leaseRetry<T>(fn: () => T, deadline = performance.now() + GUARD_WAIT_MS): T {
+  for (;;) {
+    try { return fn() }
+    catch (error) { pauseForGuard(deadline, error) }
+  }
+}
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 const tokenShape = (value: unknown): value is InstanceToken => object(value) && Number.isSafeInteger(value.pid)
   && typeof value.startTime === 'string' && typeof value.executable === 'string'
@@ -249,7 +274,7 @@ export class WorkerRegistry {
     const file = path.join(this.commonDir, 'room', 'sessions', action.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_'), 'idle-claims', `${key}.json`)
     if (!fs.existsSync(file) && !idleClaimsDue({ host: action.host, lastActivityMs: action.lastActivityMs,
       nowMs: action.monotonicMs(), heldClaims: claims.length, hasScope })) return false
-    return withGuard(file, () => {
+    return guarded(file, () => {
       let journal = readJson<IdleReleaseRecord>(file)
       if (journal?.state === 'done') return false
       if (!journal) {
@@ -327,7 +352,7 @@ export class WorkerRegistry {
     let adopted: { participant?: string; room?: string; name?: string } | undefined
     try { adopted = readJson(file) } catch { return undefined }
     if (adopted?.participant !== lead.participant || adopted.room !== lead.room || adopted.name !== worker.name) return undefined
-    return withGuard(this.workerFile(record.id), () => {
+    return guarded(this.workerFile(record.id), () => {
       const current = this.read(record.id)
       if (!current) return undefined
       if (!current.legacy?.unowned) return current
@@ -354,7 +379,7 @@ export class WorkerRegistry {
   /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
   writeIntent(record: WorkerRecord, capacity = Number.POSITIVE_INFINITY): void {
     if (!safeId(record.id) || !recordShape(record, record.id) || record.runs[0].launch) throw new Error('invalid worker intent')
-    withGuard(path.join(this.root, 'capacity'), () => {
+    guarded(path.join(this.root, 'capacity'), () => {
       if (this.occupancy() >= capacity) throw new Error('worker capacity reached')
       const tagFile = this.tagFile(record.tag)
       if (!createExclusive(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })) {
@@ -363,8 +388,8 @@ export class WorkerRegistry {
           const bound = this.read(reservation.id)
           const reusable = bound && (bound.phase === 'abandoned' || (bound.phase === 'retired' && !bound.keptWorktree
             && !!bound.cleanup && Object.values(bound.cleanup).every(state => state === 'done')))
-          if (reusable) compareAndRelease(tagFile, reservation.holder)
-          else if (!bound && !this.hasQuarantinedRecord(reservation.id)) recover(tagFile, current => current.id === reservation.id)
+          if (reusable) leaseRetry(() => compareAndRelease(tagFile, reservation.holder!))
+          else if (!bound && !this.hasQuarantinedRecord(reservation.id)) leaseRetry(() => recover(tagFile, current => current.id === reservation.id))
         }
         if (!createExclusive(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record.tag}`)
       }
@@ -377,8 +402,8 @@ export class WorkerRegistry {
   /** One operation writer per worker; the next rollout step uses this for preparation and launch facts. */
   update(id: string, edit: (record: WorkerRecord) => WorkerRecord): WorkerRecord {
     const priorOp = readJson<{ holder: InstanceToken }>(this.opFile(id))
-    if (priorOp && priorOp.holder.nonce !== this.identity.nonce && this.alive(priorOp.holder) === 'dead') recover(this.opFile(id), () => true)
-    const value = withGuard(this.opFile(id), () => {
+    if (priorOp && priorOp.holder.nonce !== this.identity.nonce && this.alive(priorOp.holder) === 'dead') leaseRetry(() => recover(this.opFile(id), () => true))
+    const value = guarded(this.opFile(id), () => {
       const op = readJson<{ holder: InstanceToken }>(this.opFile(id))
       if (op && op.holder.nonce !== this.identity.nonce) throw new Error(`worker operation lease held by another instance: ${id}`)
       const old = this.read(id)
@@ -391,7 +416,7 @@ export class WorkerRegistry {
     this.changed()
     return value
   }
-  finishOperation(id: string): boolean { return compareAndRelease(this.opFile(id), this.identity) }
+  finishOperation(id: string): boolean { return leaseRetry(() => compareAndRelease(this.opFile(id), this.identity)) }
 
   /** Admission is evidence of launch only when a run writer proves the matching nonce. */
   writeReport(id: string, report: RunReport): void {
@@ -401,11 +426,11 @@ export class WorkerRegistry {
     const writer = this.writerFile(id, report.run)
     if (!fs.existsSync(writer) && !createExclusive(writer, this.identity)) throw new Error('run writer busy')
     const prior = this.readFact(writer, tokenShape)
-    if (prior && prior.nonce !== this.identity.nonce && !replace(writer,
-      current => current.sessionId === this.identity.sessionId && this.alive(current as InstanceToken) === 'dead', this.identity)) {
+    if (prior && prior.nonce !== this.identity.nonce && !leaseRetry(() => replace(writer,
+      current => current.sessionId === this.identity.sessionId && this.alive(current as InstanceToken) === 'dead', this.identity))) {
       throw new Error('run writer busy')
     }
-    withGuard(writer, () => {
+    guarded(writer, () => {
       const owner = this.readFact(writer, tokenShape)
       if (owner?.nonce !== this.identity.nonce) throw new Error('run writer belongs to another instance')
       const previous = this.readFact(this.reportFile(id, report.run), reportShape)
@@ -421,7 +446,7 @@ export class WorkerRegistry {
   /** A witnessed child-close observation is never replaced by a later unwitnessed poll. */
   writeExit(id: string, observation: ExitObservation): void {
     const file = this.exitFile(id, observation.run)
-    withGuard(file, () => {
+    guarded(file, () => {
       const old = this.readFact(file, exitShape)
       if (!old || (!old.witnessed && observation.witnessed)) writeAtomic(file, observation)
     })
@@ -471,7 +496,7 @@ export class WorkerRegistry {
       const hadOp = fs.existsSync(this.opFile(record.id))
       const op = this.readFact(this.opFile(record.id), (value): value is { holder: InstanceToken } => object(value) && tokenShape(value.holder))
       if (hadOp && !op) continue
-      if (op && this.alive(op.holder) === 'dead') recover(this.opFile(record.id), () => true)
+      if (op && this.alive(op.holder) === 'dead') leaseRetry(() => recover(this.opFile(record.id), () => true))
       if (record.phase === 'collecting' && (!op || this.alive(op.holder) === 'dead')) {
         this.update(record.id, old => ({ ...old, phase: 'active',
           interrupted: old.interrupted ?? { op: 'collect', at: this.now(), detail: 'collection stopped; partial apply may remain' },
@@ -521,13 +546,14 @@ export class WorkerRegistry {
     if (readJson<MigrationMap>(file)?.done) return
     const lock = path.join(this.root, 'migration.lock')
     let acquired = false
-    for (let attempt = 0; attempt < 1_200; attempt++) {
+    const deadline = performance.now() + GUARD_WAIT_MS
+    while (performance.now() < deadline) {
       if (createExclusive(lock, this.identity)) { acquired = true; break }
       if (readJson<MigrationMap>(file)?.done) return
-      if (recover(lock, () => true)) continue
+      if (leaseRetry(() => recover(lock, () => true), deadline)) continue
       // Migration is a synchronous startup barrier. A second MCP process waits for the
       // first to finish; an unreadable/live holder is never stolen on an elapsed-time guess.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(GUARD_POLL_MS, deadline - performance.now())))
     }
     if (!acquired) throw new Error('registry migration in progress')
     try {
@@ -549,7 +575,7 @@ export class WorkerRegistry {
       writeAtomic(file, map)
     } finally {
       // compare-and-release normalizes bare token files as well as holder envelopes.
-      compareAndRelease(lock, this.identity)
+      leaseRetry(() => compareAndRelease(lock, this.identity))
     }
   }
 
