@@ -161,24 +161,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const notes: string[] = []
       if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`)
       const addressedWorker = to && s.room.workerOf(to)
-      let deliveredInPrompt = false
-      if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
-        await greeted(s.hub)
-        if (s.hub.paused()) return `error: not sent: room connection is paused; ${addressedWorker.tag} was not resumed`
-        const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
-        if (typeof result === 'string' && result.startsWith('error:')) return result
-        deliveredInPrompt = true
-        notes.push(typeof result === 'string' ? result : result.reply)
-      }
+      const resume = !!addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running'
       const paths = sendType === 'changed' && Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
       const symbols = sendType === 'changed' && Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
       const body: PostBody = sendType === 'changed' ? withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }) as PostBody<ChangedMsg>
         : sendType === 'question' ? withPr({ type: 'question', text, to: to! }) as PostBody<QuestionMsg>
         : sendType === 'answer' ? withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }) as PostBody<AnswerMsg>
         : withPr({ type: 'note', text, ...(to ? { to } : {}), ...(repliedNote ? { inReplyTo: repliedNote.id } : {}) }) as PostBody<NoteMsg>
+      if (resume) await greeted(s.hub)
       const posted: PostResult = await s.post(s.me, body)
-      if (!posted.ok) return [posted.text, ...deliveredInPrompt ? notes : []].join('\n')
+      if (!posted.ok) return posted.text
       const msg = posted.msg
+      let deliveredInPrompt = false
+      if (resume) {
+        const result = await rooms.resumeWorker(s, addressedWorker!, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
+        if (typeof result === 'string' && result.startsWith('error:')) return `sent [${msg.id}] ${formatMsg(msg)}; ${result}`
+        deliveredInPrompt = true
+        notes.push(typeof result === 'string' ? result : result.reply)
+      }
       if (deliveredInPrompt) ledger.commitPrompt(s, to!, [msg.id])
       if (msg.type === 'changed') notes.push(...await upgrade(s, msg, paths, symbols))
       const notice = msg.to && !deliveredInPrompt ? recipientNotice(s, msg.to) : undefined

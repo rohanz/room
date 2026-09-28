@@ -19,13 +19,17 @@ export function createRelevance(now: () => number = Date.now): (s: Session, m: M
     if (branchNote) return !s.daemon?.branch || s.daemon.branch === branchNote[1]
     const sha = m.type === 'base' ? m.base : m.type === 'pushed' ? m.toSha : undefined
     if (!sha) return true
-    // Keyed by the HEAD the daemon last observed: a reset, checkout or new commit asks again, both ways.
-    const key = `${s.dir}\u0000${s.daemon?.base ?? ''}\u0000${sha}`
+    // Capture HEAD once: both the cache key and ancestry check must use this exact commit.
+    // The daemon's last observed base can lag a commit and then miss a reset back to that base.
+    let head: string
+    try { head = execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: s.dir, encoding: 'utf8', timeout: 2000 }).trim() }
+    catch { return true }
+    const key = `${s.dir}\u0000${head}\u0000${sha}`
     const known = integrated.get(key)
     if (known === true) return false
     if (known !== undefined && now() - known < RECHECK_MS) return true
     try {
-      execFileSync('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], { cwd: s.dir, stdio: 'ignore', timeout: 2000 })
+      execFileSync('git', ['merge-base', '--is-ancestor', sha, head], { cwd: s.dir, stdio: 'ignore', timeout: 2000 })
       integrated.set(key, true)
       return false
     } catch {

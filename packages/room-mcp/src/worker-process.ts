@@ -215,3 +215,26 @@ export async function terminateWorktreeProcesses(dir: string, options: {
   }
   return named
 }
+
+/** A discard snapshot is safe only after no process can keep writing in this worktree. */
+export async function quiesceWorktreeProcesses(dir: string): Promise<boolean> {
+  try {
+    await terminateWorktreeProcesses(dir)
+    const root = fs.realpathSync(dir)
+    const inside = () => listCwdProcesses().some(p => {
+      if (p.pid === process.pid || p.pid === process.ppid) return false
+      let cwd: string
+      try { cwd = fs.realpathSync(p.cwd) } catch { cwd = path.resolve(p.cwd) }
+      return cwd === root || cwd.startsWith(root + path.sep)
+    })
+    const deadline = Date.now() + 5_000
+    let quietSince: number | undefined
+    while (Date.now() < deadline) {
+      if (inside()) quietSince = undefined
+      else if (quietSince === undefined) quietSince = Date.now()
+      else if (Date.now() - quietSince >= 100) return true
+      await new Promise<void>(resolve => setTimeout(resolve, 50))
+    }
+    return false
+  } catch { return false }
+}
