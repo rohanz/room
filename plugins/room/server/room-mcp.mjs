@@ -18000,7 +18000,7 @@ function workerBaseline(worker) {
 async function carriedPaths(baseline) {
   let tracked = Promise.resolve([]);
   if (baseline.carriedCommit) {
-    tracked = committedPaths.get(baseline.sha) ?? run2(baseline.dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", baseline.sha], UNKNOWN_WHOLE_TREE_PATHS).then((out2) => out2.toString().split("\0").filter(Boolean));
+    tracked = committedPaths.get(baseline.sha) ?? boundedGit(baseline.dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", baseline.sha], UNKNOWN_WHOLE_TREE_PATHS).then((out2) => out2.toString().split("\0").filter(Boolean));
     if (!committedPaths.has(baseline.sha)) {
       committedPaths.set(baseline.sha, tracked);
       void tracked.catch(() => {
@@ -18017,10 +18017,10 @@ async function pairBaseline(me, other, ancestor, descends) {
   }
   return void 0;
 }
-function run2(dir, args3, wholeTreePaths) {
+function boundedGit(dir, args3, wholeTreePaths, env) {
   const timeout = wholeTreePaths === void 0 ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths);
   return new Promise((resolve5, reject) => {
-    execFile2("git", args3, { cwd: dir, encoding: "buffer", maxBuffer: 64 * 1024 * 1024, timeout }, (error2, stdout, stderr2) => {
+    execFile2("git", args3, { cwd: dir, env, encoding: "buffer", maxBuffer: 64 * 1024 * 1024, timeout }, (error2, stdout, stderr2) => {
       if (error2) {
         const stopped = error2;
         const missing = missingGitCwd(dir, stopped);
@@ -18036,7 +18036,7 @@ function run2(dir, args3, wholeTreePaths) {
 }
 async function checkoutText(dir, object3, path29, encoding = "utf8") {
   try {
-    return (await run2(dir, ["cat-file", "--filters", `--path=${path29}`, object3])).toString(encoding);
+    return (await boundedGit(dir, ["cat-file", "--filters", `--path=${path29}`, object3])).toString(encoding);
   } catch (error2) {
     if (/does not exist|exists on disk, but not in|path .* not in/i.test(String(error2.stderr))) return void 0;
     throw error2;
@@ -18087,8 +18087,8 @@ async function workerChangedPaths(worker) {
   const baseline = workerBaseline(worker);
   const base = baseline?.sha ?? "HEAD";
   const exclusions = [".room", ...worker.link ?? []].map((p) => `:(exclude,literal)${p}`);
-  const tracked = (await run2(worker.dir, ["diff", "--name-only", "-z", base, "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
-  const untracked = (await run2(worker.dir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
+  const tracked = (await boundedGit(worker.dir, ["diff", "--name-only", "-z", base, "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
+  const untracked = (await boundedGit(worker.dir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
   return [.../* @__PURE__ */ new Set([...tracked, ...untracked, ...baseline?.untracked.keys() ?? []])].filter((p) => !baseline || !carriedUnchanged(baseline, p)).sort();
 }
 var carriesWork, committedPaths, MAX_COMMITTED_PATHS, MissingBaseBlob;
@@ -18333,9 +18333,9 @@ var init_disk_batch = __esm({
   "packages/roomd/src/disk-batch.ts"() {
     "use strict";
     DiskBatch = class {
-      constructor(run3, debounceMs = 300, now = Date.now, hotThrottleMs = 3e4, onError = () => {
+      constructor(run2, debounceMs = 300, now = Date.now, hotThrottleMs = 3e4, onError = () => {
       }) {
-        this.run = run3;
+        this.run = run2;
         this.debounceMs = debounceMs;
         this.now = now;
         this.hotThrottleMs = hotThrottleMs;
@@ -25313,15 +25313,15 @@ var init_src2 = __esm({
         this.localRoom = !!options.localKey;
         this.log = options.log ?? ((line) => process.stderr.write(`[roomd] ${line}
 `));
-        this.remoteRepairSchedule = options.remoteRepairSchedule ?? ((run3) => {
+        this.remoteRepairSchedule = options.remoteRepairSchedule ?? ((run2) => {
           const timer = setTimeout(() => {
-            void run3();
+            void run2();
           }, 40);
           timer.unref?.();
           return () => clearTimeout(timer);
         });
-        this.retrySchedule = options.retrySchedule ?? ((run3, delay) => {
-          const timer = setTimeout(run3, delay);
+        this.retrySchedule = options.retrySchedule ?? ((run2, delay) => {
+          const timer = setTimeout(run2, delay);
           timer.unref?.();
           return () => clearTimeout(timer);
         });
@@ -25345,8 +25345,8 @@ var init_src2 = __esm({
         this.trackedRefreshMs = options.trackedRefreshMs ?? 1e4;
         this.basePollMs = options.basePollMs ?? 3e3;
         this.reconcileIntervalMs = options.reconcileIntervalMs ?? 6e4;
-        this.periodicReconcileSchedule = options.periodicReconcileSchedule ?? ((run3, intervalMs) => {
-          const timer = setInterval(run3, intervalMs);
+        this.periodicReconcileSchedule = options.periodicReconcileSchedule ?? ((run2, intervalMs) => {
+          const timer = setInterval(run2, intervalMs);
           timer.unref?.();
           return () => clearInterval(timer);
         });
@@ -43560,15 +43560,15 @@ function retainUntrackedTree(dir, tag, paths) {
   if (!paths.length) return void 0;
   const scratch = fs13.mkdtempSync(path10.join(os3.tmpdir(), "room-carry-index-"));
   const env = { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") };
-  const run3 = (args3, wholeTreePaths) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args3], { env, wholeTreePaths }).toString().trim();
+  const run2 = (args3, wholeTreePaths) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args3], { env, wholeTreePaths }).toString().trim();
   try {
     for (const entry of paths) {
       const stat4 = fs13.lstatSync(path10.join(dir, entry.path));
       const mode2 = stat4.isSymbolicLink() ? "120000" : stat4.mode & 73 ? "100755" : "100644";
-      run3(["update-index", "--add", "--cacheinfo", `${mode2},${entry.sha},${entry.path}`]);
+      run2(["update-index", "--add", "--cacheinfo", `${mode2},${entry.sha},${entry.path}`]);
     }
-    const tree = run3(["write-tree"], paths.length);
-    run3(["update-ref", carriedUntrackedRef(tag), tree]);
+    const tree = run2(["write-tree"], paths.length);
+    run2(["update-ref", carriedUntrackedRef(tag), tree]);
     return tree;
   } finally {
     fs13.rmSync(scratch, { recursive: true, force: true });
@@ -43879,13 +43879,13 @@ async function saveDiscardPatch(leadDir, w) {
   }
   const scratch = fs13.mkdtempSync(path10.join(os3.tmpdir(), "room-discard-"));
   try {
-    const run3 = (args3, wholeTreePaths) => boundedGitSync(w.dir, args3, { env: { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") }, wholeTreePaths });
+    const run2 = (args3, wholeTreePaths) => boundedGit(w.dir, args3, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path10.join(scratch, "index") });
     const base = w.base ?? (await git(leadDir, ["merge-base", "HEAD", w.branch])).trim();
-    run3(["read-tree", "HEAD"], UNKNOWN_WHOLE_TREE_PATHS);
+    await run2(["read-tree", "HEAD"], UNKNOWN_WHOLE_TREE_PATHS);
     const unchanged = carriedUnchangedPaths(workerBaseline(w));
     const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map((p) => ":(exclude,literal)" + p)];
-    run3(["add", "-A", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS);
-    const patch = run3(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS);
+    await run2(["add", "-A", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS);
+    const patch = await run2(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS);
     if (!patch.length) return void 0;
     const verifyDir = path10.join(scratch, "verify");
     const verifyPatch = path10.join(scratch, "verify.patch");
@@ -45666,8 +45666,8 @@ function repairRetired(s, present) {
 
 // packages/room-mcp/src/registry.ts
 var toolSignal = new AsyncLocalStorage();
-function withToolSignal(signal, run3) {
-  return signal ? toolSignal.run(signal, run3) : run3();
+function withToolSignal(signal, run2) {
+  return signal ? toolSignal.run(signal, run2) : run2();
 }
 function toolCallAborted() {
   return toolSignal.getStore()?.aborted === true;
@@ -45848,10 +45848,10 @@ var Rooms = class _Rooms {
         await this.retireWorkers(s);
         continue;
       }
-      const run3 = this.evaluateRetirement(s);
-      this.retiring.set(s, run3);
+      const run2 = this.evaluateRetirement(s);
+      this.retiring.set(s, run2);
       try {
-        await run3;
+        await run2;
       } finally {
         this.retiring.delete(s);
       }
@@ -47770,7 +47770,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
         return `error: nobody called ${to2} is or was in this room; participants: ${valid.join(", ")}`;
       }
       if (sendType === "note" && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`;
-      if (repliedNote && a.to && a.to !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`;
+      if (repliedNote && a.to && to2 !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`;
       if (to2 && !s.room.workerOf(to2) && s.room.retiredWorkers().some((w) => w.name === to2)) return `error: ${to2} was collected or discarded and cannot be resumed`;
       const pr = typeof a.priority === "string" && ["fyi", "notify", "interrupt"].includes(a.priority) ? a.priority : void 0;
       const withPr = (o) => pr ? { ...o, priority: pr } : o;
@@ -48443,7 +48443,7 @@ import path25 from "node:path";
 init_baseline();
 init_context();
 async function buildCombinedTree(state, caller, participants, options = {}) {
-  const { rooms, liveText, baseFor, shareOf } = state;
+  const { rooms, liveText, baseFor, shareOf, withheld } = state;
   const people = participants.map((p) => p.person);
   const previewWorkers = /* @__PURE__ */ new WeakMap();
   for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
@@ -48628,8 +48628,9 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
       const mine = merged.get(p);
       const b = await baseAt(pair, p);
       const theirsRaw = await previewText(session, p, person);
-      const unchangedLead = leadUsesCarriedBase && theirsRaw === await textAt(leadBase, p);
-      const mineT = mine ?? "", theirs = unchangedLead || theirsRaw === void 0 ? b : theirsRaw;
+      const unsharedLead = leadUsesCarriedBase && session.room.text(p, person) === void 0 && !session.room.deleted.get(person)?.has(p) && !!withheld(session, person, p);
+      if (unsharedLead) out2.push(`${person}'s current text of ${p} is not shared; assumed unchanged since your spawn`);
+      const mineT = mine ?? "", theirs = unsharedLead ? b : theirsRaw === void 0 ? leadUsesCarriedBase ? null : b : theirsRaw;
       if (theirs === b) continue;
       if (mine === theirs) {
         const prior2 = owners.get(p) ?? [caller.me.name];
@@ -48915,10 +48916,10 @@ ${text}` : text;
           return missing ? `${person}'s worktree no longer exists; ${held}` : held;
         }
       }
-      const run3 = typeof a.run === "string" && a.run.trim() ? a.run.trim() : "";
-      const noTestsNote = run3 ? "" : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`;
+      const run2 = typeof a.run === "string" && a.run.trim() ? a.run.trim() : "";
+      const noTestsNote = run2 ? "" : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`;
       try {
-        const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...run3 ? { encoding: "latin1" } : { skipCallerOnly: true } });
+        const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...run2 ? { encoding: "latin1" } : { skipCallerOnly: true } });
         const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out: out2 } = result;
         if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, "no mergeable changes", ...result.ignoredNotes].join("\n");
         if (!paths.length && !result.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(", ")}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join("\n");
@@ -48928,9 +48929,9 @@ ${text}` : text;
 ${text}--- end ${p} ---`);
         out2.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ""} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(", ")}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ""}`);
         if (noTestsNote) out2.push(noTestsNote);
-        let ranOk = !run3;
-        if (run3) {
-          if (hardCount) out2.push(`not running "${run3}": ${hardCount} conflict(s) need a human first`);
+        let ranOk = !run2;
+        if (run2) {
+          if (hardCount) out2.push(`not running "${run2}": ${hardCount} conflict(s) need a human first`);
           else {
             const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
               const w = result.diskWorkers.get(person);
@@ -48950,13 +48951,13 @@ ${text}--- end ${p} ---`);
               }
               modes.set(p, mergedFileMode(p, leadMode, modeParticipants));
             }
-            const verdict = await runInMergedTree(caller, ancestor, merged, run3, modes);
+            const verdict = await runInMergedTree(caller, ancestor, merged, run2, modes);
             out2.push(verdict.text);
             ranOk = verdict.passed;
           }
         }
-        caller.lastPreview = { clean: hardCount === 0, ...run3 ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run3 } : {} };
-        if (!hardCount && ranOk) caller.room.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run3 ? `; "${run3}" passed` : ""}`, priority: "fyi" });
+        caller.lastPreview = { clean: hardCount === 0, ...run2 ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run2 } : {} };
+        if (!hardCount && ranOk) caller.room.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run2 ? `; "${run2}" passed` : ""}`, priority: "fyi" });
         return out2.join("\n");
       } catch (error2) {
         const message = error2 instanceof Error ? error2.message : String(error2);
@@ -49951,7 +49952,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.33",
+  version: "0.16.34",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
