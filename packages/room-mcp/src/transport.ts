@@ -28,8 +28,10 @@ export class FlushedStdioTransport extends StdioServerTransport {
 
   override send(message: JSONRPCMessage): Promise<void> {
     const id = 'id' in message && ('result' in message || 'error' in message) ? message.id : undefined
-    const settle = id === undefined ? undefined : this.pending.get(id)
+    let settle = id === undefined ? undefined : this.pending.get(id)
     if (id !== undefined) this.pending.delete(id)
+    // Only a reply carrying the tool's text receipts its batch; one replaced on the way (an error) does not (M5).
+    if (settle && !carries(message, settle.text)) { settle.release(); settle = undefined }
     return new Promise((resolve, reject) => {
       try {
         this.out.write(serializeMessage(message), error => {
@@ -39,4 +41,9 @@ export class FlushedStdioTransport extends StdioServerTransport {
       } catch (error) { settle?.release(); reject(error) }
     })
   }
+}
+
+function carries(message: JSONRPCMessage, text: string): boolean {
+  const content = 'result' in message ? (message.result as { content?: unknown }).content : undefined
+  return Array.isArray(content) && content.some(c => typeof c?.text === 'string' && c.text.includes(text))
 }

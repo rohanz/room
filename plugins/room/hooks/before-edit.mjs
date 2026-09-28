@@ -6,7 +6,7 @@
 // Everything local lives in room/sessions/<sid>/ of the clone's common git directory.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionDir, readJson, writeJsonAtomic, openMcp, writeStdout, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, containsPath, newestModelInTranscriptTail } from './common.mjs'
+import { readStdinJson, gitRoot, sessionDir, readJson, writeJsonAtomic, openMcp, writeStdout, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, containsPath, newestModelInTranscriptTail, CONTEXT_CAP, fitLines, joinedLength } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -49,36 +49,47 @@ if (session?.host === 'claude' && typeof ev.transcript_path === 'string') {
 if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...runtime, at: 0 })) writeJsonAtomic(path.join(dir, 'runtime.json'), { ...next, at: now })
 
 const state = readJson(path.join(dir, 'state.json'), null)
-const stateFresh = typeof state?.at === 'number' && state.at <= now && now - state.at < 60_000
-const company = stateFresh && state.company === true
-const pending = stateFresh ? (state.owedCount ?? 0) + (state.notices ?? 0) : 0
-// While alone with nothing owed, only the records above: no endpoint round trip, no scans.
-if (!company && !pending) process.exit(0)
+const stateAt = typeof state?.at === 'number' && state.at <= now ? state.at : undefined
+const stateFresh = stateAt !== undefined && now - stateAt < 60_000
+// Claude Code sets agent_id only inside a subagent. The main conversation is the participant: a subagent's
+// hook selects and receipts nothing, and its claim and near lines do not count as the main one being told.
+const subagent = typeof ev.agent_id === 'string' && ev.agent_id !== ''
+// While alone with nothing owed, only the records above: no endpoint round trip, no scans. state.json is
+// rewritten only when something changes, so while this session's MCP is up its age means nothing; without
+// the MCP, a stale file is not trusted.
+if (stateFresh && state.company !== true && !(state.owedCount ?? 0) && !(state.notices ?? 0)) process.exit(0)
+if (!stateFresh && !fs.existsSync(path.join(dir, 'mcp.json'))) process.exit(0)
 
-const lines = []
+const inbox = []
 let confirm
 const mcp = await openMcp(dir, 700)
-const selected = mcp && await mcp.request({ op: 'select', sessionId: ev.session_id })
+const selected = mcp && !subagent ? await mcp.request({ op: 'select', sessionId: ev.session_id }) : undefined
+const live = selected?.ok === true || (!!mcp && subagent && (await mcp.request({ op: 'ping', sessionId: ev.session_id }))?.ok === true)
+const current = stateAt !== undefined && (stateFresh || live)
+const company = current && state.company === true
 let interrupt = false
 if (selected?.ok) {
-  lines.push(...selected.notices)
+  inbox.push(...selected.notices)
   if (selected.items.length) {
-    lines.push(`[room inbox ${selected.items.length}]`)
-    for (const m of selected.items) lines.push(`  ${m.line}`)
+    inbox.push(`[room inbox ${selected.items.length}]`)
+    for (const m of selected.items) inbox.push(`  ${m.line}`)
     interrupt = selected.items.some(m => m.priority === 'interrupt')
   }
+  if (selected.more) inbox.push(`[room] ${selected.more} more: call room_state`)
   if (selected.items.length || selected.notices.length) confirm = selected.batch
-} else if (stateFresh && state.owedCount > 0) {
-  lines.push(`[room] ${state.owedCount} message${state.owedCount === 1 ? '' : 's'} pending; Room is reconnecting.`)
+} else if (current && state.owedCount > 0) {
+  const count = `${state.owedCount} message${state.owedCount === 1 ? '' : 's'} pending`
+  inbox.push(subagent ? `[room] ${count} for the main conversation.` : `[room] ${count}; Room is reconnecting.`)
 }
-if (stateFresh && typeof state.paused === 'string') lines.push(state.paused)
+const coordination = []
+if (current && typeof state.paused === 'string') coordination.push(state.paused)
 
 const hookFile = path.join(dir, 'hook.json')
-const hook = readJson(hookFile, {})
+const hook = subagent ? {} : readJson(hookFile, {})
 const told = hook.companyTold === true
 let changed = false
 if (company) {
-  if (!told) { lines.push(companyLine(state)); hook.companyTold = true; changed = true }
+  if (!told && !subagent) { coordination.push(companyLine(state)); hook.companyTold = true; changed = true }
   const paths = (isShellTool(ev.tool_name) ? shellLooksLikeWrite(ev.tool_input) : /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
     ? pathsOf(ev.tool_name, ev.tool_input, root) : []
   recordWriteIntents(dir, root, paths, now)
@@ -96,7 +107,7 @@ if (company) {
     else delete previousNear[p]
   }
   hook.near = Object.fromEntries(Object.entries(previousNear).slice(-200))
-  if (nearby.length && !adequateClaim && nearChanged) lines.push('[room] Claim before editing: ' + nearEvidence.join('; ') + '.')
+  if (nearby.length && !adequateClaim && nearChanged) coordination.push('[room] Claim before editing: ' + nearEvidence.join('; ') + '.')
   const claimEvidence = JSON.stringify(claims.map(c => [c.id, c.path, c.from, c.to, c.by, c.intent, c.plans]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
   const previousClaims = hook.claims ?? {}
   const claimsChanged = paths.some(p => claims.length ? previousClaims[p] !== claimEvidence : previousClaims[p] !== undefined)
@@ -106,14 +117,18 @@ if (company) {
   }
   hook.claims = Object.fromEntries(Object.entries(previousClaims).slice(-200))
   if (claims.length && claimsChanged) {
-    lines.push(`[room claims on ${paths.join(', ')}]`)
-    for (const c of claims) lines.push(`  ${c.by}'s agent holds ${c.path}:${c.from}-${c.to} — ${c.intent}${c.plans ? ` (plans: ${c.plans})` : ''}. Do not edit inside that range; room_wait or ask.`)
+    coordination.push(`[room claims on ${paths.join(', ')}]`)
+    for (const c of claims) coordination.push(`  ${c.by}'s agent holds ${c.path}:${c.from}-${c.to} — ${c.intent}${c.plans ? ` (plans: ${c.plans})` : ''}. Do not edit inside that range; room_wait or ask.`)
   }
   changed ||= nearChanged || claimsChanged
 }
-if (changed) writeJsonAtomic(hookFile, hook)
+if (changed && !subagent) writeJsonAtomic(hookFile, hook)
+// Inbox first, then coordination cut to what is left of the cap. An inbox that alone would not fit (the MCP
+// bounds it, so only an oversized notice) is not printed, and nothing is confirmed: it stays owed.
+if (interrupt) inbox.push('An interrupt is pending: re-plan before continuing (room_state).')
+const lines = joinedLength(inbox) <= CONTEXT_CAP ? [...inbox, ...fitLines(coordination, CONTEXT_CAP - joinedLength(inbox) - 1)] : fitLines(coordination, CONTEXT_CAP)
+if (joinedLength(inbox) > CONTEXT_CAP) confirm = undefined
 if (lines.length) {
-  if (interrupt) lines.push('An interrupt is pending: re-plan before continuing (room_state).')
   const written = await writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: lines.join('\n') } }))
   // Only a confirmed handoff becomes a receipt; a lost confirm lets the lease expire (a duplicate, never a loss).
   if (written && confirm) await mcp.request({ op: 'confirm', batch: confirm }, 1000)

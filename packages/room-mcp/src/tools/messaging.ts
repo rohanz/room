@@ -1,6 +1,7 @@
 import { formatMsg, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
 import type { Session } from '../session.js'
 import type { Batch } from '../ledger.js'
+import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
 import type { PostResult } from '../post.js'
 import { isPrName } from '../prs.js'
 import { REPLY_BATCH, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -293,20 +294,18 @@ export function createInbox(deps: Pick<HandlerState, 'ledger' | 'rooms' | 'log' 
   const { rooms, log, scheduleInboxWrite, msgInMyAreas, others, upgraded } = deps
   const forMe = (s: Session, m: Msg) => messageForMe(s.me, m, { claims: deps.mine(s), inMyAreas: x => msgInMyAreas(s, x) })
   const inbox = (s: Session, batch: Batch): string => {
-      const fresh: Msg[] = []
       const ws = rooms.workers()
-      for (const source of [s, ...(ws && ws !== s ? [ws] : [])]) {
-        for (const m of deps.ledger.select(source, batch)) fresh.push(source === s ? m : { ...m, ...('text' in m ? { text: `[workers room] ${m.text}` } : {}) } as Msg)
-      }
-      if (!fresh.length) return ''
-      const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
-      const order = (m: Msg) => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2 + rank[m.priority]
-      fresh.sort((a, b) => order(a) - order(b) || a.at - b.at)
+      const shown = ({ s: source, m }: Chosen): Msg => source === s ? m : { ...m, ...('text' in m ? { text: `[workers room] ${m.text}` } : {}) } as Msg
+      const line = (m: Msg) => m.type === 'question'
+        ? `  [${m.id}] QUESTION FOR YOU: ${formatMsg(m)} (reply with room_send type=answer inReplyTo=${m.id})`
+        : `  [${m.id}] ${formatMsg(m)}`
+      // The same budget as the hooks: the rest stays owed for the next reply (F-M2).
+      const { chosen, more } = selectWithin(deps.ledger, [s, ...(ws && ws !== s ? [ws] : [])], batch, INBOX_BUDGET, c => line(shown(c)).length + 1, true)
+      if (!chosen.length) return ''
+      const fresh = chosen.map(shown)
       for (const m of fresh) log(`inbox → ${s.me.name}: ${formatMsg(m)}`)
       scheduleInboxWrite()
-      return `[inbox ${fresh.length}]\n${fresh.map(m => m.type === 'question'
-        ? `  [${m.id}] QUESTION FOR YOU: ${formatMsg(m)} (reply with room_send type=answer inReplyTo=${m.id})`
-        : `  [${m.id}] ${formatMsg(m)}`).join('\n')}\n\n`
+      return `[inbox ${fresh.length}]\n${fresh.map(line).join('\n')}${more ? `\n  ${moreLine(more)}` : ''}\n\n`
     }
   const affected = async (s: Session, paths: string[], symbols: string[]): Promise<Map<string, string>> => {
       const out = new Map<string, string>()

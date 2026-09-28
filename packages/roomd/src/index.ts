@@ -136,6 +136,7 @@ export interface RoomdOptions {
   /**
    * Posts through the room's hub, the sole appender of its bus (room-mcp post.ts). This daemon's posts are
    * automatic (released claims, `pushed`). Without one (the standalone CLI has no hub client) they are only logged.
+   * The result, awaited for `pushed`, is the hub's answer: `{ ok: false }` or undefined means it was not taken.
    */
   post?: (from: Identity, body: PostBody<Msg>, opts: { id?: string; auto: true }) => unknown
   /** Settles durable departing grants after a successful full scan. */
@@ -280,6 +281,7 @@ class Daemon implements Roomd {
   private readonly beforeWatcherReady?: () => void
   readonly onFullScan?: RoomdOptions['onFullScan']
   private readonly poster?: RoomdOptions['post']
+  private pushedInFlight = false
   readonly sizeCap: number
   readonly totalBudget: number
   private readonly connectTimeoutMs: number
@@ -684,6 +686,8 @@ class Daemon implements Roomd {
   private async pollHead(): Promise<void> {
     if (this.stopped) return
     this.choosePublisher()
+    // Every poll (so startup and every reconnect too) retries a `pushed` the record still owes (§B2 step 6).
+    await this.postPushedPending()
     const [head, rawBranch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)])
     const branch = branchName(rawBranch)
     const inputs: BaseInputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) }
@@ -730,6 +734,8 @@ class Daemon implements Roomd {
     this.appliedRefs = refsKey(inputs)
     this.appliedAsPublisher = publishing
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
+    // §B2 step 6, after the transaction.
+    await this.postPushedPending()
   }
 
   /** The awaited half of §B2 step 5: the next `git` record and whether it yields `pushed` (§B4). */
@@ -741,18 +747,63 @@ class Daemon implements Roomd {
       ...(resolved.remote ? { remote: resolved.remote } : {}), ...(resolved.upstream ? { upstream: resolved.upstream } : {}),
       ...(resolved.ahead !== undefined ? { ahead: resolved.ahead, behind: resolved.behind } : {}), fence: this.fence,
     }
-    const { rev: _rev, ...recorded } = prev ?? { rev: 0 }
+    const { rev: _rev, pushedPending: _owed, ...recorded } = prev ?? { rev: 0 }
     if (JSON.stringify(recorded) === JSON.stringify(fields)) return {}
     const next: ParticipantGit = { ...fields, rev: (prev?.rev ?? 0) + 1 }
-    // Only a surviving record yields a notice: current refs cannot recover a lost fromSha (§B4).
-    if (!prev || promoted || !resolved.upstream || !await pushedRange(this.dir, prev, next)) return { next }
-    return { next, pushed: { type: 'pushed', branch, upstream: resolved.upstream, fromSha: prev.base, toSha: next.base, ...await pushedFacts(this.dir, prev.base, next.base) } }
+    // Only a surviving record yields a notice: current refs cannot recover a lost fromSha (§B4). Without a
+    // poster (the CLI) nothing could ever post it, so nothing is owed.
+    if (!this.poster || !prev || promoted || !resolved.upstream || !await pushedRange(this.dir, prev, next)) return { next }
+    return { next, pushed: { fromSha: prev.base, toSha: next.base, branch, upstream: resolved.upstream } }
   }
 
   /**
-   * §B2 step 5, one synchronous transaction: the publication, the `git` record (rev + 1), this participant's
-   * claim moves and releases, and `pushed` when §B4 applies. A session publishing under another writes only
-   * its claim part. False, with nothing written, when the publication went stale.
+   * The record's owed `pushed` after this transition: the new range, joined to an older unposted one it
+   * continues. An older one it does not continue is replaced (delivery is at most once, §B4); an older one
+   * with no new range is kept.
+   */
+  private owedPushed(pushed: PushedPending | undefined): PushedPending | undefined {
+    const owed = participantRecord(this.roomDoc, this.name)?.git?.pushedPending
+    if (!pushed) return owed
+    if (!owed) return pushed
+    if (owed.toSha === pushed.fromSha && owed.branch === pushed.branch && owed.upstream === pushed.upstream) return { ...pushed, fromSha: owed.fromSha }
+    this.log(`replacing an unposted pushed ${owed.fromSha.slice(0, 10)}..${owed.toSha.slice(0, 10)}: the upstream moved since`)
+    return pushed
+  }
+
+  /**
+   * §B2 step 6: post the record's `pushedPending` by its deterministic id (the hub dedupes a repeat). It
+   * clears only once the hub accepted it, and then only the part the post covered: a transition committed
+   * meanwhile keeps its newer range. One post at a time; a refusal waits for the next poll. Resolves once
+   * the post is sent; the hub's answer is handled when it comes.
+   */
+  private async postPushedPending(): Promise<void> {
+    const owed = this.publishesBaseFacts() ? participantRecord(this.roomDoc, this.name)?.git?.pushedPending : undefined
+    if (!owed || !this.poster || this.pushedInFlight || this.stopped) return
+    this.pushedInFlight = true
+    const from: Identity = { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }
+    let answer: unknown
+    let commits = 0
+    try {
+      const facts = await pushedFacts(this.dir, owed.fromSha, owed.toSha)
+      commits = facts.commits
+      answer = this.poster(from, { type: 'pushed', ...owed, ...facts } as PostBody<PushedMsg>, { id: `pushed:${this.name}:${owed.fromSha}:${owed.toSha}`, auto: true })
+    } catch (error) { this.pushedInFlight = false; this.log(`pushed not posted yet: ${errMsg(error)}`); return }
+    void Promise.resolve(answer).then(result => {
+      if (!hubAccepted(result) || this.stopped) return
+      this.log(`${owed.upstream} now has ${owed.fromSha.slice(0, 10)}..${owed.toSha.slice(0, 10)} (+${commits})`)
+      const record = participantRecord(this.roomDoc, this.name)?.git
+      const current = record?.pushedPending
+      if (!record || current?.fromSha !== owed.fromSha) return
+      const { pushedPending: _done, ...rest } = record
+      const next: ParticipantGit = current.toSha === owed.toSha ? rest : { ...rest, pushedPending: { ...current, fromSha: owed.toSha } }
+      this.roomDoc.doc.transact(() => this.roomDoc.participants.set(`${this.name}\u0000git`, next), this)
+    }).catch(error => this.log(`pushed not posted yet: ${errMsg(error)}`)).finally(() => { this.pushedInFlight = false })
+  }
+
+  /**
+   * §B2 step 5, one synchronous transaction: the publication, the `git` record (rev + 1) with `pushedPending`
+   * when §B4 applies, and this participant's claim moves and releases. A session publishing under another
+   * writes only its claim part. False, with nothing written, when the publication went stale.
    */
   private commitTransition({ head }: BaseInputs, claims: ClaimChanges, { next, pushed }: TransitionFacts, publication: PreparedPublication, anchored: boolean): boolean {
     if (!this.publisher.valid(publication)) return false
@@ -760,7 +811,11 @@ class Daemon implements Roomd {
     const notices: { from: Identity; body: PostBody<Msg>; id?: string }[] = []
     this.roomDoc.doc.transact(() => {
       this.publisher.apply(publication, anchored)
-      if (next) this.roomDoc.participants.set(`${this.name}\u0000git`, next)
+      if (next) {
+        // Read inside the transaction: a post accepted while this transition was prepared already cleared its part.
+        const owed = this.owedPushed(pushed)
+        this.roomDoc.participants.set(`${this.name}\u0000git`, owed ? { ...next, pushedPending: owed } : next)
+      }
       for (const move of claims.moves) {
         const current = this.roomDoc.claims.get(move.id)
         if (current?.by === this.name && !current.mirrorOf) this.roomDoc.moveClaim(move.id, move.from, move.to, this, claims.hashById.get(move.id))
@@ -775,10 +830,7 @@ class Daemon implements Roomd {
         this.log(text)
       }
     }, this)
-    // A deterministic id: a retry after a crash posts nothing twice (hub §2.3).
-    if (pushed) notices.push({ from: { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }, body: pushed as PostBody<PushedMsg>, id: `pushed:${this.name}:${pushed.fromSha}:${pushed.toSha}` })
     for (const n of notices) this.post(n.from, n.body, n.id)
-    if (pushed) this.log(`${pushed.upstream} now has ${pushed.fromSha.slice(0, 10)}..${pushed.toSha.slice(0, 10)} (+${pushed.commits})`)
     return true
   }
 
@@ -1020,7 +1072,10 @@ class Daemon implements Roomd {
 }
 
 interface ClaimChanges { moves: ClaimMove[]; releases: ClaimRelease[]; hashById: Map<string, string | undefined> }
-interface TransitionFacts { next?: ParticipantGit; pushed?: Omit<PushedMsg, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> }
+type PushedPending = NonNullable<ParticipantGit['pushedPending']>
+interface TransitionFacts { next?: ParticipantGit; pushed?: PushedPending }
+/** A post the hub took: a refusal resolves `{ ok: false }`, and no hub connection yet resolves undefined. */
+const hubAccepted = (result: unknown) => result != null && !(typeof result === 'object' && 'ok' in result && result.ok === false)
 /** Preparations a HEAD transition tries before it gives up until the next poll. */
 const TRANSITION_ATTEMPTS = 5
 const NO_CLAIM_CHANGES: ClaimChanges = { moves: [], releases: [], hashById: new Map() }

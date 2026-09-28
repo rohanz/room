@@ -2,6 +2,7 @@ import { formatMsg, type Priority } from '@room/shared'
 import { createHandlerState } from './state.js'
 import { hookHealthNote } from '../hooks-bridge.js'
 import type { Batch, Ledger, Notice } from '../ledger.js'
+import { INBOX_BUDGET, selectWithin, type Chosen } from '../inbox-budget.js'
 import { greeted } from '../post.js'
 import { hasCompany } from '../company.js'
 import { connectedBefore, trackConnection } from '../connection.js'
@@ -18,8 +19,11 @@ import { defs as workerDefs, handlers as workerHandlers } from './workers.js'
 import { defs as shareDefs, handlers as shareHandlers } from './share.js'
 import { defs as prDefs, handlers as prHandlers } from './prs.js'
 
-/** How the host's transport ends a reply's batch: commit after a confirmed write, release on failure. */
-export interface Settle { commit(): void; release(): void }
+/**
+ * How the host's transport ends a reply's batch: commit after a confirmed write of a reply carrying `text`
+ * (the tool's reply, whose inbox the batch holds), release on failure or when the reply sent is another.
+ */
+export interface Settle { text: string; commit(): void; release(): void }
 /** One line the before-edit or SessionStart hook prints (ledger "Before-edit and SessionStart hooks"). */
 export interface HookItem { id: string; line: string; priority: Priority }
 
@@ -32,8 +36,11 @@ export interface Tools {
   call(name: string, args: Record<string, unknown>, signal?: AbortSignal, handoff?: (settle: Settle) => void): Promise<string>
   /** The session's delivery ledger (the hooks' arbitration endpoint selects through it). */
   readonly ledger: Ledger
-  /** A hook's select: what the joined rooms owe, plus pending notices, reserved in a hook batch. */
-  hookSelect(): { batch: Batch; items: HookItem[]; notices: string[] }
+  /**
+   * A hook's select: pending notices, then what the joined rooms owe in inbox order, reserved in a hook
+   * batch while their text fits `budget` characters; `more` stays owed.
+   */
+  hookSelect(budget?: number): { batch: Batch; items: HookItem[]; notices: string[]; more: number }
   /** A startup notice, offered until a reply or hook hands it off, or until a room is joined. */
   startupNotice(text: string): void
   /** Attach the hooks bridge (state file + wake) to a session; idempotent. */
@@ -110,6 +117,8 @@ export function createTools(ctx: ToolCtx): Tools {
         if (s2) delete s2.autoTagNote
         return prefix + notices + (paused ? paused + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
       } catch (e) {
+        // The reply is an error line now: whatever was selected for it is not in it (M5).
+        ledger.discard(batch)
         if (toolCallAborted()) return 'error: tool call cancelled'
         if (e instanceof NotJoined) return notJoined()
         if (e instanceof NotLoggedIn) return `error: ${e.message}`
@@ -130,16 +139,17 @@ export function createTools(ctx: ToolCtx): Tools {
     shutdown: state.shutdown,
     flushConflicts: state.flushConflicts,
     startupNotice(text) { startup = ledger.notice('startup', text); withdrawStartup() },
-    hookSelect() {
+    hookSelect(budget = INBOX_BUDGET) {
       const batch = ledger.open('hook')
       withdrawStartup()
       const s = ctx.getSession()
       const ws = state.rooms.workers()
-      const items: HookItem[] = []
-      if (s) for (const source of [s, ...(ws && ws !== s ? [ws] : [])]) {
-        for (const m of ledger.select(source, batch)) items.push({ id: m.id, priority: m.priority, line: `${source === s ? '' : '[workers room] '}${formatMsg(m)}` })
-      }
-      return { batch, items, notices: ledger.notices(batch).map(n => n.text) }
+      const notices = ledger.notices(batch).map(n => n.text)
+      const line = ({ s: source, m }: Chosen) => `${source === s ? '' : '[workers room] '}${formatMsg(m)}`
+      const room = budget - notices.reduce((n, text) => n + text.length + 1, 0)
+      const { chosen, more } = s ? selectWithin(ledger, [s, ...(ws && ws !== s ? [ws] : [])], batch, room, c => line(c).length + 3) : { chosen: [], more: 0 }
+      const items: HookItem[] = chosen.map(c => ({ id: c.m.id, priority: c.m.priority, line: line(c) }))
+      return { batch, items, notices, more }
     },
     async call(name, args, signal, handoff) {
       const batch = ledger.open('reply')
@@ -147,7 +157,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const text = await run(name, args, signal, batch)
         // A cancelled call's reply is never written: its selections stay owed.
         if (signal?.aborted) ledger.release(batch)
-        else if (handoff) handoff({ commit: () => ledger.commit(batch), release: () => ledger.release(batch) })
+        else if (handoff) handoff({ text, commit: () => ledger.commit(batch), release: () => ledger.discard(batch) })
         else ledger.commit(batch)
         return text
       } catch (e) { ledger.release(batch); throw e }
