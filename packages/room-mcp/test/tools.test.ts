@@ -55,7 +55,7 @@ function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean
   const tools = createTools({
     config: opts.config, getSession: () => session, setSession: s => { session = s }, cwd: dir,
     join: async o => { joined.push(o.dir); created.push(!!o.create); return fakeSession(a) },
-    leave: async () => {},
+    leave: async () => {}, admit: async () => {},
   })
   return { room: a, other: b, tools, joined, created, get session() { return session } }
 }
@@ -206,6 +206,7 @@ beforeAll(() => {
   writeFileSync(join(dir, 'app.py'), COMMITTED)
   writeFileSync(join(dir, 'session.py'), 'from app import validate\n')
   git('add', '.'); git('commit', '-qm', 'init')
+  git('remote', 'add', 'origin', 'https://github.com/o/r.git') // team rooms are named after the origin
   base = git('rev-parse', 'HEAD').trim()
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -415,7 +416,7 @@ describe('session gating', () => {
   })
 
   it('offers the repo rather than part of a slash-containing branch', async () => {
-    const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {}, join: async () => { throw new NoRoom('github.com/o/r/feature/fix', 'missing') } })
+    const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {}, join: async () => { throw new NoRoom('github.com/o/r/feature/fix', 'missing') }, admit: async () => {} })
     expect(await tools.call('room_join', { where: 'team' })).toContain('No room for o/r on wss://room-rohanz.fly.dev yet.')
   })
 

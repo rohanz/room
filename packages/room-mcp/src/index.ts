@@ -9,8 +9,9 @@ import type { Msg } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
 import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { LOCAL, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
+import { LOCAL, decodeRoom, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
 import { AutoJoin } from './auto-join.js'
+import { joinableRoot } from './repository.js'
 import { gitCommonDir } from '@room/roomd'
 import { consumeHookDisclosure, consumeHookNotice, syncHookSeen, writePendingHookContext } from './hooks-bridge.js'
 import { resolveConfig, resolveSessionHost } from './config.js'
@@ -145,7 +146,6 @@ async function main() {
 
       // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
       // simply a clone with a git origin. A repo nobody has opened waits for room_create.
-      const prior = findRoomFile(dir)
       const chosen = startup.server
       log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? (startup as typeof startup & { whereEnv?: string }).whereEnv ?? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
       const autoJoin = new AutoJoin({
@@ -160,16 +160,9 @@ async function main() {
             if (!target.pinnedRoom) delete s.pinnedRoom
             return s
           }
-          // The clone's origin + current branch always decides the room. ROOM_URL (runner) or a
-          // prior .room.json only fill in when the clone has no origin.
-          if (chosen === LOCAL) return joinSession({ dir, room: startup.room, server: LOCAL, log }) // workers get the lead's room via ROOM_ROOM
-          if (startup.room) return joinSession({ dir, room: startup.room, server: chosen, log })
-          const derived = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
-          if (derived.roomName) return joinSession({ dir, server: chosen, log })
-          if (prior) {
-            const u = new URL(prior.room)
-            return joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: chosen, log })
-          }
+          // Checked on every attempt: a folder that is not a repository yet may become one mid-session.
+          const options = await startupJoinOptions(await joinableRoot(dir), chosen, startup.room)
+          if (options) return joinSession({ ...options, log })
           log(`ready; ${dir} has no git origin — call room_join with a room name`)
           return undefined
         },

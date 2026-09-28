@@ -120,6 +120,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (typeof a.share === 'string' && a.share && !share) return 'error: share must be intent, declared or full'
       // The tag is reserved from here until the process record exists (or this call fails): the worktree
       // preparation below awaits git, and a second room_spawn for the same tag must not slip in meanwhile.
+      // A move may have replaced the session this call started with (moves and spawns are serialized, but the check is cheap).
+      if (!rooms.all().includes(lead) || !rooms.all().includes(s)) return 'error: the room changed while this worker was being prepared; nothing was started. Call room_spawn again.'
       if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
       const starting = runningWorkers(lead).length
       const launchLease = reserveWorkerLaunch(rooms, max, starting)
@@ -278,9 +280,10 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
   const closeWorkersRoom = async (): Promise<void> => {
       const ws = rooms.workers()
       if (!ws) return
-      rooms.remove(ws)
       try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
+      // Forgotten only once stopped: a session whose shutdown failed stays registered, so this process still owns it.
       await doLeave(ws)
+      rooms.remove(ws)
     }
   const runningWorkers = (s: Session): { s: Session; w: Worker }[] => rooms.occupiedWorkers(s)
   const dismissWorker = async (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason'], cancelled?: AbortSignal): Promise<string> => {

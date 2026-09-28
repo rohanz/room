@@ -1,11 +1,11 @@
 import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
 import { roomNameParts, scopeLine, type Claim, type NoteMsg } from '@room/shared'
-import { resolve } from 'node:path'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
 import { git } from '@room/roomd/git'
-import { DEFAULT_SERVER, NoRoom, NotLoggedIn, closeRoom, deriveRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type Session } from '../session.js'
+import { realGitCommonDir } from '@room/roomd'
+import { DEFAULT_SERVER, NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, deriveRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, markWarned, writeChoice } from '../choice.js'
@@ -15,6 +15,9 @@ import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef 
 import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
 import { handlers as shareHandlers, secondaryPublishingLine } from './share.js'
 import { exportRoomLedger } from '../prs.js'
+import { joinableRoot, sameFolder } from '../repository.js'
+import { toolCallAborted } from '../registry.js'
+import { baseRecovery } from '../auto-join.js'
 import { decideLeave, workerRealState } from '../worker-state.js'
 
 export const defs: ToolDef[] = [
@@ -102,9 +105,10 @@ export function markHistorySeenOnJoin(s: Session, seen: Set<string>): void {
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
   async function configureLogin(a: Record<string, unknown>) {
-    const config = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
+    const config = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
     configureCredentials(config.credentialsPath)
-    ctx.config = { ...config, ...ctx.config, credentialsPath: config.credentialsPath }
+    // "team" is resolved fresh, as room_join resolves it: a remembered server may have changed since startup.
+    ctx.config = { ...config, ...ctx.config, credentialsPath: config.credentialsPath, teamServer: config.teamServer }
   }
   const handlers: Record<string, Handler> = {
     async room_login(a) {
@@ -145,7 +149,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cur && a.create !== true && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined) {
         return currentReply()
       }
-      const dir = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()
+      const dir = await joinableRoot(typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd())
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
       const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule }
@@ -153,26 +157,75 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const targetRoom = choice.server === LOCAL
         ? requestedRoom !== undefined ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir)
         : resolved.room ?? (await deriveRoomName(dir)).roomName
-      if (cur) {
-        const sameServer = choice.server === LOCAL ? !!cur.local
-          : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf('/'))).server
-        if (sameServer && targetRoom === cur.roomName && resolve(dir) === cur.dir) {
-          return currentReply()
-        }
-        const running = runningWorkers(cur)
-        if (running.length) return `error: ${running.length} worker(s) are running in ${cur.roomName}; they would be left behind. Wait for them, room_collect(discard=true) them, or stay in this room.`
+      const stay = cur ? cur.local ? ` You're still in this machine's local room (${cur.roomName}), which works for agents on this computer.` : ` You're still in ${cur.roomName}.` : ''
+      if (!targetRoom) return `Team rooms need a shared server and a git origin remote to name the room, and ${dir} has no origin.${stay || ` The local room needs neither: room_join(where="local").`} To use a team room, add an origin (git remote add origin <url>) and say 'join the room' again, or name a room: room_join(where="team", room="<name>").`
+      // Is x in the target room? A team room is its server and name; a local room is also its clone (its git common dir): two clones can each host local/shop/main.
+      const inTarget = async (x: Session): Promise<boolean> => {
+        if (x.roomName !== targetRoom) return false
+        if (choice.server !== LOCAL) return !x.local && parseServer(choice.server).server === parseServer(x.roomUrl.slice(0, x.roomUrl.lastIndexOf('/'))).server
+        if (!x.local) return false
+        const [a, b] = await Promise.allSettled([realGitCommonDir(dir), realGitCommonDir(x.dir)])
+        return a.status === 'fulfilled' && b.status === 'fulfilled' && a.value === b.value
       }
+      if (cur && await inTarget(cur) && sameFolder(dir, cur.dir)) return currentReply()
       if (typeof a.name === 'string' && a.name.trim() && choice.server !== LOCAL) {
         const server = parseServer(choice.server).server
         const cfg = await serverAuthConfig(server)
         const login = cfg.mode === 'device' ? getCredential(server)?.login : undefined
         if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`
       }
+      const message = (e: unknown) => e instanceof Error ? e.message : String(e)
+      const refused = (e: unknown, where: string): string => {
+        if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.${where}`
+        if (e instanceof NoRoom) {
+          const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName.slice(0, e.roomName.lastIndexOf('/'))
+          return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.${where}`
+        }
+        const why = `error: ${message(e)}${baseRecovery(e)}`
+        return where ? `${why}${/[.!?]$/.test(why) ? '' : '.'}${where}` : why
+      }
+      // Moves with workers wait for the redesign: a worker running, starting, or not yet collected or
+      // discarded (in this room or the workers room) refuses the move, before anything is left.
+      const withWorkers = (): string | undefined => {
+        if (!cur) return undefined
+        const leads = new Set(rooms.all().map(x => x.me.name).concat(cur.me.name))
+        const mine = [...new Map(rooms.all().concat(cur).flatMap(x => [...x.room.workers.values()]).filter(w => leads.has(w.lead)).map(w => [w.tag, w] as const)).values()]
+        const starting = rooms.launchingWorkers()
+        if (!mine.length && !starting) return undefined
+        return `You have ${mine.length + starting} worker(s)${mine.length ? ` (${mine.map(w => w.tag).join(', ')})` : ''}${starting ? `${mine.length ? ', and one starting' : ' starting'}` : ''}. Collect or discard them first (room_collect, or room_collect discard=true), then move rooms.${stay}`
+      }
+      const refusal = withWorkers()
+      if (refusal) return refusal
+      // Preflight before leaving: a team room must admit this login. It makes the join's own checks, with one /view-token request.
+      if (choice.server !== LOCAL) {
+        try { await (ctx.admit ?? checkTeamAdmission)(choice.server, targetRoom, { token: resolved.token, credentialsPath: resolved.credentialsPath, create: a.create === true, confirm: a.confirm === true }) }
+        catch (e) { return refused(e, stay) }
+      }
+      if (toolCallAborted()) return 'error: tool call cancelled'
+      // Again after the preflight's awaits, immediately before leaving.
+      const late = withWorkers()
+      if (late) return late
+      // Go back to the room this session was in, with the exact identity and pinning it had.
+      const rollBack = async (reason: string): Promise<string> => {
+        try {
+          // The exact identity: an untagged session goes back untagged ('' is an explicit empty label). Only a rollback
+          // does this; branch-following and other joins keep the collision-aware automatic name.
+          const back = await doJoin({ ...rejoinOptions(cur!, resolved.credentialsPath), tag: cur!.me.label ?? '' })
+          if (!cur!.pinnedRoom) delete back.pinnedRoom
+          markHistorySeenOnJoin(back, seen)
+          rooms.add(back, 'primary')
+          return `couldn't join ${targetRoom} (${reason}); back in ${back.roomName}.`
+        } catch (e) {
+          return `couldn't join ${targetRoom} (${reason}), and rejoining ${cur!.roomName} failed too (${message(e)}); this session is in no room. Say 'join the room' to try again.`
+        }
+      }
       if (cur) {
-        await closeWorkersRoom()
+        // With no workers, the workers room goes too. A session whose shutdown fails stays registered (this process
+        // still owns it) and the move stops there.
+        try { await closeWorkersRoom() } catch (e) { return `error: closing the workers room failed (${message(e)}); Room did not move.${stay}` }
         cleanupMine(cur, 'moved to another room')
         rooms.remove(cur)
-        await doLeave(cur)
+        try { await doLeave(cur) } catch (e) { rooms.add(cur, 'primary'); return `error: leaving ${cur.roomName} failed (${message(e)}); Room did not move.${stay}` }
       }
       let s: Session
       try { s = await doJoin({
@@ -185,12 +238,22 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         confirm: a.confirm === true,
         share: resolved.share,
       }) } catch (e) {
-        if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.`
-        if (!(e instanceof NoRoom)) throw e
-        const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName.slice(0, e.roomName.lastIndexOf('/'))
-        return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`
+        if (!cur) return refused(e, '')
+        return rollBack(message(e))
       }
-      if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, choice.where, s.me.name, s.shareRequested, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
+      // Cancelled while joining: the move is undone.
+      if (toolCallAborted() && cur) {
+        // A target that cannot be stopped stays this process's session: never start a second daemon beside it.
+        try { await doLeave(s) } catch (e) {
+          markHistorySeenOnJoin(s, seen)
+          rooms.add(s, 'primary')
+          return `cancelled, but couldn't leave ${s.roomName} (${message(e)}); you're in ${s.roomName}.`
+        }
+        return rollBack('the request was cancelled')
+      }
+      // Remember the concrete server "team" resolved to (never a token), so a restart returns to it.
+      const remembered = choice.server === LOCAL ? choice.where : parseServer(choice.server).server
+      if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, remembered, s.me.name, s.shareRequested, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
       markHistorySeenOnJoin(s, seen)
       rooms.add(s, 'primary')
@@ -355,7 +418,7 @@ export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | '
       return gone
     }
   const cleanupMine = (s: Session, _why: string, keep?: (c: Claim) => boolean): number => releaseClaimsOnDone(s, keep)
-  const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }
+  const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER, ctx.config?.teamServer); return r === LOCAL ? LOCAL : parseServer(r).server }
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`
   const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
       ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.`

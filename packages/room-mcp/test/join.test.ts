@@ -56,6 +56,7 @@ function branchTools(current: Session) {
     setSession: s => { active = s },
     join: joiner,
     leave,
+    admit: async () => {},
   })
   dispose.push(() => tools.shutdown())
   return { tools, joiner, leave, active: () => active }
@@ -117,6 +118,7 @@ it('carries a requested custom destination through login and back to join', asyn
     if (path === '/auth/config') return Response.json({ github: 'device' })
     if (path === '/auth/start') return Response.json({ user_code: 'CODE', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 0, device: 'dev' })
     if (path === '/auth/poll') return Response.json({ session: 's'.repeat(64), login: 'Ada', expiresIn: 900 })
+    if (path === '/view-token') return Response.json({ view: 'v' })
     throw new Error(`unexpected ${path}`)
   }))
   let active: Session | null = session(`local/${dir.split('/').pop()}/main`, { local: true })
@@ -132,5 +134,5 @@ it('carries a requested custom destination through login and back to join', asyn
   expect(await tools.call('room_login', { server })).toContain('CODE')
   expect(await tools.call('room_login', { server, wait: 5 })).toContain('logged in')
   expect(await tools.call('room_join', { where: server, room: 'git/example/repo/main' })).toContain('joined git/example/repo/main')
-  expect(joiner.mock.calls.map(([opts]) => opts.server)).toEqual([server, server])
+  expect(joiner.mock.calls.map(([opts]) => opts.server)).toEqual([server]) // the first attempt stopped at the login preflight
 })

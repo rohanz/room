@@ -105,12 +105,12 @@ it.each([
   'room base abc is not in this clone (local HEAD def)',
   'local HEAD def has diverged from room base abc',
 ])('explains recovery for join failure: %s', async message => {
-  const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {}, join: async () => { throw new RoomdError(message, 2) } })
+  const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {}, join: async () => { throw new RoomdError(message, 2) }, admit: async () => {} })
   const reply = await tools.call('room_join', { where: 'team', room: 'o/r/main' })
   expect(reply).toContain('If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create).')
 })
 
 it('does not suggest closing for unrelated join failures', async () => {
-  const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {}, join: async () => { throw new RoomdError('sync timed out', 1) } })
+  const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {}, join: async () => { throw new RoomdError('sync timed out', 1) }, admit: async () => {} })
   expect(await tools.call('room_join', { where: 'team', room: 'o/r/main' })).toBe('error: sync timed out')
 })

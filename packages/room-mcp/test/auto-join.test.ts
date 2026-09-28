@@ -263,7 +263,7 @@ describe('tools and the ensure step', () => {
     return { calls, failure, ensure: async () => { calls.push('ensure') }, settle: async () => { calls.push('settle') }, cancel: () => { calls.push('cancel') }, retarget: () => { calls.push('retarget') } }
   }
   it('every room tool ensures the join first; leaving ends the automatic join', async () => {
-    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: os.tmpdir(), config: { server: LOCAL } as ResolvedConfig })
+    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: repo(), config: { server: LOCAL } as ResolvedConfig })
     const h = handle()
     tools.setAutoJoin(h)
     expect(await tools.call('room_state', {})).toBe('error: not in the local room; room_join to join it.')
@@ -272,18 +272,19 @@ describe('tools and the ensure step', () => {
     expect(h.calls).toEqual(['ensure', 'settle', 'cancel'])
   })
   it('names why the automatic join failed instead of generic advice', async () => {
-    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: os.tmpdir(), config: { server: LOCAL } as ResolvedConfig })
+    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: repo(), config: { server: LOCAL } as ResolvedConfig })
     tools.setAutoJoin(handle('Room could not join the local room (relay): EACCES.'))
     expect(await tools.call('room_spawn', { tag: 'w', task: 't' })).toBe('error: not in a room. Room could not join the local room (relay): EACCES.')
   })
   it('drops a tool call cancelled while its automatic join is queued', async () => {
     let finish!: () => void
-    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: os.tmpdir(), config: { server: LOCAL } as ResolvedConfig })
+    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: repo(), config: { server: LOCAL } as ResolvedConfig })
     const h = handle()
     h.ensure = () => new Promise<void>(resolve => { finish = resolve })
     tools.setAutoJoin(h)
     const controller = new AbortController()
     const call = tools.call('room_state', {}, controller.signal)
+    await vi.waitFor(() => expect(finish).toBeDefined()) // the repository check runs first
     controller.abort()
     finish()
     expect(await call).toBe('error: tool call cancelled')

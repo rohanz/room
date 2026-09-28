@@ -9,13 +9,13 @@ on the first Room request; the shared app-server daemon was observed in 0.157.1.
 "join the room" once per session is enough. `room_state` says which room on its first line.
 
 Where to be is the user's call, by instruction:
-- "join the room" / "join the team room": `room_leave` if you are
-  in a local room, then `room_join(where="team")`. Relay the returned `note for your human`
+- "join the room" / "join the team room": `room_join(where="team")`. It checks the team room first and
+  stays in the local room if it cannot join; a join that fails later goes back. Relay the returned `note for your human`
   sharing sentence once, exactly as written. The choice is remembered for
   this clone; later sessions go there on their own.
+  "team" is the server in `ROOM_SERVER`, else `ROOM_URL`'s, else the one remembered for this clone, else the hosted one.
   A bare "join the room" (including "join the room for this repo") means the team room, because the session is already in a local room by default; do not ask which room.
-- "work locally" / "leave the team room" / "local room": `room_leave(forget=true)`, then
-  `room_join(where="local")`.
+- "work locally" / "leave the team room" / "local room": `room_join(where="local")`; the choice is remembered.
 - a server URL: `room_join(where="wss://…")`.
 Never join the team room on your own initiative.
 
@@ -25,11 +25,12 @@ push-only sync daemon, and returns who is here, their scopes, open claims, and t
 view URL. A local room needs no name and no origin remote. Pass `room` for a local join
 only when the user asks for a separate, named room; it becomes `local/<name>`.
 Re-joining the same room prints its current state and browser link. Moving rooms is refused
-while your workers are running; wait for them or use room_collect(discard=true) first. The join reply includes the new browser link.
+while you have workers, running or not yet collected; collect them or use room_collect(discard=true) first. The join reply includes the new browser link.
 Live sharing does not apply other participants' edits; collection and explicit exports can write files.
 In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.
 
 If it fails:
+- "Room works inside a git repository" / "Room needs a first commit": relay it to your human as written; do not run `git init` or commit on your own. Once they have, a later Room call joins in this session.
 - "Room was updated on disk; restart this session to pick up fixes": restart this session to load the
   updated plugin before retrying.
 - "not logged in": the server uses GitHub login. Preserve the server named in the error:
@@ -41,7 +42,7 @@ If it fails:
   whether to open one; joining is not permission to open it. Only after they say yes, call
   `room_create(where="team", confirm=true)`. Once per repo; every branch then has a room and
   teammates join automatically.
-- "no origin remote" when joining a team/server room: ask the user for a room name and call `room_join` with `room`. A local room needs no name and no origin; its name is derived from the clone.
+- "Team rooms need a shared server and a git origin remote": relay it; you are still in the local room. Only if the user gives a room name, call `room_join(where="team", room="…")`. A local room needs no name and no origin; its name is derived from the clone.
 - "room base is X; local HEAD is Y": run `git pull --ff-only --autostash` and try again; if it refuses, stop and tell your human; never merge another branch into this one. Do not work in the room on a different base.
 - "could not sync with wss://...": the server is not reachable. Continue independent work, and ask your human only if choosing another destination blocks the task.
 

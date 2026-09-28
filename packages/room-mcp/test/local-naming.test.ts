@@ -19,6 +19,7 @@ beforeEach(() => {
   vi.mocked(ensureLocalRelay).mockClear()
   dir = mkdtempSync(join(tmpdir(), 'local-naming-'))
   execFileSync('git', ['init', '-q', '-b', 'main', dir])
+  execFileSync('git', ['-C', dir, '-c', 'user.name=Ada', '-c', 'user.email=a@a', 'commit', '-q', '--allow-empty', '-m', 'init'])
 })
 afterEach(() => { dispose.splice(0).forEach(fn => fn()); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs() })
 
@@ -50,7 +51,7 @@ it.each(['local', 'team'])('reports the actual %s name and preserves team argume
     ...(where === 'local' ? { local: { url: 'ws://127.0.0.1:1' } } : {}),
   } as Session
   const joiner = vi.fn(async () => fake)
-  const tools = createTools({ cwd: dir, getSession: () => session, setSession: s => { session = s }, join: joiner, leave: async () => {} })
+  const tools = createTools({ cwd: dir, getSession: () => session, setSession: s => { session = s }, join: joiner, leave: async () => {}, admit: async () => {} })
   const reply = await tools.call('room_join', { where, room: 'anything' })
   expect(joiner).toHaveBeenCalledWith(expect.objectContaining({ room: where === 'local' ? 'local/anything' : 'anything', server: where === 'local' ? 'local' : 'wss://room-rohanz.fly.dev' }))
   if (where === 'local') {
@@ -89,7 +90,7 @@ function transitionTools() {
     } as Session
   })
   const leave = vi.fn(async () => {})
-  const tools = createTools({ cwd: dir, getSession: () => session, setSession: s => { session = s }, join: joiner, leave })
+  const tools = createTools({ cwd: dir, getSession: () => session, setSession: s => { session = s }, join: joiner, leave, admit: async () => {} })
   dispose.push(() => { void tools.shutdown() })
   return { tools, joiner, leave, current: () => session! }
 }
@@ -99,7 +100,7 @@ it('refuses to strand running workers and preserves the session and link', async
   await t.tools.call('room_join', { where: 'local', room: 'custom' })
   const cur = t.current()
   cur.room.setWorker({ tag: 'w', name: 'Ada+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', lead: 'Ada' })
-  expect(await t.tools.call('room_join', { where: 'local' })).toBe('error: 1 worker(s) are running in local/custom; they would be left behind. Wait for them, room_collect(discard=true) them, or stay in this room.')
+  expect(await t.tools.call('room_join', { where: 'local' })).toBe("You have 1 worker(s) (w). Collect or discard them first (room_collect, or room_collect discard=true), then move rooms. You're still in this machine's local room (local/custom), which works for agents on this computer.")
   expect(t.current()).toBe(cur)
   expect(t.joiner).toHaveBeenCalledTimes(1)
   expect(t.leave).not.toHaveBeenCalled()

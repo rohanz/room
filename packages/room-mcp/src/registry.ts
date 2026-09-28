@@ -321,6 +321,8 @@ export class Rooms {
   }
   releaseLaunch(): void { this.launching-- }
   launchUsage(running: number): number { return running + this.launching }
+  /** Worker starts still preparing (worktree or launch), not yet in any room's worker records. */
+  launchingWorkers(): number { return this.launching + this.reserving.size }
   occupiedWorkers(s: Session): { s: Session; w: Worker }[] {
     const sessions = [s, ...this.all().filter(x => x !== s)]
     const occupied: { s: Session; w: Worker }[] = []

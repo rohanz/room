@@ -27,6 +27,21 @@ describe('resolveConfig', () => {
     expect(c).toMatchObject({ server: LOCAL, whereRule: 'argument', share: 'intent', maxWorkers: 2 })
   })
 
+  it('sends "team" to the configured team server: ROOM_SERVER, then ROOM_URL, then a remembered server, then the hosted default', async () => {
+    const dir = repo()
+    const team = (env: Record<string, string>) => resolveConfig({ dir, env, args: { where: 'team' } }).then(c => c.server)
+    expect(await team({})).toBe(DEFAULT_SERVER)
+    await writeChoice(dir, 'ws://remembered:1266')
+    expect(await team({})).toBe('ws://remembered:1266')
+    expect(await team({ ROOM_URL: 'ws://runner:1266/example%2Fshop%2Fmain' })).toBe('ws://runner:1266')
+    expect(await team({ ROOM_URL: 'ws://runner:1266/example%2Fshop%2Fmain', ROOM_SERVER: 'ws://self-hosted:1266' })).toBe('ws://self-hosted:1266')
+    // A self-hosted team that went local: "join the team room" returns to its own server.
+    await writeChoice(dir, 'local')
+    expect(await team({ ROOM_SERVER: 'ws://self-hosted:1266' })).toBe('ws://self-hosted:1266')
+    expect(await team({ ROOM_SERVER: 'team' })).toBe(DEFAULT_SERVER)
+    expect(await team({ ROOM_SERVER: 'local' })).toBe(DEFAULT_SERVER)
+  })
+
   it('restores a remembered narrower share unless an argument or environment explicitly overrides it', async () => {
     const dir = repo()
     await writeChoice(dir, 'team', 'Ada', 'intent')

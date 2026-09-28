@@ -8,6 +8,7 @@
 import type { Session } from './session.js'
 import { NoRoom, NotLoggedIn } from './session.js'
 import { RoomdError } from '@room/roomd'
+import { NotARepository } from './repository.js'
 
 export interface AutoJoinOptions {
   /** One join attempt, of the room a human joined (target) or else the startup choice: the session, or undefined when there is nothing to join (no retry). */
@@ -69,6 +70,8 @@ export class AutoJoin {
   /** Why the last run failed, while no session is present; undefined after a join. */
   failure: string | undefined
   private permanent = false
+  /** The last run found no repository: the human fixes that, so the next call checks again at once. */
+  private recheck = false
   private target: Session | undefined
   private readonly delays: number[]
   private readonly deadlineMs: number
@@ -86,7 +89,7 @@ export class AutoJoin {
   ensure(): Promise<void> {
     if (this.inflight) return this.inflight
     if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve()
-    if (this.failure && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve()
+    if (this.failure && !this.recheck && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve()
     this.inflight = this.run().finally(() => { this.inflight = null; this.endedAt = this.now() })
     return this.inflight
   }
@@ -99,6 +102,7 @@ export class AutoJoin {
     this.target = s
     this.cancelled = false
     this.permanent = false
+    this.recheck = false
     this.failure = undefined
   }
 
@@ -112,6 +116,8 @@ export class AutoJoin {
     const deadline = this.now() + this.deadlineMs
     let last: unknown
     let attempts = 0
+    const hadNoRepository = this.recheck
+    this.recheck = false
     for (;;) {
       attempts++
       try {
@@ -124,6 +130,13 @@ export class AutoJoin {
       } catch (e) {
         last = e
         if (this.cancelled) return
+        // Not a repository (yet): retrying cannot help and it is no startup failure to report; tool calls answer with it.
+        if (e instanceof NotARepository) {
+          if (this.failure !== e.message) this.o.log(`not joining: ${e.message}`)
+          this.failure = e.message
+          this.recheck = true
+          return
+        }
         if (!retryable(e)) { this.permanent = true; break }
         const wait = this.delays[Math.min(attempts - 1, this.delays.length - 1)]
         if (this.now() + wait >= deadline) break
@@ -133,7 +146,7 @@ export class AutoJoin {
       }
     }
     this.o.log(`join attempt ${attempts} failed ${causeOf(last)}; giving up for now`)
-    const first = this.failure === undefined
+    const first = this.failure === undefined || hadNoRepository
     this.failure = joinFailureLine(last, this.target ? !!this.target.local : this.o.local, attempts)
     if (first) this.o.report(this.failure)
   }

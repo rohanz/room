@@ -25,7 +25,7 @@ export interface ConfigArgs {
   claudeChannel?: string; maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
 }
 export interface ResolvedConfig {
-  dir: string; server: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
+  dir: string; server: string; teamServer: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareWarning?: string
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
@@ -40,10 +40,11 @@ export function normaliseWhere(where?: string): string | undefined {
   if (['team', 'hosted', 'web', 'shared'].includes(w)) return 'team'
   return w
 }
-export function resolveServer(raw?: string): string {
+/** "team" means the configured team server (see resolveConfig's teamServer), else the hosted one. */
+export function resolveServer(raw?: string, teamServer = DEFAULT_SERVER): string {
   const w = normaliseWhere(raw)
   if (!w || w === LOCAL) return LOCAL
-  return w === 'team' ? DEFAULT_SERVER : w
+  return w === 'team' ? teamServer : w
 }
 
 /** Plain wording shared by join, state and sharing controls. */
@@ -89,6 +90,12 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const urlServer = url ? `${url.protocol}//${url.host}${url.search}` : undefined
   const envWhere = envServer ?? (!argUrl ? urlServer : undefined)
   const rememberedChoice = await readRememberedChoice(dir)
+  // The team server "team" names: ROOM_SERVER's, else ROOM_URL's, else a remembered server, else the hosted default.
+  const serverOnly = (w?: string) => w && w !== LOCAL && w !== 'team' ? w : undefined
+  const envUrl = value(e.ROOM_URL)
+  let envUrlServer: string | undefined
+  try { const u = envUrl ? new URL(envUrl) : undefined; envUrlServer = u && ['ws:', 'wss:'].includes(u.protocol) ? `${u.protocol}//${u.host}${u.search}` : undefined } catch { /* reported below */ }
+  const teamServer = serverOnly(envServer) ?? envUrlServer ?? serverOnly(normaliseWhere(rememberedChoice.where)) ?? DEFAULT_SERVER
   const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(rememberedChoice.where) : undefined
   const where = argWhere ?? (argUrl ? urlServer : undefined) ?? envWhere ?? remembered ?? LOCAL
   const whereRule: ConfigRule = argWhere || argUrl ? 'argument' : envWhere ? 'env' : remembered ? 'remembered' : 'default'
@@ -102,9 +109,10 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     // Empty explicitly disables development channels; do not discard it with value().
     claudeChannel: (args.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
     workerId: value(e.ROOM_WORKER_ID), gen: value(e.ROOM_GEN),
-    roomUrl, dir: path.resolve(dir), server: resolveServer(where), where, whereRule, whereEnv,
+    roomUrl, dir: path.resolve(dir), server: resolveServer(where, teamServer), teamServer, where, whereRule, whereEnv,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
-    tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareWarning: sharing.warning, credentialsPath,
+    // An explicit empty tag (a rejoin of an untagged session) means no label, not "choose one automatically".
+    tag: typeof args.tag === 'string' ? args.tag.trim() : value(e.ROOM_TAG), kind, share: sharing.level, shareWarning: sharing.warning, credentialsPath,
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),
     maxWorkers: positive(args.maxWorkers ?? e.ROOM_MAX_WORKERS, DEFAULT_MAX_WORKERS),
     staleDays: positive(args.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),

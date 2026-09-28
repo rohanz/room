@@ -15,7 +15,7 @@ import type { Awareness } from 'y-protocols/awareness'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
 import { ensureLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
-import { gitCommonDir } from '@room/roomd'
+import { gitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, assertValidParticipantName, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
@@ -176,15 +176,34 @@ export async function logout(server: string): Promise<{ login?: string; removed:
 /** Private room metadata written by the daemon. */
 export type { RoomFile } from '@room/roomd'
 
+/** This worktree's room metadata, from any folder inside it; never an enclosing repository's (a nested clone is its own). */
 export function findRoomFile(start: string): (RoomFile & { room: string; _from: string }) | undefined {
   let d = resolve(start)
+  const own = (dir: string) => { try { return worktreeGitDirSync(dir) } catch { return undefined } }
+  const gitDir = own(d)
+  if (!gitDir) return undefined
   for (;;) {
     const room = readRoomFile(d)
     if (room?.room) return { ...room, room: room.room, _from: d }
     const up = dirname(d)
-    if (up === d) return undefined
+    if (up === d || own(up) !== gitDir) return undefined
     d = up
   }
+}
+
+/**
+ * Where the automatic join goes for the clone whose validated worktree root is `root`. The clone's
+ * origin + current branch always decides a team room; ROOM_URL/ROOM_ROOM (runner, workers) or this
+ * worktree's prior room metadata only fill in when it has no origin. Undefined: nothing to join.
+ */
+export async function startupJoinOptions(root: string, server: string, room?: string): Promise<JoinOptions | undefined> {
+  if (server === LOCAL) return { dir: root, room, server: LOCAL } // workers get the lead's room via ROOM_ROOM
+  if (room) return { dir: root, room, server }
+  if ((await deriveRoomName(root).catch(() => ({ roomName: undefined }))).roomName) return { dir: root, server }
+  const prior = findRoomFile(root)
+  // Always the validated current root: a copied checkout's metadata still names the original folder.
+  if (prior) return { dir: root, name: prior.name, room: decodeRoom(new URL(prior.room).pathname.replace(/^\/+/, '')), server }
+  return undefined
 }
 
 /** Room name from the clone: normalised origin + branch. Slashes are kept for humans; encode for the URL. */
@@ -460,7 +479,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const { login: _login, ...creds } = auth
   let pre = await preflight(server, roomName, creds)
   if (opts.create && pre?.missing) {
-    if (opts.confirm !== true) throw new RoomdError('room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed', 2)
+    if (opts.confirm !== true) throw new RoomdError(CREATE_NEEDS_CONFIRM, 2)
     const err = await createRoom(server, roomName, { ...creds, by: name })
     if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}`, 2)
     pre = await preflight(server, roomName, creds)
@@ -581,6 +600,29 @@ function watchClosed(s: Session, log?: (line: string) => void): void {
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
 /** A session the server no longer knows is useless locally too. */
 function removeStaleCredential(server: string, reason: string): void { if (/expired or unknown/.test(reason)) removeCredential(server) }
+
+const CREATE_NEEDS_CONFIRM = 'room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed'
+
+/**
+ * Would the team server admit this login to roomName? The same checks joinSession makes before it
+ * connects (login, the room exists or will be opened, access), with one /view-token request (the
+ * server issues a view token): a room move runs it before leaving the current room. Throws
+ * NotLoggedIn, NoRoom or RoomdError.
+ */
+export async function checkTeamAdmission(rawServer: string, roomName: string, opts: { token?: string; credentialsPath?: string; create?: boolean; confirm?: boolean } = {}): Promise<void> {
+  if (opts.credentialsPath) configureCredentials(opts.credentialsPath)
+  const parsed = parseServer(rawServer)
+  const { login: _login, ...creds } = await resolveAuth(parsed.server, roomName, opts.token ?? parsed.token)
+  const pre = await preflight(parsed.server, roomName, creds)
+  if (!pre) return
+  if (pre.missing) {
+    if (!opts.create) throw new NoRoom(roomName, pre.reason, parsed.server)
+    if (opts.confirm !== true) throw new RoomdError(CREATE_NEEDS_CONFIRM, 2)
+    return
+  }
+  if (pre.loginNeeded) throw new NotLoggedIn(parsed.server)
+  throw new RoomdError(`${parsed.server} refused ${roomName}: ${pre.reason}`, 2)
+}
 
 /** Why the server would refuse us, or undefined when access is fine (or the server cannot be asked).
  *  `missing`: access is fine but nobody has opened this repo yet. */

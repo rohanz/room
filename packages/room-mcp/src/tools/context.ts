@@ -6,7 +6,7 @@ import type { Bridge } from '../bridge.js'
 import type { ConflictWatcher } from '../conflicts.js'
 import type { PrInfo } from '../prs.js'
 import type { Rooms } from '../registry.js'
-import type { JoinOptions, Session } from '../session.js'
+import type { JoinOptions, Session, checkTeamAdmission } from '../session.js'
 import type { CwdProcessLister, ProcessInfo, Spawner } from '../worker-process.js'
 import type { ResolvedConfig } from '../config.js'
 import type { CompanyState } from '../company.js'
@@ -29,6 +29,8 @@ export interface ToolCtx {
   /** Injectable for tests. */
   join?: (o: JoinOptions) => Promise<Session>
   leave?: (s: Session) => Promise<void>
+  /** Would the team server admit this move? Injectable for tests (default: checkTeamAdmission over HTTP). */
+  admit?: typeof checkTeamAdmission
   /** Injectable for tests (default: DELETE /rooms on the session's server). Returns the rooms closed. */
   close?: (s: Session) => Promise<string[]>
   /** Debounce for the automatic conflict checks; default 2s. */
