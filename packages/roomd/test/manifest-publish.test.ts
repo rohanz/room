@@ -10,6 +10,7 @@ import { publishManifest, type ManifestFact } from '../src/manifest-publish.js'
 import { startRoomd } from '../src/index.js'
 import { plan, policyFromLevel, rulesFromText } from '../src/policy.js'
 import { readDisk } from '../src/disk-scan.js'
+import { pollHead } from './poll-head.js'
 
 async function scanPlan(input: { room: RoomDoc; name: string; fence: string; base: string; level: 'intent' | 'declared' | 'full'; prefixes: readonly string[]; dir: string; sizeCap: number; totalBudget: number; safe: (p: string) => boolean }): Promise<ManifestFact[]> {
   const policy = policyFromLevel(input.level, input.prefixes)
@@ -199,7 +200,7 @@ describe('dual manifest publication', () => {
       expect(daemon.roomDoc.manifestHead.get('Ben')).toMatchObject({ base: anchor, complete: true })
       expect(daemon.roomDoc.manifest.get(manifestKey('Ben', 's1'))?.get('x')?.change).toBe('M')
       sh(dir, 'update-ref', '-d', 'refs/remotes/origin/main')
-      await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+      await pollHead(daemon)
       expect(daemon.anchor.anchored).toBe(false)
       expect(daemon.roomDoc.manifestHead.get('Ben')?.complete).toBe(false)
     } finally { await daemon?.stop(); fs.rmSync(root, { recursive: true, force: true }); vi.unstubAllEnvs() }
