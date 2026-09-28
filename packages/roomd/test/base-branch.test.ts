@@ -10,6 +10,7 @@ import { participantRecord, type Msg, type ParticipantGit, type PushedMsg } from
 import { claimDigest } from '../src/reanchor.js'
 import { markManifestIncomplete } from '../src/manifest-publish.js'
 import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
+import { pollHead } from './poll-head.js'
 
 vi.setConfig({ testTimeout: 30_000 })
 beforeAll(() => { vi.stubEnv('CHOKIDAR_USEPOLLING', '1') })
@@ -87,7 +88,7 @@ async function world(options: { local?: boolean } = {}) {
   }
   return { root, origin, dir, base, room, server, start, other }
 }
-const poll = (daemon: Roomd) => (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+const poll = pollHead
 const git = (daemon: Roomd, name = daemon.name): ParticipantGit | undefined => participantRecord(daemon.roomDoc, name)?.git
 const status = (daemon: Roomd) => (daemon.provider.awareness.getLocalState() as { status: string }).status
 const pushed = (daemon: Roomd) => daemon.roomDoc.messages().filter((m: Msg): m is PushedMsg => m.type === 'pushed')

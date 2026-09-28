@@ -8,6 +8,7 @@ import type { WebsocketProvider } from 'y-websocket'
 import { digestPath, manifestKey, participantRecord } from '@room/shared'
 import { startRoomd, type Roomd } from '../src/index.js'
 import { policyFromLevel } from '../src/policy.js'
+import { pollHead } from './poll-head.js'
 
 vi.setConfig({ testTimeout: 30000 })
 const roots: string[] = []
@@ -75,7 +76,7 @@ it('commits a moved HEAD and its completed manifest in one Y transaction', async
   })
   fs.writeFileSync(path.join(dir, 'x'), 'committed')
   sh(dir, 'add', '-A'); sh(dir, 'commit', '-qm', 'move')
-  await (daemon as any).pollHead()
+  await pollHead(daemon)
   expect(observed.length).toBeGreaterThan(0)
   expect(observed.every(s => s.base === s.manifest)).toBe(true)
 })
