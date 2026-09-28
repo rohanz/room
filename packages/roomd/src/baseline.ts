@@ -54,7 +54,7 @@ const MAX_COMMITTED_PATHS = 128
 export async function carriedPaths(baseline: Baseline): Promise<string[]> {
   let tracked: Promise<string[]> = Promise.resolve([])
   if (baseline.carriedCommit) {
-    tracked = committedPaths.get(baseline.sha) ?? run(baseline.dir, ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', baseline.sha], UNKNOWN_WHOLE_TREE_PATHS).then(out => out.toString().split('\0').filter(Boolean))
+    tracked = committedPaths.get(baseline.sha) ?? boundedGit(baseline.dir, ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', baseline.sha], UNKNOWN_WHOLE_TREE_PATHS).then(out => out.toString().split('\0').filter(Boolean))
     if (!committedPaths.has(baseline.sha)) {
       committedPaths.set(baseline.sha, tracked)
       void tracked.catch(() => { if (committedPaths.get(baseline.sha) === tracked) committedPaths.delete(baseline.sha) })
@@ -76,10 +76,10 @@ export async function pairBaseline(me: Worker | undefined, other: Worker | undef
   return undefined
 }
 
-function run(dir: string, args: string[], wholeTreePaths?: number): Promise<Buffer> {
+export function boundedGit(dir: string, args: string[], wholeTreePaths?: number, env?: NodeJS.ProcessEnv): Promise<Buffer> {
   const timeout = wholeTreePaths === undefined ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths)
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd: dir, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout }, (error, stdout, stderr) => {
+    execFile('git', args, { cwd: dir, env, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout }, (error, stdout, stderr) => {
       if (error) {
         const stopped = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
         const missing = missingGitCwd(dir, stopped)
@@ -98,7 +98,7 @@ function run(dir: string, args: string[], wholeTreePaths?: number): Promise<Buff
  * Undefined when the commit has no such path.
  */
 export async function checkoutText(dir: string, object: string, path: string, encoding: BufferEncoding = 'utf8'): Promise<string | undefined> {
-  try { return (await run(dir, ['cat-file', '--filters', `--path=${path}`, object])).toString(encoding) }
+  try { return (await boundedGit(dir, ['cat-file', '--filters', `--path=${path}`, object])).toString(encoding) }
   catch (error) {
     if (/does not exist|exists on disk, but not in|path .* not in/i.test(String((error as { stderr?: string }).stderr))) return undefined
     throw error
@@ -170,7 +170,7 @@ export async function workerChangedPaths(worker: Worker): Promise<string[]> {
   const baseline = workerBaseline(worker)
   const base = baseline?.sha ?? 'HEAD'
   const exclusions = ['.room', ...(worker.link ?? [])].map(p => `:(exclude,literal)${p}`)
-  const tracked = (await run(worker.dir, ['diff', '--name-only', '-z', base, '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0').filter(Boolean)
-  const untracked = (await run(worker.dir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0').filter(Boolean)
+  const tracked = (await boundedGit(worker.dir, ['diff', '--name-only', '-z', base, '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0').filter(Boolean)
+  const untracked = (await boundedGit(worker.dir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0').filter(Boolean)
   return [...new Set([...tracked, ...untracked, ...baseline?.untracked.keys() ?? []])].filter(p => !baseline || !carriedUnchanged(baseline, p)).sort()
 }

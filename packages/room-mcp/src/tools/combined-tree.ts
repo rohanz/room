@@ -11,7 +11,7 @@ import { diskWorker, type HandlerState } from './context.js'
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
 export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
-  const { rooms, liveText, baseFor, shareOf } = state
+  const { rooms, liveText, baseFor, shareOf, withheld } = state
   const people = participants.map(p => p.person)
   // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
   const previewWorkers = new WeakMap<Session, Map<string, ReturnType<typeof diskWorker>>>()
@@ -176,10 +176,11 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       const mine = merged.get(p)
       const b = await baseAt(pair, p)
       const theirsRaw = await previewText(session, p, person)
-      // The lead's HEAD predates the carried changes. If its current text still equals
-      // that HEAD, use the worker's shared base instead of treating it as a revert.
-      const unchangedLead = leadUsesCarriedBase && theirsRaw === await textAt(leadBase, p)
-      const mineT = mine ?? '', theirs = unchangedLead || theirsRaw === undefined ? b : theirsRaw
+      // With no overlay, a shared path is known to equal HEAD; an unshared path is unknown.
+      const unsharedLead = leadUsesCarriedBase && session.room.text(p, person) === undefined
+        && !session.room.deleted.get(person)?.has(p) && !!withheld(session, person, p)
+      if (unsharedLead) out.push(`${person}'s current text of ${p} is not shared; assumed unchanged since your spawn`)
+      const mineT = mine ?? '', theirs = unsharedLead ? b : theirsRaw === undefined ? (leadUsesCarriedBase ? null : b) : theirsRaw
       if (theirs === b) continue
       if (mine === theirs) {
         const prior = owners.get(p) ?? [caller.me.name]

@@ -78,6 +78,17 @@ describe('unavailable addressed recipients', () => {
     expect(s.room.messages()).toEqual([])
   })
 
+  it('accepts a note reply addressed by the sender worker tag', async () => {
+    const { rooms, makeSession, state, tools } = fixture()
+    const ws = makeSession('workers'); rooms.add(ws, 'workers')
+    ws.room.setWorker(worker({ status: 'running', exitCode: undefined, finishedAt: undefined }))
+    vi.mocked(state.workerAlive).mockReturnValue(true)
+    const note = ws.room.post({ name: 'lead+state', kind: 'agent' }, { type: 'note', to: 'lead', text: 'Update?' })
+    const reply = await tools.room_send({ type: 'note', to: 'state', inReplyTo: note.id, text: 'On it' })
+    expect(reply).not.toMatch(/^error:/)
+    expect(ws.room.messages().at(-1)).toMatchObject({ type: 'note', to: 'lead+state', inReplyTo: note.id, text: 'On it' })
+  })
+
   it('rejects an ambiguous bare worker tag before posting and lists the full name', async () => {
     const { s, rooms, makeSession, tools } = fixture()
     const ws = makeSession('workers'); rooms.add(ws, 'workers')

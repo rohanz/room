@@ -5,7 +5,7 @@ import path from 'node:path'
 import { isRegenerableBuildPath, type Worker } from '@room/shared'
 import { LINK_INPUT_PATH, RECORDED_PATH, carryRecord, carryRecordSync, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
-import { boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
+import { boundedGit, boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { decideDiscard, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
 import { terminateWorktreeProcesses } from './worker-process.js'
 
@@ -416,13 +416,13 @@ export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<stri
   }
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-discard-'))
   try {
-    const run = (args: string[], wholeTreePaths?: number) => boundedGitSync(w.dir, args, { env: { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }, wholeTreePaths })
+    const run = (args: string[], wholeTreePaths?: number) => boundedGit(w.dir, args, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') })
     const base = w.base ?? (await git(leadDir, ['merge-base', 'HEAD', w.branch])).trim()
-    run(['read-tree', 'HEAD'], UNKNOWN_WHOLE_TREE_PATHS)
+    await run(['read-tree', 'HEAD'], UNKNOWN_WHOLE_TREE_PATHS)
     const unchanged = carriedUnchangedPaths(workerBaseline(w))
     const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map(p => ':(exclude,literal)' + p)]
-    run(['add', '-A', '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)
-    const patch = run(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS)
+    await run(['add', '-A', '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)
+    const patch = await run(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS)
     if (!patch.length) return undefined
     // The recovery artifact is useful only if it applies to a fresh checkout of this base.
     const verifyDir = path.join(scratch, 'verify')

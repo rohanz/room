@@ -58,6 +58,7 @@ function spawn(files: Record<string, string>, wip: Record<string, string>, untra
     liveText: async (_s: Session, file: string, person: string) => read(dirOf(person), file),
     baseFor: (_s: Session, person: string) => baseOf(person),
     shareOf: () => 'full',
+    withheld: () => undefined,
   } as unknown as HandlerState
   const preview = (from: string, to: string) => buildCombinedTree(state, sessions[from as keyof typeof sessions], [{ person: to, session: sessions[from as keyof typeof sessions] }])
   const deps = (me: string): ConflictDeps => ({

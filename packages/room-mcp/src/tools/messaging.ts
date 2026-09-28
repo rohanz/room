@@ -145,7 +145,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `error: nobody called ${to} is or was in this room; participants: ${valid.join(', ')}`
       }
       if (sendType === 'note' && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`
-      if (repliedNote && a.to && a.to !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`
+      if (repliedNote && a.to && to !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`
       if (to && !s.room.workerOf(to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)

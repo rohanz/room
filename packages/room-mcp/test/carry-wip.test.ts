@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
-import { Awareness } from 'y-protocols/awareness'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
@@ -117,9 +117,15 @@ function world() {
     exits.get(tag)!(0)
     await vi.waitFor(() => expect(a.workers.get(tag)).toMatchObject({ status: 'done', exitCode: 0 }))
   }
-  async function workerPreview(tag: string, run?: string) {
+  async function workerPreview(tag: string, run?: string, leadShare?: 'intent' | 'declared') {
     const w = b.workers.get(tag)!
     const ws = { ...fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir), pinnedRoom: true } as Session
+    if (leadShare) {
+      const peer = new Awareness(new Y.Doc())
+      peer.setLocalState({ user: lead, share: leadShare })
+      applyAwarenessUpdate(ws.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+      peer.destroy()
+    }
     const tools = createTools({ getSession: () => ws, setSession: () => {}, cwd: w.dir })
     try { return await tools.call('room_preview_merge', { person: 'rohanz', ...(run ? { run } : {}) }) as string }
     finally { await tools.shutdown(); ws.graph?.stop() }
@@ -231,6 +237,25 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(patch).toBeTruthy()
     expect(fs.readFileSync(patch!, 'utf8')).toContain('diff --git a/keep.txt b/keep.txt')
     expect(fs.readFileSync(patch!, 'utf8')).not.toContain('notes.txt')
+  })
+  it('keeps the event loop responsive during slow discard git steps', async () => {
+    const prepared = await prepareWorktree(repo, 'slow-patch', 'rohanz')
+    put(prepared.dir, 'keep.txt', 'worker edit\n')
+    const w = { tag: 'slow-patch', branch: prepared.branch, dir: prepared.dir, base: prepared.base } as Parameters<typeof saveDiscardPatch>[1]
+    const bin = path.join(root, 'bin')
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
+    put(root, 'bin/git', `#!/bin/sh\ncase "$1" in read-tree|add|diff) sleep 0.1;; esac\nexec '${realGit}' "$@"\n`, 0o755)
+    const originalPath = process.env.PATH
+    process.env.PATH = `${bin}:${originalPath}`
+    let timerFired = false
+    const timer = setTimeout(() => { timerFired = true }, 20)
+    try {
+      expect(await saveDiscardPatch(repo, w)).toBeTruthy()
+      expect(timerFired).toBe(true)
+    } finally {
+      clearTimeout(timer)
+      process.env.PATH = originalPath
+    }
   })
   it('tells a worker which carried files belong to the lead', async () => {
     leadWip()
@@ -428,14 +453,29 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(preview).not.toContain('CONFLICTS:')
   })
 
-  it('worker preview keeps a carried lead edit when the lead overlay omits the file', async () => {
+  it('worker preview assumes an unshared lead path kept its carried text, with a caveat', async () => {
     put(repo, 'shared.txt', lines([2, 'lead carried']))
     const t = world()
     const { dir } = await t.spawn('unshared-lead')
     put(dir, 'shared.txt', lines([2, 'lead carried'], [9, 'worker appended']))
-    const preview = await t.workerPreview('unshared-lead', 'cat shared.txt')
+    const preview = await t.workerPreview('unshared-lead', 'cat shared.txt', 'declared')
     expect(preview).toContain('no conflicts')
+    expect(preview).toContain("rohanz's current text of shared.txt is not shared; assumed unchanged since your spawn")
     expect(preview).toContain(lines([2, 'lead carried'], [9, 'worker appended']))
+  })
+
+  it('worker preview reports a shared lead revert to HEAD as a conflict', async () => {
+    put(repo, 'shared.txt', lines([2, 'lead carried']))
+    const t = world()
+    const { dir } = await t.spawn('lead-revert')
+    t.a.setOverlay('rohanz', 'shared.txt', lines([2, 'lead carried']))
+    put(repo, 'shared.txt', lines())
+    t.a.clearOverlay('rohanz', 'shared.txt')
+    put(dir, 'shared.txt', lines([2, 'worker changed']))
+    const preview = await t.workerPreview('lead-revert')
+    expect(preview).toContain('CONFLICTS:')
+    expect(preview).toContain('shared.txt')
+    expect(preview).not.toContain('assumed unchanged since your spawn')
   })
 
   it('worker preview includes a lead commit after spawn when the lead overlay omits the file', async () => {
