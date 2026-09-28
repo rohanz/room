@@ -70,6 +70,7 @@ export class HubClient {
   private readonly leases = new Map<string, Lease>()
   private readonly lostLeases = new Set<string>()
   private readonly pending = new Map<string, Pending>()
+  private readonly retryWaits = new Set<{ timer: ReturnType<typeof setTimeout>; reject: (error: Error) => void }>()
   private readonly unsubs: Array<() => void>
   private readonly interval: ReturnType<typeof setInterval>
   private nextId = 0
@@ -77,6 +78,7 @@ export class HubClient {
   private incarnation?: number
   private pauseReason?: string
   private renewing = new Set<string>()
+  private closed = false
 
   constructor(private readonly options: HubClientOptions) {
     this.transport = options.transport
@@ -92,8 +94,16 @@ export class HubClient {
   }
 
   close(): void {
+    if (this.closed) return
+    this.closed = true
+    this.helloOk = false
     clearInterval(this.interval)
     for (const unsub of this.unsubs) unsub()
+    for (const wait of this.retryWaits) {
+      clearTimeout(wait.timer)
+      wait.reject(new Error('hub client closed'))
+    }
+    this.retryWaits.clear()
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer)
       pending.reject(new Error('hub client closed'))
@@ -102,6 +112,7 @@ export class HubClient {
   }
 
   paused(): string | undefined {
+    if (this.closed) return PAUSED
     this.dropExpired()
     if (this.pauseReason) return `${PAUSED} ${this.pauseReason}`
     return this.helloOk && this.lostLeases.size === 0 ? undefined : PAUSED
@@ -137,6 +148,7 @@ export class HubClient {
   }
 
   async renew(name: string): Promise<void> {
+    this.assertOpen()
     this.dropExpired()
     const lease = this.leases.get(name)
     if (!lease) throw new Error(NOT_SENT)
@@ -159,6 +171,7 @@ export class HubClient {
   }
 
   async release(name: string): Promise<void> {
+    this.assertOpen()
     const lease = this.leases.get(name)
     if (!lease) { this.lostLeases.delete(name); return }
     try { await this.request({ op: 'release', name, epoch: lease.epoch }) }
@@ -169,9 +182,14 @@ export class HubClient {
   }
 
   async post(msg: PostIn, options: { lease?: { name: string; epoch: number }; auto?: boolean } = {}): Promise<Reply> {
+    this.assertOpen()
     if (this.paused()) throw new Error(NOT_SENT)
     if (options.lease && this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) throw new Error(NOT_SENT)
-    try { return await this.request({ op: 'post', msg, ...options }) }
+    try { return await this.request({ op: 'post', msg, ...options }, () => {
+      if (this.paused() || (options.lease && this.leases.get(options.lease.name)?.epoch !== options.lease.epoch)) {
+        throw new Error(NOT_SENT)
+      }
+    }) }
     catch (error) {
       if (error instanceof HubError && error.reason === 'stale' && options.lease
         && this.leases.get(options.lease.name)?.epoch === options.lease.epoch) this.lose(options.lease.name)
@@ -225,16 +243,19 @@ export class HubClient {
   }
 
   private async request(body: RequestBody, onSend?: () => void): Promise<Extract<Reply, { ok: true }>> {
-    const startedMono = this.mono(), startedWall = Date.now()
+    this.assertOpen()
+    const startedMono = this.mono(), startedWall = this.wall()
     const startingBudget = this.timeoutMs + SETTLE_MS
-    const elapsed = () => Math.max(this.mono() - startedMono, Date.now() - startedWall)
+    const elapsed = () => Math.max(this.mono() - startedMono, this.wall() - startedWall)
     for (;;) {
       const t = await this.requestOnce(body, onSend)
+      this.assertOpen()
       if (t.ok) return t
       if (t.reason === 'starting') {
         const remaining = startingBudget - elapsed()
         if (remaining <= 0) throw new HubError('starting', t.text)
-        await new Promise(resolve => setTimeout(resolve, Math.min(Math.max(1, t.retryMs ?? 1_000), remaining)))
+        await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1_000), remaining))
+        this.assertOpen()
         if (elapsed() >= startingBudget) throw new HubError('starting', t.text)
         continue
       }
@@ -247,6 +268,7 @@ export class HubClient {
   }
 
   private requestOnce(body: RequestBody, onSend?: () => void): Promise<Reply> {
+    if (this.closed) return Promise.reject(new Error('hub client closed'))
     if (!this.transport.connected()) return Promise.reject(new Error('hub unreachable'))
     const id = `r${++this.nextId}`
     return new Promise((resolve, reject) => {
@@ -255,12 +277,25 @@ export class HubClient {
         reject(new Error('the hub did not answer'))
       }, this.timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
-      try { onSend?.(); this.transport.send(encodeFrame({ ...body, v: 1, id } as Req)) }
+      try { this.assertOpen(); onSend?.(); this.assertOpen(); this.transport.send(encodeFrame({ ...body, v: 1, id } as Req)) }
       catch (error) {
         clearTimeout(timer)
         this.pending.delete(id)
         reject(error)
       }
+    })
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error('hub client closed')
+  }
+
+  private retryDelay(ms: number): Promise<void> {
+    this.assertOpen()
+    return new Promise((resolve, reject) => {
+      const wait = { timer: undefined as unknown as ReturnType<typeof setTimeout>, reject }
+      wait.timer = setTimeout(() => { this.retryWaits.delete(wait); resolve() }, ms)
+      this.retryWaits.add(wait)
     })
   }
 }

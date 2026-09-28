@@ -4,7 +4,7 @@
  * time, and expires a participant once the measured total reaches ROOM_STALE_DAYS.
  */
 import type * as Y from 'yjs'
-import { participantRecord, type RoomDoc } from './doc.js'
+import { participantRecord, type ReleasePoster, type RoomDoc } from './doc.js'
 import { ROOM_STALE_MS, type ParticipantView } from './views.js'
 
 /** For messages only; ROOM_STALE_MS in views.ts is the rule. */
@@ -26,9 +26,9 @@ export class ExpiryTenure {
    * One leader tick. A participant is measured only when it has a `holder` (a lease-holding session that
    * could be fresh) and is not a worker. A segment adds time only while `expiry[name]` still holds what
    * this tenure last saw there, so a concurrent leader's write restarts the measurement instead of being
-   * counted twice. Returns the names it expired.
+   * counted twice. Returns the names it expired; `post` appends their release notices.
    */
-  observe(room: RoomDoc, view: readonly ParticipantView[], origin?: unknown): string[] {
+  observe(room: RoomDoc, view: readonly ParticipantView[], origin?: unknown, post?: ReleasePoster): string[] {
     const now = this.clock()
     const expired: string[] = []
     const measured = new Set<string>()
@@ -54,10 +54,16 @@ export class ExpiryTenure {
         segment.expect = next
         if (next.observedMs >= ROOM_STALE_MS) expired.push(name)
       }
-      for (const name of expired) expireParticipant(room, name, origin)
+      for (const name of expired) expireParticipant(room, name, origin, post)
     }, origin)
     for (const name of this.segments.keys()) if (!measured.has(name) || expired.includes(name)) this.segments.delete(name)
     return expired
+  }
+
+  /** The participant is back (a lease granted or adopted between ticks): its absence restarts from zero. */
+  present(room: RoomDoc, name: string, origin?: unknown): void {
+    this.segments.delete(name)
+    if (room.expiry.has(name)) room.doc.transact(() => { room.expiry.delete(name) }, origin)
   }
 }
 
@@ -66,7 +72,7 @@ export class ExpiryTenure {
  * overlay text, claims (with release notices), scope, graph and owned conflict slots. Owed mail is
  * the ledger's and stays.
  */
-export function expireParticipant(room: RoomDoc, name: string, origin?: unknown): void {
+export function expireParticipant(room: RoomDoc, name: string, origin?: unknown, post?: ReleasePoster): void {
   const prefix = `${name}\u0000`
   const dropOwned = (map: Y.Map<unknown>) => { for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key) }
   room.doc.transact(() => {
@@ -74,7 +80,7 @@ export function expireParticipant(room: RoomDoc, name: string, origin?: unknown)
     dropOwned(room.doc.getMap('manifest'))
     room.doc.getMap('manifestHead').delete(name)
     dropOwned(room.doc.getMap('conflicts'))
-    room.clearWorkerCoordination(name, `expired after ${ROOM_STALE_DAYS} days offline`)
+    room.clearWorkerCoordination(name, `expired after ${ROOM_STALE_DAYS} days offline`, post)
     room.bases.delete(name)
     room.expiry.delete(name)
   }, origin)

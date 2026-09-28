@@ -27,6 +27,8 @@ import { ledger as ledgerView, areaSummary as areaSummaryView, emptyLedgerArchiv
 type ScopeInput = Omit<Scope, 'by' | 'at'> & { at?: number }
 type NewScope = Omit<Scope, 'at'> & { at?: number }
 type PostBody<T extends Msg> = Omit<T, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> & { priority?: Priority }
+/** Appends the release notices of a cleared participant: `RoomDoc.post`, or the hub's sequenced append. */
+export type ReleasePoster = (from: Identity, body: PostBody<ReleaseMsg>) => unknown
 const validColorIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) < PALETTE.length
 
 export interface ParticipantHolder {
@@ -196,11 +198,11 @@ export class RoomDoc {
   }
 
   /** Remove coordination from a worker that can no longer act, including records from older releases. */
-  clearWorkerCoordination(name: string, reason = 'worker stopped'): void {
+  clearWorkerCoordination(name: string, reason = 'worker stopped', post: ReleasePoster = (from, body) => this.post<ReleaseMsg>(from, body)): void {
     this.doc.transact(() => {
       for (const claim of this.claims.values()) if (claim.by === name) {
         this.claims.delete(claim.id)
-        this.post<ReleaseMsg>({ name, kind: claim.byKind }, { type: 'release', claimId: claim.id, path: claim.path, summary: reason })
+        post({ name, kind: claim.byKind }, { type: 'release', claimId: claim.id, path: claim.path, summary: reason })
       }
       this.clearOverlays(name)
       this.scopes.delete(name)

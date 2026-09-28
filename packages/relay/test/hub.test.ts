@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
 import { SETTLE_MS, encodeSeq } from '@room/hub-core'
@@ -111,6 +112,69 @@ describe('relay hub wiring', () => {
       await c.close()
     } finally { await relay.close() }
   })
+
+  it('separate processes: one authority; a stalled owner is not replaced; a killed one is, and the survivor grants', async () => {
+    const common = await makeCommonDir()
+    const barrier = path.join(common, 'go')
+    const here = path.dirname(fileURLToPath(import.meta.url))
+    type Report = { pid: number; owned: boolean; port: number; key: string }
+    const reports = new Map<number, Report>()
+    const contender = (): ChildProcess => {
+      // `--import tsx`, not tsx's CLI, which runs the script in a second process that the signals would miss.
+      const child = spawn(process.execPath, ['--import', 'tsx', path.join(here, 'authority-child.ts'), common, 'local/x/main', barrier], { cwd: here, stdio: ['ignore', 'pipe', 'ignore'] })
+      let buffered = ''
+      child.stdout!.on('data', chunk => {
+        buffered += chunk
+        const lines = buffered.split('\n'); buffered = lines.pop()!
+        for (const line of lines) { const r = JSON.parse(line) as Report; reports.set(r.pid, r) }
+      })
+      return child
+    }
+    const children = [contender(), contender()]
+    const lockOwner = () => JSON.parse(fs.readFileSync(path.join(common, 'room', 'hub', 'authority.lock'), 'utf8')).pid as number
+    try {
+      // Both are loaded and waiting; they start together.
+      await new Promise(r => setTimeout(r, 1500))
+      fs.writeFileSync(barrier, '')
+      await waitFor(() => children.every(c => reports.has(c.pid!)), 20_000)
+      const owners = children.filter(c => reports.get(c.pid!)!.owned)
+      expect(owners).toHaveLength(1)
+      const [owner] = owners, survivor = children.find(c => c !== owner)!
+      const { port, key } = reports.get(owner.pid!)!
+      expect(reports.get(survivor.pid!)).toMatchObject({ owned: false, port, key })
+      expect(lockOwner()).toBe(owner.pid)
+      const client = await socketClient(roomUrl(port, 'local/x/main', key))
+      const first = await waitFor(async () => { const r = await client.hello(); return r.ok && r }, 5000)
+      const epoch = (await waitFor(async () => { const r = await client.send({ op: 'acquire', name: 'ada', holder: holder('s1') }); return r.ok && r }, 10_000)).epoch as number
+      await client.close()
+
+      // Stalled but alive: its lock is not recoverable, so nobody takes over.
+      owner.kill('SIGSTOP')
+      await new Promise(r => setTimeout(r, 3000))
+      expect(reports.get(survivor.pid!)!.owned).toBe(false)
+      expect(lockOwner()).toBe(owner.pid)
+      owner.kill('SIGCONT')
+      const resumed = await socketClient(roomUrl(port, 'local/x/main', key))
+      expect(await waitFor(async () => { const r = await resumed.hello(); return r.ok && r }, 5000)).toMatchObject({ incarnation: first.incarnation })
+      await resumed.close()
+
+      // Killed without cleanup: the survivor recovers the lock and serves on the same port.
+      owner.kill('SIGKILL')
+      await new Promise(r => owner.once('exit', r))
+      await waitFor(() => reports.get(survivor.pid!)!.owned, 10_000)
+      expect(lockOwner()).toBe(survivor.pid)
+      const next = await waitFor(async () => { try { return await socketClient(roomUrl(port, 'local/x/main', key)) } catch { return undefined } }, 5000)
+      const hello = await waitFor(async () => { const r = await next.hello(); return r.ok && r }, 5000)
+      expect(hello.incarnation as number).toBeGreaterThan(first.incarnation as number)
+      expect(await next.send({ op: 'renew', name: 'ada', epoch })).toMatchObject({ ok: true })
+      const bob = await waitFor(async () => { const r = await next.send({ op: 'acquire', name: 'bob', holder: holder('s2') }); return r.ok && r }, 10_000)
+      expect(bob.epoch as number).toBeGreaterThan(epoch)
+      await next.close()
+    } finally {
+      for (const c of children) { c.kill('SIGCONT'); c.kill('SIGKILL') }
+      fs.rmSync(common, { recursive: true, force: true })
+    }
+  }, 60_000)
 
   it('a survivor takes the authority from the stopped owner and starts from its own replica', async () => {
     const common = await makeCommonDir()

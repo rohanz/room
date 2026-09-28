@@ -16492,11 +16492,11 @@ var init_doc = __esm({
         return repairs;
       }
       /** Remove coordination from a worker that can no longer act, including records from older releases. */
-      clearWorkerCoordination(name2, reason = "worker stopped") {
+      clearWorkerCoordination(name2, reason = "worker stopped", post = (from2, body2) => this.post(from2, body2)) {
         this.doc.transact(() => {
           for (const claim2 of this.claims.values()) if (claim2.by === name2) {
             this.claims.delete(claim2.id);
-            this.post({ name: name2, kind: claim2.byKind }, { type: "release", claimId: claim2.id, path: claim2.path, summary: reason });
+            post({ name: name2, kind: claim2.byKind }, { type: "release", claimId: claim2.id, path: claim2.path, summary: reason });
           }
           this.clearOverlays(name2);
           this.scopes.delete(name2);
@@ -17950,7 +17950,7 @@ var init_memory = __esm({
 });
 
 // packages/shared/src/expiry.ts
-function expireParticipant(room, name2, origin) {
+function expireParticipant(room, name2, origin, post) {
   const prefix = `${name2}\0`;
   const dropOwned = (map2) => {
     for (const key of [...map2.keys()]) if (key.startsWith(prefix)) map2.delete(key);
@@ -17960,7 +17960,7 @@ function expireParticipant(room, name2, origin) {
     dropOwned(room.doc.getMap("manifest"));
     room.doc.getMap("manifestHead").delete(name2);
     dropOwned(room.doc.getMap("conflicts"));
-    room.clearWorkerCoordination(name2, `expired after ${ROOM_STALE_DAYS} days offline`);
+    room.clearWorkerCoordination(name2, `expired after ${ROOM_STALE_DAYS} days offline`, post);
     room.bases.delete(name2);
     room.expiry.delete(name2);
   }, origin);
@@ -17986,9 +17986,9 @@ var init_expiry = __esm({
        * One leader tick. A participant is measured only when it has a `holder` (a lease-holding session that
        * could be fresh) and is not a worker. A segment adds time only while `expiry[name]` still holds what
        * this tenure last saw there, so a concurrent leader's write restarts the measurement instead of being
-       * counted twice. Returns the names it expired.
+       * counted twice. Returns the names it expired; `post` appends their release notices.
        */
-      observe(room, view, origin) {
+      observe(room, view, origin, post) {
         const now = this.clock();
         const expired = [];
         const measured = /* @__PURE__ */ new Set();
@@ -18014,10 +18014,17 @@ var init_expiry = __esm({
             segment.expect = next;
             if (next.observedMs >= ROOM_STALE_MS) expired.push(name2);
           }
-          for (const name2 of expired) expireParticipant(room, name2, origin);
+          for (const name2 of expired) expireParticipant(room, name2, origin, post);
         }, origin);
         for (const name2 of this.segments.keys()) if (!measured.has(name2) || expired.includes(name2)) this.segments.delete(name2);
         return expired;
+      }
+      /** The participant is back (a lease granted or adopted between ticks): its absence restarts from zero. */
+      present(room, name2, origin) {
+        this.segments.delete(name2);
+        if (room.expiry.has(name2)) room.doc.transact(() => {
+          room.expiry.delete(name2);
+        }, origin);
       }
     };
   }
@@ -45042,7 +45049,8 @@ function serializedStore(record2) {
     }
   };
 }
-var holderKey = (name2) => `${name2}\0holder`;
+var HOLDER = "\0holder";
+var holderKey = (name2) => `${name2}${HOLDER}`;
 var encoder2 = new TextEncoder();
 var sizeOf2 = (value2) => encoder2.encode(JSON.stringify(value2)).length;
 var isObject2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
@@ -45059,19 +45067,35 @@ function hubHolder(v) {
   return { ...holder, epoch: v.epoch, at: typeof v.at === "number" ? v.at : 0, ...ended ? { ended } : {} };
 }
 var sameRecord = (a, b) => !!a && JSON.stringify(a) === JSON.stringify(b);
-function seenIncarnation(doc) {
-  let max2 = -1;
-  const see = (v) => {
-    if (isCounter(v)) max2 = Math.max(max2, incarnationOf(v));
+function knownOf(record2) {
+  const { epoch, at, ended, ...holder } = record2;
+  return { epoch, at, holder, ...ended ? { ended } : {} };
+}
+function hydrate(known, record2) {
+  if (known.holder || record2.epoch !== known.epoch) return;
+  const { at, holder } = knownOf(record2);
+  known.at = at;
+  known.holder = holder;
+}
+var higher = (a, b) => a === void 0 ? b : b === void 0 ? a : Math.max(a, b);
+function visible(doc) {
+  let epoch, seq;
+  const see = (v, kind) => {
+    if (!isCounter(v)) return;
+    if (kind === "epoch") epoch = higher(epoch, v);
+    else seq = higher(seq, v);
   };
   const meta2 = doc.metaMap;
-  if (isCounter(meta2.get("hubIncarnation"))) max2 = Math.max(max2, meta2.get("hubIncarnation"));
-  see(meta2.get("hubEpoch"));
-  see(meta2.get("hubSeq"));
-  for (const m of doc.bus.toArray()) see(m?.seq);
-  for (const m of doc.mail.values()) see(m?.seq);
-  for (const [key, value2] of doc.participants.entries()) if (key.endsWith("\0holder")) see(value2?.epoch);
-  return max2;
+  see(meta2.get("hubEpoch"), "epoch");
+  see(meta2.get("hubSeq"), "seq");
+  for (const m of doc.bus.toArray()) see(m?.seq, "seq");
+  for (const m of doc.mail.values()) see(m?.seq, "seq");
+  for (const [key, value2] of doc.participants.entries()) if (key.endsWith(HOLDER)) see(value2?.epoch, "epoch");
+  const incarnation = Math.max(
+    isCounter(meta2.get("hubIncarnation")) ? meta2.get("hubIncarnation") : -1,
+    ...[epoch, seq].map((v) => v === void 0 ? -1 : incarnationOf(v))
+  );
+  return { epoch, seq, incarnation };
 }
 async function startHub(host) {
   const hub = new RoomHub(host);
@@ -45099,6 +45123,7 @@ var RoomHub = class {
   unauthorized = false;
   tenure;
   leases = /* @__PURE__ */ new Map();
+  records = /* @__PURE__ */ new Map();
   greeted = /* @__PURE__ */ new Set();
   push = () => {
   };
@@ -45120,7 +45145,7 @@ var RoomHub = class {
   }
   /** Take a new incarnation (§3): durable before anything is issued under it. */
   async incarnate() {
-    const floor2 = Math.max(seenIncarnation(this.doc) + 1, this.incarnation + 1, Math.floor(this.host.wall() / 1e3));
+    const floor2 = Math.max(visible(this.doc).incarnation + 1, this.incarnation + 1, Math.floor(this.host.wall() / 1e3));
     const next = await this.host.store.advance(floor2);
     if (!Number.isInteger(next) || next < floor2 || next >= 2 ** 32) throw new Error(`incarnation store returned ${next} for floor ${floor2}`);
     this.incarnation = next;
@@ -45163,62 +45188,98 @@ var RoomHub = class {
   record(name2) {
     return hubHolder(this.doc.participants.get(holderKey(name2)));
   }
-  recordOf(lease) {
-    return { ...lease.holder, epoch: lease.epoch, at: lease.at };
+  /** The doc record for what the hub knows of a name, when it knows the holder. */
+  recordOf(k) {
+    return k.holder && { ...k.holder, epoch: k.epoch, at: k.at, ...k.ended ? { ended: k.ended } : {} };
   }
-  /** The name's live lease; one past its TTL, or whose process is gone, ends here. */
+  /** A lease is live from here: granted, or adopted from an earlier incarnation. The participant is back (§8). */
+  hold(name2, lease) {
+    this.leases.set(name2, lease);
+    this.records.set(name2, lease);
+    this.tenure.present(this.doc, name2, HUB_ORIGIN);
+  }
+  /**
+   * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
+   * an earlier incarnation whose own record now says it ended (that hub's release or expiry, synced late).
+   */
   live(name2) {
     const lease = this.leases.get(name2);
     if (!lease) return void 0;
-    if (this.host.mono() - lease.renewed < LEASE_TTL_MS && !(lease.holder && this.host.holderDead?.(lease.holder))) return lease;
-    this.end(name2, lease, "expired");
+    const record2 = incarnationOf(lease.epoch) < this.incarnation ? this.record(name2) : void 0;
+    const ended = record2?.epoch === lease.epoch ? record2.ended : void 0;
+    const expired = this.host.mono() - lease.renewed >= LEASE_TTL_MS || !!(lease.holder && this.host.holderDead?.(lease.holder));
+    if (!ended && !expired) return lease;
+    this.end(name2, lease, ended ?? "expired");
     this.notify(name2, lease, "expired");
     return void 0;
   }
   end(name2, lease, how) {
     this.leases.delete(name2);
     const current = this.record(name2);
-    const base = current?.epoch === lease.epoch ? current : lease.holder ? this.recordOf({ ...lease, holder: lease.holder }) : void 0;
-    if (base) this.doc.doc.transact(() => {
-      this.doc.participants.set(holderKey(name2), { ...base, ended: how });
+    if (current) hydrate(lease, current);
+    const ended = { epoch: lease.epoch, at: lease.at, ...lease.holder ? { holder: lease.holder } : {}, ended: how };
+    this.records.set(name2, ended);
+    const record2 = this.recordOf(ended);
+    if (record2) this.doc.doc.transact(() => {
+      this.doc.participants.set(holderKey(name2), record2);
     }, HUB_ORIGIN);
     this.host.log(`hub: lease ${lease.epoch} on ${name2} ${how}`);
   }
-  /** Inherited from an earlier incarnation, not granted by this one. */
-  inherited(lease) {
-    return incarnationOf(lease.epoch) < this.incarnation;
-  }
-  /** Carry over un-ended holders from earlier incarnations with a fresh TTL (§4.4). */
+  /**
+   * Take in earlier incarnations' holders (§4.4), at the start and while settling: an un-ended one above
+   * what the hub knows is carried over with a fresh TTL, an ended one is remembered. The mirrors' baselines
+   * rise to the highest values seen.
+   */
   adoptSynced() {
+    const seen = visible(this.doc);
+    this.lastEpoch = higher(this.lastEpoch, seen.epoch);
+    this.lastSeq = higher(this.lastSeq, seen.seq);
     for (const [key, value2] of this.doc.participants.entries()) {
-      if (!key.endsWith("\0holder")) continue;
+      if (!key.endsWith(HOLDER)) continue;
       const record2 = hubHolder(value2);
-      if (!record2 || record2.ended || incarnationOf(record2.epoch) >= this.incarnation) continue;
-      const name2 = key.slice(0, -"\0holder".length);
+      if (!record2 || incarnationOf(record2.epoch) >= this.incarnation) continue;
+      const name2 = key.slice(0, -HOLDER.length);
+      const known = this.records.get(name2);
       const lease = this.leases.get(name2);
-      const { epoch, at, ended: _ended, ...holder } = record2;
-      if (lease?.epoch === epoch) {
-        lease.holder ??= holder;
+      if (known && record2.epoch <= known.epoch) {
+        if (lease) hydrate(lease, record2);
         continue;
       }
-      if (lease && !(this.inherited(lease) && epoch > lease.epoch)) continue;
-      if (lease) this.notify(name2, lease, "superseded");
-      this.leases.set(name2, { epoch, holder, at, renewed: this.host.mono() });
+      if (lease) {
+        this.leases.delete(name2);
+        this.notify(name2, lease, "superseded");
+      }
+      if (record2.ended) this.records.set(name2, knownOf(record2));
+      else this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
     }
+  }
+  /** Whether `count` more values can be issued now; if not, a new incarnation is taken (§3). */
+  reserve(kind, count) {
+    if (this.reincarnating) return false;
+    if ((kind === "epoch" ? this.epochs : this.seqs) + count <= this.limit) return true;
+    this.reincarnating = this.incarnate().catch((e) => this.host.log(`hub: could not take a new incarnation: ${e instanceof Error ? e.message : e}`)).finally(() => {
+      this.reincarnating = void 0;
+    });
+    return false;
   }
   /** The next epoch or seq, or undefined while a new incarnation is being taken. */
   issue(kind) {
-    if (this.reincarnating) return void 0;
-    const n = kind === "epoch" ? this.epochs : this.seqs;
-    if (n >= this.limit) {
-      this.reincarnating = this.incarnate().catch((e) => this.host.log(`hub: could not take a new incarnation: ${e instanceof Error ? e.message : e}`)).finally(() => {
-        this.reincarnating = void 0;
-      });
-      return void 0;
-    }
-    if (kind === "epoch") this.epochs++;
-    else this.seqs++;
+    if (!this.reserve(kind, 1)) return void 0;
+    const n = kind === "epoch" ? this.epochs++ : this.seqs++;
     return encodeSeq(this.incarnation, n);
+  }
+  /** Append a message with the next seq and the hub's `at`, mirrored in `meta.hubSeq`; undefined while reincarnating. */
+  append(msg, wall) {
+    const seq = this.issue("seq");
+    if (seq === void 0) return void 0;
+    const record2 = { ...msg, seq, at: wall };
+    this.lastSeq = seq;
+    this.doc.doc.transact(() => {
+      this.doc.bus.push([record2]);
+      this.doc.metaMap.set("hubSeq", seq);
+    }, HUB_ORIGIN);
+    if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN });
+    return record2;
   }
   // ---- requests ----
   handle(conn, frame, p) {
@@ -45268,9 +45329,9 @@ var RoomHub = class {
     if (epoch === void 0) return starting();
     if (live) this.notify(name2, live, "superseded");
     const lease = { epoch, holder, at: this.host.wall(), renewed: this.host.mono(), conn };
-    this.leases.set(name2, lease);
     this.lastEpoch = epoch;
     this.doc.doc.transact(() => {
+      this.hold(name2, lease);
       this.doc.participants.set(holderKey(name2), this.recordOf(lease));
       this.doc.metaMap.set("hubEpoch", epoch);
     }, HUB_ORIGIN);
@@ -45287,11 +45348,12 @@ var RoomHub = class {
       live.conn = conn;
       return ok();
     }
-    if (this.settling() && incarnationOf(epoch) < this.incarnation && (!live || this.inherited(live) && epoch > live.epoch) && (!this.host.owns || this.host.owns(p, name2))) {
+    const known = this.records.get(name2);
+    if (this.settling() && incarnationOf(epoch) < this.incarnation && (!known || epoch > known.epoch) && (!this.host.owns || this.host.owns(p, name2))) {
       if (live) this.notify(name2, live, "superseded");
       const record2 = this.record(name2);
-      const { epoch: _e, at: _a3, ended: _x, ...holder } = record2?.epoch === epoch ? record2 : {};
-      this.leases.set(name2, { epoch, ...holder.sessionId ? { holder } : {}, at: record2?.epoch === epoch ? record2.at : this.host.wall(), renewed: this.host.mono(), conn });
+      const synced = record2?.epoch === epoch && !record2.ended ? knownOf(record2) : { epoch, at: this.host.wall() };
+      this.hold(name2, { ...synced, renewed: this.host.mono(), conn });
       this.host.log(`hub: adopted ${name2} at epoch ${epoch} from a renew`);
       return ok();
     }
@@ -45300,8 +45362,9 @@ var RoomHub = class {
   release(req, fail) {
     if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "release needs a name and an epoch");
     const live = this.live(req.name);
+    const known = this.records.get(req.name);
     if (live?.epoch === req.epoch) this.end(req.name, live, "released");
-    else if (!(this.record(req.name)?.epoch === req.epoch && this.record(req.name)?.ended)) return fail("stale", `epoch ${req.epoch} is not the live lease on ${req.name}`);
+    else if (!(known?.epoch === req.epoch && known.ended)) return fail("stale", `epoch ${req.epoch} is not the live lease on ${req.name}`);
     return { v: 1, re: req.id, ok: true };
   }
   post(req, p, fail, starting) {
@@ -45313,8 +45376,8 @@ var RoomHub = class {
     }
     const found = this.doc.messages().find((m) => m.id === msg.id) ?? this.doc.mail.get(msg.id);
     if (found) {
-      const seq2 = found.seq;
-      return { v: 1, re: req.id, ok: true, ...isCounter(seq2) ? { seq: seq2 } : {}, at: found.at, duplicate: true };
+      const seq = found.seq;
+      return { v: 1, re: req.id, ok: true, ...isCounter(seq) ? { seq } : {}, at: found.at, duplicate: true };
     }
     if (this.doc.archive.has(msg.id) || this.doc.outcomes.has(msg.id)) return { v: 1, re: req.id, ok: true, duplicate: true, gone: true };
     const size2 = sizeOf2(msg);
@@ -45326,22 +45389,15 @@ var RoomHub = class {
       if (!admission.ok) return fail("over-cap", admission.reason);
     }
     if (this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${"login" in p ? p.login ?? "an anonymous connection" : "a local connection"}; accepted`);
-    const seq = this.issue("seq");
-    if (seq === void 0) return starting();
     let priority2;
     try {
       priority2 = msg.priority ?? defaultPriority(msg);
     } catch {
       return fail("invalid", `cannot prioritise a ${msg.type} message`);
     }
-    const record2 = { ...msg, priority: priority2, seq, at: wall };
-    this.lastSeq = seq;
-    this.doc.doc.transact(() => {
-      this.doc.bus.push([record2]);
-      this.doc.metaMap.set("hubSeq", seq);
-    }, HUB_ORIGIN);
-    if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN });
-    return { v: 1, re: req.id, ok: true, seq, at: wall };
+    const record2 = this.append({ ...msg, priority: priority2 }, wall);
+    if (!record2) return starting();
+    return { v: 1, re: req.id, ok: true, seq: record2.seq, at: wall };
   }
   // ---- maintenance ----
   tick() {
@@ -45366,19 +45422,20 @@ var RoomHub = class {
     const { doc } = this;
     const archived = (id2) => doc.archive.has(id2) || doc.outcomes.has(id2);
     doc.doc.transact(() => {
-      const names = new Set(this.leases.keys());
-      for (const [key, value2] of doc.participants.entries()) if (key.endsWith("\0holder") && hubHolder(value2)) names.add(key.slice(0, -"\0holder".length));
+      const names = new Set(this.records.keys());
+      for (const [key, value2] of doc.participants.entries()) if (key.endsWith(HOLDER) && hubHolder(value2)) names.add(key.slice(0, -HOLDER.length));
       for (const name2 of names) {
         const current = this.record(name2);
-        const lease = this.leases.get(name2);
-        if (lease?.holder) {
-          const want = this.recordOf({ ...lease, holder: lease.holder });
+        let known = this.records.get(name2);
+        if (current && !this.leases.has(name2) && (!known || current.epoch > known.epoch)) {
+          known = knownOf(current.ended ? current : { ...current, ended: "expired" });
+          this.records.set(name2, known);
+        }
+        if (!known) continue;
+        if (current) hydrate(known, current);
+        const want = this.recordOf(known);
+        if (want) {
           if (!sameRecord(current, want)) doc.participants.set(holderKey(name2), want);
-        } else if (lease) {
-          if (current?.epoch === lease.epoch && !current.ended) {
-            const { epoch: _e, at: _a3, ended: _x, ...holder } = current;
-            lease.holder = holder;
-          }
         } else if (current && !current.ended) doc.participants.set(holderKey(name2), { ...current, ended: "expired" });
       }
       const meta2 = doc.metaMap;
@@ -45396,21 +45453,28 @@ var RoomHub = class {
       for (const i2 of drop.reverse()) doc.bus.delete(i2, 1);
     }, HUB_ORIGIN);
   }
-  /** Measure absence as "no live lease" and expire at ROOM_STALE_DAYS (§8). */
+  /**
+   * Measure absence as "no live lease" and expire at ROOM_STALE_DAYS (§8). An expired participant's claims
+   * are released with sequenced notices, so a pass runs only when every claim could get a seq.
+   */
   expire() {
+    if (!this.reserve("seq", Math.min(this.doc.claims.size, this.limit))) return;
     const view = [];
     for (const key of this.doc.participants.keys()) {
-      if (!key.endsWith("\0holder")) continue;
-      const name2 = key.slice(0, -"\0holder".length);
+      if (!key.endsWith(HOLDER)) continue;
+      const name2 = key.slice(0, -HOLDER.length);
       view.push({ name: name2, fresh: !!this.live(name2), visible: true });
     }
-    for (const name2 of this.tenure.observe(this.doc, view, HUB_ORIGIN)) {
+    const wall = this.host.wall();
+    const post = (from2, body2) => this.append({ ...body2, priority: body2.priority ?? defaultPriority(body2), id: newId("m_"), from: from2.name, fromKind: from2.kind }, wall);
+    for (const name2 of this.tenure.observe(this.doc, view, HUB_ORIGIN, post)) {
       this.host.log(`hub: expired ${name2}: no lease for the room's stale period`);
       const lease = this.leases.get(name2);
       if (lease) {
         this.leases.delete(name2);
         this.notify(name2, lease, "expired-participant");
       }
+      this.records.delete(name2);
     }
   }
 };
@@ -46700,7 +46764,8 @@ async function joinLocal(dir, opts) {
   const kind = kindEnv === "bot" || kindEnv === "ci" ? kindEnv : "agent";
   const name2 = label ? `${owner}+${label}` : owner;
   const common = await gitCommonDir(dir);
-  const local = await inPhase("relay", () => ensureLocalRelay(common, roomName, { log: opts.log }));
+  let replica;
+  const local = await inPhase("relay", () => ensureLocalRelay(common, roomName, { log: opts.log, seed: () => encodeStateAsUpdate(replica ?? new Doc2()) }));
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`;
   const share = requestedShare(opts.share);
   let daemon, me, autoTagNote, refreshRuntime;
@@ -46711,6 +46776,7 @@ async function joinLocal(dir, opts) {
     await local.stop();
     throw e;
   }
+  replica = daemon.roomDoc.doc;
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, "");
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&key=${encodeURIComponent(local.key)}`;
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);

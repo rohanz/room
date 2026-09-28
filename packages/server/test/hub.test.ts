@@ -1,7 +1,8 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
@@ -13,26 +14,27 @@ import * as encoding from 'lib0/encoding'
 import * as syncProtocol from 'y-protocols/sync'
 import { docs, setPersistence, setupWSConnection } from '@y/websocket-server/utils'
 import { RoomDoc } from '@room/shared'
-import { SETTLE_MS, encodeFrame, serializedStore, type Reply } from '@room/hub-core'
+import { SETTLE_MS, encodeFrame, serializedStore, startHub, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
 import { contractSuite, fakeClock, holder, socketClient, waitFor, type ContractClient, type FakeClock, type MakeEnv } from '../../hub-core/test/contract.js'
 import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from '../src/hub.js'
-import { DocumentIdentityGuard, capDocSize, makeReadOnly } from '../src/readonly.js'
+import { DocumentIdentityGuard, bindDocumentIdentity, capDocSize, makeReadOnly, type DocumentIdentityMode } from '../src/readonly.js'
 import { docNameOf, roomNameOf } from '../src/names.js'
 
 const ROOM = 'git/example.com/o/r/main'
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'room-server-hub-'))
 
 /** The stock y-websocket server with the hub wired as index.ts wires it, over a persistence that survives restarts. */
-async function hubServer(clock: FakeClock, opts: { full?: () => boolean } = {}) {
+async function hubServer(clock: FakeClock, opts: { full?: () => boolean; identity?: { mode: DocumentIdentityMode; violations: string[] } } = {}) {
   const stored = new Map<string, Uint8Array>()
   const provider: PersistenceProvider = {
     async getYDoc(name) { const doc = new Y.Doc(); const s = stored.get(name); if (s) Y.applyUpdate(doc, s); return doc },
     async storeUpdate(name, update) { const s = stored.get(name); stored.set(name, s ? Y.mergeUpdates([s, update]) : update) },
   }
   const dir = tmp()
-  const hubs = new ServerHubs({ store: incarnationFile(dir), log: () => {}, full: () => opts.full?.() ?? false, mono: clock.mono, wall: clock.wall })
+  const hubs = new ServerHubs({ store: incarnationFile(dir, 0), log: () => {}, full: () => opts.full?.() ?? false, mono: clock.mono, wall: clock.wall })
   setPersistence(hubs.persistence(provider))
   const wss = new WebSocketServer({ noServer: true })
+  const guards = new Map<string, DocumentIdentityGuard>()
   wss.on('connection', (conn, req) => {
     const docName = docNameOf(req.url ?? '/')
     setupWSConnection(conn, req, { gc: true, docName })
@@ -43,8 +45,14 @@ async function hubServer(clock: FakeClock, opts: { full?: () => boolean } = {}) 
     const url = new URL(req.url ?? '/', 'http://x')
     const room = roomNameOf(url.pathname)
     const view = url.searchParams.has('view')
-    bindHub(ws, () => hubs.current(room), view ? { readOnly: true } : { login: url.searchParams.get('login') ?? undefined, readOnly: false })
+    const login = url.searchParams.get('login') ?? undefined
+    bindHub(ws, () => hubs.current(room), view ? { readOnly: true } : { login, readOnly: false })
     if (view) makeReadOnly(ws, () => {})
+    if (login && opts.identity) {
+      const { mode, violations } = opts.identity
+      if (!guards.has(room)) guards.set(room, new DocumentIdentityGuard(() => docs.get(room)))
+      bindDocumentIdentity(ws, login, guards.get(room)!, (l, reason) => violations.push(`${l}: ${reason}`), mode)
+    }
     wss.emit('connection', ws, req)
   }))
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
@@ -91,7 +99,7 @@ const serverEnv: MakeEnv = async clock => {
 
 contractSuite('server', serverEnv)
 
-async function greeted(c: ContractClient): Promise<ContractClient> { expect(await c.hello()).toMatchObject({ ok: true }); return c }
+async function greeted<C extends ContractClient>(c: C): Promise<C> { expect(await c.hello()).toMatchObject({ ok: true }); return c }
 
 describe('server hub wiring', () => {
   it('a login holds only its own names; a view key is read-only; posts stop when the room is full', async () => {
@@ -143,26 +151,100 @@ describe('server hub wiring', () => {
     expect(metered).toBe(1)
   })
 
-  it('hub writes raise no identity objection, in observe or enforce mode', async () => {
-    const clock = fakeClock()
-    const s = await hubServer(clock)
+  for (const mode of ['observe', 'enforce'] as const) {
+    it(`hub writes are never attributed to the connection that caused them (identity guard: ${mode})`, async () => {
+      const clock = fakeClock()
+      const violations: string[] = []
+      const s = await hubServer(clock, { identity: { mode, violations } })
+      try {
+        const ada = await greeted(await s.open(ROOM, 'login=ada'))
+        const bob = await greeted(await s.open(ROOM, 'login=bob'))
+        /** A member's own write, sent as a sync update on its connection; resolves once the room applied it. */
+        const write = async (c: typeof ada, key: string, value: object) => {
+          const d = new Y.Doc(); Y.applyUpdate(d, Y.encodeStateAsUpdate(docs.get(ROOM)!)); const before = Y.encodeStateVector(d)
+          d.getMap('scopes').set(key, value)
+          const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); syncProtocol.writeUpdate(enc, Y.encodeStateAsUpdate(d, before))
+          c.ws.send(encoding.toUint8Array(enc))
+          await waitFor(() => JSON.stringify(docs.get(ROOM)!.getMap('scopes').get(key)) === JSON.stringify(value))
+        }
+        await write(ada, 'ada', { by: 'ada', n: 1 })
+        clock.advance(SETTLE_MS)
+        // Writes foreign to ada's login, made by the hub while it answers ada's frames: bob's holder record,
+        // and a message from bob (the hub only observes `from`).
+        expect(await bob.send({ op: 'acquire', name: 'bob', holder: holder('s2') })).toMatchObject({ ok: true })
+        expect(await ada.send({ op: 'post', msg: { id: 'm1', type: 'note', from: 'bob', text: 'x' } })).toMatchObject({ ok: true })
+        expect(await ada.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).toMatchObject({ ok: true })
+        expect(docs.get(ROOM)!.getMap('participants').get('bob\u0000holder')).toMatchObject({ sessionId: 's2' })
+        await write(ada, 'ada', { by: 'ada', n: 2 })
+        await write(bob, 'bob', { by: 'bob', n: 1 })
+        expect(violations).toEqual([])
+        await ada.close(); await bob.close()
+      } finally { await s.close() }
+    })
+  }
+
+  it('without YPERSISTENCE a fresh process over the same port never repeats a seq', async () => {
+    const port = 50_000 + Math.floor(Math.random() * 10_000)
+    const dir = path.join(os.tmpdir(), `room-server-hub-${port}`)
+    const clock = fakeClock(1_000_000)
+    const hello = { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 't', sessionId: 's' }
+    const start = (store: IncarnationStore) => startHub({ doc: new RoomDoc(), mono: clock.mono, wall: clock.wall, log: () => {}, store })
+    const post = (hub: Hub, id: string) => { hub.handle(hub, hello, { local: true }); return (hub.handle(hub, { v: 1, id, op: 'post', msg: { id, type: 'note', from: 'ada', text: id } }, { local: true }) as { seq: number }).seq }
     try {
-      const c = await greeted(await s.open(ROOM, 'login=ada'))
-      const guard = new DocumentIdentityGuard(() => docs.get(ROOM))
-      // A member write first, so the guard's shadow follows the real doc from here on.
-      const member = (change: (doc: Y.Doc) => void) => {
-        const d = new Y.Doc(); Y.applyUpdate(d, Y.encodeStateAsUpdate(docs.get(ROOM)!)); const before = Y.encodeStateVector(d)
-        change(d)
-        const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); syncProtocol.writeUpdate(enc, Y.encodeStateAsUpdate(d, before))
-        return encoding.toUint8Array(enc)
-      }
-      expect(guard.accept(member(d => d.getMap('scopes').set('ada', { by: 'ada' })), 'ada')).toEqual({ ok: true })
-      clock.advance(SETTLE_MS)
-      expect(await c.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).toMatchObject({ ok: true })
-      expect(await c.send({ op: 'post', msg: { id: 'm1', type: 'note', from: 'ada', to: 'bob', text: 'x' } })).toMatchObject({ ok: true })
-      expect(guard.accept(member(d => d.getMap('scopes').set('ada', { by: 'ada', again: true })), 'ada')).toEqual({ ok: true })
-      await c.close()
-    } finally { await s.close() }
+      // Rooms A, B and C load together, so C's incarnation runs ahead of the wall clock; C posts.
+      const first = incarnationFile(undefined, port)
+      const [, , c] = [await start(first), await start(first), await start(first)]
+      const before = post(c, 'm1')
+      // Two seconds later a new process (a fresh store over the same file) loads C first, before any replica syncs.
+      clock.advance(2_000)
+      const again = await start(incarnationFile(undefined, port))
+      expect(post(again, 'm2')).toBeGreaterThan(before)
+      expect(JSON.parse(fs.readFileSync(path.join(dir, 'incarnation.json'), 'utf8')).max).toBe(again.incarnation)
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  describe('the incarnation file is durable', () => {
+    afterEach(() => { vi.restoreAllMocks() })
+    /** Record directory creation, directory fsyncs and renames; `fail(dir)` makes that directory's fsync fail. */
+    function watchFs(fail: (dir: string) => NodeJS.ErrnoException | undefined = () => undefined): string[] {
+      const events: string[] = []
+      const { open, mkdir, rename } = fsp
+      vi.spyOn(fsp, 'mkdir').mockImplementation((async (p: string, o: unknown) => { const r = await mkdir(p, o as never); events.push(`mkdir ${p}`); return r }) as never)
+      vi.spyOn(fsp, 'rename').mockImplementation((async (a: string, b: string) => { await rename(a, b); events.push(`rename ${b}`) }) as never)
+      vi.spyOn(fsp, 'open').mockImplementation((async (p: string, flags: string, mode?: number) => {
+        const handle = await open(p, flags, mode)
+        if (flags !== 'r') return handle
+        return Object.assign(Object.create(handle), {
+          sync: async () => { const e = fail(p); if (e) throw e; await handle.sync(); events.push(`sync ${p}`) },
+          close: () => handle.close(),
+        })
+      }) as never)
+      return events
+    }
+    const errno = (code: string) => Object.assign(new Error(code), { code })
+
+    it('fsyncs a new directory into its parent before the record is renamed into it', async () => {
+      const volume = path.join(tmp(), 'volume')
+      const events = watchFs()
+      await incarnationFile(volume, 0).advance(7)
+      const hub = path.join(volume, 'hub')
+      const at = (e: string) => { const i = events.indexOf(e); expect(i, e).toBeGreaterThanOrEqual(0); return i }
+      expect(at(`mkdir ${volume}`)).toBeLessThan(at(`sync ${path.dirname(volume)}`))
+      expect(at(`mkdir ${hub}`)).toBeLessThan(at(`sync ${volume}`))
+      expect(at(`sync ${volume}`)).toBeLessThan(at(`rename ${path.join(hub, 'incarnation.json')}`))
+      expect(at(`rename ${path.join(hub, 'incarnation.json')}`)).toBeLessThan(events.lastIndexOf(`sync ${hub}`))
+    })
+
+    it('fails on a real directory fsync error, and ignores only an unsupported one', async () => {
+      const volume = tmp()
+      const hub = path.join(volume, 'hub')
+      watchFs(dir => dir === hub ? errno('EIO') : undefined)
+      await expect(incarnationFile(volume, 0).advance(7)).rejects.toMatchObject({ code: 'EIO' })
+      vi.restoreAllMocks()
+      watchFs(dir => dir === hub ? errno('ENOTSUP') : undefined)
+      // The failed write's record may have landed; its incarnation is never served, and never reused.
+      await expect(incarnationFile(volume, 0).advance(7)).resolves.toBe(8)
+    })
   })
 
   it('the serialized store takes one incarnation at a time', async () => {
