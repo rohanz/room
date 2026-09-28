@@ -1,12 +1,12 @@
 /** Owns the answer to “what state is this worker really in?” for lifecycle operations. */
 import fs from 'node:fs'
 import path from 'node:path'
-import { type RetiredWorker, type Worker } from '@room/shared'
+import type { RetiredWorker } from '@room/shared'
 import { git } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
 import { RECORDED_PATH, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { workerProcessOwnership, type ProcessInfo, type ProcessOwnership } from './worker-process.js'
-import { realStateInput, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
+import { realStateInput, type LocalWorker, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 
 /** A Room worker path is a chain of .room/workers/<name> directories ending on room/<name>. */
 export function roomWorkerPathMatchesBranch(leadDir: string, workerDir: string, branch: string, nested = false): boolean {
@@ -16,11 +16,11 @@ export function roomWorkerPathMatchesBranch(leadDir: string, workerDir: string, 
     && branch === `room/${relative.at(-1)}`
 }
 
-export type WorktreeOwnershipRecord = Pick<Worker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'>
+export type WorktreeOwnershipRecord = Pick<LocalWorker, 'name' | 'tag' | 'lead' | 'dir' | 'branch'>
   | Pick<RetiredWorker, 'name' | 'tag' | 'lead' | 'keptWorktree'>
 
 /** Cwd-wide cleanup requires a canonical Room worktree at every level back to this lead. */
-export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<Worker, 'name' | 'dir' | 'branch' | 'tag' | 'lead'>, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
+export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<LocalWorker, 'name' | 'dir' | 'branch' | 'tag' | 'lead'>, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
   const byName = new Map([...workers].map(record => [record.name, record]))
   const chain = [w]
   const seen = new Set([w.name])
@@ -82,7 +82,7 @@ export interface WorkerRealState {
   process?: ProcessOwnership
   hostSession: boolean
   finished: boolean
-  status: Worker['status']
+  status: LocalWorker['status']
   exitCode?: number
   dismissed: boolean
   merged?: boolean
@@ -95,12 +95,12 @@ export interface WorkerStateProbes {
   owned?: typeof isOwnedWorkerWorktree
   git?: typeof git
   changedPaths?: typeof workerChangedPaths
-  process?: (w: Worker) => ProcessOwnership
+  process?: (w: LocalWorker) => ProcessOwnership
 }
 
 /** A base may be a user commit. Only a recorded commit with Room's carry identity is excluded. */
 async function workerCommitCount(runGit: typeof git, dir: string, ref: string, leadHead: string,
-  w: Pick<Worker, 'tag' | 'carriedBase'>): Promise<number> {
+  w: Pick<LocalWorker, 'tag' | 'carriedBase'>): Promise<number> {
   const commits = (await runGit(dir, ['rev-list', ref, `^${leadHead}`])).trim().split('\n').filter(Boolean)
   if (!commits.length) return 0
   const recorded = new Set<string>()
@@ -121,7 +121,7 @@ async function workerCommitCount(runGit: typeof git, dir: string, ref: string, l
 }
 
 /** Select expensive probes at each call site. Git in a vanished checkout is never attempted. */
-export async function workerRealState(leadDir: string, w: Worker, options: {
+export async function workerRealState(leadDir: string, w: LocalWorker, options: {
   ownership?: boolean; branch?: boolean; git?: boolean; process?: boolean
   leadName?: string; workers?: Iterable<WorktreeOwnershipRecord>; hasHandle?: boolean
   probe?: (pid: number) => ProcessInfo | undefined
@@ -134,7 +134,7 @@ export async function workerRealState(leadDir: string, w: Worker, options: {
   const state: WorkerRealState = {
     worktree: present ? 'present' : 'vanished', hostSession: !!w.hostSessionId,
     finished: w.exitCode !== undefined || w.finishedAt !== undefined || w.status !== 'running',
-    status: w.status, exitCode: w.exitCode, dismissed: w.dismissedAt !== undefined || w.status === 'dismissed',
+    status: w.status, exitCode: w.exitCode, dismissed: w.status === 'dismissed',
   }
   if (options.process) state.process = options.hasHandle ? 'ours' : (deps.process ?? (worker => workerProcessOwnership(worker.pid, worker, options.probe)))(w)
   if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers)

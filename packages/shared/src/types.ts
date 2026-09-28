@@ -125,58 +125,49 @@ export interface MessageMap {
 }
 export type Msg = MessageMap[MsgType]
 
-/** A worker agent dispatched by a lead (room_spawn) into this room. Keyed by tag in RoomDoc.workers. */
-export type WorkerStatus = 'running' | 'done' | 'failed' | 'dismissed'
-export interface Worker {
-  /** Stable identity of this spawn: `<lead>/<tag>#<gen>`. Everything about the worker (process, worktree, log, doc entry) is looked up by it. Absent on records from older clients. */
-  id?: string
+/** The registry's `statusOf` vocabulary (registry §6). */
+export type WorkerStatus = 'starting' | 'running' | 'unknown' | 'ambiguous' | 'done' | 'failed' | 'stopped' | 'imported' | 'collecting' | 'retired' | 'abandoned'
+export type WorkerStopReason = 'lead-session-ended' | 'discarded' | 'message-delivered-cancelled' | 'message-delivered-failed'
+/** Statuses in which the worker's host may still be running. */
+export const LIVE_WORKER_STATUSES: readonly WorkerStatus[] = ['starting', 'running', 'unknown', 'ambiguous']
+export const workerLive = (status: WorkerStatus): boolean => LIVE_WORKER_STATUSES.includes(status)
+
+/**
+ * A lead's worker as the room shows it, keyed by worker ID in RoomDoc.workerViews (registry §14).
+ * Display and remote classification only: a local action reads the lead's registry, never this.
+ * Written by the lead's projector in that room; valid while `fence` is the lead's live holder.
+ */
+export interface WorkerView {
+  id: string
   tag: string
   /** Participant name the worker joins as (lead's owner + tag). */
   name: string
+  /** Participant name of the lead that spawned it. */
+  lead: string
+  mode: 'here' | 'local'
   host: 'claude' | 'codex'
   model?: string
   effort?: string
-  /** Host conversation to resume for a follow-up in this worktree. */
-  hostSessionId?: string
-  budget?: { threads: number; memGb: number; nice: number }
-  /** Assigned dev-server port (PORT); unique among this lead's live workers. */
-  port?: number
-  /** Effective sharing level at spawn; older records omit it and resume conservatively at intent. */
-  share?: ShareLevel
-  /** Repo-relative inputs linked from the lead's clone; read-only by worker instruction. */
-  link?: string[]
+  /** At most 200 characters. */
   task: string
-  dir: string
   branch: string
-  /** Commit the worker branch was created from; absent for reused/legacy worktrees. */
-  base?: string
-  /** Internal tracked-WIP commit, when one was made. `base` remains the worker delta base. */
-  carriedBase?: string
-  /** Lead-owned untracked files copied outside branch history; sha is a blob retained by a private Room tree ref. */
-  carriedUntracked?: { path: string; sha: string; mode?: number }[]
-  pid: number
-  /** OS process start identity (boot plus start tick/second); absent on legacy records. */
-  processStartTime?: string
-  startedAt: number
-  /** Newest bus message when this worker was spawned; empty if the bus was empty. */
-  spawnedAfter?: string
   status: WorkerStatus
   summary?: string
-  /** Log byte offset when the current resumed run began; absent on fresh and legacy runs. */
-  resumeLogStart?: number
-  exitCode?: number
+  /** The status row's detail ("has not joined…", "follow-up not delivered"). */
+  note?: string
+  run: number
+  startedAt: number
   finishedAt?: number
-  dismissedAt?: number
-  /** Why the host was stopped, preserved across lead sessions. */
-  stopReason?: 'lead-session-ended' | 'message-delivered-cancelled' | 'message-delivered-failed'
-  /** Participant name of the lead that spawned it. */
-  lead: string
-  /** Spawn generation for this tag: exit callbacks of an older process must not touch a newer record. */
-  gen?: number
+  exitCode?: number
+  stopReason?: WorkerStopReason
+  /** The lead's holder fence when written (its session id until names are hub leases). */
+  fence: string
 }
 
 /** Compact history of a worker whose live room state has been removed. */
 export interface RetiredWorker {
+  /** The retired worker's ID; the archive holds one entry per ID. Absent on 0.16 entries. */
+  id?: string
   name: string
   tag: string
   lead: string
@@ -192,7 +183,7 @@ export interface RetiredWorker {
   outcome: 'merged' | 'dismissed' | 'clean'
   /** How the worker left the room; older records have no disposition. */
   disposition?: 'collected' | 'discarded' | 'stopped'
-  stopReason?: Worker['stopReason']
+  stopReason?: WorkerStopReason
   /** Uncommitted/untracked files left on disk when explicitly dismissed. */
   uncommitted?: number
   /** Collected worktree retained for later explicit cleanup, usually because it has ignored output. */

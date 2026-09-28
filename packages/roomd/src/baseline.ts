@@ -7,7 +7,6 @@ import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import nodePath from 'node:path'
 import { CARRIED_PATH, containedRepoPath, validRepoPath } from './repo-path.js'
-import type { Worker } from '@room/shared'
 import { missingGitCwd, timeoutMs, wholeTreeTimeoutMs, UNKNOWN_WHOLE_TREE_PATHS } from './git.js'
 
 /** Bounded binary Git reads used by the few synchronous carry/recovery operations. */
@@ -37,7 +36,17 @@ export interface Baseline {
   carriedCommit: boolean
 }
 
-export function workerBaseline(worker: Worker | undefined): Baseline | undefined {
+/** The registry facts a worker's baseline is built from: its record, or the carried facts its daemon is started with. */
+export interface BaselineSource {
+  name: string
+  dir: string
+  base?: string
+  carriedBase?: string
+  carriedUntracked?: readonly { path: string; sha: string; mode?: number }[]
+  link?: readonly string[]
+}
+
+export function workerBaseline(worker: BaselineSource | undefined): Baseline | undefined {
   if (!worker?.base) return undefined
   return {
     worker: worker.name, sha: worker.base, dir: worker.dir, carriedCommit: !!worker.carriedBase && worker.carriedBase === worker.base,
@@ -69,8 +78,8 @@ export async function carriedPaths(baseline: Baseline): Promise<string[]> {
  * side is a worker with a recorded base (the other side first), in either direction; otherwise
  * the shared ancestor. A baseline that does not descend from the ancestor is not used.
  */
-export async function pairBaseline(me: Worker | undefined, other: Worker | undefined, ancestor: string, descends: (ancestor: string, sha: string) => Promise<boolean>): Promise<Baseline | undefined> {
-  for (const baseline of [workerBaseline(other), workerBaseline(me)]) {
+export async function pairBaseline(me: Baseline | undefined, other: Baseline | undefined, ancestor: string, descends: (ancestor: string, sha: string) => Promise<boolean>): Promise<Baseline | undefined> {
+  for (const baseline of [other, me]) {
     if (baseline && (baseline.sha === ancestor || await descends(ancestor, baseline.sha))) return baseline
   }
   return undefined
@@ -166,7 +175,7 @@ export function carriedUnchangedPaths(baseline: Baseline | undefined): Set<strin
 }
 
 /** Paths changed by a worker from its own recorded base, excluding unchanged carried inputs. */
-export async function workerChangedPaths(worker: Worker): Promise<string[]> {
+export async function workerChangedPaths(worker: BaselineSource): Promise<string[]> {
   const baseline = workerBaseline(worker)
   const base = baseline?.sha ?? 'HEAD'
   const exclusions = ['.room', ...(worker.link ?? [])].map(p => `:(exclude,literal)${p}`)

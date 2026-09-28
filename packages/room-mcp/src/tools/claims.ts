@@ -1,13 +1,12 @@
 import { ConflictSet } from '../conflict-set.js'
-import { registrySnapshotForDir } from '../worker-registry.js'
-import { workerBaseline, type Baseline } from '@room/roomd/baseline'
 import { sameCheckoutSession } from '../company.js'
 import { git, gitShow } from '@room/roomd/git'
 import { claimDigest } from '@room/roomd'
 import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
-import { coordinationPaths, coversPath, nearPath, claimsOverlap, claimInMyLines, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshot, versionOf, type Claim, type ClaimMsg, type Plan, type Worker, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { coordinationPaths, coversPath, nearPath, claimsOverlap, claimInMyLines, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshot, versionOf, type Claim, type ClaimMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { carriedFrom } from '../worker-registry.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_claim', annotations: RW, description: 'Claim only where another participant is near. Use a directory ending /, symbol, or lines. Declare public API plans.',
@@ -175,22 +174,11 @@ function parsePlans(v: unknown): Plan[] | string {
 }
 
 
-/** A registry worker's carried baseline and its lead, so contract checks measure the lead's carried work from spawn. */
-function carriedFrom(s: Session): (participant: string) => { baseline: Baseline; lead: string } | undefined {
-  return participant => {
-    let records
-    try { records = registrySnapshotForDir(s.dir).list().filter(r => r.name === participant) } catch { return undefined }
-    const record = records.sort((a, b) => b.createdAt - a.createdAt)[0]
-    const baseline = record && workerBaseline({ name: record.name, dir: record.dir, base: record.base, carriedBase: record.carriedBase, carriedUntracked: record.carriedUntracked } as Worker)
-    return baseline && { baseline, lead: record.lead.participant }
-  }
-}
-
 export function createClaims(deps: Pick<HandlerState, 'log' | 'ctx'>): Pick<HandlerState, 'planChanged' | 'startConflictSet'> {
   const { log, ctx } = deps
   const planChanged = postPlanChange
   const startConflictSet = (s: Session): ConflictSet => {
-    const set = new ConflictSet(s, s.me.name, s, log, ctx.conflictDebounceMs, carriedFrom(s))
+    const set = new ConflictSet(s, s.me.name, s, log, ctx.conflictDebounceMs, person => carriedFrom(s.dir, person))
     set.start()
     return set
   }

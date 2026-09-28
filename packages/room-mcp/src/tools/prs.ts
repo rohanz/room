@@ -41,7 +41,7 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
   const refreshPrs = async (s: Session): Promise<string> => {
       if (!s.roomName.startsWith('github.com/')) return ''
       const present = presences(s).map(p => p.user.name)
-      const leader = prLeader(present.length ? present : [s.me.name], Array.from(s.room.workers.values()).map(w => w.name))
+      const leader = prLeader(present.length ? present : [s.me.name], Array.from(s.room.workerViews.values()).map(w => w.name))
       if (leader !== s.me.name) return ''
       let prs: PrInfo[]
       try { prs = await fetchPrList(s) } catch (e) { log(`pull requests: ${e instanceof Error ? e.message : String(e)}`); return '' }

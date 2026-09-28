@@ -1,12 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { gitCommonDir } from '@room/roomd'
-import type { Worker } from '@room/shared'
 import type { Session } from '../src/session.js'
-import { registryForDir, type WorkerRegistry } from '../src/worker-registry.js'
-import { mirrorRegistryWorkerRecord } from '../src/worker-mirror.js'
-import type { WorkerRecord } from '../src/worker-status.js'
+import { localWorkers, registryForDir, type WorkerRegistry } from '../src/worker-registry.js'
+import { projectWorkers } from '../src/worker-projector.js'
+import type { LocalWorker, WorkerRecord } from '../src/worker-status.js'
 import { probeProcess } from '../src/worker-process.js'
+import { stampFixtureWorker } from './fixtures/manifest.js'
 
 /** A local artifact sink for direct saveDiscardPatch tests. */
 export function patchPublisher(dir: string, tag: string): (bytes: Buffer) => Promise<string> {
@@ -45,24 +45,43 @@ export async function seedRegistryWorker(dir: string, tag: string, patch: Partia
   return { registry, record: active }
 }
 
-/** Test-only adapter: older fixtures describe workers in a RoomDoc, then exercise tool calls. */
-export async function syncDocumentWorkers(session: Session): Promise<WorkerRegistry> {
-  const common = await gitCommonDir(session.dir)
+/** A worker as tests describe it (the 0.16 tag-keyed shape); `registerWorkers` turns it into registry facts only. */
+export interface FixtureWorker {
+  id?: string; tag: string; name: string; lead: string; host: 'claude' | 'codex'; model?: string; effort?: string
+  hostSessionId?: string; budget?: { threads: number; memGb: number; nice: number }; port?: number; share?: WorkerRecord['share']
+  link?: string[]; task: string; dir: string; branch: string; base?: string; carriedBase?: string
+  carriedUntracked?: { path: string; sha: string; mode?: number }[]; pid: number; processStartTime?: string; startedAt: number
+  status: 'running' | 'done' | 'failed' | 'dismissed'; summary?: string; exitCode?: number; finishedAt?: number
+  stopReason?: 'lead-session-ended' | 'message-delivered-cancelled' | 'message-delivered-failed'; mode?: 'here' | 'local'
+}
+
+async function migrated(dir: string): Promise<WorkerRegistry> {
+  const common = await gitCommonDir(dir)
   const migration = path.join(common, 'room', 'registry', 'migration.json')
   if (!fs.existsSync(migration)) {
     fs.mkdirSync(path.dirname(migration), { recursive: true })
     fs.writeFileSync(migration, JSON.stringify({ v: 1, sources: {}, done: true }))
   }
-  const registry = await registryForDir(session.dir)
-  for (const legacy of [...session.room.workers.values()]) {
-    const id = legacy.id?.startsWith('w_') ? legacy.id : `w_${(legacy.id ?? legacy.tag).replace(/[^A-Za-z0-9_-]/g, '_')}`
+  return registryForDir(dir)
+}
+
+/** The registry ID a fixture worker is written under. */
+export const fixtureId = (w: Pick<FixtureWorker, 'id' | 'tag'>): string => w.id?.startsWith('w_') ? w.id : `w_${(w.id ?? w.tag).replace(/[^A-Za-z0-9_-]/g, '_')}`
+
+/**
+ * Write each fixture worker's registry record in `session`'s room (with its exit, done report or stop for a
+ * finished status), then project the leads' views, as the lead session's projector would.
+ */
+export async function registerWorkers(session: Session, workers: readonly FixtureWorker[]): Promise<WorkerRegistry> {
+  const registry = await migrated(session.dir)
+  for (const w of workers) {
+    const id = fixtureId(w)
     let record = registry.read(id)
     if (!record) {
-      const w = legacy as Worker
       const run = { n: 1, mode: 'fresh' as const, intentAt: w.startedAt ?? Date.now(), nonce: `fixture:${id}`,
         busFrontier: 0, promptMsgIds: [], launcher: registry.instance, logStart: 0 }
       const initial: WorkerRecord = {
-        v: 1, id, tag: w.tag, name: w.name, mode: 'local', room: session.roomName,
+        v: 1, id, tag: w.tag, name: w.name, mode: w.mode ?? 'local', room: session.roomName,
         lead: { participant: w.lead, room: session.roomName, instance: registry.instance },
         host: w.host, model: w.model, effort: w.effort, budget: w.budget ?? { threads: 1, memGb: 1, nice: 10 },
         share: w.share ?? 'full', link: w.link, task: w.task, dir: w.dir, outside: false, branch: w.branch,
@@ -79,17 +98,37 @@ export async function syncDocumentWorkers(session: Session): Promise<WorkerRegis
             executable: probeProcess(w.pid)?.executable ?? w.host } } : {}) } }], seq: old.seq + 1 }))
       await registry.finishOperation(id)
     }
-    if (legacy.status === 'done' || legacy.status === 'failed' || legacy.status === 'dismissed') {
-      if (!registry.exits(id).some(exit => exit.run === record!.runs.at(-1)!.n)) await registry.writeExit(id,
-        { run: record.runs.at(-1)!.n, code: legacy.exitCode ?? (legacy.status === 'failed' ? 1 : 0), at: legacy.finishedAt ?? Date.now(), witnessed: true })
-      if (legacy.status === 'done' && !registry.reports(id).some(report => report.done)) {
-        await registry.writeReport(id, { run: record.runs.at(-1)!.n, nonce: record.runs.at(-1)!.nonce,
-          chain: [], joinedAt: record.createdAt, done: { at: legacy.finishedAt ?? Date.now(),
-            summary: legacy.summary ?? '', changed: session.room.changedPaths(legacy.name) } })
-      }
-      if (legacy.status === 'dismissed' && !record.stop) await registry.beginStop(id, legacy.stopReason ?? 'lead-session-ended')
-    }
-    mirrorRegistryWorkerRecord(session, registry, id)
+    stampFixtureWorker(session.room, w.name, id)
+    if (w.status !== 'running') await finishWorker(session, w.tag, w)
   }
+  await projectAll(session, registry)
   return registry
+}
+
+/** A fixture worker's run ends: its exit, a done report for `done`, a stop for `dismissed`. */
+export async function finishWorker(session: Session, tag: string, facts: Partial<Pick<FixtureWorker, 'status' | 'exitCode' | 'summary' | 'finishedAt' | 'stopReason'>> = {}): Promise<void> {
+  const registry = await migrated(session.dir)
+  const record = registry.list().find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))
+  if (!record) throw new Error(`no fixture worker ${tag}`)
+  const status = facts.status ?? 'done', run = record.runs.at(-1)!
+  if (!registry.exits(record.id).some(exit => exit.run === run.n)) await registry.writeExit(record.id,
+    { run: run.n, code: facts.exitCode ?? (status === 'failed' ? 1 : 0), at: facts.finishedAt ?? Date.now(), witnessed: true })
+  if (status === 'done' && !registry.reports(record.id).some(report => report.done)) {
+    await registry.writeReport(record.id, { run: run.n, nonce: run.nonce, chain: [], joinedAt: record.createdAt,
+      done: { at: facts.finishedAt ?? Date.now(), summary: facts.summary ?? '', changed: session.room.changedPaths(record.name) } })
+  }
+  // A dismissal without a stated reason is the lead's own discard (0.16's `dismissedAt`).
+  if (status === 'dismissed' && !record.stop) await registry.beginStop(record.id, facts.stopReason ?? 'discarded')
+  await projectAll(session, registry)
+}
+
+/** Every lead's views in `session`'s room, written as its projector would. */
+async function projectAll(session: Session, registry: WorkerRegistry): Promise<void> {
+  const leads = new Set(registry.list().filter(r => r.room === session.roomName).map(r => r.lead.participant))
+  for (const lead of leads) await projectWorkers(session, registry, lead, 'joined')
+}
+
+/** The registry's current (not retiring) worker under a tag, as the lifecycle helpers see it. */
+export function workerByTag(dir: string, tag: string): LocalWorker | undefined {
+  return localWorkers(dir, record => record.tag === tag)[0]
 }

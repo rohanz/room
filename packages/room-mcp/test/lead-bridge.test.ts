@@ -20,6 +20,7 @@ import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
+import { workerByTag } from './registry-fixture.js'
 
 let dir: string
 let base: string
@@ -115,7 +116,7 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
     await vi.waitFor(() => expect(woken).toHaveLength(1))
     expect(woken[0]).toContain('rohanz+money')
     expect(woken[0]).not.toContain('exited without room_done')
-    expect(t.local.a.workers.get('money')).toMatchObject({ status: 'failed', exitCode: 0 })
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'failed', exitCode: 0 })
     await t.leadTools.call('room_leave', { force: true })
   })
 })

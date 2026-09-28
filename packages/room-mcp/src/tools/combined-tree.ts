@@ -9,6 +9,7 @@ import { decidePreview, workerRealState } from '../worker-state.js'
 import { baselineText, checkoutText, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
 import { participantsView, snapshot, snapshotStillCurrent, versionOf, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
+import { carriedFrom, localWorkerBaseline } from '../worker-registry.js'
 
 export interface PreviewGap { person: string; path?: string; why: string }
 
@@ -122,10 +123,10 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   // A worker's own changes are its tree against its baseline (baseline.ts), whichever side calls:
   // a shared merge-base would count the lead's carried work as the worker's.
   const descends = (from: string, sha: string) => git(caller.dir, ['merge-base', '--is-ancestor', from, sha]).then(() => true, error => { if (isGitTimeout(error)) throw error; return false })
-  const callerWorker = caller.room.workerOf(caller.me.name)
+  const callerCarried = carriedFrom(caller.dir, caller.me.name), callerWorker = callerCarried?.baseline
   const callerBaseline = await pairBaseline(callerWorker, undefined, ancestor, descends)
   const pairs = new Map<string, Baseline | undefined>()
-  for (const { person, session } of participants) pairs.set(person, await pairBaseline(callerWorker, session.room.workerOf(person), ancestor, descends))
+  for (const { person, session } of participants) pairs.set(person, await pairBaseline(callerWorker, carriedFrom(session.dir, person)?.baseline, ancestor, descends))
   const deltaBases = new Map([...pairs].map(([person, pair]) => [person, pair?.sha ?? ancestor]))
   const pathSet = new Set<string>()
   /** Paths a participant may have changed; the rest only the caller changed. */
@@ -154,7 +155,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
       const worker = previewWorker(session, person)
       const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined)
-      let reason = workerOwnedPaths(session.room.workerOf(person)).includes(p) ? 'linked input' : undefined
+      let reason = workerOwnedPaths(localWorkerBaseline(session.dir, person)).includes(p) ? 'linked input' : undefined
       if (!reason && dir) {
         const root = rootOf(dir)
         try {

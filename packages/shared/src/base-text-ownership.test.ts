@@ -187,12 +187,12 @@ describe('participant-owned base texts', () => {
       a.setOverlay(name, 'file.py', `edit ${i}`)
       a.setBaseText(name, 'sha', 'file.py', 'base')
       sync(a, b)
-      const record: RetiredWorker = {
-        name, tag: `worker${i}`, lead: 'Lead', host: 'codex', task: 'task', summary: '',
+      const record: RetiredWorker & { id: string } = {
+        id: `w_${i}`, name, tag: `worker${i}`, lead: 'Lead', host: 'codex', task: 'task', summary: '',
         files: ['file.py'], fileCount: 1, startedAt: i, finishedAt: i + 1,
         retiredAt: i + 2, outcome: 'clean',
       }
-      b.retireParticipant(name, record, ignore)
+      b.retireWorker(record.id, record, ignore)
       sync(a, b)
       for (const room of [a, b]) {
         expect(room.baseText(name, 'sha', 'file.py')).toBeUndefined()

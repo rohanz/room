@@ -10,7 +10,8 @@ import type { HandlerState } from '../src/tools/context.js'
 import { RoomDoc } from '@room/shared'
 import * as Y from 'yjs'
 import type { Session } from '../src/session.js'
-import { syncDocumentWorkers } from './registry-fixture.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
+import { registerWorkers } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
@@ -29,19 +30,17 @@ beforeEach(() => {
   fs.mkdirSync(path.dirname(worker), { recursive: true })
   git(lead, 'worktree', 'add', '-qb', 'room/test', worker)
 })
-afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); await closeRegistryForDir(lead); fs.rmSync(root, { recursive: true, force: true }) })
 
 async function setup() {
-  const w = { tag: 'test', name: 'lead+test', lead: 'lead', dir: worker, branch: 'room/test', status: 'done', exitCode: 0, summary: 'finished', base, host: 'codex', task: 'task', startedAt: 1 }
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ base, branch: 'main', repo: 'test' })
-  room.workers.set('test', w as never)
-  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', room, awareness: { getStates: () => new Map() } }
+  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', room, awareness: { getStates: () => new Map() }, daemon: {} }
+  await registerWorkers(s as unknown as Session, [{ tag: 'test', name: 'lead+test', lead: 'lead', dir: worker, branch: 'room/test', status: 'done', exitCode: 0, summary: 'finished', base, host: 'codex', task: 'task', pid: 0, startedAt: 1 }])
   const state = {
-    S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers: vi.fn(async () => {}) }, workerAlive: () => false,
+    S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire: vi.fn(async () => {}), project: vi.fn(async () => {}) }, workerAlive: () => false,
     others: () => ['lead+test'], presences: () => [], withheld: () => undefined, baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,
   } as unknown as HandlerState
-  await syncDocumentWorkers(s as Session)
   return { state }
 }
 

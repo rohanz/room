@@ -19,6 +19,7 @@ import type { ResolvedConfig } from '../src/config.js'
 import { workerProcessEnv } from '../src/worker-config.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
+import { projectWorkers } from '../src/worker-projector.js'
 import { hubAppend } from '@room/shared/testing'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -92,8 +93,9 @@ describe('automatic join (real room-mcp processes)', () => {
       runs: [{ n: 1, mode: 'fresh', intentAt: Date.now(), nonce: 'auto-join-run-1', busFrontier: old.seq!, promptMsgIds: [], launcher, logStart: 0 }],
     })
     const run = record.runs[0]
-    lead.room.setWorker({ id: record.id, tag: 'q', name: 'Ada+q', lead: 'Ada', host: 'codex', task: 'room_wait once', dir,
-      branch: 'main', pid: process.pid, startedAt: record.createdAt, status: 'running' }, () => {})
+    // The lead's projector shows the worker in the room.
+    await projectWorkers(lead, registry, 'Ada', 'joined')
+    expect(lead.room.workerViewOf('Ada+q')).toMatchObject({ id: record.id, status: 'running' })
     const early = hubAppend(lead.room, lead.me, { type: 'note', text: 'BROADCAST-NOTIFY-1', priority: 'notify' })
     const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir,
       tag: 'q', lead: 'Ada', owner: 'Ada', share: 'full', run: run.n, nonce: run.nonce, registry: registry.root, id: record.id, logDir: dir, isWorker: false })

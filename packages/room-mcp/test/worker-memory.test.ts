@@ -13,10 +13,12 @@ import { WORKTREE_NOTE } from '../src/tools/context.js'
 import { handlers as fileHandlers } from '../src/tools/files.js'
 import { handlers as joinHandlers } from '../src/tools/join.js'
 import type { Session } from '../src/session.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
+import { registerWorkers } from './registry-fixture.js'
 
 let dir: string, workerDir: string, session: Session, awareness: Awareness
 const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
-beforeEach(() => {
+beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-memory-'))
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 'test@example.org'); git('config', 'user.name', 'Test')
   fs.writeFileSync(path.join(dir, 'file.txt'), 'base\n')
@@ -29,14 +31,12 @@ beforeEach(() => {
   const doc = new Y.Doc(), room = new RoomDoc(doc)
   room.setMeta({ base })
   room.setBaseOf('worker', base)
-  room.setWorker({ id: 'lead/worker#1', tag: 'worker', name: 'worker', lead: 'lead', host: 'codex', branch: 'room/worker', dir: workerDir, base, status: 'done', startedAt: Date.now() } as never)
   awareness = new Awareness(doc); awareness.setLocalState({ user: { name: 'lead', kind: 'agent' } })
   session = { dir, room, awareness, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', local: {}, daemon: {} } as Session
+  await registerWorkers(session, [{ tag: 'worker', name: 'worker', lead: 'lead', host: 'codex', task: 't', dir: workerDir, branch: 'room/worker', base, pid: 0, startedAt: 1, status: 'done' }])
 })
-afterEach(() => { awareness.destroy(); session.room.doc.destroy(); fs.rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks() })
-async function setup() {
-  const { record } = await seedRegistryWorker(dir, 'worker', { name: 'worker', dir: workerDir, branch: 'room/worker' })
-  session.room.setWorker({ ...session.room.workerOf('worker')!, id: record.id })
+afterEach(async () => { await closeRegistryForDir(dir); awareness.destroy(); session.room.doc.destroy(); fs.rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks() })
+function setup() {
   const state = createHandlerState({ cwd: dir, getSession: () => session, setSession() {} })
   state.ledgerLines = () => []
   return { state, handlers: fileHandlers(state) }

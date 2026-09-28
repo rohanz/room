@@ -3,7 +3,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import type { Worker } from '@room/shared'
+import type { LocalWorker } from './worker-status.js'
 import { workerEnv } from './worker-config.js'
 
 export interface SpawnSpec {
@@ -122,7 +122,7 @@ export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boo
   return pid > 0 && probe(pid) !== undefined
 }
 
-type WorkerIdentity = Pick<Worker, 'processStartTime' | 'host'>
+type WorkerIdentity = Pick<LocalWorker, 'processStartTime' | 'host'>
 export type ProcessOwnership = 'ours' | 'not-ours' | 'unknown'
 
 export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): ProcessOwnership {

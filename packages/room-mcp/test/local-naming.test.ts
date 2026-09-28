@@ -12,7 +12,7 @@ import { createTools } from '../src/tools.js'
 import { resolveConfig } from '../src/config.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
-import { syncDocumentWorkers } from './registry-fixture.js'
+import { registerWorkers } from './registry-fixture.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 
 vi.mock('@room/relay', () => ({ ensureLocalRelay: vi.fn(async () => { throw new Error('relay boundary') }) }))
@@ -102,13 +102,11 @@ it('refuses to strand running workers and preserves the session and link', async
   const t = transitionTools()
   await t.tools.call('room_join', { where: 'local', room: 'custom' })
   const cur = t.current()
-  cur.room.setWorker({ tag: 'w', name: 'Ada+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', lead: 'Ada' })
-  await syncDocumentWorkers(cur)
+  await registerWorkers(cur, [{ tag: 'w', name: 'Ada+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', lead: 'Ada' }])
   expect(await t.tools.call('room_join', { where: 'local' })).toBe('error: 1 worker(s) are running in local/custom; they would be left behind. Wait for them, room_collect(discard=true) them, or stay in this room.')
   expect(t.current()).toBe(cur)
   expect(t.joiner).toHaveBeenCalledTimes(1)
   expect(t.leave).not.toHaveBeenCalled()
-  cur.room.workers.clear()
 })
 
 it('moves alone without a browser link, available on explicit request', async () => {
@@ -132,8 +130,7 @@ it('same-room rejoin is a no-op even with a running worker, preserving scope', a
   const cur = t.current()
   await t.tools.call('room_scope', { area: 'test', summary: 'keep', paths: [] })
   const scope = cur.room.scope('Ada')
-  cur.room.setWorker({ tag: 'w', name: 'Ada+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', lead: 'Ada' })
-  await syncDocumentWorkers(cur)
+  await registerWorkers(cur, [{ tag: 'w', name: 'Ada+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', lead: 'Ada' }])
   const reply = await t.tools.call('room_join', { where: 'local', room: 'local/custom' })
   expect(t.current()).toBe(cur)
   expect(t.joiner).toHaveBeenCalledTimes(1)
@@ -142,5 +139,4 @@ it('same-room rejoin is a no-op even with a running worker, preserving scope', a
   expect(reply.split('\n')[1]).toContain('local/custom')
   expect(reply).toContain('browser view: ' + cur.browserUrl)
   expect(reply).not.toContain('moved from')
-  cur.room.workers.clear()
 })

@@ -36,7 +36,7 @@ export class ExpiryTenure {
       for (const participant of view) {
         const { name } = participant
         const holder = participantRecord(room, name)?.holder
-        if (!holder || holder.workerId || room.workerOf(name)) continue
+        if (!holder || holder.workerId || room.workerViewOf(name)) continue
         measured.add(name)
         const current = room.expiry.get(name)
         if (participant.fresh) {

@@ -1,11 +1,12 @@
 import { publishFixture } from './fixtures/manifest.js'
-import { patchPublisher } from './registry-fixture.js'
+import { hubSeam } from './fixtures/hub.js'
+import { patchPublisher, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { RoomDoc, type Identity, type Worker } from '@room/shared'
+import { RoomDoc, type Identity } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { carriedUnchanged, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { addCarriedUntrackedModes, mergedFileMode } from '../src/tools/files.js'
@@ -34,7 +35,7 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
 /** Commit `files`, then spawn a worker the way carry does: tracked WIP in a carried commit, untracked files copied with their blobs stored. */
-function spawn(files: Record<string, string>, wip: Record<string, string>, untracked: Record<string, string> = {}) {
+async function spawn(files: Record<string, string>, wip: Record<string, string>, untracked: Record<string, string> = {}, override: Partial<FixtureWorker> = {}) {
   for (const [file, body] of Object.entries(files)) put(lead, file, body)
   git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'base'); head = git(lead, 'rev-parse', 'HEAD')
   for (const [file, body] of Object.entries({ ...wip, ...untracked })) put(lead, file, body)
@@ -46,14 +47,15 @@ function spawn(files: Record<string, string>, wip: Record<string, string>, untra
   const carriedUntracked = Object.keys(untracked).map(file => ({ path: file, sha: git(lead, 'hash-object', '-w', `--path=${file}`, file), mode: fs.statSync(path.join(wdir, file)).mode & 0o777 }))
   const room = new RoomDoc()
   room.setMeta({ repo: 'test', branch: 'main', base: head })
-  const record = { id: 'lead/w#1', tag: 'w', name: WORKER, host: 'codex', task: 't', dir: wdir, branch: 'room/w', base, pid: 1, startedAt: 1, status: 'running', lead: LEAD, carriedUntracked, ...(base === head ? {} : { carriedBase: base }) } as Worker
-  room.setWorker(record)
+  const record: FixtureWorker = { id: 'lead/w#1', tag: 'w', name: WORKER, host: 'codex', task: 't', dir: wdir, branch: 'room/w', base, pid: 0, startedAt: 1, status: 'running', lead: LEAD, carriedUntracked, ...(base === head ? {} : { carriedBase: base }), ...override }
   const dirOf = (person: string) => person === LEAD ? lead : wdir
   const baseOf = (person: string) => person === LEAD ? head : base
   /** Publish a side's changed files the way its daemon would. */
   const publish = (person: string, files: string[]) => { for (const file of files) publishFixture(room, person, file, read(dirOf(person), file) ?? '') }
-  const session = (name: string) => ({ me: { name, kind: 'agent' }, dir: dirOf(name), room, local: true, awareness: { getStates: () => new Map() } }) as unknown as Session
+  const session = (name: string) => ({ me: { name, kind: 'agent' }, dir: dirOf(name), room, roomName: 'local/test/main', local: true, awareness: { getStates: () => new Map() }, daemon: {}, ...hubSeam(room) }) as unknown as Session
   const sessions = { [LEAD]: session(LEAD), [WORKER]: session(WORKER) }
+  // The carried baseline is a local fact of the lead's registry, which the worker's worktree shares.
+  await registerWorkers(sessions[LEAD], [record])
   const state = {
     rooms: { holding: (name: string) => sessions[name as keyof typeof sessions] },
     liveText: async (_s: Session, file: string, person: string) => read(dirOf(person), file),
@@ -67,7 +69,7 @@ function spawn(files: Record<string, string>, wip: Record<string, string>, untra
 
 describe('a carried worker\'s own changes', () => {
   it('merges the lead\'s later edit to a carried line with a distant worker edit, from both callers', async () => {
-    const t = spawn({ 'shared.txt': text(), 'keep.txt': 'keep\n' }, { 'shared.txt': text({ 2: 'W' }) })
+    const t = await spawn({ 'shared.txt': text(), 'keep.txt': 'keep\n' }, { 'shared.txt': text({ 2: 'W' }) })
     put(lead, 'shared.txt', text({ 2: 'W2' }))
     put(wdir, 'keep.txt', 'worker\n'); put(wdir, 'shared.txt', text({ 2: 'W', 9: 'X9' }))
     t.publish(LEAD, ['shared.txt']); t.publish(WORKER, ['shared.txt', 'keep.txt'])
@@ -80,7 +82,7 @@ describe('a carried worker\'s own changes', () => {
   })
 
   it('does not report a carried file the worker never touched', async () => {
-    const t = spawn({ 'shared.txt': text(), 'keep.txt': 'keep\n' }, { 'shared.txt': text({ 2: 'W' }) })
+    const t = await spawn({ 'shared.txt': text(), 'keep.txt': 'keep\n' }, { 'shared.txt': text({ 2: 'W' }) })
     put(lead, 'shared.txt', text({ 2: 'W2' }))
     put(wdir, 'keep.txt', 'worker\n')
     t.publish(LEAD, ['shared.txt']); t.publish(WORKER, ['shared.txt', 'keep.txt'])
@@ -92,14 +94,14 @@ describe('a carried worker\'s own changes', () => {
   })
 
   it('still reports a real conflict on a carried line both changed', async () => {
-    const t = spawn({ 'shared.txt': text() }, { 'shared.txt': text({ 2: 'W' }) })
+    const t = await spawn({ 'shared.txt': text() }, { 'shared.txt': text({ 2: 'W' }) })
     put(lead, 'shared.txt', text({ 2: 'W2' })); put(wdir, 'shared.txt', text({ 2: 'MINE' }))
     t.publish(LEAD, ['shared.txt']); t.publish(WORKER, ['shared.txt'])
     for (const result of [await t.preview(LEAD, WORKER), await t.preview(WORKER, LEAD)]) expect(result.conflictCount).toBe(1)
   })
 
   it('measures carried untracked files against their spawn-time blobs', async () => {
-    const t = spawn({ 'keep.txt': 'keep\n' }, {}, { 'notes.txt': 'draft\n', 'mine.txt': 'draft\n', 'both.txt': text() })
+    const t = await spawn({ 'keep.txt': 'keep\n' }, {}, { 'notes.txt': 'draft\n', 'mine.txt': 'draft\n', 'both.txt': text() })
     put(lead, 'notes.txt', 'draft 2\n'); put(lead, 'both.txt', text({ 2: 'LEAD' }))
     put(wdir, 'mine.txt', 'worker\n'); put(wdir, 'both.txt', text({ 9: 'WORKER' }))
     t.publish(LEAD, ['notes.txt', 'mine.txt', 'both.txt']); t.publish(WORKER, ['notes.txt', 'mine.txt', 'both.txt'])
@@ -111,16 +113,16 @@ describe('a carried worker\'s own changes', () => {
       expect(result.owners.get('mine.txt')).toContain(WORKER)
       expect(result.merged.get('both.txt')).toBe(text({ 2: 'LEAD', 9: 'WORKER' }))
     }
-    const own = workerBaseline(t.room.workerOf(WORKER))!
+    const own = workerBaseline(workerByTag(lead, 'w'))!
     expect(carriedUnchanged(own, 'notes.txt')).toBe(true)
     expect(carriedUnchanged(own, 'mine.txt')).toBe(false)
     expect(carriedUnchanged(own, 'keep.txt')).toBe(false)
   })
 
   it('counts a carried untracked file\'s mode change as the worker\'s in collect, preview and discard alike', async () => {
-    const t = spawn({ 'keep.txt': 'keep\n' }, {}, { 'run.sh': 'echo hi\n', 'notes.txt': 'draft\n' })
+    const t = await spawn({ 'keep.txt': 'keep\n' }, {}, { 'run.sh': 'echo hi\n', 'notes.txt': 'draft\n' })
     fs.chmodSync(path.join(wdir, 'run.sh'), 0o755)
-    const w = t.room.workerOf(WORKER)!
+    const w = workerByTag(lead, 'w')!
     const unchanged = carriedUnchangedPaths(workerBaseline(w))
     expect([...unchanged]).toEqual(['notes.txt'])
     const participant = { dir: wdir, baseModes: addCarriedUntrackedModes(new Map(), w), unchangedCarried: unchanged, carriedPaths: new Set(['run.sh', 'notes.txt']) }
@@ -131,9 +133,7 @@ describe('a carried worker\'s own changes', () => {
   })
 
   it('refuses a carried untracked file whose private base blob is gone', async () => {
-    const t = spawn({ 'keep.txt': 'keep\n' }, {}, { 'notes.txt': 'draft\n' })
-    const record = t.room.workerOf(WORKER)!
-    t.room.setWorker({ ...record, carriedUntracked: [{ path: 'notes.txt', sha: '1'.repeat(40) }] } as Worker)
+    const t = await spawn({ 'keep.txt': 'keep\n' }, {}, { 'notes.txt': 'draft\n' }, { carriedUntracked: [{ path: 'notes.txt', sha: '1'.repeat(40) }] })
     put(lead, 'notes.txt', 'draft 2\n'); put(wdir, 'notes.txt', 'worker\n')
     t.publish(LEAD, ['notes.txt']); t.publish(WORKER, ['notes.txt'])
     for (const result of [await t.preview(LEAD, WORKER), await t.preview(WORKER, LEAD)]) {
@@ -144,7 +144,7 @@ describe('a carried worker\'s own changes', () => {
 
   it('compares CRLF checkouts in one representation', async () => {
     git(lead, 'config', 'core.autocrlf', 'true')
-    const t = spawn({ 'app.py': text({}, '\r\n'), 'keep.txt': 'keep\r\n' }, { 'app.py': text({ 2: 'W' }, '\r\n') })
+    const t = await spawn({ 'app.py': text({}, '\r\n'), 'keep.txt': 'keep\r\n' }, { 'app.py': text({ 2: 'W' }, '\r\n') })
     expect(git(lead, 'show', `${t.base}:app.py`)).toBe(text({ 2: 'W' }).trim())
     put(lead, 'app.py', text({ 2: 'W', 5: 'LEAD' }, '\r\n'))
     put(wdir, 'keep.txt', 'worker\r\n')

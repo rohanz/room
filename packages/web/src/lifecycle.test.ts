@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
-import { RoomDoc, type RetiredWorker, type Worker } from '@room/shared'
+import { RoomDoc, type RetiredWorker, type WorkerView } from '@room/shared'
 import { boardPanel } from './board.ts'
 import { centrePanel, createFocusState, header, participantsPanel, timelinePanel } from './panels.ts'
 import { renderScheduler } from './scheduler.ts'
@@ -21,12 +21,15 @@ function setup() {
   cleanups.push(() => { room.doc.destroy(); dom.window.close() })
   return { room, conn, dom }
 }
-function worker(tag: string, status: Worker['status'] = 'running'): Worker {
-  return { name: `Lead+${tag}`, tag, lead: 'Lead', host: 'codex', model: 'model', task: 'Task', dir: '/tmp/example', branch: tag, pid: 1, startedAt: 1, status }
+/** The lead projector's view of a worker, keyed by worker ID. */
+function worker(tag: string, status: WorkerView['status'] = 'running'): WorkerView {
+  return { id: `w_${tag}`, name: `Lead+${tag}`, tag, lead: 'Lead', mode: 'local', host: 'codex', model: 'model', task: 'Task', branch: tag, status, run: 1, startedAt: 1, fence: 'test' }
 }
-function retired(tag: string): RetiredWorker {
-  return { name: `Lead+${tag}`, tag, lead: 'Lead', host: 'codex', model: 'model', task: 'Task', summary: 'Finished the task', files: ['a.ts'], fileCount: 61, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' }
+function retired(tag: string): RetiredWorker & { id: string } {
+  return { id: `w_${tag}`, name: `Lead+${tag}`, tag, lead: 'Lead', host: 'codex', model: 'model', task: 'Task', summary: 'Finished the task', files: ['a.ts'], fileCount: 61, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' }
 }
+const show = (room: RoomDoc, view: WorkerView) => room.workerViews.set(view.id, view)
+const retire = (room: RoomDoc, record: RetiredWorker & { id: string }) => room.retireWorker(record.id, record, () => {})
 
 it('labels an untagged agent separately from a human in both participant and timeline views', () => {
   const { room, conn } = setup()
@@ -47,10 +50,10 @@ it('labels an untagged agent separately from a human in both participant and tim
 
 it('nests active and failed workers, collapses archives, and counts active in both presentations', () => {
   const { room, conn, dom } = setup()
-  room.workers.set('running', worker('running'))
-  room.workers.set('failed', worker('failed', 'failed'))
+  show(room, worker('running'))
+  show(room, worker('failed', 'failed'))
   room.scopes.set('Away', { by: 'Away', byKind: 'agent', area: 'api', summary: 'Away', paths: [], at: 1 })
-  room.retireParticipant('Lead+old', retired('old'), () => {})
+  retire(room, retired('old'))
   const focus = createFocusState()
   const people = participantsPanel(conn, focus), board = boardPanel(conn, vi.fn()), top = header(conn)
   document.body.append(people, board, top)
@@ -67,7 +70,7 @@ it('nests active and failed workers, collapses archives, and counts active in bo
     expect(details.textContent).toContain('61 files')
     expect(details.textContent).toContain('Finished the task')
   }
-  room.retireParticipant('Lead+running', retired('running'), () => {})
+  retire(room, retired('running'))
   renderScheduler.flushNow()
   expect(top.textContent).toContain('2 active')
   expect(people.textContent).toContain("Lead's agent · 0 running · 2 finished")
@@ -76,7 +79,7 @@ it('nests active and failed workers, collapses archives, and counts active in bo
 
 it('bounds timeline and merge controls while retaining older filters and scope context', () => {
   const { room, conn } = setup()
-  room.retireParticipant('Lead+archived', retired('archived'), () => {})
+  retire(room, retired('archived'))
   for (const name of ['Lead', 'Old', 'Recent']) room.setOverlay(name, 'a.ts', name)
   room.bus.push([{ id: 'old', type: 'scope', from: 'Old', fromKind: 'agent', at: 1, priority: 'fyi', area: 'old-area', summary: 'Old task', paths: [] },
     { id: 'recent', type: 'scope', from: 'Recent', fromKind: 'agent', at: 2, priority: 'fyi', area: 'current-area', summary: 'Current task', paths: [] }])
@@ -108,7 +111,7 @@ it('bounds timeline and merge controls while retaining older filters and scope c
 
 it('shows dismissed uncommitted files in the archive row', () => {
   const { room, conn } = setup()
-  room.retireParticipant('Lead+dirty', { ...retired('dirty'), outcome: 'dismissed', uncommitted: 2 }, () => {})
+  retire(room, { ...retired('dirty'), outcome: 'dismissed', uncommitted: 2 })
   expect(participantsPanel(conn, createFocusState()).textContent).toContain('dismissed with 2 uncommitted files left in its worktree')
 })
 

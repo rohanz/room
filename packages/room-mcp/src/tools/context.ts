@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Worker, Version } from '@room/shared'
+import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Version } from '@room/shared'
+import { localWorkers } from '../worker-registry.js'
+import type { LocalWorker } from '../worker-status.js'
 import { DISK_READ_PATH, containedRepoPath, isInsideRoot, validRepoPath, type ShareLevel, type SharePresence } from '@room/roomd'
 import type { Bridge } from '../bridge.js'
 import type { ConflictSet } from '../conflict-set.js'
@@ -80,13 +82,13 @@ export interface HandlerState {
   S: () => Session
   isMe: (s: Session, p: { name: string; kind: string }) => boolean
   mine: (s: Session) => Claim[]
-  myWorkers: (s: Session) => Worker[]
-  workerAlive: (s: Session, w: Worker) => boolean
+  myWorkers: (s: Session) => LocalWorker[]
+  workerAlive: (s: Session, w: LocalWorker) => boolean
   ensureWorkersRoom: (lead: Session) => Promise<Session>
   closeWorkersRoom: () => Promise<void>
-  runningWorkers: (s: Session) => { s: Session; w: Worker }[]
+  runningWorkers: (s: Session) => { s: Session; w: LocalWorker }[]
   hasCompany: (s: Session) => CompanyState
-  dismissWorker: (s: Session, w: Worker, why: string, stopReason?: Worker['stopReason'], cancelled?: AbortSignal) => string | Promise<string>
+  dismissWorker: (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal) => string | Promise<string>
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]
   shareOf: (s: Session, person: string) => ShareLevel
@@ -164,9 +166,9 @@ export class NotJoined extends Error {}
 export class NeedFetch extends Error { constructor(public person: string, public sha: string, public detail: string, public lead?: string) { super(detail) } }
 
 /** Local worktree reads require a registry capability; replicated worker fields grant none. */
-export async function trustedWorker(s: Session, person: string): Promise<Worker | undefined> {
-  const worker = s.room.workerOf(person)
-  if (!worker?.id || worker.lead !== s.me.name) return undefined
+export async function trustedWorker(s: Session, person: string): Promise<LocalWorker | undefined> {
+  const worker = localWorkers(s.dir, record => record.name === person && record.lead.participant === s.me.name)[0]
+  if (!worker?.id) return undefined
   const trusted = await (await registryForDir(s.dir)).trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, worker.tag)
   if (!trusted || trusted.record.id !== worker.id || trusted.record.name !== person) return undefined
   return { ...realStateInput(trusted.record, trusted.status), dir: fs.realpathSync(trusted.record.dir) }

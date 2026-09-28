@@ -94,7 +94,7 @@ export function createTools(ctx: ToolCtx): Tools {
       try {
         const body = await h(name === 'room_wait' ? { ...(args ?? {}), [WAIT_SIGNAL]: signal, [REPLY_BATCH]: batch } : args ?? {})
         if (toolCallAborted() && name !== 'room_send' && name !== 'room_spawn') return 'error: tool call cancelled'
-        if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
+        if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.autoRetire()
         const s2 = ctx.getSession()
         if (s2 && s2 !== s) s2.refreshRuntime?.()
         if (s2 && autoJoin && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)

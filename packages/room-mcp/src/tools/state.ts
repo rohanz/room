@@ -19,7 +19,6 @@ import { Ledger } from '../ledger.js'
 import { createRelevance } from '../relevance.js'
 import { decideShutdown, workerRealState } from '../worker-state.js'
 import { hasCompany } from '../company.js'
-import { repairRetired } from '../retire.js'
 import { trustedWorker, workerText, NotJoined, type HandlerState, type ToolCtx } from './context.js'
 
 export function createHandlerState(ctx: ToolCtx): HandlerState {
@@ -66,17 +65,14 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
         if (bridge) { bridge.stop(); if (roomBridge === bridge) roomBridge = null }
       },
       flush: () => watcher?.flush() ?? Promise.resolve(),
+      project: () => bridge?.sync() ?? Promise.resolve(),
     }
   }
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: () => {}, attach, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), attach, log, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
 
   const S = (): Session => {
     const s = ctx.getSession()
     if (!s) throw new NotJoined()
-    for (const roomSession of new Set([s, ...rooms.all()])) {
-      const present = new Set(Array.from(roomSession.awareness?.getStates().values() ?? []).flatMap(p => p.user?.name ? [p.user.name] : []))
-      repairRetired(roomSession, present)
-    }
     return s
   }
   const isMe = (s: Session, p: { name: string; kind: string }) => p.name === s.me.name && p.kind === s.me.kind
@@ -89,7 +85,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     for (const p of presences(s)) names.add(p.user.name)
     names.delete(s.me.name)
     const retired = new Set(s.room.retiredWorkers().map(w => w.name))
-    return Array.from(names).filter(n => !isPrName(n) && (!retired.has(n) || s.room.workerOf(n))).sort() // PR mirrors and retired workers are not routed to
+    return Array.from(names).filter(n => !isPrName(n) && (!retired.has(n) || s.room.workerViewOf(n))).sort() // PR mirrors and retired workers are not routed to
   }
   const presences = (s: Session): SharePresence[] =>
     Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)

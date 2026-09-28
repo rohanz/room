@@ -1,11 +1,12 @@
 import { publishFixture } from './fixtures/manifest.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc, formatMsg, type ClaimMsg, type PlanMsg, type Worker } from '@room/shared'
+import { RoomDoc, formatMsg, type ClaimMsg, type PlanMsg, type WorkerStatus, type WorkerView } from '@room/shared'
 import { Rooms } from '../src/registry.js'
 import { Ledger } from '../src/ledger.js'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
+import type { LocalWorker } from '../src/worker-status.js'
 import { handlers } from '../src/tools/messaging.js'
 import { createClaims, releaseClaimsOnDone } from '../src/tools/claims.js'
 import { hubAppend } from '@room/shared/testing'
@@ -17,13 +18,34 @@ const ignore = () => {}
 const close: (() => void)[] = []
 afterEach(() => { close.splice(0).forEach(f => f()); vi.useRealTimers() })
 const clock = 600_000
-const worker = (patch: Partial<Worker> = {}): Worker => ({
-  tag: 'state', name: 'lead+state', host: 'codex', task: 'fix state', dir: '/tmp/state', branch: 'room/state',
-  pid: 123, startedAt: 1, status: 'done', finishedAt: clock - 180_000, summary: 'Fixed state.\nTests passed.', lead: 'lead', exitCode: 0, ...patch,
+const worker = (patch: Partial<LocalWorker> = {}): LocalWorker => ({
+  id: `w_${patch.tag ?? 'state'}`, tag: 'state', name: 'lead+state', host: 'codex', task: 'fix state', dir: '/tmp/state', branch: 'room/state',
+  pid: 123, startedAt: 1, status: 'done', finishedAt: clock - 180_000, summary: 'Fixed state.\nTests passed.', lead: 'lead', exitCode: 0,
+  budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full', ...patch,
+})
+const viewStatus: Record<LocalWorker['status'], WorkerStatus> = { running: 'running', done: 'done', failed: 'failed', dismissed: 'stopped' }
+/** The room's view of a worker, as its lead's projector writes it. */
+const viewOf = (w: LocalWorker): WorkerView => ({
+  id: w.id, tag: w.tag, name: w.name, lead: w.lead, mode: 'local', host: w.host, task: w.task, branch: w.branch,
+  status: viewStatus[w.status], run: 1, startedAt: w.startedAt, fence: 'test',
+  ...(w.summary !== undefined ? { summary: w.summary } : {}), ...(w.finishedAt !== undefined ? { finishedAt: w.finishedAt } : {}),
+  ...(w.exitCode !== undefined ? { exitCode: w.exitCode } : {}),
 })
 
 function fixture() {
   const sessions: Session[] = []
+  /** Each session's own workers, as the lead's registry lists them. */
+  const own = new Map<Session, LocalWorker[]>()
+  /** Another lead's worker is only a view; the lead's own worker is also in its registry. */
+  const addWorker = (x: Session, w: LocalWorker) => {
+    if (w.lead === x.me.name) own.set(x, [...(own.get(x) ?? []).filter(o => o.id !== w.id), w])
+    x.room.workerViews.set(w.id, viewOf(w))
+  }
+  const retire = (x: Session, w: LocalWorker, archive: { summary: string; outcome: 'merged' | 'clean' }) => {
+    own.set(x, (own.get(x) ?? []).filter(o => o.id !== w.id))
+    x.room.retireWorker(w.id, { id: w.id, name: w.name, tag: w.tag, lead: w.lead, host: w.host, task: w.task, startedAt: w.startedAt,
+      finishedAt: w.finishedAt!, retiredAt: clock, files: [], fileCount: 0, ...archive }, ignore)
+  }
   const makeSession = (roomName: string) => {
     const room = new RoomDoc(), awareness = new Awareness(room.doc)
     awareness.setLocalState({ user: { name: 'lead', kind: 'agent' } })
@@ -33,21 +55,21 @@ function fixture() {
     return s
   }
   const s = makeSession('primary')
-  const rooms = new Rooms({ primary: () => s, setPrimary() {}, observeClaims() {}, attach: () => ({ stop() {} }) })
+  const rooms = new Rooms({ primary: () => s, setPrimary() {}, attach: () => ({ stop() {} }) })
   const state = {
-    S: () => s, rooms, now: () => clock, myWorkers: (x: Session) => Array.from(x.room.workers.values()),
-    workerAlive: vi.fn(() => false), presences: (x: Session) => Array.from(x.awareness.getStates().values()),
+    S: () => s, rooms, now: () => clock, myWorkers: (x: Session) => own.get(x) ?? [],
+    workerAlive: vi.fn(() => false), presences: vi.fn((x: Session) => Array.from(x.awareness.getStates().values())),
     upgrade: async () => [], setPresence: vi.fn(), forMe: () => false, scheduleInboxWrite: vi.fn(),
     ledger: new Ledger({ sessionId: () => 'test-session', route: () => ({}) }),
   } as unknown as HandlerState
   close.push(() => sessions.forEach(x => { rooms.remove(x); x.awareness.destroy(); x.room.doc.destroy() }))
-  return { s, rooms, state, makeSession, tools: handlers(state) }
+  return { s, rooms, state, makeSession, addWorker, retire, tools: handlers(state) }
 }
 
 describe('unavailable addressed recipients', () => {
   it('records questions to another lead\'s exited worker, and send and wait return the same one-line notice', async () => {
-    const { s, tools } = fixture()
-    s.room.setWorker(worker({ lead: 'other' }), () => {})
+    const { s, addWorker, tools } = fixture()
+    addWorker(s, worker({ lead: 'other' }))
     const sent = await tools.room_send({ type: 'question', to: 'lead+state', text: 'Can you review?' })
     const question = s.room.messages().find(m => m.type === 'question')!
     const notice = 'lead+state finished 3m ago and will not answer; its summary: Fixed state. Tests passed.'
@@ -57,11 +79,11 @@ describe('unavailable addressed recipients', () => {
   })
 
   it('routes retired worker questions to the workers room and reads the archive', async () => {
-    const { rooms, makeSession, tools } = fixture()
+    const { rooms, makeSession, addWorker, retire, tools } = fixture()
     const ws = makeSession('workers'); rooms.add(ws, 'workers')
     const w = worker()
-    ws.room.setWorker(w, ignore)
-    ws.room.retireParticipant(w.name, { ...w, summary: 'Archived fix', finishedAt: w.finishedAt!, retiredAt: clock, files: [], fileCount: 0, outcome: 'merged' }, ignore)
+    addWorker(ws, w)
+    retire(ws, w, { summary: 'Archived fix', outcome: 'merged' })
     const sent = await tools.room_send({ type: 'question', to: w.name, text: 'More?' })
     expect(sent).toBe('error: lead+state was collected or discarded and cannot be resumed')
     expect(ws.room.messages().some(m => m.type === 'question')).toBe(false)
@@ -76,9 +98,9 @@ describe('unavailable addressed recipients', () => {
   })
 
   it('resolves a unique bare tag to the sender\'s worker, including the workers room', async () => {
-    const { s, rooms, makeSession, state, tools } = fixture()
+    const { s, rooms, makeSession, addWorker, state, tools } = fixture()
     const ws = makeSession('workers'); rooms.add(ws, 'workers')
-    ws.room.setWorker(worker({ status: 'running', exitCode: undefined, finishedAt: undefined }), () => {})
+    addWorker(ws, worker({ status: 'running', exitCode: undefined, finishedAt: undefined }))
     vi.mocked(state.workerAlive).mockReturnValue(true)
     const sent = await tools.room_send({ type: 'question', to: 'state', text: 'Ready?' })
     expect(sent).toContain('(in the workers room)')
@@ -87,9 +109,9 @@ describe('unavailable addressed recipients', () => {
   })
 
   it('accepts a note reply addressed by the sender worker tag', async () => {
-    const { rooms, makeSession, state, tools } = fixture()
+    const { rooms, makeSession, addWorker, state, tools } = fixture()
     const ws = makeSession('workers'); rooms.add(ws, 'workers')
-    ws.room.setWorker(worker({ status: 'running', exitCode: undefined, finishedAt: undefined }), () => {})
+    addWorker(ws, worker({ status: 'running', exitCode: undefined, finishedAt: undefined }))
     vi.mocked(state.workerAlive).mockReturnValue(true)
     const note = hubAppend(ws.room, { name: 'lead+state', kind: 'agent' }, { type: 'note', to: 'lead', text: 'Update?' })
     const reply = await tools.room_send({ type: 'note', to: 'state', inReplyTo: note.id, text: 'On it' })
@@ -98,10 +120,10 @@ describe('unavailable addressed recipients', () => {
   })
 
   it('rejects an ambiguous bare worker tag before posting and lists the full name', async () => {
-    const { s, rooms, makeSession, tools } = fixture()
+    const { s, rooms, makeSession, addWorker, tools } = fixture()
     const ws = makeSession('workers'); rooms.add(ws, 'workers')
-    s.room.setWorker(worker({ status: 'running', exitCode: undefined, finishedAt: undefined }), () => {})
-    ws.room.setWorker(worker({ status: 'running', exitCode: undefined, finishedAt: undefined }), () => {})
+    addWorker(s, worker({ status: 'running', exitCode: undefined, finishedAt: undefined }))
+    addWorker(ws, worker({ status: 'running', exitCode: undefined, finishedAt: undefined }))
     const sent = await tools.room_send({ type: 'note', to: 'state', text: 'Ready?' })
     expect(sent).toBe('error: worker tag state is ambiguous; use a full name: lead+state')
     expect(s.room.messages()).toEqual([])
@@ -121,22 +143,25 @@ describe('unavailable addressed recipients', () => {
   })
 
   it('allows questions to a running worker whose process still lives, including a reused archived name', async () => {
-    const { s, state, tools } = fixture()
-    const old = worker()
-    s.room.setWorker(old, ignore)
-    s.room.retireParticipant(old.name, { ...old, summary: 'old', finishedAt: old.finishedAt!, retiredAt: clock, files: [], fileCount: 0, outcome: 'clean' }, ignore)
-    s.room.setWorker(worker({ status: 'running', startedAt: clock, exitCode: undefined }), () => {})
+    const { s, state, addWorker, retire, tools } = fixture()
+    const old = worker({ id: 'w_old' })
+    addWorker(s, old)
+    retire(s, old, { summary: 'old', outcome: 'clean' })
+    addWorker(s, worker({ id: 'w_new', status: 'running', startedAt: clock, exitCode: undefined }))
     vi.mocked(state.workerAlive).mockReturnValue(true)
     expect(await tools.room_send({ type: 'question', to: old.name, text: 'follow-up' })).toContain('to block for the answer')
   })
 
-  it.each(['done', 'failed', 'dismissed'] as const)('returns immediately for a %s worker whose process still lives', async status => {
+  // Another lead's worker is known only by its view: its process shows as its presence, its status in the view's vocabulary.
+  it.each([['done', 'done'], ['failed', 'failed'], ['dismissed', 'stopped']] as const)('returns immediately for a %s worker whose process still lives', async (status, shown) => {
     vi.useFakeTimers()
-    const { s, state, tools } = fixture()
-    s.room.setWorker(worker({ lead: 'other', status, exitCode: undefined, finishedAt: clock }), () => {})
+    const { s, state, addWorker, tools } = fixture()
+    addWorker(s, worker({ lead: 'other', status, exitCode: undefined, finishedAt: clock }))
     vi.mocked(state.workerAlive).mockReturnValue(true)
+    const presences = vi.mocked(state.presences as (x: Session) => unknown[])
+    presences.mockImplementation(x => [...Array.from(x.awareness.getStates().values()), { user: { name: 'lead+state', kind: 'agent' } }])
     const sent = await tools.room_send({ type: 'question', to: 'lead+state', text: 'More?' })
-    const notice = 'lead+state reported ' + status + ' 0m ago and will not answer; its summary: Fixed state. Tests passed.'
+    const notice = 'lead+state reported ' + shown + ' 0m ago and will not answer; its summary: Fixed state. Tests passed.'
     expect(sent).toContain(notice)
     expect(sent).not.toContain('to block for the answer')
     expect(await tools.room_wait({ questionId: s.room.messages().at(-1)!.id })).toBe(notice)
@@ -150,26 +175,27 @@ describe('unavailable addressed recipients', () => {
   })
 
   it('detects a gone local worker before its exit callback updates the record', async () => {
-    const { s, tools } = fixture()
-    s.room.setWorker(worker({ status: 'running', exitCode: undefined, finishedAt: undefined, summary: undefined }), () => {})
+    const { s, addWorker, tools } = fixture()
+    addWorker(s, worker({ status: 'running', exitCode: undefined, finishedAt: undefined, summary: undefined }))
     expect(await tools.room_send({ type: 'note', to: 'lead+state', text: 'Review?' })).toContain('lead+state finished and will not answer; its summary: no summary recorded')
   })
 
   it('ends an active question wait as soon as the recipient exits and removes its observer', async () => {
-    const { s, state, tools } = fixture()
-    s.room.setWorker(worker({ status: 'running', exitCode: undefined }), () => {})
+    const { s, state, addWorker, tools } = fixture()
+    addWorker(s, worker({ status: 'running', exitCode: undefined }))
     vi.mocked(state.workerAlive).mockReturnValue(true)
     await tools.room_send({ type: 'question', to: 'lead+state', text: 'Review?' })
     const off = vi.spyOn(s.room.doc, 'off')
     const waiting = tools.room_wait({ questionId: s.room.messages().at(-1)!.id })
-    s.room.updateWorker('state', { exitCode: 1, status: 'failed', summary: 'crashed' })
+    // The registry records the exit and the projector rewrites the view.
+    addWorker(s, worker({ status: 'failed', exitCode: 1, summary: 'crashed' }))
     expect(await waiting).toContain('will not answer; its summary: crashed')
     expect(off).toHaveBeenCalledWith('update', expect.any(Function))
   })
 
   it('prefers an already recorded answer over the later exit', async () => {
-    const { s, tools } = fixture()
-    s.room.setWorker(worker({ lead: 'other' }), () => {})
+    const { s, addWorker, tools } = fixture()
+    addWorker(s, worker({ lead: 'other' }))
     await tools.room_send({ type: 'question', to: 'lead+state', text: 'Review?' })
     const q = s.room.messages().at(-1)!
     hubAppend(s.room, { name: 'lead+state', kind: 'agent' }, { type: 'answer', inReplyTo: q.id, to: 'lead', text: 'Reviewed' })
@@ -212,8 +238,8 @@ describe('finishing claim notices', () => {
 
  it('keeps a lead waiting quietly while workers run', async () => {
    vi.useFakeTimers()
-   const { s, tools } = fixture()
-   for (const tag of ['a', 'b', 'c']) s.room.setWorker(worker({ tag, name: 'lead+' + tag, status: 'running', exitCode: undefined }), () => {})
+   const { s, addWorker, tools } = fixture()
+   for (const tag of ['a', 'b', 'c']) addWorker(s, worker({ tag, name: 'lead+' + tag, status: 'running', exitCode: undefined }))
    const waiting = tools.room_wait({ timeoutMs: 10 })
    await vi.advanceTimersByTimeAsync(10)
    expect(await waiting).toContain('nothing yet; 3 workers still running (a, b, c); nothing needs you')

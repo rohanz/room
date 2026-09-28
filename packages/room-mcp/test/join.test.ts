@@ -13,7 +13,7 @@ import { DEFAULT_SERVER, NotLoggedIn, type JoinOptions, type Session } from '../
 import { hubSeam } from './fixtures/hub.js'
 import { memorySession } from './fixtures/session.js'
 import { testPolicyStore } from './policy-fixture.js'
-import { syncDocumentWorkers } from './registry-fixture.js'
+import { registerWorkers } from './registry-fixture.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 
 let dir: string
@@ -96,8 +96,7 @@ it('follows a slash-containing branch without widening sharing or dropping ident
 it('says once and stays when an automatic branch move would strand a running worker', async () => {
   execFileSync('git', ['-C', dir, 'switch', '-qc', 'feature/x'])
   const current = session('github.com/a/b/main', { share: 'intent' })
-  current.room.setWorker({ tag: 'w', name: 'Ada+privacy+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: process.pid, startedAt: Date.now(), status: 'running', lead: current.me.name })
-  await syncDocumentWorkers(current)
+  await registerWorkers(current, [{ tag: 'w', name: 'Ada+privacy+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: process.pid, startedAt: Date.now(), status: 'running', lead: current.me.name }])
   const t = branchTools(current)
   const first = await t.tools.call('room_state', {})
   const second = await t.tools.call('room_state', {})

@@ -8,7 +8,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { isAgentic, shouldWakeOnMsg, type Msg } from '@room/shared'
+import { isAgentic, manifestPaths, shouldWakeOnMsg, type Msg } from '@room/shared'
 import type { Session } from './session.js'
 import type { Ledger } from './ledger.js'
 import { writeAtomic } from './leases.js'
@@ -95,7 +95,7 @@ export class WakeReconciler {
       if (!ledger.fenced(s)) continue
       const frontier = ledger.frontier(s)
       const claims = s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
-      const uncommitted = s.room.changedPaths(s.me.name).length > 0
+      const uncommitted = manifestPaths(s.room, s.me.name).length > 0
       const workers = this.o.ownWorkers?.(s)
       const done = woken[s.roomName] ?? {}
       for (const m of ledger.candidates(s)) {

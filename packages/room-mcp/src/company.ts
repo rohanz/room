@@ -1,4 +1,5 @@
-import { displayName, type Worker } from '@room/shared'
+import { displayName } from '@room/shared'
+import type { LocalWorker } from './worker-status.js'
 import type { Presence } from '@room/shared'
 import type { Session } from './session.js'
 
@@ -21,7 +22,7 @@ export function sameCheckoutSession(s: Session, name: string): boolean {
 /** Company means another participant present now (fresh awareness, excluding browser viewers),
  * or this session's running workers. Offline claims and edits do not count: offline work
  * is covered passively by the conflict watcher and merge previews. */
-export function hasCompany(s: Session, runningWorkers: readonly Worker[] = [], now = Date.now()): CompanyState {
+export function hasCompany(s: Session, runningWorkers: readonly Pick<LocalWorker, 'name'>[] = [], now = Date.now()): CompanyState {
   const names = new Map<string, string>()
   for (const [clientId, value] of s.awareness.getStates()) {
     const p = value as Partial<Presence>

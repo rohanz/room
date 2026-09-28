@@ -6,6 +6,8 @@ import { coordinationPaths, manifestChangers, manifestKey, manifestPaths } from 
 import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimInMyLines, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
+import { localWorkerView } from '../worker-projector.js'
+import type { LocalWorker } from '../worker-status.js'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
@@ -21,7 +23,7 @@ export const defs: ToolDef[] = [
 ]
 
 /** A stopped worker may have lost its overlay while its worktree still holds edits. */
-async function workerChangedCount(s: Session, worker: import('@room/shared').Worker, processGone: boolean): Promise<number> {
+async function workerChangedCount(s: Session, worker: LocalWorker, processGone: boolean): Promise<number> {
   const overlayCount = manifestPaths(s.room, worker.name).length
   const trusted = await trustedWorker(s, worker.name)
   if (!trusted) return overlayCount
@@ -127,7 +129,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return theirs.some(c => myClaims.some(m => claimsOverlap(c, m)))
       }
       const groups = splitParticipants({
-        presences: ps, workers: [...s.room.workers.values()], retiredWorkers: s.room.retiredWorkers(),
+        presences: ps, workers: [...s.room.workerViews.values()], retiredWorkers: s.room.retiredWorkers(),
         scopes: [...s.room.scopes.entries()], overlayPeople: [...s.room.manifestHead.keys()],
         changesByPerson: new Map(), claims: s.room.openClaims(), now: now(),
       })
@@ -140,8 +142,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`participants${all ? '' : ' overlapping your work'} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? '' : 's'}` : ''}):`)
       for (const n of names) {
         const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
-        const worker = s.room.workerOf(n)
-        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: worker !== undefined && !state.workerAlive(s, worker) }) : 'offline'
+        const worker = s.room.workerViewOf(n)
+        const own = worker && myWorkers(s).find(w => w.id === worker.id)
+        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: !!own && !state.workerAlive(s, own) }) : 'offline'
         const who = participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find(c => c.by === n)?.byKind)
         if (sameCheckoutSession(s, n)) {
           const declaredScope = s.room.scope(n)
@@ -202,11 +205,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatRoomMessage(s, x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
-      out.push(...formatWorkerLines(await Promise.all(myWorkers(s).map(async worker => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(s, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
+      out.push(...formatWorkerLines(await Promise.all(myWorkers(s).flatMap(worker => { const view = localWorkerView(s, worker.id); return view ? [{ worker, view }] : [] }).map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker: view, dir: worker.dir, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(s, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)
-        out.push(...formatWorkerLines(await Promise.all(myWorkers(ws).map(async worker => { const processGone = worker.status === 'running' && !state.workerAlive(ws, worker); return { worker, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(ws, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
+        out.push(...formatWorkerLines(await Promise.all(myWorkers(ws).flatMap(worker => { const view = localWorkerView(ws, worker.id); return view ? [{ worker, view }] : [] }).map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(ws, worker); return { worker: view, dir: worker.dir, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(ws, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
       }
       return a.all === true ? out.join('\n') : compactState(out, summarizedClaims)
     },

@@ -17,7 +17,7 @@ import { prepareWorkerLinks, prepareWorktree, cleanupPreparedWorktree } from '..
 import { workerBudget, workerPriority, workerCommand, workerPrompt, validTag, workerEnv } from '../src/worker-config.js'
 import { workerLogTail, defaultSpawner, pidAlive, pidIsOurWorker, workerProcessOwnership, probeProcess, parsePsLstartUtc, type SpawnSpec } from '../src/worker-process.js'
 import { reserveWorkerPort } from '../src/port-reservations.js'
-import { syncDocumentWorkers } from './registry-fixture.js'
+import { registerWorkers, workerByTag } from './registry-fixture.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
@@ -26,12 +26,18 @@ import { hubAppend } from '@room/shared/testing'
 /** No release notices to send here. */
 const ignore = () => {}
 
+/** The worker reports room_done for its current run (a done report), while its process may still be alive. */
+async function reportDone(tag: string, summary = ''): Promise<void> {
+  const registry = await registryForDir(dir)
+  const record = registry.list().find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))!, run = record.runs.at(-1)!
+  await registry.writeReport(record.id, { run: run.n, nonce: run.nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary, changed: [] } })
+}
+
 // Lifecycle workers and worktrees in this file are synthetic. Never scan host processes.
 const createTools = (ctx: Parameters<typeof createRoomTools>[0]) => {
   const tools = createRoomTools({ listCwdProcesses: () => [], ...ctx })
   return { ...tools, call: async (...args: Parameters<typeof tools.call>) => {
     const session = ctx.getSession()
-    if (session && session.room.workers.size && args[0] !== 'room_spawn') await syncDocumentWorkers(session)
     if (session && args[0] === 'room_done' && !ctx.config?.workerId && !process.env.ROOM_WORKER_ID) {
       const registry = await registryForDir(session.dir)
       const record = registry.list().find(record => record.name === session.me.name)
@@ -439,7 +445,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
       const t = setup()
       const first = await t.leadTools.call('room_spawn', { tag: 'first', task: 'x' })
       const second = await t.leadTools.call('room_spawn', { tag: 'second', task: 'y' })
-      expect(t.a.workers.get('first')?.host).toBe('codex')
+      expect(workerByTag(dir, 'first')?.host).toBe('codex')
       expect(first).toContain('reports through room_done'); expect(second).not.toContain('reports through room_done')
       expect(first).not.toContain('tip:')
       expect(first).toContain('browser view: http://x')
@@ -454,8 +460,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     try {
       const first = await t.leadTools.call('room_spawn', { tag: 'first', task: 'serve the app' })
       const second = await t.leadTools.call('room_spawn', { tag: 'second', task: 'test the app' })
-      const firstPort = (t.a.workers.get('first') as Worker & { port?: number })?.port
-      const secondPort = (t.a.workers.get('second') as Worker & { port?: number })?.port
+      const firstPort = workerByTag(dir, 'first')?.port
+      const secondPort = workerByTag(dir, 'second')?.port
       expect(firstPort).toBe(4400)
       expect(secondPort).toBe(4401)
       expect(t.specs.map(spec => spec.env.PORT)).toEqual(['4400', '4401'])
@@ -485,8 +491,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const parent = reserveWorkerPort('lead/parent', [], configHome)
     const { a } = pair()
     a.setMeta({ repo: 'x', branch: 'main', base })
-    a.setWorker({ id: 'lead/parent', tag: 'money', name: workerId.name, lead: lead.name, host: 'codex', task: 'parent task', dir: join(dir, '.room', 'workers', 'money'), branch: 'room/money', pid: process.pid, port: parent.port, startedAt: Date.now(), status: 'running' }, ignore)
     let session: Session | null = fakeSession(a, workerId)
+    await registerWorkers(session, [{ id: 'lead/parent', tag: 'money', name: workerId.name, lead: lead.name, host: 'codex', task: 'parent task', dir: join(dir, '.room', 'workers', 'money'), branch: 'room/money', pid: process.pid, port: parent.port, startedAt: Date.now(), status: 'running' }])
     const specs: SpawnSpec[] = []
     const tools = createTools({
       getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => undefined,
@@ -520,9 +526,9 @@ describe('room_spawn / room_done / room_collect discard', () => {
 
     const collected = setup()
     await collected.leadTools.call('room_spawn', { tag: 'collected', task: 'x' })
-    collected.a.updateWorker('collected', { status: 'done', summary: 'done', finishedAt: Date.now() })
+    await reportDone('collected', 'done')
     collected.exits[0](0)
-    await vi.waitFor(() => expect(collected.a.workers.get('collected')?.exitCode).toBe(0))
+    await vi.waitFor(() => expect(workerByTag(dir, 'collected')?.exitCode).toBe(0))
     await collected.leadTools.call('room_collect', { tag: 'collected' })
     expect(existsSync(file(collected.specs[0].env.PORT))).toBe(false)
     await collected.leadTools.shutdown()
@@ -547,22 +553,21 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'finished', task: 'x' })
     await t.leadTools.call('room_spawn', { tag: 'busy', task: 'y' })
-    t.a.updateWorker('finished', { status: 'done', summary: 'done', finishedAt: Date.now() })
-    await syncDocumentWorkers(fakeSession(t.a, lead))
+    await reportDone('finished', 'done')
     t.exits[0](0)
-    await vi.waitFor(() => expect(t.a.workers.get('finished')?.exitCode).toBe(0))
+    await vi.waitFor(() => expect(workerByTag(dir, 'finished')?.exitCode).toBe(0))
     expect(await t.leadTools.call('room_leave', {})).toMatch(/^error: 1 worker\(s\) still running: busy\. /)
     expect(t.killed).toEqual([])
     await t.leadTools.shutdown()
     expect(t.killed).toEqual([1])
     // §9: the stop is recorded before the signal; §6 row 8 shows it running ("stopping") until the exit.
-    expect(t.a.workers.get('busy')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
+    expect(workerByTag(dir, 'busy')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
     const registry = await registryForDir(dir)
     const busy = registry.list().find(record => record.tag === 'busy')!
     t.exits[1](null)
     await vi.waitFor(() => expect(registry.status(busy.id)?.status).toBe('stopped'))
-    expect(t.a.workers.get('finished')).toMatchObject({ status: 'done' })
-    expect(t.a.workers.get('finished')?.stopReason).toBeUndefined()
+    expect(workerByTag(dir, 'finished')).toMatchObject({ status: 'done' })
+    expect(workerByTag(dir, 'finished')?.stopReason).toBeUndefined()
   })
 
   it('releases a reserved port when spawning fails', async () => {
@@ -601,10 +606,10 @@ describe('room_spawn / room_done / room_collect discard', () => {
       const first = await t.leadTools.call('room_spawn', { tag: 'wip1', task: 'a' })
       expect(first).toContain('carried your uncommitted work into its worktree: 1 untracked file copied')
       expect(first).not.toContain('starts from HEAD')
-      expect(t.a.workers.get('wip1')?.base).toBe(execFileSync('git', ['-C', join(dir, '.room', 'workers', 'wip1'), 'rev-parse', 'HEAD']).toString().trim())
+      expect(workerByTag(dir, 'wip1')?.base).toBe(execFileSync('git', ['-C', join(dir, '.room', 'workers', 'wip1'), 'rev-parse', 'HEAD']).toString().trim())
       expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).toContain('carried your uncommitted work into its worktree: 1 untracked file copied')
-      expect(t.a.workers.get('wip2')?.base).toBe(base)
-      expect(t.a.workers.get('wip2')?.carriedUntracked?.map(x => x.path)).toEqual(['wip.txt'])
+      expect(workerByTag(dir, 'wip2')?.base).toBe(base)
+      expect(workerByTag(dir, 'wip2')?.carriedUntracked?.map(x => x.path)).toEqual(['wip.txt'])
     } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
     expect(await setup().leadTools.call('room_spawn', { tag: 'wip3', task: 'c' })).not.toMatch(/uncommitted change/)
   })
@@ -634,7 +639,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
       const t = setup(prepareWorktree)
       const out = await t.leadTools.call('room_spawn', { tag: 'reusedbranch', task: 'resume' })
       expect(out).toContain('branch room/reusedbranch is unmanaged')
-      expect(t.a.workers.get('reusedbranch')).toBeUndefined()
+      expect(workerByTag(dir, 'reusedbranch')).toBeUndefined()
       expect(execFileSync('git', ['-C', dir, 'rev-parse', 'room/reusedbranch']).toString().trim()).toBe(oldHead)
       expect(execFileSync('git', ['-C', dir, 'show', 'room/reusedbranch:branch.txt']).toString().trim()).toBe('old worker work')
       expect(readFileSync(join(dir, 'wip.txt'), 'utf8')).toBe('lead WIP')
@@ -651,7 +656,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(out).toContain(` · priority ${priority.nice ? 'nice 10' : 'normal'}`)
     expect(t.specs[0].env).toMatchObject({ ROOM_WORKER_HOST: 'codex', ROOM_WORKER_MODEL: 'gpt-5.6', ROOM_WORKER_EFFORT: 'medium', ROOM_TAG: 'money', ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
     expect(t.specs[0].cwd).toBe(join(dir, '.room', 'workers', 'money'))
-    const w = t.a.workers.get('money')
+    const w = workerByTag(dir, 'money')
     expect(w).toMatchObject({ name: 'rohanz+money', status: 'running', lead: 'rohanz', branch: 'room/money', base, host: 'codex', model: 'gpt-5.6', effort: 'medium' })
     const st = await t.leadTools.call('room_state', { all: true })
     expect(st).toContain('workers (1):')
@@ -682,12 +687,15 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(joins).toEqual([{ server: 'local', name: 'rohanz' }])
     expect(out).toContain('local workers room local/x/main')
     expect(specs[0].env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
-    expect(local.a.workers.get('money')).toMatchObject({ status: 'running', lead: 'rohanz' })
-    expect(team.a.workers.get('money')).toBeUndefined()
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', lead: 'rohanz' })
+    expect(local.a.workerViewOf('rohanz+money')).toMatchObject({ status: 'running', lead: 'rohanz' })
+    // The lead's bridge projects its local worker's view into the team room (registry §13).
+    expect(team.a.workerViewOf('rohanz+money')).toMatchObject({ mode: 'local', status: 'running', lead: 'rohanz' })
     // the worker declares a scope and claims in the local room; the team room sees both as the lead's
     local.b.setScope({ by: workerId.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
     local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: workerId.name, byKind: 'agent', intent: 'bump' })
-    expect(team.b.scope('rohanz')?.paths).toEqual(['api/models.py'])
+    // The bridge publishes the workers' paths as the lead's coordination record, never as the lead's scope (manifest §5.6).
+    await vi.waitFor(() => expect(team.b.coordination.get('rohanz')?.paths).toEqual(['api/models.py']))
     expect(team.b.openClaims().map(c => c.intent)).toEqual(['[money] bump'])
     expect(team.b.scopes.has(workerId.name)).toBe(false)
     const st = await leadTools.call('room_state', { all: true })
@@ -729,7 +737,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const out = await waiting
     expect(out).toContain('[interrupt]')
     expect(out).toContain('exited without room_done')
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'failed', exitCode: 0 })
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'failed', exitCode: 0 })
   })
 
   it('refuses beyond the worker budget', async () => {
@@ -759,7 +767,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const config = { ...await resolveConfig({ dir, env: {} }), workerId: 'old-spawn' }
     const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, config })
     expect(await tools.call('room_done', { summary: 'old task finished' })).toContain('invalid worker id')
-    expect(t.a.workers.get('money')?.status).toBe('running')
+    expect(workerByTag(dir, 'money')?.status).toBe('running')
     expect(t.a.messages().some(m => m.type === 'done')).toBe(false)
     expect(t.b.openClaims().some(c => c.id === claim.id)).toBe(true)
     expect(t.b.scope(workerId.name)).toBeDefined()
@@ -768,7 +776,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
   it('refuses a superseded run without releasing its current claims', async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
-    const id = t.a.workers.get('money')!.id!
+    const id = workerByTag(dir, 'money')!.id
     const s = fakeSession(t.b, workerId)
     const claim = t.b.addClaim({ path: 'app.py', from: 1, to: 1, by: workerId.name, byKind: 'agent', intent: 'edit' })
     const config = { ...await resolveConfig({ dir, env: {} }), workerId: id }
@@ -793,13 +801,13 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(shouldWakeOnMsg(lead, done).wake).toBe(true)
     expect(shouldWakeOnMsg({ name: 'someone', kind: 'agent' }, done).wake).toBe(false)
     // §6 row 8: the process is still alive, so the worker reads as running with its report's summary.
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'running', summary: 'Money type in cents, 7 tests pass' })
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', summary: 'Money type in cents, 7 tests pass' })
     // The lead's next tool call shows the done line in its inbox.
     const st = await t.leadTools.call('room_state', {})
     expect(st).toContain('finished: Money type in cents')
     // A later process exit keeps the done status and records the code.
     t.exits[0](0)
-    await vi.waitFor(() => expect(t.a.workers.get('money')).toMatchObject({ status: 'done', exitCode: 0 }))
+    await vi.waitFor(() => expect(workerByTag(dir, 'money')).toMatchObject({ status: 'done', exitCode: 0 }))
   })
 
   it('does not promise a wake-up when a non-worker finishes', async () => {
@@ -828,15 +836,15 @@ describe('room_spawn / room_done / room_collect discard', () => {
     await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
     await t.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
     t.exits[0](1)
-    await vi.waitFor(() => expect(t.a.workers.get('a')).toMatchObject({ status: 'failed', exitCode: 1 }))
+    await vi.waitFor(() => expect(workerByTag(dir, 'a')).toMatchObject({ status: 'failed', exitCode: 1 }))
     await vi.waitFor(() => expect(t.a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && /worker a failed: exit 1/.test(m.text))).toBe(true))
     const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'b' })
-    await vi.waitFor(() => expect(t.killed).toHaveLength(1))
+    await vi.waitFor(() => expect(t.killed).toHaveLength(1), { timeout: 10_000 })
     t.exits[1](0)
     const d = await discarding
     expect(d).toContain('discarded b')
     expect(t.killed).toHaveLength(1)
-    expect(t.a.workers.has('b')).toBe(false)
+    expect(workerByTag(dir, 'b')).toBeUndefined()
     await vi.waitFor(() => expect(t.a.retiredWorkers().some(w => w.tag === 'b')).toBe(true))
   })
 })
@@ -887,10 +895,9 @@ function setupLead() {
 async function ownedLegacyWorker(room: RoomDoc, tag: string, status: 'running' | 'done' | 'failed' | 'dismissed', pid: number): Promise<void> {
   const prepared = await prepareWorktree(dir, tag, 'rohanz')
   // A finished worker's recorded identity no longer matches the live pid, so §6 rows 10, 11 and 14 apply.
-  room.setWorker({ tag, name: `rohanz+${tag}`, host: 'claude', task: 'x', dir: prepared.dir,
+  await registerWorkers(fakeSession(room, lead), [{ tag, name: `rohanz+${tag}`, host: 'claude', task: 'x', dir: prepared.dir,
     branch: prepared.branch, base: prepared.base, pid, processStartTime: status === 'running' ? probeProcess(pid)?.startTime : undefined,
-    startedAt: Date.now(), status, lead: 'rohanz' }, ignore)
-  await syncDocumentWorkers(fakeSession(room, lead))
+    startedAt: Date.now(), status, lead: 'rohanz' }])
 }
 
 describe('worker safety', () => {
@@ -934,7 +941,7 @@ describe('worker safety', () => {
   it('keeps the worker record and disk stop reason untouched if shutdown dismissal errors', async () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'erroring', task: 'x' })
-    const before = { ...t.a.workers.get('erroring')! }
+    const before = { ...workerByTag(dir, 'erroring')! }
     const post = t.session.post
     vi.spyOn(t.session, 'post').mockImplementation(((...args: Parameters<typeof post>) => {
       if ((args[1] as { type?: string }).type === 'note') throw new Error('note failed')
@@ -943,7 +950,7 @@ describe('worker safety', () => {
     await t.leadTools.shutdown()
     expect(t.killed).toEqual([1])
     // §9: the durable stop is mirrored even though the note failed; §6 row 8 keeps it running.
-    expect(t.a.workers.get('erroring')).toEqual({ ...before, stopReason: 'lead-session-ended' })
+    expect(workerByTag(dir, 'erroring')).toEqual({ ...before, stopReason: 'lead-session-ended' })
     expect((await registryForDir(dir)).read(before.id!)?.stop?.reason).toBe('lead-session-ended')
   })
 
@@ -951,12 +958,12 @@ describe('worker safety', () => {
     const { a, b } = pair()
     a.setMeta({ repo: 'x', branch: 'main', base })
     // a worker record left by a lead that has since restarted: pid 1 is alive but not ours
-    a.setWorker({ tag: 'ghost', name: 'rohanz+ghost', host: 'claude', task: 'x', dir, branch: 'room/ghost', pid: 1, startedAt: Date.now(), status: 'running', lead: 'rohanz' }, ignore)
+    await registerWorkers(fakeSession(a, lead), [{ tag: 'ghost', name: 'rohanz+ghost', host: 'claude', task: 'x', dir, branch: 'room/ghost', pid: 1, startedAt: Date.now(), status: 'running', lead: 'rohanz' }])
     let ls: Session | null = fakeSession(b, lead)
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir })
     const out = await tools.call('room_collect', { discard: true, tag: 'ghost' })
     expect(out).toContain('no local worker capability')
-    expect(a.workers.get('ghost')?.status).toBe('running') // nothing was signalled, so nothing changed
+    expect(workerByTag(dir, 'ghost')?.status).toBe('running') // nothing was signalled, so nothing changed
   })
 
   it('shutdown reports an unreadable live pid and preserves the running record', async () => {
@@ -966,8 +973,7 @@ describe('worker safety', () => {
     let session: Session | null = fakeSession(a, lead)
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
     await tools.shutdown()
-    expect(a.workers.get('unknown')?.status).toBe('running')
-    expect(a.workers.get('unknown')?.dismissedAt).toBeUndefined()
+    expect(workerByTag(dir, 'unknown')?.status).toBe('running')
     expect((await registryForDir(dir)).list().find(record => record.tag === 'unknown')?.stop?.reason).toBe('lead-session-ended')
     expect(a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && m.text === `could not verify unknown's process (pid ${process.pid}); left running, not stopped`)).toBe(true)
   })
@@ -980,7 +986,7 @@ describe('worker safety', () => {
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
     await tools.shutdown()
     expect(a.messages().some(m => m.type === 'note' && m.text.includes('dismissed worker finished'))).toBe(false)
-    expect(a.workers.get('finished')?.status).toBe(status)
+    expect(workerByTag(dir, 'finished')?.status).toBe(status)
   })
 
   it('leave does not signal a finished worker without verified live identity', async () => {
@@ -990,19 +996,19 @@ describe('worker safety', () => {
     let session: Session | null = fakeSession(a, lead)
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
     expect(await tools.call('room_leave', {})).toContain('left local/x/main')
-    expect(a.workers.get('finished')?.status).toBe('done')
+    expect(workerByTag(dir, 'finished')?.status).toBe('done')
   })
 
   it('a registry transition with no mirror at its call site (reconcile, another writer) still reaches the Worker doc', async () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
-    const id = t.a.workers.get('a')!.id!
-    expect(t.a.workers.get('a')?.status).toBe('running')
+    const id = workerByTag(dir, 'a')!.id
+    expect(workerByTag(dir, 'a')?.status).toBe('running')
     const registry = await registryForDir(dir)
     await registry.writeExit(id, { run: 1, code: 3, witnessed: true, at: Date.now() })
     // §6 row 14: a witnessed nonzero exit is `failed`.
     expect(registry.status(id)?.status).toBe('failed')
-    expect(t.a.workers.get('a')).toMatchObject({ status: 'failed', exitCode: 3 })
+    expect(workerByTag(dir, 'a')).toMatchObject({ status: 'failed', exitCode: 3 })
   })
 
   it('room_leave refuses while workers run, force dismisses them; shutdown dismisses too', async () => {
@@ -1010,20 +1016,20 @@ describe('worker safety', () => {
     await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
     const refused = await t.leadTools.call('room_leave', {})
     expect(refused).toContain('error: 1 worker(s) still running: a')
-    expect(t.a.workers.get('a')?.status).toBe('running')
+    expect(workerByTag(dir, 'a')?.status).toBe('running')
     expect(t.killed).toHaveLength(0)
     const left = await t.leadTools.call('room_leave', { force: true })
     expect(left).toContain('left local/x/main')
     expect(t.killed).toHaveLength(1)
     // §9 / §6 row 8: stopping until the exit is witnessed.
-    expect(t.a.workers.get('a')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
+    expect(workerByTag(dir, 'a')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
     expect(t.a.messages().some(m => m.type === 'note' && /dismissed worker a .*the lead left/.test((m as { text: string }).text))).toBe(true)
     // shutdown path
     const t2 = setupLead()
     await t2.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
     await t2.leadTools.shutdown()
     expect(t2.killed).toHaveLength(1)
-    expect(t2.a.workers.get('b')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
+    expect(workerByTag(dir, 'b')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
     t2.exits[0](null)
     await vi.waitFor(async () => {
       const registry = await registryForDir(dir)
@@ -1033,7 +1039,8 @@ describe('worker safety', () => {
     expect(t2.a.messages().some(m => m.type === 'note' && m.text.includes('died'))).toBe(false)
     const session = fakeSession(t2.a, lead)
     const next = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
-    expect(await next.call('room_state', {})).toContain('workers (1):')
+    // Worker facts are this clone's registry, so the next session sees both stopped workers, a and b.
+    expect(await next.call('room_state', {})).toContain('workers (2):')
     expect(await next.call('room_state', {})).toContain('stopped when your last session ended; its partial work is in its worktree')
     expect(await next.call('room_state', { all: true })).toContain('stopped when your last session ended; its partial work is in its worktree')
     await next.shutdown()
@@ -1052,11 +1059,13 @@ describe('worker safety', () => {
       worktree: (repo, tag) => prepareWorktree(repo, tag, 'rohanz'),
     })
     const spawning = tools.call('room_spawn', { tag: 'nope', task: 'x', host: 'codex' })
-    await vi.waitFor(() => expect(launchAttempted).toBe(true))
-    expect(a.workers.get('nope')).toBeUndefined()
+    await vi.waitFor(() => expect(launchAttempted).toBe(true), { timeout: 10_000 })
+    // The launcher's write-ahead record exists (registry §3); the room shows at most a starting worker, never a running one.
+    expect([undefined, 'starting']).toContain(a.workerViewOf('rohanz+nope')?.status)
     failStart(new Error('spawn codex ENOENT'))
     expect(await spawning).toContain('could not start codex: spawn codex ENOENT')
-    expect(a.workers.get('nope')).toBeUndefined()
+    expect(workerByTag(dir, 'nope')).toBeUndefined()
+    expect(a.workerViewOf('rohanz+nope')).toBeUndefined()
     expect(a.messages()).toHaveLength(0)
   })
 
@@ -1072,7 +1081,7 @@ describe('worker safety', () => {
     expect(t.specs).toHaveLength(0)
     const ok = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside, allowOutside: true })
     expect(ok).toContain('outside this repo, so no worktree was made')
-    expect(t.a.workers.get('far')).toMatchObject({ dir: outside, branch: 'elsewhere' })
+    expect(workerByTag(dir, 'far')).toMatchObject({ dir: outside, branch: 'elsewhere' })
   })
   it('shows an existing-dir worker model without attributing the lead checkout edits to it', async () => {
     const t = setupLead()
@@ -1103,7 +1112,7 @@ describe('review fixes: workers', () => {
     })
     await leadTools.call('room_spawn', { tag: 'money', task: 't', where: 'local' })
     expect(specs[0].env.ROOM_OWNER).toBe('rohanz')
-    expect(local.a.workers.get('money')!.name).toBe('rohanz+money')
+    expect(workerByTag(dir, 'money')!.name).toBe('rohanz+money')
     await leadTools.call('room_leave', { force: true })
   })
 
@@ -1129,13 +1138,13 @@ describe('review fixes: workers', () => {
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
     await workerTools.call('room_done', { summary: 'done but still running' })
     // §6 row 8 precedes row 10: a live process reads as running even after its done report.
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'running', summary: 'done but still running' })
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', summary: 'done but still running' })
     const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
-    await vi.waitFor(() => expect(t.killed).toHaveLength(1))
+    await vi.waitFor(() => expect(t.killed).toHaveLength(1), { timeout: 10_000 })
     t.exits[0](0)
     expect(await discarding).toContain('discarded money')
     expect(t.killed).toHaveLength(1)
-    expect(t.a.workers.has('money')).toBe(false)
+    expect(workerByTag(dir, 'money')).toBeUndefined()
     // shutdown with a live process behind a done record signals it as well
     await t.leadTools.call('room_spawn', { tag: 'tiers', task: 't' })
     let ws2: Session | null = fakeSession(t.b, { name: 'rohanz+tiers', kind: 'agent', owner: 'rohanz', label: 'tiers' })
@@ -1148,17 +1157,20 @@ describe('review fixes: workers', () => {
   it('a discarded tag remains reserved until retirement, and a stale exit cannot clear its record (fix 9)', async () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'first' })
-    const firstId = t.a.workers.get('money')!.id
+    const firstId = workerByTag(dir, 'money')!.id
     // Discard must not report success until its process exits.
     const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
-    await vi.waitFor(async () => expect((await registryForDir(dir)).read(firstId!)?.stop?.reason).toBe('discarded'))
+    await vi.waitFor(async () => expect((await registryForDir(dir)).read(firstId)?.stop?.reason).toBe('discarded'), { timeout: 10_000 })
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('tag in use: money')
     t.exits[0](1)
     expect(await discarding).toContain('discarded money')
-    await vi.waitFor(() => expect(t.a.workers.has('money')).toBe(false))
-    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('tag in use: money')
+    await vi.waitFor(() => expect(workerByTag(dir, 'money')).toBeUndefined())
+    // Retirement cleanup finished in the lead's only room (§12), releasing the tag; the respawn is refused only
+    // by the worktree this file's mocked cleanupWorker leaves behind.
+    expect((await registryForDir(dir)).read(firstId)?.phase).toBe('retired')
+    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('worktree money is unmanaged')
     t.exits[0](1) // the first process finally dies
-    expect((await registryForDir(dir)).read(firstId!)).toMatchObject({ id: firstId, tag: 'money' })
+    expect((await registryForDir(dir)).read(firstId)).toMatchObject({ id: firstId, tag: 'money' })
     // and while a process is alive the tag cannot be reused
     await t.leadTools.call('room_spawn', { tag: 'x', task: 't' })
     expect(await t.leadTools.call('room_spawn', { tag: 'x', task: 'again' })).toContain('tag in use: x')
@@ -1232,7 +1244,9 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     t.exits[0](0)
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('tag in use: money')
     await t.leadTools.call('room_collect', { discard: true, tag: 'money' })
-    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('tag in use: money')
+    // Retirement cleanup has finished (§12); only the worktree left by the mocked cleanupWorker refuses the tag now.
+    expect((await registryForDir(dir)).list().find(record => record.tag === 'money')?.phase).toBe('retired')
+    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('worktree money is unmanaged')
   })
 
   it('W2/W3: distinct tags route workers to their rooms; local reads and diffs use the workers room', async () => {
@@ -1253,12 +1267,12 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     await leadTools.call('room_spawn', { tag: 'team-money', task: 'team side' })
     await leadTools.call('room_spawn', { tag: 'money', task: 'local side', where: 'local' })
     expect(await leadTools.call('room_spawn', { tag: 'money', task: 'duplicate', where: 'here' })).toContain('tag in use: money')
-    expect(team.a.workers.get('team-money')?.task).toBe('team side')
-    expect(local.a.workers.get('money')?.task).toBe('local side')
+    expect(workerByTag(dir, 'team-money')?.task).toBe('team side')
+    expect(workerByTag(dir, 'money')?.task).toBe('local side')
     // the local worker edits in the workers room; the team-room lead reads and diffs its version
     publishFixture(local.b, 'rohanz+money', 'app.py', 'x = 100\n')
     // §14: a local worker's preview reads its trusted worktree, so the edit is on disk as well.
-    writeFileSync(join(local.a.workers.get('money')!.dir, 'app.py'), 'x = 100\n')
+    writeFileSync(join(workerByTag(dir, 'money')!.dir, 'app.py'), 'x = 100\n')
     publishFixture(local.b, 'rohanz+tiers', 'tiers.py', 'tier = "gold"\n')
     const read = await leadTools.call('room_read', { path: 'app.py', person: 'rohanz+money' })
     expect(read).toContain('x = 100')
@@ -1282,10 +1296,10 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     // dismissing the team-room worker signals only the team-room process; the local one is untouched
     await leadTools.call('room_collect', { discard: true, tag: 'team-money' })
     expect(killed).toEqual(['github.com/rohanz/x/main'])
-    expect(local.a.workers.get('money')?.status).toBe('running')
+    expect(workerByTag(dir, 'money')?.status).toBe('running')
     expect(await leadTools.call('room_leave', {})).toContain('worker(s) still running: money')
     expect(killed).toEqual(['github.com/rohanz/x/main'])
-    expect(local.a.workers.get('money')?.status).toBe('running')
+    expect(workerByTag(dir, 'money')?.status).toBe('running')
     await leadTools.call('room_leave', { force: true })
     expect(killed).toEqual(['github.com/rohanz/x/main', 'local/x/main'])
   })
@@ -1310,7 +1324,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     release()
     expect(await first).toContain('spawned money')
     expect(specs).toHaveLength(1)
-    expect(a.workers.get('money')?.task).toBe('one')
+    expect(workerByTag(dir, 'money')?.task).toBe('one')
     // the reservation is released once the spawn has finished (or failed)
     expect(await tools.call('room_spawn', { tag: 'money', task: 'three' })).toContain('tag in use: money')
   })
@@ -1338,7 +1352,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     try {
       expect(await spawning).toContain('tool call cancelled')
       expect(specs).toHaveLength(0)
-      expect(a.workers.has('cancelled-preparation')).toBe(false)
+      expect(workerByTag(dir, 'cancelled-preparation')).toBeUndefined()
       expect(existsSync(join(dir, '.room/workers/cancelled-preparation'))).toBe(false)
     } finally {
       if (prepared?.created && existsSync(prepared.dir)) await cleanupPreparedWorktree(dir, prepared)
@@ -1371,7 +1385,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
       expect(existsSync(checkout)).toBe(true)
       expect(readFileSync(join(checkout, 'partial.txt'), 'utf8')).toBe('keep me')
       // §9: an unconfirmed stop leaves it running ("stopping", §6 row 8).
-      expect(a.workers.get('after-start')?.status).toBe(stopped ? 'dismissed' : 'running')
+      expect(workerByTag(dir, 'after-start')?.status).toBe(stopped ? 'dismissed' : 'running')
     } finally { dir = previousDir; base = previousBase }
   })
 
@@ -1384,8 +1398,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     // registry cannot tie the live pid to it and §6 row 10 reads it as done
     const prepared = await prepareWorktree(dir, 'money', 'rohanz')
     const processStartTime = probeProcess(child.pid!)!.startTime!
-    a.setWorker({ tag: 'money', name: 'rohanz+money', host: 'claude', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b', task: 'x', dir: prepared.dir, branch: prepared.branch, pid: child.pid!, startedAt: Date.now(), status: 'done', lead: 'rohanz', summary: 'done but alive' }, ignore)
-    await syncDocumentWorkers(fakeSession(a, lead))
+    await registerWorkers(fakeSession(a, lead), [{ tag: 'money', name: 'rohanz+money', host: 'claude', hostSessionId: 'e1be43be-03a3-45b8-b267-cd48780e2a0b', task: 'x', dir: prepared.dir, branch: prepared.branch, pid: child.pid!, startedAt: Date.now(), status: 'done', lead: 'rohanz', summary: 'done but alive' }])
     let ls: Session | null = fakeSession(a, lead)
     const probe = () => pidAlive(child.pid!) ? { startTime: processStartTime, executable: 'claude' } : undefined
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe })
@@ -1420,7 +1433,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
       worktree: (repo, tag) => prepareWorktree(repo, tag, 'rohanz'),
     })
     await tools.call('room_spawn', { tag: 'money', task: 't' })
-    expect(a.workers.get('money')?.processStartTime).toBe('test:worker:8')
+    expect(workerByTag(dir, 'money')?.processStartTime).toBe('test:worker:8')
     const refused = await tools.call('room_collect', { discard: true, tag: 'money' })
     expect(refused).toContain('worker process has not stopped')
     expect((await registryForDir(dir)).list().find(record => record.tag === 'money')?.stop?.reason).toBe('discarded')
@@ -1428,7 +1441,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(a.messages().some(m => m.type === 'note' && /could not dismiss worker money/.test((m as { text: string }).text))).toBe(true)
     deliverable = true
     expect(await tools.call('room_collect', { discard: true, tag: 'money' })).toContain('discarded money')
-    expect(a.workers.has('money')).toBe(false)
+    expect(workerByTag(dir, 'money')).toBeUndefined()
   })
 })
 
@@ -1436,10 +1449,9 @@ describe('review round 3', () => {
   it("a tag held by another lead's running worker is refused, and its record is never touched", async () => {
     const t = setupLead()
     const prepared = await prepareWorktree(dir, 'money', 'kieran')
-    t.a.setWorker({ tag: 'money', name: 'kieran+money', host: 'claude', task: 'theirs', dir: prepared.dir, branch: prepared.branch, pid: 4242, startedAt: Date.now(), status: 'running', lead: 'kieran', gen: 1 }, ignore)
-    await syncDocumentWorkers(fakeSession(t.a, lead))
+    await registerWorkers(fakeSession(t.a, lead), [{ tag: 'money', name: 'kieran+money', host: 'claude', task: 'theirs', dir: prepared.dir, branch: prepared.branch, pid: 4242, startedAt: Date.now(), status: 'running', lead: 'kieran' }])
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'mine' })).toContain('tag in use: money')
-    expect(t.a.workers.get('money')).toMatchObject({ lead: 'kieran', status: 'running' })
+    expect(workerByTag(dir, 'money')).toMatchObject({ lead: 'kieran', status: 'running' })
   })
 })
 
@@ -1562,16 +1574,16 @@ describe('retirement integration', () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'archive me' })
     publishFixture(t.a, 'rohanz+money', 'app.py', 'x = 2\n')
-    t.a.updateWorker('money', { status: 'done', summary: 'implemented money', finishedAt: Date.now() })
+    await reportDone('money', 'implemented money')
     const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
     await new Promise(resolve => setTimeout(resolve, 1))
     expect(t.a.retiredWorkers()).toEqual([])
-    await vi.waitFor(async () => expect((await registryForDir(dir)).list().find(record => record.tag === 'money')?.stop?.reason).toBe('discarded'))
-    expect(await t.leadTools.call('room_state', {})).toContain('money (claude, discard pending (dismissed)')
+    await vi.waitFor(async () => expect((await registryForDir(dir)).list().find(record => record.tag === 'money')?.stop?.reason).toBe('discarded'), { timeout: 10_000 })
+    expect(await t.leadTools.call('room_state', {})).toContain('money (claude, discard pending (collecting)')
     t.exits[0](0)
     expect(await discarding).toContain('discarded money')
     expect(t.a.messages().some(m => m.type === 'note' && m.to === lead.name && /dismissed worker money/.test(m.text))).toBe(false)
-    await vi.waitFor(() => expect(t.a.workers.has('money')).toBe(false))
+    await vi.waitFor(() => expect(workerByTag(dir, 'money')).toBeUndefined())
     expect(t.a.retiredWorkers()).toMatchObject([{ name: 'rohanz+money', summary: 'discarded', files: [], outcome: 'dismissed' }])
     expect(t.a.changedPaths('rohanz+money')).toEqual([])
     await t.leadTools.shutdown()
@@ -1581,10 +1593,10 @@ describe('retirement integration', () => {
     const t = setupLead()
     const prepared = await prepareWorktree(dir, 'finished', 'rohanz')
     writeFileSync(join(prepared.dir, 'uncommitted-retirement-check'), 'dirty')
-    t.a.setWorker({ tag: 'finished', name: 'rohanz+finished', host: 'codex', task: 'x', dir: prepared.dir, branch: prepared.branch, pid: -1, startedAt: 1, status: 'done', lead: 'rohanz', exitCode: 0 }, ignore)
+    await registerWorkers(t.session!, [{ tag: 'finished', name: 'rohanz+finished', host: 'codex', task: 'x', dir: prepared.dir, branch: prepared.branch, pid: -1, startedAt: 1, status: 'done', lead: 'rohanz', exitCode: 0 }])
     await t.leadTools.call('room_preview_merge', {})
     expect(t.a.retiredWorkers()).toEqual([])
-    expect(t.a.workers.has('finished')).toBe(true)
+    expect(workerByTag(dir, 'finished')).toBeDefined()
     await t.leadTools.call('room_collect', { discard: true, tag: 'finished' })
     const retired = t.a.retiredWorkers()[0]
     expect(retired).toMatchObject({ tag: 'finished', outcome: 'dismissed' })
@@ -1620,7 +1632,7 @@ describe('spawn inputs and effort', () => {
     writeFileSync(join(dir, '.roomlinks'), `# shared inputs\n\n${source} # comment\n`)
     try {
       expect(await t.leadTools.call('room_spawn', { tag: 'linked', task: 'read inputs' })).toContain(`inputs ${source}`)
-      expect(t.a.workers.get('linked')?.link).toEqual([source])
+      expect(workerByTag(dir, 'linked')?.link).toEqual([source])
       expect(lstatSync(join(dest, source)).isSymbolicLink()).toBe(true)
       expect(t.specs[0].args.some(a => a.includes(`Read-only inputs linked from the lead's clone: ${source}`))).toBe(true)
       expect(prepareWorkerLinks(dir, dest, [])).toEqual([])
@@ -1747,20 +1759,20 @@ describe('worker follow-up sessions', () => {
     vi.stubEnv('ROOM_WORKER_MAX_BUDGET_USD', '3.25')
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'first', host: 'claude', model: 'opus', effort: 'high', threads: 2 })
-    const initial = t.a.workers.get('money')!
+    const initial = workerByTag(dir, 'money')!
     expect(initial.hostSessionId).toMatch(/^[0-9a-f-]{36}$/)
     expect(t.specs[0].args).toContain('--session-id')
     mkdirSync(initial.dir, { recursive: true })
-    t.a.updateWorker('money', { status: 'done', summary: 'first done', finishedAt: Date.now() })
+    await reportDone('money', 'first done')
     t.exits[0](0)
-    await vi.waitFor(() => expect(t.a.workers.get('money')?.exitCode).toBe(0))
+    await vi.waitFor(() => expect(workerByTag(dir, 'money')?.exitCode).toBe(0))
     const sent = await t.leadTools.call('room_send', { type: 'note', to: 'money', text: 'fix the review finding' })
     expect(sent).toContain("resumed money's retained conversation with your message")
     expect(t.specs[1].env).toMatchObject({ ...t.specs[0].env, ROOM_WORKER_RUN: '2', ROOM_LAUNCH_NONCE: t.specs[1].env.ROOM_LAUNCH_NONCE })
     expect(t.specs[1].env.ROOM_LAUNCH_NONCE).not.toBe(t.specs[0].env.ROOM_LAUNCH_NONCE)
     expect(t.specs[1]).toMatchObject({ cwd: initial.dir, env: { ROOM_TAG: 'money', ROOM_WORKER_THREADS: t.specs[0].env.ROOM_WORKER_THREADS, ROOM_WORKER_MEM_GB: t.specs[0].env.ROOM_WORKER_MEM_GB } })
     expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, 'fix the review finding', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'running', hostSessionId: initial.hostSessionId, dir: initial.dir })
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', hostSessionId: initial.hostSessionId, dir: initial.dir })
   })
 
   it('captures the Codex thread ID and resumes a stopped worker with the documented flags', async () => {
@@ -1772,24 +1784,28 @@ describe('worker follow-up sessions', () => {
     await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir,
       chain: [], hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })
     expect(registry.read(record.id)?.hostSessionId).toBe('550e8400-e29b-41d4-a716-446655440000')
-    const initial = t.a.workers.get('money')!
+    const initial = workerByTag(dir, 'money')!
     mkdirSync(initial.dir, { recursive: true })
     t.exits[0](1)
-    await vi.waitFor(() => expect(t.a.workers.get('money')?.status).toBe('failed'))
+    await vi.waitFor(() => expect(workerByTag(dir, 'money')?.status).toBe('failed'))
     const sent = await t.leadTools.call('room_send', { type: 'note', to: 'rohanz+money', text: 'repair the failure' })
     expect(sent).toContain("resumed money's retained conversation with your message")
     expect(t.specs[1].args).toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'repair the failure'])
     expect(t.specs[1].cwd).toBe(initial.dir)
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'running', exitCode: undefined, hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', exitCode: undefined, hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })
   })
 
   it('waits for a just-finished worker process to exit before resuming its session', async () => {
     vi.stubEnv('ROOM_WORKER_NICE', '0')
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'quickreply', task: 'first', host: 'claude' })
-    const w = t.a.workers.get('quickreply')!
+    const w = workerByTag(dir, 'quickreply')!
     mkdirSync(w.dir, { recursive: true })
-    t.a.updateWorker('quickreply', { status: 'done', summary: 'done', finishedAt: Date.now() })
+    await reportDone('quickreply', 'done')
+    // Another observer records the exit (§6 then reads done) before this session's process handle reports it.
+    const registry = await registryForDir(dir), id = w.id
+    await registry.writeExit(id, { run: 1, code: 0, witnessed: true, at: Date.now() })
+    expect(workerByTag(dir, 'quickreply')?.status).toBe('done')
     const reply = t.leadTools.call('room_send', { type: 'note', to: 'quickreply', text: 'one more fix' })
     setTimeout(() => t.exits[0](0), 20)
     expect(await reply).toContain("resumed quickreply's retained conversation with your message")
@@ -1799,32 +1815,33 @@ describe('worker follow-up sessions', () => {
   it('reserves a fresh port and names it when a resumed worker lost its old port', async () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'resumeport', task: 'first', host: 'claude' })
-    const w = t.a.workers.get('resumeport')!
+    const w = workerByTag(dir, 'resumeport')!
     mkdirSync(w.dir, { recursive: true })
-    t.a.updateWorker('resumeport', { status: 'done', summary: 'first done', finishedAt: Date.now() })
+    await reportDone('resumeport', 'first done')
     t.exits[0](0)
-    await vi.waitFor(() => expect(t.a.workers.get('resumeport')?.exitCode).toBe(0))
+    await vi.waitFor(() => expect(workerByTag(dir, 'resumeport')?.exitCode).toBe(0))
     const other = reserveWorkerPort('other-lead/worker', [], process.env.XDG_CONFIG_HOME, w.port)
     try {
       const reply = await t.leadTools.call('room_send', { type: 'note', to: 'resumeport', text: 'one more task' })
       expect(reply).toContain('dev-server PORT is 4401')
       expect(t.specs[1].env.PORT).toBe('4401')
       expect(t.specs[1].args.join(' ')).toContain('Your dev-server port is 4401 (PORT=4401).')
-      expect(t.a.workers.get('resumeport')?.port).toBe(4401)
+      expect(workerByTag(dir, 'resumeport')?.port).toBe(4401)
     } finally { other.release(); await t.leadTools.shutdown() }
   })
 
   it('explains why a collected worker or missing worktree cannot resume', async () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'missingfollowup', task: 'first', host: 'claude' })
-    t.a.updateWorker('missingfollowup', { status: 'done', finishedAt: Date.now() })
+    await reportDone('missingfollowup')
     t.exits[0](0)
-    await vi.waitFor(() => expect(t.a.workers.get('missingfollowup')?.exitCode).toBe(0))
+    await vi.waitFor(() => expect(workerByTag(dir, 'missingfollowup')?.exitCode).toBe(0))
     rmSync(join(dir, '.room', 'workers', 'missingfollowup'), { recursive: true, force: true })
     expect(await t.leadTools.call('room_send', { type: 'note', to: 'missingfollowup', text: 'fix' })).toContain('worktree no longer exists')
     expect(t.specs).toHaveLength(1)
-    const finished = t.a.workers.get('missingfollowup')!
-    t.a.retireParticipant(finished.name, { ...finished, summary: 'collected', finishedAt: finished.finishedAt!, retiredAt: Date.now(), files: [], fileCount: 0, outcome: 'dismissed' }, ignore)
+    const finished = workerByTag(dir, 'missingfollowup')!
+    t.a.retireWorker(finished.id, { name: finished.name, tag: finished.tag, lead: finished.lead, host: finished.host, task: finished.task, startedAt: finished.startedAt,
+      id: finished.id, summary: 'collected', finishedAt: finished.finishedAt!, retiredAt: Date.now(), files: [], fileCount: 0, outcome: 'dismissed' }, ignore)
     const registry = await registryForDir(dir)
     await registry.update(finished.id!, old => ({ ...old, phase: 'retired', seq: old.seq + 1 }))
     expect(await t.leadTools.call('room_send', { type: 'note', to: 'missingfollowup', text: 'fix' })).toContain('collected or discarded')

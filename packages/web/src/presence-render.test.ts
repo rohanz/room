@@ -67,11 +67,12 @@ it('renders the shared model line with ellipsis styling and full title/tooltip o
   room.doc.destroy()
 })
 
-it.each(['done', 'failed', 'dismissed', 'running'] as const)('shares %s worker recency across People and Board', status => {
+// A dismissed worker's view says `stopped` (the registry vocabulary).
+it.each(['done', 'failed', 'stopped', 'running'] as const)('shares %s worker recency across People and Board', status => {
   vi.useFakeTimers(); vi.setSystemTime(600_000)
   vi.stubGlobal('document', { createElement: () => new Element(), activeElement: null, addEventListener: vi.fn(), removeEventListener: vi.fn() })
   const room = new RoomDoc()
-  room.setWorker({ name: 'Ada+test', tag: 'test', lead: 'Ada', host: 'codex', task: 'test', dir: '/', branch: 'test', pid: 1, startedAt: 0, status, finishedAt: 240_000 }, () => {})
+  room.workerViews.set('w_test', { id: 'w_test', name: 'Ada+test', tag: 'test', lead: 'Ada', mode: 'local', host: 'codex', task: 'test', branch: 'test', status, run: 1, startedAt: 0, finishedAt: 240_000, fence: 'test' })
   const states = new Map([[1, { user: { name: 'Ada+test', kind: 'agent' }, lastActive: 599_000 }]])
   const conn = { room, provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
   const people = participantsPanel(conn, createFocusState()) as unknown as Element

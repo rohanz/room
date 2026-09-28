@@ -19,7 +19,9 @@ import type { SessionBinding } from '../src/binding.js'
 import { Ledger } from '../src/ledger.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
 import type { SendWake } from '../src/wake-path.js'
-import type { Worker } from '@room/shared'
+import type { LocalWorker } from '../src/worker-status.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
+import { registerWorkers } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.clearAllMocks() })
@@ -144,7 +146,7 @@ describe('hasCompany', () => {
 
   it('counts a running worker', () => {
     const s = session(new RoomDoc())
-    const worker = { name: 'Rohan+tests', status: 'running' } as Worker
+    const worker = { name: 'Rohan+tests', status: 'running' } as LocalWorker
     expect(hasCompany(s, [worker])).toMatchObject({ company: true, others: ['Rohan+tests'] })
   })
 

@@ -1,7 +1,7 @@
 import { describeClaim } from './claims.js'
 import { describeIdentity, isAgentic } from './identity.js'
 import { participantRecord, type ParticipantGit, type ParticipantHolder, type ParticipantRecord, type RoomDoc } from './doc.js'
-import type { Claim, Kind, NoteMsg, Presence, RetiredWorker, Scope, ShareLevel, Worker } from './types.js'
+import { workerLive, type Claim, type Kind, type NoteMsg, type Presence, type RetiredWorker, type Scope, type ShareLevel, type WorkerView } from './types.js'
 
 export const ROOM_STALE_MS = 7 * 24 * 60 * 60 * 1000
 export const AWARENESS_FRESH_MS = 30_000
@@ -123,18 +123,18 @@ export function summarizeFiles(paths: readonly string[], options: FileSummaryOpt
 
 const STOPPED_WITH_SESSION = 'stopped when your last session ended; its partial work is in its worktree'
 const STOPPED_UNWITNESSED = 'stopped while no session of yours was running; reason unknown'
-const stoppedWithSession = (w: Pick<Worker, 'stopReason'>): boolean => w.stopReason === 'lead-session-ended'
-const stoppedAfterMessage = (w: Pick<Worker, 'stopReason'>): string | undefined =>
+const stoppedWithSession = (w: Pick<WorkerView, 'stopReason'>): boolean => w.stopReason === 'lead-session-ended'
+const stoppedAfterMessage = (w: Pick<WorkerView, 'stopReason'>): string | undefined =>
   w.stopReason?.startsWith('message-delivered-')
     ? `stopped after receiving your message: ${w.stopReason === 'message-delivered-cancelled' ? 'cancelled' : 'launch failed'}`
     : undefined
 
 /** Wording for action recency; connectivity and process liveness are separate facts. */
-export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; processGone?: boolean; worker?: Pick<Worker, 'status' | 'finishedAt' | 'stopReason'> } = {}): string {
+export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; processGone?: boolean; worker?: Pick<WorkerView, 'status' | 'finishedAt' | 'stopReason'> } = {}): string {
   if (options.worker && stoppedWithSession(options.worker)) return STOPPED_WITH_SESSION
-  if (options.worker?.status === 'running' && options.processGone) return STOPPED_UNWITNESSED
-  const finished = options.worker !== undefined && options.worker.status !== 'running'
-  const running = options.worker ? options.worker.status === 'running' : options.running
+  if (options.worker && workerLive(options.worker.status) && options.processGone) return STOPPED_UNWITNESSED
+  const finished = options.worker !== undefined && !workerLive(options.worker.status)
+  const running = options.worker ? workerLive(options.worker.status) : options.running
   if (finished) lastActive = options.worker!.finishedAt ?? lastActive
   if (lastActive === undefined || !Number.isFinite(lastActive)) return finished ? 'finished (time unknown)' : running ? 'running' : 'activity unknown'
   const seconds = Math.max(0, Math.floor((now - lastActive) / 1000))
@@ -167,7 +167,7 @@ export interface Participant {
 
 export interface ParticipantInput {
   presences: readonly Presence[]
-  workers?: readonly Worker[]
+  workers?: readonly WorkerView[]
   scopes: readonly (readonly [string, Scope])[]
   overlayPeople: readonly string[]
   changesByPerson: ReadonlyMap<string, readonly string[]>
@@ -178,7 +178,7 @@ export interface ParticipantInput {
 }
 
 /** Shared identity text for browser cards and room_state, using only reported runtime facts. */
-export function participantIdentityLine(current: readonly Presence[], name: string, worker?: Worker, fallbackKind?: Kind): string {
+export function participantIdentityLine(current: readonly Presence[], name: string, worker?: WorkerView, fallbackKind?: Kind): string {
   const p = [...current].filter(p => p.user.name === name).sort((a, b) => Number(isAgentic(b.user.kind)) - Number(isAgentic(a.user.kind)) || (b.lastActive ?? 0) - (a.lastActive ?? 0))[0]
   const id = p?.user ?? (worker ? { name, kind: 'agent' as const, owner: worker.name.split('+')[0], label: worker.tag } : fallbackKind ? { name, kind: fallbackKind } : undefined)
   if (!id) return name
@@ -259,7 +259,7 @@ export function splitParticipants(input: ParticipantInput & { retiredWorkers: re
   const retiredWorkers = [...input.retiredWorkers].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))
   const retiredNames = new Set(retiredWorkers.map(w => w.name))
   const participants = deriveParticipants(input).filter(p => !retiredNames.has(p.name) || workers.has(p.name))
-  const active = participants.filter(p => p.online || ['running', 'failed'].includes(workers.get(p.name)?.status ?? ''))
+  const active = participants.filter(p => p.online || (!!workers.get(p.name) && (workerLive(workers.get(p.name)!.status) || workers.get(p.name)!.status === 'failed')))
   const offlineTeammates = participants.filter(p => !p.online && !workers.has(p.name))
   const leads = new Set([...workers.values()].map(w => w.lead))
   for (const w of retiredWorkers) leads.add(w.lead)
@@ -267,7 +267,7 @@ export function splitParticipants(input: ParticipantInput & { retiredWorkers: re
     lead,
     active: active.filter(p => workers.get(p.name)?.lead === lead),
     retiredWorkers: retiredWorkers.filter(w => w.lead === lead),
-    running: [...workers.values()].filter(w => w.lead === lead && w.status === 'running').length,
+    running: [...workers.values()].filter(w => w.lead === lead && workerLive(w.status)).length,
     nested: [] as WorkerParticipantGroup[],
   }))
   const byLead = new Map(allGroups.map(group => [group.lead, group]))
@@ -335,7 +335,9 @@ export function otherAreasLine(hiddenCount: number, areas: readonly string[]): s
 }
 
 export interface WorkerLineInput {
-  worker: Worker
+  worker: WorkerView
+  /** The worktree, known only to the lead's own registry. */
+  dir?: string
   processGone?: boolean
   lastActive?: number
   changedCount: number
@@ -344,17 +346,17 @@ export interface WorkerLineInput {
 }
 
 /** The two canonical room_state lines for one dispatched worker. */
-export function workerLine({ worker: w, processGone = false, lastActive, changedCount, last, now = Date.now() }: WorkerLineInput): [string, string] {
+export function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last, now = Date.now() }: WorkerLineInput): [string, string] {
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120)
   const state = stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION
+    : w.stopReason === 'discarded' ? `discard pending (${w.status})`
     : w.stopReason ? `stopped (${w.stopReason})`
-    : w.dismissedAt !== undefined || w.status === 'dismissed' ? `discard pending (${w.status})`
-    : w.status === 'running' && processGone ? STOPPED_UNWITNESSED
-    : w.status === 'running' ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status)
+    : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED
+    : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status)
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
-    `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${w.status === 'running' && processGone && !stoppedWithSession(w) ? ` · worktree ${w.dir}` : ''}${summary ? ` · ${summary}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
+    `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` · worktree ${dir}` : ''}${summary ? ` · ${summary}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
   ]
 }
 

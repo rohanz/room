@@ -12,14 +12,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { JSDOM } from 'jsdom'
-import { RoomDoc, formatMsg, messageEndsWait, messageForMe, shouldWakeOnMsg, type Identity, type NoteMsg, type Worker } from '@room/shared'
+import { RoomDoc, formatMsg, messageEndsWait, messageForMe, shouldWakeOnMsg, type Identity, type NoteMsg, type WorkerView } from '@room/shared'
 import { handlers as collectHandlers } from '../src/tools/collect.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { prepareWorktree } from '../src/worker-git.js'
-import { syncDocumentWorkers } from './registry-fixture.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
+import { projectWorkers } from '../src/worker-projector.js'
+import { fixtureId, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
 import { type SpawnSpec } from '../src/worker-process.js'
 import { createFocusState, participantsPanel } from '../../web/src/panels.ts'
 import type { Conn } from '../../web/src/conn.ts'
@@ -53,7 +55,8 @@ beforeEach(() => {
   // The human's own uncommitted work, as in the live run.
   put(top, 'README.md', 'shop\nLocal note: human WIP\n'); put(top, 'WIP-top.txt', 'untracked wip from the human\n')
 })
-afterEach(() => {
+afterEach(async () => {
+  await closeRegistryForDir(top)
   vi.unstubAllGlobals()
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
   Object.assign(process.env, roomEnv)
@@ -61,7 +64,7 @@ afterEach(() => {
 })
 
 /** The shape the live run produced: the human's worker `lead` and its Codex worker `cat`, nested under it. */
-async function nestedBatch(opts: { leadStatus?: Worker['status']; catStatus?: Worker['status'] } = {}) {
+async function nestedBatch(opts: { leadStatus?: FixtureWorker['status']; catStatus?: FixtureWorker['status'] } = {}) {
   const lead = await prepareWorktree(top, 'lead', HUMAN, [], undefined)
   put(lead.dir, 'api/tax.py', '# Rates reviewed 2026-09\nRATES = {}\n')
   const cat = await prepareWorktree(lead.dir, 'cat', LEAD, [], undefined)
@@ -69,25 +72,25 @@ async function nestedBatch(opts: { leadStatus?: Worker['status']; catStatus?: Wo
   put(lead.dir, '.room/workers/cat.log', 'codex transcript\n')
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ base: git(top, 'rev-parse', 'HEAD'), branch: 'shop', repo: 'top' })
-  const leadW: Worker = { id: `${HUMAN}/lead#1`, tag: 'lead', name: LEAD, lead: HUMAN, host: 'claude', task: 'lead the batch', dir: lead.dir, branch: lead.branch, base: lead.base, pid: -1, startedAt: 1, status: opts.leadStatus ?? 'running', ...(lead.carriedUntracked?.length ? { carriedUntracked: lead.carriedUntracked } : {}) }
-  const catW: Worker = { id: `${LEAD}/cat#1`, tag: 'cat', name: 'rohanz+cat', lead: LEAD, host: 'codex', task: 'catalog docstring', dir: cat.dir, branch: cat.branch, base: cat.base, pid: -1, startedAt: 2, status: opts.catStatus ?? 'running', ...(cat.carriedUntracked?.length ? { carriedUntracked: cat.carriedUntracked } : {}) }
-  room.setWorker(leadW); room.setWorker(catW)
-  return { lead, cat, room, leadW, catW }
+  const leadW: FixtureWorker = { id: `${HUMAN}/lead#1`, tag: 'lead', name: LEAD, lead: HUMAN, host: 'claude', task: 'lead the batch', dir: lead.dir, branch: lead.branch, base: lead.base, pid: 0, startedAt: 1, status: opts.leadStatus ?? 'running', ...(lead.carriedUntracked?.length ? { carriedUntracked: lead.carriedUntracked } : {}) }
+  const catW: FixtureWorker = { id: `${LEAD}/cat#1`, tag: 'cat', name: 'rohanz+cat', lead: LEAD, host: 'codex', task: 'catalog docstring', dir: cat.dir, branch: cat.branch, base: cat.base, pid: 0, startedAt: 2, status: opts.catStatus ?? 'running', ...(cat.carriedUntracked?.length ? { carriedUntracked: cat.carriedUntracked } : {}) }
+  // Registered in the top clone's registry (shared by every nested worktree) when the human's session collects.
+  return { lead, cat, room, leadW, catW, workers: [leadW, catW] }
 }
 
 /** The human's session after a crash: a fresh session in the top clone, with no process handles. */
-function humanCollect(room: RoomDoc) {
-  const s = { dir: top, local: {}, me: { name: HUMAN, kind: 'agent' }, roomName: 'local/top/shop', room, awareness: { getStates: () => new Map() } }
+async function humanCollect(room: RoomDoc, workers: readonly FixtureWorker[]) {
+  const s = { ...hubSeam(room), dir: top, local: {}, me: { name: HUMAN, kind: 'agent' }, roomName: 'local/top/shop', room, awareness: { getStates: () => new Map() }, daemon: {} }
+  const registry = await registerWorkers(s as unknown as Session, workers)
   const state = {
     S: () => s,
-    rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers: async () => {}, handle: () => undefined },
+    rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire: async () => {}, project: async () => {}, handle: () => undefined },
     workerAlive: () => false,
     dismissWorker: () => 'pid -1 not signalled: it is not alive',
     now: Date.now,
     ctx: { sleep: async () => {} },
   } as unknown as HandlerState
-  const call = collectHandlers(state).room_collect
-  return async (args: Parameters<typeof call>[0]) => { await syncDocumentWorkers(s as Session); return call(args) }
+  return { call: collectHandlers(state).room_collect, s: s as unknown as Session, registry }
 }
 
 const prunable = () => git(top, 'worktree', 'list', '--porcelain').split('\n').filter(l => l.startsWith('prunable'))
@@ -113,10 +116,9 @@ describe('nested lead: a worker that leads workers', () => {
   it('2: after the human session dies, the lead-worker\'s finished edits can still be copied out', async () => {
     // Live: room_state says "stopped while no session of yours was running", but the record still says running,
     // so room_collect answers "skipped lead: running" for apply AND copy mode; only discard is left.
-    const { room, leadW } = await nestedBatch()
+    const { room, leadW, workers } = await nestedBatch()
     leadW.pid = 7777
-    room.setWorker(leadW)
-    const collect = humanCollect(room)
+    const { call: collect } = await humanCollect(room, workers)
     const out = await collect({ tag: 'lead', mode: 'copy', paths: ['api/tax.py'] })
     expect(out).toContain('copied api/tax.py')
     expect(read(top, 'api/tax.py')).toBe('# Rates reviewed 2026-09\nRATES = {}\n')
@@ -125,15 +127,15 @@ describe('nested lead: a worker that leads workers', () => {
   it('3: discarding a lead-worker names its nested workers instead of calling .room/ an uncopied artifact', async () => {
     // Live: "discard refused; ignored artifacts not covered by a recovery patch: .room/ ... copy what you need
     // (mode=\"copy\")" - but copy refuses the same worker (item 2), and .room/ holds another worker's worktree.
-    const { room } = await nestedBatch()
-    const out = await humanCollect(room)({ tag: 'lead', discard: true })
+    const { room, workers } = await nestedBatch()
+    const out = await (await humanCollect(room, workers)).call({ tag: 'lead', discard: true })
     expect(out).not.toContain('ignored artifacts not covered by a recovery patch: .room/')
     expect(out).toContain('cat')
   })
 
   it('4: force-discarding a lead-worker does not destroy a grand-worker\'s uncollected output or leave git debris', async () => {
-    const { room, cat } = await nestedBatch()
-    const out = await humanCollect(room)({ tag: 'lead', discard: true, force: true })
+    const { room, cat, workers } = await nestedBatch()
+    const out = await (await humanCollect(room, workers)).call({ tag: 'lead', discard: true, force: true })
     const catEdit = 'Raises KeyError for unknown products'
     const archive = path.join(top, '.git', 'room', 'registry', 'patches')
     const patches = fs.existsSync(archive) ? fs.readdirSync(archive).map(f => read(archive, f)) : []
@@ -147,11 +149,15 @@ describe('nested lead: a worker that leads workers', () => {
   it('5: a retired lead view does not grant direct discard authority over its grand-worker', async () => {
     // Live: "error: no worker catalog owned by you" for collect and discard; the tag stays reserved for good
     // ("tag catalog is in use by rohanz+lead's worker in this room").
-    const { room } = await nestedBatch({ leadStatus: 'done' })
-    room.retireParticipant(LEAD, { name: LEAD, tag: 'lead', lead: HUMAN, host: 'claude', task: 'lead', summary: 'discarded', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'dismissed' })
-    const out = await humanCollect(room)({ tag: 'cat', discard: true, force: true })
+    const { room, leadW, workers } = await nestedBatch({ leadStatus: 'done' })
+    const { call, s, registry } = await humanCollect(room, workers)
+    // The lead-worker is retired (registry §12) and its projector cleans up the room; its grand-worker stays.
+    await registry.beginRetirement(fixtureId(leadW), { name: LEAD, tag: 'lead', lead: HUMAN, host: 'claude', task: 'lead', summary: 'discarded', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'dismissed' })
+    await projectWorkers(s, registry, HUMAN, 'joined')
+    expect(room.retiredWorkers().map(r => r.name)).toEqual([LEAD])
+    const out = await call({ tag: 'cat', discard: true, force: true })
     expect(out).toContain('cat belongs to rohanz+lead')
-    expect(room.workers.has('cat')).toBe(true)
+    expect(workerByTag(top, 'cat')).toBeDefined()
   })
 
   it('6: grand-workers share the lead-worker\'s compute budget instead of each inheriting all of it', async () => {
@@ -177,10 +183,9 @@ describe('nested lead: a worker that leads workers', () => {
 
   it('7: room_state counts a dead worker\'s uncommitted edits from its worktree, not from its vanished overlay', async () => {
     // Live, new session after the crash: "lead ... 0 changed files" while its worktree had api/tax.py modified.
-    const { room } = await nestedBatch()
-    room.workers.delete('cat')
+    const { room, leadW } = await nestedBatch()
     let s: Session | null = fakeSession(room, { name: HUMAN, kind: 'agent', owner: HUMAN }, top)
-    await syncDocumentWorkers(s) // the worktree is read only for a worker the registry trusts
+    await registerWorkers(s, [leadW])
     const tools = createTools({ getSession: () => s, setSession: x => { s = x }, cwd: top })
     const out = await tools.call('room_state', { all: true })
     expect(out).toMatch(/lead \(claude[^\n]*\n\s+1 changed file/)
@@ -191,8 +196,8 @@ describe('nested lead: a worker that leads workers', () => {
     vi.stubGlobal('document', dom.window.document); vi.stubGlobal('window', dom.window)
     vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1)); vi.stubGlobal('cancelAnimationFrame', vi.fn())
     const room = new RoomDoc()
-    const w = (tag: string, lead: string): Worker => ({ tag, name: `rohanz+${tag}`, lead, host: tag === 'lead' ? 'claude' : 'codex', task: `task ${tag}`, dir: '/tmp/x', branch: `room/${tag}`, pid: 1, startedAt: 1, status: 'running' })
-    room.workers.set('lead', w('lead', HUMAN)); room.workers.set('ship', w('ship', LEAD)); room.workers.set('cat', w('cat', LEAD))
+    const w = (tag: string, lead: string): WorkerView => ({ id: `w_${tag}`, tag, name: `rohanz+${tag}`, lead, mode: 'local', host: tag === 'lead' ? 'claude' : 'codex', task: `task ${tag}`, branch: `room/${tag}`, status: 'running', run: 1, startedAt: 1, fence: 'test' })
+    for (const view of [w('lead', HUMAN), w('ship', LEAD), w('cat', LEAD)]) room.workerViews.set(view.id, view)
     const states = new Map(['rohanz', 'rohanz+lead', 'rohanz+ship', 'rohanz+cat'].map((name, i) => [i + 1, { user: { name, kind: 'agent' } }]))
     const conn = { room, displayRoomName: 'local/top/shop', onStatus: vi.fn(), provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
     const panel = participantsPanel(conn, createFocusState())

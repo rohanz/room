@@ -18,9 +18,10 @@ import { waitConsumesMessage } from '../src/tools/messaging.js'
 import { suggestedTestCommand, testCommandFor } from '../src/tools/files.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam, setHubReachable } from './fixtures/hub.js'
-import { seedRegistryWorker } from './registry-fixture.js'
-import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { fixtureId, registerWorkers, seedRegistryWorker, type FixtureWorker } from './registry-fixture.js'
+import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { projectWorkers } from '../src/worker-projector.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -204,6 +205,12 @@ beforeAll(() => {
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
+/** Workers registered by one test must not appear in the next: the registry lives in the shared repo. */
+async function dropRegistry(): Promise<void> {
+  await closeRegistryForDir(dir)
+  rmSync(join(dir, '.git', 'room', 'registry'), { recursive: true, force: true })
+}
+
 describe('session gating', () => {
   it('summarizes six or more changed paths but preserves short lists and path lookup', async () => {
     const t = setup()
@@ -237,10 +244,10 @@ describe('session gating', () => {
   it('keeps worker history compact until all=true and excludes retired participants', async () => {
     const t = setup()
     t.room.clearOverlays('Rohan') // No scope or edits: default area view expands, history still stays compact.
-    const worker = { name: 'Rohan+failed', tag: 'failed', lead: 'Rohan', host: 'codex' as const, task: 'failed task', dir, branch: 'main', pid: 0, startedAt: 1, status: 'failed' as const }
-    t.room.setWorker(worker)
-    t.room.setWorker({ ...worker, name: 'Rohan+old', tag: 'old', status: 'done' })
-    t.room.retireParticipant('Rohan+old', { name: 'Rohan+old', tag: 'old', lead: 'Rohan', host: 'codex', model: 'actual-model', task: 'old task', summary: 'archived summary', files: ['app.py'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' })
+    const worker: FixtureWorker = { name: 'Rohan+failed', tag: 'failed', lead: 'Rohan', host: 'codex', task: 'failed task', dir, branch: 'main', pid: 0, startedAt: 1, status: 'failed' }
+    const registry = await registerWorkers(t.session!, [worker, { ...worker, name: 'Rohan+old', tag: 'old', status: 'done' }])
+    await registry.beginRetirement(fixtureId({ tag: 'old' }), { name: 'Rohan+old', tag: 'old', lead: 'Rohan', host: 'codex', model: 'actual-model', task: 'old task', summary: 'archived summary', files: ['app.py'], fileCount: 60, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' })
+    await projectWorkers(t.session!, registry, 'Rohan', 'joined')
     publishFixture(t.room, 'Teammate', 'app.py', 'offline work')
     const peer = addPresence(t.session!.awareness, 'Rohan+old')
     try {
@@ -253,7 +260,7 @@ describe('session gating', () => {
       const expanded = await t.tools.call('room_state', { all: true })
       expect(expanded).toContain('old (merged, actual-model): archived summary · 60 files')
       expect(expanded).not.toContain('Rohan+old ·')
-    } finally { peer.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
+    } finally { peer.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy(); await dropRegistry() }
   })
 
   it('renders stale claims using the resolved staleDays argument', async () => {
@@ -597,7 +604,7 @@ describe('scope, claims, plans, ledger', () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
     hubAppend(t.other, worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['app.py'] })
     clock.mockRestore()
-    t.other.retireParticipant(worker.name, { name: worker.name, tag: 'old', lead: 'Rohan', host: 'codex', task: 'old work', summary: 'done', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' })
+    t.other.retireWorker('w_old', { id: 'w_old', name: worker.name, tag: 'old', lead: 'Rohan', host: 'codex', task: 'old work', summary: 'done', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' }, () => {})
     const out = await t.tools.call('room_scope', { area: 'api', summary: 'new work', paths: ['app.py'] })
     expect(out).toContain('earlier: Rohan+old was on api (00:00:01): old work')
     expect(out).not.toContain('Rohan+old is on api')
@@ -632,11 +639,13 @@ describe('scope, claims, plans, ledger', () => {
   it('uses live scope wording in a worker last-message line', async () => {
     const t = setup()
     const worker = { name: 'Rohan+review', kind: 'agent' as const }
-    t.other.setWorker({ tag: 'review', name: worker.name, lead: 'Rohan', host: 'codex', task: 'review', dir, branch: 'room/review', pid: -1, startedAt: 1, status: 'done' })
-    t.other.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'review code', paths: ['app.py'] })
-    hubAppend(t.other, worker, { type: 'scope', area: 'api', summary: 'review code', paths: ['app.py'] })
-    const state = await t.tools.call('room_state', { all: true })
-    expect(state).toContain('last: [notify] Rohan+review is on api: review code')
+    await registerWorkers(t.session!, [{ tag: 'review', name: worker.name, lead: 'Rohan', host: 'codex', task: 'review', dir, branch: 'room/review', pid: -1, startedAt: 1, status: 'done' }])
+    try {
+      t.other.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'review code', paths: ['app.py'] })
+      hubAppend(t.other, worker, { type: 'scope', area: 'api', summary: 'review code', paths: ['app.py'] })
+      const state = await t.tools.call('room_state', { all: true })
+      expect(state).toContain('last: [notify] Rohan+review is on api: review code')
+    } finally { await t.tools.shutdown(); await dropRegistry() }
   })
 
   it('a claim with plans notifies whoever uses the symbol; release reports unfulfilled plans', async () => {

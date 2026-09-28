@@ -11,6 +11,7 @@ import type { Session } from './session.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
 import { resolveSessionHost } from './config.js'
 import { writeAtomic } from './leases.js'
+import { ownWorkerNames } from './worker-registry.js'
 
 /** The bound session's write intents (recorded by before-edit.mjs): did this session write `p` in the last two minutes? */
 export function createWriteIntentReader(dir: string, sessionDir: () => string | undefined, now: () => number = Date.now): (p: string) => boolean | undefined {

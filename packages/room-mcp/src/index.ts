@@ -18,6 +18,7 @@ import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
 import { createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
+import { ownWorkerNames } from './worker-registry.js'
 
 /** Plugin release, also advertised in the MCP handshake. Package versions are private. */
 export const RELEASE_VERSION = pluginManifest.version

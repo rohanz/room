@@ -11,6 +11,7 @@ import { highestSeq, messageForMe, owed, participantRecord, type MessageRouteCon
 import { writeAtomic } from './leases.js'
 import { registrySnapshotForDir } from './worker-registry.js'
 import type { Session } from './session.js'
+import { workerCarried } from './worker-registry.js'
 
 /** A reply batch is held until its transport write settles; a hook batch until the hook confirms. */
 export const REPLY_LEASE_MS = 60_000
