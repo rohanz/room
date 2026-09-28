@@ -2,7 +2,10 @@ import diff from 'fast-diff'
 import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
 import * as Y from 'yjs'
+import { randomBytes } from 'node:crypto'
+import type { CoordinationRecord, ManifestEntry, ManifestHead } from './manifest.js'
 import type {
+  ArchivedMsg,
   ChatItem,
   Claim,
   ClaimAnchor,
@@ -10,6 +13,7 @@ import type {
   Meta,
   Msg,
   MsgType,
+  Outcome,
   Priority,
   Scope,
   Worker,
@@ -86,6 +90,16 @@ export class RoomDoc {
   get expiry(): Y.Map<{ observedMs: number; epoch: string }> { return this.doc.getMap('expiry') }
   /** Persistent participant -> palette slot assignments. */
   get colors(): Y.Map<number> { return this.doc.getMap<number>('colors') }
+  /** One writer per incarnation key; the head remains a plain value. */
+  get manifest(): Y.Map<Y.Map<ManifestEntry>> { return this.doc.getMap('manifest') }
+  get manifestHead(): Y.Map<ManifestHead> { return this.doc.getMap('manifestHead') }
+  get coordination(): Y.Map<CoordinationRecord> { return this.doc.getMap('coordination') }
+  get roomSalt(): string | undefined { return this.metaMap.get('roomSalt') as string | undefined }
+  /** Local/test fallback until room creation owns salt in the schema-2 cutover. */
+  ensureRoomSalt(): string {
+    if (!this.roomSalt) this.doc.transact(() => { if (!this.roomSalt) this.metaMap.set('roomSalt', randomBytes(32).toString('hex')) })
+    return this.roomSalt!
+  }
 
   constructor(doc: Y.Doc = new Y.Doc()) {
     this.doc = doc
@@ -403,7 +417,7 @@ export class RoomDoc {
 
   // ---- meta --------------------------------------------------------------
 
-  get meta(): Meta {
+  get meta(): Meta & { roomSalt?: string } {
     const map = this.metaMap
     return {
       repo: map.get('repo') as string | undefined,
@@ -412,6 +426,7 @@ export class RoomDoc {
       createdAt: map.get('createdAt') as number | undefined,
       seededBy: map.get('seededBy') as string | undefined,
       schemaVersion: map.get('schemaVersion') as number | undefined,
+      roomSalt: map.get('roomSalt') as string | undefined,
     }
   }
 
@@ -493,6 +508,14 @@ export class RoomDoc {
   // ---- bus ---------------------------------------------------------------
 
   messages(): Msg[] { return this.bus.toArray() }
+  /** Addressed messages that left the bus while owed or answerable; written by the trim (delivery.ts). */
+  get mail(): Y.Map<Msg> { return this.doc.getMap<Msg>('mail') }
+  /** Terminal outcomes of addressed messages that were never receipted. */
+  get outcomes(): Y.Map<Outcome> { return this.doc.getMap<Outcome>('outcomes') }
+  /** Compact records of every message the trim removed from the bus. */
+  get archive(): Y.Map<ArchivedMsg> { return this.doc.getMap<ArchivedMsg>('archive') }
+  /** A message on the bus, else in mail. */
+  message(id: string): Msg | undefined { return this.messages().find(m => m.id === id) ?? this.mail.get(id) }
   lastMessages(n: number): Msg[] {
     const messages = this.messages()
     return messages.slice(Math.max(0, messages.length - n))
@@ -532,15 +555,22 @@ export class RoomDoc {
     return removable.length
   }
 
-  post<T extends Msg>(from: Identity, body: PostBody<T>, origin?: unknown): T {
+  /** With `opts.id`, a retry posts nothing: an id already on the bus or in mail returns that record, and
+   * one only in `archive`/`outcomes` (its body is gone) returns the unposted message. */
+  post<T extends Msg>(from: Identity, body: PostBody<T>, origin?: unknown, opts: { id?: string } = {}): T {
     const msg = {
       ...body,
       priority: body.priority ?? defaultPriority(body as { type: MsgType; symbols?: string[] }),
-      id: newId('m_'),
+      id: opts.id ?? newId('m_'),
       at: Date.now(),
       from: from.name,
       fromKind: from.kind,
     } as T
+    if (opts.id !== undefined) {
+      const existing = this.message(opts.id)
+      if (existing) return existing as T
+      if (this.archive.has(opts.id) || this.outcomes.has(opts.id)) return msg
+    }
     this.doc.transact(() => { this.bus.push([msg]) }, origin)
     return msg
   }

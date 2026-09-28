@@ -203,39 +203,9 @@ export async function gitIgnored(dir: string, rel: string, configuredTimeoutMs?:
   })
 }
 
-export type BaseRelation = 'same' | 'ahead' | 'behind' | 'diverged' | 'unknown'
-
-/** How local HEAD relates to the room base. 'unknown' when the base commit is not in this clone (fetch first). */
-export async function gitRelation(dir: string, head: string, base: string): Promise<BaseRelation> {
-  if (head === base) return 'same'
-  try { await git(dir, ['cat-file', '-e', `${base}^{commit}`]) } catch { return 'unknown' }
-  const isAncestor = async (a: string, b: string) => { try { await git(dir, ['merge-base', '--is-ancestor', a, b]); return true } catch { return false } }
-  if (await isAncestor(base, head)) return 'ahead'
-  if (await isAncestor(head, base)) return 'behind'
-  return 'diverged'
-}
-
 export const gitCountBetween = (dir: string, from: string, to: string) =>
   git(dir, ['rev-list', '--count', `${from}..${to}`]).then(s => Number(s.trim()) || 0)
 export const gitPathsBetween = (dir: string, from: string, to: string) =>
   gitWholeTree(dir, ['diff', '--name-only', '-z', from, to]).then(s => s.split('\0').filter(Boolean))
 export const gitSubject = (dir: string, rev: string) =>
   git(dir, ['log', '-1', '--format=%s', rev]).then(s => s.trim())
-
-/** Newest commit in HEAD that has reached the room branch's origin tracking ref. */
-export async function gitPushedRoomHead(dir: string, head: string, branch: string): Promise<string | undefined> {
-  const ref = `refs/remotes/origin/${branch}`
-  try {
-    await git(dir, ['rev-parse', '--verify', `${ref}^{commit}`])
-    return (await git(dir, ['merge-base', head, ref])).trim() || undefined
-  } catch { return undefined }
-}
-
-/** Whether the room branch has an origin tracking ref, which makes push advice meaningful. */
-export async function gitRoomRemoteBranchExists(dir: string, branch: string): Promise<boolean> {
-  try { await git(dir, ['rev-parse', '--verify', `refs/remotes/origin/${branch}^{commit}`]); return true }
-  catch (error) {
-    if (error instanceof Error && error.message.includes('timed out')) throw error
-    return false
-  }
-}

@@ -70,7 +70,7 @@ export interface Scope {
 }
 
 export type Priority = 'fyi' | 'notify' | 'interrupt'
-export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'merge-conflict' | 'contract' | 'note' | 'scope' | 'base' | 'plan' | 'done'
+export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'merge-conflict' | 'contract' | 'note' | 'scope' | 'base' | 'pushed' | 'plan' | 'done'
 export type MsgType = keyof MessageMap & string
 
 export interface MsgBase {
@@ -98,6 +98,8 @@ export interface NoteMsg extends MsgBase { type: 'note'; text: string; inReplyTo
 export interface ScopeMsg extends MsgBase { type: 'scope'; area: string; summary: string; paths: string[] }
 /** The room's base commit moved forward (someone committed/pulled a descendant). */
 export interface BaseMsg extends MsgBase { type: 'base'; base: string; prev: string; commits: number; paths: string[]; summary: string }
+/** The author's own commits fromSha..toSha are now on `upstream` (reporooms §B4): an observed upstream advance, never addressed. */
+export interface PushedMsg extends MsgBase { type: 'pushed'; branch: string; upstream: string; fromSha: string; toSha: string; commits: number; paths: string[]; summary: string }
 /** A declared plan changed: cancelled (released undone) or superseded by a new plan on the same symbol. Routed to everyone who was shown the original. */
 export interface PlanMsg extends MsgBase { type: 'plan'; status: 'cancelled' | 'superseded'; claimId: string; path: string; plan: Plan; replacedBy?: Plan; text: string }
 /** A worker finished its task; addressed to the lead that dispatched it. */
@@ -115,6 +117,7 @@ export interface MessageMap {
   note: NoteMsg
   scope: ScopeMsg
   base: BaseMsg
+  pushed: PushedMsg
   plan: PlanMsg
   done: DoneMsg
 }
@@ -203,6 +206,8 @@ export interface Meta {
   createdAt?: number
   seededBy?: string
   schemaVersion?: number
+  /** Written once by the room creator; salts manifest path digests (manifest §4.1). */
+  roomSalt?: string
 }
 
 export interface Cursor {
@@ -237,6 +242,21 @@ export interface Presence {
 }
 
 export type ShareLevel = 'intent' | 'declared' | 'full'
+
+// ---- delivery ledger (docs/superpowers/specs/2026-09-28-ledger.md) ----------
+
+/** How a message was handed off to the host. */
+export type Via = 'reply' | 'wait' | 'hook' | 'prompt' | 'agent'
+/** `seen:<P>[msgId]`; `s` is the holder session that got it (provenance, never a filter). Legacy receipts are a number. */
+export interface Receipt { s: string; via: Via; at: number }
+/** Terminal outcome of an addressed message that was never receipted. */
+export interface Outcome { to: string; from: string; outcome: 'expired' | 'over-cap' | 'recipient-retired'; at: number }
+/** A release's plans left undone, kept in the archive for the PR ledger. */
+export interface ArchivedRelease { path: string; plans: Plan[]; summary?: string }
+/** Compact record of a message that left the bus: [type, from, at, areas, unfulfilled?]. */
+export type ArchivedMsg = [type: MsgType, from: string, at: number, areas: string[], unfulfilled?: ArchivedRelease]
+/** One session's causal cursor in a room: bus ids observed at first bind, and broadcasts routing rejected. */
+export interface DeliveryCursor { frontier: ReadonlySet<string>; routed: ReadonlySet<string> }
 
 export type ChatRole = 'human' | 'agent' | 'tool' | 'event' | 'status'
 export interface ChatItem {

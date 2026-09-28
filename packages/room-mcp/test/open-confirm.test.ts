@@ -5,7 +5,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { createTools, DEFS } from '../src/tools.js'
 import { deriveRoomName } from '../src/session.js'
-import { RoomdError } from '@room/roomd'
 vi.mock('@room/roomd', async original => ({
   ...await original<typeof import('@room/roomd')>(),
   startRoomd: vi.fn(async () => { throw new Error('reached daemon') }),
@@ -101,16 +100,3 @@ describe('closing without a joined session', () => {
   })
 })
 
-it.each([
-  'room base abc is not in this clone (local HEAD def)',
-  'local HEAD def has diverged from room base abc',
-])('explains recovery for join failure: %s', async message => {
-  const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {}, join: async () => { throw new RoomdError(message, 2) } })
-  const reply = await tools.call('room_join', { where: 'team', room: 'o/r/main' })
-  expect(reply).toContain('If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create).')
-})
-
-it('does not suggest closing for unrelated join failures', async () => {
-  const tools = createTools({ cwd: process.cwd(), getSession: () => null, setSession: () => {}, join: async () => { throw new RoomdError('sync timed out', 1) } })
-  expect(await tools.call('room_join', { where: 'team', room: 'o/r/main' })).toBe('error: sync timed out')
-})

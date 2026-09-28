@@ -42,7 +42,6 @@ If it fails:
   `room_create(where="team", confirm=true)`. Once per repo; every branch then has a room and
   teammates join automatically.
 - "no origin remote" when joining a team/server room: ask the user for a room name and call `room_join` with `room`. A local room needs no name and no origin; its name is derived from the clone.
-- "room base is X; local HEAD is Y": run `git pull --ff-only --autostash` and try again; if it refuses, stop and tell your human; never merge another branch into this one. Do not work in the room on a different base.
 - "could not sync with wss://...": the server is not reachable. Continue independent work, and ask your human only if choosing another destination blocks the task.
 
 After joining, if the user has given you a task, immediately call

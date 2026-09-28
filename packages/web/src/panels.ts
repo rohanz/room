@@ -868,6 +868,7 @@ export function messageBody(message: Msg): (Node | string | null)[] {
     case 'question': return [h('strong', {}, 'asked '), message.text]
     case 'answer': return [h('strong', {}, 'answered '), message.text]
     case 'base': return [`${displayName({ name: message.from, kind: message.fromKind })} pushed ${message.commits} commit${message.commits === 1 ? '' : 's'}: ${message.summary} (base → ${message.base.slice(0, 7)})`]
+    case 'pushed': return [`${displayName({ name: message.from, kind: message.fromKind })} pushed ${message.commits} commit${message.commits === 1 ? '' : 's'} to ${message.upstream}: ${message.summary} (${message.fromSha.slice(0, 7)}..${message.toSha.slice(0, 7)})`]
     case 'plan': return [h('strong', {}, `${message.status} plan `), formatPlans([message.plan]), message.replacedBy ? ` → now ${formatPlans([message.replacedBy])}` : '', ` · ${message.text}`]
     case 'scope': return [message.summary]
     case 'done': return [h('strong', {}, `worker ${message.tag} finished `), message.summary, message.changed.length ? h('span', { class: 'mono' }, ` · ${message.changed.join(', ')}`) : null]

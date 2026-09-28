@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
 import type { WebsocketProvider } from 'y-websocket'
-import { startRoomd, defaultIgnoredPath, RoomdError, clampShare, parseShare, type Roomd, type RoomdOptions } from '../src/index.js'
+import { startRoomd, defaultIgnoredPath, clampShare, parseShare, type Roomd, type RoomdOptions } from '../src/index.js'
 import { normalizeGitOrigin, gitIgnored } from '../src/git.js'
 
 vi.setConfig({ testTimeout: 30_000 })
@@ -524,8 +524,9 @@ describe('roomd v2 push-only overlays', () => {
       repo: 'github.com/openai/room',
       seededBy: 'Alice',
     })
+    // No ref of the room's remote has been fetched: nothing a teammate could resolve.
     expect(daemon.provider.awareness.getLocalState()).toMatchObject({
-      status: 'synced',
+      status: 'no anchor on origin: teammates cannot compare with you',
       lastActive: expect.any(Number),
     })
   })
@@ -681,30 +682,6 @@ describe('roomd v2 push-only overlays', () => {
     await daemon.stop()
   })
 
-  it('logs an unpushed HEAD/base pair once across repeated polls, and logs new pairs', async () => {
-    const origin = await makeRepo({ 'app.py': 'base\n' })
-    const dir = await cloneRepo(origin)
-    const logs: string[] = []
-    const daemon = await start({ room: room(), dir, name: 'Alice', basePollMs: 60_000, log: line => logs.push(line) })
-    const base = daemon.roomDoc.meta.base!
-    // Invoke the actual poll deterministically, without wall-clock timer races.
-    const poll = () => (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
-    const warnings = () => logs.filter(line => line.includes('but not pushed; base stays'))
-    sh(dir, ['commit', '--allow-empty', '-qm', 'first'])
-    const first = sh(dir, ['rev-parse', 'HEAD'])
-    for (let i = 0; i < 4; i++) await poll()
-    expect(warnings()).toHaveLength(1)
-    sh(dir, ['commit', '--allow-empty', '-qm', 'second'])
-    for (let i = 0; i < 4; i++) await poll()
-    expect(warnings()).toHaveLength(2)
-    daemon.roomDoc.setMeta({ base: first })
-    for (let i = 0; i < 4; i++) await poll()
-    expect(warnings()).toHaveLength(3)
-    daemon.roomDoc.setMeta({ base })
-    for (let i = 0; i < 4; i++) await poll()
-    expect(warnings()).toHaveLength(3) // returning to an already-seen pair stays quiet
-  })
-
   it('receipts integrated base notices on pull and arrival, while pending and invalid commits stay unread', async () => {
     const origin = await makeRepo({ 'app.py': 'base\n' })
     const dir = await cloneRepo(origin)
@@ -745,31 +722,6 @@ describe('roomd v2 push-only overlays', () => {
     } finally { provider.destroy(); remote.doc.destroy() }
   })
 
-  it('a pushed commit by a member advances the room base and posts a base entry; an unpushed one does not', async () => {
-    const origin = await makeRepo({ 'app.py': 'base\n' })
-    const source = await cloneRepo(origin)
-    const daemon = await start({ room: room(), dir: source, name: 'Alice', basePollMs: 30 })
-    const before = sh(source, ['rev-parse', 'HEAD'])
-    expect(daemon.roomDoc.baseOf('Alice')).toBe(before)
-    await fsp.writeFile(path.join(source, 'app.py'), 'edited\n')
-    await waitFor(() => daemon.roomDoc.changedPaths('Alice').includes('app.py'))
-    sh(source, ['commit', '-qam', 'edit app'])
-    const after = sh(source, ['rev-parse', 'HEAD'])
-    await waitFor(() => daemon.roomDoc.baseOf('Alice') === after)
-    await waitFor(() => /unpushed/.test((daemon.provider.awareness.getLocalState() as { status: string }).status))
-    expect(daemon.roomDoc.meta.base).toBe(before)
-    sh(origin, ['config', 'receive.denyCurrentBranch', 'updateInstead'])
-    sh(source, ['push', '-q', 'origin', 'HEAD:main'])
-    // HEAD did not move on push; the daemon must notice the commit is now on the remote.
-    await waitFor(() => daemon.roomDoc.meta.base === after)
-    await waitFor(() => (daemon.provider.awareness.getLocalState() as { status: string }).status === 'synced')
-    expect(daemon.base).toBe(after)
-    await waitFor(() => daemon.roomDoc.changedPaths('Alice').length === 0)
-    const entry = daemon.roomDoc.messages().find(m => m.type === 'base')
-    expect(entry).toMatchObject({ type: 'base', priority: 'notify', base: after, prev: before, commits: 1, paths: ['app.py'], summary: 'edit app' })
-    expect(daemon.roomDoc.ledger({ path: 'app.py' }).some(m => m.type === 'base')).toBe(true)
-  })
-
   it('does not tell a worker on a carried commit to push its branch', async () => {
     const source = await makeRepo({ 'app.py': 'base\n' })
     const roomUrl = room()
@@ -781,12 +733,12 @@ describe('roomd v2 push-only overlays', () => {
     sh(workerDir, ['-c', 'user.name=Room', '-c', 'user.email=room@localhost', 'commit', '-qam', 'room: carried-in uncommitted work from Alice'])
     const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w' })
     await waitFor(() => (worker.provider.awareness.getLocalState() as { status: string }).status !== 'syncing')
-    expect((worker.provider.awareness.getLocalState() as { status: string }).status).toBe('worker worktree ahead of room base')
+    expect((worker.provider.awareness.getLocalState() as { status: string }).status).not.toMatch(/push/)
     expect(worker.roomDoc.meta.base).toBe(sharedBase)
     await fsp.writeFile(path.join(workerDir, 'worker.txt'), 'worker change\n')
     sh(workerDir, ['add', 'worker.txt']); sh(workerDir, ['commit', '-qm', 'worker change'])
     await waitFor(() => worker.base === sh(workerDir, ['rev-parse', 'HEAD']))
-    expect((worker.provider.awareness.getLocalState() as { status: string }).status).toBe('worker worktree ahead of room base')
+    expect((worker.provider.awareness.getLocalState() as { status: string }).status).not.toMatch(/push/)
     expect(worker.roomDoc.meta.base).toBe(sharedBase)
   })
 
@@ -838,7 +790,7 @@ describe('roomd v2 push-only overlays', () => {
     await waitFor(() => !worker.roomDoc.changedPaths('Alice+w').includes('app.py'))
   })
 
-  it('a clone behind the room base may join, is marked behind, and syncs after pulling', async () => {
+  it('a clone behind its upstream joins, is marked behind, and syncs after pulling', async () => {
     const source = await makeRepo({ 'app.py': 'base\n' })
     const behind = await cloneRepo(source)
     await fsp.writeFile(path.join(source, 'extra.txt'), 'x\n')
@@ -847,64 +799,46 @@ describe('roomd v2 push-only overlays', () => {
     const roomUrl = room()
     await start({ room: roomUrl, dir: source, name: 'Alice' })
     const bob = await start({ room: roomUrl, dir: behind, name: 'Bob', basePollMs: 30 })
-    await waitFor(() => (bob.provider.awareness.getLocalState() as { status: string }).status.startsWith('behind base by 1 commit:'))
-    expect((bob.provider.awareness.getLocalState() as { status: string }).status).toContain('git pull --ff-only --autostash')
+    expect((bob.provider.awareness.getLocalState() as { status: string }).status).toMatch(/^behind origin\/main by 1: .*git pull --ff-only --autostash/)
     const expectedBase = sh(source, ['rev-parse', 'HEAD'])
     sh(behind, ['pull', '-q', '--ff-only'])
     // Git polling and presence publication finish asynchronously under suite load.
-    await waitFor(() => bob.base === expectedBase && bob.roomDoc.baseOf('Bob') === expectedBase
-      && (bob.provider.awareness.getLocalState() as { status: string }).status === 'synced')
-    expect(bob.base).toBe(expectedBase)
+    await waitFor(() => bob.base === expectedBase && bob.anchor.base === expectedBase
+      && (bob.provider.awareness.getLocalState() as { status: string }).status === 'synced with origin/main')
   })
 
-  it('a diverged clone is refused with a rebase hint', async () => {
+  it('a diverged clone joins and keeps running; its status says to stop and tell the human', async () => {
     const source = await makeRepo({ 'app.py': 'base\n' })
+    const first = sh(source, ['rev-parse', 'HEAD'])
     const other = await cloneRepo(source)
     await fsp.writeFile(path.join(source, 'a.txt'), 'a\n'); sh(source, ['add', '-A']); sh(source, ['commit', '-q', '-m', 'a'])
     await fsp.writeFile(path.join(other, 'b.txt'), 'b\n'); sh(other, ['add', '-A']); sh(other, ['commit', '-q', '-m', 'b'])
     sh(other, ['fetch', '-q'])
     const roomUrl = room()
     await start({ room: roomUrl, dir: source, name: 'Alice' })
-    const error = await startRoomd({ room: roomUrl, dir: other, name: 'Bob', log: silent, providerFactory }).then(() => null, caught => caught)
-    expect(error).toBeInstanceOf(RoomdError)
-    expect(error.message).toContain('diverged')
-    expect(error.message).toContain('stop and tell your human')
-    expect(error.message).toContain('never merge another branch into this one')
+    const bob = await start({ room: roomUrl, dir: other, name: 'Bob' })
+    expect(bob.anchor).toEqual({ base: first, anchored: true })
+    expect((bob.provider.awareness.getLocalState() as { status: string }).status).toBe('diverged from origin/main: stop and tell your human')
   })
 
-  it('a clone that has not fetched the room base is refused with both SHAs and the pull hint', async () => {
-    const source = await makeRepo({ 'app.py': 'base\n' })
-    const stale = await cloneRepo(source)
-    await fsp.writeFile(path.join(source, 'extra.txt'), 'x\n')
-    sh(source, ['add', '-A']); sh(source, ['commit', '-q', '-m', 'extra'])
-    const roomUrl = room()
-    await start({ room: roomUrl, dir: source, name: 'Alice' })
-    const roomHead = sh(source, ['rev-parse', 'HEAD'])
-    const localHead = sh(stale, ['rev-parse', 'HEAD'])
-    const error = await startRoomd({ room: roomUrl, dir: stale, name: 'Bob', log: silent, providerFactory }).then(() => null, caught => caught)
-    expect(error).toBeInstanceOf(RoomdError)
-    expect(error.code).toBe(2)
-    expect(error.message).toContain(roomHead)
-    expect(error.message).toContain(localHead)
-    expect(error.message).toContain('git pull --ff-only --autostash')
-    expect(error.message).toContain('Then $room-join')
-  })
-
-  it('a clone ahead of the room base (pushed) joins and advances it for everyone', async () => {
+  it('a clone that has not fetched joins at the anchor it has; a newer teammate never moves anyone else\'s base', async () => {
     const origin = await makeRepo({ 'app.py': 'base\n' })
     sh(origin, ['config', 'receive.denyCurrentBranch', 'updateInstead'])
     const source = await cloneRepo(origin)
     const ahead = await cloneRepo(origin)
+    const start0 = sh(source, ['rev-parse', 'HEAD'])
     const roomUrl = room()
     const alice = await start({ room: roomUrl, dir: source, name: 'Alice', basePollMs: 30 })
     await fsp.writeFile(path.join(ahead, 'extra.txt'), 'x\n')
     sh(ahead, ['add', '-A']); sh(ahead, ['commit', '-q', '-m', 'extra'])
     sh(ahead, ['push', '-q', 'origin', 'HEAD:main'])
-    sh(source, ['fetch', '-q'])
     const newHead = sh(ahead, ['rev-parse', 'HEAD'])
-    await start({ room: roomUrl, dir: ahead, name: 'Bob' })
-    expect(alice.roomDoc.meta.base).toBe(newHead)
-    await waitFor(() => /behind base/.test((alice.provider.awareness.getLocalState() as { status: string }).status))
+    const bob = await start({ room: roomUrl, dir: ahead, name: 'Bob' })
+    expect(bob.anchor.base).toBe(newHead)
+    expect(alice.anchor.base).toBe(start0)
+    expect(alice.roomDoc.meta.base).toBe(start0)
+    sh(source, ['fetch', '-q'])
+    await waitFor(() => /^behind origin\/main by 1/.test((alice.provider.awareness.getLocalState() as { status: string }).status))
   })
 })
 

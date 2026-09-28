@@ -18,19 +18,22 @@ import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
 import { Publisher } from './publisher.js'
+import { publishManifest, scanManifest } from './manifest-publish.js'
 import { clampShare, type ShareLevel } from './share-level.js'
 export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './share-level.js'
 import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
-import { claimDigest, reanchorClaims } from './reanchor.js'
-import type { Claim, ReleaseMsg } from '@room/shared'
+import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease } from './reanchor.js'
+import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { BASE_CATCH_UP, RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, roomNameParts, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
+import { ExpiryTenure, ROOM_STALE_DAYS, RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, leadsTrim, newId, participantRecord, participantsView, trimLeader, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline } from './baseline.js'
-import { git, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitRoomRemoteBranchExists, gitShowMany, gitSubject, gitTracked } from './git.js'
+import { git, gitBranch, gitChanged, gitHead, gitIgnored, gitOrigin, gitShowMany, gitTracked } from './git.js'
+import { pushedFacts, pushedRange, readBaseRefs, refsKey, resolveBase, roomRemote, type BaseInputs, type ResolvedBase } from './base.js'
+export { comparePair, ensureCommit, readBaseRefs, resolveBase, roomRemote, type BaseInputs, type BaseRefs, type ResolvedBase } from './base.js'
 
 /** Keep event emitters and timers from leaking both sync throws and rejected promises. */
 export function observeCallback(fn: () => unknown, report: (error: unknown) => void): void {
@@ -102,6 +105,8 @@ export interface RoomdOptions {
   token?: string
   /** Room session id from GitHub device login, sent as ?session= (servers with GITHUB_CLIENT_ID). */
   session?: string
+  /** The bound host session (registry §17): published in presence and fences this daemon's records. */
+  sessionId?: string
   /** Local relay key (room-local.json): sent as ?key= so only sessions that can read the clone's git dir connect. */
   localKey?: string
   log?: (line: string) => void
@@ -147,6 +152,8 @@ export interface RoomdOptions {
   /** Rolling bus size and maintenance interval. Defaults: ROOM_BUS_KEEP/2000 and 60s. */
   busKeep?: number
   busTrimMs?: number
+  /** Test override for the trim leader's monotonic clock, which alone measures absence for expiry. */
+  expiryClock?: () => number
   /** After startup, skipped files are logged as one count per this window; default 10s. */
   skipLogMs?: number
 }
@@ -164,6 +171,8 @@ export interface Roomd {
   readonly provider: WebsocketProvider
   readonly branch: string
   readonly base: string
+  /** This participant's base (reporooms §B3): what its `git` record announces and teammates compare with. */
+  readonly anchor: { base: string; anchored: boolean }
   /** Current sharing level. */
   readonly share: ShareLevel
   /** Change the sharing level (and, under 'declared', the paths it covers). Dropping the level withdraws
@@ -240,7 +249,10 @@ class Daemon implements Roomd {
   readonly provider: WebsocketProvider
   branch = ''
   base = ''
+  anchor = { base: '', anchored: false }
   private appliedHead = ''
+  /** refsKey of the last completed transition; unset until the start transition has run. */
+  private appliedRefs?: string
   /**
    * The commit this person's overlays are published against (baseOf): HEAD, except for a carried worker
    * in a team room. Its HEAD is a commit of the lead's uncommitted work that exists only on the lead's
@@ -248,9 +260,15 @@ class Daemon implements Roomd {
    */
   shared = ''
   private readonly localRoom: boolean
-  private readonly namedRoomBranch: string
   private readonly roomName: string
-  private notifiedSwitch?: string
+  /** The remote whose URL names the room (§B3); read at start. */
+  private remote?: string
+  private readonly sessionId?: string
+  /** Fences this daemon's records: the host session, or a per-daemon id until wave 4 binds one. */
+  private readonly fence: string
+  private readonly expiryClock: () => number
+  /** This daemon's current trim-leader tenure; its epoch tags the absence it measures. */
+  private tenure?: ExpiryTenure
 
   readonly dir: string
   readonly name: string
@@ -297,6 +315,8 @@ class Daemon implements Roomd {
   private readonly watchedDirectory: string
   publishUnder?: string
   private publisherChosen = false
+  private manifestSaltObserved = false
+  private readonly manifestContent = new Map<string, { hash: string; at: number }>()
   private symlinks = new Set<string>()
   private loggedSkips = new Set<string>()
   /** Skips not yet logged: reason -> count, with one example path; logged as one line per window. */
@@ -323,6 +343,9 @@ class Daemon implements Roomd {
     this.label = options.label
     this.roomUrl = options.room
     this.localRoom = !!options.localKey
+    this.sessionId = options.sessionId
+    this.fence = options.sessionId ?? newId('daemon_')
+    this.expiryClock = options.expiryClock ?? (() => performance.now())
     this.log = options.log ?? (line => process.stderr.write(`[roomd] ${line}\n`))
     this.remoteRepairSchedule = options.remoteRepairSchedule ?? (run => {
       const timer = setTimeout(() => { void run() }, 40)
@@ -374,7 +397,6 @@ class Daemon implements Roomd {
     let decodedRoomName = roomName
     try { decodedRoomName = decodeURIComponent(roomName) } catch { /* use the literal name */ }
     this.roomName = decodedRoomName
-    this.namedRoomBranch = roomNameParts(decodedRoomName).branch
     this.provider = options.providerFactory
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
       : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
@@ -390,15 +412,16 @@ class Daemon implements Roomd {
       throw new RoomdError(`${this.dir} is not a git repository`, 1)
     }
 
-    const [branch, base, repo, tracked] = await this.step('git', () => Promise.all([
+    const [branch, base, repo, tracked, remote] = await this.step('git', () => Promise.all([
       gitBranch(this.dir),
       gitHead(this.dir),
       gitOrigin(this.dir),
       gitTracked(this.dir),
+      this.localRoom ? undefined : roomRemote(this.dir, this.roomName),
     ]))
-    this.branch = branch
+    this.branch = branchName(branch)
     this.base = base
-    this.appliedHead = base
+    this.remote = remote
     this.tracked = tracked
     this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl))
     // Scope can change during sync or seed. Keep the observer live before either await.
@@ -428,23 +451,16 @@ class Daemon implements Roomd {
     await this.refreshShared()
     this.roomDoc.setBaseOf(this.name, this.shared, this)
     this.roomDoc.reconcileBaseTexts(this.name, this)
-    const roomBase = this.roomDoc.meta.base
-    if (roomBase && roomBase !== this.base) {
-      const rel = await gitRelation(this.dir, this.base, roomBase)
-      if (rel === 'ahead') await this.maybeAdvance(roomBase, this.base)
-      else if (rel === 'behind') this.log(`behind room base ${roomBase.slice(0, 10)} (local HEAD ${this.base.slice(0, 10)})${this.isWorkerWorktree() ? '' : `; ${BASE_CATCH_UP}`}`)
-      else {
-        const message = rel === 'unknown'
-          ? `room base ${roomBase} is not in this clone (local HEAD ${this.base}) — ${BASE_CATCH_UP} Then $room-join`
-          : `local HEAD ${this.base} has diverged from room base ${roomBase} — stop and tell your human; never merge another branch into this one`
-        this.setStatus(`error: ${message}`)
-        throw new RoomdError(message, 2)
-      }
-    }
-    if (!roomBase) {
+    // The start transition resumes from the recorded head, so claims re-anchor over what changed while down (§B2).
+    this.appliedHead = participantRecord(this.roomDoc, this.name)?.git?.head || base
+    // Publication during the seed already needs the anchor; the start transition records it.
+    const { base: anchorBase, anchored } = await resolveBase(this.dir, { head: base, branch: this.branch, refs: await readBaseRefs(this.dir, this.remote, this.branch) }, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
+    this.anchor = { base: anchorBase, anchored }
+    // Legacy readers of meta.base (graph index, join line, web) keep the room's first base until the cutover.
+    if (!this.roomDoc.meta.base) {
       this.roomDoc.setMeta({
         ...(repo ? { repo } : {}),
-        branch: this.roomBranch(),
+        branch: this.branch,
         base: this.base,
         createdAt: Date.now(),
         seededBy: this.name,
@@ -463,8 +479,6 @@ class Daemon implements Roomd {
     if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader())
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
     this.every(this.basePollMs, () => this.enqueue(async () => { await this.pollHead() }))
-    this.roomDoc.metaMap.observe(() => observeCallback(() => this.refreshBaseStatus(), error => this.log(`warn: ${errMsg(error)}`)))
-    await this.refreshBaseStatus()
     this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
     this.started = true
     this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`)
@@ -522,7 +536,44 @@ class Daemon implements Roomd {
   }
 
   private isShared(relpath: string): boolean { return this.publisher.isShared(relpath) }
-  private resharePaths(): Promise<void> { return this.publisher.resharePaths() }
+  private async resharePaths(): Promise<void> {
+    await this.publisher.resharePaths()
+    await this.publishManifestSnapshot()
+  }
+
+  private async publishManifestSnapshot(): Promise<void> {
+    if (this.stopped) return
+    if (!this.manifestSaltObserved) {
+      this.manifestSaltObserved = true
+      this.roomDoc.metaMap.observe(event => {
+        if (event.keysChanged.has('roomSalt') && !this.stopped) void this.enqueue(() => this.publishManifestSnapshot())
+      })
+    }
+    const base = this.shared
+    const level = this.share
+    const generation = this.sharingGeneration
+    const fence = this.fence
+    const holder = this.roomDoc.participants.get(`${this.name}\0holder`) as { sessionId?: string } | undefined
+    if (holder && holder.sessionId !== fence) return
+    const input = { room: this.roomDoc, name: this.name, fence, base, level, prefixes: this.scopePaths(), complete: true, ...(this.publishUnder ? { publisher: this.publishUnder } : {}) }
+    const facts = await scanManifest({ ...input, dir: this.dir, sizeCap: this.sizeCap, totalBudget: this.totalBudget, safe: p => this.isSafeRoomPath(p) })
+    const currentHolder = this.roomDoc.participants.get(`${this.name}\0holder`) as { sessionId?: string } | undefined
+    if (this.stopped || base !== this.shared || level !== this.share || generation !== this.sharingGeneration || JSON.stringify(input.prefixes) !== JSON.stringify(this.scopePaths()) || (currentHolder && currentHolder.sessionId !== fence)) return
+    for (const fact of facts) {
+      if (fact.text === undefined) continue
+      try {
+        const stat = fs.lstatSync(this.abs(fact.path))
+        if (!stat.isFile() || !this.isSafeRoomPath(fact.path) || stat.size !== Buffer.byteLength(fact.text) || fs.readFileSync(this.abs(fact.path), 'utf8') !== fact.text) return
+      } catch { return }
+    }
+    for (const fact of facts) {
+      const identity = fact.hash ?? (fact.change === 'D' ? 'D' : 'excluded')
+      const before = this.manifestContent.get(fact.path)
+      fact.at = before?.hash === identity ? before.at : Date.now()
+      this.manifestContent.set(fact.path, { hash: identity, at: fact.at })
+    }
+    publishManifest(input, facts)
+  }
 
 
   private loadRoomIgnore(): void {
@@ -572,6 +623,7 @@ class Daemon implements Roomd {
       ...runtime,
       user: { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}), color: colorFor(this.name, this.roomDoc) },
       status,
+      ...(this.sessionId ? { sessionId: this.sessionId } : {}),
       share: this.share,
       watchedDirectory: this.watchedDirectory,
       publishUnder: this.publishUnder,
@@ -624,6 +676,7 @@ class Daemon implements Roomd {
       try {
         await this.pollHead()
         await this.publisher.reconcile(await gitChanged(this.dir))
+        await this.publishManifestSnapshot()
       } finally { this.reconcileQueued = false }
     })
   }
@@ -737,9 +790,10 @@ class Daemon implements Roomd {
     const seen = this.roomDoc.seen(this.name)
     const ids: string[] = []
     for (const notice of notices) {
-      if (notice.type !== 'base' || seen.has(notice.id)) continue
+      const sha = notice.type === 'base' ? notice.base : notice.type === 'pushed' ? notice.toSha : undefined
+      if (!sha || seen.has(notice.id)) continue
       try {
-        execFileSync('git', ['merge-base', '--is-ancestor', notice.base, 'HEAD'], {
+        execFileSync('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], {
           cwd: this.dir, stdio: 'ignore', timeout: 2000,
         })
         ids.push(notice.id)
@@ -748,61 +802,91 @@ class Daemon implements Roomd {
     this.roomDoc.markSeen(this.name, ids, this)
   }
 
-  /** Local HEAD moved (commit, pull, checkout): re-seed the overlay and maybe advance the room base. */
+  /** The worktree's publisher alone writes base facts and posts `pushed` (invariant 11); wave 4 gates this on the publisher lease. */
+  private publishesBaseFacts(): boolean { return !this.publishUnder }
+
+  /**
+   * One HEAD transition (§B2): a commit, pull, reset, branch switch, or a fetch or force-push that moved
+   * the room remote's refs. The applied state advances only when the whole transition has committed.
+   */
   private async pollHead(): Promise<void> {
     if (this.stopped) return
     const wasSecondary = !!this.publishUnder
     this.choosePublisher()
     if (wasSecondary && !this.publishUnder) await this.publisher.reconcile(await gitChanged(this.dir))
-    const [head, branch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)])
-    if (head === this.appliedHead && branch === this.branch) {
-      // HEAD unchanged, but a commit we are ahead with may have been pushed since last check.
-      const roomBase = this.roomDoc.meta.base
-      if (roomBase && roomBase !== head) await this.refreshBaseStatus()
-      return
-    }
+    const [head, rawBranch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)])
+    const branch = branchName(rawBranch)
+    const inputs: BaseInputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) }
+    const headMoved = head !== this.appliedHead || branch !== this.branch
+    if (!headMoved && refsKey(inputs) === this.appliedRefs) return
     const prev = this.appliedHead
-    const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : []
-    this.base = head
-    this.branch = branch
-    this.tracked = await gitTracked(this.dir)
-    await this.refreshShared()
-    // The receipt may run ahead of overlays briefly; the transition is retried until every step succeeds.
-    this.roomDoc.doc.transact(() => {
-      this.roomDoc.setBaseOf(this.name, this.shared, this)
-      this.roomDoc.reconcileBaseTexts(this.name, this)
-    }, this)
-    await this.refreshBaseStatus()
-    await this.publisher.reconcile(await gitChanged(this.dir))
-    if (prev !== head) await this.reanchorOwnClaims(head, claimSnapshot)
+    const firstTransition = this.appliedRefs === undefined
+    const claimSnapshot = prev !== head || firstTransition ? await this.snapshotOwnClaims(prev) : []
+    if (headMoved) {
+      this.base = head
+      this.branch = branch
+      this.tracked = await gitTracked(this.dir)
+      await this.refreshShared()
+      // The receipt may run ahead of overlays briefly; the transition is retried until every step succeeds.
+      this.roomDoc.doc.transact(() => {
+        this.roomDoc.setBaseOf(this.name, this.shared, this)
+        this.roomDoc.reconcileBaseTexts(this.name, this)
+      }, this)
+      await this.publisher.reconcile(await gitChanged(this.dir))
+    }
+    const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
+    const claims = await this.reanchorOwnClaims(head, claimSnapshot)
     if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
-    await this.refreshBaseStatus()
-    if (prev !== head) this.markIntegratedBaseNotices(this.roomDoc.messages())
+    await this.commitTransition(inputs, resolved, claims)
+    this.anchor = { base: resolved.base, anchored: resolved.anchored }
+    this.setStatus(resolved.status)
+    if (headMoved) this.markIntegratedBaseNotices(this.roomDoc.messages())
     this.appliedHead = head
+    this.appliedRefs = refsKey(inputs)
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
   }
 
-  private readonly unpushedPairs = new Set<string>()
-
-  private roomBranch(): string { return this.namedRoomBranch || this.roomDoc.meta.branch || this.branch }
-
-  /** Address the branch warning to this agent; a self-authored message is filtered from its inbox. */
-  private warnBranchSwitch(): boolean {
-    const roomBranch = this.roomBranch()
-    if (this.branch === 'HEAD') {
-      this.notifiedSwitch = undefined
-      this.setStatus(`detached HEAD; room base waits until you return to ${roomBranch}`)
-      return true
+  /**
+   * §B2 step 5, one transaction: the `git` record (rev + 1), this participant's claim moves and releases,
+   * and `pushed` when §B4 applies. A session publishing under another writes only its claim part.
+   */
+  private async commitTransition({ head, branch }: BaseInputs, resolved: ResolvedBase, claims: ClaimChanges): Promise<void> {
+    const prev = participantRecord(this.roomDoc, this.name)?.git
+    let next: ParticipantGit | undefined
+    let pushed: Omit<PushedMsg, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> | undefined
+    if (this.publishesBaseFacts()) {
+      const fields = {
+        branch, head, base: resolved.base, anchored: resolved.anchored,
+        ...(resolved.remote ? { remote: resolved.remote } : {}), ...(resolved.upstream ? { upstream: resolved.upstream } : {}),
+        ...(resolved.ahead !== undefined ? { ahead: resolved.ahead, behind: resolved.behind } : {}), fence: this.fence,
+      }
+      const { rev: _rev, ...recorded } = prev ?? { rev: 0 }
+      if (JSON.stringify(recorded) !== JSON.stringify(fields)) next = { ...fields, rev: (prev?.rev ?? 0) + 1 }
+      // Only a surviving record yields a notice: current refs cannot recover a lost fromSha (§B4).
+      if (next && prev && resolved.upstream && await pushedRange(this.dir, prev, next)) {
+        pushed = { type: 'pushed', branch, upstream: resolved.upstream, fromSha: prev.base, toSha: next.base, ...await pushedFacts(this.dir, prev.base, next.base) }
+      }
     }
-    if (this.branch === roomBranch) { this.notifiedSwitch = undefined; return false }
-    const text = `you switched to ${this.branch}; the room is for ${roomBranch}; commits here are not the room's base until they are pushed to ${roomBranch}`
-    this.setStatus(text)
-    if (this.notifiedSwitch !== this.branch) {
-      this.notifiedSwitch = this.branch
-      this.roomDoc.post<NoteMsg>({ name: 'room', kind: 'bot' }, { type: 'note', to: this.name, priority: 'notify', text }, this)
-      this.log(text)
-    }
-    return true
+    this.roomDoc.doc.transact(() => {
+      if (next) this.roomDoc.participants.set(`${this.name}\u0000git`, next)
+      for (const move of claims.moves) {
+        const current = this.roomDoc.claims.get(move.id)
+        if (current?.by === this.name && !current.mirrorOf) this.roomDoc.moveClaim(move.id, move.from, move.to, this, claims.hashById.get(move.id))
+      }
+      for (const release of claims.releases) {
+        const current = this.roomDoc.claims.get(release.id)
+        if (current?.by !== this.name || current.mirrorOf) continue
+        this.roomDoc.removeClaim(release.id, this)
+        const text = `released your claim on ${release.path}:${release.from}-${release.to}: that code changed in ${head.slice(0, 10)}`
+        this.roomDoc.post<ReleaseMsg>({ name: this.name, kind: this.kind }, { type: 'release', claimId: release.id, path: release.path, summary: text }, this)
+        this.roomDoc.post<NoteMsg>({ name: 'room', kind: 'bot' }, { type: 'note', to: this.name, priority: 'notify', text }, this)
+        this.log(text)
+      }
+      if (pushed) {
+        this.roomDoc.post<PushedMsg>({ name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }, pushed, this, { id: `pushed:${this.name}:${pushed.fromSha}:${pushed.toSha}` })
+      }
+    }, this)
+    if (pushed) this.log(`${pushed.upstream} now has ${pushed.fromSha.slice(0, 10)}..${pushed.toSha.slice(0, 10)} (+${pushed.commits})`)
   }
 
   private isWorkerWorktree(): boolean { return !!this.label && this.branch === `room/${this.label}` }
@@ -814,62 +898,13 @@ class Daemon implements Roomd {
     return baseline?.sha === this.base && carriesWork(baseline) ? baseline : undefined
   }
 
+  /** A local-room worker's base is the commit its lead carried it from (registry pins it). */
+  private localCarriedBase(): string | undefined {
+    return this.isWorkerWorktree() ? workerBaseline(this.roomDoc.workerOf(this.name))?.sha : undefined
+  }
+
   private async refreshShared(): Promise<void> {
     this.shared = !this.localRoom && this.carried()?.carriedCommit ? (await git(this.dir, ['rev-parse', `${this.base}^`])).trim() : this.base
-  }
-
-  private localCommittedHead?: string
-
-  /** A remote branch requires push; without one, local participants share the object store. */
-  private async maybeAdvance(from: string, to: string): Promise<void> {
-    if (this.isWorkerWorktree()) { this.setStatus('worker worktree ahead of room base'); return }
-    if (this.warnBranchSwitch()) return
-    if (!await gitRoomRemoteBranchExists(this.dir, this.roomBranch())) {
-      if (this.localRoom) await this.advanceBase(from, to)
-      this.localCommittedHead = to
-      this.setStatus('committed locally')
-      return
-    }
-    const pushed = await gitPushedRoomHead(this.dir, to, this.roomBranch())
-    if (pushed && pushed !== from && await gitRelation(this.dir, pushed, from) === 'ahead') {
-      await this.advanceBase(from, pushed)
-    } else {
-      this.setStatus('ahead of base (unpushed): git push')
-      const pair = `${to}:${from}`
-      if (!this.unpushedPairs.has(pair)) {
-        this.unpushedPairs.add(pair)
-        this.log(`HEAD ${to.slice(0, 10)} is ahead of the room base but not pushed; base stays at ${from.slice(0, 10)}`)
-      }
-    }
-  }
-
-  private async advanceBase(from: string, to: string): Promise<void> {
-    const [commits, paths, summary] = await Promise.all([
-      gitCountBetween(this.dir, from, to), gitPathsBetween(this.dir, from, to), gitSubject(this.dir, to),
-    ])
-    if (this.roomDoc.meta.base !== from) return // A concurrent meta observer already advanced it.
-    this.roomDoc.doc.transact(() => {
-      this.roomDoc.setMeta({ base: to, branch: this.roomBranch() }, this)
-      this.roomDoc.post<BaseMsg>({ name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }, { type: 'base', base: to, prev: from, commits, paths, summary }, this)
-    }, this)
-    this.log(`advanced room base to ${to.slice(0, 10)} (+${commits})`)
-  }
-
-  /** Presence status reflects where this clone stands relative to the room base. */
-  private async refreshBaseStatus(): Promise<void> {
-    if (this.stopped) return
-    if (!this.isWorkerWorktree() && this.warnBranchSwitch()) return
-    const roomBase = this.roomDoc.meta.base
-    if (!roomBase || roomBase === this.base) {
-      this.setStatus(this.localCommittedHead === this.base && !await gitRoomRemoteBranchExists(this.dir, this.roomBranch()) ? 'committed locally' : 'synced')
-      return
-    }
-    const rel = await gitRelation(this.dir, this.base, roomBase)
-    if (rel === 'behind') {
-      const n = await gitCountBetween(this.dir, this.base, roomBase).catch(() => 0)
-      this.setStatus(`${this.isWorkerWorktree() ? 'worker worktree behind room base' : 'behind base'} by ${n || '?'} commit${n === 1 ? '' : 's'}${this.isWorkerWorktree() ? '' : `: ${BASE_CATCH_UP}`}`)
-    } else if (rel === 'ahead') { await this.maybeAdvance(roomBase, this.base) }
-    else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}${this.isWorkerWorktree() ? '' : `: ${BASE_CATCH_UP}`}`)
   }
 
   /** Capture the claimed code before a commit can clear its overlay. */
@@ -889,30 +924,13 @@ class Daemon implements Roomd {
     })
   }
 
-  /** Validate only this daemon's claims against the new HEAD or current overlay. */
-  private async reanchorOwnClaims(head: string, snapshot: readonly Claim[]): Promise<void> {
-    if (!snapshot.length || this.stopped || await gitHead(this.dir) !== head) return
+  /** §B2 step 4: where this daemon's claims moved, over the current texts; applied in commitTransition. */
+  private async reanchorOwnClaims(head: string, snapshot: readonly Claim[]): Promise<ClaimChanges> {
+    if (!snapshot.length) return NO_CLAIM_CHANGES
     const paths = [...new Set(snapshot.map(c => c.path))]
     const headTexts = await gitShowMany(this.dir, head, paths)
-    if (this.stopped || await gitHead(this.dir) !== head) return
     const currentTexts = new Map(paths.map(p => [p, this.roomDoc.text(p, this.name) ?? headTexts.get(p)]))
-    const { moves, releases } = reanchorClaims(this.name, snapshot, currentTexts)
-    const hashById = new Map(snapshot.map(c => [c.id, c.claimedHash]))
-    this.roomDoc.doc.transact(() => {
-      for (const move of moves) {
-        const current = this.roomDoc.claims.get(move.id)
-        if (current?.by === this.name && !current.mirrorOf) this.roomDoc.moveClaim(move.id, move.from, move.to, this, hashById.get(move.id))
-      }
-      for (const release of releases) {
-        const current = this.roomDoc.claims.get(release.id)
-        if (current?.by !== this.name || current.mirrorOf) continue
-        this.roomDoc.removeClaim(release.id, this)
-        const text = `released your claim on ${release.path}:${release.from}-${release.to}: that code changed in ${head.slice(0, 10)}`
-        this.roomDoc.post<ReleaseMsg>({ name: this.name, kind: this.kind }, { type: 'release', claimId: release.id, path: release.path, summary: text }, this)
-        this.roomDoc.post<NoteMsg>({ name: 'room', kind: 'bot' }, { type: 'note', to: this.name, priority: 'notify', text }, this)
-        this.log(text)
-      }
-    }, this)
+    return { ...reanchorClaims(this.name, snapshot, currentTexts), hashById: new Map(snapshot.map(c => [c.id, c.claimedHash])) }
   }
 
   /** Publish what differs from HEAD: git's changed paths plus what this person already published, never every tracked file. */
@@ -983,19 +1001,23 @@ class Daemon implements Roomd {
 
   // ---- watcher -----------------------------------------------------------
 
+  /**
+   * The ledger's trim leader also holds the one destructive-expiry authority (reporooms S5). Each tenure
+   * is an epoch whose absence measurements use only this daemon's monotonic clock.
+   */
   private trimBusIfLeader(): void {
-    const states = typeof this.provider.awareness.getStates === 'function'
-      ? Array.from(this.provider.awareness.getStates().values())
-      : [{ user: { name: this.name } }]
-    const present = states
-      .map(state => (state as Partial<Presence>)?.user?.name)
-      .filter((name): name is string => !!name && !name.startsWith('pr#'))
-    const workers = new Set(Array.from(this.roomDoc.workers.values()).map(w => w.name))
-    const leads = present.filter(name => !workers.has(name)).sort()
-    const leader = leads[0] ?? present.sort()[0] ?? this.name
-    if (leader !== this.name) return
+    const awareness = this.provider.awareness
+    const leader = trimLeader(this.roomDoc, awareness, Date.now())
+    if (!leadsTrim(leader, { name: this.name, ...(this.sessionId ? { sessionId: this.sessionId } : {}) })) {
+      this.tenure = undefined
+      return
+    }
+    this.tenure ??= new ExpiryTenure(newId('ep_'), this.expiryClock)
     const removed = this.roomDoc.trimBus(this.busKeep, this)
     if (removed) this.log(`folded ${removed} old bus messages into the compact ledger (keeping ${this.busKeep})`)
+    for (const name of this.tenure.observe(this.roomDoc, participantsView(this.roomDoc, awareness, Date.now()), this)) {
+      this.log(`expired ${name}: offline for ${ROOM_STALE_DAYS} days`)
+    }
   }
 
   private async startWatcher(): Promise<void> {
@@ -1092,7 +1114,7 @@ class Daemon implements Roomd {
         this.tracked.add(relpath)
       }
       await this.publisher.publishDiskState(relpath)
-    } finally { release() }
+    } finally { release(); await this.publishManifestSnapshot() }
   }
 
   /** Does git track (or offer as untracked) any file under this directory? */
@@ -1129,6 +1151,12 @@ class Daemon implements Roomd {
     }
   }
 }
+
+interface ClaimChanges { moves: ClaimMove[]; releases: ClaimRelease[]; hashById: Map<string, string | undefined> }
+const NO_CLAIM_CHANGES: ClaimChanges = { moves: [], releases: [], hashById: new Map() }
+
+/** Detached HEAD has no branch: `''` in the record (reporooms §Participant record). */
+const branchName = (abbrev: string) => abbrev === 'HEAD' ? '' : abbrev
 
 function errMsg(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
