@@ -339,7 +339,7 @@ const droppedWrite = (room: string) => () => {
   console.log(`dropped write from a view-key connection (room ${room})`)
 }
 /** One hub per loaded room: one process per YPERSISTENCE volume, so one authority per room (hub spec §6). */
-const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES })
+const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES })
 const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
 if (stockPersistence) setPersistence(hubs.persistence(stockPersistence.provider))
 setInterval(() => hubs.tick(), 1000).unref()

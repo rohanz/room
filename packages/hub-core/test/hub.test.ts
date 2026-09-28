@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import * as Y from 'yjs'
 import { OWED_TTL_MS, ROOM_STALE_MS, RoomDoc } from '@room/shared'
-import { MAINTENANCE_MS, SETTLE_MS, incarnationOf, serializedStore, startHub, type HubHost, type Push } from '../src/index.js'
+import { LEASE_TTL_MS, MAINTENANCE_MS, SETTLE_MS, incarnationOf, serializedStore, startHub, type Hub, type HubHost, type Push } from '../src/index.js'
 import { contractSuite, fakeClock, holder, memoryEnv } from './contract.js'
 
 contractSuite('in process', memoryEnv())
@@ -127,24 +128,142 @@ describe('hub in process', () => {
     hub.handle(conn, hello, local)
     h.clock.advance(SETTLE_MS)
     const { epoch } = hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'gone', holder: holder('s1') }, local) as { epoch: number }
-    hub.handle(conn, { v: 1, id: 'b', op: 'acquire', name: 'here', holder: holder('s2') }, local)
+    const here = (hub.handle(conn, { v: 1, id: 'b', op: 'acquire', name: 'here', holder: holder('s2') }, local) as { epoch: number }).epoch
     hub.handle(conn, { v: 1, id: 'c', op: 'release', name: 'gone', epoch }, local)
     h.doc.setScope('gone', { byKind: 'agent', area: 'old', summary: 'left', paths: ['a.txt'] })
     h.doc.setScope('here', { byKind: 'agent', area: 'new', summary: 'here', paths: ['b.txt'] })
-    const keepAlive = (ms: number) => {
-      for (let t = 0; t < ms; t += 15_000) {
-        h.clock.advance(15_000)
-        hub.handle(conn, { v: 1, id: 'r', op: 'renew', name: 'here', epoch: epoch + 1 }, local)
-      }
+    // "here" renews every 15 s throughout; the hub ticks every maintenance period.
+    for (let t = 0; t <= ROOM_STALE_MS + MAINTENANCE_MS; t += 15_000) {
+      h.clock.advance(15_000)
+      expect(hub.handle(conn, { v: 1, id: 'r', op: 'renew', name: 'here', epoch: here }, local)).toMatchObject({ ok: true })
+      if (t % MAINTENANCE_MS === 0) hub.tick()
     }
-    keepAlive(MAINTENANCE_MS)
-    hub.tick()
-    h.clock.advance(ROOM_STALE_MS)
-    hub.handle(conn, { v: 1, id: 'r', op: 'renew', name: 'here', epoch: epoch + 1 }, local)
-    hub.tick()
     expect(h.doc.participants.get('gone\u0000holder')).toBeUndefined()
     expect(h.doc.scope('gone')).toBeUndefined()
     expect(h.doc.scope('here')).toBeDefined()
+    expect(h.doc.participants.get('here\u0000holder')).toMatchObject({ epoch: here })
     expect(h.logs.some(l => l.includes('expired gone'))).toBe(true)
+  })
+
+  it("a return and release between maintenance passes restarts the participant's absence", async () => {
+    const h = host()
+    const hub = await startHub(h)
+    const conn = {}
+    hub.handle(conn, hello, local)
+    h.clock.advance(SETTLE_MS)
+    const acquire = () => (hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s1') }, local) as { epoch: number }).epoch
+    hub.handle(conn, { v: 1, id: 'r', op: 'release', name: 'ada', epoch: acquire() }, local)
+    // Absent for all but the last two maintenance passes of the stale period.
+    for (let t = 0; t < ROOM_STALE_MS - MAINTENANCE_MS; t += MAINTENANCE_MS) { h.clock.advance(MAINTENANCE_MS); hub.tick() }
+    h.clock.advance(20_000)
+    const back = acquire()
+    h.doc.setScope('ada', { byKind: 'agent', area: 'new', summary: 'back', paths: ['a.txt'] })
+    h.clock.advance(10_000)
+    expect(hub.handle(conn, { v: 1, id: 'r', op: 'release', name: 'ada', epoch: back }, local)).toMatchObject({ ok: true })
+    for (let i = 0; i < 3; i++) { h.clock.advance(MAINTENANCE_MS); hub.tick() }
+    expect(h.doc.scope('ada')).toBeDefined()
+    expect(h.logs.some(l => l.includes('expired ada'))).toBe(false)
+  })
+
+  it("expiry's release notices go through the sequencer", async () => {
+    const h = host()
+    const hub = await startHub(h)
+    const conn = {}
+    hub.handle(conn, hello, local)
+    h.clock.advance(SETTLE_MS)
+    const { epoch } = hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'gone', holder: holder('s1') }, local) as { epoch: number }
+    const { seq } = hub.handle(conn, { v: 1, id: 'p', op: 'post', msg: { id: 'm1', type: 'note', from: 'gone', text: 'x' } }, local) as { seq: number }
+    h.doc.addClaim({ path: 'a.txt', from: 1, to: 1, by: 'gone', byKind: 'agent', intent: 'edit' })
+    hub.handle(conn, { v: 1, id: 'r', op: 'release', name: 'gone', epoch }, local)
+    const expired = () => h.logs.some(l => l.includes('expired gone'))
+    for (let t = 0; t <= ROOM_STALE_MS + MAINTENANCE_MS && !expired(); t += MAINTENANCE_MS) { h.clock.advance(MAINTENANCE_MS); hub.tick() }
+    expect(expired()).toBe(true)
+    const release = h.doc.messages().find(m => m.type === 'release') as unknown as { seq: number; at: number; from: string }
+    expect(release).toMatchObject({ from: 'gone', at: h.clock.wall() })
+    expect(release.seq).toBeGreaterThan(seq)
+    expect(incarnationOf(release.seq)).toBe(hub.incarnation)
+    expect(h.doc.metaMap.get('hubSeq')).toBe(release.seq)
+  })
+
+  it('restores the loaded counter mirrors over a stale replica before issuing anything', async () => {
+    const doc = new RoomDoc()
+    doc.metaMap.set('hubSeq', 123)
+    doc.metaMap.set('hubEpoch', 124)
+    const h = host({ doc })
+    const hub = await startHub(h)
+    const replica = new Y.Doc()
+    Y.applyUpdate(replica, Y.encodeStateAsUpdate(doc.doc))
+    replica.transact(() => { replica.getMap('meta').set('hubSeq', 1); replica.getMap('meta').set('hubEpoch', 2) })
+    Y.applyUpdate(doc.doc, Y.encodeStateAsUpdate(replica), 'replica')
+    expect(doc.metaMap.get('hubSeq')).toBe(1)
+    h.clock.advance(SETTLE_MS)
+    hub.tick()
+    expect(doc.metaMap.get('hubSeq')).toBe(123)
+    expect(doc.metaMap.get('hubEpoch')).toBe(124)
+  })
+})
+
+describe('the hub remembers ended holders', () => {
+  const acquire = (hub: Hub, conn: object, sessionId: string) => (hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder(sessionId) }, local) as { epoch: number }).epoch
+  /** A replica that saw everything writes `value` over ada's holder (new CRDT items, so it wins). */
+  function staleSync(doc: RoomDoc, value: unknown): void {
+    const replica = new Y.Doc()
+    Y.applyUpdate(replica, Y.encodeStateAsUpdate(doc.doc))
+    replica.getMap('participants').set('ada\u0000holder', value)
+    Y.applyUpdate(doc.doc, Y.encodeStateAsUpdate(replica), 'replica')
+  }
+
+  it('a stale replica cannot bring back a superseded or released epoch', async () => {
+    const h = host()
+    const hub = await startHub(h)
+    const conn = {}
+    hub.handle(conn, hello, local)
+    h.clock.advance(SETTLE_MS)
+    const e1 = acquire(hub, conn, 's1')
+    const e1Record = h.doc.participants.get('ada\u0000holder')
+    const e2 = acquire(hub, conn, 's1')
+    expect(hub.handle(conn, { v: 1, id: 'r', op: 'release', name: 'ada', epoch: e2 }, local)).toMatchObject({ ok: true })
+    staleSync(h.doc, e1Record)
+    expect(h.doc.participants.get('ada\u0000holder')).toMatchObject({ epoch: e1 })
+    // The acknowledged release stays acknowledged, before and after re-assertion.
+    expect(hub.handle(conn, { v: 1, id: 'r', op: 'release', name: 'ada', epoch: e2 }, local)).toMatchObject({ ok: true })
+    hub.tick()
+    expect(h.doc.participants.get('ada\u0000holder')).toMatchObject({ epoch: e2, ended: 'released' })
+    expect(hub.handle(conn, { v: 1, id: 'r', op: 'release', name: 'ada', epoch: e2 }, local)).toMatchObject({ ok: true })
+
+    // An expired lease, brought back un-ended, is expired again.
+    const e3 = acquire(hub, conn, 's1')
+    const e3Record = h.doc.participants.get('ada\u0000holder')
+    h.clock.advance(LEASE_TTL_MS)
+    hub.tick()
+    expect(h.doc.participants.get('ada\u0000holder')).toMatchObject({ epoch: e3, ended: 'expired' })
+    staleSync(h.doc, e3Record)
+    hub.tick()
+    expect(h.doc.participants.get('ada\u0000holder')).toMatchObject({ epoch: e3, ended: 'expired' })
+  })
+
+  it('the settle window never adopts an epoch this incarnation released, or one below the latest', async () => {
+    let max: number | undefined
+    const store = serializedStore({ read: async () => max, write: async v => { max = v } })
+    const first = host({ store })
+    const a = await startHub(first)
+    const conn = {}
+    a.handle(conn, hello, local)
+    first.clock.advance(SETTLE_MS)
+    const e1 = acquire(a, conn, 's1')
+    const e2 = acquire(a, conn, 's1')
+    a.stop()
+
+    // The successor carries e2, which is released inside the settle window.
+    const second = host({ store, doc: first.doc })
+    const b = await startHub(second)
+    b.handle(conn, hello, local)
+    expect(b.handle(conn, { v: 1, id: 'r', op: 'release', name: 'ada', epoch: e2 }, local)).toMatchObject({ ok: true })
+    // Renews already in flight arrive after the release.
+    expect(b.handle(conn, { v: 1, id: 'n', op: 'renew', name: 'ada', epoch: e2 }, local)).toMatchObject({ ok: false, reason: 'stale' })
+    expect(b.handle(conn, { v: 1, id: 'n', op: 'renew', name: 'ada', epoch: e1 }, local)).toMatchObject({ ok: false, reason: 'stale' })
+    second.clock.advance(SETTLE_MS)
+    b.tick()
+    expect(first.doc.participants.get('ada\u0000holder')).toMatchObject({ epoch: e2, ended: 'released' })
   })
 })

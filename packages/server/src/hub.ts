@@ -3,40 +3,52 @@
  * started after the doc's persisted state is loaded, answering message type 7 on the room's websocket.
  */
 import crypto from 'node:crypto'
-import fsp from 'node:fs/promises'
+import fsp, { type FileHandle } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { MSG_HUB, STARTING_RETRY_MS, decodeFrame, encodeFrame, serializedStore, startHub, type Hub, type IncarnationStore, type Principal, type Reply } from '@room/hub-core'
 import { RoomDoc } from '@room/shared'
 import { ownsName, toBytes } from './readonly.js'
 
-async function syncDir(dir: string): Promise<void> {
-  const handle = await fsp.open(dir, 'r')
-  try { await handle.sync() } catch { /* directory fsync is unsupported on some filesystems */ } finally { await handle.close() }
+// The relay's durable-file procedure (relay/src/leases.ts), async; the server does not depend on the relay.
+
+async function syncDirectory(dir: string): Promise<void> {
+  // Directory fsync is unsupported by some filesystems; the file itself was fsynced. Any other error is real.
+  let handle: FileHandle | undefined
+  try { handle = await fsp.open(dir, 'r'); await handle.sync() }
+  catch (e) { if (!['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e }
+  finally { await handle?.close() }
 }
 
-/** Temp, fsync, rename, fsync-dir. */
+async function ensureDurableDirectory(dir: string): Promise<void> {
+  const parent = path.dirname(dir)
+  if (parent !== dir) await ensureDurableDirectory(parent)
+  try { await fsp.mkdir(dir, { mode: 0o700 }) }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
+  // EEXIST may mean another writer created this directory but has not fsynced its parent yet.
+  if (parent !== dir) await syncDirectory(parent)
+}
+
+/** Temp, fsync, rename, fsync-dir, in a directory whose own entry is durable. */
 async function writeDurable(file: string, content: object): Promise<void> {
   const dir = path.dirname(file)
-  await fsp.mkdir(dir, { recursive: true })
+  await ensureDurableDirectory(dir)
   const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`
   const handle = await fsp.open(temp, 'wx', 0o600)
   try { await handle.writeFile(JSON.stringify(content) + '\n'); await handle.sync() }
   finally { await handle.close() }
   try { await fsp.rename(temp, file) } catch (e) { await fsp.rm(temp, { force: true }); throw e }
-  await syncDir(dir)
+  await syncDirectory(dir)
 }
 
 /**
- * One `<YPERSISTENCE>/hub/incarnation.json` for the process, taken one room at a time. Without a volume the
- * record lives in memory: the wall-clock floor then orders restarts (§3).
+ * The process's durable incarnation record, taken one room at a time (§3): `<YPERSISTENCE>/hub/incarnation.json`,
+ * or without a volume `<tmpdir>/room-server-hub-<port>/incarnation.json`, which outlives the process as the
+ * clients' replicas of its in-memory rooms do.
  */
-export function incarnationFile(dir: string | undefined): IncarnationStore {
-  if (!dir) {
-    let max: number | undefined
-    return serializedStore({ read: async () => max, write: async v => { max = v } })
-  }
-  const file = path.join(dir, 'hub', 'incarnation.json')
+export function incarnationFile(dir: string | undefined, port: number): IncarnationStore {
+  const file = dir ? path.join(dir, 'hub', 'incarnation.json') : path.join(os.tmpdir(), `room-server-hub-${port}`, 'incarnation.json')
   return serializedStore({
     read: async () => {
       try { const max = (JSON.parse(await fsp.readFile(file, 'utf8')) as { max?: unknown }).max; return typeof max === 'number' ? max : undefined }

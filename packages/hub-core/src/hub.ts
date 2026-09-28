@@ -4,8 +4,8 @@
  * and a durable incarnation record, and call `tick` every second.
  */
 import {
-  BUS_KEEP, ExpiryTenure, MAX_MESSAGE_BYTES, MessageKinds, admit, defaultPriority, trim, validParticipantName,
-  type Msg, type ParticipantView, type RoomDoc,
+  BUS_KEEP, ExpiryTenure, MAX_MESSAGE_BYTES, MessageKinds, admit, defaultPriority, newId, trim, validParticipantName,
+  type Msg, type MsgType, type ParticipantView, type ReleasePoster, type RoomDoc,
 } from '@room/shared'
 import {
   COUNTER_LIMIT, HUB_ORIGIN, HUB_PROTO, LEASE_RENEW_MS, LEASE_TTL_MS, SETTLE_MS, STARTING_RETRY_MS,
@@ -71,12 +71,22 @@ export interface Hub {
   onPush(fn: (conn: object, push: Push) => void): void
 }
 
+type End = 'released' | 'expired'
+
 /** The hub's record of a lease, at `participants[`${name}\0holder`]` (§4.1). */
-export interface HubHolder extends HolderIn { epoch: number; at: number; ended?: 'released' | 'expired' }
+export interface HubHolder extends HolderIn { epoch: number; at: number; ended?: End }
 
-interface Lease { epoch: number; holder?: HolderIn; at: number; renewed: number; conn?: object }
+/**
+ * The hub's own word on a name, kept after its lease ends: the latest epoch it granted, adopted or ended.
+ * Re-assertion writes it back over stale replicas, and the settle window never adopts an epoch at or below
+ * an ended one. `holder` is missing only for a lease adopted from a renew before its record synced.
+ */
+interface Known { epoch: number; at: number; holder?: HolderIn; ended?: End }
+/** A live lease; it is also its name's `Known` until it ends. The TTL state lives only here (§4.1). */
+interface Lease extends Known { renewed: number; conn?: object }
 
-const holderKey = (name: string) => `${name}\u0000holder`
+const HOLDER = '\u0000holder'
+const holderKey = (name: string) => `${name}${HOLDER}`
 const encoder = new TextEncoder()
 const sizeOf = (value: unknown) => encoder.encode(JSON.stringify(value)).length
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -100,17 +110,31 @@ function hubHolder(v: unknown): HubHolder | undefined {
 
 const sameRecord = (a: HubHolder | undefined, b: HubHolder) => !!a && JSON.stringify(a) === JSON.stringify(b)
 
-/** The highest incarnation visible in the doc (§3's `S`). */
-function seenIncarnation(doc: RoomDoc): number {
-  let max = -1
-  const see = (v: unknown) => { if (isCounter(v)) max = Math.max(max, incarnationOf(v)) }
+function knownOf(record: HubHolder): Known {
+  const { epoch, at, ended, ...holder } = record
+  return { epoch, at, holder, ...(ended ? { ended } : {}) }
+}
+
+const higher = (a: number | undefined, b: number | undefined) => a === undefined ? b : b === undefined ? a : Math.max(a, b)
+
+/**
+ * The highest epoch and seq visible in the doc, the baselines of the meta mirrors, and the highest
+ * incarnation (§3's `S`).
+ */
+function visible(doc: RoomDoc): { epoch?: number; seq?: number; incarnation: number } {
+  let epoch: number | undefined, seq: number | undefined
+  const see = (v: unknown, kind: 'epoch' | 'seq') => {
+    if (!isCounter(v)) return
+    if (kind === 'epoch') epoch = higher(epoch, v); else seq = higher(seq, v)
+  }
   const meta = doc.metaMap
-  if (isCounter(meta.get('hubIncarnation'))) max = Math.max(max, meta.get('hubIncarnation') as number)
-  see(meta.get('hubEpoch')); see(meta.get('hubSeq'))
-  for (const m of doc.bus.toArray()) see((m as { seq?: unknown })?.seq)
-  for (const m of doc.mail.values()) see((m as { seq?: unknown })?.seq)
-  for (const [key, value] of doc.participants.entries()) if (key.endsWith('\u0000holder')) see((value as { epoch?: unknown })?.epoch)
-  return max
+  see(meta.get('hubEpoch'), 'epoch'); see(meta.get('hubSeq'), 'seq')
+  for (const m of doc.bus.toArray()) see((m as { seq?: unknown })?.seq, 'seq')
+  for (const m of doc.mail.values()) see((m as { seq?: unknown })?.seq, 'seq')
+  for (const [key, value] of doc.participants.entries()) if (key.endsWith(HOLDER)) see((value as { epoch?: unknown })?.epoch, 'epoch')
+  const incarnation = Math.max(isCounter(meta.get('hubIncarnation')) ? meta.get('hubIncarnation') as number : -1,
+    ...[epoch, seq].map(v => v === undefined ? -1 : incarnationOf(v)))
+  return { epoch, seq, incarnation }
 }
 
 export async function startHub(host: HubHost): Promise<Hub> {
@@ -135,6 +159,7 @@ class RoomHub implements Hub {
   private unauthorized = false
   private tenure!: ExpiryTenure
   private readonly leases = new Map<string, Lease>()
+  private readonly records = new Map<string, Known>()
   private readonly greeted = new Set<object>()
   private push: (conn: object, push: Push) => void = () => {}
   private readonly onUpdate = (_update: Uint8Array, origin: unknown) => {
@@ -153,14 +178,14 @@ class RoomHub implements Hub {
     await this.incarnate()
     this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono())
     this.startedAt = this.maintainedAt = this.host.mono()
-    this.adoptSynced()
+    this.adoptSynced() // also takes the loaded mirror values as the baselines re-assertion restores
     this.doc.doc.on('update', this.onUpdate)
     this.host.log(`hub: incarnation ${this.incarnation}, ${this.leases.size} lease(s) carried over`)
   }
 
   /** Take a new incarnation (§3): durable before anything is issued under it. */
   private async incarnate(): Promise<void> {
-    const floor = Math.max(seenIncarnation(this.doc) + 1, this.incarnation + 1, Math.floor(this.host.wall() / 1000))
+    const floor = Math.max(visible(this.doc).incarnation + 1, this.incarnation + 1, Math.floor(this.host.wall() / 1000))
     const next = await this.host.store.advance(floor)
     if (!Number.isInteger(next) || next < floor || next >= 2 ** 32) throw new Error(`incarnation store returned ${next} for floor ${floor}`)
     this.incarnation = next
@@ -201,7 +226,17 @@ class RoomHub implements Hub {
 
   private record(name: string): HubHolder | undefined { return hubHolder(this.doc.participants.get(holderKey(name))) }
 
-  private recordOf(lease: Lease & { holder: HolderIn }): HubHolder { return { ...lease.holder, epoch: lease.epoch, at: lease.at } }
+  /** The doc record for what the hub knows of a name, when it knows the holder. */
+  private recordOf(k: Known): HubHolder | undefined {
+    return k.holder && { ...k.holder, epoch: k.epoch, at: k.at, ...(k.ended ? { ended: k.ended } : {}) }
+  }
+
+  /** A lease is live from here: granted, or adopted from an earlier incarnation. The participant is back (§8). */
+  private hold(name: string, lease: Lease): void {
+    this.leases.set(name, lease)
+    this.records.set(name, lease)
+    this.tenure.present(this.doc, name, HUB_ORIGIN)
+  }
 
   /** The name's live lease; one past its TTL, or whose process is gone, ends here. */
   private live(name: string): Lease | undefined {
@@ -213,45 +248,73 @@ class RoomHub implements Hub {
     return undefined
   }
 
-  private end(name: string, lease: Lease, how: 'released' | 'expired'): void {
+  private end(name: string, lease: Lease, how: End): void {
     this.leases.delete(name)
     const current = this.record(name)
-    const base = current?.epoch === lease.epoch ? current : lease.holder ? this.recordOf({ ...lease, holder: lease.holder }) : undefined
-    if (base) this.doc.doc.transact(() => { this.doc.participants.set(holderKey(name), { ...base, ended: how }) }, HUB_ORIGIN)
+    const holder = lease.holder ?? (current?.epoch === lease.epoch ? knownOf(current).holder : undefined)
+    const ended: Known = { epoch: lease.epoch, at: lease.at, ...(holder ? { holder } : {}), ended: how }
+    this.records.set(name, ended)
+    const record = this.recordOf(ended)
+    if (record) this.doc.doc.transact(() => { this.doc.participants.set(holderKey(name), record) }, HUB_ORIGIN)
     this.host.log(`hub: lease ${lease.epoch} on ${name} ${how}`)
   }
 
-  /** Inherited from an earlier incarnation, not granted by this one. */
-  private inherited(lease: Lease): boolean { return incarnationOf(lease.epoch) < this.incarnation }
-
-  /** Carry over un-ended holders from earlier incarnations with a fresh TTL (§4.4). */
+  /**
+   * Take in earlier incarnations' holders (§4.4), at the start and while settling: an un-ended one above
+   * what the hub knows is carried over with a fresh TTL, an ended one is remembered. The mirrors' baselines
+   * rise to the highest values seen.
+   */
   private adoptSynced(): void {
+    const seen = visible(this.doc)
+    this.lastEpoch = higher(this.lastEpoch, seen.epoch)
+    this.lastSeq = higher(this.lastSeq, seen.seq)
     for (const [key, value] of this.doc.participants.entries()) {
-      if (!key.endsWith('\u0000holder')) continue
+      if (!key.endsWith(HOLDER)) continue
       const record = hubHolder(value)
-      if (!record || record.ended || incarnationOf(record.epoch) >= this.incarnation) continue
-      const name = key.slice(0, -'\u0000holder'.length)
+      if (!record || incarnationOf(record.epoch) >= this.incarnation) continue
+      const name = key.slice(0, -HOLDER.length)
+      const known = this.records.get(name)
       const lease = this.leases.get(name)
-      const { epoch, at, ended: _ended, ...holder } = record
-      if (lease?.epoch === epoch) { lease.holder ??= holder; continue }
-      if (lease && !(this.inherited(lease) && epoch > lease.epoch)) continue
-      if (lease) this.notify(name, lease, 'superseded')
-      this.leases.set(name, { epoch, holder, at, renewed: this.host.mono() })
+      if (known && record.epoch <= known.epoch) {
+        if (lease?.epoch === record.epoch && !record.ended) lease.holder ??= knownOf(record).holder
+        continue
+      }
+      // A live lease below an earlier incarnation's record is itself inherited, and that grant superseded it.
+      if (lease) { this.leases.delete(name); this.notify(name, lease, 'superseded') }
+      if (record.ended) this.records.set(name, knownOf(record))
+      else this.hold(name, { ...knownOf(record), renewed: this.host.mono() })
     }
+  }
+
+  /** Whether `count` more values can be issued now; if not, a new incarnation is taken (§3). */
+  private reserve(kind: 'epoch' | 'seq', count: number): boolean {
+    if (this.reincarnating) return false
+    if ((kind === 'epoch' ? this.epochs : this.seqs) + count <= this.limit) return true
+    this.reincarnating = this.incarnate()
+      .catch(e => this.host.log(`hub: could not take a new incarnation: ${e instanceof Error ? e.message : e}`))
+      .finally(() => { this.reincarnating = undefined })
+    return false
   }
 
   /** The next epoch or seq, or undefined while a new incarnation is being taken. */
   private issue(kind: 'epoch' | 'seq'): number | undefined {
-    if (this.reincarnating) return undefined
-    const n = kind === 'epoch' ? this.epochs : this.seqs
-    if (n >= this.limit) {
-      this.reincarnating = this.incarnate()
-        .catch(e => this.host.log(`hub: could not take a new incarnation: ${e instanceof Error ? e.message : e}`))
-        .finally(() => { this.reincarnating = undefined })
-      return undefined
-    }
-    if (kind === 'epoch') this.epochs++; else this.seqs++
+    if (!this.reserve(kind, 1)) return undefined
+    const n = kind === 'epoch' ? this.epochs++ : this.seqs++
     return encodeSeq(this.incarnation, n)
+  }
+
+  /** Append a message with the next seq and the hub's `at`, mirrored in `meta.hubSeq`; undefined while reincarnating. */
+  private append(msg: Record<string, unknown> & { id: string; type: MsgType; from: string }, wall: number): Msg | undefined {
+    const seq = this.issue('seq')
+    if (seq === undefined) return undefined
+    const record = { ...msg, seq, at: wall } as unknown as Msg
+    this.lastSeq = seq
+    this.doc.doc.transact(() => {
+      this.doc.bus.push([record])
+      this.doc.metaMap.set('hubSeq', seq)
+    }, HUB_ORIGIN)
+    if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN })
+    return record
   }
 
   // ---- requests ----
@@ -302,10 +365,10 @@ class RoomHub implements Hub {
     if (epoch === undefined) return starting()
     if (live) this.notify(name, live, 'superseded')
     const lease = { epoch, holder, at: this.host.wall(), renewed: this.host.mono(), conn }
-    this.leases.set(name, lease)
     this.lastEpoch = epoch
     this.doc.doc.transact(() => {
-      this.doc.participants.set(holderKey(name), this.recordOf(lease))
+      this.hold(name, lease)
+      this.doc.participants.set(holderKey(name), this.recordOf(lease)!)
       this.doc.metaMap.set('hubEpoch', epoch)
     }, HUB_ORIGIN)
     this.host.log(`hub: granted ${name} to ${holder.sessionId} at epoch ${epoch}${live ? ` (superseding ${live.epoch})` : ''}`)
@@ -318,13 +381,15 @@ class RoomHub implements Hub {
     const live = this.live(name)
     const ok = (): Reply => ({ v: 1, re: req.id, ok: true, ttlMs: LEASE_TTL_MS })
     if (live?.epoch === epoch) { live.renewed = this.host.mono(); live.conn = conn; return ok() }
-    // A holder whose record has not synced yet renews an earlier incarnation's grant: adopt it (§4.4).
-    if (this.settling() && incarnationOf(epoch) < this.incarnation && (!live || (this.inherited(live) && epoch > live.epoch))
+    // A holder whose record has not synced yet renews an earlier incarnation's grant: adopt it (§4.4), unless
+    // the hub already knows that epoch ended or a later one (a live lease is one too).
+    const known = this.records.get(name)
+    if (this.settling() && incarnationOf(epoch) < this.incarnation && (!known || epoch > known.epoch)
       && (!this.host.owns || this.host.owns(p, name))) {
       if (live) this.notify(name, live, 'superseded')
       const record = this.record(name)
-      const { epoch: _e, at: _a, ended: _x, ...holder } = record?.epoch === epoch ? record : ({} as Partial<HubHolder>)
-      this.leases.set(name, { epoch, ...(holder.sessionId ? { holder: holder as HolderIn } : {}), at: record?.epoch === epoch ? record.at : this.host.wall(), renewed: this.host.mono(), conn })
+      const synced = record?.epoch === epoch && !record.ended ? knownOf(record) : { epoch, at: this.host.wall() }
+      this.hold(name, { ...synced, renewed: this.host.mono(), conn })
       this.host.log(`hub: adopted ${name} at epoch ${epoch} from a renew`)
       return ok()
     }
@@ -334,8 +399,9 @@ class RoomHub implements Hub {
   private release(req: Extract<Req, { op: 'release' }>, fail: Fail): Reply {
     if (!isName(req.name) || !isCounter(req.epoch)) return fail('invalid', 'release needs a name and an epoch')
     const live = this.live(req.name)
+    const known = this.records.get(req.name)
     if (live?.epoch === req.epoch) this.end(req.name, live, 'released')
-    else if (!(this.record(req.name)?.epoch === req.epoch && this.record(req.name)?.ended)) return fail('stale', `epoch ${req.epoch} is not the live lease on ${req.name}`)
+    else if (!(known?.epoch === req.epoch && known.ended)) return fail('stale', `epoch ${req.epoch} is not the live lease on ${req.name}`)
     return { v: 1, re: req.id, ok: true }
   }
 
@@ -362,19 +428,12 @@ class RoomHub implements Hub {
       if (!admission.ok) return fail('over-cap', admission.reason)
     }
     if (this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${'login' in p ? p.login ?? 'an anonymous connection' : 'a local connection'}; accepted`)
-    const seq = this.issue('seq')
-    if (seq === undefined) return starting()
     let priority: Msg['priority']
     try { priority = (msg.priority as Msg['priority'] | undefined) ?? defaultPriority(msg) }
     catch { return fail('invalid', `cannot prioritise a ${msg.type} message`) }
-    const record = { ...msg, priority, seq, at: wall } as unknown as Msg
-    this.lastSeq = seq
-    this.doc.doc.transact(() => {
-      this.doc.bus.push([record])
-      this.doc.metaMap.set('hubSeq', seq)
-    }, HUB_ORIGIN)
-    if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN })
-    return { v: 1, re: req.id, ok: true, seq, at: wall }
+    const record = this.append({ ...msg, priority }, wall)
+    if (!record) return starting()
+    return { v: 1, re: req.id, ok: true, seq: (record as unknown as { seq: number }).seq, at: wall }
   }
 
   // ---- maintenance ----
@@ -399,17 +458,21 @@ class RoomHub implements Hub {
     const { doc } = this
     const archived = (id: string) => doc.archive.has(id) || doc.outcomes.has(id)
     doc.doc.transact(() => {
-      const names = new Set(this.leases.keys())
-      for (const [key, value] of doc.participants.entries()) if (key.endsWith('\u0000holder') && hubHolder(value)) names.add(key.slice(0, -'\u0000holder'.length))
+      const names = new Set(this.records.keys())
+      for (const [key, value] of doc.participants.entries()) if (key.endsWith(HOLDER) && hubHolder(value)) names.add(key.slice(0, -HOLDER.length))
       for (const name of names) {
         const current = this.record(name)
-        const lease = this.leases.get(name)
-        if (lease?.holder) {
-          const want = this.recordOf({ ...lease, holder: lease.holder })
-          if (!sameRecord(current, want)) doc.participants.set(holderKey(name), want)
-        } else if (lease) {
-          if (current?.epoch === lease.epoch && !current.ended) { const { epoch: _e, at: _a, ended: _x, ...holder } = current; lease.holder = holder }
-        } else if (current && !current.ended) doc.participants.set(holderKey(name), { ...current, ended: 'expired' })
+        let known = this.records.get(name)
+        // A holder the hub never knew, above its own word and not live here: remember it as ended.
+        if (current && !this.leases.has(name) && (!known || current.epoch > known.epoch)) {
+          known = knownOf(current.ended ? current : { ...current, ended: 'expired' })
+          this.records.set(name, known)
+        }
+        if (!known) continue
+        const want = this.recordOf(known)
+        if (want) { if (!sameRecord(current, want)) doc.participants.set(holderKey(name), want) }
+        else if (current?.epoch === known.epoch && !current.ended) known.holder = knownOf(current).holder
+        else if (current && !current.ended) doc.participants.set(holderKey(name), { ...current, ended: 'expired' })
       }
       const meta = doc.metaMap
       if (meta.get('hubIncarnation') !== this.incarnation) meta.set('hubIncarnation', this.incarnation)
@@ -427,18 +490,26 @@ class RoomHub implements Hub {
     }, HUB_ORIGIN)
   }
 
-  /** Measure absence as "no live lease" and expire at ROOM_STALE_DAYS (§8). */
+  /**
+   * Measure absence as "no live lease" and expire at ROOM_STALE_DAYS (§8). An expired participant's claims
+   * are released with sequenced notices, so a pass runs only when every claim could get a seq.
+   */
   private expire(): void {
+    if (!this.reserve('seq', Math.min(this.doc.claims.size, this.limit))) return
     const view: ParticipantView[] = []
     for (const key of this.doc.participants.keys()) {
-      if (!key.endsWith('\u0000holder')) continue
-      const name = key.slice(0, -'\u0000holder'.length)
+      if (!key.endsWith(HOLDER)) continue
+      const name = key.slice(0, -HOLDER.length)
       view.push({ name, fresh: !!this.live(name), visible: true })
     }
-    for (const name of this.tenure.observe(this.doc, view, HUB_ORIGIN)) {
+    const wall = this.host.wall()
+    const post: ReleasePoster = (from, body) =>
+      this.append({ ...body, priority: body.priority ?? defaultPriority(body), id: newId('m_'), from: from.name, fromKind: from.kind }, wall)
+    for (const name of this.tenure.observe(this.doc, view, HUB_ORIGIN, post)) {
       this.host.log(`hub: expired ${name}: no lease for the room's stale period`)
       const lease = this.leases.get(name)
       if (lease) { this.leases.delete(name); this.notify(name, lease, 'expired-participant') }
+      this.records.delete(name)
     }
   }
 }

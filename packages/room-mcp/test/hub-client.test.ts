@@ -162,6 +162,93 @@ describe('HubClient', () => {
     client.close()
   })
 
+  it('does not retry a post after its lease expires during a starting delay', async () => {
+    const { client, transport, advance } = fixture()
+    await client.hello(); await client.acquire('alice', holder)
+    advance(LEASE_TTL_MS - 1)
+    let posts = 0
+    transport.answer = req => req.op === 'post'
+      ? (++posts === 1 ? { ok: false, reason: 'starting', text: 'starting', retryMs: 1_000 } : { ok: true, seq: 5, at: 1 })
+      : { ok: true }
+    const result = expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } }))
+      .rejects.toThrow('not sent: hub unreachable')
+    await Promise.resolve()
+    expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(1)
+    advance(1_000)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await result
+    expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(1)
+    expect(client.paused()).toBe(PAUSED)
+    client.close()
+  })
+
+  it('does not retry a post after a lease-lost push during a starting delay', async () => {
+    const { client, transport } = fixture()
+    await client.hello(); await client.acquire('alice', holder)
+    let posts = 0
+    transport.answer = req => req.op === 'post'
+      ? (++posts === 1 ? { ok: false, reason: 'starting', text: 'starting', retryMs: 1_000 } : { ok: true, seq: 5, at: 1 })
+      : { ok: true }
+    const result = expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } }))
+      .rejects.toThrow('not sent: hub unreachable')
+    await Promise.resolve()
+    transport.emit({ v: 1, push: 'lease-lost', name: 'alice', epoch: 42, reason: 'expired' })
+    await vi.advanceTimersByTimeAsync(1_000)
+    await result
+    expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(1)
+    expect(client.paused()).toBe(PAUSED)
+    client.close()
+  })
+
+  it('rechecks the post lease after a hello-first retry', async () => {
+    const { client, transport } = fixture()
+    await client.hello(); await client.acquire('alice', holder)
+    transport.answer = req => req.op === 'post'
+      ? { ok: false, reason: 'hello-first', text: 'hello first' }
+      : undefined
+    const result = expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } }))
+      .rejects.toThrow('not sent: hub unreachable')
+    await vi.waitFor(() => expect(transport.sent.filter(r => r.op === 'hello')).toHaveLength(2))
+    const hello = transport.sent.at(-1)!
+    transport.emit({ v: 1, push: 'lease-lost', name: 'alice', epoch: 42, reason: 'expired' })
+    transport.emit({ v: 1, re: hello.id, ok: true, proto: 1, incarnation: 1, ttlMs: LEASE_TTL_MS, renewMs: LEASE_RENEW_MS, authority: true })
+    await result
+    expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(1)
+    expect(client.paused()).toBe(PAUSED)
+    client.close()
+  })
+
+  it('closes during a starting delay without sending another request', async () => {
+    const { client, transport } = fixture()
+    let sends = 0
+    transport.answer = () => ++sends === 1
+      ? { ok: false, reason: 'starting', text: 'starting', retryMs: 1_000 }
+      : { ok: true, incarnation: 1 }
+    const result = expect(client.hello()).rejects.toThrow('hub client closed')
+    await Promise.resolve()
+    expect(transport.sent).toHaveLength(1)
+    client.close()
+    client.close()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await result
+    expect(transport.sent).toHaveLength(1)
+  })
+
+  it('rejects pending requests and all APIs after close', async () => {
+    const { client, transport } = fixture()
+    transport.answer = () => undefined
+    const pending = expect(client.hello()).rejects.toThrow('hub client closed')
+    client.close()
+    client.close()
+    await pending
+    await expect(client.hello()).rejects.toThrow('hub client closed')
+    await expect(client.acquire('alice', holder)).rejects.toThrow('hub client closed')
+    await expect(client.renew('alice')).rejects.toThrow('hub client closed')
+    await expect(client.release('alice')).rejects.toThrow('hub client closed')
+    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' })).rejects.toThrow('hub client closed')
+    expect(transport.sent).toHaveLength(1)
+  })
+
   it('bounds repeated starting replies by request timeout plus settle time', async () => {
     const { client, transport } = fixture()
     transport.answer = req => req.op === 'hello'
