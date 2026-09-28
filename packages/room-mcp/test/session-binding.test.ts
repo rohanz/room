@@ -56,4 +56,19 @@ describe('host session binding', () => {
     expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: '', env: {} })).toBeUndefined()
     expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'wrapper', env: {} })).toBeUndefined()
   })
+
+  it('binds a Claude lead even when its prompt mentions app-server', () => {
+    const dir = common()
+    record(dir, 'claude-prompt', 'claude', 1, [parent])
+    expect(boundSession({ commonDir: dir, host: 'claude', parent, parentArgs: 'claude -p explain-app-server', env: {} })).toEqual({ id: 'claude-prompt', host: 'claude' })
+  })
+
+  it('recognizes a dedicated Codex parent from a spaced executable path', () => {
+    const dir = common()
+    record(dir, 'codex-spaces', 'codex', 1, [child])
+    for (const args of ['/Users/A Name/bin/codex exec', '"/Users/A Name/bin/codex" exec']) {
+      expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: args, env: {} })).toEqual({ id: 'codex-spaces', host: 'codex' })
+    }
+    expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'codex exec app-server', env: {} })).toEqual({ id: 'codex-spaces', host: 'codex' })
+  })
 })

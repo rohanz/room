@@ -31,8 +31,9 @@ function ensureDurableDirectory(dir: string): void {
   if (parent !== dir) ensureDurableDirectory(parent)
   try {
     fs.mkdirSync(dir, { mode: 0o700 })
-    if (parent !== dir) syncDirectory(parent)
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
+  // EEXIST may mean another writer created this directory but has not fsynced its parent yet.
+  if (parent !== dir) syncDirectory(parent)
 }
 
 const startMarker = (startTime: string): string => createHash('sha256').update(startTime).digest('hex').slice(0, 24)

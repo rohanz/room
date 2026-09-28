@@ -102,6 +102,37 @@ describe('local leases', () => {
     expect(directories).toBeGreaterThanOrEqual(3)
   })
 
+  it('fsyncs a parent even when another writer created the directory first', () => {
+    const root = path.dirname(leaseFile())
+    const parent = path.join(root, 'room')
+    const target = path.join(parent, 'registry')
+    const originalMkdir = fs.mkdirSync, originalOpen = fs.openSync, originalFsync = fs.fsyncSync
+    const opened = new Map<number, string>()
+    let intervened = false, parentSynced = false, syncedBeforeSecondReturned = false
+    const open = vi.spyOn(fs, 'openSync').mockImplementation(((file: fs.PathLike, flags: string | number, ...args: any[]) => {
+      const fd = originalOpen(file, flags as any, ...args as [any])
+      if (flags === 'r') opened.set(fd, path.resolve(String(file)))
+      return fd
+    }) as typeof fs.openSync)
+    const fsync = vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+      if (opened.get(fd) === parent) parentSynced = true
+      return originalFsync(fd)
+    })
+    const mkdir = vi.spyOn(fs, 'mkdirSync').mockImplementation(((dir: fs.PathLike, ...args: any[]) => {
+      const result = originalMkdir(dir, ...args as [any])
+      if (!intervened && path.resolve(String(dir)) === target) {
+        intervened = true
+        expect(createExclusive(path.join(target, 'second.json'), {})).toBe(true)
+        syncedBeforeSecondReturned = parentSynced
+      }
+      return result
+    }) as typeof fs.mkdirSync)
+    try { expect(createExclusive(path.join(target, 'first.json'), {})).toBe(true) }
+    finally { mkdir.mockRestore(); fsync.mockRestore(); open.mockRestore() }
+    expect(intervened).toBe(true)
+    expect(syncedBeforeSecondReturned).toBe(true)
+  })
+
   it('keeps a live writer temp and removes it after that writer dies', async () => {
     const file = leaseFile(), ready = `${file}.ready`
     const child = launch('temp', file, ready)

@@ -170,6 +170,37 @@ function parentCommandLine(): string {
   catch { return '' }
 }
 
+/** Strip the known Codex executable, including an unquoted path containing spaces. */
+function codexArguments(parent: ProcessIdentity | undefined, commandLine: string): string | undefined {
+  if (!parent) return undefined
+  const known = parent.executable
+  const name = known.split(/[/\\]/).at(-1)
+  if (name !== 'codex' && name !== 'codex.exe') return undefined
+  const raw = commandLine.trim()
+  const after = (prefix: string): string | undefined => raw.startsWith(prefix) && (raw.length === prefix.length || /\s/.test(raw[prefix.length]))
+    ? raw.slice(prefix.length).trimStart() : undefined
+  for (const prefix of [known, `"${known}"`, `'${known}'`]) {
+    const args = after(prefix)
+    if (args !== undefined) return args
+  }
+  if (raw[0] === '"' || raw[0] === "'") {
+    const end = raw.indexOf(raw[0], 1)
+    if (end > 0 && raw.slice(1, end).split(/[/\\]/).at(-1) === name) return after(raw.slice(0, end + 1))
+    return undefined
+  }
+  const direct = after(name)
+  if (direct !== undefined) return direct
+  for (const separator of ['/', '\\']) {
+    let index = raw.indexOf(`${separator}${name}`)
+    while (index >= 0) {
+      const args = after(raw.slice(0, index + 1 + name.length))
+      if (args !== undefined) return args
+      index = raw.indexOf(`${separator}${name}`, index + 1)
+    }
+  }
+  return undefined
+}
+
 /** Re-evaluate on every call: a new SessionStart after Claude /clear supersedes the prior ID. */
 export function boundSession(options: SessionBindingOptions = {}): { id: string; host: 'claude' | 'codex' } | undefined {
   const env = options.env ?? process.env
@@ -189,10 +220,10 @@ export function boundSession(options: SessionBindingOptions = {}): { id: string;
     const id = matching?.session_id ?? (host === 'codex' ? options.codexLogSessionId : undefined)
     return id ? { id, host } : undefined
   }
-  const parentArgs = options.parentArgs ?? parentCommandLine()
-  if (options.appServer || /\bapp-server\b/.test(parentArgs)) return undefined
-  const parentExecutable = parentArgs.trim().split(/\s+/)[0]?.split(/[/\\]/).at(-1)
-  if (host === 'codex' && parentExecutable !== 'codex' && parentExecutable !== 'codex.exe') return undefined
+  if (host === 'codex') {
+    const args = codexArguments(parent, options.parentArgs ?? parentCommandLine())
+    if (options.appServer || args === undefined || args.match(/^\S+/)?.[0] === 'app-server') return undefined
+  }
   const matching = parent && records.filter(record => !record.worker_id && record.chain?.some(member => sameProcess(member, parent))).sort((a, b) => b.at - a.at)[0]
   if (matching) return { id: matching.session_id, host }
   return host === 'claude' && env.CLAUDE_CODE_SESSION_ID ? { id: env.CLAUDE_CODE_SESSION_ID, host } : undefined
