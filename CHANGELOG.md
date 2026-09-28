@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.34
+
+Fixes from the Astra review of 0.16.33.
+
+- **A carried worker's preview no longer hides a lead's real revert.** With no shared text from the lead, the preview used the carried base in every case. It now separates two cases. If the lead shares the path, no overlay means it equals HEAD, so a revert shows as the conflict it is. If the lead withholds the path, the preview uses the carried base and says plainly that the lead's current text is not shared.
+- A reply to a worker's note addressed by the worker's tag is accepted.
+- Discard recovery runs its whole-tree git steps asynchronously, so a slow step no longer stops presence heartbeats.
+- The GraphIndex tests prove indexing and edge publication each yield to the event loop, independently.
+
 ## 0.16.33
 
 Found in the rehearsals and the worker-in-team-room check.
