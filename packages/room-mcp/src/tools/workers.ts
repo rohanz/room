@@ -5,7 +5,7 @@ import { WORKER_EFFORTS } from '../worker-config.js'
 import { prepareWorkerLinks, resolveWorkerLinks, cleanupPreparedWorktree } from '../worker-git.js'
 import { decideStop, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
-import { retainedList, secondaryPublishingLine } from './share.js'
+import { publisherLine, retainedList } from './share.js'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
@@ -67,10 +67,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
       s.daemon.touch()
       const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${asWorker ? `Your lead ${asWorker.lead} has been told (worker ${asWorker.tag}); your work is on branch ${asWorker.branch} in ${asWorker.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : 'You remain in the room.'}`]
-      const secondary = secondaryPublishingLine(s)
+      const secondary = publisherLine(s)
       if (secondary) out.push(secondary)
       else {
-        const retained = s.daemon.share === 'declared' ? s.daemon.retainedDeclared() : []
+        const retained = s.daemon.share === 'declared' ? [...s.policyStore.retained] : []
         if (retained.length) out.push(`${retained.length} changed file(s) you declared earlier stay shared while they differ from your base: ${retainedList(retained)}. A sharing-level change, an ignore rule or the size limit also withdraws them. To withdraw them now, say: share plans only.`)
       }
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary)

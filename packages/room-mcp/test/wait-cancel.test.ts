@@ -7,6 +7,7 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc, type AnswerMsg, type Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
+import { testPolicyStore } from './policy-fixture.js'
 import { waitConsumesMessage } from '../src/tools/messaging.js'
 
 const asker: Identity = { name: 'Asker', kind: 'agent' }
@@ -23,6 +24,7 @@ it('aborting room_wait removes its listeners and leaves a later answer unread', 
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { ...asker, color: '#000' }, status: 'idle' })
   const session: Session = {
+    policyStore: testPolicyStore(),
     room, awareness, me: asker, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     provider: { synced: true, awareness } as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: asker.name, roomDoc: room, provider: null as never, branch: 'main', base: 'base' },

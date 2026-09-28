@@ -21,12 +21,12 @@ const DEFAULT_STALE_DAYS = 7
 export type ConfigRule = 'argument' | 'env' | 'remembered' | 'default'
 export interface ConfigArgs {
   server?: string; where?: string; name?: string; owner?: string; tag?: string; kind?: string
-  share?: string; credentialsPath?: string; credentials?: string; token?: string; logFile?: string
+  share?: string; shareExplicit?: boolean; credentialsPath?: string; credentials?: string; token?: string; logFile?: string
   claudeChannel?: string; maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
 }
 export interface ResolvedConfig {
   dir: string; server: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
-  name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareWarning?: string
+  name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareExplicit: boolean; shareWarning?: string
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
   claudeChannel: string; workerId?: string; gen?: string
@@ -65,11 +65,11 @@ export function resolveShare(raw: unknown, source = 'share'): { level: ShareLeve
   return level ? { level } : { level: 'intent', warning: `${source}='${String(raw)}' is not a level; sharing plans only` }
 }
 
-async function readRememberedChoice(dir: string): Promise<{ where?: string; share?: ShareLevel; room?: string }> {
+async function readRememberedChoice(dir: string): Promise<{ where?: string; room?: string }> {
   try {
     const file = path.join(await gitCommonDir(dir), 'room-choice.json')
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown; share?: unknown; room?: unknown }
-    return { where: value(parsed.where), share: parseShare(parsed.share), room: value(parsed.room) }
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown; room?: unknown }
+    return { where: value(parsed.where), room: value(parsed.room) }
   } catch { return {} }
 }
 
@@ -95,16 +95,16 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const whereEnv = whereRule === 'env' ? envServer ? 'ROOM_SERVER' : 'ROOM_URL' : undefined
   const rawKind = value(args.kind) ?? value(e.ROOM_KIND) ?? 'agent'
   const kind = rawKind === 'bot' || rawKind === 'ci' ? rawKind : 'agent'
-  const rawShare = args.share ?? e.ROOM_SHARE ?? rememberedChoice.share
-  const sharing = resolveShare(rawShare, args.share !== undefined ? 'share' : e.ROOM_SHARE !== undefined ? 'ROOM_SHARE' : 'remembered share')
+  const rawShare = args.share ?? e.ROOM_SHARE
+  const sharing = resolveShare(rawShare, args.share !== undefined ? 'share' : 'ROOM_SHARE')
   const credentialsPath = resolveCredentialsPath(args, e)
   return {
     // Empty explicitly disables development channels; do not discard it with value().
     claudeChannel: (args.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
-    workerId: value(e.ROOM_WORKER_ID), gen: value(e.ROOM_GEN),
+    workerId: value(e.ROOM_WORKER_ID),
     roomUrl, dir: path.resolve(dir), server: resolveServer(where), where, whereRule, whereEnv,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
-    tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareWarning: sharing.warning, credentialsPath,
+    tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareExplicit: args.shareExplicit ?? rawShare !== undefined, shareWarning: sharing.warning, credentialsPath,
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),
     maxWorkers: positive(args.maxWorkers ?? e.ROOM_MAX_WORKERS, DEFAULT_MAX_WORKERS),
     staleDays: positive(args.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),

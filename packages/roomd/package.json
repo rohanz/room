@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./git": "./src/git.ts",
     "./baseline": "./src/baseline.ts",
-    "./local": "./src/local.ts"
+    "./local": "./src/local.ts",
+    "./policy": "./src/policy.ts"
   },
   "bin": {
     "roomd": "./src/cli.ts"

@@ -8,6 +8,7 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc, type Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -39,7 +40,7 @@ describe('merge preview materialization', () => {
     awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
     const session = {
       room, awareness, me, dir, roomName: 'local/demo/main', roomUrl: 'ws://local/local%2Fdemo%2Fmain', browserUrl: '',
-      provider: { synced: true, awareness }, shareMax: 'full', shareRequested: 'full',
+      provider: { synced: true, awareness }, shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
       daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null, branch: 'main', base },
     } as unknown as Session
     const tools = createTools({ cwd: dir, getSession: () => session, setSession: () => {} })

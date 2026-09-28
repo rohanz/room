@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { RoomDoc, type Worker } from '@room/shared'
 import { prepareWorktree, saveDiscardPatch } from '../src/worker-git.js'
-import { RetainedDeclaredPaths, retainedDeclaredFile } from '@room/roomd'
+import { worktreeGitDirFromDotGit } from '@room/roomd'
+import { PolicyStore, sharingFile } from '../src/policy-store.js'
 import { decideRetire, workerRealState, type WorkerRealState } from '../src/worker-state.js'
 import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
@@ -314,57 +315,57 @@ it('retires clean zero-commit and legacy workers as clean, and archives dismisse
   r.close()
 })
 
-it('clears a dismissed dirty worker retained-path record during automatic retirement', async () => {
+it('clears a dismissed dirty worker sharing record while keeping another room', async () => {
   const { dir } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w', 'lead')
   const w = { ...worker(prepared.dir), base: prepared.base, status: 'dismissed' as const, dismissedAt: 2 }
   writeFileSync(join(w.dir, 'a'), 'dirty work')
-  const retained = retainedDeclaredFile(w.dir, r.s.roomName, w.name, 'ws://team')
-  const teamRetained = retainedDeclaredFile(w.dir, 'repo/main', w.name, 'wss://team')
-  writeFileSync(teamRetained, JSON.stringify({ server: 'wss://team', room: 'repo/main', participant: w.name, paths: ['a'] }))
-  writeFileSync(retained, JSON.stringify({ server: 'ws://team', room: 'repo/main', participant: w.name, paths: ['a'] }))
+  await PolicyStore.open({ dir: w.dir, room: r.s.roomName, participant: w.name, requested: 'declared' })
+  await PolicyStore.open({ dir: w.dir, room: 'repo/main', participant: w.name, requested: 'declared' })
+  const sharing = await sharingFile(w.dir, r.s.roomName, w.name)
+  const other = await sharingFile(w.dir, 'repo/main', w.name)
   r.room.setWorker(w)
   await r.rooms.retireWorkers()
   expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('dismissed')
   expect(existsSync(w.dir)).toBe(true)
-  expect(existsSync(retained)).toBe(false)
-  expect(existsSync(teamRetained)).toBe(true)
+  expect(existsSync(sharing)).toBe(false)
+  expect(existsSync(other)).toBe(true)
   r.close()
 })
 
-it('removes a legacy-only retained record so a later worker join publishes nothing', async () => {
+it('removes a matching legacy grant during retirement so it cannot migrate on a later join', async () => {
   const { dir } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w', 'lead')
   const w = { ...worker(prepared.dir), base: prepared.base, status: 'dismissed' as const, dismissedAt: 2 }
   writeFileSync(join(w.dir, 'a'), 'dirty work')
-  const legacy = join(dirname(retainedDeclaredFile(w.dir, r.s.roomName, w.name, 'ws://team')), 'room-retained-declared.json')
+  const legacy = join(worktreeGitDirFromDotGit(w.dir), 'room-retained-declared.json')
   writeFileSync(legacy, JSON.stringify({ server: 'ws://team', room: r.s.roomName, participant: w.name, paths: ['a'] }))
   r.room.setWorker(w)
   await r.rooms.retireWorkers()
   expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('dismissed')
   expect(existsSync(w.dir)).toBe(true)
   expect(existsSync(legacy)).toBe(false)
-  expect([...new RetainedDeclaredPaths(w.dir, r.s.roomName, w.name, 'ws://team')]).toEqual([])
-  expect(existsSync(retainedDeclaredFile(w.dir, r.s.roomName, w.name, 'ws://team'))).toBe(false)
+  const reopened = await PolicyStore.open({ dir: w.dir, room: r.s.roomName, participant: w.name, server: 'ws://team', requested: 'declared' })
+  expect(reopened.retained).toEqual([])
   r.close()
 })
 
-it('clears a retained-path record when repairing a legacy archived worker', async () => {
+it('clears a sharing record when repairing a legacy archived worker', async () => {
   const { dir } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w', 'lead')
   const w = { ...worker(prepared.dir), base: prepared.base }
-  const retained = retainedDeclaredFile(w.dir, r.s.roomName, w.name, 'ws://team')
+  await PolicyStore.open({ dir: w.dir, room: r.s.roomName, participant: w.name, requested: 'declared' })
+  const sharing = await sharingFile(w.dir, r.s.roomName, w.name)
   const record = { name: w.name, tag: w.tag, lead: w.lead, host: w.host, task: w.task,
     summary: 'archived', files: [], fileCount: 0, startedAt: w.startedAt,
     finishedAt: 2, retiredAt: 3, outcome: 'dismissed' as const }
   r.room.retireParticipant(w.name, record)
   r.room.setWorker(w)
   r.room.setOverlay(w.name, 'a', 'ghost')
-  writeFileSync(retained, JSON.stringify({ server: 'ws://team', room: 'repo/main', participant: w.name, paths: ['a'] }))
   await r.rooms.retireWorkers()
   expect(r.room.workers.has(w.tag)).toBe(false)
   expect(r.room.changedPaths(w.name)).toEqual([])
-  expect(existsSync(retained)).toBe(false)
+  expect(existsSync(sharing)).toBe(false)
   r.close()
 })
 

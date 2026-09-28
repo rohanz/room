@@ -27,6 +27,7 @@ import { readChoice, rememberTag, worktreePath } from './choice.js'
 import { acquireOwnedFile } from './owned-file.js'
 import { probeProcess, type ProcessProbe } from './worker-process.js'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
+import { CeilingSource, PolicyStore } from './policy-store.js'
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
@@ -63,6 +64,7 @@ export interface Session {
   autoTagNote?: string
   /** Latest preview started by this MCP session; never reconstructed from shared room history. */
   lastPreview?: { clean: boolean; testsPassed?: boolean; testsCommand?: string }
+  policyStore: PolicyStore
   /** Refresh hook/session runtime metadata before a Room tool is dispatched. */
   refreshRuntime?: () => void
 }
@@ -251,6 +253,7 @@ export interface JoinOptions {
   kind?: string
   /** Sharing level: intent | declared | full. Default from ROOM_SHARE, then full. Clamped to the server's shareMax. */
   share?: string
+  shareExplicit?: boolean
   connectTimeoutMs?: number
   log?: (line: string) => void
 }
@@ -378,51 +381,21 @@ export function parseServer(raw: string): { server: string; token?: string } {
   }
 }
 
-const shareMaxCache = new Map<string, ShareLevel>()
-const shareSessions = new Map<string, Set<Session>>()
-/** Track every live session on a server so a learned policy reaches all of them. */
-export async function trackServerShare(server: string, session: Session): Promise<() => void> {
-  let sessions = shareSessions.get(server)
-  if (!sessions) { sessions = new Set(); shareSessions.set(server, sessions) }
-  sessions.add(session)
-  const untrack = () => {
-    sessions!.delete(session)
-    if (!sessions!.size) shareSessions.delete(server)
-  }
-  // A join can spend time resolving its identity and seeding before it registers.
-  // Apply the policy known now, including any ceiling learned during that gap.
-  try {
-    for (;;) {
-      const max = shareMaxCache.get(server) ?? session.shareMax
-      session.shareMax = max
-      const level = clampShare(session.shareRequested, max)
-      await session.daemon.setShare(level)
-      if (shareMaxCache.get(server) === undefined || shareMaxCache.get(server) === max) break
-    }
-  } catch (error) {
-    untrack()
-    throw error
-  }
-  return untrack
+const ceilings = new Map<string, CeilingSource>()
+function ceilingFor(server: string, fallback: ShareLevel): CeilingSource {
+  let source = ceilings.get(server)
+  if (!source) { source = new CeilingSource(server, fallback); ceilings.set(server, source) }
+  return source
 }
 /** The server's sharing ceiling. Unknown results use the local choice and are retried. */
-export async function serverShareMax(server: string, fallback: ShareLevel = 'intent', fetcher: typeof serverFetch = serverFetch, refresh = false): Promise<ShareLevel> {
-  const hit = shareMaxCache.get(server)
-  if (hit && !refresh) return hit
-  let max: ShareLevel | undefined
+export async function serverShareMax(server: string, fallback: ShareLevel = 'intent', fetcher: typeof serverFetch = serverFetch, _refresh = false): Promise<ShareLevel> {
+  const source = ceilingFor(server, fallback)
   try {
     const res = await fetcher(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 })
-    if (!res.ok) return hit ?? fallback
-    max = resolveShare(((await res.json()) as { shareMax?: unknown }).shareMax).level
+    if (!res.ok) return source.level
+    source.set(resolveShare(((await res.json()) as { shareMax?: unknown }).shareMax).level)
   } catch { /* unreachable: the join will report it */ }
-  if (max === undefined) return hit ?? fallback
-  shareMaxCache.set(server, max)
-  await Promise.allSettled([...shareSessions.get(server) ?? []].map(async session => {
-    session.shareMax = max
-    const level = clampShare(session.shareRequested, max)
-    await session.daemon.setShare(level)
-  }))
-  return max
+  return source.level
 }
 
 /** Missing uses full; invalid levels fail closed to plans only. */
@@ -488,7 +461,7 @@ async function reserveAutoName(dir: string, room: string, name: string, worktree
 }
 
 /** Resolve identity before roomd can publish any overlays under it. The probe never publishes a user. */
-export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd>[0], explicitTag?: string, shareCeiling?: () => ShareLevel): Promise<{ daemon: Roomd; me: Identity; autoTagNote?: string; refreshRuntime: () => void }> {
+export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof startRoomd>[0], 'policy'> & { requested: ShareLevel; requestedExplicit?: boolean; ceiling?: ShareLevel }, explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; policyStore: PolicyStore; autoTagNote?: string; refreshRuntime: () => void }> {
   assertValidParticipantName(options.name)
   if (options.owner) assertValidParticipantName(options.owner)
   if (options.label) assertValidParticipantName(options.label)
@@ -554,7 +527,14 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
     }
   }
   let daemon: Roomd
-  try { daemon = await startRoomd({ ...options, name, label, shareCeiling, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) }) }
+  const room = decodeURIComponent(new URL(options.room).pathname.replace(/^\/+/, ''))
+  const policyStore = await PolicyStore.open({ dir: options.dir, room, participant: name, server: new URL(options.room).origin, requested: options.requested, ceiling: options.ceiling,
+    onChange: policy => { if (daemon) daemon.applyInputs({ ...daemon.inputs, policy: { ...policy, publisher: !daemon.publishUnder, ...(daemon.publishUnder ? { publisherName: daemon.publishUnder } : {}) } }) } })
+  if (options.requestedExplicit) await policyStore.setRequested(options.requested)
+  const { requested: _requested, requestedExplicit: _requestedExplicit, ceiling: _ceiling, ...daemonOptions } = options
+  try { daemon = await startRoomd({ ...daemonOptions, name, label, policy: policyStore.policy,
+    onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
+    host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) }) }
   catch (e) { releaseName?.(); throw e }
   if (releaseName) {
     const stop = daemon.stop.bind(daemon)
@@ -587,7 +567,7 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
   publishRuntime() // cover a metadata rewrite during initial connection without reading the transcript on startup
   const stop = daemon.stop.bind(daemon)
   daemon.stop = async () => { unwatchFile(file, refresh); unwatchFile(activityFile, refreshActivity); await stop() }
-  return { daemon, me: { name, kind: options.kind ?? 'agent', owner: options.owner, ...(label ? { label } : {}) }, autoTagNote, refreshRuntime: refresh }
+  return { daemon, me: { name, kind: options.kind ?? 'agent', owner: options.owner, ...(label ? { label } : {}) }, policyStore, autoTagNote, refreshRuntime: refresh }
 }
 
 export async function joinSession(opts: JoinOptions): Promise<Session> {
@@ -598,7 +578,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (opts.log) setServerLog(opts.log)
   const chosen = config.server
   if (chosen === LOCAL) {
-    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, web: config.web })
+    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, shareExplicit: config.shareExplicit, web: config.web })
     session.shareWarning = config.shareWarning
     return session
   }
@@ -641,7 +621,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await serverShareMax(server, shareRequested)
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const { daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag, () => shareMaxCache.get(server) ?? shareMax)
+  const { daemon, me, policyStore, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag)
   const view = await viewToken(server, roomName, creds)
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
@@ -652,20 +632,19 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
     daemon,
+    policyStore,
     me, autoTagNote, refreshRuntime,
     dir,
     roomUrl,
     roomName,
     browserUrl,
     shareMax,
-    shareRequested,
+    shareRequested: policyStore.requested,
     shareWarning: config.shareWarning,
     ...(token ? { token } : {}),
     ...(config.room ? { pinnedRoom: true } : {}),
   }
-  let untrackShare: () => void
-  try { untrackShare = await trackServerShare(server, session) }
-  catch (error) { graph.stop(); await daemon.stop(); throw error }
+  const untrackShare = ceilingFor(server, shareMax).subscribe(policyStore)
   trackConnection(session)
   const stop = session.daemon.stop.bind(session.daemon)
   session.daemon.stop = async () => { try { await stop() } finally { untrackShare() } }
@@ -706,9 +685,9 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, seed: () => Y.encodeStateAsUpdate(replica ?? new Y.Doc()) }))
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
-  let daemon: Roomd, me: Identity, autoTagNote: string | undefined, refreshRuntime: () => void
+  let daemon: Roomd, me: Identity, policyStore: PolicyStore, autoTagNote: string | undefined, refreshRuntime: () => void
   try {
-    ;({ daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag))
+    ;({ daemon, me, policyStore, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
   replica = daemon.roomDoc.doc
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
@@ -723,13 +702,14 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
     daemon,
+    policyStore,
     me, autoTagNote, refreshRuntime,
     dir,
     roomUrl,
     roomName,
     browserUrl,
     shareMax: 'full',
-    shareRequested: share,
+    shareRequested: policyStore.requested,
     local,
     pinnedRoom: true,
   }

@@ -8,9 +8,10 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import { RoomDoc } from '@room/shared'
 import type { ShareLevel } from '@room/roomd'
 import { createTools } from '../src/tools.js'
-import { requestedShare, serverShareMax, trackServerShare, findRoomFile, type Session } from '../src/session.js'
+import { requestedShare, serverShareMax, findRoomFile, type Session } from '../src/session.js'
 import { sharingDescription } from '../src/config.js'
 import { readChoice, writeChoice } from '../src/choice.js'
+import { CeilingSource, PolicyStore } from '../src/policy-store.js'
 
 let dir: string
 const cleanup: (() => void | Promise<void>)[] = []
@@ -23,12 +24,15 @@ afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn()
 
 function setup(company = false) {
   let session: Session | null = null
-  const joiner = vi.fn(async (opts: { share?: string; server?: string; room?: string }) => {
+  const joiner = vi.fn(async (opts: { share?: string; shareExplicit?: boolean; server?: string; room?: string }) => {
     const doc = new Y.Doc(), room = new RoomDoc(doc), awareness = new Awareness(doc)
     cleanup.push(() => { awareness.destroy(); doc.destroy() })
     const name = opts.room ?? 'git/example/repo/main'
-    const daemon = { share: opts.share ?? 'full', touch() {}, async stop() {}, async setShare(level: string) { daemon.share = level }, skipped: () => ({ share: [], size: [], budget: [], ignore: [] }) }
-    const s = { dir, room, awareness, roomName: name, roomUrl: `${opts.server}/${encodeURIComponent(name)}`, browserUrl: 'http://example/view', me: { name: 'Ada', kind: 'agent' }, provider: { synced: true, awareness }, daemon, shareMax: 'full', shareRequested: daemon.share, ...(opts.server === 'local' ? { local: { url: 'ws://local' } } : {}) } as Session
+    const daemon = { share: opts.share ?? 'full', touch() {}, async stop() {}, skipped: () => ({ size: [], budget: [], ignore: [] }) }
+    const policyStore = await PolicyStore.open({ dir, room: name, participant: 'Ada', server: opts.server, requested: daemon.share as ShareLevel,
+      onChange: policy => { daemon.share = policy.level } })
+    if (opts.shareExplicit) await policyStore.setRequested((opts.share ?? 'full') as ShareLevel)
+    const s = { dir, room, awareness, roomName: name, roomUrl: `${opts.server}/${encodeURIComponent(name)}`, browserUrl: 'http://example/view', me: { name: 'Ada', kind: 'agent' }, provider: { synced: true, awareness }, daemon, policyStore, shareMax: 'full', shareRequested: daemon.share, ...(opts.server === 'local' ? { local: { url: 'ws://local' } } : {}) } as Session
     if (company) {
       const other = new Y.Doc(), aw = new Awareness(other)
       aw.setLocalState({ user: { name: 'Bob', kind: 'agent' }, lastActive: Date.now() })
@@ -75,7 +79,7 @@ it.each(['ROOM_SERVER', 'ROOM_URL'])('reports explicit %s and invalid environmen
   expect(out).toContain("ROOM_SHARE='decalred' is not a level; sharing plans only")
   expect(out).toContain('note for your human: this clone now shares only your plans, no file text')
   expect(t.joiner).toHaveBeenCalledWith(expect.objectContaining({ server: 'ws://team', share: 'intent', room: 'repo/main' }))
-  expect((await readChoice(dir))?.where).toBe('local')
+  expect(await readChoice(dir)).toBeUndefined()
 })
 it('narrows invalid explicit sharing on both new and existing joins', async () => {
   const t = setup()
@@ -98,15 +102,18 @@ it('discloses a remembered team destination and lets explicit local override ROO
   expect(t.joiner).toHaveBeenLastCalledWith(expect.objectContaining({ server: 'local' }))
 })
 it('keeps the human\'s narrowed sharing level on restart', async () => {
-  await writeChoice(dir, 'ws://remembered', 'Ada', 'intent')
+  await writeChoice(dir, 'ws://remembered', 'Ada')
   const t = setup()
-  await t.tools.call('room_join', { room: 'repo/main' })
-  expect(t.joiner).toHaveBeenCalledWith(expect.objectContaining({ server: 'ws://remembered', share: 'intent' }))
+  await t.tools.call('room_join', { room: 'repo/main', share: 'intent' })
+  await t.tools.call('room_leave', {})
+  const next = setup()
+  await next.tools.call('room_join', { room: 'repo/main' })
+  expect(next.session().policyStore.requested).toBe('intent')
 })
 it('discloses when explicit configuration widens a previously disclosed narrower boundary', async () => {
-  await writeChoice(dir, 'ws://remembered', 'Ada', 'intent')
+  await writeChoice(dir, 'ws://remembered', 'Ada')
   const first = setup()
-  await first.tools.call('room_join', { room: 'repo/main' })
+  await first.tools.call('room_join', { room: 'repo/main', share: 'intent' })
   await first.tools.call('room_leave', {})
   vi.stubEnv('ROOM_SHARE', 'full')
   const restarted = setup()
@@ -128,58 +135,22 @@ it('does not cache an unreachable sharing ceiling and retries with an injected f
   expect(await serverShareMax('ws://retry-ceiling', 'declared', fetcher)).toBe('declared')
   expect(await serverShareMax('ws://retry-ceiling', 'declared', fetcher)).toBe('intent')
   expect(await serverShareMax('ws://retry-ceiling', 'declared', fetcher)).toBe('intent')
-  expect(fetcher).toHaveBeenCalledTimes(2)
+  expect(fetcher).toHaveBeenCalledTimes(3)
 })
 
-it('applies a newly learned ceiling to both sessions on one server without widening on fetch failure', async () => {
-  const server = 'ws://two-session-ceiling'
-  const a = setup(), b = setup()
-  const one = await a.joiner({ server, share: 'full' })
-  const two = await b.joiner({ server, share: 'full' })
-  const stopA = await trackServerShare(server, one), stopB = await trackServerShare(server, two)
+it('CeilingSource narrows two subscribed sessions and preserves the last ceiling after a failed refresh', async () => {
+  const source = new CeilingSource('ws://two-session-ceiling')
+  const one = await PolicyStore.open({ dir, room: 'repo/main', participant: 'Ada', requested: 'full' })
+  const two = await PolicyStore.open({ dir, room: 'repo/main', participant: 'Bob', requested: 'full' })
+  const stopA = source.subscribe(one), stopB = source.subscribe(two)
   cleanup.push(stopA, stopB)
-  const fetcher = vi.fn().mockRejectedValueOnce(new Error('offline'))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ shareMax: 'intent' })))
-    .mockRejectedValueOnce(new Error('offline again'))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ shareMax: 'declared' })))
-  await serverShareMax(server, 'full', fetcher)
-  expect([one.daemon.share, two.daemon.share]).toEqual(['full', 'full'])
-  await serverShareMax(server, 'full', fetcher)
-  await vi.waitFor(() => expect([one.daemon.share, two.daemon.share]).toEqual(['intent', 'intent']))
-  expect([one.shareMax, two.shareMax]).toEqual(['intent', 'intent'])
-  await serverShareMax(server, 'full', fetcher, true)
-  expect([one.daemon.share, two.daemon.share]).toEqual(['intent', 'intent'])
-  await serverShareMax(server, 'full', fetcher, true)
-  expect([one.daemon.share, two.daemon.share]).toEqual(['declared', 'declared'])
-})
-
-it('clamps a session at registration when another session learned intent during its start', async () => {
-  const server = 'ws://late-registration-ceiling'
-  let continueStart!: () => void
-  const held = new Promise<void>(resolve => { continueStart = resolve })
-  const a = setup()
-  const starting = (async () => {
-    const fallback = await serverShareMax(server, 'full', vi.fn(async () => { throw new Error('offline') }))
-    await held // name resolution and daemon startup completed after the other session learned the ceiling
-    const session = await a.joiner({ server, share: fallback })
-    const untrack = await trackServerShare(server, session)
-    cleanup.push(untrack)
-    return session
-  })()
-  await serverShareMax(server, 'full', vi.fn(async () => new Response(JSON.stringify({ shareMax: 'intent' }))))
-  continueStart()
-  const session = await starting
-  expect(session.shareMax).toBe('intent')
-  expect(session.daemon.share).toBe('intent')
-})
-
-it('reconciles at registration even when the daemon already reports the learned level', async () => {
-  const server = 'ws://matching-registration-ceiling'
-  await serverShareMax(server, 'full', vi.fn(async () => new Response(JSON.stringify({ shareMax: 'intent' }))))
-  const session = await setup().joiner({ server, share: 'intent' })
-  const reconcile = vi.spyOn(session.daemon, 'setShare')
-  cleanup.push(await trackServerShare(server, session))
-  expect(reconcile).toHaveBeenCalledWith('intent')
+  expect([one.policy.level, two.policy.level]).toEqual(['full', 'full'])
+  await source.refresh(vi.fn(async () => new Response(JSON.stringify({ shareMax: 'intent' }))))
+  expect([one.policy.level, two.policy.level]).toEqual(['intent', 'intent'])
+  await expect(source.refresh(vi.fn(async () => { throw new Error('offline') }))).rejects.toThrow('offline')
+  expect([one.policy.level, two.policy.level]).toEqual(['intent', 'intent'])
+  await source.refresh(vi.fn(async () => new Response(JSON.stringify({ shareMax: 'declared' }))))
+  expect([one.policy.level, two.policy.level]).toEqual(['declared', 'declared'])
 })
 
 it('delivers automatic-join disclosure on the first tool reply only', async () => {

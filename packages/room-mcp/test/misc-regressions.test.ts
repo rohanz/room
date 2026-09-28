@@ -5,6 +5,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
+import { testPolicyStore } from './policy-fixture.js'
 
 describe('resumed worker process identity', () => {
   it('recognizes a Codex process by its OS start identity after resume', () => {
@@ -25,7 +26,7 @@ describe('worker to worker answers', () => {
       const me = { name, kind: 'agent' as const, owner: 'rohanz' }
       const awareness = new Awareness(room.doc)
       awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
-      return { me, room, awareness, dir: process.cwd(), roomName: 'local/x/main', roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', browserUrl: 'http://x', provider: { synced: true, awareness }, daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full' } as unknown as Session
+      return { me, room, awareness, dir: process.cwd(), roomName: 'local/x/main', roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', browserUrl: 'http://x', provider: { synced: true, awareness }, daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore() } as unknown as Session
     }
     const a = mk('rohanz+a'), b = mk('rohanz+b')
     const ta = createTools({ getSession: () => a, setSession: () => {}, cwd: process.cwd() })
@@ -50,7 +51,7 @@ describe('replies to addressed notes', () => {
       const me = { name, kind: 'agent' as const, owner: 'rohanz' }
       const awareness = new Awareness(room.doc)
       awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
-      return { me, room, awareness, dir: process.cwd(), roomName: 'local/x/main', roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', browserUrl: 'http://x', provider: { synced: true, awareness }, daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full' } as unknown as Session
+      return { me, room, awareness, dir: process.cwd(), roomName: 'local/x/main', roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', browserUrl: 'http://x', provider: { synced: true, awareness }, daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore() } as unknown as Session
     }
     const a = mk('rohanz+a'), b = mk('rohanz+b')
     const ta = createTools({ getSession: () => a, setSession: () => {}, cwd: process.cwd() })

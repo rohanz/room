@@ -2,7 +2,7 @@
 /**
  * roomd CLI: `roomd --room ws://host:1234/<room> --dir <clone> --name <Name> [--share intent|declared|full]`
  */
-import { startRoomd, RoomdError, parseShare } from './index.js'
+import { startRoomd, RoomdError, parseShare, policyFromLevel } from './index.js'
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {}
@@ -29,7 +29,7 @@ if (!room || !name || args.help || (shareRaw && !share)) {
   process.exit(args.help ? 0 : 1)
 }
 
-startRoomd({ room, dir, name, share })
+startRoomd({ room, dir, name, policy: policyFromLevel(share ?? 'full') })
   .then(d => {
     process.on('SIGINT', () => { void d.stop('SIGINT').then(() => process.exit(0)) })
     process.on('SIGTERM', () => { void d.stop('SIGTERM').then(() => process.exit(0)) })

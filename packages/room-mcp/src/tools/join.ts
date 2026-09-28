@@ -8,12 +8,12 @@ import { git } from '@room/roomd/git'
 import { DEFAULT_SERVER, NoRoom, NotLoggedIn, closeRoom, deriveRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
-import { clearChoice, describeWhere, markWarned, writeChoice } from '../choice.js'
+import { clearChoice, describeWhere, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
 import { LOCAL, logout as doLogout, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
-import { handlers as shareHandlers, secondaryPublishingLine } from './share.js'
+import { handlers as shareHandlers, publisherLine } from './share.js'
 import { exportRoomLedger } from '../prs.js'
 import { decideLeave, workerRealState } from '../worker-state.js'
 
@@ -39,7 +39,7 @@ export function sharingSentence(s: Session): string {
   const parts = roomNameParts(s.roomName)
   const repo = parts.branch ? s.roomName.slice(0, -(parts.branch.length + 1)) : s.roomName
   const level = s.daemon.share ?? s.shareRequested ?? 'intent'
-  const secondary = secondaryPublishingLine(s)
+  const secondary = publisherLine(s)
   if (secondary) return `note for your human: ${secondary} Members of ${repo} on ${server} can read it.`
   const description = sharingDescription(level)
   const choices = sharingHumanChoices(level)
@@ -53,10 +53,12 @@ export async function prepareTeamSharingDisclosure(s: Session): Promise<void> {
   if (state.prepared || state.delivered) return state.prepared
   state.prepared = (async () => {
     if (s.local) { state!.delivered = true; return }
-    const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
     const share = s.daemon.share ?? s.shareRequested ?? 'intent'
-    if (await markWarned(s.dir, s.dir, server, share).catch(() => true)) state!.pending = sharingSentence(s)
-    else state!.delivered = true
+    const rank = (level: string) => level === 'intent' ? 0 : level === 'declared' ? 1 : 2
+    if (s.policyStore.disclosed.version < 1 || rank(share) > rank(s.policyStore.disclosed.level)) {
+      state!.pending = sharingSentence(s)
+      await s.policyStore.markDisclosed(share, 1)
+    } else state!.delivered = true
   })()
   await state.prepared
 }
@@ -184,13 +186,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         create: a.create === true,
         confirm: a.confirm === true,
         share: resolved.share,
+        shareExplicit: resolved.shareExplicit,
       }) } catch (e) {
         if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.`
         if (!(e instanceof NoRoom)) throw e
         const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName.slice(0, e.roomName.lastIndexOf('/'))
         return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.`
       }
-      if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, choice.where, s.me.name, s.shareRequested, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
+      if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, choice.where, s.me.name, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
       markHistorySeenOnJoin(s, seen)
       rooms.add(s, 'primary')

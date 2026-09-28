@@ -10,13 +10,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { git } from '@room/roomd/git'
 import { gitCommonDir } from '@room/roomd'
-import type { ShareLevel } from '@room/roomd'
 import { DEFAULT_SERVER, LOCAL, normaliseWhere } from './config.js'
 import { acquireOwnedFile } from './owned-file.js'
+import { withGuard, writeAtomic } from './leases.js'
 
 const CHOICE_FILE = 'room-choice.json'
 
-export interface RoomChoice { where: string; at: number; by?: string; share?: ShareLevel; /** Explicit local room selected by room_join; absent in older choices. */ room?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; /** worktree/destination keys already told what they share */ warned?: string[]; /** most recently disclosed level for each warning key */ warnedLevels?: Record<string, ShareLevel> }
+export interface RoomChoice { where: string; at: number; by?: string; /** Explicit local room selected by room_join; absent in older choices. */ room?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string> }
 
 /** "team"/"hosted" → the hosted server; "local" or empty → local; anything else is a server URL. */
 export { normaliseWhere }
@@ -35,7 +35,7 @@ export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
     const file = await choiceFile(dir)
     const c = JSON.parse(fs.readFileSync(file, 'utf8')) as RoomChoice & { tag?: string }
     if (!c || typeof c.where !== 'string') return undefined
-    const { tag, ...choice } = c
+    const { tag, share: _share, warned: _warned, warnedLevels: _warnedLevels, ...choice } = c as RoomChoice & { tag?: string; share?: unknown; warned?: unknown; warnedLevels?: unknown }
     if (typeof tag === 'string') {
       const main = fs.realpathSync(path.dirname(path.dirname(file)))
       choice.tags = { [main]: tag, ...choice.tags }
@@ -44,26 +44,17 @@ export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
   } catch { return undefined }
 }
 
-export async function writeChoice(dir: string, where: string, by?: string, share?: ShareLevel, room?: string): Promise<RoomChoice> {
+export async function writeChoice(dir: string, where: string, by?: string, room?: string): Promise<RoomChoice> {
   where = where.replace(/\?.*$/, '') // never remember a token; it comes from ROOM_SERVER/ROOM_TOKEN at join time
-  const prev = await readChoice(dir)
-  const same = prev?.where === where
-  const rememberedShare = share ?? (same ? prev?.share : undefined)
-  const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(rememberedShare ? { share: rememberedShare } : {}), ...(where === LOCAL && room ? { room } : {}), ...(prev?.tags ? { tags: prev.tags } : {}), ...(same && prev.warned?.length ? { warned: prev.warned } : {}), ...(same && prev.warnedLevels ? { warnedLevels: prev.warnedLevels } : {}) }
   const file = await choiceFile(dir)
-  fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
-  try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }
-  return c
-}
-
-/** Remember a live human sharing choice without changing the clone's destination. */
-export async function rememberShare(dir: string, share: ShareLevel): Promise<RoomChoice> {
-  const prev = await readChoice(dir) ?? { where: LOCAL, at: Date.now() }
-  const c: RoomChoice = { ...prev, share, at: Date.now() }
-  const file = await choiceFile(dir)
-  fs.writeFileSync(file, JSON.stringify(c) + '\n', { mode: 0o600 })
-  try { fs.chmodSync(file, 0o600) } catch { /* best effort */ }
-  return c
+  return withGuard(`${file}.lock`, () => {
+    let prev: RoomChoice & { tag?: string } | undefined
+    try { prev = JSON.parse(fs.readFileSync(file, 'utf8')) as RoomChoice & { tag?: string } } catch { /* new choice */ }
+    const tags = typeof prev?.tag === 'string' ? { [fs.realpathSync(path.dirname(path.dirname(file)))]: prev.tag, ...prev.tags } : prev?.tags
+    const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(where === LOCAL && room ? { room } : {}), ...(tags ? { tags } : {}) }
+    writeAtomic(file, c)
+    return c
+  })
 }
 
 /** Remember an automatically assigned identity without changing this clone's room choice. */
@@ -91,18 +82,18 @@ export async function rememberTag(dir: string, tag: string): Promise<RoomChoice>
   }
 }
 
-/** Has this worktree been told its uncommitted work is visible to the team? Marks it told and says whether it was new. */
-export async function markWarned(dir: string, worktree: string, destination?: string, share?: ShareLevel): Promise<boolean> {
-  const c = await readChoice(dir) ?? { where: LOCAL, at: Date.now() }
-  const key = path.resolve(worktree) + (destination ? '#' + destination : '')
-  const warned = c.warned ?? []
-  const previous = c.warnedLevels?.[key]
-  const rank = (level: ShareLevel) => level === 'intent' ? 0 : level === 'declared' ? 1 : 2
-  const tell = share === undefined ? !warned.includes(key) : previous ? rank(share) > rank(previous) : !warned.includes(key)
-  if (!tell && share === undefined) return false
-  const next = { ...c, warned: [...warned.filter(k => k !== key), key].slice(-50), ...(share ? { warnedLevels: { ...c.warnedLevels, [key]: share } } : {}) }
-  try { const file = await choiceFile(dir); fs.writeFileSync(file, JSON.stringify(next) + '\n', { mode: 0o600 }); fs.chmodSync(file, 0o600) } catch { /* best effort */ }
-  return tell
+/** Migration removes old sharing authority after PolicyStore has persisted its replacement. */
+export async function removeSharingChoice(dir: string): Promise<void> {
+  const file = await choiceFile(dir)
+  withGuard(`${file}.lock`, () => {
+    let raw: Record<string, unknown>
+    try { raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+    delete raw.share
+    delete raw.warned
+    delete raw.warnedLevels
+    writeAtomic(file, raw)
+  })
 }
 
 export async function clearChoice(dir: string): Promise<boolean> {

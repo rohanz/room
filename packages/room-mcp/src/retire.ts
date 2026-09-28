@@ -1,12 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { deleteRetainedDeclaredRecord, splitRoomUrl } from '@room/roomd'
+import { PolicyStore } from './policy-store.js'
 import type { RetiredWorker, Worker } from '@room/shared'
 import type { Session } from './session.js'
 
-/** All retirement paths withdraw the worker's private retained publisher first. */
+/** All retirement paths remove the worker's local sharing authority first. */
 export function retireCollected(s: Session, w: Worker, record: RetiredWorker): void {
-  if (fs.existsSync(path.join(w.dir, '.git'))) deleteRetainedDeclaredRecord(w.dir, s.roomName, w.name, splitRoomUrl(s.roomUrl).serverUrl)
+  if (fs.existsSync(path.join(w.dir, '.git'))) PolicyStore.retire(w.dir, s.roomName, w.name, new URL(s.roomUrl).origin)
   s.room.retireParticipant(w.name, record)
 }
 

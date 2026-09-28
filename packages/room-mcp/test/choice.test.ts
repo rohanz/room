@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync, mkdirSync, symlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { choiceFile, clearChoice, normaliseWhere, readChoice, writeChoice, describeWhere, markWarned, rememberTag, worktreePath } from '../src/choice.js'
+import { choiceFile, clearChoice, normaliseWhere, readChoice, writeChoice, describeWhere, rememberTag, worktreePath } from '../src/choice.js'
 import { resolveConfig } from '../src/config.js'
 import { DEFAULT_SERVER, LOCAL } from '../src/session.js'
 import { RELEASE_VERSION } from '../src/index.js'
@@ -54,21 +54,6 @@ describe('room choice', () => {
   })
 })
 
-describe('visibility warning per worktree', () => {
-  it('warns once per worktree and keeps the list across re-choices of the same room', async () => {
-    await writeChoice(dir, 'team', 'rohanz')
-    expect(await markWarned(dir, dir)).toBe(true)
-    expect(await markWarned(dir, dir)).toBe(false)
-    expect(await markWarned(dir, join(dir, 'other-worktree'))).toBe(true)
-    await writeChoice(dir, 'team', 'rohanz') // same choice: keeps who was warned
-    expect(await markWarned(dir, dir)).toBe(false)
-    await writeChoice(dir, 'local') // a new choice starts over
-    expect((await readChoice(dir))?.warned).toBeUndefined()
-    await clearChoice(dir)
-  })
-})
-
-
 describe('tags per worktree', () => {
   it('migrates the legacy tag only to the main worktree and drops it on every next write', async () => {
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'init'], { cwd: dir })
@@ -77,7 +62,7 @@ describe('tags per worktree', () => {
     const mainKey = await worktreePath(dir), workerKey = await worktreePath(worktree)
     const file = await choiceFile(dir)
     expect(realpathSync(join(await choiceFile(worktree), '..'))).toBe(realpathSync(join(file, '..')))
-    for (const write of [() => rememberTag(worktree, 'codex'), () => writeChoice(worktree, 'team'), () => markWarned(worktree, worktree)]) {
+    for (const write of [() => rememberTag(worktree, 'codex'), () => writeChoice(worktree, 'team')]) {
       writeFileSync(file, JSON.stringify({ where: 'team', at: 1, tag: '', warned: [mainKey] }))
       expect((await readChoice(worktree))?.tags).toEqual({ [mainKey]: '' })
       expect((await readChoice(worktree))?.tags?.[workerKey]).toBeUndefined()
@@ -85,7 +70,7 @@ describe('tags per worktree', () => {
       const stored = JSON.parse(readFileSync(file, 'utf8'))
       expect(stored).not.toHaveProperty('tag')
       expect(stored.tags[mainKey]).toBe('')
-      expect(stored.warned).toContain(mainKey)
+      expect(stored).not.toHaveProperty('warned')
     }
     await rememberTag(worktree, 'codex')
     await rememberTag(dir, 'claude')
@@ -104,20 +89,12 @@ describe('tags per worktree', () => {
   })
 })
 
-it('remembers disclosure per destination without opting an environment-only clone into a server', async () => {
+it('choice writes keep only destination and identity, never sharing authority', async () => {
   await clearChoice(dir)
-  expect(await markWarned(dir, dir, 'wss://one')).toBe(true)
-  expect(await markWarned(dir, dir, 'wss://one')).toBe(false)
-  expect(await markWarned(dir, dir, 'wss://two')).toBe(true)
-  expect((await configured()).server).toBe(LOCAL)
-  await clearChoice(dir)
-})
-
-it('remembers the sharing level alongside the clone destination', async () => {
-  await clearChoice(dir)
-  await writeChoice(dir, 'team', 'rohanz', 'intent')
-  expect(await readChoice(dir)).toMatchObject({ where: 'team', share: 'intent' })
-  await writeChoice(dir, 'team', 'rohanz', 'declared')
-  expect(await readChoice(dir)).toMatchObject({ where: 'team', share: 'declared' })
+  await writeChoice(dir, 'team', 'rohanz')
+  const choice = await readChoice(dir)
+  expect(choice).toMatchObject({ where: 'team', by: 'rohanz' })
+  expect(choice).not.toHaveProperty('share')
+  expect(choice).not.toHaveProperty('warned')
   await clearChoice(dir)
 })
