@@ -9,6 +9,8 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@room/hub-core": "*",
+    "@room/shared": "*",
     "@y/websocket-server": "0.1.1",
     "jose": "^6.2.12",
     "lib0": "^0.2.117",

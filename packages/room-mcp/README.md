@@ -204,10 +204,10 @@ an inbox unless addressed; `claim` and `conflict` reach the holders of overlappi
 wakes anyone with uncommitted work. Interrupts always reach the inbox. `notify` messages from other
 areas are dropped by the areas filter. Registering a new kind is one entry in that table.
 
-The bus keeps the last `ROOM_BUS_KEEP` messages (default 2000); older ones are folded into a compact
-per-area ledger archive (counts, last seen per person, unfulfilled plans and open questions kept in
-full) by the lowest-named present participant, at most once a minute. Ledgers, `room_pr_note` and
-`room_export` read the archive too.
+The bus keeps the last 2000 messages (`BUS_KEEP` in `packages/shared/src/delivery.ts`); the room's hub
+folds older ones into a compact per-area ledger archive (counts, last seen per person, unfulfilled plans
+and open questions kept in full) every minute and whenever a post takes the bus past that bound.
+Ledgers, `room_pr_note` and `room_export` read the archive too.
 
 Wake-ups: interrupts and questions addressed to you reach an idle Codex thread through `codex queue` (retried with backoff; the thread id comes from the SessionStart hook) and a Claude Code session through the MCP channel notification.
 

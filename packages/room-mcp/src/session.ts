@@ -701,13 +701,16 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
   const name = label ? `${owner}+${label}` : owner
   const common = await gitCommonDir(dir)
-  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log }))
+  // A takeover starts the successor relay from this session's replica (hub.md §5); roomd supplies it once started.
+  let replica: Y.Doc | undefined
+  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, seed: () => Y.encodeStateAsUpdate(replica ?? new Y.Doc()) }))
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
   let daemon: Roomd, me: Identity, autoTagNote: string | undefined, refreshRuntime: () => void
   try {
     ;({ daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, share, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
+  replica = daemon.roomDoc.doc
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, '')
   // The link carries the relay key: it is machine-local, and anyone holding it can read the room.
