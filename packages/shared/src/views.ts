@@ -4,7 +4,7 @@ import { participantRecord, type ParticipantGit, type ParticipantHolder, type Pa
 import type { Claim, Kind, NoteMsg, Presence, RetiredWorker, Scope, ShareLevel, Worker } from './types.js'
 
 const ROOM_STALE_MS = 7 * 24 * 60 * 60 * 1000
-const AWARENESS_FRESH_MS = 30_000
+export const AWARENESS_FRESH_MS = 30_000
 
 export interface ParticipantView {
   name: string

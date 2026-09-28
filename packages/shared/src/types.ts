@@ -203,6 +203,8 @@ export interface Meta {
   createdAt?: number
   seededBy?: string
   schemaVersion?: number
+  /** Written once by the room creator; salts manifest path digests (manifest §4.1). */
+  roomSalt?: string
 }
 
 export interface Cursor {
@@ -237,6 +239,21 @@ export interface Presence {
 }
 
 export type ShareLevel = 'intent' | 'declared' | 'full'
+
+// ---- delivery ledger (docs/superpowers/specs/2026-09-28-ledger.md) ----------
+
+/** How a message was handed off to the host. */
+export type Via = 'reply' | 'wait' | 'hook' | 'prompt' | 'agent'
+/** `seen:<P>[msgId]`; `s` is the holder session that got it (provenance, never a filter). Legacy receipts are a number. */
+export interface Receipt { s: string; via: Via; at: number }
+/** Terminal outcome of an addressed message that was never receipted. */
+export interface Outcome { to: string; from: string; outcome: 'expired' | 'over-cap' | 'recipient-retired'; at: number }
+/** A release's plans left undone, kept in the archive for the PR ledger. */
+export interface ArchivedRelease { path: string; plans: Plan[]; summary?: string }
+/** Compact record of a message that left the bus: [type, from, at, areas, unfulfilled?]. */
+export type ArchivedMsg = [type: MsgType, from: string, at: number, areas: string[], unfulfilled?: ArchivedRelease]
+/** One session's causal cursor in a room: bus ids observed at first bind, and broadcasts routing rejected. */
+export interface DeliveryCursor { frontier: ReadonlySet<string>; routed: ReadonlySet<string> }
 
 export type ChatRole = 'human' | 'agent' | 'tool' | 'event' | 'status'
 export interface ChatItem {

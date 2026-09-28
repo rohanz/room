@@ -3,6 +3,7 @@ import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
 import * as Y from 'yjs'
 import type {
+  ArchivedMsg,
   ChatItem,
   Claim,
   ClaimAnchor,
@@ -10,6 +11,7 @@ import type {
   Meta,
   Msg,
   MsgType,
+  Outcome,
   Priority,
   Scope,
   Worker,
@@ -493,6 +495,14 @@ export class RoomDoc {
   // ---- bus ---------------------------------------------------------------
 
   messages(): Msg[] { return this.bus.toArray() }
+  /** Addressed messages that left the bus while owed or answerable; written by the trim (delivery.ts). */
+  get mail(): Y.Map<Msg> { return this.doc.getMap<Msg>('mail') }
+  /** Terminal outcomes of addressed messages that were never receipted. */
+  get outcomes(): Y.Map<Outcome> { return this.doc.getMap<Outcome>('outcomes') }
+  /** Compact records of every message the trim removed from the bus. */
+  get archive(): Y.Map<ArchivedMsg> { return this.doc.getMap<ArchivedMsg>('archive') }
+  /** A message on the bus, else in mail. */
+  message(id: string): Msg | undefined { return this.messages().find(m => m.id === id) ?? this.mail.get(id) }
   lastMessages(n: number): Msg[] {
     const messages = this.messages()
     return messages.slice(Math.max(0, messages.length - n))
@@ -532,15 +542,22 @@ export class RoomDoc {
     return removable.length
   }
 
-  post<T extends Msg>(from: Identity, body: PostBody<T>, origin?: unknown): T {
+  /** With `opts.id`, a retry posts nothing: an id already on the bus or in mail returns that record, and
+   * one only in `archive`/`outcomes` (its body is gone) returns the unposted message. */
+  post<T extends Msg>(from: Identity, body: PostBody<T>, origin?: unknown, opts: { id?: string } = {}): T {
     const msg = {
       ...body,
       priority: body.priority ?? defaultPriority(body as { type: MsgType; symbols?: string[] }),
-      id: newId('m_'),
+      id: opts.id ?? newId('m_'),
       at: Date.now(),
       from: from.name,
       fromKind: from.kind,
     } as T
+    if (opts.id !== undefined) {
+      const existing = this.message(opts.id)
+      if (existing) return existing as T
+      if (this.archive.has(opts.id) || this.outcomes.has(opts.id)) return msg
+    }
     this.doc.transact(() => { this.bus.push([msg]) }, origin)
     return msg
   }

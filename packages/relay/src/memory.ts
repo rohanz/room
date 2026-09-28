@@ -2,9 +2,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
-import { memoryTypes, memorySnapshot } from '@room/shared'
+import { MAX_MEMORY_BYTES, memoryTypes, memorySnapshot } from '@room/shared'
 
-export const MAX_MEMORY_BYTES = 5 * 1024 * 1024
+export { MAX_MEMORY_BYTES }
 const stderr = (line: string): void => { process.stderr.write(`${line}\n`) }
 export function memoryFile(commonDir: string, room: string): string {
   return path.join(commonDir, 'room-local', `${encodeURIComponent(room)}.ydoc`)
@@ -32,7 +32,8 @@ export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = st
   const file = memoryFile(commonDir, room)
   const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`
   try {
-    const update = memorySnapshot(doc)
+    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: line => log(`local room memory: ${room}: ${line}`) })
+    // Only roots outside the ledger's budget can still be over: sheddable data is already gone.
     if (update.byteLength > MAX_MEMORY_BYTES) { log(`local room memory: skipping ${room}: snapshot exceeds 5 MB`); return false }
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     fs.chmodSync(path.dirname(file), 0o700)
