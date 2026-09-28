@@ -1,9 +1,10 @@
 import { subscribeRender } from './scheduler.ts'
 import { bindTooltip, showTooltip, hideTooltip } from './tooltip.ts'
-import type { GraphSnapshot } from '@room/shared'
+import { acceptedGit, manifestChangers, manifestPaths, participantRecord, participantsView, type GraphSnapshot } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
 import { h, type FocusState } from './panels.ts'
 import { deriveNetwork, deriveContractImpact, deriveWorkImpact, observedImpactClaims, rememberPlanClaims, type ImpactClaim, type NetworkNode } from './network-model.ts'
+import { manifestPeople, webChangerLabels } from './manifest-reader.ts'
 
 const NS = 'http://www.w3.org/2000/svg'
 function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, text?: string) {
@@ -73,8 +74,8 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     selectedPath = node.path
     const upstream = snapshot.edges.filter(e => e.target === node.path)
     const downstream = snapshot.edges.filter(e => e.source === node.path)
-    const changers = [...new Set([...conn.room.overlays.keys(), ...conn.room.deleted.keys()])]
-      .filter(p => conn.room.changedPaths(p).includes(node.path))
+    const changers = manifestChangers(conn.room, node.path)
+    const changeLabels = webChangerLabels(conn.room, node.path)
     const claims = conn.room.claimsFor(node.path)
     const ownedPlans = impact.contracts.get(node.path) ?? []
     const directConsumers = [...impact.direct].filter(([, plans]) => plans.some(p => ownedPlans.includes(p)))
@@ -85,7 +86,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     const clear = h('button', { class: 'network-clear', title: 'Clear file selection' }, 'Clear selection')
     clear.onclick = () => { selectedPath = ''; render() }
     details.replaceChildren(h('div', { class: 'network-detail-head' }, h('strong', { class: 'mono' }, node.path), clear),
-      h('p', { class: 'muted' }, `${node.deleted ? 'Deleted locally. ' : ''}${changers.length ? `Changed by ${changers.join(', ')}.` : 'No current overlay changes.'}`),
+      h('p', { class: 'muted' }, `${node.deleted ? 'Deleted locally. ' : ''}${changeLabels.length ? `Changed by ${changeLabels.join(', ')}.` : 'No named changes in the room.'}`),
       h('p', {}, risk(node.path) === 'work' ? 'Your current work: edited locally or held in one of your open claims.' : risk(node.path) === 'upstream' ? 'Your work depends on this file. Contract exposures below are scoped to paths reaching your work.' : risk(node.path) === 'downstream' ? 'Potential consumer impact from your announced or observed contract changes.' : 'Outside your current work and its contract-impact paths.'),
       h('div', { class: 'network-contract-details' },
         ...(impact.contracts.get(node.path) ?? []).map(p => h('p', { class: p.released ? 'muted' : '' }, `${p.source === 'declared' ? `Announced${p.released ? ' (released)' : ''}` : 'Observed in edits'} · ${p.kind} · ${p.symbol} · ${p.owner}: ${p.detail}`)),
@@ -105,7 +106,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
 
   const render = () => {
     hideTooltip()
-    const names = [...new Set([...conn.room.graphs.keys(), ...conn.room.overlays.keys(), ...conn.room.deleted.keys(), ...conn.room.scopes.keys(), ...presences(conn.provider, conn.room).map(p => p.user.name)])].sort()
+    const names = [...new Set([...conn.room.graphs.keys(), ...manifestPeople(conn.room), ...conn.room.scopes.keys(), ...presences(conn.provider, conn.room).map(p => p.user.name)])].sort()
     if (!names.includes(selectedPerson)) selectedPerson = names[0] ?? ''
     person.replaceChildren(...names.map(name => h('option', { value: name, selected: name === selectedPerson }, name)))
     const claims = rememberPlanClaims(planHistory, conn.room.openClaims())
@@ -115,16 +116,20 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
       canvas.replaceChildren(h('div', { class: 'network-empty' }, h('h2', {}, 'Waiting for a dependency snapshot'), h('p', {}, 'Join with the updated Room MCP server to publish the source graph from your clone.'), h('p', { class: 'muted' }, 'Your changed files will be highlighted once indexing completes.')))
       emptyDetails(); fileSet = ''; return
     }
-    const changed = conn.room.changedPaths(selectedPerson)
-    const model = deriveNetwork(snapshot, changed, [...(conn.room.deleted.get(selectedPerson)?.keys() ?? [])], false)
+    const changed = manifestPaths(conn.room, selectedPerson)
+    const head = conn.room.manifestHead.get(selectedPerson)
+    const entries = head && conn.room.manifest.get(`${selectedPerson}\0${head.fence}`)
+    const deleted = changed.filter(path => entries?.get(path)?.change === 'D')
+    const model = deriveNetwork(snapshot, changed, deleted, false)
     const foreignObserved = [...conn.room.graphs.entries()].flatMap(([owner, graph]) => owner === selectedPerson ? [] : observedImpactClaims(graph, owner))
     workView = deriveWorkImpact(snapshot, claims, selectedPerson, changed, foreignObserved)
     impact = workView.impact
     for (const path of new Set([...workView.work, ...impact.contracts.keys()])) if (!model.nodes.some(n => n.path === path)) model.nodes.push({ path, role: 'context', deleted: false })
     stats.replaceChildren(...[[workView.upstreamPlans, 'upstream contract risks'], [workView.work.size, 'my work files'], [workView.ownPlans, 'my contract changes'], [workView.downstream.size, 'potential consumers']].map(([count, label]) => h('div', {}, h('strong', {}, String(count)), h('span', {}, String(label)))))
     const online = presences(conn.provider, conn.room).some(p => p.user.name === selectedPerson)
+    const git = acceptedGit(participantRecord(conn.room, selectedPerson), participantsView(conn.room, conn.provider.awareness, Date.now()))
     const notices = [snapshot.status === 'ready' ? '' : snapshot.status === 'error' ? 'Index failed — showing last available data.' : 'Indexing — dependencies may be incomplete.',
-      !online ? 'Participant offline — retained snapshot.' : '', snapshot.base !== conn.room.meta.base ? 'Snapshot is on an older room base.' : '', snapshot.truncated ? 'Indexer limits reached; graph is partial.' : '',
+      !online ? 'Participant offline — retained snapshot.' : '', git === 'updating' ? 'Participant git state is updating.' : snapshot.base !== git.base ? 'Snapshot is on an older participant base.' : '', snapshot.truncated ? 'Indexer limits reached; graph is partial.' : '',
       !workView.work.size ? 'No edits or open claims for this participant. Turn off Relevant to my work to explore the repository.' : '',
       workView.work.size && !workView.upstreamPlans ? 'No matching upstream contract risk in this snapshot.' : ''].filter(Boolean)
     status.textContent = `${notices.join(' ')} Snapshot ${new Date(snapshot.at).toLocaleTimeString()} · base ${snapshot.base.slice(0, 7)}`
@@ -174,13 +179,17 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     }
     for (const node of nodes) {
       const { x, y } = positions.get(node.path)!
-      const editedBy = [...new Set([...conn.room.overlays.keys(), ...conn.room.deleted.keys()])].filter(p => conn.room.changedPaths(p).includes(node.path))
+      const editedBy = manifestChangers(conn.room, node.path)
+      const heldBy = editedBy.filter(name => {
+        const head = conn.room.manifestHead.get(name)
+        return head && conn.room.manifest.get(`${name}\0${head.fence}`)?.get(node.path)?.state === 'held'
+      })
       const declared = impact.contracts.has(node.path)
       const released = declared && (impact.contracts.get(node.path) ?? []).every(p => p.released)
       const group = svg('g', { transform: `translate(${x} ${y})`, class: `network-node ${contractStyle(node.path)}${released ? ' released-plan' : ''}${workView.work.has(node.path) ? ' my-work' : ''}${node.role === 'changed' ? ' own-edit' : ''}${node.path === selectedPath ? ' selected' : ''}`, tabindex: '0', role: 'button', 'aria-label': `${node.path}, ${risk(node.path)}, ${contractStyle(node.path)}${node.role === 'changed' ? ', my edits' : ''}`, 'data-path': node.path })
       group.classList.toggle('file-edited', editedBy.length > 0)
       group.classList.toggle('exposed', impact.direct.has(node.path) || impact.indirect.has(node.path))
-      group.setAttribute('aria-label', `${node.path}, ${risk(node.path)}${declared ? ', contract change declared' : ''}${editedBy.length ? `, file modified by ${editedBy.join(', ')}` : ', no file edits'}`)
+      group.setAttribute('aria-label', `${node.path}, ${risk(node.path)}${declared ? ', contract change declared' : ''}${editedBy.length ? `, file modified by ${editedBy.join(', ')}${heldBy.length ? `; text not shared by ${heldBy.join(', ')}` : ''}` : ', no named file edits'}`)
       group.append(svg('rect', { width: '244', height: String(nodeHeight), rx: compact ? '6' : '10' }))
       if (declared) group.append(svg('path', { d: compact ? 'M 14 9 L 20 15 L 14 21 L 8 15 Z' : 'M 14 16 L 20 22 L 14 28 L 8 22 Z', class: 'contract-marker' }))
       else group.append(svg('circle', { cx: '14', cy: compact ? '15' : '22', r: '3.5' }))
@@ -199,7 +208,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
         tooltip.replaceChildren(h('strong', { class: 'mono' }, node.path),
           h('div', {}, risk(node.path) === 'work' ? 'My edited or planned work' : risk(node.path) === 'upstream' ? 'Upstream dependency of my work' : risk(node.path) === 'downstream' ? 'Consumer of my planned contract change' : 'Other file'),
           h('div', {}, plans.length ? `${plans.length} declared contract change(s)` : affected.length ? 'Potential consumer impact — not verified breakage' : 'No declared contract impact'),
-          h('div', {}, editedBy.length ? `Actual file edits: ${editedBy.join(', ')}. Contract implementation is not verified.` : 'No actual file edits in the room; plans can exist before editing.'),
+          h('div', {}, editedBy.length ? `Actual file edits: ${editedBy.join(', ')}${heldBy.length ? ` (text not shared by ${heldBy.join(', ')})` : ''}. Contract implementation is not verified.` : 'No named file edits in the room; plans can exist before editing.'),
           ...plans.slice(0, 2).map(p => h('div', { class: p.released ? 'muted' : '' }, `${p.released ? 'Released · ' : ''}${p.owner} · ${p.kind} ${p.symbol}: ${p.detail}`)),
           ...affected.slice(0, 2).map(p => h('div', {}, `Depends on ${p.symbol} · ${p.owner}`)),
           h('div', { class: 'muted' }, `${node.role === 'changed' ? 'You have edits here. ' : ''}Click for full plans and dependency details.`))

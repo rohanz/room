@@ -5,6 +5,7 @@ import { boardPanel } from './board.ts'
 import { centrePanel, createFocusState, header, participantsPanel, timelinePanel } from './panels.ts'
 import { renderScheduler } from './scheduler.ts'
 import type { Conn } from './conn.ts'
+import { publish } from './test-manifest.ts'
 
 const cleanups: (() => void)[] = []
 afterEach(() => { cleanups.splice(0).forEach(fn => fn()); vi.useRealTimers(); vi.unstubAllGlobals() })
@@ -77,7 +78,7 @@ it('nests active and failed workers, collapses archives, and counts active in bo
 it('bounds timeline and merge controls while retaining older filters and scope context', () => {
   const { room, conn } = setup()
   room.retireParticipant('Lead+archived', retired('archived'), () => {})
-  for (const name of ['Lead', 'Old', 'Recent']) room.setOverlay(name, 'a.ts', name)
+  for (const name of ['Lead', 'Old', 'Recent']) publish(room, name, 'a.ts', name)
   room.bus.push([{ id: 'old', type: 'scope', from: 'Old', fromKind: 'agent', at: 1, priority: 'fyi', area: 'old-area', summary: 'Old task', paths: [] },
     { id: 'recent', type: 'scope', from: 'Recent', fromKind: 'agent', at: 2, priority: 'fyi', area: 'current-area', summary: 'Current task', paths: [] }])
   for (let i = 0; i < 35; i++) room.bus.push([{ id: `note-${i}`, type: 'note', from: 'Recent', fromKind: 'agent', at: i + 3, priority: 'fyi', text: `Recent note ${i}` }])
