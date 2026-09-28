@@ -1,3 +1,5 @@
+import { patchPublisher } from './registry-fixture.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, symlinkSync } from 'node:fs'
@@ -148,9 +150,9 @@ describe('git facts and lead evaluation', () => {
     writeFileSync(join(dir, 'a'), 'lead WIP')
     const prepared = await prepareWorktree(dir, 'w', 'lead')
     const w = { ...worker(prepared.dir), base: prepared.base }
-    expect(await saveDiscardPatch(dir, w)).toBeUndefined()
+    expect(await saveDiscardPatch(dir, w, patchPublisher(dir, w.tag))).toBeUndefined()
     writeFileSync(join(w.dir, 'worker.txt'), 'worker output')
-    const patch = await saveDiscardPatch(dir, w)
+    const patch = await saveDiscardPatch(dir, w, patchPublisher(dir, w.tag))
     expect(patch).toBeDefined()
     const text = readFileSync(patch!, 'utf8')
     expect(text).toContain('worker output')
@@ -179,10 +181,11 @@ describe('git facts and lead evaluation', () => {
     const prepared = await prepareWorktree(dir, 'w', 'lead')
     const w = { ...worker(prepared.dir), base: prepared.base }
     r.room.setWorker(w)
+    await syncDocumentWorkers(r.s)
     let alive = true
     const state = {
       S: () => r.s, rooms: r.rooms, now: Date.now, workerAlive: () => alive,
-      ctx: { listCwdProcesses: () => [], sleep: async () => { await r.rooms.retireWorkers(r.s); alive = false } },
+      ctx: { listCwdProcesses: () => [], sleep: async () => { alive = false } },
     } as unknown as HandlerState
     const reply = await collectHandlers(state).room_collect({})
     expect(reply).toContain('Changes from w: already present. Nothing committed or staged.')

@@ -7,6 +7,7 @@ import { RoomDoc, type Worker } from '@room/shared'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { createWorkerRuntime } from '../src/tools/workers.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
 
 const terminate = vi.hoisted(() => vi.fn<(_dir: string) => Promise<string[]>>())
 vi.mock('../src/worker-process.js', async importOriginal => ({
@@ -36,11 +37,16 @@ function fixture(ownedWorktree: boolean | 'noncanonical' | 'nested') {
   if (ownedWorktree === 'nested') room.workers.set('parent', { id: 'parent-id', tag: 'parent', name: 'lead+parent', lead: 'lead', host: 'codex', task: 'parent', dir: parentDir, branch: 'room/parent', pid: -1, startedAt: Date.now(), status: 'done' } as Worker)
   const w = { id: 'worker-id', tag: 'test', name: 'lead+test', lead: ownedWorktree === 'nested' ? 'lead+parent' : 'lead', host: 'codex', task: 'test', dir, branch: 'room/test', pid: 987654, startedAt: Date.now(), status: 'running' } as Worker
   room.workers.set(w.tag, w)
-  const s = { dir: leadDir, room, me: { name: 'lead', kind: 'agent' } } as Session
+  const s = { dir: leadDir, roomName: 'local/test/main', room, me: { name: 'lead', kind: 'agent' } } as Session
   const kill = vi.fn(() => true)
   const state = { ctx: {}, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
   state.dismissWorker = createWorkerRuntime(state).dismissWorker
   return { state, s, w, kill, room, dir, parentDir }
+}
+
+async function dismiss(t: ReturnType<typeof fixture>): Promise<string> {
+  await syncDocumentWorkers(t.s)
+  return t.state.dismissWorker(t.s, t.room.workers.get('test')!, 'stop')
 }
 
 describe('dismissWorker ownership', () => {
@@ -48,11 +54,11 @@ describe('dismissWorker ownership', () => {
     const t = fixture(false)
     const unrelatedSignal = vi.fn()
     terminate.mockImplementation(async dir => { if (dir === t.dir) unrelatedSignal(12345, 'SIGTERM'); return ['editor (pid 12345)'] })
-    const reply = await t.state.dismissWorker(t.s, t.w, 'stop')
+    const reply = await dismiss(t)
     expect(terminate).not.toHaveBeenCalled()
     expect(unrelatedSignal).not.toHaveBeenCalled()
-    expect(t.kill).toHaveBeenCalledOnce()
-    expect(reply).toContain('pid 987654 signalled')
+    expect(t.kill).not.toHaveBeenCalled()
+    expect(reply).toContain('no local worker capability')
     t.room.doc.destroy()
   })
 
@@ -60,11 +66,11 @@ describe('dismissWorker ownership', () => {
     const t = fixture('noncanonical')
     const unrelatedSignal = vi.fn()
     terminate.mockImplementation(async () => { unrelatedSignal(12345, 'SIGTERM'); return ['editor (pid 12345)'] })
-    const reply = await t.state.dismissWorker(t.s, t.w, 'stop')
+    const reply = await dismiss(t)
     expect(terminate).not.toHaveBeenCalled()
     expect(unrelatedSignal).not.toHaveBeenCalled()
-    expect(t.kill).toHaveBeenCalledOnce()
-    expect(reply).toContain('pid 987654 signalled')
+    expect(t.kill).not.toHaveBeenCalled()
+    expect(reply).toContain('no local worker capability')
     t.room.doc.destroy()
   })
 
@@ -72,18 +78,19 @@ describe('dismissWorker ownership', () => {
     const t = fixture(true)
     t.w.lead = 'other-lead'
     terminate.mockResolvedValue(['editor (pid 12345)'])
-    const reply = await t.state.dismissWorker(t.s, t.w, 'stop')
+    const reply = await dismiss(t)
     expect(terminate).not.toHaveBeenCalled()
-    expect(t.kill).toHaveBeenCalledOnce()
-    expect(reply).toContain('pid 987654 signalled')
+    expect(t.kill).not.toHaveBeenCalled()
+    expect(reply).toContain('no local worker capability')
     t.room.doc.destroy()
   })
 
   it('enumerates a grand-worker only through its verified parent worktree', async () => {
     const t = fixture('nested')
+    t.s.dir = t.parentDir; t.s.me.name = 'lead+parent'
     terminate.mockResolvedValue([])
-    await t.state.dismissWorker(t.s, t.w, 'stop')
-    expect(terminate).toHaveBeenCalledWith(t.dir, { protectedPids: [t.w.pid] })
+    await dismiss(t)
+    expect(terminate).toHaveBeenCalledWith(t.dir, expect.objectContaining({ protectedPids: [t.w.pid] }))
     expect(t.kill).toHaveBeenCalledOnce()
     t.room.doc.destroy()
   })
@@ -92,19 +99,20 @@ describe('dismissWorker ownership', () => {
     const t = fixture('nested')
     t.room.workers.set('parent', { ...t.room.workers.get('parent')!, dir: t.s.dir })
     terminate.mockResolvedValue([])
-    await t.state.dismissWorker(t.s, t.w, 'stop')
+    await dismiss(t)
     expect(terminate).not.toHaveBeenCalled()
-    expect(t.kill).toHaveBeenCalledOnce()
+    expect(t.kill).not.toHaveBeenCalled()
     t.room.doc.destroy()
   })
 
   it('verifies an archived parent worktree before enumerating its grand-worker', async () => {
     const t = fixture('nested')
+    t.s.dir = t.parentDir; t.s.me.name = 'lead+parent'
     const parent = t.room.workers.get('parent')!
     t.room.retireParticipant(parent.name, { name: parent.name, tag: parent.tag, lead: parent.lead, host: parent.host, task: parent.task, summary: 'done', files: [], fileCount: 0, startedAt: parent.startedAt, finishedAt: parent.startedAt + 1, retiredAt: parent.startedAt + 2, outcome: 'dismissed' })
     terminate.mockResolvedValue([])
-    await t.state.dismissWorker(t.s, t.w, 'stop')
-    expect(terminate).toHaveBeenCalledWith(t.dir, { protectedPids: [t.w.pid] })
+    await dismiss(t)
+    expect(terminate).toHaveBeenCalledWith(t.dir, expect.objectContaining({ protectedPids: [t.w.pid] }))
     expect(t.kill).toHaveBeenCalledOnce()
     t.room.doc.destroy()
   })
@@ -112,8 +120,8 @@ describe('dismissWorker ownership', () => {
   it('reports cwd enumeration failure and still kills an owned worker handle', async () => {
     const t = fixture(true)
     terminate.mockRejectedValue(new Error('lsof timed out'))
-    const reply = await t.state.dismissWorker(t.s, t.w, 'stop')
-    expect(terminate).toHaveBeenCalledWith(t.dir, { protectedPids: [t.w.pid] })
+    const reply = await dismiss(t)
+    expect(terminate).toHaveBeenCalledWith(t.dir, expect.objectContaining({ protectedPids: [t.w.pid] }))
     expect(t.kill).toHaveBeenCalledOnce()
     expect(reply).toContain('lsof timed out')
     t.room.doc.destroy()

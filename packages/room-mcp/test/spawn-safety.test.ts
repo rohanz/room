@@ -102,7 +102,7 @@ it('refuses a second room that targets an occupied worktree tag', async () => {
   expect(second.room.workers.has('w')).toBe(false)
 })
 
-it('respawns the same lead into a kept worktree and recovers its carry record', async () => {
+it('keeps the tag reserved while an ignored output worktree is retained', async () => {
   fs.writeFileSync(path.join(repo, 'tracked.txt'), 'lead WIP\n')
   fs.writeFileSync(path.join(repo, 'untracked.txt'), 'untracked WIP\n')
   const t = tool('local/a/main')
@@ -118,11 +118,9 @@ it('respawns the same lead into a kept worktree and recovers its carry record', 
     finishedAt: Date.now(), retiredAt: Date.now(), outcome: 'dismissed',
   })
   expect(t.room.workers.has('w')).toBe(false)
-  expect(await t.call({})).toContain('spawned w:')
-  const second = t.room.workers.get('w')!
-  expect(second.gen).toBeGreaterThan(first.gen!)
-  expect(second).toMatchObject({ dir: first.dir, base: first.base, carriedUntracked: first.carriedUntracked })
-  expect(fs.readFileSync(path.join(second.dir, 'ignored-output.txt'), 'utf8')).toBe('retained worker output')
+  expect(await t.call({})).toContain('tag in use: w')
+  expect(t.room.workers.has('w')).toBe(false)
+  expect(fs.readFileSync(path.join(first.dir, 'ignored-output.txt'), 'utf8')).toBe('retained worker output')
   const otherRoom = tool('local/b/main')
-  expect(await otherRoom.call({})).toMatch(/error:.*(?:owned|another room)/i)
+  expect(await otherRoom.call({})).toContain('tag in use: w')
 })

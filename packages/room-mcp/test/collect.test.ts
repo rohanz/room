@@ -11,6 +11,8 @@ import { RoomDoc, splitParticipants, workerLines } from '@room/shared'
 import * as Y from 'yjs'
 import { git as roomGit } from '@room/roomd/git'
 import { retainedDeclaredFile } from '@room/roomd'
+import { syncDocumentWorkers } from './registry-fixture.js'
+import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 
 const release = vi.hoisted(() => vi.fn())
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: release }))
@@ -27,7 +29,7 @@ beforeEach(() => {
   git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'base'); base = git(lead, 'rev-parse', 'HEAD')
   git(lead, 'worktree', 'add', '-qb', 'room/test', worker)
 })
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
+afterEach(async () => { await closeRegistryForDir(lead); fs.rmSync(root, { recursive: true, force: true }) })
 
 function setup(status = 'done') {
   const w = { tag: 'test', name: 'lead+test', lead: 'lead', dir: worker, branch: 'room/test', status, summary: 'finished\nextra', base, host: 'codex', task: 'task', startedAt: 1 }
@@ -37,7 +39,10 @@ function setup(status = 'done') {
   const s = { dir: lead, local: {}, roomName: 'local/test', roomUrl: 'ws://127.0.0.1:1/local%2Ftest', me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } }
   const retireWorkers = vi.fn(async () => {})
   const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers }, workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
-  return { call: handlers(state).room_collect, retireWorkers, state, s, w }
+  return { call: async (args: Record<string, unknown>) => {
+    await syncDocumentWorkers(s as never)
+    return handlers(state).room_collect(args)
+  }, retireWorkers, state, s, w }
 }
 
 const LINES = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\n'
@@ -76,7 +81,7 @@ describe('room_collect', () => {
     for (const args of [{ tag: 'test' }, { tag: 'test', discard: true }]) {
       const reply = await t.call(args)
       expect(reply).toContain(`could not verify test's process (pid ${process.pid}); left running, not stopped`)
-      expect(t.s.room.workers.get('test')).toEqual(current)
+      expect(t.s.room.workers.get('test')).toMatchObject({ tag: 'test', status, pid: process.pid })
       expect(fs.existsSync(worker)).toBe(true)
     }
     expect(t.state.dismissWorker).not.toHaveBeenCalled()
@@ -129,7 +134,7 @@ describe('room_collect', () => {
     expect(lines).not.toContain('uncommitted')
     expect(lines).toContain('workers (1):')
   })
-  it('stops a worker in an existing directory and reports that its directory was retained', async () => {
+  it('refuses to stop a worker in an unmanaged existing directory', async () => {
     const t = setup('running')
     t.s.room.workers.set('test', { ...t.w, dir: lead, branch: 'main', model: 'worker-model' } as never)
     let alive = true
@@ -137,11 +142,10 @@ describe('room_collect', () => {
     t.state.workerAlive = () => alive
     t.state.dismissWorker = stopped as never
     const result = await t.call({ tag: 'test', discard: true })
-    expect(stopped).toHaveBeenCalledOnce()
-    expect(result).toContain(`stopped test; kept ${lead} (an existing directory, not a Room worktree)`)
-    expect(result).not.toContain('error:')
+    expect(stopped).not.toHaveBeenCalled()
+    expect(result).toContain('no local worker capability')
     expect(fs.existsSync(lead)).toBe(true)
-    expect(t.s.room.retiredWorkers()[0]?.model).toBe('worker-model')
+    expect(t.s.room.retiredWorkers()).toEqual([])
   })
   it('keeps a finished worker when process ownership becomes unknown during discard', async () => {
     const t = setup()
@@ -250,7 +254,7 @@ describe('room_collect', () => {
     expect(fs.existsSync(path.join(worker, 'artifact.bin'))).toBe(true)
     expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
   })
-  it('stops worktree processes when ignored output makes discard refuse', async () => {
+  it('preflights ignored output before stopping worktree processes', async () => {
     const t = setup('failed')
     put(worker, 'artifact.bin', 'ignored output')
     const child = await startWorktreeProcess()
@@ -258,8 +262,8 @@ describe('room_collect', () => {
     try {
       const reply = await t.call({ tag: 'test', discard: true })
       expect(reply).toContain('discard refused; ignored artifacts')
-      expect(reply).toContain(`pid ${child.pid}`)
-      expect(reply).toContain('stopped processes:')
+      expect(reply).not.toContain(`pid ${child.pid}`)
+      expect(pidAlive(child.pid!)).toBe(true)
       expect(fs.existsSync(worker)).toBe(true)
     } finally { child.kill('SIGKILL') }
   })
@@ -297,10 +301,10 @@ describe('room_collect', () => {
     put(other, 'survived.txt', 'kept')
     fs.rmSync(worker, { recursive: true, force: true })
     const result = await t.call({})
-    expect(result).toMatch(/skipped test: worktree .* is gone/i)
+    expect(result).toContain('skipped test: no local worker capability (worktree missing or unmanaged)')
     expect(result).toContain('Changes from second: survived.txt')
     expect(fs.readFileSync(path.join(lead, 'survived.txt'), 'utf8')).toBe('kept')
-    expect(git(lead, 'worktree', 'list', '--porcelain')).not.toContain(worker)
+    expect(t.s.room.workers.has('test')).toBe(true)
   })
   it.each([false, true])('discards a vanished worktree with merged commits (pruned first: %s)', async pruned => {
     const t = setup()
@@ -314,20 +318,19 @@ describe('room_collect', () => {
     fs.rmSync(worker, { recursive: true, force: true })
     if (pruned) git(lead, 'worktree', 'prune')
     const reply = await t.call({ tag: 'test', discard: true })
-    expect(reply).toContain('its worktree was already gone; branch room/test deleted (it has no commits of its own beyond your HEAD)')
-    expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
+    expect(reply).toContain('no local worker capability (worktree missing or unmanaged)')
+    expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
     expect(git(lead, 'rev-parse', 'room/og-cards')).toBe(otherBranch)
-    expect(git(lead, 'worktree', 'list', '--porcelain')).not.toContain(worker)
-    expectRetired(t)
+    expect(t.s.room.workers.has('test')).toBe(true)
   })
   it('removes both worker logs when discarding an already vanished worktree', async () => {
     const t = setup()
     for (const suffix of ['.log', '.mcp.log']) put(lead, `.room/workers/test${suffix}`, 'log')
     fs.rmSync(worker, { recursive: true, force: true })
-    expect(await t.call({ tag: 'test', discard: true })).toContain('its worktree was already gone')
-    expect(fs.existsSync(path.join(lead, '.room/workers/test.log'))).toBe(false)
-    expect(fs.existsSync(path.join(lead, '.room/workers/test.mcp.log'))).toBe(false)
-    expect(t.s.room.retiredWorkers()[0].disposition).toBe('discarded')
+    expect(await t.call({ tag: 'test', discard: true })).toContain('no local worker capability')
+    expect(fs.existsSync(path.join(lead, '.room/workers/test.log'))).toBe(true)
+    expect(fs.existsSync(path.join(lead, '.room/workers/test.mcp.log'))).toBe(true)
+    expect(t.s.room.retiredWorkers()).toEqual([])
   })
   it('keeps unmerged branch commits when discarding a vanished worktree', async () => {
     const t = setup()
@@ -338,9 +341,9 @@ describe('room_collect', () => {
     }
     fs.rmSync(worker, { recursive: true, force: true })
     const reply = await t.call({ tag: 'test', discard: true })
-    expect(reply).toContain('branch room/test kept: it has 2 commits not in your HEAD')
+    expect(reply).toContain('no local worker capability')
     expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
-    expectRetired(t)
+    expect(t.s.room.workers.has('test')).toBe(true)
   })
   it('keeps a user commit at the worker base after the lead resets behind it', async () => {
     const t = setup()
@@ -352,7 +355,7 @@ describe('room_collect', () => {
     git(lead, 'reset', '--hard', 'HEAD^')
     fs.rmSync(worker, { recursive: true, force: true })
     const reply = await t.call({ tag: 'test', discard: true })
-    expect(reply).toContain('branch room/test kept: it has 1 commit not in your HEAD')
+    expect(reply).toContain('no local worker capability')
     expect(git(lead, 'rev-parse', 'room/test')).toBe(userCommit)
   })
   it('deletes a vanished worker branch containing only the carried base', async () => {
@@ -361,10 +364,10 @@ describe('room_collect', () => {
     carry(t, worker, 'test', { 'carried.txt': 'lead edit' })
     fs.rmSync(worker, { recursive: true, force: true })
     const reply = await t.call({ tag: 'test', discard: true })
-    expect(reply).toContain('its worktree was already gone; branch room/test deleted (it has no commits of its own beyond your HEAD)')
-    expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
+    expect(reply).toContain('no local worker capability')
+    expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
     expect(fs.readFileSync(path.join(lead, 'carried.txt'), 'utf8')).toBe('lead edit')
-    expectRetired(t)
+    expect(t.s.room.workers.has('test')).toBe(true)
   })
   it('keeps a vanished worker branch with a commit after the carried base', async () => {
     const t = setup()
@@ -375,9 +378,9 @@ describe('room_collect', () => {
     const workerCommit = git(worker, 'rev-parse', 'HEAD')
     fs.rmSync(worker, { recursive: true, force: true })
     const reply = await t.call({ tag: 'test', discard: true })
-    expect(reply).toContain('branch room/test kept: it has 1 commit not in your HEAD')
+    expect(reply).toContain('no local worker capability')
     expect(git(lead, 'rev-parse', 'room/test')).toBe(workerCommit)
-    expectRetired(t)
+    expect(t.s.room.workers.has('test')).toBe(true)
   })
   it('discards a legacy replacement record when its worktree and branch are already absent', async () => {
     const t = setup()
@@ -387,8 +390,8 @@ describe('room_collect', () => {
     git(lead, 'worktree', 'prune')
     git(lead, 'branch', '-D', 'room/og-sections')
     const reply = await t.call({ tag: 'og-sections-2', discard: true })
-    expect(reply).toContain('its worktree was already gone; branch room/og-sections was already absent')
-    expectRetired(t)
+    expect(reply).toContain('no local worker capability')
+    expect(t.s.room.workers.has(t.w.tag)).toBe(true)
   })
   it('keeps commits on a legacy replacement branch after its worktree vanishes', async () => {
     const t = setup()
@@ -400,9 +403,9 @@ describe('room_collect', () => {
     fs.rmSync(worker, { recursive: true, force: true })
     git(lead, 'worktree', 'prune')
     const reply = await t.call({ tag: 'e2e-static-2', discard: true })
-    expect(reply).toContain('branch room/e2e-static kept: it has 1 commit not in your HEAD')
+    expect(reply).toContain('no local worker capability')
     expect(git(lead, 'rev-parse', 'room/e2e-static')).toBe(branchCommit)
-    expectRetired(t)
+    expect(t.s.room.workers.has(t.w.tag)).toBe(true)
   })
   it('explains that plain collect cannot collect a vanished worktree and leaves its record', async () => {
     const t = setup()
@@ -410,10 +413,9 @@ describe('room_collect', () => {
     git(worker, 'add', 'not-landed.txt'); git(worker, 'commit', '-qm', 'worker commit')
     const branchHead = git(lead, 'rev-parse', 'room/test')
     fs.rmSync(worker, { recursive: true, force: true })
-    expect(await t.call({ tag: 'test' })).toContain('nothing to collect: worktree')
+    expect(await t.call({ tag: 'test' })).toContain('no local worker capability')
     expect(t.s.room.workers.has('test')).toBe(true)
     expect(git(lead, 'rev-parse', 'room/test')).toBe(branchHead)
-    expect(git(lead, 'worktree', 'list', '--porcelain')).not.toContain(worker)
   })
   it('names a missing cwd in the shared git helper error', async () => {
     fs.rmSync(worker, { recursive: true, force: true })
@@ -450,12 +452,11 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(true)
     expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
   })
-  it('queues a parallel collect behind the first tag and reports the queue', async () => {
+  it('serializes parallel collects through the worktree lease', async () => {
     const t = setup(), other = second(t)
     put(worker, 'first.txt', 'first'); put(other, 'second.txt', 'second')
     const [first, queued] = await Promise.all([t.call({ tag: 'test' }), t.call({ tag: 'second' })])
     expect(first).toContain('Changes from test: first.txt')
-    expect(queued).toContain('queued behind test')
     expect(queued).toContain('Changes from second: second.txt')
   })
   it('keeps both workers and all lead files when their same-line changes conflict', async () => {
@@ -576,11 +577,12 @@ describe('room_collect', () => {
       expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
       expect(fs.existsSync(path.join(lead, '.room/workers'))).toBe(false)
       expect(t.s.room.workers.size).toBe(0); expect(release).toHaveBeenCalled()
-      const patches = fs.readdirSync(path.join(lead, '.room/discarded'))
-      expect(patches).toHaveLength(1); expect(patches[0]).toMatch(/^test-\d{8}-\d{6}\.patch$/)
+      const patchDir = path.join(lead, '.git/room/registry/patches')
+      const patches = fs.readdirSync(patchDir)
+      expect(patches).toEqual(['w_test.patch'])
       const fresh = path.join(root, 'fresh')
       git(lead, 'worktree', 'add', '--detach', fresh, base)
-      git(fresh, 'apply', path.join(lead, '.room/discarded', patches[0]))
+      git(fresh, 'apply', path.join(patchDir, patches[0]))
       for (const [p, text] of [['committed.txt', 'commit\n'], ['staged.txt', 'stage\n'], ['file.txt', 'dirty\n'], ['new.txt', 'untracked\n']]) expect(fs.readFileSync(path.join(fresh, p), 'utf8')).toBe(text)
       expect(fs.readFileSync(path.join(fresh, 'binary'))).toEqual(Buffer.from([0, 255, 128]))
       expect(fs.existsSync(path.join(fresh, 'node_modules'))).toBe(false)
@@ -592,7 +594,7 @@ describe('room_collect', () => {
     put(worker, 'node_modules/pkg/cache.bin', 'dependency cache')
     const result = await t.call({ tag: 'test', discard: true })
     expect(result).toContain('ignored artifacts not covered by a recovery patch: artifact.bin')
-    expect(result).toContain(`kept artifact.bin at ${path.join(worker, 'artifact.bin')}`)
+    expect(result).toContain(`retained worktree: ${worker}`)
     expect(result).toContain(`retained worktree: ${worker}`)
     expect(result).not.toContain('node_modules')
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('generated model')
@@ -609,11 +611,13 @@ describe('room_collect', () => {
   })
   it('discards a clean failed worker without a patch and prunes old patches and empty folders', async () => {
     const t = setup('failed')
-    put(lead, '.room/discarded/old.patch', 'old')
+    put(lead, '.git/room/registry/patches/w_old.patch', 'old')
     const old = new Date(Date.now() - 8 * 86400_000)
-    fs.utimesSync(path.join(lead, '.room/discarded/old.patch'), old, old)
+    fs.utimesSync(path.join(lead, '.git/room/registry/patches/w_old.patch'), old, old)
     put(lead, '.room/workers/test.log', 'log')
     expect(await t.call({ tag: 'test', discard: true })).toBe('discarded test')
+    await (await registryForDir(lead)).reconcile()
+    expect(fs.existsSync(path.join(lead, '.git/room/registry/patches/w_old.patch'))).toBe(false)
     expect(fs.existsSync(path.join(lead, '.room'))).toBe(false)
   })
   it('keeps recent patches and another worker folder until the last cleanup', async () => {
@@ -772,7 +776,7 @@ describe('room_collect', () => {
   it('uses the confirmed exit record after waiting when cleaning up', async () => {
     const t = setup(); let alive = true
     t.state.workerAlive = () => alive
-    t.state.ctx = { listCwdProcesses: () => [], sleep: async () => { alive = false; t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never) } } as HandlerState['ctx']
+    t.state.ctx = { listCwdProcesses: () => [], sleep: async () => { alive = false } } as HandlerState['ctx']
     put(worker, 'new.txt', 'new')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
     expect(fs.existsSync(worker)).toBe(false)

@@ -54,9 +54,10 @@ describe('resolveConfig', () => {
     expect((await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: 'custom' }, args: { claudeChannel: '' } })).claudeChannel).toBe('')
   })
 
-  it('resolves worker identity from the environment', async () => {
+  it('resolves worker identity without a legacy generation from the environment', async () => {
     const config = await resolveConfig({ dir: repo(), env: { ROOM_WORKER_ID: ' spawn-id ', ROOM_GEN: ' 2 ' } })
-    expect(config).toMatchObject({ workerId: 'spawn-id' })
+    expect(config.workerId).toBe('spawn-id')
+    expect(config).not.toHaveProperty('gen')
   })
 
   it('resolves identity, paths, secrets and numeric defaults without mutating env', async () => {

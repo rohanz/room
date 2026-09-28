@@ -8,16 +8,19 @@
  * bridge) so they start when a session is added and stop when it is removed, and the process
  * handles of workers this process spawned, keyed by the worker's stable id.
  */
-import type { DoneMsg, NoteMsg, Presence, Worker } from '@room/shared'
+import type { Presence, Worker } from '@room/shared'
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
-import { cleanupWorker, clearWorkerStopState, ignoredWorkerArtifacts, persistedWorkerStopReason, persistWorkerStopReason, pruneMissingWorkerWorktree, workerOperationKey } from './worker-git.js'
-import { defaultSpawner, pidPresent, workerLogTail, probeProcess, type CwdProcessLister, type ProcessProbe, type SpawnedProcess, type Spawner } from './worker-process.js'
+import { cleanupWorker, ignoredWorkerArtifacts, pruneMissingWorkerWorktree } from './worker-git.js'
+import { defaultSpawner, pidPresent, probeProcess, type CwdProcessLister, type ProcessProbe, type SpawnedProcess, type Spawner } from './worker-process.js'
 import { decideResume, decideRetire, processExited, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
-import { launchWorkerProcess, reserveWorkerLaunch, WorkerLaunchError } from './worker-launch.js'
+import { launchWorkerProcess, WorkerLaunchError } from './worker-launch.js'
+import { registryForDir } from './worker-registry.js'
+import { realStateInput } from './worker-status.js'
 import { repairRetired, retireCollected } from './retire.js'
 
 export type Role = 'primary' | 'workers'
@@ -50,80 +53,11 @@ export interface RoomsOptions {
   attach(s: Session, role: Role, lead?: Session): Attachment
 }
 
-/** A worker's stable identity: one per spawn, never reused. */
-export function workerId(lead: string, tag: string, gen: number): string { return `${lead}/${tag}#${gen}` }
-/** The part of an id that a concurrent spawn of the same tag would share. */
-export function workerIdBase(roomName: string, lead: string, tag: string): string { return `${roomName}|${lead}/${tag}` }
 /** Where a worker started from this session connects, and whether this session is itself a worker (its budget is then shared). */
 export function workerOrigin(s: Session): { server: string; isWorker: boolean } {
   return {
     server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')),
     isWorker: !!process.env.ROOM_TAG || !!s.room.workerOf(s.me.name) || (!!s.me.owner && s.me.owner !== s.me.name),
-  }
-}
-
-function followUpAnswer(logFile: string, host: Worker['host'], runStart: number): string {
-  let fd: number | undefined
-  try {
-    fd = fs.openSync(logFile, 'r')
-    const size = fs.fstatSync(fd).size, start = Math.max(size >= runStart ? runStart : 0, size - 64 * 1024)
-    const buffer = Buffer.alloc(size - start)
-    fs.readSync(fd, buffer, 0, buffer.length, start)
-    const lines = buffer.toString('utf8').split(/\r?\n|\r/)
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim()
-      if (!line) continue
-      if (host === 'claude') return line.slice(0, 300)
-      try {
-        const event = JSON.parse(line) as { type?: string; item?: { type?: string; text?: unknown } }
-        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
-          const text = event.item.text.trim().replace(/\s+/g, ' ')
-          if (text) return text.slice(0, 300)
-        }
-      } catch { /* Skip non-JSON log lines. */ }
-    }
-  } catch { /* A missing log has no report. */ }
-  finally { if (fd !== undefined) fs.closeSync(fd) }
-  return 'finished without a report'
-}
-
-/** A confirmed exit is recorded once, including when discovered after the lead restarts. */
-/** `unwitnessed`: a later lead found the recorded worker process gone, but cannot know why it stopped. */
-export async function finishWorkerProcess(s: Session, w: Worker, code: number | null, at = Date.now(), error?: string, unwitnessed = false): Promise<void> {
-  const current = s.room.workers.get(w.tag)
-  if (current !== w || w.exitCode !== undefined) return
-  const resumedDone = w.status === 'running' && w.resumeLogStart !== undefined && code === 0 && !unwitnessed && !error && !w.stopReason && w.dismissedAt === undefined
-  const done = w.status === 'done' || resumedDone
-  const exitCode = code ?? -1
-  const logFile = path.join(s.dir, '.room', 'workers', `${w.tag}.log`)
-  const tail = workerLogTail(logFile)
-  const stopReason = w.stopReason ?? (unwitnessed ? persistedWorkerStopReason(s.dir, w.tag, w.id) : undefined)
-  const summary = resumedDone ? `${w.summary ? `${w.summary} ` : ''}(follow-up: ${followUpAnswer(logFile, w.host, w.resumeLogStart!)})` : undefined
-  s.room.updateWorker(w.tag, {
-    exitCode, finishedAt: w.finishedAt ?? at,
-    ...(stopReason ? { stopReason } : {}),
-    ...(w.status !== 'running' ? {}
-      : unwitnessed ? { status: stopReason ? 'dismissed' as const : 'failed' as const, summary: `stopped while no session of yours was running; ${stopReason ?? 'reason unknown'}; worktree: ${w.dir}; last lines of its log: ${tail || '(empty log)'}` }
-      : stopReason ? { status: 'dismissed' as const } : resumedDone ? { status: 'done' as const, summary }
-        : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
-  }, w.id)
-  if (!done || resumedDone) {
-    // tools/state constructs Rooms: defer this dependency until all tool definitions are loaded.
-    const { releaseClaimsOnDone } = await import('./tools/claims.js')
-    const current = s.room.workers.get(w.tag)
-    if (!current || current.id !== w.id || current.gen !== w.gen || current.startedAt !== w.startedAt) return
-    releaseClaimsOnDone(s, undefined, w.name)
-  }
-  if (resumedDone) {
-    s.room.post<DoneMsg>({ name: w.name, kind: 'agent' }, { type: 'done', tag: w.tag, summary: summary!, changed: s.room.changedPaths(w.name), to: w.lead, priority: 'notify' })
-  }
-  if (!unwitnessed && !w.stopReason && w.dismissedAt === undefined && (exitCode !== 0 || !done)) {
-    const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1000))
-    const elapsed = seconds < 90 ? `${seconds} s after start` : `after ${Math.floor(seconds / 60)}m`
-    s.room.post<NoteMsg>({ name: 'room', kind: 'bot' }, {
-      type: 'note', to: w.lead, priority: 'interrupt',
-      text: `worker ${w.tag} died ${elapsed} (exit ${code ?? 'unknown'})${!done ? '; exited without room_done' : ''}${error ? `; ${error}` : ''}; last lines of its log: ${tail || '(empty log)'}`,
-    })
   }
 }
 
@@ -133,10 +67,6 @@ export class Rooms {
   /** Processes this MCP instance started, by worker id. A lead that restarted only has the pid in the doc. */
   private handles = new Map<string, { proc: SpawnedProcess; session: Session }>()
   private exitWaiters = new Map<string, Set<() => void>>()
-  /** Tags whose worktree is being prepared, so two concurrent room_spawn calls cannot both pass the tag check. */
-  private reserving = new Set<string>()
-  /** Starts awaiting worktree preparation count against the same limit as live workers. */
-  private launching = 0
   private retirementTimers = new Map<Session, ReturnType<typeof setInterval>>()
   private retiring = new Map<Session, Promise<void>>()
 
@@ -175,13 +105,6 @@ export class Rooms {
   track(s: Session): void {
     if (this.tracked.has(s)) return
     this.tracked.add(s)
-    for (const w of s.room.workers.values()) {
-      if (w.stopReason) continue
-      try {
-        const reason = persistedWorkerStopReason(s.dir, w.tag, w.id)
-        if (reason) s.room.updateWorker(w.tag, { stopReason: reason, ...(w.status === 'running' ? { status: 'dismissed' as const } : {}) }, w.id)
-      } catch { /* an external checkout has no local carry record */ }
-    }
     this.o.observeClaims(s)
     const timer = setInterval(() => { void this.retireWorkers(s).catch(() => {}) }, 60_000)
     timer.unref()
@@ -225,55 +148,50 @@ export class Rooms {
       // Keep a finished host session addressable until the lead explicitly collects or
       // discards it. If its checkout vanished, room_send must explain why it cannot resume.
       if (w.status === 'done' && w.hostSessionId) continue
-      if (this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
       if (w.lead !== s.me.name || this.hasHandle(s, w)) continue
-      const lock = workerOperationKey(w)
-      if (!this.reserve(lock)) continue
-      try {
-        const state = await workerRealState(s.dir, w, { process: true, probe: this.probe.bind(this) })
-        if (!processExited(state)) continue
-        if (w.status !== 'done') s.room.clearWorkerCoordination(w.name)
-        if (w.status === 'running') {
-          await finishWorkerProcess(s, w, null, Date.now(), undefined, true)
-          continue
-        }
-        if (w.status !== 'done' && !state.dismissed) continue
-        if (state.worktree === 'vanished') {
-          try { await pruneMissingWorkerWorktree(s.dir, w) } catch { continue }
-          if (s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
-          const retiredAt = Date.now()
-          retireCollected(s, w, {
-            name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
-            task: w.task, summary: 'worktree was already gone', files: [], fileCount: 0,
-            startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
-            disposition: w.stopReason ? 'stopped' : 'discarded', ...(w.stopReason ? { stopReason: w.stopReason } : {}),
-          })
-          continue
-        }
-        const facts = { ...await workerRealState(s.dir, w, { git: true, leadName: w.lead }), process: state.process }
-        const outcome = decideRetire(facts)
-        // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
-        if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s) || this.reserving.has('discard:' + s.roomName + ':' + w.name)) continue
-        // An ignored artifact has no recovery patch. Keep both its worktree and the live record so
-        // the lead can copy it or explicitly discard it, exactly as manual collection does.
-        try { if ((await ignoredWorkerArtifacts(w)).length) continue }
-        catch { continue }
-        const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
-        const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
-        if (facts.clean && w.exitCode === 0) {
-          try { if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this), list: this.o.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue }
-          catch { continue }
-        }
+      const state = await workerRealState(s.dir, w, { process: true, probe: this.probe.bind(this) })
+      if (!processExited(state)) continue
+      if (w.status !== 'done') s.room.clearWorkerCoordination(w.name)
+      if (w.status === 'running') {
+        await (await registryForDir(s.dir)).reconcile()
+        continue
+      }
+      if (w.status !== 'done' && !state.dismissed) continue
+      if (state.worktree === 'vanished') {
+        try { await pruneMissingWorkerWorktree(s.dir, w) } catch { continue }
+        if (s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
         const retiredAt = Date.now()
         retireCollected(s, w, {
           name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
-          task: w.task, summary: w.summary ?? '', files, fileCount: files.length, startedAt: w.startedAt,
-          finishedAt: w.finishedAt ?? done?.at ?? retiredAt, retiredAt, outcome,
-          disposition: w.stopReason ? 'stopped' : w.dismissedAt !== undefined || w.status === 'dismissed' ? 'discarded' : 'collected',
-          ...(w.stopReason ? { stopReason: w.stopReason } : {}),
-          ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
+          task: w.task, summary: 'worktree was already gone', files: [], fileCount: 0,
+          startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed',
+          disposition: w.stopReason ? 'stopped' : 'discarded', ...(w.stopReason ? { stopReason: w.stopReason } : {}),
         })
-      } finally { this.unreserve(lock) }
+        continue
+      }
+      const facts = { ...await workerRealState(s.dir, w, { git: true, leadName: w.lead }), process: state.process }
+      const outcome = decideRetire(facts)
+      // Git awaits must not let an old evaluation retire a newer spawn or a disconnected session.
+      if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue
+      // An ignored artifact has no recovery patch. Keep both its worktree and the live record so
+      // the lead can copy it or explicitly discard it, exactly as manual collection does.
+      try { if ((await ignoredWorkerArtifacts(w)).length) continue }
+      catch { continue }
+      const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
+      const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
+      if (facts.clean && w.exitCode === 0) {
+        try { if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this), list: this.o.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue }
+        catch { continue }
+      }
+      const retiredAt = Date.now()
+      retireCollected(s, w, {
+        name: w.name, tag: w.tag, lead: w.lead, host: w.host, ...(w.model ? { model: w.model } : {}),
+        task: w.task, summary: w.summary ?? '', files, fileCount: files.length, startedAt: w.startedAt,
+        finishedAt: w.finishedAt ?? done?.at ?? retiredAt, retiredAt, outcome,
+        disposition: w.stopReason ? 'stopped' : w.dismissedAt !== undefined || w.status === 'dismissed' ? 'discarded' : 'collected',
+        ...(w.stopReason ? { stopReason: w.stopReason } : {}),
+        ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
+      })
     }
   }
 
@@ -303,44 +221,19 @@ export class Rooms {
     for (const s of [from, ...this.all().filter(x => x !== from)]) if (s.room.messages().some(m => m.id === msgId)) return s
     return undefined
   }
-  /** The session whose workers map has this tag; the caller's session first. */
-  holdingWorker(tag: string, from: Session = this.primary() ?? this.mustHave()): Session {
-    if (from.room.workers.get(tag)) return from
-    for (const s of this.all()) if (s !== from && s.room.workers.get(tag)) return s
-    return from
-  }
   private mustHave(): Session { throw new Error('not in a room') }
 
   // ---- worker processes ---------------------------------------------------------
-  reserve(base: string): boolean { if (toolCallAborted() || this.reserving.has(base)) return false; this.reserving.add(base); return true }
-  unreserve(base: string): void { this.reserving.delete(base) }
-  reserveLaunch(max: number, running: number): boolean {
-    if (toolCallAborted() || this.launchUsage(running) >= max) return false
-    this.launching++
-    return true
-  }
-  releaseLaunch(): void { this.launching-- }
-  launchUsage(running: number): number { return running + this.launching }
-  occupiedWorkers(s: Session): { s: Session; w: Worker }[] {
-    const sessions = [s, ...this.all().filter(x => x !== s)]
-    const occupied: { s: Session; w: Worker }[] = []
-    for (const sess of sessions) for (const w of sess.room.workers.values()) {
-      if (w.lead === s.me.name && (w.status === 'running' || this.hasHandle(sess, w) || pidPresent(w.pid, this.probe.bind(this)))) occupied.push({ s: sess, w })
-    }
-    return occupied
-  }
-  /** A worker id is unique per lead and tag, but the same lead may spawn the same tag in its own room and in the workers room: handles are keyed per room. */
-  private static hkey(s: Session, id: string): string { return `${s.roomName}|${id}` }
-  setHandle(s: Session, id: string, proc: SpawnedProcess): void { this.handles.set(Rooms.hkey(s, id), { proc, session: s }) }
-  handle(s: Session, id: string | undefined): SpawnedProcess | undefined { return id ? this.handles.get(Rooms.hkey(s, id))?.proc : undefined }
+  setHandle(s: Session, id: string, proc: SpawnedProcess): void { this.handles.set(id, { proc, session: s }) }
+  handle(_s: Session, id: string | undefined): SpawnedProcess | undefined { return id ? this.handles.get(id)?.proc : undefined }
   /** Forget a handle, but only if it is still the one given (an exit callback of an older process must not drop a newer one). */
   dropHandle(s: Session, id: string | undefined, proc?: SpawnedProcess): void {
     if (!id) return
-    const k = Rooms.hkey(s, id)
+    const k = id
     const h = this.handles.get(k)
     if (h && (!proc || h.proc === proc)) this.handles.delete(k)
   }
-  hasHandle(s: Session, w: Worker): boolean { return !!w.id && this.handles.has(Rooms.hkey(s, w.id)) }
+  hasHandle(_s: Session, w: Worker): boolean { return !!w.id && this.handles.has(w.id) }
 
   /** A just-finished host can still be closing. Its exit callback wakes the pending resume. */
   private async waitForPreviousExit(s: Session, w: Worker, timeoutMs = 30_000): Promise<'exited' | 'unknown' | 'timeout'> {
@@ -350,7 +243,7 @@ export class Rooms {
       const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) })
       if (state.process === 'not-ours') return 'exited'
       if (state.process === 'unknown') return 'unknown'
-      const key = Rooms.hkey(s, w.id!)
+      const key = w.id!
       await new Promise<void>(resolve => {
         let settled = false
         const done = () => {
@@ -372,113 +265,75 @@ export class Rooms {
     return 'timeout'
   }
 
-  /** Spawn and resume share the same process-exit accounting and error reporting. */
-  watchWorkerProcess(s: Session, id: string, proc: SpawnedProcess, errorPrefix: string, log: (line: string) => void, at: () => number = Date.now, observed?: () => Worker['stopReason'] | undefined): void {
-    let processError: string | undefined
-    const exited = (code: number | null, error?: string) => {
-      const stopReason = observed?.()
-      this.dropHandle(s, id, proc)
-      let current = s.room.workerById(id)
-      const notify = () => { const key = Rooms.hkey(s, id); for (const wake of this.exitWaiters.get(key) ?? []) wake(); this.exitWaiters.delete(key) }
-      if (!current || current.pid !== proc.pid) { notify(); return }
-      if (stopReason) {
-        s.room.updateWorker(current.tag, { stopReason }, id)
-        current = s.room.workerById(id)
-        if (!current) { notify(); return }
-      }
-      void finishWorkerProcess(s, current, code, at(), error)
-        .then(() => { notify(); return this.retireWorkers(s) })
-        .catch(e => { notify(); log(`worker exit: ${e}`) })
+  /** Continue an exited, retained worker using a new durable run intent. */
+  async resumeWorker(s: Session, w: Worker, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000): Promise<string | DeliveredResume> {
+    if (toolCallAborted()) return 'error: tool call cancelled'
+    const registry = await registryForDir(s.dir)
+    const known = registry.list().find(record => record.tag === w.tag && record.lead.participant === s.me.name)
+    if (known && ['retiring', 'retired'].includes(known.phase)) return `error: ${w.tag} was collected or discarded; it cannot resume`
+    if (known && !fs.existsSync(known.dir)) return `error: cannot resume ${w.tag}: its worktree no longer exists`
+    const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
+    if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; cannot resume`
+    const record = trusted.record
+    const local = realStateInput(record, trusted.status)
+    const processState = await workerRealState(s.dir, local, { process: true, hasHandle: this.hasHandle(s, local), probe: this.probe.bind(this) })
+    const initial = decideResume(processState)
+    if (initial === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
+    if (initial === 'no-session') return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`
+    if (initial === 'unknown') return `error: could not verify ${w.tag}'s process; message was not delivered`
+    if (initial === 'wait-exit') {
+      const settled = await this.waitForPreviousExit(s, local, exitWaitMs)
+      if (settled !== 'exited') return `error: previous ${w.tag} process ${settled}; message was not delivered`
     }
-    proc.onError?.(err => { processError = `${errorPrefix}: ${err.message}` })
-    proc.onExit(code => exited(code, processError))
+    if (toolCallAborted()) return 'error: tool call cancelled'
+    const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers } })
+    const logFile = path.join(s.dir, '.room', 'workers', `${w.tag}.log`)
+    let logStart = 0
+    try { logStart = fs.statSync(logFile).size } catch { /* a new log starts at zero */ }
+    let run: import('./worker-status.js').Run
+    try {
+      const next = await registry.resume(record.id, config.maxWorkers, { nonce: randomUUID(), logStart,
+        busFrontier: s.room.messages().map(message => message.id) })
+      run = next.runs.at(-1)!
+    } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
+    try {
+      const { server, isWorker } = workerOrigin(s)
+      const launched = await launchWorkerProcess({ session: s, id: record.id, tag: record.tag, dir: record.dir,
+        lead: record.lead.participant, owner: s.me.owner ?? s.me.name, host: record.host, model: record.model,
+        effort: record.effort, share: record.share, run: run.n, nonce: run.nonce, registry: registry.root,
+        budget: record.budget, server, isWorker, token: s.local ? undefined : s.token, claudeChannel,
+        preferredPort: record.port, spawner, probe: this.probe.bind(this), log, at },
+      { mode: 'resume', sessionId: record.hostSessionId!, followUp, oldPort: record.port },
+      { setHandle: (id, proc) => this.setHandle(s, id, proc),
+        watch: (_id, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
+      async pid => { await registry.update(record.id, old => ({ ...old,
+        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid } }], seq: old.seq + 1 })) },
+      async result => {
+        await registry.update(record.id, old => ({ ...old, phase: 'active', port: result.port,
+          runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: result.proc.pid,
+            ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime,
+              executable: this.probe(result.proc.pid)?.executable ?? '' } } : {}) } }], seq: old.seq + 1 }))
+        const { mirrorRegistryWorkerRecord } = await import('./tools/workers.js')
+        mirrorRegistryWorkerRecord(s, registry, record.id)
+      }, async code => {
+        await registry.writeExit(record.id, { run: run.n, code, witnessed: true, at: at() })
+        this.dropHandle(s, record.id)
+        const { mirrorRegistryWorkerRecord } = await import('./tools/workers.js')
+        mirrorRegistryWorkerRecord(s, registry, record.id)
+        await registry.postObservedFailure(record.id, run.n, message => {
+          if (message.body.type === 'note') s.room.post({ name: record.name, kind: 'agent', owner: record.lead.participant, label: record.tag }, message.body, undefined, { id: message.id })
+        })
+      })
+      return `resumed ${record.tag}'s retained conversation with your message${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ''}`
+    } catch (error) {
+      const launchError = error instanceof WorkerLaunchError ? error : new WorkerLaunchError('start', String(error))
+      if (!launchError.delivered) await registry.update(record.id, old => ({ ...old, phase: 'active',
+        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: launchError.message } }], seq: old.seq + 1 }))
+      else await registry.beginStop(record.id, launchError.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed')
+      return launchError.delivered
+        ? { delivered: true, reply: launchError.stopped ? `stopped after receiving your message: ${launchError.message}` : `could not stop ${record.tag}; left running` }
+        : `error: could not resume ${record.tag}: ${launchError.message}`
+    } finally { await registry.finishOperation(record.id) }
   }
 
-  /** Continue an exited, retained worker in its original checkout and host conversation. */
-  async resumeWorker(s: Session, w: Worker, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000): Promise<string | DeliveredResume> {
-    // An exit callback starts retirement asynchronously. Let that check finish before competing
-    // for the same worktree lock; it retains any worker with work to collect.
-    await this.retiring.get(s)
-    if (toolCallAborted()) return 'error: tool call cancelled'
-    const key = workerOperationKey(w)
-    if (!this.reserve(key)) return `error: ${w.tag} is being collected, discarded or resumed; retry after that finishes`
-    try {
-      const exitWaitLabel = `${Math.ceil(exitWaitMs / 1000)} second${exitWaitMs > 1_000 ? 's' : ''}`
-      const current = s.room.workers.get(w.tag)
-      if (!current || current.id !== w.id || current.gen !== w.gen) return `error: ${w.tag} changed while you were sending; retry`
-      w = current
-      if (w.lead !== s.me.name) return `error: ${w.tag} belongs to ${w.lead}`
-      if (w.status === 'running') return `error: ${w.tag} is already running`
-      if (w.status === 'dismissed' && w.stopReason !== 'lead-session-ended' && w.stopReason !== 'message-delivered-cancelled' && w.stopReason !== 'message-delivered-failed') return `error: ${w.tag} was discarded and cannot be resumed`
-      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) })
-      const initial = decideResume(state)
-      if (initial === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
-      if (initial === 'no-session') return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`
-      if (initial === 'unknown') return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`
-      const previousExit = initial === 'wait-exit' ? await this.waitForPreviousExit(s, w, exitWaitMs) : 'exited'
-      if (previousExit === 'unknown') return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`
-      if (previousExit === 'timeout') {
-        return toolCallAborted() ? 'error: tool call cancelled' : `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`
-      }
-      if (toolCallAborted()) return 'error: tool call cancelled'
-      const settled = decideResume(await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) }))
-      if (settled === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
-      if (settled === 'unknown') return `error: could not verify ${w.tag}'s process (pid ${w.pid}); message was not delivered and worker was not resumed`
-      if (settled === 'wait-exit') return `error: could not resume ${w.tag}: previous process did not exit within ${exitWaitLabel}; message was not delivered and worker was not resumed`
-      if (!w.id) return `error: ${w.tag} has no stable worker id; it cannot be resumed`
-      const budget = w.budget
-      if (!budget) return `error: ${w.tag} has no recorded compute budget; it cannot be resumed`
-      const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers } })
-      if (toolCallAborted()) return 'error: tool call cancelled'
-      const latest = s.room.workers.get(w.tag)
-      if (!latest || latest.id !== w.id || latest.gen !== w.gen || latest.status === 'running') return `error: ${w.tag} changed while you were sending; retry`
-      w = latest
-      const id = w.id
-      if (!id) return `error: ${w.tag} has no stable worker id; it cannot be resumed`
-      const running = this.occupiedWorkers(s).length
-      const launchLease = reserveWorkerLaunch(this, config.maxWorkers, running)
-      if (!launchLease) return `error: ${this.launchUsage(running)} workers already running or starting (max ${config.maxWorkers}, ROOM_MAX_WORKERS); wait for one to finish`
-      try {
-        const { server, isWorker } = workerOrigin(s)
-        const spawnedAfter = s.room.lastMessages(1)[0]?.id ?? ''
-        let resumeLogStart = 0
-        try { resumeLogStart = fs.statSync(path.join(s.dir, '.room', 'workers', `${w.tag}.log`)).size } catch { /* A new log starts at zero. */ }
-        let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
-        try { launched = await launchWorkerProcess({ rooms: this, session: s, id, tag: w.tag, dir: w.dir,
-          lead: w.lead, owner: s.me.owner ?? s.me.name, host: w.host, model: w.model, effort: w.effort,
-          share: w.share ?? 'intent', gen: w.gen ?? 1, budget, server, isWorker,
-          token: s.local ? undefined : s.token, claudeChannel, preferredPort: w.port, spawner, probe: this.probe.bind(this), log, at },
-        { mode: 'resume', sessionId: w.hostSessionId!, followUp, oldPort: w.port }, launchLease,
-        ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running',
-          startedAt, spawnedAfter, processStartTime, resumeLogStart, exitCode: undefined, finishedAt: undefined,
-          dismissedAt: undefined, stopReason: undefined }, id)) }
-        catch (e) {
-          const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
-          if (error.delivered) {
-            if (!error.stopped) return { delivered: true, reply: `could not stop ${w.tag} (pid ${error.pid}); left running` }
-            const reason = error.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
-            const stoppedAt = at()
-            const stopped = s.room.updateWorker(w.tag, { status: 'dismissed', dismissedAt: stoppedAt, finishedAt: stoppedAt,
-              startedAt: stoppedAt, processStartTime: undefined, summary: undefined,
-              stopReason: reason, ...(error.pid ? { pid: error.pid } : {}), exitCode: undefined }, id)
-            if (stopped) {
-              try { persistWorkerStopReason(s.dir, w.tag, reason, id) }
-              catch (persistError) { log(`worker resume: could not persist stop reason for ${w.tag}: ${persistError}`) }
-            }
-            return { delivered: true, reply: `stopped after receiving your message: ${error.phase === 'cancelled' ? 'cancelled' : error.message}` }
-          }
-          if (error.phase === 'port') return `error: could not reserve a port for ${w.tag}: ${error.message}`
-          if (error.phase === 'budget' || error.phase === 'cancelled') return `error: ${error.message}`
-          if (error.phase === 'stale') return `error: ${w.tag} changed during resume; attempted to stop the new process`
-          return `error: could not resume ${w.tag}: ${error.message}`
-        }
-        let stopWarning = ''
-        try { clearWorkerStopState(s.dir, w.tag, id) }
-        catch (e) { stopWarning = `; warning: could not clear saved stop reason: ${e instanceof Error ? e.message : String(e)}`; log(`worker resume:${stopWarning}`) }
-        return `resumed ${w.tag}'s retained conversation with your message${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ''}${w.share ? '' : ' (legacy worker has no saved sharing level; using intent)'}${stopWarning}`
-      } finally {
-        launchLease.release()
-      }
-    } finally { this.unreserve(key) }
-  }
 }

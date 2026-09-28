@@ -4,7 +4,7 @@ import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
 import { git, gitWholeTree } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, workerOwnedPaths, workerOperationKey } from '../worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, workerOwnedPaths } from '../worker-git.js'
 import { signalWorker, pidPresent, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../worker-process.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
@@ -13,6 +13,7 @@ import { releaseClaimsOnDone } from './claims.js'
 import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import type { Session } from '../session.js'
 import { retireCollected } from '../retire.js'
+import { registryForDir, registrySnapshotForDir } from '../worker-registry.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
@@ -26,7 +27,6 @@ export const defs: ToolDef[] = [{
 }]
 
 const split = (value: string) => value.split('\0').filter(Boolean)
-const collectQueues = new Map<string, { tail: Promise<void>; tag: string }>()
 
 /** Only signal processes after confirming this is still the worker's owned git worktree. */
 const ownershipRecords = (s: Session) => [...s.room.retiredWorkers(), ...s.room.workers.values()]
@@ -72,6 +72,19 @@ async function assertNoOperation(dir: string): Promise<void> {
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
+  const missingCapability = (s: Session, w: Worker): string => {
+    const records = registrySnapshotForDir(s.dir).list()
+    const record = records.find(candidate => candidate.tag === w.tag)
+    if (record && record.lead.participant !== s.me.name) {
+      const parent = records.find(candidate => candidate.name === record.lead.participant)
+      return `${w.tag} belongs to ${record.lead.participant}; collect it through that lead (resume it if needed), or room_collect tag=${parent?.tag ?? 'PARENT'} discard=true force=true to save recovery patches`
+    }
+    return `${w.tag}: no local worker capability (worktree missing or unmanaged)`
+  }
+  const holdingWorker = (tag: string, from: Session): Session => {
+    const records = registrySnapshotForDir(from.dir).list().filter(record => record.tag === tag)
+    return state.rooms.all().find(room => records.some(record => record.room === room.roomName)) ?? from
+  }
   const unverifiedLive = async (s: Session, w: Worker): Promise<string | undefined> => {
     if (!pidPresent(w.pid, state.ctx?.probe)) return undefined
     const facts = await workerRealState(s.dir, w, { process: true, hasHandle: !!state.rooms.handle?.(s, w.id), probe: state.ctx?.probe })
@@ -99,15 +112,17 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     visit(w)
     return out
   }
-  const reserveWorker = async (s: Session, w: Worker): Promise<string | undefined> => {
-    const lock = workerOperationKey(w)
-    if (state.rooms.reserve(lock)) return lock
-    await state.rooms.retireWorkers(s)
-    const current = s.room.workers.get(w.tag)
-    return current && current.id === w.id && current.startedAt === w.startedAt && state.rooms.reserve(lock) ? lock : undefined
+  const takeWorkerOperation = async (s: Session, w: Worker, op: 'collect' | 'discard'): Promise<string> => {
+    if (!w.id) return 'untrusted'
+    const registry = await registryForDir(s.dir)
+    const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
+    if (!trusted || trusted.record.id !== w.id) return 'untrusted'
+    try { await registry.beginOperation(w.id, op); return w.id }
+    catch { return 'busy' }
   }
-  const roomCollect = async (a: Record<string, unknown>, discarding = new Set<string>()): Promise<string> => {
-    const { rooms } = state, lead = state.S()
+  const roomCollect = async (a: Record<string, unknown>, discarding = new Set<string>(), actingLead?: Session): Promise<string> => {
+    const { rooms } = state, lead = actingLead ?? state.S()
+    const registry = await registryForDir(lead.dir)
     const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'paths', 'force'].includes(key))
     if (unknown) return 'error: unknown argument ' + unknown
     if (a.tag !== undefined && (typeof a.tag !== 'string' || !/^[a-zA-Z0-9_-]{1,40}$/.test(a.tag))) return 'error: valid worker tag required'
@@ -124,18 +139,27 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (kept && !kept.s.room.workers.has(a.tag as string)) {
         const { s, r } = kept
         const w = { ...r, dir: r.keptWorktree!, branch: 'room/' + r.tag, status: 'done', exitCode: 0, pid: 0 } as Worker
-        const lock = workerOperationKey(w)
-        if (!rooms.reserve(lock)) return 'error: this worker is already being handled or retired'
+        const active = registry.list().find(record => record.tag === r.tag && record.keptWorktree === r.keptWorktree)
+        if (!active) return 'error: kept worker has no local registry record'
+        try { await registry.beginOperation(active.id, 'discard') }
+        catch { return 'error: this worker is already being handled or retired' }
         try {
+          const missing = decideDiscard(await workerRealState(s.dir, w)) === 'prune'
+          const ignored = missing ? [] : await ignoredWorkerArtifacts(w)
+          if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
+          await registry.beginDiscard(active.id, a.force === true, [])
+          await registry.markDiscardStep(active.id, 'children')
+          await registry.beginStop(active.id, 'discarded')
           const cleanupErrors: string[] = []
           const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses)
           // A kept worktree that is no longer an owned Room worktree is refused, not forgotten: cleanupWorker decides.
-          const missing = decideDiscard(await workerRealState(s.dir, w)) === 'prune'
           const missingDetail = missing ? await pruneMissingWorkerWorktree(s.dir, w) : undefined
           if (missing) cleanupWorkerLogs(s.dir, w)
-          const ignored = missing ? [] : await ignoredWorkerArtifacts(w)
-          if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}${terminated.length ? '\nstopped processes: ' + terminated.join(', ') : ''}${cleanupErrors.length ? '\n' + cleanupErrors.join('; ') : ''}\nrepeat with force=true to delete them`
+          await registry.markDiscardStep(active.id, 'stop')
+          const patch = missing ? undefined : await saveDiscardPatch(s.dir, w, bytes => registry.recordDiscardPatch(active.id, bytes))
+          await registry.markDiscardStep(active.id, 'patch')
           if (!missing && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
+          await registry.markDiscardStep(active.id, 'cleanup')
           const archive = s.room.doc.getArray<RetiredWorker>('retiredWorkers')
           const index = archive.toArray().findIndex(item => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead)
           if (index >= 0) s.room.doc.transact(() => {
@@ -143,32 +167,40 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const { keptWorktree: _keptWorktree, ...cleared } = r
             archive.insert(index, [{ ...cleared, summary: 'discarded', disposition: 'discarded' }])
           })
-          return 'discarded ' + r.tag + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
-        } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
-        finally { rooms.unreserve(lock) }
+          await registry.markDiscardStep(active.id, 'prune')
+          await registry.update(active.id, old => ({ ...old, phase: 'retiring', keptWorktree: undefined,
+            cleanup: { [old.room]: 'pending' }, seq: old.seq + 1 }))
+          return 'discarded ' + r.tag + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
+        } catch (e) { await registry.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {}); return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
+        finally { await registry.finishOperation(active.id) }
       }
-      const s = rooms.holdingWorker(a.tag as string, lead)
+      const s = actingLead ?? holdingWorker(a.tag as string, lead)
       const w = s.room.workers.get(a.tag as string)
       if (!w) return 'error: no worker ' + a.tag + ' owned by you'
       const owner = ownership(s, w, discarding)
       if (!owner.owned) return 'error: no worker ' + a.tag + ' owned by you'
       if (owner.liveLead) return `error: ${w.tag} belongs to ${owner.liveLead}, which is still running; ask it with room_send, or discard ${owner.liveLead}'s worker first`
-      const intent = 'discard:' + s.roomName + ':' + w.name
-      if (!rooms.reserve(intent)) return 'error: this worker is already being discarded'
-      const lock = await reserveWorker(s, w)
-      if (!lock) { rooms.unreserve(intent); return 'error: this worker is already being handled or retired' }
+      const lock = await takeWorkerOperation(s, w, 'discard')
+      if (lock === 'untrusted') return `error: ${missingCapability(s, w)}`
+      if (lock === 'busy') return 'error: this worker is already being handled or retired'
       try {
         const unsafe = await unverifiedLive(s, w)
         if (unsafe) return unsafe
         const children = descendants(s, w)
         if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map(c => c.tag).join(', ')}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`
+        const beforePlan = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) })
+        const ignoredBefore = decideDiscard(beforePlan) === 'cleanup' ? await ignoredWorkerArtifacts(w) : []
+        if (ignoredBefore.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignoredBefore.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
+        await registry.beginDiscard(lock, a.force === true, children.map(child => child.id!).filter(Boolean))
         const childResults: string[] = []
         for (const child of children) {
           if (!s.room.workers.has(child.tag)) continue
-          const result = await roomCollect({ tag: child.tag, discard: true, force: true }, new Set([...discarding, w.name]))
+          const childLead = { ...s, dir: w.dir, me: { ...s.me, name: w.name } } as Session
+          const result = await roomCollect({ tag: child.tag, discard: true, force: true }, new Set([...discarding, w.name]), childLead)
           childResults.push(result)
           if (!result.startsWith('discarded ') && !result.startsWith('stopped ')) return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
         }
+        await registry.markDiscardStep(lock, 'children')
         // A headless host can take its child server down as it exits. Record and stop
         // worktree processes while they are still observable, before dismissing it.
         const cleanupErrors: string[] = []
@@ -187,6 +219,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           })
           if (!stopped) throw new Error('worker process has not stopped')
         }
+        await registry.markDiscardStep(lock, 'stop')
         const unsafeAfterDismissal = await unverifiedLive(s, w)
         if (unsafeAfterDismissal) return unsafeAfterDismissal
         terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses))
@@ -210,6 +243,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const ownedWorktree = decideDiscard(afterStop) === 'cleanup'
         const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w) : []
         if (ignored.length && a.force !== true) {
+          await registry.interruptDiscard(lock, `ignored artifacts appeared: ${ignored.join(', ')}`)
           return [
             `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}`,
             ...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`),
@@ -219,8 +253,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             'copy what you need (mode="copy", paths=[...]), then repeat with force=true to delete the rest',
           ].join('\n')
         }
-        const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w) : undefined
+        const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w, bytes => registry.recordDiscardPatch(lock, bytes)) : undefined
+        await registry.markDiscardStep(lock, 'patch')
         if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
+        await registry.markDiscardStep(lock, 'cleanup')
         releaseClaimsOnDone(s, () => false, w.name, false)
         const retiredAt = Date.now()
         retireCollected(s, w, {
@@ -228,11 +264,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           summary: 'discarded', files: [], fileCount: 0, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed', disposition: 'discarded',
         })
+        await registry.markDiscardStep(lock, 'prune')
+        await registry.update(lock, old => ({ ...old, phase: 'retiring', cleanup: { [old.room]: 'pending' }, seq: old.seq + 1 }))
         return [...childResults, (decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
-      } catch (e) { return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
-      finally { rooms.unreserve(lock); rooms.unreserve(intent) }
+      } catch (e) {
+        await registry.interruptDiscard(lock, e instanceof Error ? e.message : String(e)).catch(() => {})
+        return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir
+      }
+      finally { await registry.finishOperation(lock) }
     }
-    const sessions = a.tag ? [rooms.holdingWorker(a.tag as string, lead)] : rooms.all()
+    const sessions = a.tag ? [holdingWorker(a.tag as string, lead)] : rooms.all()
     const candidates = sessions.flatMap(s => [...s.room.workers.values()].filter(w => {
       if (a.tag && w.tag !== a.tag) return false
       const owner = ownership(s, w, discarding)
@@ -249,15 +290,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const selected: typeof candidates = []
     const leadRoot = fs.realpathSync(lead.dir)
     const workerRoots = new Map<Worker, string>()
-    const lock = 'collect:' + leadRoot
-    if (!rooms.reserve(lock)) return 'error: another collection is in progress'
     const workerLocks: string[] = []
+    const collectStarted = new Set<string>()
     try {
       for (const item of candidates) {
         const { s } = item; let { w } = item
         const unsafe = await unverifiedLive(s, w)
         if (unsafe) { out.push(unsafe); continue }
-        const stopped = w.pid !== undefined && !state.workerAlive(s, w) && !pidPresent(w.pid, state.ctx?.probe)
+        const stopped = w.pid > 0 && !state.workerAlive(s, w) && !pidPresent(w.pid, state.ctx?.probe)
         const decision = decideCollect(await workerRealState(lead.dir, w), !!a.tag, stopped)
         if (decision === 'skip-status') { out.push('skipped ' + w.tag + ': ' + w.status + (w.status === 'failed' ? ` (${failureReason(w)})` : '')); continue }
         if (decision === 'skip-partial') {
@@ -265,8 +305,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           out.push(`skipped ${w.tag}: stopped before finishing (${why}); room_collect tag=${w.tag} to take its partial edits, mode=copy for named files, or discard=true`)
           continue
         }
-        const workerLock = await reserveWorker(s, w)
-        if (!workerLock) continue
+        const workerLock = await takeWorkerOperation(s, w, 'collect')
+        if (workerLock === 'untrusted') { out.push(`skipped ${missingCapability(s, w)}`); continue }
+        if (workerLock === 'busy') { out.push(`skipped ${w.tag}: already being handled`); continue }
         workerLocks.push(workerLock)
         try {
         const unsafeAfterLock = await unverifiedLive(s, w)
@@ -371,6 +412,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         changes.push({ p, file, before, after, mode, oldMode })
       }
       // Preflight every destination before writes. Restore originals on any write failure.
+      for (const { w } of selected) if (w.id) {
+        await registry.beginCollect(w.id)
+        collectStarted.add(w.id)
+      }
       const written: typeof changes = []
       try {
         for (const change of changes) {
@@ -385,8 +430,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       out.push('Changes from ' + selected.map(x => x.w.tag).join(', ') + ': ' + (changes.map(x => x.p).join(', ') || 'already present') + '. Nothing committed or staged.')
       for (const { s, w } of selected) {
+        let keptDir: string | undefined
+        const finishOne = async (success = true) => { if (w.id) { await registry.finishCollect(w.id, success, keptDir); collectStarted.delete(w.id) } }
         releaseClaimsOnDone(s, () => false, w.name, false)
         const retire = (summary: string, keptWorktree?: string, keptReason?: string) => {
+          if (keptWorktree) keptDir = keptWorktree
           const retiredAt = Date.now()
           const files = result.paths.filter(p => result.owners.get(p)?.includes(w.name))
           retireCollected(s, w, {
@@ -395,17 +443,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             startedAt: w.startedAt, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed', disposition: 'collected',
           })
         }
-        if (state.workerAlive(s, w)) { out.push('kept ' + w.tag + ': clean exit not confirmed'); continue }
-        if (w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); retire(w.summary ?? '', w.dir, 'clean exit not confirmed'); continue }
+        if (state.workerAlive(s, w)) { out.push('kept ' + w.tag + ': clean exit not confirmed'); await finishOne(false); continue }
+        if (w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); retire(w.summary ?? '', w.dir, 'clean exit not confirmed'); await finishOne(); continue }
         try {
           const children = descendants(s, w)
-          if (children.length) { const reason = 'nested workers remain: ' + children.map(c => c.tag).join(', '); out.push('kept ' + w.tag + ': ' + reason); retire(w.summary ?? '', w.dir, reason); continue }
+          if (children.length) { const reason = 'nested workers remain: ' + children.map(c => c.tag).join(', '); out.push('kept ' + w.tag + ': ' + reason); retire(w.summary ?? '', w.dir, reason); await finishOne(); continue }
           const ignored = await ignoredWorkerArtifacts(w)
           if (ignored.length) {
             out.push('kept ' + w.tag + ': uncopied ignored artifacts')
             out.push(...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`))
             out.push(`retained worktree: ${w.dir}`)
             retire(`kept for ignored output at ${w.dir}`, w.dir, 'uncopied ignored artifacts')
+            await finishOne()
             continue
           }
           const terminated: string[] = []
@@ -415,25 +464,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
           } else { out.push('kept ' + w.tag + ': cleanup incomplete'); retire(w.summary ?? '', w.dir, 'cleanup incomplete') }
         } catch (e) { out.push('cleanup incomplete for ' + w.tag + ': ' + (e instanceof Error ? e.message : String(e))); retire(w.summary ?? '', w.dir, 'cleanup incomplete') }
+        await finishOne()
       }
       return out.join('\n')
-    } catch (e) { return [...out, 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n') }
-    finally { for (const workerLock of workerLocks) rooms.unreserve(workerLock); rooms.unreserve(lock) }
+    } catch (e) {
+      for (const id of collectStarted) await registry.finishCollect(id, false).catch(() => {})
+      return [...out, 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n')
+    }
+    finally { for (const workerLock of workerLocks) await registry.finishOperation(workerLock) }
   }
   return { room_collect: async a => {
-    const key = fs.realpathSync(state.S().dir)
-    const prior = collectQueues.get(key)
-    let release!: () => void
-    const tail = new Promise<void>(resolve => { release = resolve })
-    const entry = { tail, tag: typeof a.tag === 'string' ? a.tag : 'collect-all' }
-    collectQueues.set(key, entry)
-    try {
-      if (prior) await prior.tail
-      const result = await roomCollect(a)
-      return prior ? `queued behind ${prior.tag}\n${result}` : result
-    } finally {
-      if (collectQueues.get(key) === entry) collectQueues.delete(key)
-      release()
-    }
+    const registry = await registryForDir(state.S().dir)
+    if (a.discard) return roomCollect(a)
+    try { return await registry.withCollectLease(state.S().dir, () => roomCollect(a)) }
+    catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
   } }
 }

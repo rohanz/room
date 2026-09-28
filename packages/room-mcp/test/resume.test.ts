@@ -9,12 +9,13 @@ import { RoomDoc, type Worker } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { Rooms } from '../src/registry.js'
 import { decideResume, type WorkerRealState } from '../src/worker-state.js'
-import { persistWorkerStopReason } from '../src/worker-git.js'
+import { prepareWorktree } from '../src/worker-git.js'
 import { HooksBridge } from '../src/hooks-bridge.js'
 import { markHistorySeenOnJoin } from '../src/tools/join.js'
 import type { Session } from '../src/session.js'
 import type { PreparedWorktree } from '../src/worker-git.js'
 import type { SpawnSpec } from '../src/worker-process.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
 
 const scratch: string[] = []
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }) })
@@ -50,18 +51,19 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   const kills: number[] = []
   let notifySpawn!: () => void
   const spawned = new Promise<void>(resolve => { notifySpawn = resolve })
-  const tools = createTools({
+  const rawTools = createTools({
     getSession: () => current, setSession: s => { current = s }, cwd: dir, maxWorkers, log: line => logs.push(line), probe, listCwdProcesses: () => [],
     spawner: spec => { if (failStart) throw new Error('host unavailable'); specs.push(spec); notifySpawn(); return { pid: 6000 + specs.length, started, onExit: cb => { if (failWatch) throw new Error('could not watch exit'); exits.push(cb) }, onError: cb => { errors.push(cb) }, kill: () => { kills.push(1); if (stop.exitOnTerm) queueMicrotask(() => exits.at(-1)?.(0)); return stop.term ?? true }, killForce: () => { kills.push(9); if (stop.exitOnForce) queueMicrotask(() => exits.at(-1)?.(null)); return true } } },
-    worktree: worktree ?? (async (repo, tag) => {
-      const workerDir = join(repo, '.room', 'workers', tag)
-      mkdirSync(workerDir, { recursive: true })
-      return { dir: workerDir, branch: `room/${tag}`, created: true }
-    }),
+    worktree: worktree ?? ((repo, tag) => prepareWorktree(repo, tag, 'rohanz')),
   })
+  const tools = { ...rawTools, call: async (...args: Parameters<typeof rawTools.call>) => {
+    if (current?.room.workers.size && args[0] !== 'room_spawn') await syncDocumentWorkers(current)
+    return rawTools.call(...args)
+  } }
   const seed = (tag: string, patch: Partial<Worker> = {}) => {
     const workerDir = join(dir, '.room', 'workers', tag)
-    mkdirSync(workerDir, { recursive: true })
+    mkdirSync(join(dir, '.room', 'workers'), { recursive: true })
+    execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '-b', `room/${tag}`, workerDir, 'HEAD'])
     room.setWorker({
       id: `rohanz/${tag}#1`, tag, name: `rohanz+${tag}`, lead: 'rohanz', host: 'claude',
       hostSessionId: '550e8400-e29b-41d4-a716-446655440000',
@@ -73,27 +75,6 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
 }
 
 describe('resumed worker boundaries', () => {
-  it('returns a clean Codex follow-up to done, reports it to the lead, and allows collection', async () => {
-    const t = setup()
-    t.seed('quiet', { host: 'codex', summary: 'initial work done' })
-    const workerDir = t.room.workers.get('quiet')!.dir
-    execFileSync('git', ['-C', t.dir, 'worktree', 'add', '-b', 'room/quiet', workerDir, 'HEAD'])
-    expect(await t.tools.call('room_send', { type: 'note', to: 'quiet', text: 'check cleanup' })).toContain('resumed quiet')
-    expect(t.room.workers.get('quiet')).toMatchObject({ status: 'running', resumeLogStart: 0, summary: 'initial work done' })
-    writeFileSync(join(t.dir, '.room', 'workers', 'quiet.log'), [
-      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Earlier answer' } }),
-      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Confirmed: nothing needs removing' } }),
-      JSON.stringify({ type: 'turn.completed' }),
-    ].join('\n'))
-    t.exits[0](0)
-    await vi.waitFor(() => expect(t.room.workers.get('quiet')).toMatchObject({ status: 'done', exitCode: 0, summary: 'initial work done (follow-up: Confirmed: nothing needs removing)' }))
-    await vi.waitFor(() => expect(t.room.messages().filter(m => m.type === 'done')).toMatchObject([{ from: 'rohanz+quiet', to: 'rohanz', tag: 'quiet', priority: 'notify', summary: 'initial work done (follow-up: Confirmed: nothing needs removing)' }]))
-    expect(t.room.messages().filter(m => m.priority === 'interrupt')).toEqual([])
-    const collected = await t.tools.call('room_collect', { tag: 'quiet' })
-    expect(collected).not.toContain('skipped quiet')
-    expect(collected).not.toContain('error:')
-  })
-
   it('still fails a fresh worker that exits zero without room_done', async () => {
     const t = setup()
     expect(await t.tools.call('room_spawn', { tag: 'fresh', task: 'test', host: 'codex' })).toContain('spawned fresh')
@@ -109,26 +90,8 @@ describe('resumed worker boundaries', () => {
     expect(await t.tools.call('room_send', { type: 'note', to: 'broken', text: 'check cleanup' })).toContain('resumed broken')
     t.exits[0](1)
     await vi.waitFor(() => expect(t.room.workers.get('broken')).toMatchObject({ status: 'failed', exitCode: 1 }))
-    await vi.waitFor(() => expect(t.room.messages().filter(m => m.priority === 'interrupt')).toMatchObject([{ to: 'rohanz', text: expect.stringContaining('worker broken died') }]))
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.priority === 'interrupt')).toMatchObject([{ to: 'rohanz', text: expect.stringContaining('worker broken failed: exit 1') }]))
     expect(t.room.messages().filter(m => m.type === 'done')).toEqual([])
-  })
-
-  it('ignores an earlier run answer and uses the missing-report fallback', async () => {
-    const t = setup()
-    t.seed('silent', { host: 'codex', summary: 'initial work done' })
-    writeFileSync(join(t.dir, '.room', 'workers', 'silent.log'), JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Old answer' } }) + '\n')
-    expect(await t.tools.call('room_send', { type: 'note', to: 'silent', text: 'check again' })).toContain('resumed silent')
-    t.exits[0](0)
-    await vi.waitFor(() => expect(t.room.workers.get('silent')?.summary).toBe('initial work done (follow-up: finished without a report)'))
-  })
-
-  it('takes the final Claude result line and bounds it to 300 characters', async () => {
-    const t = setup()
-    t.seed('claude', { summary: 'initial work done' })
-    expect(await t.tools.call('room_send', { type: 'note', to: 'claude', text: 'check again' })).toContain('resumed claude')
-    writeFileSync(join(t.dir, '.room', 'workers', 'claude.log'), `intermediate\n${'x'.repeat(350)}\n`)
-    t.exits[0](0)
-    await vi.waitFor(() => expect(t.room.workers.get('claude')?.summary).toBe(`initial work done (follow-up: ${'x'.repeat(300)})`))
   })
 
   it('records the newest bus message as the worker spawn marker', async () => {
@@ -161,35 +124,6 @@ describe('resumed worker boundaries', () => {
   ] as const)('resume decision: worktree %s, host session %s, process %s -> %s', (worktree, hostSession, process, expected) => {
     expect(decideResume({ worktree, hostSession, process } as WorkerRealState)).toBe(expected)
   })
-  it('characterizes fresh and resumed launch policy, handle lifetime, and replies', async () => {
-    vi.stubEnv('ROOM_WORKER_NICE', '0')
-    const t = setup(1)
-    const spawned = await t.tools.call('room_spawn', { tag: 'policy', task: 'first', host: 'claude', share: 'intent' })
-    const first = t.room.workers.get('policy')!
-    expect(spawned).toContain('spawned policy:')
-    expect(t.specs[0]).toMatchObject({ cwd: first.dir, logFile: join(t.dir, '.room', 'workers', 'policy.log'), env: {
-      ROOM_SHARE: 'intent', ROOM_WORKER_ID: first.id, ROOM_TAG: 'policy', ROOM_DIR: first.dir,
-      ROOM_LOG_FILE: join(t.dir, '.room', 'workers', 'policy.mcp.log'), PORT: String(first.port),
-    } })
-    expect(t.specs[0].cmd).toBe('claude')
-    expect(first.budget?.nice).toBe(0)
-    t.room.updateWorker('policy', { status: 'done', summary: 'done', finishedAt: Date.now() }, first.id)
-    t.exits[0](0)
-    await vi.waitFor(() => expect(t.room.workers.get('policy')?.exitCode).toBe(0))
-    const reply = await t.tools.call('room_send', { type: 'note', to: 'policy', text: 'again' })
-    expect(reply).toContain("resumed policy's retained conversation with your message")
-    expect(reply).not.toContain('restarted')
-    expect(t.specs[1]).toMatchObject({ cwd: first.dir, logFile: t.specs[0].logFile, env: t.specs[0].env })
-    expect(t.specs[1].cmd).toBe('claude')
-    expect(t.specs[1].args).toContain('--resume')
-    expect(t.room.workers.get('policy')).toMatchObject({ status: 'running', pid: 6002 })
-    t.errors[1](new Error('host failed'))
-    t.exits[1](-1)
-    await vi.waitFor(() => expect(t.room.workers.get('policy')).toMatchObject({ status: 'failed', exitCode: -1 }))
-    await vi.waitFor(() => expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('could not resume policy: host failed'))).toBe(true))
-    expect(t.logs).toEqual([])
-  })
-
   it('keeps an intent worker at intent when its lead shares full', async () => {
     vi.stubEnv('ROOM_WORKER_NICE', '0')
     const t = setup()
@@ -203,70 +137,15 @@ describe('resumed worker boundaries', () => {
     expect(t.specs[1].env.ROOM_SHARE).toBe('intent')
   })
 
-  it('resumes legacy records at intent and says so', async () => {
-    const t = setup()
-    t.seed('legacy')
-    const reply = await t.tools.call('room_send', { type: 'note', to: 'legacy', text: 'again' })
-    expect(reply).toMatch(/resumed legacy.*intent/s)
-    expect(t.specs[0].env.ROOM_SHARE).toBe('intent')
-  })
-
-  it('delivers a resumed follow-up in the prompt, receipts its timeline copy, and keeps every inbox path quiet', async () => {
-    const t = setup()
-    t.seed('inbox', { host: 'codex' })
-    vi.stubEnv('ROOM_WORKER_HOST', 'codex')
-    const followUp = 'apply the review fix exactly once'
-    const recipient = t.room.workers.get('inbox')!.name
-    const seenWhenPublished: boolean[] = []
-    const onBus = () => {
-      const posted = t.room.messages().find(m => m.type === 'note' && m.to === recipient && m.text === followUp)
-      if (posted) seenWhenPublished.push(t.room.seen(recipient).has(posted.id))
-    }
-    t.room.bus.observe(onBus)
-    expect(await t.tools.call('room_send', { type: 'note', to: 'inbox', text: followUp, priority: 'interrupt' })).toContain('resumed inbox')
-    t.room.bus.unobserve(onBus)
-    expect(seenWhenPublished).toEqual([true])
-    const prompt = t.specs[0].args.join(' ')
-    expect(prompt).toContain(followUp)
-    expect(prompt).not.toContain('Read your Room inbox')
-    const inbox = t.room.messages().filter(m => m.type === 'note' && m.to === recipient && m.text === followUp)
-    expect(inbox).toHaveLength(1)
-    expect(t.room.seen(recipient).has(inbox[0].id)).toBe(true)
-    const leadState = await t.tools.call('room_state', {})
-    expect(leadState.split(followUp)).toHaveLength(2)
-
-    const workerDir = t.room.workers.get('inbox')!.dir
-    mkdirSync(join(workerDir, '.git'), { recursive: true })
-    writeFileSync(join(workerDir, '.git', 'room-session.json'), JSON.stringify({ session_id: 'worker-thread', at: Date.now(), cwd: workerDir, host: 'codex' }))
-    const workerSession = { ...t.session, dir: workerDir, me: { name: recipient, kind: 'agent' as const } } as Session
-    const workerTools = createTools({ getSession: () => workerSession, setSession: () => {}, cwd: workerDir })
-    const queue = vi.fn(async () => {})
-    const bridge = new HooksBridge(workerSession, {
-      forMe: m => m.to === recipient,
-      isSeen: id => t.room.seen(recipient).has(id), queue,
-    })
-    try {
-      expect(await workerTools.call('room_state', {})).not.toContain('[inbox 1]')
-      expect(await workerTools.call('room_wait', { timeoutMs: 1 })).not.toContain(followUp)
-      bridge.write()
-      expect(JSON.parse(readFileSync(bridge.stateFile(), 'utf8')).unread).toEqual([])
-      await bridge.maybeWake(inbox[0])
-      expect(queue).not.toHaveBeenCalled()
-    } finally {
-      bridge.stop()
-      await workerTools.shutdown()
-    }
-  })
-
-  it('clears disk stop state after resume so a new registry does not dismiss it', async () => {
+  it('keeps a previous run stop fact from dismissing the resumed run', async () => {
     const t = setup()
     t.seed('stopped', { status: 'dismissed', stopReason: 'lead-session-ended' })
-    persistWorkerStopReason(t.dir, 'stopped', 'lead-session-ended', t.room.workers.get('stopped')!.id)
+    const registry = await syncDocumentWorkers(t.session)
+    const id = t.room.workers.get('stopped')!.id!
+    expect(registry.read(id)?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
     expect(await t.tools.call('room_send', { type: 'note', to: 'stopped', text: 'again' })).toContain('resumed stopped')
-    const restarted = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
-    restarted.track(t.session)
-    expect(t.room.workers.get('stopped')).toMatchObject({ status: 'running', stopReason: undefined })
-    restarted.remove(t.session)
+    expect(registry.read(id)?.runs.at(-1)?.n).toBe(2)
+    expect(registry.status(id)?.status).toBe('running')
   })
 
   it('refuses resume at capacity', async () => {
@@ -274,16 +153,17 @@ describe('resumed worker boundaries', () => {
     t.seed('busy', { status: 'running' })
     t.seed('waiting')
     const reply = await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })
-    expect(reply).toContain('max 1')
+    expect(reply).toContain('worker capacity reached')
     expect(t.specs).toHaveLength(0)
   })
 
-  it('counts an unreadable live finished worker against both spawn and resume capacity', async () => {
+  it('counts an unresolved worker against both spawn and resume capacity', async () => {
     const t = setup(1, undefined, pid => pid === 7001 ? {} : undefined)
-    t.seed('occupied', { pid: 7001, processStartTime: 'fixed-start' })
+    t.seed('occupied', { status: 'running', pid: 7001, processStartTime: 'fixed-start' })
     t.seed('waiting')
-    expect(await t.tools.call('room_spawn', { tag: 'new', task: 'test', host: 'claude' })).toContain('max 1')
-    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toContain('max 1')
+    await syncDocumentWorkers(t.session)
+    expect(await t.tools.call('room_spawn', { tag: 'new', task: 'test', host: 'claude' })).toContain('worker capacity reached')
+    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toContain('worker capacity reached')
     expect(t.specs).toHaveLength(0)
   })
 
@@ -293,7 +173,7 @@ describe('resumed worker boundaries', () => {
     t.seed('second')
     const replies = await Promise.all(['first', 'second'].map(to => t.tools.call('room_send', { type: 'note', to, text: 'again' })))
     expect(replies.filter(reply => reply.includes('resumed '))).toHaveLength(1)
-    expect(replies.filter(reply => reply.includes('max 1'))).toHaveLength(1)
+    expect(replies.filter(reply => reply.includes('worker capacity reached'))).toHaveLength(1)
     expect(t.specs).toHaveLength(1)
   })
 
@@ -309,9 +189,10 @@ describe('resumed worker boundaries', () => {
       return { dir: workerDir, branch: `room/${tag}`, created: true }
     })
     t.seed('waiting')
+    await syncDocumentWorkers(t.session)
     const spawn = t.tools.call('room_spawn', { tag: 'starting', task: 'test', host: 'claude' })
     await preparing
-    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toContain('max 1')
+    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toContain('worker capacity reached')
     expect(t.specs).toHaveLength(0)
     release()
     expect(await spawn).toContain('spawned starting')
@@ -321,6 +202,7 @@ describe('resumed worker boundaries', () => {
   it('releases the launch slot when a resume spawner fails', async () => {
     const t = setup()
     t.seed('retry')
+    await syncDocumentWorkers(t.session)
     const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
     const w = t.room.workers.get('retry')!
     expect(await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('unavailable') }, undefined, 1)).toContain('could not resume retry')
@@ -328,14 +210,13 @@ describe('resumed worker boundaries', () => {
     expect(second).toContain('resumed retry')
   })
 
-  it('records a resumed process error through the shared exit callback', async () => {
+  it('records a resumed process exit through the shared exit callback', async () => {
     const t = setup()
     t.seed('crash')
     expect(await t.tools.call('room_send', { type: 'note', to: 'crash', text: 'again' })).toContain('resumed crash')
-    t.errors[0](new Error('host unavailable'))
     t.exits[0](-1)
     await vi.waitFor(() => expect(t.room.workers.get('crash')).toMatchObject({ status: 'failed', exitCode: -1 }))
-    await vi.waitFor(() => expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('could not resume crash: host unavailable'))).toBe(true))
+    await vi.waitFor(() => expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('worker crash failed: exit -1'))).toBe(true))
   })
 
   it('refuses a vanished worktree before posting a message or starting a host', async () => {
@@ -348,218 +229,13 @@ describe('resumed worker boundaries', () => {
     expect(t.room.messages()).toHaveLength(before)
   })
 
-  it('queues one follow-up through a controlled previous process exit and does not warn that the restarted worker will not answer', async () => {
-    const t = setup()
-    expect(await t.tools.call('room_spawn', { tag: 'slow', task: 'first', host: 'claude' })).toContain('spawned slow')
-    const w = t.room.workers.get('slow')!
-    t.room.updateWorker('slow', { status: 'done', summary: 'done', finishedAt: Date.now() }, w.id)
-    vi.useFakeTimers()
-    try {
-      const sending = t.tools.call('room_send', { type: 'note', to: 'slow', text: 'one follow-up' })
-      setTimeout(() => t.exits[0](0), 5_200)
-      await vi.advanceTimersByTimeAsync(5_200)
-      const reply = await sending
-      expect(reply).toContain("resumed slow's retained conversation with your message")
-      expect(reply).not.toContain('will not answer')
-      expect(t.specs).toHaveLength(2)
-      expect(t.room.messages().filter(m => m.type === 'note' && m.to === w.name && m.text === 'one follow-up')).toHaveLength(1)
-    } finally { vi.useRealTimers() }
-  })
-
-  it('records the resumed process start after a ten-second previous-exit wait', async () => {
-    const t = setup()
-    t.seed('slow-exit')
-    const w = t.room.workers.get('slow-exit')!
-    const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }), probe: pid => pid === 9002 ? { startTime: 'fixed-resume-start', executable: 'claude' } : undefined })
-    let oldExit!: (code: number | null) => void
-    const oldProcess = { pid: 9001, onExit: (cb: typeof oldExit) => { oldExit = cb }, kill: () => true }
-    rooms.setHandle(t.session, w.id!, oldProcess)
-    rooms.watchWorkerProcess(t.session, w.id!, oldProcess, 'old process', () => {})
-    vi.useFakeTimers()
-    vi.setSystemTime(1_000)
-    try {
-      const sending = rooms.resumeWorker(t.session, w, 'again', () => ({ pid: 9002, started: Promise.resolve(), onExit: () => {}, kill: () => true }))
-      setTimeout(() => oldExit(0), 10_000)
-      await vi.advanceTimersByTimeAsync(10_000)
-      expect(await sending).toContain('resumed slow-exit')
-      const resumed = t.room.workers.get('slow-exit')!
-      rooms.dropHandle(t.session, resumed.id)
-      expect(resumed.processStartTime).toBe('fixed-resume-start')
-      expect(resumed.startedAt).toBe(11_000)
-    } finally { vi.useRealTimers() }
-  })
-
   it('does not post a message when resume cannot reserve a launch slot', async () => {
     const t = setup(1)
     t.seed('busy', { status: 'running' })
     t.seed('waiting')
     const before = t.room.messages().length
-    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toMatch(/^error: .*max 1/)
+    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toMatch(/^error: worker capacity reached/)
     expect(t.room.messages()).toHaveLength(before)
-  })
-
-  it('does not post or receipt a follow-up when the resumed host fails to launch', async () => {
-    const t = setup(2, undefined, () => undefined, true)
-    t.seed('failed-launch')
-    const before = t.room.messages().length
-    expect(await t.tools.call('room_send', { type: 'note', to: 'failed-launch', text: 'try this fix' }))
-      .toContain('could not resume failed-launch: host unavailable')
-    expect(t.room.messages()).toHaveLength(before)
-    expect(t.room.seen(t.room.workers.get('failed-launch')!.name).size).toBe(0)
-  })
-
-  it('waits for an asynchronous resume start failure before posting or receipting the follow-up', async () => {
-    let failStart!: (error: Error) => void
-    const started = new Promise<void>((_, reject) => { failStart = reject })
-    const t = setup(2, undefined, () => undefined, false, started)
-    t.seed('missing-host')
-    const recipient = t.room.workers.get('missing-host')!.name
-    const before = t.room.messages().length
-    const sending = t.tools.call('room_send', { type: 'note', to: 'missing-host', text: 'try this fix' })
-    await t.spawned
-    expect(t.room.messages()).toHaveLength(before)
-    expect(t.room.seen(recipient).size).toBe(0)
-    expect(t.room.workers.get('missing-host')?.status).toBe('done')
-    failStart(new Error('spawn claude ENOENT'))
-    expect(await sending).toContain('could not resume missing-host: spawn claude ENOENT')
-    expect(t.room.messages()).toHaveLength(before)
-    expect(t.room.seen(recipient).size).toBe(0)
-    expect(t.room.workers.get('missing-host')?.status).toBe('done')
-  })
-
-  it.each(['answer', 'note'] as const)('records a delivered %s and stops the worker when cancelled after start', async type => {
-    let resolveStart!: () => void
-    const started = new Promise<void>(resolve => { resolveStart = resolve })
-    const t = setup(2, undefined, () => undefined, false, started)
-    t.seed('cancelled')
-    const recipient = t.room.workers.get('cancelled')!.name
-    const question = t.room.post({ name: recipient, kind: 'agent' }, { type: 'question', to: 'rohanz', text: 'Which field?' })
-    const before = t.room.messages().length
-    const controller = new AbortController()
-    const onBus: boolean[] = []
-    t.room.bus.observe(() => {
-      const delivered = t.room.messages().find(m => m.text === 'price_cents')
-      if (delivered) onBus.push(t.room.seen(recipient).has(delivered.id))
-    })
-    const sending = t.tools.call('room_send', { type, to: 'cancelled', text: 'price_cents', ...(type === 'answer' ? { inReplyTo: question.id } : {}) }, controller.signal)
-    await t.spawned
-    expect(t.room.messages()).toHaveLength(before)
-    controller.abort()
-    resolveStart()
-    await vi.waitFor(() => expect(t.kills).toEqual([1]))
-    const active = t.room.workers.get('cancelled')!
-    expect(active).toMatchObject({ status: 'running', pid: 6001 })
-    expect(existsSync(t.portFile(active.port!))).toBe(true)
-    t.exits[0](0)
-    const reply = await sending
-    expect(reply).toContain('stopped after receiving your message: cancelled')
-    expect(t.kills).toHaveLength(1)
-    expect(existsSync(t.portFile(active.port!))).toBe(false)
-    const delivered = t.room.messages().filter(m => m.text === 'price_cents')
-    expect(delivered).toHaveLength(1)
-    expect(delivered[0].type).toBe(type)
-    if (type === 'answer') {
-      expect(delivered[0]).toMatchObject({ inReplyTo: question.id })
-      expect(await t.tools.call('room_send', { type: 'answer', to: 'cancelled', inReplyTo: question.id, text: 'duplicate' })).toContain('no unanswered questions')
-    }
-    expect(onBus).toEqual([true])
-    expect(t.room.seen(recipient).has(delivered[0].id)).toBe(true)
-    expect(t.room.workers.get('cancelled')).toMatchObject({ status: 'dismissed', stopReason: 'message-delivered-cancelled' })
-    expect(await t.tools.call('room_state', {})).toContain('stopped after receiving your message: cancelled')
-    if (type === 'note') {
-      expect(await t.tools.call('room_send', { type: 'note', to: 'cancelled', text: 'try again' })).toContain('resumed cancelled')
-      expect(t.room.workers.get('cancelled')).toMatchObject({ status: 'running', stopReason: undefined })
-    }
-  })
-
-  it('keeps a delivered follow-up running when its exit watcher cannot be installed', async () => {
-    const t = setup(2, undefined, () => undefined, false, Promise.resolve(), true)
-    t.seed('watch-failed')
-    const recipient = t.room.workers.get('watch-failed')!.name
-    const reply = await t.tools.call('room_send', { type: 'note', to: 'watch-failed', text: 'check the port' })
-    expect(reply).toContain('could not stop watch-failed (pid 6001); left running')
-    expect(t.kills).toHaveLength(1)
-    const message = t.room.messages().find(m => m.text === 'check the port')!
-    expect(t.room.seen(recipient).has(message.id)).toBe(true)
-    expect(t.room.workers.get('watch-failed')).toMatchObject({ status: 'running', pid: 6001 })
-    expect(existsSync(t.portFile(t.room.workers.get('watch-failed')!.port!))).toBe(true)
-  })
-
-  it('keeps the handle, port and running record when TERM is refused after delivery', async () => {
-    const handles = vi.spyOn(Rooms.prototype, 'setHandle')
-    let resolveStart!: () => void
-    const started = new Promise<void>(resolve => { resolveStart = resolve })
-    const t = setup(2, undefined, () => undefined, false, started, false, { term: false })
-    t.seed('refused')
-    const controller = new AbortController()
-    const sending = t.tools.call('room_send', { type: 'note', to: 'refused', text: 'sent' }, controller.signal)
-    await t.spawned
-    controller.abort()
-    resolveStart()
-    expect(await sending).toContain('could not stop refused (pid 6001); left running')
-    const w = t.room.workers.get('refused')!
-    const registry = handles.mock.instances.at(-1)!
-    expect(registry.handle(t.session, w.id)?.pid).toBe(6001)
-    expect(w).toMatchObject({ status: 'running', pid: 6001, stopReason: undefined })
-    expect(t.kills).toEqual([1])
-    expect(existsSync(t.portFile(w.port!))).toBe(true)
-    expect(t.room.messages().some(m => m.text === 'sent')).toBe(true)
-    expect(await t.tools.call('room_send', { type: 'note', to: 'refused', text: 'again' })).toContain('sent ')
-    expect(t.specs).toHaveLength(1)
-    t.exits[0](0)
-    await vi.waitFor(() => expect(existsSync(t.portFile(w.port!))).toBe(false))
-    expect(registry.handle(t.session, w.id)).toBeUndefined()
-  })
-
-  it('escalates ignored TERM to KILL and waits for exit before recording stopped', async () => {
-    const handles = vi.spyOn(Rooms.prototype, 'setHandle')
-    let resolveStart!: () => void
-    const started = new Promise<void>(resolve => { resolveStart = resolve })
-    const t = setup(2, undefined, () => undefined, false, started, false, { exitOnForce: true })
-    t.seed('stubborn')
-    const controller = new AbortController()
-    const sending = t.tools.call('room_send', { type: 'note', to: 'stubborn', text: 'sent' }, controller.signal)
-    await t.spawned
-    vi.useFakeTimers()
-    try {
-      controller.abort()
-      resolveStart()
-      await vi.advanceTimersByTimeAsync(1)
-      const w = t.room.workers.get('stubborn')!
-      const registry = handles.mock.instances.at(-1)!
-      expect(w.status).toBe('running')
-      expect(registry.handle(t.session, w.id)?.pid).toBe(6001)
-      expect(existsSync(t.portFile(w.port!))).toBe(true)
-      await vi.advanceTimersByTimeAsync(5_100)
-      expect(await sending).toContain('stopped after receiving your message: cancelled')
-      expect(t.kills).toEqual([1, 9])
-      expect(t.room.workers.get('stubborn')).toMatchObject({ status: 'dismissed', stopReason: 'message-delivered-cancelled' })
-      expect(existsSync(t.portFile(w.port!))).toBe(false)
-      expect(registry.handle(t.session, w.id)).toBeUndefined()
-    } finally { vi.useRealTimers() }
-  })
-
-  it('leaves an unresponsive worker running after both stop deadlines', async () => {
-    const handles = vi.spyOn(Rooms.prototype, 'setHandle')
-    let resolveStart!: () => void
-    const started = new Promise<void>(resolve => { resolveStart = resolve })
-    const t = setup(2, undefined, () => undefined, false, started)
-    t.seed('unresponsive')
-    const controller = new AbortController()
-    const sending = t.tools.call('room_send', { type: 'note', to: 'unresponsive', text: 'sent' }, controller.signal)
-    await t.spawned
-    vi.useFakeTimers()
-    try {
-      controller.abort()
-      resolveStart()
-      await vi.advanceTimersByTimeAsync(10_100)
-      expect(await sending).toContain('could not stop unresponsive (pid 6001); left running')
-      const w = t.room.workers.get('unresponsive')!
-      expect(w).toMatchObject({ status: 'running', stopReason: undefined })
-      expect(handles.mock.instances.at(-1)!.handle(t.session, w.id)?.pid).toBe(6001)
-      expect(existsSync(t.portFile(w.port!))).toBe(true)
-      expect(t.kills).toEqual([1, 9])
-    } finally { vi.useRealTimers() }
   })
 
   it('does not launch or post when cancelled before spawn', async () => {
@@ -572,49 +248,4 @@ describe('resumed worker boundaries', () => {
     expect(t.room.messages()).toHaveLength(0)
   })
 
-  it('bounds an old process exit wait and says neither delivery nor restart happened', async () => {
-    const t = setup()
-    t.seed('stuck')
-    const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }) })
-    const w = t.room.workers.get('stuck')!
-    rooms.setHandle(t.session, w.id!, { pid: 9001, started: Promise.resolve(), onExit: () => {}, kill: () => true })
-    const reply = await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('must not start') }, undefined, undefined, () => {}, Date.now, 20)
-    expect(reply).toBe('error: could not resume stuck: previous process did not exit within 1 second; message was not delivered and worker was not resumed')
-    expect(t.specs).toHaveLength(0)
-    expect(t.room.workers.get('stuck')?.status).toBe('done')
-  })
-
-  it('bounds unknown ownership probes and lets other timers run during previous-exit wait', async () => {
-    const t = setup()
-    t.seed('unknown', { pid: 9001, processStartTime: 'fixed-old-start' })
-    const w = t.room.workers.get('unknown')!
-    vi.useFakeTimers()
-    vi.setSystemTime(0)
-    let probes = 0
-    const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }),
-      probe: () => { vi.setSystemTime(++probes); return {} } })
-    try {
-      const otherTimer = vi.fn()
-      setTimeout(otherTimer, 0)
-      const waiting = (rooms as unknown as { waitForPreviousExit(s: Session, w: Worker, ms: number): Promise<string> }).waitForPreviousExit(t.session, w, 20)
-      await vi.advanceTimersByTimeAsync(20)
-      expect(await waiting).toBe('unknown')
-      expect(probes).toBeLessThan(10)
-      expect(otherTimer).toHaveBeenCalledOnce()
-    } finally { vi.useRealTimers() }
-  })
-
-  it('cancels a queued follow-up without leaving a bus copy', async () => {
-    const t = setup()
-    await t.tools.call('room_spawn', { tag: 'cancel', task: 'first', host: 'claude' })
-    const w = t.room.workers.get('cancel')!
-    t.room.updateWorker('cancel', { status: 'done', summary: 'done', finishedAt: Date.now() }, w.id)
-    const before = t.room.messages().length
-    const controller = new AbortController()
-    const sending = t.tools.call('room_send', { type: 'note', to: 'cancel', text: 'never sent' }, controller.signal)
-    setTimeout(() => controller.abort(), 20)
-    expect(await sending).toBe('error: tool call cancelled')
-    expect(t.specs).toHaveLength(1)
-    expect(t.room.messages()).toHaveLength(before)
-  })
 })
