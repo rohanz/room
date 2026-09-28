@@ -16329,6 +16329,14 @@ var init_doc = __esm({
       get graphs() {
         return this.doc.getMap("graphs");
       }
+      /** Flat `${name}\0${field}` keys avoid concurrent child-map insertion races. */
+      get participants() {
+        return this.doc.getMap("participants");
+      }
+      /** Monotonic absence accumulated by the current trim leader. */
+      get expiry() {
+        return this.doc.getMap("expiry");
+      }
       /** Persistent participant -> palette slot assignments. */
       get colors() {
         return this.doc.getMap("colors");
@@ -16697,7 +16705,8 @@ var init_doc = __esm({
           branch: map2.get("branch"),
           base: map2.get("base"),
           createdAt: map2.get("createdAt"),
-          seededBy: map2.get("seededBy")
+          seededBy: map2.get("seededBy"),
+          schemaVersion: map2.get("schemaVersion")
         };
       }
       setMeta(patch, origin) {
@@ -17406,13 +17415,13 @@ function summarizeFiles(paths, options = {}) {
   const dominant = winner ? { folder: winner[0], count: winner[1] } : void 0;
   const ordered = [...sorted].sort((a, b) => Number(!!dominant && a.startsWith(dominant.folder)) - Number(!!dominant && b.startsWith(dominant.folder)) || byPath(a, b));
   const selected = ordered.slice(0, options.namedLimit ?? 3);
-  const basename3 = (path29) => path29.slice(path29.lastIndexOf("/") + 1);
+  const basename4 = (path29) => path29.slice(path29.lastIndexOf("/") + 1);
   const counts = /* @__PURE__ */ new Map();
-  for (const path29 of selected) counts.set(basename3(path29), (counts.get(basename3(path29)) ?? 0) + 1);
+  for (const path29 of selected) counts.set(basename4(path29), (counts.get(basename4(path29)) ?? 0) + 1);
   return {
     count: sorted.length,
     dominant,
-    named: selected.map((path29) => ({ path: path29, label: counts.get(basename3(path29)) > 1 ? path29 : basename3(path29) })),
+    named: selected.map((path29) => ({ path: path29, label: counts.get(basename4(path29)) > 1 ? path29 : basename4(path29) })),
     groups: [...immediate].sort(([a], [b]) => a.localeCompare(b)).map(([folder, groupPaths]) => ({ folder, paths: groupPaths }))
   };
 }
@@ -17548,17 +17557,26 @@ function workerLines(inputs, options = {}) {
   if (hiddenRetired) out2.push(`  retired: ${hiddenRetired} (all=true lists them)`);
   return out2;
 }
-var STOPPED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, stoppedAfterMessage, scopeLine;
+var ROOM_STALE_MS, STOPPED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, stoppedAfterMessage, scopeLine;
 var init_views = __esm({
   "packages/shared/src/views.ts"() {
     "use strict";
     init_claims();
     init_identity();
+    init_doc();
+    ROOM_STALE_MS = 7 * 24 * 60 * 60 * 1e3;
     STOPPED_WITH_SESSION = "stopped when your last session ended; its partial work is in its worktree";
     STOPPED_UNWITNESSED = "stopped while no session of yours was running; reason unknown";
     stoppedWithSession = (w) => w.stopReason === "lead-session-ended";
     stoppedAfterMessage = (w) => w.stopReason?.startsWith("message-delivered-") ? `stopped after receiving your message: ${w.stopReason === "message-delivered-cancelled" ? "cancelled" : "launch failed"}` : void 0;
     scopeLine = (scope) => `${scope.area}: ${scope.summary} (${scope.paths.join(", ")})`;
+  }
+});
+
+// packages/shared/src/rooms.ts
+var init_rooms = __esm({
+  "packages/shared/src/rooms.ts"() {
+    "use strict";
   }
 });
 
@@ -17666,6 +17684,7 @@ var init_src = __esm({
     init_graph();
     init_areas();
     init_views();
+    init_rooms();
     init_memory();
     init_near();
     init_parsed();
@@ -23508,10 +23527,10 @@ var init_esm = __esm({
       }
       async _formatEntry(dirent, path29) {
         let entry;
-        const basename3 = this._isDirent ? dirent.name : dirent;
+        const basename4 = this._isDirent ? dirent.name : dirent;
         try {
-          const fullPath = presolve(pjoin(path29, basename3));
-          entry = { path: prelative(this._root, fullPath), fullPath, basename: basename3 };
+          const fullPath = presolve(pjoin(path29, basename4));
+          entry = { path: prelative(this._root, fullPath), fullPath, basename: basename4 };
           entry[this._statsProp] = this._isDirent ? dirent : await this._stat(fullPath);
         } catch (err2) {
           this._onError(err2);
@@ -24040,9 +24059,9 @@ var init_handler = __esm({
       _watchWithNodeFs(path29, listener) {
         const opts = this.fsw.options;
         const directory = sysPath.dirname(path29);
-        const basename3 = sysPath.basename(path29);
+        const basename4 = sysPath.basename(path29);
         const parent = this.fsw._getWatchedDir(directory);
-        parent.add(basename3);
+        parent.add(basename4);
         const absolutePath = sysPath.resolve(path29);
         const options = {
           persistent: opts.persistent
@@ -24052,7 +24071,7 @@ var init_handler = __esm({
         let closer;
         if (opts.usePolling) {
           const enableBin = opts.interval !== opts.binaryInterval;
-          options.interval = enableBin && isBinaryPath(basename3) ? opts.binaryInterval : opts.interval;
+          options.interval = enableBin && isBinaryPath(basename4) ? opts.binaryInterval : opts.interval;
           closer = setFsWatchFileListener(path29, absolutePath, options, {
             listener,
             rawEmitter: this.fsw._emitRaw
@@ -24075,10 +24094,10 @@ var init_handler = __esm({
           return;
         }
         const dirname5 = sysPath.dirname(file);
-        const basename3 = sysPath.basename(file);
+        const basename4 = sysPath.basename(file);
         const parent = this.fsw._getWatchedDir(dirname5);
         let prevStats = stats;
-        if (parent.has(basename3))
+        if (parent.has(basename4))
           return;
         const listener = async (path29, newStats) => {
           if (!this.fsw._throttle(THROTTLE_MODE_WATCH, file, 5))
@@ -24103,9 +24122,9 @@ var init_handler = __esm({
                 prevStats = newStats2;
               }
             } catch (error2) {
-              this.fsw._remove(dirname5, basename3);
+              this.fsw._remove(dirname5, basename4);
             }
-          } else if (parent.has(basename3)) {
+          } else if (parent.has(basename4)) {
             const at = newStats.atimeMs;
             const mt = newStats.mtimeMs;
             if (!at || at <= mt || mt !== prevStats.mtimeMs) {
@@ -44195,14 +44214,14 @@ function connectedBefore(session) {
 }
 
 // packages/room-mcp/src/session.ts
+import { mkdirSync, readFileSync, readdirSync, watchFile as watchFile2, unwatchFile as unwatchFile2 } from "node:fs";
+import { createHash as createHash6 } from "node:crypto";
 init_y_websocket();
 init_wrapper();
 init_yjs();
 init_src2();
-import { mkdirSync, readFileSync, watchFile as watchFile2, unwatchFile as unwatchFile2 } from "node:fs";
-import { createHash as createHash6 } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname as dirname4, join as join4, resolve as resolve3 } from "node:path";
+import { basename as basename3, dirname as dirname4, join as join4, resolve as resolve3 } from "node:path";
 
 // packages/relay/src/memory.ts
 init_yjs();
