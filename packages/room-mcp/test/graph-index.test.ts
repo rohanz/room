@@ -257,41 +257,62 @@ describe('GraphIndex', () => {
 })
 
 describe('GraphIndex snapshot discipline', () => {
-  it('yields during indexing and edge publication on a large shared-name graph', async () => {
-    const repo = mkdtempSync(join(tmpdir(), 'room-graph-large-'))
+  let repo: string, largeBase: string
+  const total = 2100
+  const readLarge = async (_dir: string, _sha: string, path: string): Promise<string> => {
+    const i = Number(path.slice(4, -3))
+    return i < 4
+      ? Array.from({ length: 8 }, (_, symbol) => `def shared_${symbol}(): pass`).join('\n')
+      : `def use_${i}(): return ${Array.from({ length: 8 }, (_, symbol) => `shared_${symbol}()`).join(' + ')}\n`
+  }
+  beforeAll(() => {
+    repo = mkdtempSync(join(tmpdir(), 'room-graph-large-'))
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()
     git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
-    const total = 2100
     for (let i = 0; i < total; i++) writeFileSync(join(repo, `file${i}.py`), '')
-    git('add', '.'); git('commit', '-qm', 'fixture')
-    const room = new RoomDoc(); room.setMeta({ base: git('rev-parse', 'HEAD') })
-    const read = async (_dir: string, _sha: string, path: string): Promise<string> => {
-      const i = Number(path.slice(4, -3))
-      return i < 4
-        ? Array.from({ length: 8 }, (_, symbol) => `def shared_${symbol}(): pass`).join('\n')
-        : `def use_${i}(): return ${Array.from({ length: 8 }, (_, symbol) => `shared_${symbol}()`).join(' + ')}\n`
-    }
-    const gi = new GraphIndex(room, 'Rohan', repo, undefined, { random: () => 0, minPublishMs: 0, read })
-    let indexTimer = false, edgeTimer = false
+    git('add', '.'); git('commit', '-qm', 'fixture'); largeBase = git('rev-parse', 'HEAD')
+  })
+  afterAll(() => rmSync(repo, { recursive: true, force: true }))
+
+  it('yields during indexing before starting edge publication', async () => {
+    const room = new RoomDoc(); room.setMeta({ base: largeBase })
+    const gi = new GraphIndex(room, 'Rohan', repo, undefined, { random: () => 0, minPublishMs: 0, read: readLarge })
+    let probe = false, probeAt1000 = false
     const originalSet = gi.graph.set.bind(gi.graph)
-    const originalDependencies = gi.graph.dependenciesOf.bind(gi.graph)
     vi.spyOn(gi.graph, 'set').mockImplementation((path, text) => {
-      if (gi.graph.size === 0) setTimeout(() => { indexTimer = true }, 0)
+      if (gi.graph.size === 100) setImmediate(() => { probe = true })
+      if (gi.graph.size === 1000) probeAt1000 = probe
       return originalSet(path, text)
-    })
-    vi.spyOn(gi.graph, 'dependenciesOf').mockImplementation(path => {
-      if (!edgeTimer) setTimeout(() => { edgeTimer = true }, 0)
-      return originalDependencies(path)
     })
     try {
       gi.start(); await gi.ready
       expect(gi.graph.size).toBe(total)
-      expect(indexTimer).toBe(true)
-      expect(edgeTimer).toBe(true)
+      expect(probeAt1000).toBe(true)
+    } finally { gi.stop(); room.doc.destroy() }
+  }, 30_000)
+
+  it('yields during edge publication before publishing ready', async () => {
+    const room = new RoomDoc(); room.setMeta({ base: largeBase })
+    const gi = new GraphIndex(room, 'Rohan', repo, undefined, { random: () => 0, minPublishMs: 0, read: readLarge })
+    try {
+      gi.start(); await gi.ready
+      let probe = false, scheduled = false, probeAtReady: boolean | undefined
+      const originalDependencies = gi.graph.dependenciesOf.bind(gi.graph)
+      vi.spyOn(gi.graph, 'dependenciesOf').mockImplementation(path => {
+        if (!scheduled) { scheduled = true; setImmediate(() => { probe = true }) }
+        return originalDependencies(path)
+      })
+      const originalPublish = room.graphs.set.bind(room.graphs)
+      vi.spyOn(room.graphs, 'set').mockImplementation((name, snapshot) => {
+        if (snapshot.status === 'ready') probeAtReady = probe
+        return originalPublish(name, snapshot)
+      })
+      room.setOverlay('Rohan', 'file4.py', 'def changed(): pass\n')
+      await eventually(() => probeAtReady !== undefined)
       expect(room.graphs.get('Rohan')?.status).toBe('ready')
-      expect(gi.graph.dependenciesOf('file4.py')).toHaveLength(8)
+      expect(probeAtReady).toBe(true)
       expect(room.graphs.get('Rohan')?.truncated).toBe(true)
-    } finally { gi.stop(); room.doc.destroy(); rmSync(repo, { recursive: true, force: true }) }
+    } finally { gi.stop(); room.doc.destroy() }
   }, 30_000)
 
   it('skips edge construction when the queued publish finds no graph changes', async () => {
