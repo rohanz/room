@@ -87,7 +87,18 @@ export function snapshot(room: RoomDoc, name: string, view: readonly Participant
 
 export function snapshotStillCurrent(room: RoomDoc, snap: ParticipantSnapshot, view: readonly ParticipantView[]): boolean {
   const head = room.manifestHead.get(snap.name)
-  return !!head && head.semRev === snap.head.semRev && fenceValid(head, participantRecord(room, snap.name), view)
+  const record = participantRecord(room, snap.name)
+  if (!head || !snap.fenceValid || !fenceValid(snap.head, record, view) || !fenceValid(head, record, view)) return false
+  const a = snap.head, b = head
+  return a.semRev === b.semRev && a.rev === b.rev && a.fence === b.fence && a.base === b.base &&
+    a.complete === b.complete && a.level === b.level && a.projectedBy === b.projectedBy &&
+    a.projectedFrom === b.projectedFrom && a.publisher === b.publisher &&
+    JSON.stringify(a.coverage) === JSON.stringify(b.coverage) &&
+    JSON.stringify(a.excluded) === JSON.stringify(b.excluded) &&
+    JSON.stringify(a.textPrefixes) === JSON.stringify(b.textPrefixes) &&
+    snap.roomSalt === room.roomSalt &&
+    snap.record?.git?.head === record?.git?.head && snap.record?.git?.base === record?.git?.base &&
+    snap.record?.git?.fence === record?.git?.fence && snap.record?.git?.rev === record?.git?.rev
 }
 
 /** Resolve only from the immutable snapshot; a hashless held entry always remains a gap. */
