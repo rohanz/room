@@ -51,6 +51,14 @@ describe('statusOf', () => {
     expect(statusOf(r, undefined, [previous], [{ run: 2, code: null, at: 5, witnessed: false }], dead).status).toBe('done')
   })
 
+  it('preserves a prior done through two failed resume launches (S3)', () => {
+    const first = run({ outcome: 'launched', pid: 42 })
+    const failed = (n: number): Run => ({ ...run({ outcome: 'never', error: 'spawn error' }, 'resume'), n })
+    const r = { ...record('active', first), runs: [first, failed(2), failed(3)] }
+    const reports = [{ run: 1, nonce: 'n', chain: [], joinedAt: 2, done: { at: 3, summary: 'completed', changed: [] } }]
+    expect(statusOf(r, undefined, reports, undefined, dead)).toMatchObject({ status: 'done', note: 'follow-up not delivered', summary: 'completed' })
+  })
+
   it('classifies witnessed success without room_done, failures, stop and unwitnessed loss', () => {
     const launched = record('active', run({ outcome: 'launched', pid: 42 }))
     expect(statusOf(launched, undefined, [], [{ run: 1, code: 0, at: 5, witnessed: true }], dead).status).toBe('failed')

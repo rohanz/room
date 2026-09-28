@@ -70,6 +70,56 @@ describe('WorkerRegistry durable store', () => {
     expect(restarted.reports('w_01')[0].done?.summary).toBe('finished')
   })
 
+  it('adds posted after done and preserves the first chain and host session through restart (S2)', () => {
+    const dir = common(), identity = { ...token, sessionId: 'worker-session', nonce: 'old' }
+    const first = openRegistry(dir, { migrate: false, identity })
+    first.writeIntent(intent())
+    const chain = [{ pid: 42, startTime: 'born', executable: '/bin/codex' }]
+    first.writeReport('w_01', { run: 1, nonce: 'launch-nonce', chain, joinedAt: 3, hostSessionId: 'host-1' })
+    const restarted = openRegistry(dir, { migrate: false, liveness: () => 'dead', identity: { ...identity, nonce: 'new' } })
+    restarted.writeReport('w_01', { run: 1, nonce: 'launch-nonce', chain: [], joinedAt: 5, hostSessionId: 'host-2',
+      done: { at: 6, summary: 'finished', changed: ['a.ts'] } })
+    restarted.writeReport('w_01', { run: 1, nonce: 'launch-nonce', chain: [], joinedAt: 7, posted: 'wk:w_01:1' })
+    expect(restarted.reports('w_01')[0]).toMatchObject({ chain, joinedAt: 3, hostSessionId: 'host-1',
+      done: { at: 6, summary: 'finished' }, posted: 'wk:w_01:1' })
+  })
+
+  it('notifies subscribers of another registry’s record, report, and exit writes (M4)', () => {
+    const dir = common(), a = openRegistry(dir, { migrate: false, liveness: () => 'alive' }),
+      b = openRegistry(dir, { migrate: false, liveness: () => 'alive' })
+    let changes = 0
+    a.onChange(() => { changes++ })
+    b.writeIntent(intent())
+    a.reconcile()
+    expect(changes).toBeGreaterThan(0)
+    const workerFile = path.join(dir, 'room', 'registry', 'workers', 'w_01.json')
+    const launched = b.read('w_01')!
+    launched.runs[0].launch = { outcome: 'launched', pid: 42 }
+    fs.writeFileSync(workerFile, JSON.stringify(launched))
+    a.reconcile()
+    const afterRecord = changes
+    b.writeReport('w_01', { run: 1, nonce: 'launch-nonce', chain: [], joinedAt: 2,
+      done: { at: 3, summary: 'done', changed: [] } })
+    a.reconcile()
+    expect(changes).toBeGreaterThan(afterRecord)
+    const afterReport = changes
+    b.writeExit('w_01', { run: 1, code: 0, at: 4, witnessed: true })
+    a.reconcile()
+    expect(changes).toBeGreaterThan(afterReport)
+  })
+
+  it('reuses an abandoned or fully cleaned retired tag, but keeps a retired worktree reserved (M5)', () => {
+    for (const phase of ['abandoned', 'retired'] as const) {
+      const dir = common(), store = openRegistry(dir, { migrate: false })
+      store.writeIntent({ ...intent(), phase, ...(phase === 'retired' ? { cleanup: { 'local/repo': 'done' } } : {}) })
+      store.writeIntent({ ...intent(), id: 'w_02' })
+      expect(JSON.parse(fs.readFileSync(path.join(dir, 'room', 'registry', 'tags', 'tests.json'), 'utf8')).id).toBe('w_02')
+    }
+    const dir = common(), store = openRegistry(dir, { migrate: false })
+    store.writeIntent({ ...intent(), phase: 'retired', cleanup: { 'local/repo': 'done' }, keptWorktree: '/tmp/kept' })
+    expect(() => store.writeIntent({ ...intent(), id: 'w_02' })).toThrow(/tag in use/)
+  })
+
   it('keeps a witnessed exit over later polling, and upgrades an unwitnessed exit', () => {
     const store = openRegistry(common(), { migrate: false })
     store.writeIntent(intent())
@@ -150,8 +200,29 @@ describe('WorkerRegistry durable store', () => {
     expect(imported).toMatchObject({ tag: 'tests', branch: 'room/tests', phase: 'active',
       capabilities: { signal: false, resume: false, collect: 'copy' } })
     expect(store.status(imported.id)?.status).toBe('imported')
-    expect((await store.trusted({ participant: imported.lead.participant, room: imported.lead.room, dir }, 'tests'))?.record.id).toBe(imported.id)
-    expect(await store.trusted({ participant: 'another', room: imported.lead.room, dir }, 'tests')).toBeUndefined()
+    expect(imported.legacy?.unowned).toBe(true)
+    expect(imported.lead.participant).toBe('')
+    expect((await store.trusted({ participant: 'rohanz', room: 'local/repo', dir }, 'tests'))?.record.id).toBe(imported.id)
+    expect(store.read(imported.id)).toMatchObject({ name: 'rohanz+tests', lead: { participant: 'rohanz', room: 'local/repo' } })
+    expect(await store.trusted({ participant: 'another', room: 'local/repo', dir }, 'tests')).toBeUndefined()
+    expect((await openRegistry(path.resolve(dir, commonDir)).trusted({ participant: 'rohanz', room: 'local/repo', dir }, 'tests'))?.record.id).toBe(imported.id)
+  })
+
+  it('discovers a nested legacy worker for its actual parent checkout, not its directory name (M3)', async () => {
+    const dir = common()
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
+    git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.com')
+    fs.writeFileSync(path.join(dir, 'README.md'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base')
+    const parent = path.join(dir, '.room', 'workers', 'parent')
+    const child = path.join(parent, '.room', 'workers', 'child')
+    fs.mkdirSync(path.dirname(parent), { recursive: true })
+    git('worktree', 'add', '-qb', 'room/parent', parent)
+    fs.mkdirSync(path.dirname(child), { recursive: true })
+    git('worktree', 'add', '-qb', 'room/child', child)
+    const store = openRegistry(path.resolve(dir, git('rev-parse', '--git-common-dir')))
+    expect(store.list().map(record => record.tag).sort()).toEqual(['child', 'parent'])
+    const adopted = await store.trusted({ participant: 'real-parent', room: 'local/repo', dir: parent }, 'child')
+    expect(adopted?.record).toMatchObject({ name: 'real-parent+child', lead: { participant: 'real-parent' } })
   })
 
   it('imports only locally verified carry and session capabilities from a legacy snapshot', () => {
@@ -179,6 +250,7 @@ describe('WorkerRegistry durable store', () => {
     const store = openRegistry(commonDir)
     expect(store.list()[0]).toMatchObject({ host: 'claude', task: 'old task', legacy: { said: 'old summary' },
       hostSessionId: 'session-1', capabilities: { resume: true, signal: false, collect: 'delta' } })
+    expect(store.list()[0].lead.participant).toBe('')
     expect(fs.existsSync(carry)).toBe(false)
     expect(fs.existsSync(`${carry}.migrated`)).toBe(true)
   })
@@ -201,6 +273,8 @@ describe('WorkerRegistry durable store', () => {
     expect(restarted.read('w_01')?.phase).toBe('abandoned')
     expect(fs.existsSync(workerDir)).toBe(false)
     expect(git('branch', '--list', 'room/tests')).toBe('')
+    restarted.writeIntent({ ...intent(), id: 'w_02' })
+    expect(restarted.read('w_02')).toBeDefined()
   })
 
   it('marks an interrupted collect without claiming that a partial apply was undone', () => {
@@ -222,6 +296,19 @@ describe('WorkerRegistry durable store', () => {
     expect(() => reopened.writeIntent({ ...intent(), id: 'w_02' })).toThrow(/tag in use/)
   })
 
+  it('quarantines structurally corrupt records without aborting healthy recovery (S4)', () => {
+    const dir = common(), store = openRegistry(dir, { migrate: false })
+    store.writeIntent(intent())
+    store.writeIntent({ ...intent(), id: 'w_02', tag: 'healthy', name: 'lead+healthy' })
+    const file = path.join(dir, 'room', 'registry', 'workers', 'w_01.json')
+    fs.writeFileSync(file, JSON.stringify({ v: 1, id: 'w_01', phase: 'prepared', runs: [{ n: 1 }] }))
+    const reopened = openRegistry(dir, { migrate: false, liveness: identity => identity.pid ? 'alive' : (() => { throw new Error('missing pid') })() })
+    expect(reopened.read('w_01')).toBeUndefined()
+    expect(reopened.read('w_02')).toBeDefined()
+    expect(fs.readdirSync(path.join(dir, 'room', 'registry', 'quarantine'))).toHaveLength(1)
+    expect(() => reopened.writeIntent({ ...intent(), id: 'w_03' })).toThrow(/tag in use/)
+  })
+
   it('releases claims at 8h idle with exactly one notice, and resets after activity', () => {
     const dir = common(), registry = openRegistry(dir, { migrate: false })
     const doc = new RoomDoc()
@@ -239,6 +326,7 @@ describe('WorkerRegistry durable store', () => {
     expect(registry.reconcileIdleClaims(input(8 * 3600_000))).toBe(true)
     expect(doc.claims.has('c1')).toBe(false)
     expect(notices).toEqual([{ id: 'idle-claims:s1:first', text: expect.stringContaining('src/api.ts:2-5') }])
+    expect(notices[0].text).not.toContain('cleared its scope')
     expect(registry.reconcileIdleClaims(input(9 * 3600_000))).toBe(false)
     expect(notices).toHaveLength(1)
     doc.claims.set('c2', { id: 'c2', path: 'src/new.ts', from: 1, to: 1, by: 'ben', byKind: 'agent', intent: 'new', at: 2 })
