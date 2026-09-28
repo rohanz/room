@@ -8,6 +8,7 @@ import { stripVTControlCharacters } from 'node:util'
 import { describeClaim, withLineNumbers, type NoteMsg, type Worker } from '@room/shared'
 import type { Session } from '../session.js'
 import { sameCheckoutSession } from '../company.js'
+import { checkoutPublisher } from './share.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, validRepoPath } from '@room/roomd'
 import { workerOwnedPaths } from '../worker-git.js'
@@ -44,9 +45,9 @@ export function testCommandFor(dir: string): string {
   return suggestedTestCommand(files)
 }
 
-/** A secondary Room process has no overlay of its own, but still reads this checkout's files. */
+/** A session without this checkout's publisher lease has no overlay of its own, but still reads the checkout's files. */
 function ownUnpublishedCheckout(s: Session, person: string): boolean {
-  const publisher = s.awareness.getLocalState()?.publishUnder
+  const publisher = checkoutPublisher(s)
   return person === s.me.name && !!publisher && sameCheckoutSession(s, publisher)
 }
 

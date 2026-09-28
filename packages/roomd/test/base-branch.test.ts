@@ -330,51 +330,97 @@ describe('restart: the transition resumes from the surviving record (reporooms �
   })
 })
 
-describe('one publisher per checkout (reporooms invariant 11)', () => {
-  it('a session publishing under another writes no git record and posts no pushed, but still moves its own claims', async () => {
-    vi.stubEnv('ROOM_MACHINE_ID', 'test-machine')
+/** A session in the checkout that does not hold the publisher lease (registry §16): its PolicyStore says so. */
+const secondary = (publisherName = 'Alice') => Object.freeze({ ...policyFromLevel('full', [], 'full', false), publisherName })
+
+describe('one publisher per checkout (reporooms invariant 11, registry §16, D5)', () => {
+  it('five sessions, team room: a commit and its push give one git update and one pushed, from the publisher; the others still move their claims (row 23a)', async () => {
     const w = await world()
     const alice = await w.start()
-    const bob = await w.start({ name: 'Bob' })
-    expect((bob as unknown as { publishUnder?: string }).publishUnder).toBe('Alice')
-    const claim = bob.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Bob', byKind: 'agent', intent: 'edit', claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2) })
+    const others = await Promise.all(['Bob', 'Cy', 'Di', 'Ed'].map(name => w.start({ name, policy: secondary() })))
+    const claims = others.map(d => d.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: d.name, byKind: 'agent', intent: 'edit', claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2) }))
+    const revs = () => git(alice, 'Alice')?.rev
+    const before = revs()
     const head = commit(w.dir, 'app.txt', 'added\nfirst\nclaimed\nlast\n')
     sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
-    await poll(alice)
-    await poll(bob)
-    expect(git(alice, 'Alice')).toMatchObject({ head, base: head, rev: 2 })
-    expect(git(alice, 'Bob')).toBeUndefined()
+    for (const d of [alice, ...others]) await poll(d)
+    expect(git(alice, 'Alice')).toMatchObject({ head, base: head, rev: before! + 1 })
+    for (const d of others) {
+      expect(git(alice, d.name)).toBeUndefined()
+      expect(alice.roomDoc.manifestHead.get(d.name)).toMatchObject({ coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'Alice' })
+    }
     expect(pushed(alice).map(m => m.from)).toEqual(['Alice'])
-    expect(alice.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
+    for (const claim of claims) expect(alice.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
   })
 
-  it('a promoted session writes its base facts at once, and a stale record of its own never yields a pushed', async () => {
-    vi.stubEnv('ROOM_MACHINE_ID', 'test-machine')
+  it('five sessions, local room: a commit gives exactly one git.rev bump, from the publisher, and no notice (row 23b)', async () => {
+    const w = await world({ local: true })
+    const alice = await w.start()
+    const others = await Promise.all(['Bob', 'Cy', 'Di', 'Ed'].map(name => w.start({ name, policy: secondary() })))
+    const before = git(alice, 'Alice')!.rev
+    const head = commit(w.dir, 'a.txt', 'a\n')
+    for (const d of [alice, ...others]) await poll(d)
+    expect(git(alice, 'Alice')).toMatchObject({ head, rev: before + 1 })
+    for (const d of others) expect(git(alice, d.name)).toBeUndefined()
+    expect(alice.roomDoc.messages().filter(m => m.type === 'pushed' || m.type === 'base')).toEqual([])
+  })
+
+  it('a session given the lease writes its base facts at once, and a stale record of its own never yields a pushed', async () => {
     const w = await world()
     const alice = await w.start()
-    const bob = await w.start({ name: 'Bob' })
+    const bob = await w.start({ name: 'Bob', policy: secondary() })
     await poll(bob)
     expect(git(bob, 'Bob')).toBeUndefined()
-    // Alice leaves with no commit or fetch: Bob is promoted and writes his record on the next poll.
+    // Alice leaves: her process released the lease, and Bob's next tick took it (his PolicyStore says publisher).
     await alice.stop(); daemons.splice(daemons.indexOf(alice), 1)
+    bob.applyInputs({ ...bob.inputs, policy: policyFromLevel('full') })
     await poll(bob)
-    expect((bob as unknown as { publishUnder?: string }).publishUnder).toBeUndefined()
     expect(git(bob, 'Bob')).toMatchObject({ head: w.base, base: w.base, anchored: true, rev: 1 })
-    // While Bob publishes, a commit is pushed from the checkout: Bob announces it, once.
     const head = commit(w.dir, 'a.txt', 'a\n')
     await poll(bob)
     sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
     await poll(bob)
     expect(pushed(bob).map(m => [m.from, m.fromSha, m.toSha])).toEqual([['Bob', w.base, head]])
-    // Alice returns under Bob, then is promoted when Bob leaves: her record from before is stale, not history to announce.
-    const back = await w.start()
-    expect((back as unknown as { publishUnder?: string }).publishUnder).toBe('Bob')
+    // Alice returns without the lease, then gets it when Bob leaves: her record from before is stale, not history to announce.
+    const back = await w.start({ policy: secondary('Bob') })
     await poll(back)
     expect(git(back, 'Alice')).toMatchObject({ head: w.base, rev: 1 })
     await bob.stop(); daemons.splice(daemons.indexOf(bob), 1)
+    back.applyInputs({ ...back.inputs, policy: policyFromLevel('full') })
     await poll(back)
-    expect((back as unknown as { publishUnder?: string }).publishUnder).toBeUndefined()
     expect(git(back, 'Alice')).toMatchObject({ head, base: head, rev: 2 })
     expect(pushed(back).map(m => m.from)).toEqual(['Bob'])
+  })
+})
+
+describe('the name lease fences every write (hub §4.1, §7)', () => {
+  it('paused: no git record, manifest or claim move; on a new epoch it republishes everything under it', async () => {
+    const w = await world()
+    let fence: string | undefined = '7'
+    const alice = await w.start({ lease: () => fence })
+    expect(git(alice)).toMatchObject({ fence: '7', rev: 1 })
+    expect(alice.roomDoc.manifestHead.get('Alice')).toMatchObject({ fence: '7' })
+    const claim = alice.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2) })
+    fence = undefined
+    const head = commit(w.dir, 'app.txt', 'added\nfirst\nclaimed\nlast\n')
+    await poll(alice)
+    expect(git(alice)).toMatchObject({ fence: '7', rev: 1, head: w.base })
+    expect(alice.roomDoc.claims.get(claim.id)).toMatchObject({ from: 2, to: 2 })
+    fence = '9'
+    await poll(alice)
+    await alice.settle()
+    expect(git(alice)).toMatchObject({ fence: '9', rev: 2, head })
+    expect(alice.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
+    await vi.waitFor(() => expect(alice.roomDoc.manifestHead.get('Alice')).toMatchObject({ fence: '9', complete: true }))
+    // The holder removes its own older incarnation on its first write under the new one (manifest §4.1).
+    expect([...alice.roomDoc.manifest.keys()].filter(k => k.startsWith('Alice\u0000'))).toEqual(['Alice\u00009'])
+  })
+
+  it('writes nothing while the hub-written holder names another epoch', async () => {
+    const w = await world()
+    w.server.getMap('participants').set('Alice\u0000holder', { sessionId: 'other', epoch: 8, pid: 1, startTime: '', executable: '', at: 1 })
+    const alice = await w.start({ lease: () => '7' })
+    expect(git(alice)).toBeUndefined()
+    expect(alice.roomDoc.manifestHead.get('Alice')).toBeUndefined()
   })
 })

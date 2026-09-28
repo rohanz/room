@@ -27,6 +27,12 @@ export interface ManifestPublication {
 const authorized = (i: ManifestPublication, p: string) => i.level === 'full' || (i.level === 'declared' && i.prefixes.some(prefix => containsPath(prefix, p)))
 const contentIdentity = (e: ManifestEntry) => JSON.stringify({ change: e.change, state: e.state, held: e.held, hash: e.hash, size: e.size, baseHash: e.baseHash, fence: e.fence })
 const headIdentity = (h: ManifestHead) => JSON.stringify({ base: h.base, fence: h.fence, coverage: h.coverage, level: h.level, complete: h.complete, publisher: h.publisher, textPrefixes: h.textPrefixes })
+const epochOf = (fence: string) => /^\d+$/.test(fence) ? Number(fence) : undefined
+function olderEpoch(fence: string, than: string): boolean {
+  const a = epochOf(fence), b = epochOf(than)
+  return a !== undefined && b !== undefined && a < b
+}
+
 /** Whole-snapshot writer; old overlay publication remains untouched during rollout step 1. */
 export function publishManifest(input: ManifestPublication, facts: readonly ManifestFact[]): ManifestHead {
   const { room, name, fence } = input
@@ -65,6 +71,12 @@ export function publishManifest(input: ManifestPublication, facts: readonly Mani
   }
   head.semRev = (previous?.semRev ?? 0) + (rev !== previous?.rev || !previous || headIdentity(head) !== headIdentity(previous) ? 1 : 0)
   room.doc.transact(() => {
+    // The holder deletes its own participant's older incarnations (manifest §4.1). Epochs only grow, so a
+    // stepped-down writer that has not noticed yet can never delete its successor's.
+    for (const other of [...room.manifest.keys()]) {
+      const split = other.lastIndexOf('\u0000')
+      if (other.slice(0, split) === name && olderEpoch(other.slice(split + 1), fence)) room.manifest.delete(other)
+    }
     let map = room.manifest.get(key)
     if (!map) { map = new Y.Map<ManifestEntry>(); room.manifest.set(key, map) }
     for (const p of [...map.keys()]) if (!entries.has(p)) map.delete(p)

@@ -113,7 +113,6 @@ export interface HandlerState {
   describeUsers: (s: Session, files: string[]) => string
   planChanged: (s: Session, claim: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan) => string[]
   followBranch: () => Promise<string>
-  evictStale: (s: Session) => string[]
   cleanupMine: (s: Session, why: string, keep?: (claim: Claim) => boolean) => number
   upgrade: (s: Session, msg: Msg, paths: string[], symbols: string[]) => Promise<string[]>
   claimLine: (s: Session, claim: Claim) => string

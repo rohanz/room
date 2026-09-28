@@ -9,6 +9,12 @@ vi.mock('@room/roomd', async original => ({
   ...await original<typeof import('@room/roomd')>(),
   startRoomd: vi.fn(async () => { throw new Error('reached daemon') }),
 }))
+// The join's probe connection syncs at once and finds no hub, so the join goes on (paused) to the daemon.
+vi.mock('y-websocket', async () => {
+  const { EventEmitter } = await import('node:events')
+  const { Awareness } = await import('y-protocols/awareness')
+  return { WebsocketProvider: class extends EventEmitter { synced = true; awareness: InstanceType<typeof Awareness>; constructor(_u: string, _r: string, doc: import('yjs').Doc) { super(); this.awareness = new Awareness(doc) } destroy() {} } }
+})
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 function server(open: boolean) {
   const posts: string[] = []

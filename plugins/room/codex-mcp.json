@@ -26,7 +26,8 @@
         "ROOM_MAX_WORKERS",
         "ROOM_LOG_FILE",
         "ROOM_OWNER",
-        "ROOM_CLAUDE_CHANNEL"
+        "ROOM_CLAUDE_CHANNEL",
+        "ROOM_NAME_EPOCH"
       ],
       "startup_timeout_sec": 30,
       "env": {

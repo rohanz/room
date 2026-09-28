@@ -1,6 +1,7 @@
 /** Owns starting a worker process, fresh or resumed. Worktree preparation happens before this boundary. */
 import path from 'node:path'
 import type { Session } from './session.js'
+import { processToken } from './names.js'
 import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
 import { defaultSpawner, probeProcess, stopWorkerWithEscalation, type ProcessInfo, type SpawnedProcess, type Spawner } from './worker-process.js'
@@ -34,6 +35,17 @@ export interface WorkerLaunchResult {
   processStartTime?: string
 }
 
+/**
+ * Reserve the worker's name in the room it joins, before the launch, so nobody else takes it meanwhile
+ * (registry §15 row 3). Without a reachable hub the worker acquires its name itself when it joins.
+ */
+async function reserveWorkerName(s: Session, name: string, workerId: string, log: (line: string) => void): Promise<number | undefined> {
+  if (!s.hub || !s.lease) return undefined
+  const token = processToken(s.lease.sessionId)
+  try { return await s.hub.reserve(name, { sessionId: s.lease.sessionId, pid: token.pid, startTime: token.startTime, executable: token.executable, workerId }) }
+  catch (e) { log(`could not reserve ${name} for the worker: ${e instanceof Error ? e.message : String(e)}`); return undefined }
+}
+
 /** The caller records the launch intent before entering this boundary. */
 export async function launchWorkerProcess(policy: Policy, command: Command, host: LaunchHost,
   onLaunched: (pid: number) => Promise<void>, onSpawn: (result: WorkerLaunchResult) => Promise<void>,
@@ -49,12 +61,13 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     try { reservation = reserveWorkerPort(id, policy.usedPorts ?? [], undefined, policy.preferredPort) }
     catch (e) { throw new WorkerLaunchError('port', String(e instanceof Error ? e.message : e)) }
     const port = reservation.port
+    const nameEpoch = await reserveWorkerName(s, `${policy.owner}+${tag}`, id, policy.log)
     const portChanged = command.mode === 'resume' && port !== command.oldPort
     const env = workerProcessEnv({ threads: policy.budget.threads, memGb: policy.budget.memGb,
       host: policy.host, model: policy.model, effort: policy.effort, port, server: policy.server,
       room: s.roomName, dir: policy.dir, tag, lead: policy.lead, owner: policy.owner,
       share: policy.share, run: policy.run, nonce: policy.nonce, registry: policy.registry,
-      id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker })
+      id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker, nameEpoch })
     const niceEnv = command.mode === 'resume'
       ? { ...process.env, ROOM_WORKER_NICE: String(policy.budget.nice) }
       : process.env

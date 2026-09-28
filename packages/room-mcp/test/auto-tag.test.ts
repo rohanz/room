@@ -2,182 +2,142 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { EventEmitter } from 'node:events'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
-import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import type { WebsocketProvider } from 'y-websocket'
-import { RoomDoc } from '@room/shared'
-import { hasCompany } from '../src/company.js'
 import { localRoomName } from '@room/roomd/local'
-import { startAutoTaggedRoomd, type Session } from '../src/session.js'
+import { startAutoTaggedRoomd } from '../src/session.js'
 import { resolveConfig, resolveSessionHost } from '../src/config.js'
 import { clearChoice, readChoice, rememberTag, writeChoice, worktreePath } from '../src/choice.js'
+import { hubRoom, type HubRoom } from './fixtures/hub-provider.js'
 
-vi.mock('@room/roomd', async importOriginal => ({
-  ...await importOriginal<typeof import('@room/roomd')>(),
-  startRoomd: vi.fn(async options => {
-    const roomDoc = new RoomDoc(), awareness = new Awareness(roomDoc.doc)
-    awareness.setLocalState({ user: { name: options.name, kind: 'agent' } })
-    return { name: options.name, roomDoc, provider: { awareness, messageHandlers: [], on() {}, off() {}, wsconnected: false }, stop: async () => { awareness.destroy(); roomDoc.doc.destroy() } }
-  }),
-}))
+const cleanup: (() => unknown)[] = []
+afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); vi.unstubAllEnvs() })
 
-const cleanup: (() => void)[] = []
-afterEach(() => { cleanup.splice(0).reverse().forEach(fn => fn()); vi.unstubAllEnvs() })
-
-/** Same update-exchange hub as the other suites, with real awareness and delayed first sync. */
-function hub(names: string[], ownName = 'name', stale = new Set<string>(), work = new Set<string>(), observe?: (awareness: Awareness) => void, omitAwareness = false) {
-  const peers = names.map(name => {
-    const doc = new Y.Doc(), awareness = new Awareness(doc)
-    awareness.setLocalState({ user: { name, kind: 'agent' }, lastActive: Date.now() - 5 * 60_000 })
-    if (work.has(name)) new RoomDoc(doc).setOverlay(name, 'work.txt', 'uncommitted')
-    cleanup.push(() => { awareness.destroy(); doc.destroy() })
-    return { doc, awareness }
-  })
-  return (_server: string, _room: string, doc: Y.Doc): WebsocketProvider => {
-    const events = new EventEmitter(), awareness = new Awareness(doc)
-    awareness.setLocalState({ user: { name: ownName } })
-    const provider = Object.assign(events, { synced: false, awareness, destroy() { events.removeAllListeners() } })
-    queueMicrotask(() => {
-      for (const peer of peers) {
-        Y.applyUpdate(doc, Y.encodeStateAsUpdate(peer.doc))
-        if (!omitAwareness) {
-          applyAwarenessUpdate(awareness, encodeAwarenessUpdate(peer.awareness, [peer.awareness.clientID]), null)
-          if (stale.has(peer.awareness.getLocalState()!.user.name)) awareness.meta.get(peer.awareness.clientID)!.lastUpdated = Date.now() - 30_001
-        }
-      }
-      observe?.(awareness)
-      provider.synced = true
-      events.emit('sync', true)
-    })
-    return provider as unknown as WebsocketProvider
-  }
-}
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'auto-tag-'))
   execFileSync('git', ['init', '-q'], { cwd: dir })
+  execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'init'], { cwd: dir })
+  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ host: 'claude' }))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   vi.stubEnv('ROOM_HOST', 'claude')
   vi.stubEnv('ROOM_WORKER_HOST', '')
+  vi.stubEnv('ROOM_WORKER_ID', '')
   return dir
 }
-async function start(names: string[], tag?: string, stale: string[] = [], work: string[] = [], dir = repo(), room = 'ws://test/room', localKey?: string, omitAwareness = false) {
+let sessions = 0
+/** Join `room` (one hub for every join in a test) from `dir`; names are decided by the local and hub leases. */
+async function start(room: HubRoom, dir = repo(), tag?: string, sessionId = `s${++sessions}`) {
   const log = vi.fn()
   const config = await resolveConfig({ dir, env: tag ? { ROOM_TAG: tag } : {} })
-  const result = await startAutoTaggedRoomd({ dir, room, localKey, name: tag ? `name+${tag}` : 'name', label: config.tag, owner: 'name', kind: 'agent', providerFactory: hub(names, 'name', new Set(stale), new Set(work), undefined, omitAwareness), log }, config.tag)
-  cleanup.push(() => { void result.daemon.stop() })
+  const result = await startAutoTaggedRoomd({ dir, room: 'ws://test/room', localKey: 'key', name: tag ? `name+${tag}` : 'name', label: config.tag, owner: 'name', kind: 'agent',
+    requested: 'full', sessionId, providerFactory: (_s, _r, doc: Y.Doc) => room.provider(doc), log }, config.tag)
+  cleanup.push(() => result.daemon.stop())
   return { ...result, log, dir }
 }
-describe('automatic session tags', () => {
-  it('tags a second join after first sync using the session host', async () => {
-    const s = await start(['name'])
+describe('automatic session tags (registry §15: local lease, then hub lease)', () => {
+  it('tags a join whose name another session holds, using the session host', async () => {
+    const room = hubRoom()
+    await room.hold('name')
+    const s = await start(room)
     expect(s.me).toMatchObject({ name: 'name+claude', label: 'claude', owner: 'name' })
     expect(s.daemon.name).toBe(s.me.name)
     expect(s.autoTagNote).toBe('joined as name+claude (name is in use by another session)')
-    expect(s.log).toHaveBeenCalledExactlyOnceWith(s.autoTagNote)
-  })
-  it.each([false, true])('company and the probe agree for an idle participant (stale heartbeat: %s)', async stale => {
-    const dir = repo()
-    let company: boolean | undefined
-    const result = await startAutoTaggedRoomd({ dir, room: 'ws://test/room', name: 'name', kind: 'agent',
-      providerFactory: hub(['name'], 'observer', new Set(stale ? ['name'] : []), new Set(), awareness => {
-        company = hasCompany({ awareness, me: { name: 'observer' } } as Session).company
-      }),
-    })
-    cleanup.push(() => { void result.daemon.stop() })
-    expect(company).toBe(!stale)
-    expect(result.me.name).toBe(stale ? 'name' : 'name+claude')
+    expect(s.log.mock.calls.filter(([line]) => line === s.autoTagNote)).toHaveLength(1)
+    expect(s.lease.fence()).toBe(String(s.lease.epoch))
   })
   it('keeps separate remembered names for a main checkout and its worktree in one local room', async () => {
+    const room = hubRoom()
     const dir = repo(), worktree = join(dir, 'worktree')
-    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'init'], { cwd: dir })
     execFileSync('git', ['worktree', 'add', '-qb', 'worker', worktree], { cwd: dir })
     expect(await localRoomName(worktree)).toBe(await localRoomName(dir))
-    const main = await start([], undefined, [], [], dir)
+    const main = await start(room, dir)
     vi.stubEnv('ROOM_HOST', 'codex')
-    const worker = await start([main.me.name], undefined, [], [], worktree)
+    const worker = await start(room, worktree)
     expect([main.me.name, worker.me.name]).toEqual(['name', 'name+codex'])
     expect((await readChoice(dir))?.tags).toEqual({ [await worktreePath(dir)]: '', [await worktreePath(worktree)]: 'codex' })
-    // A restart releases the prior process's name; the new session retains its identity.
+    // A restart released the prior process's names; each checkout gets its own back.
     await main.daemon.stop()
     await worker.daemon.stop()
-    expect((await start([worker.me.name, main.me.name], undefined, [main.me.name], [main.me.name], dir)).me.name).toBe(main.me.name)
-    expect((await start([main.me.name, worker.me.name], undefined, [worker.me.name], [worker.me.name], worktree)).me.name).toBe(worker.me.name)
+    expect((await start(room, dir)).me.name).toBe(main.me.name)
+    expect((await start(room, worktree)).me.name).toBe(worker.me.name)
   })
   it('numbers the third join', async () => {
-    expect((await start(['name', 'name+claude'])).me.name).toBe('name+claude-2')
+    const room = hubRoom()
+    await room.hold('name'); await room.hold('name+claude')
+    expect((await start(room)).me.name).toBe('name+claude-2')
   })
-  it('reserves distinct names for simultaneous linked-worktree joins before presence arrives', async () => {
+  it('gives distinct names to simultaneous linked-worktree joins', async () => {
+    const room = hubRoom()
     const dir = repo()
-    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'init'], { cwd: dir })
     const dirs = [dir]
     for (let i = 1; i < 6; i++) {
       const worktree = join(dir, `worktree-${i}`)
       execFileSync('git', ['worktree', 'add', '-qb', `worker-${i}`, worktree], { cwd: dir })
       dirs.push(worktree)
     }
-    const joined = await Promise.all(dirs.map(worktree => start(['name'], undefined, [], [], worktree)))
+    const joined = await Promise.all(dirs.map(worktree => start(room, worktree)))
     expect(new Set(joined.map(s => s.me.name)).size).toBe(6)
-    const tags = (await readChoice(dir))?.tags
-    expect(Object.keys(tags ?? {})).toHaveLength(6)
+    expect(Object.keys((await readChoice(dir))?.tags ?? {})).toHaveLength(6)
   })
-  it('keeps a team name unique across separate clones when presence has not arrived', async () => {
-    const firstDir = repo(), secondDir = repo()
-    const firstLocal = await start([], undefined, [], [], firstDir, 'ws://local/local-room', 'key')
-    const secondLocal = await start([], undefined, [], [], secondDir, 'ws://local/local-room', 'key')
-    await firstLocal.daemon.stop()
-    await secondLocal.daemon.stop()
-    expect((await readChoice(firstDir))?.tags?.[await worktreePath(firstDir)]).toBe('')
-    expect((await readChoice(secondDir))?.tags?.[await worktreePath(secondDir)]).toBe('')
-    const first = await start([], undefined, [], [], firstDir)
-    // The second probe has synced the first daemon's work but has not received its awareness.
-    const second = await start(['name'], undefined, [], ['name'], secondDir, 'ws://test/room', undefined, true)
-    expect(first.me.name).toBe('name')
-    expect(second.me.name).toBe('name+claude')
-    expect((await readChoice(secondDir))?.tags?.[await worktreePath(secondDir)]).toBe('claude')
+  it('keeps a name unique across separate clones: the hub grants it once', async () => {
+    const room = hubRoom()
+    const [first, second] = [await start(room, repo()), await start(room, repo())]
+    expect([first.me.name, second.me.name]).toEqual(['name', 'name+claude'])
+    expect((await readChoice(second.dir))?.tags?.[await worktreePath(second.dir)]).toBe('claude')
   })
-  it('preserves explicit ROOM_TAG even on collision', async () => {
-    const s = await start(['name', 'name+custom'], 'custom')
-    expect(s.me.name).toBe('name+custom')
+  it('refuses an explicit ROOM_TAG another session holds, and takes a free one without a note or a remembered choice', async () => {
+    const room = hubRoom()
+    await room.hold('name+custom')
+    await expect(start(room, repo(), 'custom')).rejects.toThrow('name+custom is held by another session')
+    const s = await start(room, repo(), 'other')
+    expect(s.me.name).toBe('name+other')
     expect(s.autoTagNote).toBeUndefined()
     expect(await readChoice(s.dir)).toBeUndefined()
   })
-  it('keeps a lone join plain and ignores its own awareness state', async () => {
-    const s = await start([])
+  it('keeps a lone join plain', async () => {
+    const s = await start(hubRoom())
     expect(s.me.name).toBe('name')
     expect((await readChoice(s.dir))?.tags?.[await worktreePath(s.dir)]).toBe('')
   })
-  it('ignores a crashed session whose heartbeat is older than 30 seconds', async () => {
-    expect((await start(['name'], undefined, ['name'])).me.name).toBe('name')
+  it('takes a name whose last holder released it', async () => {
+    const room = hubRoom()
+    await room.release('name', await room.hold('name'))
+    expect((await start(room)).me.name).toBe('name')
   })
-  it('skips a name with a leftover overlay when nobody is present', async () => {
-    const s = await start(['name'], undefined, ['name'], ['name'])
+  it('passes over a name that holds another clone\'s uncommitted work while nobody holds it', async () => {
+    const room = hubRoom()
+    room.doc.setOverlay('name', 'work.txt', 'uncommitted')
+    const s = await start(room)
     expect(s.me.name).toBe('name+claude')
     expect(s.autoTagNote).toBe('joined as name+claude (name still holds uncommitted work from another clone)')
   })
-  it('rejoins under a tag remembered after a different session was present under the bare name', async () => {
+  it('rejoins under a tag remembered after another session held the bare name', async () => {
+    const room = hubRoom()
     const dir = repo()
-    const first = await start(['name'], undefined, [], [], dir)
+    await room.hold('name')
+    const first = await start(room, dir)
     expect(first.me.name).toBe('name+claude')
     await first.daemon.stop()
     await writeChoice(dir, 'team')
-    expect((await start([], undefined, [], [], dir)).me.name).toBe('name+claude')
+    expect((await start(room, dir)).me.name).toBe('name+claude')
   })
-  it('does not remember a temporary tag while this worktree previous process holds the bare name lock', async () => {
+  it('does not remember a temporary tag while this worktree\'s previous process still holds the bare name lease', async () => {
+    const room = hubRoom()
     const dir = repo()
-    const old = await start([], undefined, [], [], dir)
-    const replacement = await start([], undefined, [], [], dir)
+    const old = await start(room, dir)
+    const replacement = await start(room, dir)
     expect(replacement.me.name).toBe('name+claude')
     expect((await readChoice(dir))?.tags?.[await worktreePath(dir)]).toBe('')
     await replacement.daemon.stop()
     await old.daemon.stop()
-    expect((await start([], undefined, [], [], dir)).me.name).toBe('name')
+    expect((await start(room, dir)).me.name).toBe('name')
   })
-  it('replaces a remembered bare tag when another session is present, rather than only its old lock', async () => {
+  it('replaces a remembered bare tag when another session holds that name', async () => {
+    const room = hubRoom()
     const dir = repo()
     await rememberTag(dir, '')
-    const s = await start(['name'], undefined, [], [], dir)
+    await room.hold('name')
+    const s = await start(room, dir)
     expect(s.me).toMatchObject({ name: 'name+claude', label: 'claude', owner: 'name' })
     expect((await readChoice(dir))?.tags?.[await worktreePath(dir)]).toBe('claude')
     expect(s.autoTagNote).toBe('joined as name+claude (remembered name name is in use by another session)')
@@ -185,7 +145,7 @@ describe('automatic session tags', () => {
   it('lets ROOM_TAG win without replacing the remembered automatic tag', async () => {
     const dir = repo()
     await rememberTag(dir, 'claude')
-    expect((await start([], 'custom', [], [], dir)).me.name).toBe('name+custom')
+    expect((await start(hubRoom(), dir, 'custom')).me.name).toBe('name+custom')
     expect((await readChoice(dir))?.tags?.[await worktreePath(dir)]).toBe('claude')
   })
   it('forgets the remembered tag with the clone choice', async () => {

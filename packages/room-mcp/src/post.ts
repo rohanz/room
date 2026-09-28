@@ -47,7 +47,11 @@ export function releasePoster(post: Post): ReleasePoster {
   return (from, body) => { void post(from, body, { auto: true }) }
 }
 
-export function createPost(room: RoomDoc, hub: HubClient): Post {
+/** The poster's own name lease, which every post carries (hub §2.3); undefined while it has none (paused, hub §7). */
+export type PostLease = { name: string; epoch: number }
+export type LeaseSource = () => PostLease | undefined | Promise<PostLease | undefined>
+
+export function createPost(room: RoomDoc, hub: HubClient, lease: LeaseSource): Post {
   return <T extends Msg>(from: Identity, body: PostBody<T>, opts: PostOpts = {}): Posting<T> => {
     const id = opts.id ?? newId('m_')
     const sent = { ...outgoing<T>(from, body, id), at: Date.now() } as T
@@ -55,7 +59,9 @@ export function createPost(room: RoomDoc, hub: HubClient): Post {
       try {
         // A hello missed on reconnect is repaired here rather than reported as an outage.
         if (hub.paused()) await hub.hello().catch(() => {})
-        const reply = await hub.post(outgoing(from, body, id) as unknown as PostIn, opts.auto ? { auto: true } : {})
+        const held = await lease()
+        if (!held) return { ok: false, msg: sent, reason: 'unreachable', text: NOT_SENT }
+        const reply = await hub.post(outgoing(from, body, id) as unknown as PostIn, { lease: held, ...(opts.auto ? { auto: true } : {}) })
         const seq = typeof reply.seq === 'number' ? reply.seq : undefined
         const at = typeof reply.at === 'number' ? reply.at : sent.at
         const msg = (room.message(id) as T | undefined) ?? { ...sent, at, ...(seq === undefined ? {} : { seq }) }

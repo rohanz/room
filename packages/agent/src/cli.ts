@@ -93,9 +93,18 @@ const backend = new CodexBackend({
   } },
 })
 // Posts go through the room's hub, the sole appender of its bus; hello now and on every reconnect.
-const hub = new HubClient({ transport: hubTransport(provider), client: 'roomagent', sessionId: `roomagent:${process.pid}` })
+const sessionId = `roomagent:${process.pid}`
+const hub = new HubClient({ transport: hubTransport(provider), client: 'roomagent', sessionId })
 provider.once('sync', () => { void hub.hello().catch(() => {}) })
-const runner = new Runner({ name, room, post: createPost(room, hub), awareness: provider.awareness, backend, log: l => console.error(`[roomagent] ${l}`) })
+// Its posts carry its own name lease (hub §2.3), taken again if it lapsed; its Codex thread's MCP joins under another name.
+let acquiring: Promise<number | undefined> | undefined
+const lease = async () => {
+  const epoch = hub.lease(name) ?? await (acquiring ??= hub.acquire(name, { sessionId, pid: process.pid, startTime: '', executable: process.execPath })
+    .catch(error => { console.error(`[roomagent] no name lease on ${name}: ${error instanceof Error ? error.message : String(error)}`); return undefined })
+    .finally(() => { acquiring = undefined }))
+  return epoch === undefined ? undefined : { name, epoch }
+}
+const runner = new Runner({ name, room, post: createPost(room, hub, lease), awareness: provider.awareness, backend, log: l => console.error(`[roomagent] ${l}`) })
 
 // Mirror the transcript to the terminal so the browser view is optional.
 room.chat(name).observe(ev => {

@@ -48,12 +48,16 @@ export interface Tools {
   drop(s: Session, reason: string): Promise<void>
   /** Run any pending automatic conflict checks now (tests). */
   flushConflicts(): Promise<void>
+  /** A room_wait is in progress (the idle lease never ends presence during one, registry §18). */
+  waiting(): boolean
 }
 
 /** What the tools need of the automatic join (auto-join.ts). */
 export interface AutoJoinHandle { ensure(): Promise<void>; settle(): Promise<void>; cancel(): void; retarget(s: Session): void; readonly failure?: string }
 /** Tools that choose the room themselves: the automatic join pauses while one runs, and stays stopped unless it joined a room. */
 const CHOOSES_ROOM = new Set(['room_join', 'room_create', 'room_leave', 'room_close'])
+/** Writes fenced by the name lease: refused while coordination is paused (hub §7). Posts are refused by the hub client. */
+const FENCED = new Set(['room_scope', 'room_claim', 'room_release', 'room_done'])
 
 const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...collectDefs, ...prDefs, ...shareDefs]
 const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect']
@@ -67,6 +71,7 @@ export function createTools(ctx: ToolCtx): Tools {
   const notJoined = () => autoJoin?.failure ? `error: not in a room. ${autoJoin.failure}`
     : ctx.config?.server === LOCAL ? 'error: not in the local room; room_join to join it.'
     : 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
+  let waits = 0
   const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), collectHandlers(state), prHandlers(state), shareHandlers(state))
 
   const { ledger } = state
@@ -91,8 +96,13 @@ export function createTools(ctx: ToolCtx): Tools {
       s?.refreshRuntime?.()
       if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && (s.closed || connectedBefore(s)))) return 'error: room not synced yet, retry'
       if (s) { trackConnection(s, state.now); state.rooms.track(s) }
+      const paused = s?.lease?.paused()
+      if (paused && FENCED.has(name)) return `${paused}\n\nnot done: ${name} writes under your name, and coordination is paused; retry once it resumes.`
       try {
-        const body = await h(name === 'room_wait' ? { ...(args ?? {}), [WAIT_SIGNAL]: signal, [REPLY_BATCH]: batch } : args ?? {})
+        if (name === 'room_wait') waits++
+        let body: string
+        try { body = await h(name === 'room_wait' ? { ...(args ?? {}), [WAIT_SIGNAL]: signal, [REPLY_BATCH]: batch } : args ?? {}) }
+        finally { if (name === 'room_wait') waits-- }
         if (toolCallAborted() && name !== 'room_send' && name !== 'room_spawn') return 'error: tool call cancelled'
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
         const s2 = ctx.getSession()
@@ -104,7 +114,7 @@ export function createTools(ctx: ToolCtx): Tools {
         withdrawStartup()
         const notices = ledger.notices(batch).map(n => n.text + '\n\n').join('')
         if (s2) await greeted(s2.hub)
-        const paused = s2?.hub.paused()
+        const paused = s2?.lease?.paused() ?? s2?.hub.paused()
         const health = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name, !s2.local) : ''
         const autoTag = s2?.autoTagNote
         if (s2) delete s2.autoTagNote
@@ -129,6 +139,7 @@ export function createTools(ctx: ToolCtx): Tools {
     drop: state.drop,
     shutdown: state.shutdown,
     flushConflicts: state.flushConflicts,
+    waiting: () => waits > 0,
     startupNotice(text) { startup = ledger.notice('startup', text); withdrawStartup() },
     hookSelect() {
       const batch = ledger.open('hook')

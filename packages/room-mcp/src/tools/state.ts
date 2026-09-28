@@ -45,7 +45,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ledger.bind(s)
     const hooks = new HooksBridge(s, {
       forMe: m => inboxServices.forMe(s, m), owedCount: () => ledger.candidates(s).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
-      session: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), paused: () => s.hub.paused(),
+      session: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), paused: () => s.lease?.paused() ?? s.hub.paused(),
       company: () => company(s), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}),
     })
     hooks.start()
@@ -173,7 +173,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     scheduleInboxWrite,
     upgraded, conflictPairs,
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
-    clearStale: (s: Session) => { join.evictStale(s); return state.cleanupMine(s, 'stale from an earlier session') },
+    clearStale: (s: Session) => state.cleanupMine(s, 'stale from an earlier session'),
     async shutdown() {
       const s = ctx.getSession()
       if (!s) return

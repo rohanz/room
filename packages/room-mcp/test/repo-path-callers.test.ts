@@ -143,7 +143,8 @@ it('rollback recovery skips invalid recorded paths before writing them', async (
 describe('disk read paths', () => {
   it('room_read and preview keep their lexical and contained-link policies', async () => {
     const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); room.setBaseOf('lead', base)
-    const localState = { publishUnder: 'publisher', watchedDirectory: 'same', user: { name: 'lead', kind: 'agent' } }
+    room.manifestHead.set('lead', { base, fence: 'f', coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'publisher', level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+    const localState = { watchedDirectory: 'same', user: { name: 'lead', kind: 'agent' } }
     const peerState = { watchedDirectory: 'same', user: { name: 'publisher', kind: 'agent' } }
     const awareness = { clientID: 1, getLocalState: () => localState, getStates: () => new Map([[1, localState], [2, peerState]]), meta: new Map([[2, { lastUpdated: Date.now() }]]) }
     const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, local: true, awareness } as unknown as Session

@@ -227,8 +227,6 @@ export interface Presence {
   wakeUnavailable?: boolean
   /** SHA256 of the watched directory realpath; never the path itself. */
   watchedDirectory?: string
-  /** Co-located participant publishing this directory; this participant publishes no files. */
-  publishUnder?: string
   host?: string
   model?: string
   effort?: string
@@ -241,6 +239,8 @@ export interface Presence {
   areas?: string[]
   /** epoch ms */
   lastActive?: number
+  /** Minutes since this session's last Room call or hook contact, on its own clock (registry §18). */
+  idleMin?: number
 }
 
 export type ShareLevel = 'intent' | 'declared' | 'full'

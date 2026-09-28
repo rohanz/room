@@ -85,7 +85,7 @@ export function rejoinOptions(s: Session, credentialsPath?: string): JoinOptions
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, ledger, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
+  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, ledger, rooms, cleanupMine, log, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
   async function configureLogin(a: Record<string, unknown>) {
     const config = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
     configureCredentials(config.credentialsPath)
@@ -181,7 +181,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       rooms.add(s, 'primary')
       const stale = cleanupMine(s, 'stale from an earlier session')
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
-      evictStale(s)
       await loadAreas(s)
       const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
       if (cur) out.unshift(`moved from ${cur.roomName} to ${s.roomName}; links to the old room no longer show this session.`)
@@ -285,7 +284,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | 'doLeave' | 'rooms' | 'now' | 'presences' | 'runningWorkers'>): Pick<HandlerState, 'followBranch' | 'evictStale' | 'cleanupMine' | 'serverOf' | 'LOCAL_LOGIN' | 'codeLine'> {
+export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | 'doLeave' | 'rooms' | 'now' | 'presences' | 'runningWorkers'>): Pick<HandlerState, 'followBranch' | 'cleanupMine' | 'serverOf' | 'LOCAL_LOGIN' | 'codeLine'> {
   const { ctx, log, doJoin, doLeave, rooms, now, presences, runningWorkers } = deps
   const blockedBranch = new WeakMap<Session, string>()
   const followBranch = async (): Promise<string> => {
@@ -318,28 +317,11 @@ export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | '
         return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`
       }
     }
-  const envStaleDays = Number(process.env.ROOM_STALE_DAYS)
-  const STALE_MS = (ctx.config?.staleDays ?? (Number.isFinite(envStaleDays) && envStaleDays > 0 ? envStaleDays : 7)) * 24 * 60 * 60 * 1000
-  const evictStale = (s: Session): string[] => {
-      const here = new Set(presences(s).map(p => p.user.name))
-      const gone: string[] = []
-      for (const person of Array.from(s.room.overlays.keys())) {
-        if (person === s.me.name || here.has(person)) continue
-        const age = s.room.overlayAge(person, now())
-        if (age === undefined || age < STALE_MS) continue
-        const n = s.room.clearOverlays(person)
-        const days = Math.round(age / 86_400_000)
-        void s.post<NoteMsg>(s.me, { type: 'note', text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? '' : 's'}; last seen ${days} day${days === 1 ? '' : 's'} ago)`, priority: 'fyi' })
-        log(`evicted ${person}'s ${n} stale overlay file(s), ${days} days old`)
-        gone.push(person)
-      }
-      return gone
-    }
   const cleanupMine = (s: Session, _why: string, keep?: (c: Claim) => boolean): number => releaseClaimsOnDone(s, keep)
   const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`
   const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
       ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.`
       : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`
-  return { followBranch, evictStale, cleanupMine, serverOf, LOCAL_LOGIN, codeLine }
+  return { followBranch, cleanupMine, serverOf, LOCAL_LOGIN, codeLine }
 }

@@ -50,12 +50,12 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
 describe('HubClient', () => {
-  it('allows lease-less posts after hello, before any name is acquired', async () => {
+  it('sends no post without a valid lease of the poster (wave 4)', async () => {
     const { client, transport } = fixture()
     await client.hello()
     expect(client.paused()).toBeUndefined()
-    await client.post({ id: 'm1', type: 'note', from: 'alice' })
-    expect(transport.sent.at(-1)).toMatchObject({ op: 'post', msg: { id: 'm1' } })
+    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: hub unreachable')
+    expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(0)
     client.close()
   })
 
@@ -64,13 +64,13 @@ describe('HubClient', () => {
     await client.hello(); await client.acquire('alice', holder)
     jumpWall(60_000)
     expect(client.paused()).toBe(PAUSED)
-    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' })).rejects.toThrow('not sent: hub unreachable')
+    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: hub unreachable')
     await client.acquire('alice', holder)
     expect(client.paused()).toBeUndefined()
+    await client.post({ id: 'm2', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })
+    expect(transport.sent.at(-1)).toMatchObject({ op: 'post', lease: { name: 'alice', epoch: 42 } })
     await client.release('alice')
     expect(client.paused()).toBeUndefined()
-    await client.post({ id: 'm2', type: 'note', from: 'alice' })
-    expect(transport.sent.at(-1)?.op).toBe('post')
     client.close()
   })
 
@@ -118,7 +118,7 @@ describe('HubClient', () => {
     await client.hello(); await client.acquire('alice', holder)
     jumpWall(60_000)
     expect(client.paused()).toBe(PAUSED)
-    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' })).rejects.toThrow('not sent: hub unreachable')
+    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: hub unreachable')
     client.close()
   })
 
@@ -245,7 +245,7 @@ describe('HubClient', () => {
     await expect(client.acquire('alice', holder)).rejects.toThrow('hub client closed')
     await expect(client.renew('alice')).rejects.toThrow('hub client closed')
     await expect(client.release('alice')).rejects.toThrow('hub client closed')
-    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' })).rejects.toThrow('hub client closed')
+    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('hub client closed')
     expect(transport.sent).toHaveLength(1)
   })
 
@@ -311,4 +311,33 @@ it('hubTransport forwards type-7 frames after y-websocket consumes the type byte
   expect(received).toEqual([frame])
   expect(encoding.length(encoder)).toBe(0)
   unsubscribe()
+})
+
+describe('HubClient handover and lease queries (wave 4)', () => {
+  it('reports a lease epoch only while it is valid by the send-time clock', async () => {
+    const { client, advance } = fixture()
+    await client.hello(); await client.acquire('alice', holder)
+    expect(client.lease('alice')).toBe(42)
+    expect(client.lease('bob')).toBeUndefined()
+    advance(LEASE_TTL_MS)
+    expect(client.lease('alice')).toBeUndefined()
+    client.close()
+  })
+
+  it('moves to a new connection, keeps the lease and renews it there', async () => {
+    const { client, transport } = fixture()
+    await client.hello(); await client.acquire('alice', holder)
+    const next = new FakeTransport()
+    next.answer = transport.answer
+    client.attach(next)
+    await vi.waitFor(() => expect(next.sent.map(r => r.op)).toEqual(['hello', 'renew']))
+    expect(next.sent[1]).toMatchObject({ name: 'alice', epoch: 42 })
+    expect(client.lease('alice')).toBe(42)
+    // The old connection no longer delivers frames to this client.
+    transport.emit({ v: 1, push: 'lease-lost', name: 'alice', epoch: 42, reason: 'expired' })
+    expect(client.lease('alice')).toBe(42)
+    next.emit({ v: 1, push: 'lease-lost', name: 'alice', epoch: 42, reason: 'expired' })
+    expect(client.lease('alice')).toBeUndefined()
+    client.close()
+  })
 })

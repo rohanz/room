@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { RoomDoc, ParticipantRecord } from './doc.js'
-import { participantRecord } from './doc.js'
+import { holderFence, participantRecord } from './doc.js'
 import { normalizeCoordinationPath } from './near.js'
 import { liveHolder, type ParticipantView } from './views.js'
 import type { ShareLevel } from './types.js'
@@ -65,7 +65,7 @@ export function gitBlobHash(text: string, format: 'sha1' | 'sha256' = 'sha1'): s
 }
 
 function fenceValid(head: ManifestHead, record: ParticipantRecord | undefined, view: readonly ParticipantView[]): boolean {
-  const expected = head.projectedFrom ? liveHolder(view, head.projectedBy ?? '') : record?.holder?.sessionId
+  const expected = head.projectedFrom ? liveHolder(view, head.projectedBy ?? '') : holderFence(record?.holder)
   return !!expected && head.fence === expected
 }
 

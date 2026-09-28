@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { manifestKey, participantRecord, type RoomDoc } from '@room/shared'
+import { manifestKey, type RoomDoc } from '@room/shared'
 import { gitHead, gitShowMany } from './git.js'
 import { checkoutText, type Baseline } from './baseline.js'
 import { readDisk } from './disk-scan.js'
@@ -10,7 +10,8 @@ import type { DiskBatch } from './disk-batch.js'
 interface Host {
   readonly dir: string
   readonly name: string
-  readonly fence: string
+  /** Undefined while the name lease is paused: nothing is written (hub §7). */
+  readonly fence: string | undefined
   readonly roomDoc: RoomDoc
   readonly batch: DiskBatch
   readonly skips: { size: Set<string>; budget: Set<string>; ignore: Set<string> }
@@ -50,7 +51,8 @@ export class Publisher {
   constructor(private readonly host: Host) {}
 
   pathsToReconcile(extra: Iterable<string> = []): Set<string> {
-    const current = this.host.roomDoc.manifest.get(manifestKey(this.host.name, this.host.fence))
+    const fence = this.host.fence
+    const current = fence === undefined ? undefined : this.host.roomDoc.manifest.get(manifestKey(this.host.name, fence))
     return new Set([...current?.keys() ?? [], ...this.excludedPaths, ...extra])
   }
 
@@ -59,7 +61,10 @@ export class Publisher {
   /** Synchronous narrowing from the currently published snapshot; widening waits for readDisk. */
   applyInputs(next: PublicationInputs): void {
     const { host } = this
-    const current = host.roomDoc.manifest.get(manifestKey(host.name, host.fence))
+    const fence = host.fence
+    // Paused: the next publication under a fence applies these inputs in full.
+    if (fence === undefined) { this.markDirty(); return }
+    const current = host.roomDoc.manifest.get(manifestKey(host.name, fence))
     const facts: ManifestFact[] = []
     let budget = 0
     if (next.policy.level !== 'intent' && next.policy.publisher) {
@@ -83,7 +88,7 @@ export class Publisher {
       for (const path of this.excludedPaths) if (!facts.some(f => f.path === path)) facts.push({ path, change: 'M', excluded: true })
     }
     host.roomDoc.doc.transact(() => {
-      publishManifest({ room: host.roomDoc, name: host.name, fence: host.fence, base: next.head, level: next.policy.level,
+      publishManifest({ room: host.roomDoc, name: host.name, fence, base: next.head, level: next.policy.level,
         prefixes: next.policy.textPrefixes, complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
         ...(next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? 'another session' }) }, facts)
       for (const path of host.roomDoc.changedPaths(host.name)) {
@@ -132,9 +137,7 @@ export class Publisher {
   /** Final synchronous gate; called immediately before the Y transaction. */
   valid(prepared: PreparedPublication): boolean {
     const { host } = this
-    if (host.stopped || host.inputs !== prepared.inputs) return false
-    const holder = participantRecord(host.roomDoc, host.name)?.holder
-    if (holder && holder.sessionId !== host.fence) return false
+    if (host.stopped || host.inputs !== prepared.inputs || host.fence === undefined) return false
     for (const p of prepared.desired.textPaths) {
       const entry = prepared.desired.entries.get(p)!
       try {
@@ -151,8 +154,9 @@ export class Publisher {
     if (!this.valid(prepared)) { this.markDirty(); return false }
     const { host } = this
     const { desired, inputs } = prepared
+    const fence = host.fence!
     host.roomDoc.doc.transact(() => {
-      publishManifest({ room: host.roomDoc, name: host.name, fence: host.fence, base: inputs.head, level: inputs.policy.level,
+      publishManifest({ room: host.roomDoc, name: host.name, fence, base: inputs.head, level: inputs.policy.level,
         prefixes: inputs.policy.textPrefixes, complete, ...(inputs.policy.publisher ? {} : { publisher: inputs.policy.publisherName ?? 'another session' }) }, prepared.facts)
       const old = new Set(host.roomDoc.changedPaths(host.name))
       for (const p of old) {

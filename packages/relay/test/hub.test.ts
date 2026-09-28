@@ -63,7 +63,8 @@ describe('relay hub wiring', () => {
       const client = await socketClient(roomUrl(a.port, 'local/x/main', a.key))
       await waitFor(async () => (await client.hello()).ok)
       expect(await client.hello()).toMatchObject({ ok: true, authority: true })
-      expect(await client.send({ op: 'post', msg: { id: 'm1', type: 'note', from: 'ada', text: 'hi' } })).toMatchObject({ ok: true })
+      const lease = await waitFor(async () => { const r = await client.send({ op: 'acquire', name: 'ada', holder: holder('s1') }) as { ok: boolean; epoch: number }; return r.ok && r }, 10_000)
+      expect(await client.send({ op: 'post', lease: { name: 'ada', epoch: lease.epoch }, msg: { id: 'm1', type: 'note', from: 'ada', text: 'hi' } })).toMatchObject({ ok: true })
       await client.close()
 
       const other = await socketClient(roomUrl(stray.port, 'local/x/main', a.key))

@@ -316,7 +316,7 @@ describe('room lifecycle', () => {
     const room = new RoomDoc()
     room.setMeta({ repo: 'r', branch: 'main', base })
     const joined = fakeSession(room)
-    joined.awareness.setLocalStateField('publishUnder', 'Kieran')
+    room.manifestHead.set('Rohan', { base, fence: 'f', coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'Kieran', level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
     joined.awareness.setLocalStateField('watchedDirectory', dir)
     const peer = addPresence(joined.awareness, 'Kieran')
     peer.setLocalStateField('watchedDirectory', dir)
@@ -390,19 +390,14 @@ describe('room lifecycle', () => {
     expect(await t.tools.call('room_leave', {})).toContain('left')
   })
 
-  it('join evicts overlays of absent people older than 7 days, keeps recent and present ones', async () => {
+  it('join deletes nothing of an absent participant: the room\'s hub is the one expiry authority (reporooms)', async () => {
     const DAY = 86_400_000
     let clock = 1_000_000_000_000
     const t = setup({ joined: false, now: () => clock })
     t.other.setOverlay('Kieran', 'app.py', 'old\n')
-    t.other.setOverlay('Hrishi', 'app.py', 'recent\n')
-    // timestamps are wall-clock; age them explicitly
     t.other.overlayAt.set('Kieran', clock - 9 * DAY)
-    t.other.overlayAt.set('Hrishi', clock - 2 * DAY)
     await t.tools.call('room_join', {})
-    expect(t.room.changedPaths('Kieran')).toEqual([])
-    expect(t.room.changedPaths('Hrishi')).toEqual(['app.py'])
-    const note = t.room.messages().find(m => m.type === 'note' && m.text.includes('evicted'))
-    expect(note && note.type === 'note' && note.text).toContain('evicted stale uncommitted work of Kieran (1 file; last seen 9 days ago)')
+    expect(t.room.changedPaths('Kieran')).toEqual(['app.py'])
+    expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('evicted'))).toBe(false)
   })
 })

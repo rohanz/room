@@ -562,7 +562,7 @@ describe('reading', () => {
     const edited = COMMITTED.replace('return 2', 'return 33')
     try {
       s.awareness.setLocalStateField('watchedDirectory', 'same-checkout')
-      s.awareness.setLocalStateField('publishUnder', 'Rohan+old')
+      t.room.manifestHead.set('Rohan', { base: '', fence: 'f', coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'Rohan+old', level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
       publisher.setLocalStateField('watchedDirectory', 'same-checkout')
       applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(publisher, [publisher.clientID]), 'test')
       t.room.clearOverlay('Rohan', 'app.py')
