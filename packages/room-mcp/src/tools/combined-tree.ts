@@ -169,10 +169,16 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     const declaredNote = shareOf(session, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
     const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], sameChange: string[] = [], resolvable: string[] = []
     const pair = pairs.get(person)
+    const leadUsesCarriedBase = !!pair && pair.worker === caller.me.name && person === callerWorker?.lead
+      && await descends(baseFor(session, person), pair.sha)
     for (const p of paths) {
       const mine = merged.get(p)
-      const theirsRaw = await previewText(session, p, person)
       const b = await baseAt(pair, p)
+      // The lead's HEAD predates a worker's carried changes. With no published overlay for
+      // this path, the lead has no visible post-spawn edit; use the worker's shared base.
+      const unchangedLead = leadUsesCarriedBase && !previewWorker(session, person) && session.room.text(p, person) === undefined
+        && !session.room.deleted.get(person)?.has(p)
+      const theirsRaw = unchangedLead ? b : await previewText(session, p, person)
       const mineT = mine ?? '', theirs = theirsRaw === undefined ? b : theirsRaw
       if (theirs === b) continue
       if (mine === theirs) {

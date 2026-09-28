@@ -117,7 +117,14 @@ function world() {
     exits.get(tag)!(0)
     await vi.waitFor(() => expect(a.workers.get(tag)).toMatchObject({ status: 'done', exitCode: 0 }))
   }
-  return { a, b, call, spawn, finish, prompts }
+  async function workerPreview(tag: string, run?: string) {
+    const w = b.workers.get(tag)!
+    const ws = { ...fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir), pinnedRoom: true } as Session
+    const tools = createTools({ getSession: () => ws, setSession: () => {}, cwd: w.dir })
+    try { return await tools.call('room_preview_merge', { person: 'rohanz', ...(run ? { run } : {}) }) as string }
+    finally { await tools.shutdown(); ws.graph?.stop() }
+  }
+  return { a, b, call, spawn, finish, prompts, workerPreview }
 }
 
 /** The files a collect reply says it wrote for the workers. */
@@ -407,6 +414,54 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const preview = await t.call('room_preview_merge', { person: 'rohanz+carried-line' })
     expect(preview).toMatch(/against rohanz\+carried-line's base/)
     expect(preview).toMatch(/only rohanz\+carried-line changed this file since its start, which already includes your carried edits: shared\.txt \(rohanz\+carried-line only\)/)
+  })
+
+  it('worker preview treats the lead carried line as common ancestry', async () => {
+    put(repo, 'shared.txt', lines([2, 'lead carried']))
+    const t = world()
+    const { dir } = await t.spawn('own-preview')
+    t.a.setOverlay('rohanz', 'shared.txt', lines([2, 'lead carried']))
+    put(dir, 'shared.txt', lines([2, 'lead carried'], [9, 'worker appended']))
+    const preview = await t.workerPreview('own-preview')
+    expect(preview).toContain('final combined tree: 1 path(s) applied')
+    expect(preview).toContain('no conflicts')
+    expect(preview).not.toContain('CONFLICTS:')
+  })
+
+  it('worker preview keeps a carried lead edit when the lead overlay omits the file', async () => {
+    put(repo, 'shared.txt', lines([2, 'lead carried']))
+    const t = world()
+    const { dir } = await t.spawn('unshared-lead')
+    put(dir, 'shared.txt', lines([2, 'lead carried'], [9, 'worker appended']))
+    const preview = await t.workerPreview('unshared-lead', 'cat shared.txt')
+    expect(preview).toContain('no conflicts')
+    expect(preview).toContain(lines([2, 'lead carried'], [9, 'worker appended']))
+  })
+
+  it('worker preview includes a lead commit after spawn when the lead overlay omits the file', async () => {
+    put(repo, 'shared.txt', lines([2, 'lead carried']))
+    const t = world()
+    const { dir } = await t.spawn('committed-lead')
+    put(repo, 'shared.txt', lines([2, 'lead committed']))
+    git(repo, 'add', 'shared.txt'); git(repo, 'commit', '-qm', 'lead edit after spawn')
+    t.a.setBaseOf('rohanz', git(repo, 'rev-parse', 'HEAD'))
+    put(dir, 'shared.txt', lines([2, 'lead carried'], [9, 'worker appended']))
+    const preview = await t.workerPreview('committed-lead', 'cat shared.txt')
+    expect(preview).toContain('no conflicts')
+    expect(preview).toContain(lines([2, 'lead committed'], [9, 'worker appended']))
+  })
+
+  it('worker preview reports competing edits to a carried line', async () => {
+    put(repo, 'shared.txt', lines([2, 'lead carried']))
+    const t = world()
+    const { dir } = await t.spawn('own-conflict')
+    put(repo, 'shared.txt', lines([2, 'lead after spawn']))
+    t.a.setOverlay('rohanz', 'shared.txt', lines([2, 'lead after spawn']))
+    put(dir, 'shared.txt', lines([2, 'worker after spawn']))
+    const preview = await t.workerPreview('own-conflict')
+    expect(preview).toContain('final combined tree: 1 path(s) applied')
+    expect(preview).toContain('CONFLICTS:')
+    expect(preview).toContain('shared.txt')
   })
 
   it('(7) a clean lead behaves exactly as 0.10.2: base is HEAD, no carried commit, no carried line', async () => {
