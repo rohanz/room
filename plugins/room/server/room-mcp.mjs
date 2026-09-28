@@ -45071,6 +45071,12 @@ function knownOf(record2) {
   const { epoch, at, ended, ...holder } = record2;
   return { epoch, at, holder, ...ended ? { ended } : {} };
 }
+function hydrate(known, record2) {
+  if (known.holder || record2.epoch !== known.epoch) return;
+  const { at, holder } = knownOf(record2);
+  known.at = at;
+  known.holder = holder;
+}
 var higher = (a, b) => a === void 0 ? b : b === void 0 ? a : Math.max(a, b);
 function visible(doc) {
   let epoch, seq;
@@ -45192,20 +45198,26 @@ var RoomHub = class {
     this.records.set(name2, lease);
     this.tenure.present(this.doc, name2, HUB_ORIGIN);
   }
-  /** The name's live lease; one past its TTL, or whose process is gone, ends here. */
+  /**
+   * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
+   * an earlier incarnation whose own record now says it ended (that hub's release or expiry, synced late).
+   */
   live(name2) {
     const lease = this.leases.get(name2);
     if (!lease) return void 0;
-    if (this.host.mono() - lease.renewed < LEASE_TTL_MS && !(lease.holder && this.host.holderDead?.(lease.holder))) return lease;
-    this.end(name2, lease, "expired");
+    const record2 = incarnationOf(lease.epoch) < this.incarnation ? this.record(name2) : void 0;
+    const ended = record2?.epoch === lease.epoch ? record2.ended : void 0;
+    const expired = this.host.mono() - lease.renewed >= LEASE_TTL_MS || !!(lease.holder && this.host.holderDead?.(lease.holder));
+    if (!ended && !expired) return lease;
+    this.end(name2, lease, ended ?? "expired");
     this.notify(name2, lease, "expired");
     return void 0;
   }
   end(name2, lease, how) {
     this.leases.delete(name2);
     const current = this.record(name2);
-    const holder = lease.holder ?? (current?.epoch === lease.epoch ? knownOf(current).holder : void 0);
-    const ended = { epoch: lease.epoch, at: lease.at, ...holder ? { holder } : {}, ended: how };
+    if (current) hydrate(lease, current);
+    const ended = { epoch: lease.epoch, at: lease.at, ...lease.holder ? { holder: lease.holder } : {}, ended: how };
     this.records.set(name2, ended);
     const record2 = this.recordOf(ended);
     if (record2) this.doc.doc.transact(() => {
@@ -45230,7 +45242,7 @@ var RoomHub = class {
       const known = this.records.get(name2);
       const lease = this.leases.get(name2);
       if (known && record2.epoch <= known.epoch) {
-        if (lease?.epoch === record2.epoch && !record2.ended) lease.holder ??= knownOf(record2).holder;
+        if (lease) hydrate(lease, record2);
         continue;
       }
       if (lease) {
@@ -45420,11 +45432,11 @@ var RoomHub = class {
           this.records.set(name2, known);
         }
         if (!known) continue;
+        if (current) hydrate(known, current);
         const want = this.recordOf(known);
         if (want) {
           if (!sameRecord(current, want)) doc.participants.set(holderKey(name2), want);
-        } else if (current?.epoch === known.epoch && !current.ended) known.holder = knownOf(current).holder;
-        else if (current && !current.ended) doc.participants.set(holderKey(name2), { ...current, ended: "expired" });
+        } else if (current && !current.ended) doc.participants.set(holderKey(name2), { ...current, ended: "expired" });
       }
       const meta2 = doc.metaMap;
       if (meta2.get("hubIncarnation") !== this.incarnation) meta2.set("hubIncarnation", this.incarnation);
