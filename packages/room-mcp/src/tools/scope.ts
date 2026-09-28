@@ -3,7 +3,7 @@ import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
 import { coordinationPaths, manifestChangers, manifestKey, manifestPaths } from '@room/shared'
-import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimInMyLines, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
 import { describeWhere } from '../choice.js'
@@ -51,7 +51,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const tagged = (x: Session, line: string) => x === s ? line : `${line} (workers room)`
       const who = new Map<string, 'shared' | 'not shared'>()
       for (const x of inRooms) {
-        for (const c of x.room.openClaims()) if (claimsOverlap(c, { path: p, ...r })) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`))
+        for (const c of x.room.openClaims()) {
+          // A teammate's line claim is in their text: map it into mine (reporooms §B6).
+          if (c.path !== p || c.by === s.me.name || typeof t !== 'string') {
+            if (claimsOverlap(c, { path: p, ...r })) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`))
+            continue
+          }
+          const theirs = await readText(x, p, c.by).catch(() => undefined)
+          const mapped = claimInMyLines(c, theirs ?? undefined, t)
+          if (!rangesOverlap(mapped.from, mapped.to, r.from, r.to)) continue
+          const moved = mapped.approximate ? ` (your lines ${mapped.from}-${mapped.to}, approximate)` : mapped.from !== c.from || mapped.to !== c.to ? ` (your lines ${mapped.from}-${mapped.to})` : ''
+          out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}${moved}`))
+        }
         for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
         for (const n of manifestChangers(x.room, p)) if (n !== s.me.name && !sameCheckoutSession(s, n)) {
           const fence = x.room.manifestHead.get(n)?.fence

@@ -1,11 +1,12 @@
-import { createWriteIntentReader } from '../hooks-bridge.js'
-import { ConflictWatcher } from '../conflicts.js'
+import { ConflictSet } from '../conflict-set.js'
+import { registrySnapshotForDir } from '../worker-registry.js'
+import { workerBaseline, type Baseline } from '@room/roomd/baseline'
 import { sameCheckoutSession } from '../company.js'
 import { git, gitShow } from '@room/roomd/git'
 import { claimDigest } from '@room/roomd'
 import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
-import { coordinationPaths, coversPath, nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, type Claim, type ClaimMsg, type ConflictMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { coordinationPaths, coversPath, nearPath, claimsOverlap, claimInMyLines, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshot, versionOf, type Claim, type ClaimMsg, type Plan, type Worker, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -56,13 +57,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const r = directory ? range : clampRange(range.from, range.to, n)
       const claimedHash = !isNew && !directory ? claimDigest(t!, r.from, r.to) : undefined
       const intentFull = symbol ? `${symbol}: ${intent}` : intent
-      const overl = s.room.openClaims().filter(c => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }))
       const claim = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent: intentFull, ...(plans.length ? { plans } : {}), ...(claimedHash ? { claimedHash } : {}) }, s.me)
       const posting = s.post<ClaimMsg>(s.me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent: intentFull, ...(plans.length ? { plans } : {}) })
       s.room.setClaimMsg(claim.id, posting.id)
-      const conflicts = overl.map(o => s.post<ConflictMsg>(s.me, { type: 'conflict', claimId: claim.id, otherClaimId: o.id, path: p, to: o.by,
-        text: `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intentFull}) overlapping ${describeClaim(o)}` }, { auto: true }))
-      const [posted] = await Promise.all([posting, ...conflicts])
+      const posted = await posting
+      await new ConflictSet(s, s.me.name, s, state.log, 0).reconcile('claim').catch(e => state.log(`claim conflicts: ${String(e)}`))
       s.daemon.touch()
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} — ${intent}` })
       const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew && !directory ? ' (new file)' : ''}`, ...posted.ok ? [] : [`claim notice ${posted.text}`]]
@@ -79,7 +78,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       if (superseded) await s.post<NoteMsg>(s.me, { type: 'note', priority: 'fyi', text: `${s.me.name} superseded ${superseded} plan(s)` })
-      for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`)
+      const overlaps = (await Promise.all(s.room.openClaims().filter(c => c.id !== claim.id && !isMe(s, { name: c.by, kind: c.byKind })).map(async c => ({
+        claim: c, range: await claimRangeInMyText(s, c, t ?? ''),
+      })))).filter(({ claim: c, range }) => claimsOverlap({ path: c.path, ...range }, { path: p, ...r }))
+      for (const { claim: o, range } of overlaps)
+        out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}${range.approximate ? '; approximate lines' : ''}). Ask ${o.by}'s agent or wait for release.`)
       if (s.graph && plans.length) {
         await s.graph.ready
         for (const pl of plans) {
@@ -122,6 +125,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   return handlers
 }
 
+/** A foreign claim names lines in its owner's text, not in this checkout. */
+async function claimRangeInMyText(s: Session, claim: Claim, myText: string): Promise<{ from: number; to: number; approximate: boolean }> {
+  if (claim.path.endsWith('/')) return { from: claim.from, to: claim.to, approximate: false }
+  const view = participantsView(s.room, s.awareness, Date.now())
+  const raw = snapshot(s.room, claim.by, view)
+  const owner = raw?.head.publisher ? snapshot(s.room, raw.head.publisher, view) : raw
+  const version = await versionOf(owner, claim.path, {
+    gitAt: (sha, path) => gitShow(s.dir, sha, path),
+    known: blob => git(s.dir, ['cat-file', '-p', blob]).catch(() => undefined),
+  })
+  const ownerText = version.kind === 'text' ? version.text : version.kind === 'base' ? version.text ?? '' : version.kind === 'deleted' ? '' : undefined
+  return claimInMyLines(claim, ownerText, myText)
+}
+
 /** Quietly end an owner's selected claims; collection can retain the scope for ongoing work. The fyi note is posted, not awaited. */
 export function releaseClaimsOnDone(s: Session, keep?: (claim: Claim) => boolean, name = s.me.name, clearScope = true): number {
   const released = s.room.openClaims().filter(c => c.by === name && c.byKind !== 'human' && !keep?.(c))
@@ -158,49 +175,24 @@ function parsePlans(v: unknown): Plan[] | string {
 }
 
 
-export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' | 'log' | 'ctx' | 'readText' | 'baseFor'>): Pick<HandlerState, 'observeClaims' | 'planChanged' | 'startConflictWatcher'> {
-  const { conflictPairs, mine, log, ctx, readText, baseFor } = deps
-  const sessionDir = () => ctx.binding?.dir()
-  const observeClaims = (s: Session) => {
-      s.room.claims.observe((ev, tr) => {
-        if (tr.local) return
-        for (const [id, ch] of ev.changes.keys) {
-          if (ch.action !== 'add') continue
-          const arrived = s.room.openClaims().find(c => c.id === id)
-          if (!arrived || (arrived.by === s.me.name && arrived.byKind === s.me.kind)) continue
-          for (const m of mine(s)) {
-            if (!claimsOverlap(m, arrived)) continue
-            const key = [m.id, arrived.id].sort().join(':')
-            if (conflictPairs.has(key) || s.room.messages().some(x => x.type === 'conflict' && [x.claimId, x.otherClaimId].sort().join(':') === key)) { conflictPairs.add(key); continue }
-            conflictPairs.add(key)
-            if (m.id.localeCompare(arrived.id) > 0) continue
-            const text = `concurrent overlapping claims: ${describeClaim(m)} and ${describeClaim(arrived)}`
-            void s.post<ConflictMsg>(s.me, { type: 'conflict', claimId: m.id, otherClaimId: arrived.id, path: m.path, text, to: arrived.by }, { auto: true })
-          }
-        }
-      })
-    }
-  const planChanged = postPlanChange
-
-  const startConflictWatcher = (s: import('../session.js').Session): ConflictWatcher => {
-    const watcher = new ConflictWatcher({
-      room: s.room, me: s.me, log, debounceMs: ctx.conflictDebounceMs,
-      post: s.post,
-      writeIntent: createWriteIntentReader(s.dir, sessionDir),
-      coLocated: person => {
-        const states = [...s.awareness.getStates().values()]
-        const mine = s.awareness.getLocalState()?.watchedDirectory
-        return !!mine && states.some(state => state?.user?.name === person && state.watchedDirectory === mine)
-      },
-      liveText: (p, person) => readText(s, p, person),
-      baseText: (sha, p) => gitShow(s.dir, sha, p),
-      baseFor: person => baseFor(s, person),
-      mergeBase: async (a, b) => (await git(s.dir, ['merge-base', a, b])).trim(),
-      graph: () => s.graph?.graph,
-      isPresent: person => Array.from(s.awareness.getStates().values()).some(state => state?.user?.name === person),
-    })
-    watcher.start()
-    return watcher
+/** A registry worker's carried baseline and its lead, so contract checks measure the lead's carried work from spawn. */
+function carriedFrom(s: Session): (participant: string) => { baseline: Baseline; lead: string } | undefined {
+  return participant => {
+    let records
+    try { records = registrySnapshotForDir(s.dir).list().filter(r => r.name === participant) } catch { return undefined }
+    const record = records.sort((a, b) => b.createdAt - a.createdAt)[0]
+    const baseline = record && workerBaseline({ name: record.name, dir: record.dir, base: record.base, carriedBase: record.carriedBase, carriedUntracked: record.carriedUntracked } as Worker)
+    return baseline && { baseline, lead: record.lead.participant }
   }
-  return { observeClaims, planChanged, startConflictWatcher }
+}
+
+export function createClaims(deps: Pick<HandlerState, 'log' | 'ctx'>): Pick<HandlerState, 'planChanged' | 'startConflictSet'> {
+  const { log, ctx } = deps
+  const planChanged = postPlanChange
+  const startConflictSet = (s: Session): ConflictSet => {
+    const set = new ConflictSet(s, s.me.name, s, log, ctx.conflictDebounceMs, carriedFrom(s))
+    set.start()
+    return set
+  }
+  return { planChanged, startConflictSet }
 }

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 const readers = [
   '../src/tools/state.ts', '../src/tools/context.ts', '../src/tools/combined-tree.ts',
   '../src/tools/files.ts', '../src/tools/scope.ts', '../src/tools/messaging.ts',
-  '../src/tools/workers.ts', '../src/tools/join.ts', '../src/graph-index.ts', '../src/conflicts.ts',
+  '../src/tools/workers.ts', '../src/tools/join.ts', '../src/graph-index.ts', '../src/conflict-set.ts', '../src/tools/claims.ts',
   '../../shared/src/near.ts', '../../shared/src/views.ts',
 ]
 

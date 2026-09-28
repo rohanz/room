@@ -199,7 +199,7 @@ describe('finishing claim notices', () => {
 
   it('keeps explicit plan cancellations as interrupts with their explanation', async () => {
     const { s, state } = fixture()
-    state.planChanged = createClaims({ conflictPairs: new Set(), mine: () => [], log: vi.fn(), ctx: state.ctx, liveText: async () => undefined, baseFor: () => '' }).planChanged
+    state.planChanged = createClaims({ log: vi.fn(), ctx: state.ctx }).planChanged
     const c = s.room.addClaim({ by: 'lead', byKind: 'agent', path: 'a.ts', from: 1, to: 1, intent: 'fix' })
     const shown = hubAppend(s.room, s.me, { type: 'claim', claimId: c.id, path: c.path, from_line: 1, to_line: 1, intent: 'fix' })
     s.room.setClaimMsg(c.id, shown.id)

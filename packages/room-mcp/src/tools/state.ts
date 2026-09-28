@@ -10,7 +10,7 @@ import { git, gitShow } from '@room/roomd/git'
 import type { SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
-import { ConflictWatcher } from '../conflicts.js'
+import { ConflictSet } from '../conflict-set.js'
 import { isPrName } from '../prs.js'
 import { Rooms, type Attachment, type Role } from '../registry.js'
 import { authFor, closeRoom, joinSession, leaveSession, syntheticSessionId, type Session } from '../session.js'
@@ -29,7 +29,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
 
   // ---- per-session state --------------------------------------------------
   const upgraded = new Set<string>() // "msgId:person" copies already posted
-  const conflictPairs = new Set<string>() // sorted "a:b" claim-id pairs already reported
   /** The lead-in-two-rooms bridge, while a workers room is open (owned by that session's attachment). */
   let roomBridge: Bridge | null = null
   /** The primary session's hooks bridge (state file); the inbox asks it to rewrite after marking messages seen. */
@@ -49,10 +48,10 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     })
     hooks.start()
     if (role === 'primary') primaryHooks = hooks
-    let watcher: ConflictWatcher | null = null
+    let watcher: ConflictSet | null = null
     let bridge: Bridge | null = null
     if (role === 'primary') {
-      watcher = claims.startConflictWatcher(s)
+      watcher = claims.startConflictSet(s)
       prs.startPrSync(s)
     } else if (lead) {
       bridge = workers.startWorkersBridge(lead, s)
@@ -68,7 +67,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       flush: () => watcher?.flush() ?? Promise.resolve(),
     }
   }
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: s => claims.observeClaims(s), attach, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), observeClaims: () => {}, attach, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
 
   const S = (): Session => {
     const s = ctx.getSession()
@@ -130,7 +129,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
   const areas = createAreas({ ctx, log, base, presences, others, shareOf, now, isMe })
-  const claims = createClaims({ conflictPairs, mine, log, ctx, readText, baseFor })
+  const claims = createClaims({ log, ctx })
   const scheduleInboxWrite = () => primaryHooks?.scheduleWrite()
   const ledger: Ledger = new Ledger({
     sessionId: () => ctx.binding?.id() ?? syntheticSessionId({ pid: process.pid, startTime: '', executable: '' }),
@@ -161,7 +160,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     shareOf, setPresence, base, baseFor, baseText, readVersion, readText, lines,
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite,
-    upgraded, conflictPairs,
+    upgraded,
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
     clearStale: (s: Session) => { join.evictStale(s); return state.cleanupMine(s, 'stale from an earlier session') },
     async shutdown() {

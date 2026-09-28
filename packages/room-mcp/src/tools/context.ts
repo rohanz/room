@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Worker, Version } from '@room/shared'
 import { DISK_READ_PATH, containedRepoPath, isInsideRoot, validRepoPath, type ShareLevel, type SharePresence } from '@room/roomd'
 import type { Bridge } from '../bridge.js'
-import type { ConflictWatcher } from '../conflicts.js'
+import type { ConflictSet } from '../conflict-set.js'
 import type { PrInfo } from '../prs.js'
 import type { Rooms } from '../registry.js'
 import type { JoinOptions, Session } from '../session.js'
@@ -131,14 +131,12 @@ export interface HandlerState {
   prLines: (s: Session) => string[]
   myPr: (s: Session) => Promise<PrInfo | undefined>
   postLedger: (s: Session, pr: PrInfo) => Promise<string>
-  observeClaims: (s: Session) => void
-  startConflictWatcher: (s: Session) => ConflictWatcher
+  startConflictSet: (s: Session) => ConflictSet
   startWorkersBridge: (lead: Session, workers: Session) => Bridge
   workerPaths: () => string[]
   /** Rewrite the hook's state.json (counts only) after a delivery changed what is owed. */
   scheduleInboxWrite: () => void
   upgraded: Set<string>
-  conflictPairs: Set<string>
   attachHooks: (s: Session) => void
   clearStale: (s: Session) => number
   shutdown: () => Promise<void>
