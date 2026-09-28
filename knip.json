@@ -25,6 +25,15 @@
         "test/**/*.ts"
       ]
     },
+    "packages/hub-core": {
+      "entry": [
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ]
+    },
     "packages/relay": {
       "entry": [
         "test/**/*.test.ts"
@@ -59,9 +68,6 @@
       "project": [
         "src/**/*.ts",
         "test/**/*.ts"
-      ],
-      "ignoreDependencies": [
-        "@room/shared"
       ]
     },
     "packages/shared": {

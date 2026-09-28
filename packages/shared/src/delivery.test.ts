@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
 import {
-  admit, archiveSummary, BUS_BYTES, LEDGER_BUDGET, leadsTrim, MAIL_BYTES, OUTCOMES_MAX, OWED_PER_RECIPIENT,
-  OWED_TTL_MS, owed, REPLY_WINDOW_MS, trim, trimLeader,
+  admit, archiveSummary, BUS_BYTES, LEDGER_BUDGET, MAIL_BYTES, OUTCOMES_MAX, OWED_PER_RECIPIENT,
+  OWED_TTL_MS, owed, REPLY_WINDOW_MS, trim,
 } from './delivery.js'
-import type { DeliveryCursor, MessageMap, Msg, MsgType, Presence } from './types.js'
+import type { DeliveryCursor, MessageMap, Msg, MsgType } from './types.js'
 
 const NOW = Date.UTC(2026, 8, 28, 12)
 const DAY = 24 * 60 * 60 * 1000
@@ -235,42 +235,5 @@ describe('bounds and admission (test 3, MF6, SF4)', () => {
     const kept = new Set([...ids(room.messages()), ...room.mail.keys()])
     expect(kept.size + room.outcomes.size).toBe(100)
     expect([...room.outcomes.values()].every(o => o.outcome === 'over-cap')).toBe(true)
-  })
-})
-
-describe('trim leader', () => {
-  const awareness = (states: Array<[number, Partial<Presence>, number?]>) => ({
-    getStates: () => new Map(states.map(([id, state]) => [id, state] as [number, unknown])),
-    meta: new Map(states.map(([id, , updated]) => [id, { lastUpdated: updated ?? NOW }] as [number, { lastUpdated: number }])),
-  })
-  const user = (name: string) => ({ name, kind: 'agent' as const, color: '#fff' })
-
-  it('prefers present non-workers by name and ignores PR mirrors and stale presence', () => {
-    const room = new RoomDoc()
-    room.setWorker({ tag: 'w', name: 'aaron+w', host: 'codex', task: '', dir: '', branch: '', pid: 1, startedAt: 0, status: 'running', lead: 'zoe' })
-    const view = awareness([[1, { user: user('pr#12') }], [2, { user: user('aaron+w') }], [3, { user: user('zoe') }], [4, { user: user('abe') }, NOW - 31_000]])
-    expect(trimLeader(room, view, NOW)).toEqual({ name: 'zoe' })
-    expect(trimLeader(room, awareness([[2, { user: user('aaron+w') }]]), NOW)).toEqual({ name: 'aaron+w' })
-    expect(trimLeader(room, awareness([]), NOW)).toBeUndefined()
-  })
-
-  it('treats a holder with a workerId as a worker and admits a held name only through its holder session', () => {
-    const room = new RoomDoc()
-    const holder = (sessionId: string, workerId?: string) => ({ sessionId, machine: 'm', pid: 1, startTime: 's', executable: 'node', ...(workerId ? { workerId } : {}) })
-    room.participants.set('adam\0holder', holder('s-adam', 'w1'))
-    room.participants.set('zoe\0holder', holder('s-zoe-b'))
-    const view = awareness([[1, { user: user('adam'), sessionId: 's-adam' }], [2, { user: user('zoe'), sessionId: 's-zoe-a' }], [3, { user: user('zoe'), sessionId: 's-zoe-b' }]])
-    const leader = trimLeader(room, view, NOW)
-    expect(leader).toEqual({ name: 'zoe', sessionId: 's-zoe-b' })
-    expect(leadsTrim(leader, { name: 'zoe', sessionId: 's-zoe-b' })).toBe(true)
-    expect(leadsTrim(leader, { name: 'zoe', sessionId: 's-zoe-a' })).toBe(false)
-    expect(leadsTrim(leader, { name: 'zoe' })).toBe(true)
-    expect(leadsTrim(leader, { name: 'adam', sessionId: 's-adam' })).toBe(false)
-    expect(leadsTrim(undefined, { name: 'zoe' })).toBe(false)
-    // A name with a holder counts only through that holder's session.
-    const stale = awareness([[1, { user: user('adam'), sessionId: 's-adam' }], [2, { user: user('zoe'), sessionId: 's-zoe-a' }]])
-    expect(trimLeader(room, stale, NOW)).toEqual({ name: 'adam', sessionId: 's-adam' })
-    room.participants.delete('zoe\0holder')
-    expect(trimLeader(room, view, NOW)).toEqual({ name: 'zoe', sessionId: 's-zoe-a' })
   })
 })

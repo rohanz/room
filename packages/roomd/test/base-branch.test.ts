@@ -293,28 +293,3 @@ describe('one publisher per checkout (reporooms invariant 11)', () => {
     expect(alice.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
   })
 })
-
-
-describe('expiry authority in the trim leader (reporooms S5)', () => {
-  it('only the trim leader measures absence, on its own clock, and expires after ROOM_STALE_DAYS', async () => {
-    const w = await world()
-    let aliceNow = 0, zedNow = 1e12
-    const logs: string[] = []
-    const alice = await w.start({ expiryClock: () => aliceNow, busTrimMs: 0, log: line => logs.push(line) })
-    const zed = await w.start({ name: 'Zed', expiryClock: () => zedNow, busTrimMs: 0 }, w.other('zed'))
-    alice.roomDoc.participants.set('Gone\0id', { name: 'Gone', kind: 'agent' })
-    alice.roomDoc.participants.set('Gone\0holder', { sessionId: 'gone-session', machine: 'm', pid: 1, startTime: 't', executable: 'claude' })
-    alice.roomDoc.setScope('Gone', { byKind: 'agent', area: 'old', summary: 'left', paths: ['app.txt'] })
-    const trim = (daemon: Roomd) => (daemon as unknown as { trimBusIfLeader(): void }).trimBusIfLeader()
-    trim(alice); trim(zed)
-    zedNow += 30 * 24 * 60 * 60 * 1000
-    trim(zed)
-    expect(alice.roomDoc.expiry.has('Gone')).toBe(false)
-    aliceNow += 7 * 24 * 60 * 60 * 1000
-    trim(alice)
-    expect(participantRecord(alice.roomDoc, 'Gone')).toBeUndefined()
-    expect(alice.roomDoc.scope('Gone')).toBeUndefined()
-    expect(participantRecord(zed.roomDoc, 'Gone')).toBeUndefined()
-    expect(logs).toContain('expired Gone: offline for 7 days')
-  })
-})

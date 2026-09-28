@@ -27,7 +27,7 @@ import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease } from '
 import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { ExpiryTenure, ROOM_STALE_DAYS, RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, leadsTrim, newId, participantRecord, participantsView, trimLeader, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
+import { RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, newId, participantRecord, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline } from './baseline.js'
@@ -149,11 +149,6 @@ export interface RoomdOptions {
   reconcileIntervalMs?: number
   /** Test scheduler for the periodic reconciliation. */
   periodicReconcileSchedule?: (run: () => void, intervalMs: number) => () => void
-  /** Rolling bus size and maintenance interval. Defaults: ROOM_BUS_KEEP/2000 and 60s. */
-  busKeep?: number
-  busTrimMs?: number
-  /** Test override for the trim leader's monotonic clock, which alone measures absence for expiry. */
-  expiryClock?: () => number
   /** After startup, skipped files are logged as one count per this window; default 10s. */
   skipLogMs?: number
 }
@@ -266,9 +261,6 @@ class Daemon implements Roomd {
   private readonly sessionId?: string
   /** Fences this daemon's records: the host session, or a per-daemon id until wave 4 binds one. */
   private readonly fence: string
-  private readonly expiryClock: () => number
-  /** This daemon's current trim-leader tenure; its epoch tags the absence it measures. */
-  private tenure?: ExpiryTenure
 
   readonly dir: string
   readonly name: string
@@ -287,8 +279,6 @@ class Daemon implements Roomd {
   readonly sizeCap: number
   readonly totalBudget: number
   private readonly connectTimeoutMs: number
-  private readonly busKeep: number
-  private readonly busTrimMs: number
   private roomIgnore: RoomIgnore = parseRoomIgnore('')
   readonly skips = { size: new Set<string>(), budget: new Set<string>(), ignore: new Set<string>(), share: new Set<string>() }
   private readonly roomUrl: string
@@ -345,7 +335,6 @@ class Daemon implements Roomd {
     this.localRoom = !!options.localKey
     this.sessionId = options.sessionId
     this.fence = options.sessionId ?? newId('daemon_')
-    this.expiryClock = options.expiryClock ?? (() => performance.now())
     this.log = options.log ?? (line => process.stderr.write(`[roomd] ${line}\n`))
     this.remoteRepairSchedule = options.remoteRepairSchedule ?? (run => {
       const timer = setTimeout(() => { void run() }, 40)
@@ -383,9 +372,6 @@ class Daemon implements Roomd {
     this.sizeCap = options.sizeCap ?? 512 * 1024
     this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000
-    const envKeep = Number.parseInt(process.env.ROOM_BUS_KEEP ?? '', 10)
-    this.busKeep = Math.max(0, options.busKeep ?? (Number.isFinite(envKeep) ? envKeep : 2000))
-    this.busTrimMs = options.busTrimMs ?? 60_000
     this.skipLogMs = options.skipLogMs ?? 10_000
     this.shareCeiling = options.shareCeiling
     this.share = clampShare(options.share ?? 'full', this.shareCeiling?.() ?? 'full')
@@ -475,8 +461,6 @@ class Daemon implements Roomd {
     // Events can be missed between the seed scan and watch readiness.
     await this.reconcileGitChanges()
     if (this.reconcileIntervalMs > 0) this.cancelPeriodicReconcile = this.periodicReconcileSchedule(() => { void this.reconcileGitChanges() }, this.reconcileIntervalMs)
-    this.trimBusIfLeader()
-    if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader())
     this.every(this.trackedRefreshMs, () => this.refreshTracked())
     this.every(this.basePollMs, () => this.enqueue(async () => { await this.pollHead() }))
     this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
@@ -1000,25 +984,6 @@ class Daemon implements Roomd {
   }
 
   // ---- watcher -----------------------------------------------------------
-
-  /**
-   * The ledger's trim leader also holds the one destructive-expiry authority (reporooms S5). Each tenure
-   * is an epoch whose absence measurements use only this daemon's monotonic clock.
-   */
-  private trimBusIfLeader(): void {
-    const awareness = this.provider.awareness
-    const leader = trimLeader(this.roomDoc, awareness, Date.now())
-    if (!leadsTrim(leader, { name: this.name, ...(this.sessionId ? { sessionId: this.sessionId } : {}) })) {
-      this.tenure = undefined
-      return
-    }
-    this.tenure ??= new ExpiryTenure(newId('ep_'), this.expiryClock)
-    const removed = this.roomDoc.trimBus(this.busKeep, this)
-    if (removed) this.log(`folded ${removed} old bus messages into the compact ledger (keeping ${this.busKeep})`)
-    for (const name of this.tenure.observe(this.roomDoc, participantsView(this.roomDoc, awareness, Date.now()), this)) {
-      this.log(`expired ${name}: offline for ${ROOM_STALE_DAYS} days`)
-    }
-  }
 
   private async startWatcher(): Promise<void> {
     this.beforeWatcherReady?.()
