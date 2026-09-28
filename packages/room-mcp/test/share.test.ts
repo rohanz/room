@@ -11,7 +11,7 @@ import type { ShareLevel } from '@room/roomd'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { readChoice, writeChoice } from '../src/choice.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = COMMITTED.replace('return 2', 'return 22')
@@ -26,19 +26,16 @@ function pair() {
   return { a: new RoomDoc(a), b: new RoomDoc(b) }
 }
 
-/** A daemon stand-in that records setShare calls and mimics withdraw/republish on the doc. */
+/** A daemon stand-in whose policy callback mimics synchronous withdrawal. */
 function fakeDaemon(room: RoomDoc, share: ShareLevel) {
-  const calls: { level: ShareLevel; paths?: string[] }[] = []
-  const withheld = new Set<string>()
   const d = {
-    share, calls, touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base,
-    skipped: () => ({ size: [], budget: [], ignore: [], share: Array.from(withheld).sort() }),
-    retainedDeclared: () => [],
-    async setShare(level: ShareLevel, paths?: string[]) {
-      calls.push({ level, paths })
+    share, touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base,
+    skipped: () => ({ size: [], budget: [], ignore: [] }),
+    applyInputs({ policy }: { policy: { level: ShareLevel } }) {
+      const level = policy.level
       d.share = level
-      if (level === 'intent') { withheld.add('app.py'); room.clearOverlay('Rohan', 'app.py') }
-      else { withheld.delete('app.py'); room.setOverlay('Rohan', 'app.py', MINE) }
+      if (level === 'intent') room.clearOverlay('Rohan', 'app.py')
+      else room.setOverlay('Rohan', 'app.py', MINE)
     },
   }
   return d
@@ -51,8 +48,11 @@ function setup(opts: { share?: ShareLevel; shareMax?: ShareLevel; requested?: Sh
   const awareness = new Awareness(a.doc)
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle', share: opts.share ?? 'full' })
   const daemon = fakeDaemon(a, opts.share ?? 'full')
+  const policyStore = testPolicyStore(opts.requested ?? opts.share ?? 'full', policy => daemon.applyInputs({ policy }))
+  policyStore.setCeiling(opts.shareMax ?? 'full')
   const graph = new GraphIndex(a, 'Rohan', dir); graph.start()
   const session: Session = {
+    policyStore,
     graph, room: a, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: daemon as unknown as Session['daemon'],
@@ -89,24 +89,21 @@ describe('room_share', () => {
     expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: the full text of files you change')
   })
 
-  it('changes the level live through the daemon, using my scope paths, and posts a note', async () => {
+  it('changes the level live through policy inputs and posts a note', async () => {
     const t = setup()
     t.room.setScope({ by: 'Rohan', byKind: 'agent', area: 'api', summary: 's', paths: ['app.py'] })
     const out = t.body(await t.tools.call('room_share', { level: 'intent' }))
     expect(out).toContain('changed sharing full -> sharing: only your plans, no file text')
-    expect(out).toContain('withheld 1 changed file(s): app.py')
-    expect(t.daemon.calls).toEqual([{ level: 'intent', paths: undefined }]) // the daemon keeps following the declared scope
     expect(t.room.changedPaths('Rohan')).toEqual([])
     expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'note', text: 'now sharing only your plans, no file text' })
     expect(t.body(await t.tools.call('room_share', { level: 'full' }))).toBe('changed sharing intent -> sharing: the full text of files you change')
     expect(t.room.changedPaths('Rohan')).toEqual(['app.py'])
   })
 
-  it('remembers an explicit narrower level for the clone', async () => {
-    await writeChoice(dir, 'team', 'Rohan', 'full')
+  it('stores an explicit narrower level in the policy store', async () => {
     const t = setup()
     await t.tools.call('room_share', { level: 'intent' })
-    expect(await readChoice(dir)).toMatchObject({ where: 'team', share: 'intent' })
+    expect(t.session.policyStore.requested).toBe('intent')
   })
 
   it('narrows unknown levels and warns when declared has no scope yet', async () => {
@@ -122,7 +119,7 @@ describe('room_share', () => {
     expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: files in your declared area and changed files declared earlier (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
     const out = t.body(await t.tools.call('room_share', { level: 'full' }))
     expect(out).toContain('sharing level unchanged: sharing: files in your declared area and changed files declared earlier (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
-    expect(t.daemon.calls).toEqual([{ level: 'declared', paths: undefined }])
+    expect(t.session.policyStore.requested).toBe('full')
     expect(t.body(await t.tools.call('room_share', { level: 'intent' }))).toContain('changed sharing declared -> sharing: only your plans, no file text')
   })
 })

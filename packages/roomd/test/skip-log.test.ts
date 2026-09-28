@@ -1,3 +1,4 @@
+import { policyFromLevel } from '../src/policy.js'
 import { it, expect, vi, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -19,7 +20,7 @@ function repo(files: Record<string, string>): string {
   git('add', '.'); git('commit', '-qm', 'base')
   return dir
 }
-const start = (dir: string, log: (line: string) => void, extra: Partial<RoomdOptions> = {}) => startRoomd({ dir, name: 'Test', room: 'ws://memory/skip-log', debounceMs: 20, log, ...extra, providerFactory: (_server, _room, doc) => {
+const start = (dir: string, log: (line: string) => void, extra: Partial<RoomdOptions> = {}) => startRoomd({ policy: policyFromLevel('full'), dir, name: 'Test', room: 'ws://memory/skip-log', debounceMs: 20, log, ...extra, providerFactory: (_server, _room, doc) => {
   const awareness = new Awareness(doc)
   return { synced: true, awareness, on() {}, off() {}, destroy() { awareness.destroy() } } as unknown as WebsocketProvider
 } })
@@ -28,20 +29,16 @@ async function until(check: () => boolean, ms = 10_000): Promise<void> {
   while (!check()) { if (Date.now() > deadline) throw new Error('timed out'); await new Promise(r => setTimeout(r, 20)) }
 }
 
-it('logs ignored-file skips as one count per scan, not one line per file', async () => {
+it('does not digest gitignored untracked files as repository changes', async () => {
   const dir = repo({ '.gitignore': 'logs/\n', 'app.py': 'x = 1\n' })
   const logs: string[] = []
   const daemon = await start(dir, line => logs.push(line), { skipLogMs: 300 })
   try {
     fs.mkdirSync(path.join(dir, 'logs'))
     for (let i = 0; i < 30; i++) fs.writeFileSync(path.join(dir, 'logs', `run-${i}.log`), `line ${i}\n`)
-    await until(() => daemon.skipped().ignore.filter(p => p.startsWith('logs/')).length === 30)
-    await until(() => logs.filter(line => line.startsWith('skipped ')).reduce((n, line) => n + Number(line.match(/^skipped (\d+)/)![1]), 0) === 30)
-    expect(logs.filter(line => line.startsWith('skip '))).toEqual([])
-    const counts = logs.filter(line => line.startsWith('skipped '))
-    expect(counts.length).toBeLessThanOrEqual(2)
-    expect(counts.reduce((n, line) => n + Number(line.match(/^skipped (\d+)/)![1]), 0)).toBe(30)
-    expect(counts[0]).toMatch(/^skipped \d+ file\(s\) \(\d+ \.gitignore\), e\.g\. logs\/run-\d+\.log$/)
+    await daemon.reconcileGitChanges()
+    expect(daemon.roomDoc.manifestHead.get('Test')?.excluded).toEqual([])
+    expect(daemon.roomDoc.changedPaths('Test').filter(p => p.startsWith('logs/'))).toEqual([])
   } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
 

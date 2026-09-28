@@ -18,6 +18,7 @@ import { waitConsumesMessage } from '../src/tools/messaging.js'
 import { shouldWake } from '../src/wake.js'
 import { suggestedTestCommand, testCommandFor } from '../src/tools/files.js'
 import { markHistorySeenOnJoin } from '../src/tools/join.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -39,6 +40,7 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
   const graph = new GraphIndex(room, 'Rohan', dir); graph.start()
   return {
     graph,
+    policyStore: testPolicyStore(),
     room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     provider: { synced, awareness, ...(wsconnected === undefined ? {} : { wsconnected }) } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
@@ -469,7 +471,7 @@ describe('one login, two agents', () => {
     const mk = (room: RoomDoc, id: Identity, awareness: Awareness) => {
       awareness.setLocalState({ user: { ...id, color: '#000' }, status: 'idle', lastActive: Date.now() })
       const graph = new GraphIndex(room, id.name, dir); graph.start()
-      const s: Session = { graph, room, awareness, me: id, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+      const s: Session = { graph, policyStore: testPolicyStore(), room, awareness, me: id, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
         provider: { synced: true, awareness } as unknown as Session['provider'],
         daemon: { touch() {}, async stop() {}, dir, name: id.name, roomDoc: room, provider: null as never, branch: 'main', base } }
       return createTools({ getSession: () => s, setSession: () => {}, cwd: dir })

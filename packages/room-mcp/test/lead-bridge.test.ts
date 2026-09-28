@@ -15,6 +15,7 @@ import { createTools } from '../src/tools.js'
 import { shouldWake } from '../src/wake.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 let dir: string
 let base: string
@@ -35,7 +36,7 @@ function fakeSession(room: RoomDoc, me: Identity, local = true): Session {
     graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', roomName: 'local/x/main', browserUrl: 'http://x',
     provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base } as never,
-    shareMax: 'full', shareRequested: 'full',
+    shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
     ...(local ? { local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} } } : {}),
   } as Session
 }

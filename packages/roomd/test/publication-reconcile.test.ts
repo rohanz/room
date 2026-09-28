@@ -1,3 +1,4 @@
+import { policyFromLevel } from '../src/policy.js'
 import { afterEach, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -32,7 +33,7 @@ function repo(): string {
 }
 
 function options(extra: Partial<RoomdOptions> = {}): RoomdOptions {
-  return { dir: repo(), room: 'ws://memory/level-reconcile', name: 'Alice', providerFactory: (_s, _n, doc) => provider(doc),
+  return { dir: repo(), room: 'ws://memory/level-reconcile', name: 'Alice', policy: policyFromLevel('full'), providerFactory: (_s, _n, doc) => provider(doc),
     basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {}, ...extra }
 }
 

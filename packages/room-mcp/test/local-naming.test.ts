@@ -10,6 +10,7 @@ import { ensureLocalRelay } from '@room/relay'
 import { joinSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import { resolveConfig } from '../src/config.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 vi.mock('@room/relay', () => ({ ensureLocalRelay: vi.fn(async () => { throw new Error('relay boundary') }) }))
 let dir: string
@@ -46,7 +47,7 @@ it.each(['local', 'team'])('reports the actual %s name and preserves team argume
   const fake = {
     dir, room, awareness, roomName: name, roomUrl, browserUrl: `http://localhost/?room=${encodeURIComponent(roomUrl)}`,
     pinnedRoom: true, me: { name: 'Ada', kind: 'agent' }, provider: { synced: true, awareness },
-    daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full',
+    daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
     ...(where === 'local' ? { local: { url: 'ws://127.0.0.1:1' } } : {}),
   } as Session
   const joiner = vi.fn(async () => fake)
@@ -84,7 +85,7 @@ function transitionTools() {
     return { dir, room, awareness, roomName: name, roomUrl,
       browserUrl: 'http://localhost/?room=' + encodeURIComponent(roomUrl), pinnedRoom: true,
       me: { name: 'Ada', kind: 'agent' }, provider: { synced: true, awareness },
-      daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full',
+      daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
       local: { url: 'ws://127.0.0.1:1' },
     } as Session
   })

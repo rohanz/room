@@ -9,6 +9,7 @@ import { RoomDoc } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { getCredential } from '../src/credentials.js'
 import { DEFAULT_SERVER, NotLoggedIn, type JoinOptions, type Session } from '../src/session.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 let dir: string
 const dispose: (() => void | Promise<void>)[] = []
@@ -35,8 +36,9 @@ function session(roomName: string, options: { local?: boolean; share?: 'full' | 
   dispose.push(() => { awareness.destroy(); doc.destroy() })
   const share = options.share ?? 'full'
   const roomUrl = `${options.local ? 'ws://local' : 'ws://team'}/${encodeURIComponent(roomName)}`
-  const daemon = { share, touch() {}, async stop() {}, async setShare(level: typeof share) { daemon.share = level }, skipped: () => ({ share: [], size: [], budget: [], ignore: [] }) }
+  const daemon = { share, touch() {}, async stop() {}, skipped: () => ({ size: [], budget: [], ignore: [] }) }
   return {
+    policyStore: testPolicyStore(share, policy => { daemon.share = policy.level }),
     dir, room, awareness, roomName, roomUrl, browserUrl: 'http://example/view',
     me: { name: 'Ada+privacy', owner: 'Ada', label: 'privacy', kind: 'agent' },
     provider: { synced: true, awareness }, daemon, shareMax: 'full', shareRequested: share,

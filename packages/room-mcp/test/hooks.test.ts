@@ -9,6 +9,7 @@ import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
 import { consumeHookDisclosure, consumeHookNotice, createWriteIntentReader, findThreadForDir, HooksBridge, hookHealthNote, syncHookSeen, writePendingHookContext } from '../src/hooks-bridge.js'
 import type { Session } from '../src/session.js'
+import { testPolicyStore } from './policy-fixture.js'
 import { hasCompany } from '../src/company.js'
 import { AGENT_INSTRUCTIONS } from '../src/prompt.js'
 import { createTools } from '../src/tools.js'
@@ -54,7 +55,7 @@ function runHook(script: string, input: object, args: string[] = [], nodeArgs: s
 
 function session(room: RoomDoc): Session {
   const awareness = new Awareness(room.doc)
-  return { room, awareness, me: { name: 'Rohan', kind: 'agent' }, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: '', provider: { synced: true } as never, daemon: { touch() {}, async stop() {} } as never }
+  return { room, awareness, me: { name: 'Rohan', kind: 'agent' }, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: '', provider: { synced: true } as never, daemon: { touch() {}, async stop() {} } as never, policyStore: testPolicyStore() }
 }
 
 function addPresence(s: Session, name: string, kind: 'agent' | 'human' = 'agent', status = 'idle') {

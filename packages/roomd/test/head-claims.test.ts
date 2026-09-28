@@ -1,3 +1,4 @@
+import { policyFromLevel } from '../src/policy.js'
 import { afterEach, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -42,7 +43,7 @@ it('revalidates only its own claims when HEAD moves, retaining a moved block and
   fs.writeFileSync(file, before)
   git(root, 'add', '-A')
   git(root, 'commit', '-qm', 'base')
-  daemon = await startRoomd({ dir: root, room: 'ws://memory/claims', name: 'Alice', kind: 'agent',
+  daemon = await startRoomd({ policy: policyFromLevel('full'), dir: root, room: 'ws://memory/claims', name: 'Alice', kind: 'agent',
     providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
   })
   const doc = daemon.roomDoc
@@ -84,7 +85,7 @@ it('keeps the claim-time digest when a later overlay has unrelated lines at an u
   const before = Array.from({ length: 18 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
   fs.writeFileSync(file, before)
   git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base')
-  daemon = await startRoomd({ dir: root, room: 'ws://memory/digest', name: 'Alice', kind: 'agent',
+  daemon = await startRoomd({ policy: policyFromLevel('full'), dir: root, room: 'ws://memory/digest', name: 'Alice', kind: 'agent',
     providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
   })
   const doc = daemon.roomDoc
@@ -111,7 +112,7 @@ for (const addedAbove of [0, 5]) {
     fs.writeFileSync(file, before)
     git(root, 'add', '-A')
     git(root, 'commit', '-qm', 'base')
-    daemon = await startRoomd({ dir: root, room: 'ws://memory/claim-edit', name: 'Alice', kind: 'agent',
+    daemon = await startRoomd({ policy: policyFromLevel('full'), dir: root, room: 'ws://memory/claim-edit', name: 'Alice', kind: 'agent',
       providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
     })
     const doc = daemon.roomDoc

@@ -14,6 +14,7 @@ import type { Identity } from '@room/shared'
 import { Rooms, workerId, workerIdBase, finishWorkerProcess } from '../src/registry.js'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 let dir: string, base: string
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
@@ -32,7 +33,7 @@ function fakeSession(room: RoomDoc, me: Identity, roomName = 'local/x/main'): Se
     room, awareness, me, dir, roomUrl: `ws://127.0.0.1:1/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
     provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base } as never,
-    shareMax: 'full', shareRequested: 'full',
+    shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
   } as Session
 }
 

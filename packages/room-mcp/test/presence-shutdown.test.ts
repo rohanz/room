@@ -8,6 +8,7 @@ import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd } from '@room/roomd'
+import { policyFromLevel } from '@room/roomd/policy'
 
 const cleanup: (() => void)[] = []
 afterEach(() => cleanup.splice(0).reverse().forEach(fn => fn()))
@@ -38,7 +39,7 @@ describe('roomd presence shutdown', () => {
         destroy() { awareness.destroy(); events.removeAllListeners() },
       }) as unknown as WebsocketProvider
     }
-    const daemon = await startRoomd({ room: 'ws://memory/test', dir, name: 'Rohan', kind: 'agent', providerFactory, log: () => {} })
+    const daemon = await startRoomd({ room: 'ws://memory/test', dir, name: 'Rohan', kind: 'agent', providerFactory, policy: policyFromLevel('full'), log: () => {} })
     expect(Array.from(remote.getStates().values()).some(state => state.user?.name === 'Rohan')).toBe(true)
     await daemon.stop()
     expect(Array.from(remote.getStates().values()).some(state => state.user?.name === 'Rohan')).toBe(false)

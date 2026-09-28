@@ -1,3 +1,4 @@
+import { policyFromLevel } from '../src/policy.js'
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -68,7 +69,7 @@ async function world(options: { local?: boolean } = {}) {
   const server = new Y.Doc()
   room.connect(server)
   const start = async (extra: Partial<RoomdOptions> = {}, at = dir) => {
-    const daemon = await startRoomd({
+    const daemon = await startRoomd({ policy: policyFromLevel('full'),
       dir: at, room: `ws://memory/${encodeURIComponent(options.local ? 'local/repo' : 'github.com/owner/repo/rehearsal')}`,
       ...(options.local ? { localKey: 'test-local-key' } : {}),
       name: 'Alice', kind: 'agent', providerFactory: (_server, _name, doc) => room.connect(doc),
@@ -230,7 +231,7 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: true, base: w.base })
     const next = commit(w.dir, 'a.txt', 'a\n')
     const before = daemon.roomDoc.manifestHead.get('Alice')!
-    const internal = daemon as unknown as { reanchorOwnClaims: (...args: unknown[]) => Promise<unknown>; publishManifestSnapshot(): Promise<void> }
+    const internal = daemon as unknown as { reanchorOwnClaims: (...args: unknown[]) => Promise<unknown>; publisher: { prepare(): Promise<unknown>; apply(prepared: unknown, complete: boolean): boolean } }
     const reanchor = internal.reanchorOwnClaims.bind(daemon)
     const during: unknown[] = []
     internal.reanchorOwnClaims = async () => { during.push(daemon.roomDoc.manifestHead.get('Alice')); throw new Error('injected mid-transition failure') }
@@ -238,7 +239,7 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     expect(during).toMatchObject([{ complete: false }])
     expect((during[0] as { semRev: number }).semRev).toBeGreaterThan(before.semRev)
     // Another publication path (watcher, reshare, salt) must not certify the head while the transition is unfinished.
-    await internal.publishManifestSnapshot()
+    await internal.publisher.reconcile('all', false)
     expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: false, base: w.base })
     expect(git(daemon)).toMatchObject({ head: w.base, rev: 1 })
     internal.reanchorOwnClaims = reanchor
@@ -246,11 +247,12 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     expect(git(daemon)).toMatchObject({ head: next, rev: 2 })
     expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: true, base: w.base })
     // A snapshot already scanning when a transition starts must not certify the head afterwards.
-    const inFlight = internal.publishManifestSnapshot() // computes its input now, then awaits the scan
-    const state = daemon as unknown as { transitionPending: boolean; fence: string }
+    const inFlight = internal.publisher.prepare() // captures immutable inputs before a transition
+    const state = daemon as unknown as { transitionPending: boolean; fence: string; inputs: unknown }
+    state.inputs = { ...daemon.inputs }
     state.transitionPending = true // what a transition starting now does before its first await
     markManifestIncomplete(daemon.roomDoc, 'Alice', state.fence)
-    await inFlight
+    expect(internal.publisher.apply(await inFlight, true)).toBe(false)
     expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: false })
   })
 
