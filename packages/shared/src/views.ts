@@ -1,8 +1,71 @@
 import { describeClaim } from './claims.js'
 import { describeIdentity, isAgentic } from './identity.js'
+import { participantRecord, type ParticipantGit, type ParticipantHolder, type ParticipantRecord, type RoomDoc } from './doc.js'
 import type { Claim, Kind, NoteMsg, Presence, RetiredWorker, Scope, ShareLevel, Worker } from './types.js'
 
-/** Split a room identity while preserving slashes within its branch. */
+const ROOM_STALE_MS = 7 * 24 * 60 * 60 * 1000
+const AWARENESS_FRESH_MS = 30_000
+
+export interface ParticipantView {
+  name: string
+  kind?: Kind
+  fresh: boolean
+  visible: boolean
+  holder?: ParticipantHolder
+  projectedBy?: string
+}
+
+export interface AwarenessView {
+  getStates(): Map<number, unknown>
+  meta?: Map<number, { lastUpdated: number }>
+}
+
+/** Build the read-only presence and expiry view over flat participant records. */
+export function participantsView(doc: RoomDoc, awareness: AwarenessView, now: number): ParticipantView[] {
+  const names = new Set<string>()
+  for (const key of doc.participants.keys()) {
+    const split = key.lastIndexOf('\u0000')
+    if (split > 0) names.add(key.slice(0, split))
+  }
+  const current = new Map<string, Partial<Presence>[]>()
+  for (const [clientId, value] of awareness.getStates()) {
+    const state = value as Partial<Presence> | null
+    const name = state?.user?.name
+    if (!name) continue
+    names.add(name)
+    const updated = awareness.meta?.get(clientId)?.lastUpdated
+    if (updated !== undefined && (now - updated > AWARENESS_FRESH_MS || updated > now)) continue
+    current.set(name, [...(current.get(name) ?? []), state])
+  }
+  return [...names].sort().map(name => {
+    const record = participantRecord(doc, name)
+    const presences = current.get(name) ?? []
+    const fresh = !!record?.holder && presences.some(state => state.sessionId === record.holder?.sessionId)
+    const observedMs = doc.expiry.get(name)?.observedMs ?? 0
+    return {
+      name,
+      ...(record?.id?.kind ? { kind: record.id.kind } : presences[0]?.user?.kind ? { kind: presences[0].user.kind } : {}),
+      fresh,
+      visible: fresh || (!!record && observedMs < ROOM_STALE_MS),
+      ...(record?.holder ? { holder: record.holder } : {}),
+      ...(record?.proj ? { projectedBy: record.proj.projectedBy } : {}),
+    }
+  })
+}
+
+/** A holder is live only while awareness names that exact host session. */
+export function liveHolder(view: readonly ParticipantView[], name: string): string | undefined {
+  const participant = view.find(p => p.name === name)
+  return participant?.fresh ? participant.holder?.sessionId : undefined
+}
+
+/** The only reader for a participant's git fact; stale writer incarnations read as updating. */
+export function acceptedGit(record: ParticipantRecord | undefined, view: readonly ParticipantView[]): ParticipantGit | 'updating' {
+  const expected = record?.proj ? liveHolder(view, record.proj.projectedBy) : record?.holder?.sessionId
+  return expected && record?.git?.fence === expected ? record.git : 'updating'
+}
+
+/** Legacy branch parser, replaced by rooms.ts at the wave-5 cutover. */
 export function roomNameParts(roomName: string): { host?: string; owner?: string; repo: string; branch: string; local: boolean } {
   const parts = roomName.split('/')
   if (parts[0] === 'local' && parts.length >= 3) {

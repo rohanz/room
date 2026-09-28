@@ -202,6 +202,7 @@ export interface Meta {
   base?: string
   createdAt?: number
   seededBy?: string
+  schemaVersion?: number
 }
 
 export interface Cursor {
@@ -213,6 +214,8 @@ export interface Cursor {
 
 /** Awareness state published by every client. */
 export interface Presence {
+  /** Immutable host-session identity used to match a participant's live holder. */
+  sessionId?: string
   /** Session cannot receive an idle wake; messages remain for its next turn. */
   wakeUnavailable?: boolean
   /** SHA256 of the watched directory realpath; never the path itself. */

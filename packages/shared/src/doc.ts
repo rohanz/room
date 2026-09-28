@@ -25,6 +25,48 @@ type NewScope = Omit<Scope, 'at'> & { at?: number }
 type PostBody<T extends Msg> = Omit<T, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> & { priority?: Priority }
 const validColorIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) < PALETTE.length
 
+export interface ParticipantHolder {
+  sessionId: string
+  machine: string
+  pid: number
+  startTime: string
+  executable: string
+  workerId?: string
+}
+
+export interface ParticipantGit {
+  branch: string
+  head: string
+  base: string
+  anchored: boolean
+  remote?: string
+  upstream?: string
+  ahead?: number
+  behind?: number
+  rev: number
+  fence: string
+}
+
+export interface ParticipantProjection { projectedFrom: string; projectedBy: string }
+export interface ParticipantRecord {
+  id?: Identity
+  holder?: ParticipantHolder
+  /** Raw replicated value. Readers use acceptedGit() to check its fence. */
+  git?: ParticipantGit
+  proj?: ParticipantProjection
+}
+
+/** Compose independently merged, whole-value participant fields. */
+export function participantRecord(room: RoomDoc, name: string): ParticipantRecord | undefined {
+  const key = (field: string) => `${name}\u0000${field}`
+  const id = room.participants.get(key('id')) as Identity | undefined
+  const holder = room.participants.get(key('holder')) as ParticipantHolder | undefined
+  const git = room.participants.get(key('git')) as ParticipantGit | undefined
+  const proj = room.participants.get(key('proj')) as ParticipantProjection | undefined
+  if (!id && !holder && !git && !proj) return undefined
+  return { ...(id ? { id } : {}), ...(holder ? { holder } : {}), ...(git ? { git } : {}), ...(proj ? { proj } : {}) }
+}
+
 /** Default bus priority from spec §6. */
 export function defaultPriority(msg: { type: MsgType; symbols?: readonly string[]; [key: string]: unknown }): Priority {
   const kind = MessageKinds[msg.type]
@@ -38,6 +80,10 @@ export class RoomDoc {
   private colorName?: string
   private colorOrigin?: unknown
   get graphs(): Y.Map<GraphSnapshot> { return this.doc.getMap<GraphSnapshot>('graphs') }
+  /** Flat `${name}\0${field}` keys avoid concurrent child-map insertion races. */
+  get participants(): Y.Map<unknown> { return this.doc.getMap<unknown>('participants') }
+  /** Monotonic absence accumulated by the current trim leader. */
+  get expiry(): Y.Map<{ observedMs: number; epoch: string }> { return this.doc.getMap('expiry') }
   /** Persistent participant -> palette slot assignments. */
   get colors(): Y.Map<number> { return this.doc.getMap<number>('colors') }
 
@@ -365,6 +411,7 @@ export class RoomDoc {
       base: map.get('base') as string | undefined,
       createdAt: map.get('createdAt') as number | undefined,
       seededBy: map.get('seededBy') as string | undefined,
+      schemaVersion: map.get('schemaVersion') as number | undefined,
     }
   }
 
