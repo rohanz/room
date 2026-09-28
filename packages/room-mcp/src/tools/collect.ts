@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { claimsOverlap, type RetiredWorker, type Worker } from '@room/shared'
-import { git } from '@room/roomd/git'
+import { git, gitWholeTree } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, workerOwnedPaths, workerOperationKey } from '../worker-git.js'
@@ -282,7 +282,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         await assertNoOperation(w.dir)
         if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error('worker is not a worktree of this repository')
         if (w.branch !== 'room/' + w.tag || (await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) throw new Error('worker must be on branch room/' + w.tag)
-        await git(w.dir, ['ls-files', '-z'])
+        await gitWholeTree(w.dir, ['ls-files', '-z'])
         const cleanupErrors: string[] = []
         const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses)
         if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
@@ -316,8 +316,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!Array.isArray(a.paths) || !a.paths.length || a.paths.some(p => typeof p !== 'string')) return 'error: copy requires non-empty paths'
         const workerRoot = workerRoots.get(w)!
         const files = copyFiles(workerRoot, a.paths as string[])
-        const modified = new Set(split(await git(lead.dir, ['diff', '--name-only', '-z', 'HEAD', '--'])))
-        const tracked = new Set(split(await git(lead.dir, ['ls-files', '-z'])))
+        const modified = new Set(split(await gitWholeTree(lead.dir, ['diff', '--name-only', '-z', 'HEAD', '--'])))
+        const tracked = new Set(split(await gitWholeTree(lead.dir, ['ls-files', '-z'])))
         for (const p of files) {
           const dst = safePath(leadRoot, p)
           if (fs.existsSync(dst) && !fs.statSync(dst).isFile()) return 'error: copy destination is not a regular file: ' + p

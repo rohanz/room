@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { git } from '@room/roomd/git'
+import { git, gitWholeTree, isGitTimeout } from '@room/roomd/git'
 import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
@@ -70,11 +70,11 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   for (const item of bases.slice(1)) {
     if (item.base === ancestor) continue
     try { ancestor = (await git(caller.dir, ['merge-base', ancestor, item.base])).trim() }
-    catch { throw new Error(`${item.person}'s HEAD ${item.base.slice(0, 10)} is not in this clone; git fetch, then retry`) }
+    catch (error) { if (isGitTimeout(error)) throw error; throw new Error(`${item.person}'s HEAD ${item.base.slice(0, 10)} is not in this clone; git fetch, then retry`) }
   }
   // A worker's own changes are its tree against its baseline (baseline.ts), whichever side calls:
   // a shared merge-base would count the lead's carried work as the worker's.
-  const descends = (from: string, sha: string) => git(caller.dir, ['merge-base', '--is-ancestor', from, sha]).then(() => true, () => false)
+  const descends = (from: string, sha: string) => git(caller.dir, ['merge-base', '--is-ancestor', from, sha]).then(() => true, error => { if (isGitTimeout(error)) throw error; return false })
   const callerWorker = caller.room.workerOf(caller.me.name)
   const callerBaseline = await pairBaseline(callerWorker, undefined, ancestor, descends)
   const pairs = new Map<string, Baseline | undefined>()
@@ -88,16 +88,16 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     const add = (p: string) => { pathSet.add(p); if (index > 0) theirPaths.add(p) }
     const worker = previewWorker(item.session, item.person)
     const dir = worker?.dir ?? (item.person === caller.me.name ? caller.dir : undefined)
-    const ignored = dir ? (await git(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
+    const ignored = dir ? (await gitWholeTree(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
     const visibleIgnored = ignored.filter(p => !/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/.test(p))
     if (visibleIgnored.length) ignoredNotes.push('NOT previewed (gitignored, ' + item.person + '): ' + visibleIgnored.join(', '))
     if (!options.diskOnly) for (const p of item.session.room.changedPaths(item.person)) if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) add(p)
     if (dir) {
-      for (const p of (await git(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) add(p)
-      for (const p of (await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) add(p)
+      for (const p of (await gitWholeTree(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) add(p)
+      for (const p of (await gitWholeTree(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) add(p)
     }
     for (const base of new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? callerBaseline?.sha ?? ancestor])) {
-      if (base !== ancestor) for (const p of (await git(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean)) add(p)
+      if (base !== ancestor) for (const p of (await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean)) add(p)
     }
   }
   // ls-files represents nested repositories/submodules as directory entries.

@@ -2,15 +2,32 @@ import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
 export const DEFAULT_GIT_TIMEOUT_MS = 30_000
+export const UNKNOWN_WHOLE_TREE_PATHS = 10_000
+const WHOLE_TREE_PER_PATH_MS = 15
+const WHOLE_TREE_TIMEOUT_CAP_MS = 300_000
 
 export function missingGitCwd(dir: string, error: NodeJS.ErrnoException): Error | undefined {
   return error.code === 'ENOENT' && !existsSync(dir) ? new Error(`worktree ${dir} no longer exists`) : undefined
 }
 
-function timeoutMs(configured?: number): number {
+function overrideMs(configured?: number): number | undefined {
+  if (configured !== undefined && Number.isFinite(configured) && configured > 0) return configured
   const fromEnv = Number(process.env.ROOM_GIT_TIMEOUT_MS)
-  return Number.isFinite(configured) && configured! > 0 ? configured! : Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_GIT_TIMEOUT_MS
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : undefined
 }
+
+export const timeoutMs = (configured?: number): number => overrideMs(configured) ?? DEFAULT_GIT_TIMEOUT_MS
+
+/** Whole-tree Git work: 30s + 15ms per path, at most five minutes. Unknown tree sizes use 10,000 paths. */
+export function wholeTreeTimeoutMs(pathCount = UNKNOWN_WHOLE_TREE_PATHS, configured?: number): number {
+  return overrideMs(configured) ?? Math.min(WHOLE_TREE_TIMEOUT_CAP_MS, DEFAULT_GIT_TIMEOUT_MS + Math.max(0, pathCount) * WHOLE_TREE_PER_PATH_MS)
+}
+
+export const gitWholeTree = (dir: string, args: string[], pathCount?: number, configuredTimeoutMs?: number) =>
+  git(dir, args, wholeTreeTimeoutMs(pathCount, configuredTimeoutMs))
+
+export const isGitTimeout = (error: unknown): error is Error =>
+  error instanceof Error && /^git .*timed out after \d+ms/.test(error.message)
 
 export function git(dir: string, args: string[], configuredTimeoutMs?: number): Promise<string> {
   const timeout = timeoutMs(configuredTimeoutMs)
@@ -102,7 +119,7 @@ export async function gitShowMany(dir: string, base: string, relpaths: Iterable<
     else batch.push(p)
   }
   if (!batch.length) return out
-  const timeout = timeoutMs(configuredTimeoutMs)
+  const timeout = wholeTreeTimeoutMs(batch.length, configuredTimeoutMs)
   const raw = await new Promise<Buffer>((resolve, reject) => {
     const child = spawn('git', ['cat-file', '--batch'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
     const chunks: Buffer[] = []
@@ -136,7 +153,7 @@ export async function gitBlobInfoMany(dir: string, base: string, relpaths: Itera
   const paths = Array.from(relpaths)
   const out = new Map<string, GitBlobInfo | undefined>()
   if (!paths.length) return out
-  const timeout = timeoutMs(configuredTimeoutMs)
+  const timeout = wholeTreeTimeoutMs(paths.length, configuredTimeoutMs)
   const raw = await new Promise<string>((resolve, reject) => {
     const child = spawn('git', ['cat-file', '--batch-check', '-Z'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
     const chunks: Buffer[] = []
@@ -160,7 +177,7 @@ export async function gitBlobInfoMany(dir: string, base: string, relpaths: Itera
 
 /** Paths whose worktree or index differs from HEAD, untracked non-ignored files included: what an overlay seed must look at. */
 export async function gitChanged(dir: string): Promise<string[]> {
-  const out = await git(dir, ['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all', '--no-renames', '--ignore-submodules=all'])
+  const out = await gitWholeTree(dir, ['--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all', '--no-renames', '--ignore-submodules=all'])
   return out.split('\0').filter(Boolean).map(entry => entry.slice(3))
 }
 
@@ -170,7 +187,7 @@ export async function gitChanged(dir: string): Promise<string[]> {
  * creates api/notify.py rarely stages it, and a teammate's tests still need it.
  */
 export async function gitTracked(dir: string): Promise<Set<string>> {
-  const out = await git(dir, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
+  const out = await gitWholeTree(dir, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
   return new Set(out.split('\0').filter(Boolean))
 }
 
@@ -201,7 +218,7 @@ export async function gitRelation(dir: string, head: string, base: string): Prom
 export const gitCountBetween = (dir: string, from: string, to: string) =>
   git(dir, ['rev-list', '--count', `${from}..${to}`]).then(s => Number(s.trim()) || 0)
 export const gitPathsBetween = (dir: string, from: string, to: string) =>
-  git(dir, ['diff', '--name-only', '-z', from, to]).then(s => s.split('\0').filter(Boolean))
+  gitWholeTree(dir, ['diff', '--name-only', '-z', from, to]).then(s => s.split('\0').filter(Boolean))
 export const gitSubject = (dir: string, rev: string) =>
   git(dir, ['log', '-1', '--format=%s', rev]).then(s => s.trim())
 

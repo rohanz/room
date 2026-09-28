@@ -1,4 +1,4 @@
-import { git } from '@room/roomd/git'
+import { git, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
 import { createTwoFilesPatch } from 'diff'
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -86,8 +86,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (typeof a.path === 'string' && a.path) return label((await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`)
       const parts: string[] = []
       const paths = worker || ownDisk ? new Set([
-        ...(await git(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
-        ...(await git(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
+        ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
+        ...(await gitWholeTree(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
       ].filter(Boolean)) : s.room.changedPaths(person)
       for (const p of paths) { const d = await one(p); if (d) parts.push(d) }
       const level = shareOf(s, person)
@@ -179,39 +179,46 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
-      const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
-      const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out } = result
-      if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, 'no mergeable changes', ...result.ignoredNotes].join('\n')
-      if (!paths.length && !result.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
-      out.unshift(...missingNotes)
-      if (skippedNote) out.push(skippedNote)
-      for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
-      out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
-      if (noTestsNote) out.push(noTestsNote)
-      let ranOk = !run
-      if (run) {
-        if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
-        else {
-          const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
-            const w = result.diskWorkers.get(person)
-            if (!w) return undefined
-            const dir = result.roots.get(path.resolve(w.dir))
-            if (!dir) throw new Error('uncaptured preview root: ' + w.dir)
-            return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) }
-          }))).filter((x): x is NonNullable<typeof x> => !!x)
-          const modes = new Map<string, number>()
-          for (const p of merged.keys()) {
-            let leadMode = 0o644
-            try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
-            modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
+      try {
+        const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
+        const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out } = result
+        if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, 'no mergeable changes', ...result.ignoredNotes].join('\n')
+        if (!paths.length && !result.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
+        out.unshift(...missingNotes)
+        if (skippedNote) out.push(skippedNote)
+        for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
+        out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
+        if (noTestsNote) out.push(noTestsNote)
+        let ranOk = !run
+        if (run) {
+          if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
+          else {
+            const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
+              const w = result.diskWorkers.get(person)
+              if (!w) return undefined
+              const dir = result.roots.get(path.resolve(w.dir))
+              if (!dir) throw new Error('uncaptured preview root: ' + w.dir)
+              return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) }
+            }))).filter((x): x is NonNullable<typeof x> => !!x)
+            const modes = new Map<string, number>()
+            for (const p of merged.keys()) {
+              let leadMode = 0o644
+              try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+              modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
+            }
+            const verdict = await runInMergedTree(caller, ancestor, merged, run, modes); out.push(verdict.text); ranOk = verdict.passed
           }
-          const verdict = await runInMergedTree(caller, ancestor, merged, run, modes); out.push(verdict.text); ranOk = verdict.passed
         }
+        caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run } : {}) }
+        // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
+        if (!hardCount && ranOk) caller.room.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
+        return out.join('\n')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!isGitTimeout(error)) throw error
+        caller.lastPreview = { clean: false }
+        return `preview failed: ${message.replace(/ failed: timed out/, ' timed out')}; combined code was NOT checked`
       }
-      caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run } : {}) }
-      // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
-      if (!hardCount && ranOk) caller.room.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
-      return out.join('\n')
     }
   }
   return handlers
@@ -277,7 +284,7 @@ function ensureMergedDirectory(root: string, rel: string): string {
 }
 
 export async function gitTreeModes(dir: string, ref: string): Promise<Map<string, number>> {
-  const entries = (await git(dir, ['ls-tree', '-rz', ref])).split('\0').filter(Boolean)
+  const entries = (await gitWholeTree(dir, ['ls-tree', '-rz', ref])).split('\0').filter(Boolean)
   return new Map(entries.map(entry => { const tab = entry.indexOf('\t'); const meta = entry.slice(0, tab), rel = entry.slice(tab + 1); return [rel, parseInt(meta.split(' ')[0], 8) & 0o777] }))
 }
 
@@ -369,6 +376,7 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
     const verdict = testVerdict(result.out, result.code)
     return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${verdict.text}` }
   } catch (e) {
+    if (isGitTimeout(e)) throw e
     return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -403,7 +411,8 @@ export async function materializeGitTree(cloneDir: string, ref: string, destinat
       if (archiveCode === 0 && extractCode === 0) resolve()
       else reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? 'signal'}${archiveError.trim() ? `: ${archiveError.trim()}` : ''}; tar ${extractCode ?? 'signal'}${extractError.trim() ? `: ${extractError.trim()}` : ''})`))
     }
-    const timer = setTimeout(() => fail(new Error('git archive/tar extraction timed out after 60000ms')), 60_000)
+    const timeout = wholeTreeTimeoutMs()
+    const timer = setTimeout(() => fail(new Error(`git archive/tar extraction timed out after ${timeout}ms`)), timeout)
     timer.unref?.()
     archive.stderr.setEncoding('utf8'); archive.stderr.on('data', chunk => { archiveError += String(chunk).slice(0, 4096) })
     extract.stderr.setEncoding('utf8'); extract.stderr.on('data', chunk => { extractError += String(chunk).slice(0, 4096) })

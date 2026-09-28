@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { isRegenerableBuildPath, type Worker } from '@room/shared'
 import { LINK_INPUT_PATH, RECORDED_PATH, carryRecord, carryRecordSync, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { git } from '@room/roomd/git'
+import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
 import { boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { decideDiscard, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
 import { terminateWorktreeProcesses } from './worker-process.js'
@@ -140,14 +140,14 @@ function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sh
   if (!paths.length) return undefined
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-index-'))
   const env = { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }
-  const run = (args: string[]) => boundedGitSync(dir, ['-c', 'core.hooksPath=/dev/null', ...args], { env }).toString().trim()
+  const run = (args: string[], wholeTreePaths?: number) => boundedGitSync(dir, ['-c', 'core.hooksPath=/dev/null', ...args], { env, wholeTreePaths }).toString().trim()
   try {
     for (const entry of paths) {
       const stat = fs.lstatSync(path.join(dir, entry.path))
       const mode = stat.isSymbolicLink() ? '120000' : (stat.mode & 0o111) ? '100755' : '100644'
       run(['update-index', '--add', '--cacheinfo', `${mode},${entry.sha},${entry.path}`])
     }
-    const tree = run(['write-tree'])
+    const tree = run(['write-tree'], paths.length)
     run(['update-ref', carriedUntrackedRef(tag), tree])
     return tree
   } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
@@ -416,13 +416,13 @@ export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<stri
   }
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-discard-'))
   try {
-    const run = (args: string[]) => boundedGitSync(w.dir, args, { env: { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') } })
+    const run = (args: string[], wholeTreePaths?: number) => boundedGitSync(w.dir, args, { env: { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }, wholeTreePaths })
     const base = w.base ?? (await git(leadDir, ['merge-base', 'HEAD', w.branch])).trim()
-    run(['read-tree', 'HEAD'])
+    run(['read-tree', 'HEAD'], UNKNOWN_WHOLE_TREE_PATHS)
     const unchanged = carriedUnchangedPaths(workerBaseline(w))
     const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map(p => ':(exclude,literal)' + p)]
-    run(['add', '-A', '--', '.', ...exclusions])
-    const patch = run(patchArgs(base, exclusions, true))
+    run(['add', '-A', '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)
+    const patch = run(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS)
     if (!patch.length) return undefined
     // The recovery artifact is useful only if it applies to a fresh checkout of this base.
     const verifyDir = path.join(scratch, 'verify')
