@@ -42,9 +42,11 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
   let reservation: ReturnType<typeof reserveWorkerPort> | undefined
   let passed = false
   let delivered = false
+  let owned = false
   let proc: SpawnedProcess | undefined
   let exited = false
   let watching = false
+  let releaseReservation = true
   try {
     try { reservation = reserveWorkerPort(id, policy.usedPorts ?? [], undefined, policy.preferredPort) }
     catch (e) { throw new WorkerLaunchError('port', String(e instanceof Error ? e.message : e)) }
@@ -76,6 +78,11 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     try { proc = (policy.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args,
       cwd: policy.dir, env, logFile }) }
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
+    // The child is ours from the instant spawn returns. A failed registry write is not
+    // evidence that the process failed to start.
+    owned = true
+    releaseReservation = false
+    if (proc.pid > 0) host.setHandle(id, proc)
     bindWorkerPortReservation(proc, reservation)
     host.watch(id, proc, code => { exited = true; void onExit(code).catch(error => policy.log(`worker exit: ${error}`)) })
     watching = true
@@ -84,7 +91,6 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
     delivered = true
     passed = true
-    host.setHandle(id, proc)
     const result = { proc, port, env, nice: priority.nice, logFile, portChanged,
       startedAt: (policy.at ?? Date.now)(), processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime }
     await onSpawn(result)
@@ -92,19 +98,27 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     return result
   } catch (e) {
     let stopped = false
-    if (delivered && proc) {
+    if (owned && proc) {
       const launchedProc = proc
-      try {
-        if (watching) stopped = await stopWorkerWithEscalation({
-          terminate: () => launchedProc.kill(), exited: () => exited,
-          force: () => launchedProc.killForce?.() ?? false,
-        })
-        else launchedProc.kill() // No exit observer was installed; never report a confirmed stop.
-      } catch (stopError) { policy.log(`worker launch: could not stop ${tag}: ${stopError}`) }
+      // A persistence failure may precede the host's spawn/error event. Observe it
+      // before deciding whether the child needs to be stopped.
+      let started = false
+      try { await launchedProc.started; started = true } catch { /* no host acceptance */ }
+      delivered = started || launchedProc.pid > 0
+      if (delivered) {
+        try {
+          if (watching) stopped = await stopWorkerWithEscalation({
+            terminate: () => launchedProc.kill(), exited: () => exited,
+            force: () => launchedProc.killForce?.() ?? false,
+          })
+          else launchedProc.kill() // No exit observer was installed; never report a confirmed stop.
+        } catch (stopError) { policy.log(`worker launch: could not stop ${tag}: ${stopError}`) }
+      }
+      if (!delivered || stopped || exited) releaseReservation = true
     }
     if (e instanceof WorkerLaunchError) throw delivered ? new WorkerLaunchError(e.phase, e.message, true, proc?.pid, stopped) : e
     throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e), delivered, proc?.pid, stopped)
   } finally {
-    if (!passed) reservation?.release()
+    if (!passed && releaseReservation) reservation?.release()
   }
 }

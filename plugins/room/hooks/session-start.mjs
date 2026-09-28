@@ -6,7 +6,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionDir, readJson, writeJsonAtomic, openMcp, writeStdout, processChain, companyLine } from './common.mjs'
+import { readStdinJson, gitRoot, sessionDir, readJson, writeJsonAtomic, openMcp, writeStdout, processChain, companyLine, CONTEXT_CAP, fitLines, joinedLength } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -31,11 +31,6 @@ writeJsonAtomic(path.join(dir, 'session.json'), {
   ...(typeof ev.effort?.level === 'string' && ev.effort.level.trim() ? { effort: ev.effort.level.trim().slice(0, 80) } : {}),
 })
 
-const state = readJson(path.join(dir, 'state.json'), null)
-const fresh = typeof state?.at === 'number' && state.at <= now && now - state.at < 60_000
-const announced = fresh && typeof state.room === 'string' && state.room.length > 0 && state.company === true
-writeJsonAtomic(path.join(dir, 'hook.json'), { ...readJson(path.join(dir, 'hook.json'), {}), companyTold: announced })
-
 const lines = []
 let confirm
 const mcp = await openMcp(dir, 300)
@@ -46,9 +41,17 @@ if (selected?.ok) {
     lines.push(`[room inbox ${selected.items.length}]`)
     for (const m of selected.items) lines.push(`  ${m.line}`)
   }
+  if (selected.more) lines.push(`[room] ${selected.more} more: call room_state`)
   if (selected.items.length || selected.notices.length) confirm = selected.batch
 }
-if (announced) lines.push(companyLine(state))
+// state.json is rewritten only when something changes: with this session's MCP answering, any age is current.
+const state = readJson(path.join(dir, 'state.json'), null)
+const current = typeof state?.at === 'number' && state.at <= now && (now - state.at < 60_000 || selected?.ok === true)
+const announced = current && typeof state.room === 'string' && state.room.length > 0 && state.company === true
+writeJsonAtomic(path.join(dir, 'hook.json'), { ...readJson(path.join(dir, 'hook.json'), {}), companyTold: announced })
+// An inbox over the cap (only an oversized notice; the MCP bounds items) is not printed or confirmed: it stays owed.
+if (joinedLength(lines) > CONTEXT_CAP) { lines.length = 0; confirm = undefined }
+if (announced) lines.push(...fitLines([companyLine(state)], CONTEXT_CAP - joinedLength(lines) - 1))
 if (lines.length) {
   const written = await writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: lines.join('\n') } }))
   if (written && confirm) await mcp.request({ op: 'confirm', batch: confirm }, 1000)

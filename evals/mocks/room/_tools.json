@@ -140,7 +140,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Leave and release your work claims. force dismisses running workers; forget clears this clone\u2019s remembered destination.",
+      "description": "Leave and release your work claims. force dismisses running workers; forget clears this clone’s remembered destination.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -512,7 +512,7 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "description": "Post or update the room ledger on a GitHub PR; defaults to this branch\u2019s open PR.",
+      "description": "Post or update the room ledger on a GitHub PR; defaults to this branch’s open PR.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -673,13 +673,9 @@
             ],
             "description": "intent: plans only; declared: scoped files; full: all changed files"
           },
-          "allowOutside": {
-            "type": "boolean",
-            "description": "permit dir outside this repo (no worktree bookkeeping)"
-          },
           "dir": {
             "type": "string",
-            "description": "use this existing directory instead of creating a worktree"
+            "description": "use an existing directory in this repo instead of creating a worktree"
           },
           "where": {
             "type": "string",

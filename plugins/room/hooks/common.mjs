@@ -247,6 +247,30 @@ export function companyLine(state) {
   return '[room] ' + names.join(', ') + (names.length > 1 ? ' are here.' : ' is here.')
 }
 
+/**
+ * Claude Code caps a hook's additionalContext at 10,000 characters; over it, the model sees a file path and
+ * a 2,000-character preview it is not asked to read (hooks reference, "JSON output"). Hooks stay under it.
+ */
+export const CONTEXT_CAP = 10_000
+const CUT = '… (more: call room_state)'
+
+/** `lines`, in order, while they fit `budget` characters joined by newlines; the first misfit is cut short. */
+export function fitLines(lines, budget) {
+  const out = []
+  let used = 0
+  for (const line of lines) {
+    const sep = out.length ? 1 : 0
+    if (used + sep + line.length <= budget) { out.push(line); used += sep + line.length; continue }
+    const room = budget - used - sep - CUT.length
+    if (room >= 0) out.push(line.slice(0, room) + CUT)
+    break
+  }
+  return out
+}
+
+/** Characters of `lines` joined by newlines. */
+export const joinedLength = lines => lines.reduce((n, line, i) => n + line.length + (i ? 1 : 0), 0)
+
 /** Dependency-free mirrors of shared near.ts; parity-tested. */
 export function normalizeCoordinationPath(p) {
   const parts = []

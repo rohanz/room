@@ -64,6 +64,7 @@ export class Ledger {
   private readonly noticeReservations = new Map<string, Batch>()
   private readonly cursors = new WeakMap<Session, Cursor>()
   private readonly pendingNotices = new Map<string, Notice>()
+  private readonly onDelivered = new Map<string, () => void>()
   private delivered?: Record<string, { at: number; via: Via }>
 
   constructor(private readonly o: LedgerOptions) {}
@@ -131,8 +132,19 @@ export class Ledger {
       const delivered = this.deliveredNotices()
       for (const n of batch.notices) { delivered[n.id] = { at: Date.now(), via: batch.kind === 'hook' ? 'hook' : 'reply' }; this.pendingNotices.delete(n.id) }
       this.persistNotices()
+      for (const n of batch.notices) this.fireDelivered(n.id)
     }
     this.end(batch)
+  }
+
+  /**
+   * The reply or hook output that selected these no longer carries them (it failed after selecting):
+   * they are selectable again, and a later commit of this batch receipts nothing.
+   */
+  discard(batch: Batch): void {
+    this.release(batch)
+    batch.items.length = 0
+    batch.notices.length = 0
   }
 
   /**
@@ -149,11 +161,22 @@ export class Ledger {
     this.end(batch)
   }
 
-  /** Offer a local notice until a confirmed handoff receipts it. */
-  notice(kind: string, text: string): Notice {
+  /**
+   * Offer a local notice until a confirmed handoff receipts it. `onDelivered` runs after that receipt, or
+   * at once when notices.json already holds one (a crash between the receipt and the caller's own record).
+   */
+  notice(kind: string, text: string, onDelivered?: () => void): Notice {
     const n = { id: noticeId(kind, text), text }
-    if (!this.deliveredNotices()[n.id] && !this.pendingNotices.has(n.id)) { this.pendingNotices.set(n.id, n); this.o.onSettled?.() }
+    if (onDelivered) this.onDelivered.set(n.id, onDelivered)
+    if (this.deliveredNotices()[n.id]) this.fireDelivered(n.id)
+    else if (!this.pendingNotices.has(n.id)) { this.pendingNotices.set(n.id, n); this.o.onSettled?.() }
     return n
+  }
+
+  private fireDelivered(id: string): void {
+    const fn = this.onDelivered.get(id)
+    this.onDelivered.delete(id)
+    try { fn?.() } catch (e) { this.o.log?.(`notice ${id}: ${e instanceof Error ? e.message : String(e)}`) }
   }
 
   /** How many notices wait for a handoff (the hooks' state.json says so without their text). */

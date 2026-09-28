@@ -32,6 +32,12 @@ import { CeilingSource, PolicyStore } from './policy-store.js'
 import { admitWorkerEnvironment, workerCarried } from './worker-registry.js'
 import { HubClient, hubTransport } from './hub-client.js'
 import { createPost, greet, type Post } from './post.js'
+import type { SharingPolicy } from '@room/roomd/policy'
+
+/** The production PolicyStore onChange path into the daemon. */
+export function applySessionPolicy(daemon: Roomd, policy: SharingPolicy): void {
+  daemon.applyInputs({ ...daemon.inputs, policy })
+}
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
@@ -537,14 +543,14 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   let daemon: Roomd
   const room = decodeURIComponent(new URL(options.room).pathname.replace(/^\/+/, ''))
   const policyStore = await PolicyStore.open({ dir: options.dir, room, participant: name, server: new URL(options.room).origin, requested: options.requested, ceiling: options.ceiling,
-    onChange: policy => { if (daemon) daemon.applyInputs({ ...daemon.inputs, policy: { ...policy, publisher: !daemon.publishUnder, ...(daemon.publishUnder ? { publisherName: daemon.publishUnder } : {}) } }) } })
+    onChange: policy => { if (daemon) applySessionPolicy(daemon, policy) } })
   if (options.requestedExplicit) await policyStore.setRequested(options.requested)
   const { requested: _requested, requestedExplicit: _requestedExplicit, ceiling: _ceiling, ...daemonOptions } = options
   const binding = createSessionBinding(options.dir)
   // The daemon's automatic posts go through this connection's hub, which exists once the daemon's provider does.
   let seam: Pick<Session, 'hub' | 'post'> | undefined
   try { daemon = await startRoomd({ ...daemonOptions, name, label, policy: policyStore.policy, carried: workerCarried(options.dir),
-    post: (from, body, opts) => { if (seam) void seam.post(from, body, opts); else options.log?.(`not posted before the hub connection: ${body.type}`) },
+    post: (from, body, opts) => { if (seam) return seam.post(from, body, opts); options.log?.(`not posted before the hub connection: ${body.type}`) },
     onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
     host: resolveSessionHost(), ...resolveSessionRuntime(binding.dir()) }) }
   catch (e) { releaseName?.(); throw e }

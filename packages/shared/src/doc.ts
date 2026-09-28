@@ -53,6 +53,8 @@ export interface ParticipantGit {
   behind?: number
   rev: number
   fence: string
+  /** A `pushed` a HEAD transition owes (reporooms §B4): posted by id after it, cleared once the hub accepted it. */
+  pushedPending?: { fromSha: string; toSha: string; branch: string; upstream: string }
 }
 
 export interface ParticipantProjection { projectedFrom: string; projectedBy: string }

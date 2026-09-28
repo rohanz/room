@@ -13,6 +13,7 @@ import { configureCredentials, getCredential, getPending, setPending } from '../
 import { LOCAL, logout as doLogout, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
 import type { Ledger } from '../ledger.js'
+import type { ShareLevel } from '@room/roomd'
 import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
 import { handlers as shareHandlers, publisherLine } from './share.js'
 import { exportRoomLedger } from '../prs.js'
@@ -33,7 +34,7 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { path: str('output; default .room/ledger/<room>-<timestamp>.md') } } }
 ]
 
-const disclosures = new WeakMap<Session, { pending?: string; prepared?: Promise<void>; delivered?: boolean }>()
+const disclosures = new WeakMap<Session, { pending?: string; level?: ShareLevel; prepared?: Promise<void>; delivered?: boolean }>()
 
 export function sharingSentence(s: Session): string {
   const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
@@ -47,7 +48,10 @@ export function sharingSentence(s: Session): string {
   return `note for your human: this clone now shares ${description} with members of ${repo} on ${server}${choices ? `; ${choices}` : '.'}`
 }
 
-/** Establish whether this session has a disclosure pending without consuming its one delivery. */
+/**
+ * Establish whether this session has a disclosure pending without consuming its one delivery: the durable
+ * `disclosed` marker advances only once the notice's handoff is confirmed (ledger MF10).
+ */
 export async function prepareTeamSharingDisclosure(s: Session): Promise<void> {
   let state = disclosures.get(s)
   if (!state) { state = {}; disclosures.set(s, state) }
@@ -58,25 +62,31 @@ export async function prepareTeamSharingDisclosure(s: Session): Promise<void> {
     const rank = (level: string) => level === 'intent' ? 0 : level === 'declared' ? 1 : 2
     if (s.policyStore.disclosed.version < 1 || rank(share) > rank(s.policyStore.disclosed.level)) {
       state!.pending = sharingSentence(s)
-      await s.policyStore.markDisclosed(share, 1)
+      state!.level = share
     } else state!.delivered = true
   })()
   await state.prepared
 }
 
-/** The exact hook-context sentence, or nothing when this boundary needs no disclosure. */
-export function pendingTeamSharingDisclosure(s: Session): string | undefined {
-  return disclosures.get(s)?.pending
-}
-
 /**
  * One human disclosure per worktree and destination, including automatic and solo joins: a local notice
- * (ledger MF10) that the next tool reply or hook hands off, receipted only after that handoff.
+ * (ledger MF10) that the next tool reply or hook hands off, receipted only after that handoff. The receipt
+ * then records the level as disclosed; a receipt found without that record (a crash between the two)
+ * records it when offered again, idempotently.
  */
 export async function offerTeamSharingDisclosure(s: Session, ledger: Ledger): Promise<void> {
   await prepareTeamSharingDisclosure(s)
-  const sentence = pendingTeamSharingDisclosure(s)
-  if (sentence) ledger.notice('sharing', sentence)
+  const state = disclosures.get(s)
+  const sentence = state?.pending
+  if (!state || !sentence || state.delivered) return
+  const level = state.level!
+  ledger.notice('sharing', sentence, () => {
+    if (state.delivered) return
+    state.delivered = true
+    state.pending = undefined
+    // A failed write is repaired from the receipt the next time a session offers the notice.
+    void s.policyStore.markDisclosed(level, 1).catch(() => {})
+  })
 }
 
 /** Join s's room again as s did, without opening the repo again. */

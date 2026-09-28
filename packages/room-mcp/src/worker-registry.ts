@@ -15,7 +15,7 @@ import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { realStateInput, type LocalWorker } from './worker-status.js'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
-import { signalWorker } from './worker-process.js'
+import { pidAlive, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 
 export interface LegacySource {
   key: string; tag: string; dir: string; branch: string; host: 'claude' | 'codex'
@@ -434,6 +434,18 @@ export class WorkerRegistry {
     const record = this.read(id)
     return record ? [record] : []
   }) }
+  /** The reservation, rather than record ordering, selects the current incarnation of a tag. */
+  reserved(tag: string): WorkerRecord | undefined {
+    if (!safeTag(tag)) return undefined
+    const reservation = readJson<{ id?: string }>(this.tagFile(tag))
+    const record = reservation?.id ? this.read(reservation.id) : undefined
+    return record?.tag === tag ? record : undefined
+  }
+  reservedByTagOrName(tagOrName: string): WorkerRecord | undefined {
+    const direct = this.reserved(tagOrName)
+    if (direct) return direct
+    return this.list().find(record => record.name === tagOrName && this.reserved(record.tag)?.id === record.id)
+  }
   status(id: string): WorkerStatusResult | undefined {
     const record = this.read(id)
     if (!record) return undefined
@@ -441,7 +453,7 @@ export class WorkerRegistry {
   }
   /** No room view or remote presence can turn into a local worktree capability. */
   async trusted(lead: { participant: string; room: string; dir: string }, tagOrName: string): Promise<{ record: WorkerRecord; status: WorkerStatusResult } | undefined> {
-    let candidate = this.list().find(r => r.tag === tagOrName || r.name === tagOrName)
+    let candidate = this.reservedByTagOrName(tagOrName)
     if (candidate?.legacy?.unowned) candidate = await this.adoptLegacy(candidate, lead)
     if (!candidate || candidate.lead.participant !== lead.participant || candidate.lead.room !== lead.room
       || ['retiring', 'retired', 'abandoned'].includes(candidate.phase)) return undefined
@@ -651,9 +663,10 @@ export class WorkerRegistry {
     const exit = this.exits(id).find(value => value.run === n)
     const report = this.reports(id).find(value => value.run === n)
     const status = this.status(id)
-    if (!record || !run || !exit?.witnessed || run.posted || report?.posted || status?.status !== 'failed') return false
+    if (!record || !run || !status || !exit?.witnessed || run.posted || report?.posted
+      || (status.status !== 'failed' && !report?.done)) return false
     const message = completionMessage(record, run, status, report)
-    if (!message || message.body.type !== 'note') return false
+    if (!message) return false
     await post(message)
     await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))
     return true
@@ -765,6 +778,13 @@ export class WorkerRegistry {
   async replayDiscard(id: string): Promise<void> {
     let record = this.read(id)
     if (record?.phase !== 'discarding' || !record.discard) return
+    // A writer killed between creating and linking a patch leaves its private
+    // scratch file behind. It has no committed identity and replay rebuilds it.
+    for (const scratch of files(path.join(this.root, 'patches'), '.tmp')) {
+      const suffix = path.basename(scratch).slice(id.length + 1)
+      if (!path.basename(scratch).startsWith(`${id}.`) || !/^[0-9a-f]{16}\.tmp$/.test(suffix)) continue
+      if (fs.lstatSync(scratch).isFile()) fs.rmSync(scratch)
+    }
     const leadDir = path.dirname(path.dirname(path.dirname(record.dir)))
     const status = this.status(id)
     if (!status) return
@@ -788,10 +808,29 @@ export class WorkerRegistry {
     }
     if (!record.discard!.steps.stop) {
       await this.beginStop(id, 'discarded')
-      const launch = record.runs.at(-1)?.launch
-      if (launch?.outcome === 'launched' && launch.process && this.alive(launch.process) !== 'dead') {
-        if (this.alive(launch.process) !== 'alive' || !signalWorker(launch.pid, 'SIGTERM', record.dir, undefined, own, probeProcess)) return
-        if (this.alive(launch.process) !== 'dead') return
+      const run = record.runs.at(-1)!
+      const launch = run.launch
+      const report = this.reports(id).find(value => value.run === run.n && value.nonce === run.nonce)
+      // Display status is `collecting` during a discard and deliberately strips
+      // pid from realStateInput. Stop authority instead comes from durable launch
+      // or admitted-run evidence for this exact run.
+      const identities = [launch?.outcome === 'launched' ? launch.process : undefined,
+        ...(report?.chain ?? [])].filter((value): value is NonNullable<typeof value> => !!value)
+      const live = identities.find(value => this.alive(value) === 'alive')
+      if (live) {
+        if (!record.capabilities.signal) return
+        const signalOwn = { ...own, pid: live.pid, processStartTime: live.startTime }
+        const workerDir = record.dir
+        const stopped = await stopWorkerWithEscalation({
+          terminate: () => signalWorker(live.pid, 'SIGTERM', workerDir, undefined, signalOwn, probeProcess),
+          exited: () => this.alive(live) === 'dead',
+          force: () => signalWorker(live.pid, 'SIGKILL', workerDir, undefined, signalOwn, probeProcess),
+        })
+        if (!stopped) return
+      } else if (identities.some(value => this.alive(value) === 'unknown')
+        || (launch?.outcome === 'launched' && !identities.length
+          && !this.exits(id).some(value => value.run === run.n) && pidAlive(launch.pid))) {
+        return
       }
       await this.markDiscardStep(id, 'stop')
       record = this.read(id)!
@@ -869,6 +908,9 @@ export class WorkerRegistry {
 
   private rollbackPreparation(record: WorkerRecord): void {
     const prep = record.prep
+    // A supplied directory has no resources for this preparation to undo.
+    if (prep.created !== true && prep.branchCreated !== true
+      && !Object.keys(prep.previousCarryRefs ?? {}).length) return
     const leadDir = path.dirname(path.dirname(path.dirname(record.dir)))
     if (!roomWorkerPathMatchesBranch(leadDir, record.dir, record.branch, false)) throw new Error(`unsafe preparation path for ${record.id}`)
     const run = (...args: string[]): string => execFileSync('git', ['--git-dir', this.commonDir, ...args], { encoding: 'utf8' }).trim()
