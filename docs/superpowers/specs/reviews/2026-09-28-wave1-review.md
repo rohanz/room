@@ -91,3 +91,17 @@ Fast-forwarded this worktree to `eec69a9` and reviewed `git diff fb088b7 eec69a9
 - Reran inline probes for the original failure scenarios and the two new findings above. Git/worktree fixtures and guard holder processes were temporary and cleaned up. No socket/browser rehearsal was run. The first synthetic promotion fixture supplied the wrong awareness field and was discarded; the reported promotion result uses `user.name` and verifies the secondary precondition before removing Alice.
 - An in-memory esbuild rebuild of the server bundle matches committed `plugins/room/server/room-mcp.mjs` exactly after normalizing worktree source-path labels (**1,995,239 characters** each); no unexpected payload found. No bundle files were written.
 - L1–L4 remain the wave boundaries: legacy bus trimming and holderless expiry stay wired; reporooms **B2 step 5** / manifest **§5.4**'s combined transaction remains a wave-2 obligation; one daemon fence remains intact. S1's incomplete marker is now implemented. L5's earlier server rebuild debt is cleared at this pin.
+
+## Lead resolution
+
+The re-review's M7 and S8 went back to `store` and were fixed in `456d45c`, each with a failing-first test:
+- M7: legacy migration reads snapshots up to the shared `ROOM_DOC_MAX_BYTES` (64 MiB). A snapshot it cannot read
+  fails closed: a registered worktree is never imported as active on missing evidence. There is also a relay-save →
+  registry-migration integration test.
+- S8: guard acquisition yields between attempts. The registry's `open` and its mutations are async, and a
+  timer-responsiveness contention test covers it.
+
+The brief allowed one re-review, so these were not re-reviewed. The lead reran typecheck, the full suite
+(1896/1896, 165 files, inside a Claude Code session) and `build:plugin` (no diff) on `456d45c`. L1–L4 stay as wave
+boundaries: L2 (evictStale goes when holders are written, wave 4) and L3 (the manifest joins the transition
+transaction, wave 2) are obligations for those waves. See [the wave-1 rehearsal](../../rehearsals/2026-09-28-wave1.md).
