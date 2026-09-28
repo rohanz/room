@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.32
+
+Found in the Codex-repo rehearsal.
+
+- **Two clones on one machine can no longer join a team room under the same name.** Two Claude Code sessions of the same user, in two clones of one repository, both joined as the bare name. Each could overwrite the other's shared files in the room, and notes for one reached the other. The automatic-name lock lived in each clone's own git directory, so independent clones never saw each other's lock, and a remembered bare name skipped the uncommitted-work check. Team-room name locks are now per user and machine-wide. Local rooms keep their per-clone locks. A regression test reproduces the collision on the old code.
+
 ## 0.16.31
 
 Found in the worker-in-team-room check.
