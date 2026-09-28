@@ -129,6 +129,23 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toEqual([])
   })
 
+  it('a disk change during the HEAD transition re-prepares the publication instead of failing the transition', async () => {
+    const w = await world()
+    let reads = 0
+    const daemon = await w.start({ beforeBaseRead: async p => {
+      // Once the transition has read the disk, the file changes before its publication applies.
+      if (p === 'wip.txt' && transitioning && ++reads === 1) fs.writeFileSync(path.join(w.dir, 'wip.txt'), 'second\n')
+    } })
+    let transitioning = false
+    fs.writeFileSync(path.join(w.dir, 'wip.txt'), 'first\n')
+    const local = commit(w.dir, 'a.txt', 'a\n', 'add a')
+    transitioning = true
+    await poll(daemon)
+    expect(reads).toBe(2) // prepared, found stale, prepared again
+    expect(git(daemon)).toMatchObject({ head: local, ahead: 1 })
+    expect(daemon.roomDoc.overlayText(daemon.name, 'wip.txt')?.toString()).toBe('second\n')
+  })
+
   it('announces each push of its own commits once, including a partial push while HEAD is further ahead', async () => {
     const w = await world()
     const daemon = await w.start()

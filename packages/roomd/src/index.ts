@@ -737,12 +737,14 @@ class Daemon implements Roomd {
     }
     const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
     const claims = await this.reanchorOwnClaims(head, claimSnapshot)
-    const nextInputs: PublicationInputs = { ...this.inputs, head: resolved.base }
-    this.inputs = nextInputs
-    const publication = await this.publisher.prepare(nextInputs)
-    if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
-    if (!this.publisher.valid(publication)) throw new Error('publication changed during HEAD transition')
-    await this.commitTransition(inputs, resolved, claims, promoted, publication)
+    const facts = await this.transitionFacts(inputs, resolved, promoted)
+    // A disk scan or policy change during preparation invalidates it; prepare again rather than fail the move.
+    for (let attempt = 1; ; attempt++) {
+      const publication = await this.publisher.prepare(this.inputs = { ...this.inputs, head: resolved.base })
+      if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
+      if (this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break
+      if (attempt === TRANSITION_ATTEMPTS) throw new Error(`publication changed during HEAD transition ${attempt} times`)
+    }
     this.anchor = { base: resolved.base, anchored: resolved.anchored }
     this.transitionPending = false
     this.setStatus(resolved.status)
@@ -753,29 +755,32 @@ class Daemon implements Roomd {
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
   }
 
-  /**
-   * §B2 step 5, one transaction: the `git` record (rev + 1), this participant's claim moves and releases,
-   * and `pushed` when §B4 applies. A session publishing under another writes only its claim part.
-   */
-  private async commitTransition({ head, branch }: BaseInputs, resolved: ResolvedBase, claims: ClaimChanges, promoted: boolean, publication: PreparedPublication): Promise<void> {
+  /** The awaited half of §B2 step 5: the next `git` record and whether it yields `pushed` (§B4). */
+  private async transitionFacts({ head, branch }: BaseInputs, resolved: ResolvedBase, promoted: boolean): Promise<TransitionFacts> {
+    if (!this.publishesBaseFacts()) return {}
     const prev = participantRecord(this.roomDoc, this.name)?.git
-    let next: ParticipantGit | undefined
-    let pushed: Omit<PushedMsg, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> | undefined
-    if (this.publishesBaseFacts()) {
-      const fields = {
-        branch, head, base: resolved.base, anchored: resolved.anchored,
-        ...(resolved.remote ? { remote: resolved.remote } : {}), ...(resolved.upstream ? { upstream: resolved.upstream } : {}),
-        ...(resolved.ahead !== undefined ? { ahead: resolved.ahead, behind: resolved.behind } : {}), fence: this.fence,
-      }
-      const { rev: _rev, ...recorded } = prev ?? { rev: 0 }
-      if (JSON.stringify(recorded) !== JSON.stringify(fields)) next = { ...fields, rev: (prev?.rev ?? 0) + 1 }
-      // Only a surviving record yields a notice: current refs cannot recover a lost fromSha (§B4).
-      if (next && prev && !promoted && resolved.upstream && await pushedRange(this.dir, prev, next)) {
-        pushed = { type: 'pushed', branch, upstream: resolved.upstream, fromSha: prev.base, toSha: next.base, ...await pushedFacts(this.dir, prev.base, next.base) }
-      }
+    const fields = {
+      branch, head, base: resolved.base, anchored: resolved.anchored,
+      ...(resolved.remote ? { remote: resolved.remote } : {}), ...(resolved.upstream ? { upstream: resolved.upstream } : {}),
+      ...(resolved.ahead !== undefined ? { ahead: resolved.ahead, behind: resolved.behind } : {}), fence: this.fence,
     }
+    const { rev: _rev, ...recorded } = prev ?? { rev: 0 }
+    if (JSON.stringify(recorded) === JSON.stringify(fields)) return {}
+    const next: ParticipantGit = { ...fields, rev: (prev?.rev ?? 0) + 1 }
+    // Only a surviving record yields a notice: current refs cannot recover a lost fromSha (§B4).
+    if (!prev || promoted || !resolved.upstream || !await pushedRange(this.dir, prev, next)) return { next }
+    return { next, pushed: { type: 'pushed', branch, upstream: resolved.upstream, fromSha: prev.base, toSha: next.base, ...await pushedFacts(this.dir, prev.base, next.base) } }
+  }
+
+  /**
+   * §B2 step 5, one synchronous transaction: the publication, the `git` record (rev + 1), this participant's
+   * claim moves and releases, and `pushed` when §B4 applies. A session publishing under another writes only
+   * its claim part. False, with nothing written, when the publication went stale.
+   */
+  private commitTransition({ head }: BaseInputs, claims: ClaimChanges, { next, pushed }: TransitionFacts, publication: PreparedPublication, anchored: boolean): boolean {
+    if (!this.publisher.valid(publication)) return false
     this.roomDoc.doc.transact(() => {
-      if (!this.publisher.apply(publication, resolved.anchored)) throw new Error('publication changed during HEAD transition')
+      this.publisher.apply(publication, anchored)
       if (next) this.roomDoc.participants.set(`${this.name}\u0000git`, next)
       for (const move of claims.moves) {
         const current = this.roomDoc.claims.get(move.id)
@@ -795,6 +800,7 @@ class Daemon implements Roomd {
       }
     }, this)
     if (pushed) this.log(`${pushed.upstream} now has ${pushed.fromSha.slice(0, 10)}..${pushed.toSha.slice(0, 10)} (+${pushed.commits})`)
+    return true
   }
 
   private isWorkerWorktree(): boolean { return !!this.label && this.branch === `room/${this.label}` }
@@ -1029,6 +1035,9 @@ class Daemon implements Roomd {
 }
 
 interface ClaimChanges { moves: ClaimMove[]; releases: ClaimRelease[]; hashById: Map<string, string | undefined> }
+interface TransitionFacts { next?: ParticipantGit; pushed?: Omit<PushedMsg, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> }
+/** Preparations a HEAD transition tries before it gives up until the next poll. */
+const TRANSITION_ATTEMPTS = 5
 const NO_CLAIM_CHANGES: ClaimChanges = { moves: [], releases: [], hashById: new Map() }
 
 /** Detached HEAD has no branch: `''` in the record (reporooms §Participant record). */
