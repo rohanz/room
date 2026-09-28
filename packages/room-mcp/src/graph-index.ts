@@ -18,6 +18,9 @@ const MAX_EDGES = 4000
 const MAX_OBSERVED = 200
 const MAX_SNAPSHOT_BYTES = 200 * 1024
 const MIN_PUBLISH_MS = 20_000
+const YIELD_EVERY = 100
+const YIELD_AFTER_MS = 50
+const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve))
 
 /** Read references from live worker text, including calls in the definition's own file. */
 export async function referencesSymbol(path: string, text: string, symbol: string): Promise<boolean> {
@@ -58,9 +61,15 @@ export class GraphIndex {
   private observedByPath = new Map<string, ObservedContractChange[]>()
   private degradedPaths = new Set<string>()
   private generation = 0
+  private graphRevision = 0
+  private observedRevision = 0
+  private indexedSinceYield = 0
+  private lastIndexYield = Date.now()
   private truncated = false
   private publishing?: ReturnType<typeof setTimeout>
   private lastPublished = { at: 0, key: '', status: '' }
+  private lastPublishedRevision = { graph: -1, observed: -1, base: '' }
+  private publication: Promise<void> = Promise.resolve()
   private phase: 'ready' | 'indexing' | 'error' = 'indexing'
   private base = ''
   private stopped = false
@@ -132,11 +141,21 @@ export class GraphIndex {
     this.phase = 'indexing'
     this.base = this.room.meta.base ?? ''
     this.observedByPath.clear()
+    this.observedRevision++
     this.degradedPaths.clear()
-    for (const p of this.cache.keys()) this.graph.remove(p)
+    let removed = 0, lastRemovalYield = Date.now()
+    for (const p of this.cache.keys()) {
+      this.removeGraph(p)
+      if (++removed % YIELD_EVERY === 0 || Date.now() - lastRemovalYield >= YIELD_AFTER_MS) {
+        await yieldToEventLoop()
+        if (generation !== this.generation || this.stopped) return
+        lastRemovalYield = Date.now()
+      }
+    }
     this.cache.clear()
     if (!this.base) return
-    this.publish('indexing')
+    await this.publish('indexing')
+    if (generation !== this.generation || this.stopped) return
     let paths: string[] = []
     try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', '-z', this.base])).split('\0').filter(isSourcePath) }
     catch (e) { if (generation === this.generation) { this.phase = 'error'; this.publish('error') }; this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`); return }
@@ -145,15 +164,24 @@ export class GraphIndex {
     if (paths.length > MAX_FILES) { this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`); paths = paths.slice(0, MAX_FILES) }
     const all = new Set(paths)
     for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) all.add(p)
-    for (const p of this.cache.keys()) if (!all.has(p)) { this.cache.delete(p); this.graph.remove(p) }
     const t0 = Date.now()
     const pathsToRefresh = Array.from(all)
     await ensureLanguages(pathsToRefresh)
     if (generation !== this.generation || this.stopped) return
-    await Promise.all(pathsToRefresh.map(path => this.refresh(path)))
+    const refreshes: Promise<void>[] = []
+    let lastYield = Date.now()
+    for (let i = 0; i < pathsToRefresh.length; i++) {
+      refreshes.push(this.refresh(pathsToRefresh[i]))
+      if ((i + 1) % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS) {
+        await yieldToEventLoop()
+        if (generation !== this.generation || this.stopped) return
+        lastYield = Date.now()
+      }
+    }
+    await Promise.all(refreshes)
     if (generation !== this.generation || this.stopped) return
     this.phase = 'ready'
-    this.publish('ready')
+    await this.publish('ready')
     this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`)
   }
 
@@ -189,6 +217,16 @@ export class GraphIndex {
     return promise
   }
 
+  private removeGraph(path: string): void { this.graph.remove(path); this.graphRevision++ }
+  private setGraph(path: string, text: string): void { this.graph.set(path, text); this.graphRevision++ }
+
+  private async yieldAfterIndex(): Promise<void> {
+    if (++this.indexedSinceYield < YIELD_EVERY && Date.now() - this.lastIndexYield < YIELD_AFTER_MS) return
+    this.indexedSinceYield = 0
+    this.lastIndexYield = Date.now()
+    await yieldToEventLoop()
+  }
+
   private drainRefreshQueue(): void {
     while (!this.stopped && this.activeRefreshes < MAX_REFRESH_CONCURRENCY && this.refreshQueue.length) {
       const path = this.refreshQueue.shift()!
@@ -204,9 +242,7 @@ export class GraphIndex {
         else { entry?.resolveIdle(); this.pending.delete(path) }
         if (!this.stopped && !this.pending.size) {
           clearTimeout(this.publishing)
-          this.publishing = setTimeout(() => {
-            try { this.publish(this.phase) } catch (e) { this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`) }
-          }, 100)
+          this.publishing = setTimeout(() => { void this.publish(this.phase) }, 100)
         }
         this.drainRefreshQueue()
       })
@@ -236,13 +272,15 @@ export class GraphIndex {
         ) : undefined
       if (this.stopped) return true
       if (generation !== this.generation) return false
-      if (!symbols || text === undefined) { this.cache.delete(path); this.graph.remove(path) }
-      else { this.cache.set(path, symbols); this.graph.set(path, text) }
+      if (!symbols || text === undefined) { this.cache.delete(path); this.removeGraph(path) }
+      else { this.cache.set(path, symbols); this.setGraph(path, text) }
       if (mine !== undefined || mineDeleted) {
         if (baseRead?.kind === 'unavailable') {
           this.degradedPaths.add(path)
           this.observedByPath.delete(path)
           this.log(`graph: baseline unavailable for ${path}; observed contract coverage degraded: ${baseRead.error.message}`)
+          this.observedRevision++
+          await this.yieldAfterIndex()
           return revision === this.revisions.get(path)
         }
         this.degradedPaths.delete(path)
@@ -250,6 +288,8 @@ export class GraphIndex {
         if (changes.length) this.observedByPath.set(path, changes)
         else this.observedByPath.delete(path)
       } else { this.observedByPath.delete(path); this.degradedPaths.delete(path) }
+      this.observedRevision++
+      await this.yieldAfterIndex()
       return revision === this.revisions.get(path)
     }
     return true
@@ -261,19 +301,40 @@ export class GraphIndex {
     while (this.pending.size) await Promise.all([...this.pending.values()].map(entry => entry.idle))
   }
 
-  private publish(status: 'ready' | 'indexing' | 'error'): void {
+  private publish(status: 'ready' | 'indexing' | 'error'): Promise<void> {
+    const generation = this.generation
+    this.publication = this.publication.then(() => this.publishSnapshot(status, generation)).catch(e => {
+      this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`)
+    })
+    return this.publication
+  }
+
+  private async publishSnapshot(status: 'ready' | 'indexing' | 'error', generation: number): Promise<void> {
     if (this.stopped) return
+    if (generation !== this.generation) return
     if (this.degradedPaths.size) status = 'error'
+    const graphRevision = this.graphRevision, observedRevision = this.observedRevision, base = this.base
+    if (this.lastPublishedRevision.graph === graphRevision && this.lastPublishedRevision.observed === observedRevision &&
+        this.lastPublishedRevision.base === base && this.lastPublished.status === status) return
     const paths = Array.from(this.cache.keys()).sort()
     const edges = new Map<string, { source: string; target: string; symbols: string[] }>()
     let truncated = this.truncated
-    for (const target of paths) for (const dep of this.graph.dependenciesOf(target)) for (const source of dep.definedIn) {
-      const key = JSON.stringify([source, target])
-      if (!edges.has(key)) {
-        if (edges.size >= MAX_EDGES) { truncated = true; continue }
-        edges.set(key, { source, target, symbols: [] })
+    let lastYield = Date.now()
+    for (let i = 0; i < paths.length; i++) {
+      const target = paths[i]
+      for (const dep of this.graph.dependenciesOf(target)) for (const source of dep.definedIn) {
+        const key = JSON.stringify([source, target])
+        if (!edges.has(key)) {
+          if (edges.size >= MAX_EDGES) { truncated = true; continue }
+          edges.set(key, { source, target, symbols: [] })
+        }
+        edges.get(key)!.symbols.push(dep.symbol)
       }
-      edges.get(key)!.symbols.push(dep.symbol)
+      if ((i + 1) % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS) {
+        await yieldToEventLoop()
+        if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision) return
+        lastYield = Date.now()
+      }
     }
     let edgeList = [...edges.values()]
     const allObserved = [...this.observedByPath.values()].flat().sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
@@ -287,16 +348,19 @@ export class GraphIndex {
     // Same content as last time: nothing to write. Same status within the window: wait, then write once.
     const key = `${this.base}|${status}|${body.length}|${hashOf(body)}`
     const now = Date.now()
-    if (key === this.lastPublished.key) return
+    if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision) return
+    if (key === this.lastPublished.key) {
+      this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base }
+      return
+    }
     const minMs = this.opts.minPublishMs ?? MIN_PUBLISH_MS
     if (status === this.lastPublished.status && now - this.lastPublished.at < minMs) {
       clearTimeout(this.publishing)
-      this.publishing = setTimeout(() => {
-        try { this.publish(this.phase) } catch (e) { this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`) }
-      }, minMs - (now - this.lastPublished.at))
+      this.publishing = setTimeout(() => { void this.publish(this.phase) }, minMs - (now - this.lastPublished.at))
       return
     }
     this.lastPublished = { at: now, key, status }
+    this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base }
     this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, observed, observedTruncated, truncated })
   }
 }
